@@ -1,0 +1,40 @@
+# Byte-compiled / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Locks and credentials
+.env
+.env.*
+!.env.example
+.pypirc
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local agent / editor config (local-only)
+CLAUDE.local.md
+CLAUDE.md
+.claude/
+.claude-dev-helper/
