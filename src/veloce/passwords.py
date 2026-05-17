@@ -1,0 +1,190 @@
+"""Password hashing helpers.
+
+`hash_password(password, method=...)` derives a verifier from a password
+and returns a string-encoded hash; `verify_password(stored, candidate)`
+checks a candidate password against a previously-stored hash with
+constant-time comparison.
+
+Two methods are supported, both stdlib-only:
+
+- `"scrypt"` (default) — RFC 7914. Memory-hard; resistant to GPU/ASIC
+  brute-force. Parameters: `n=2**15, r=8, p=1` give ~32 MiB working set.
+- `"pbkdf2:sha256"` — NIST SP 800-132. CPU-only; portable to any
+  hashlib build (some restricted Python builds lack scrypt).
+
+Stored format: `method$params$salt_b64$hash_b64`. Each segment is
+URL-safe base64 without `=` padding for compactness. The method tag at
+the front means the verifier can identify which KDF to run on the
+candidate even after future additions to this module.
+
+Spec anchors:
+- RFC 7914 (scrypt)
+- NIST SP 800-132 §5.3 (PBKDF2)
+- OWASP Password Storage cheatsheet
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import os
+import secrets
+
+# Default parameters. Tuned for ~100ms on a 2020-era laptop — enough to
+# meaningfully slow offline attack without making login latency painful.
+_SCRYPT_N = 2**15  # CPU/memory cost factor
+_SCRYPT_R = 8  # block size
+_SCRYPT_P = 1  # parallelisation
+_SCRYPT_DKLEN = 64
+# OpenSSL's scrypt enforces `maxmem >= 128 * N * r * p`. Default is 32 MiB,
+# which is the exact threshold for the parameters above — give a 2x cushion
+# so the call doesn't fail with "memory limit exceeded" on tight builds.
+_SCRYPT_MAXMEM = 128 * _SCRYPT_N * _SCRYPT_R * _SCRYPT_P * 2
+
+_PBKDF2_ITERATIONS = 600_000  # OWASP recommendation as of 2023
+_PBKDF2_DKLEN = 32
+
+_SALT_BYTES = 16
+
+
+def _b64encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64decode(data: str) -> bytes:
+    pad = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(data + pad)
+
+
+def hash_password(
+    password: str | bytes,
+    method: str = "scrypt",
+    salt_length: int = _SALT_BYTES,
+) -> str:
+    """Derive a salted verifier for `password`.
+
+    Returns a self-describing string of the form
+    `method$params$salt$hash` where each segment is URL-safe base64
+    (no padding). Pass this string verbatim to `verify_password` later.
+
+    `method`:
+    - `"scrypt"` (default): RFC 7914, memory-hard.
+    - `"pbkdf2:sha256"`: NIST SP 800-132, CPU-only.
+
+    `salt_length` is the number of random bytes used for the salt;
+    16 is the OWASP minimum.
+    """
+    if not password:
+        raise ValueError("password must be non-empty")
+    if salt_length < 8:
+        raise ValueError("salt_length must be >= 8 (OWASP recommendation)")
+
+    if isinstance(password, str):
+        password = password.encode("utf-8")
+    salt = secrets.token_bytes(salt_length)
+
+    if method == "scrypt":
+        derived = hashlib.scrypt(
+            password,
+            salt=salt,
+            n=_SCRYPT_N,
+            r=_SCRYPT_R,
+            p=_SCRYPT_P,
+            dklen=_SCRYPT_DKLEN,
+            maxmem=_SCRYPT_MAXMEM,
+        )
+        params = f"{_SCRYPT_N}:{_SCRYPT_R}:{_SCRYPT_P}"
+        return f"scrypt${params}${_b64encode(salt)}${_b64encode(derived)}"
+
+    if method == "pbkdf2:sha256":
+        derived = hashlib.pbkdf2_hmac(
+            "sha256", password, salt, _PBKDF2_ITERATIONS, dklen=_PBKDF2_DKLEN
+        )
+        params = str(_PBKDF2_ITERATIONS)
+        return f"pbkdf2:sha256${params}${_b64encode(salt)}${_b64encode(derived)}"
+
+    raise ValueError(f"unknown password hashing method: {method!r}")
+
+
+def verify_password(stored: str, candidate: str | bytes) -> bool:
+    """Compare `candidate` against a `stored` verifier string.
+
+    Returns False (never raises) for any malformed `stored`, unknown
+    method, or mismatch. Uses `hmac.compare_digest` for the final byte
+    comparison so timing attacks can't leak partial matches.
+    """
+    if not stored or not candidate:
+        return False
+    if isinstance(candidate, str):
+        candidate = candidate.encode("utf-8")
+    try:
+        method, params, salt_b64, hash_b64 = stored.split("$", 3)
+    except ValueError:
+        return False
+
+    try:
+        salt = _b64decode(salt_b64)
+        expected = _b64decode(hash_b64)
+    except (ValueError, OSError):
+        return False
+
+    if method == "scrypt":
+        # Reject hashes whose length isn't the canonical derive length —
+        # otherwise truncated verifiers would accept the truncated-prefix
+        # match of a re-derive at that shorter length.
+        if len(expected) != _SCRYPT_DKLEN:
+            return False
+        try:
+            n_str, r_str, p_str = params.split(":")
+            n, r, p = int(n_str), int(r_str), int(p_str)
+        except ValueError:
+            return False
+        try:
+            # Size maxmem based on the stored parameters so verifying a
+            # legacy hash with different N/r/p still works.
+            maxmem = 128 * n * r * p * 2
+            derived = hashlib.scrypt(
+                candidate, salt=salt, n=n, r=r, p=p, dklen=_SCRYPT_DKLEN, maxmem=maxmem
+            )
+        except (ValueError, OSError):
+            return False
+        return hmac.compare_digest(derived, expected)
+
+    if method == "pbkdf2:sha256":
+        if len(expected) != _PBKDF2_DKLEN:
+            return False
+        try:
+            iterations = int(params)
+        except ValueError:
+            return False
+        if iterations <= 0:
+            return False
+        derived = hashlib.pbkdf2_hmac("sha256", candidate, salt, iterations, dklen=_PBKDF2_DKLEN)
+        return hmac.compare_digest(derived, expected)
+
+    # Unknown method tag — fail closed.
+    return False
+
+
+def is_strong_password(password: str, *, min_length: int = 8) -> bool:
+    """Cheap policy check — not exhaustive.
+
+    Returns True only when the password meets a minimum baseline: at
+    least `min_length` characters and contains at least one digit AND
+    one alphabetic character. Callers that want NIST SP 800-63B-style
+    policy (block known-leaked passwords, drop max-length caps, etc.)
+    should layer on top.
+    """
+    if len(password) < min_length:
+        return False
+    has_alpha = any(c.isalpha() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+    return has_alpha and has_digit
+
+
+# Module-level random initialiser sanity check — fail at import if the
+# platform has no secure entropy source. `os.urandom` raises NotImplementedError
+# on platforms without /dev/urandom; this surfaces the issue earlier
+# than the first signup.
+_ = os.urandom(1)
