@@ -1,0 +1,637 @@
+"""OpenAPI 3.1 schema generation and Swagger UI — auto-generated from routes."""
+
+from __future__ import annotations
+
+import inspect
+from typing import Any, get_type_hints
+
+from pydantic import BaseModel
+
+from veloce.http.response import HTMLResponse, JSONResponse
+
+
+def _deep_merge(target: dict, overlay: dict) -> None:
+    """Recursively merge `overlay` into `target` in place.
+
+    Nested dicts merge key-by-key; any non-dict value (scalar, list)
+    in `overlay` replaces the value in `target`.
+    """
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _deep_merge(target[key], value)
+        else:
+            target[key] = value
+
+
+def get_openapi_schema(app: Any) -> dict:
+    """Generate OpenAPI 3.1 schema from the app's registered routes."""
+    info_obj: dict[str, Any] = {
+        "title": getattr(app, "title", "Veloce API"),
+        "version": getattr(app, "version", "0.1.0"),
+    }
+    if getattr(app, "summary", None):
+        info_obj["summary"] = app.summary
+    if getattr(app, "description", ""):
+        info_obj["description"] = app.description
+    if getattr(app, "terms_of_service", None):
+        info_obj["termsOfService"] = app.terms_of_service
+    if getattr(app, "contact", None):
+        info_obj["contact"] = app.contact
+    if getattr(app, "license_info", None):
+        info_obj["license"] = app.license_info
+
+    schema: dict[str, Any] = {
+        "openapi": "3.1.0",
+        "info": info_obj,
+        "paths": {},
+        "components": {"schemas": {}},
+    }
+
+    if getattr(app, "servers", None):
+        schema["servers"] = app.servers
+    if getattr(app, "openapi_tags", None):
+        schema["tags"] = app.openapi_tags
+    # OpenAPI 3.1 §4.8.11 — top-level `externalDocs` object.
+    if getattr(app, "openapi_external_docs", None):
+        schema["externalDocs"] = app.openapi_external_docs
+
+    routes = app._collect_all_routes()
+    schemas_registry: dict[str, dict] = {}
+    security_schemes_registry: dict[str, dict] = {}
+
+    for method, path, info in routes:
+        method_lower = method.lower()
+        if path not in schema["paths"]:
+            schema["paths"][path] = {}
+
+        # Per OpenAPI 3.1 §4.8.10 operationId must be unique across the
+        # document. The explicit override wins; default = `<name>_<method>`.
+        op_id = (
+            info.operation_id
+            if getattr(info, "operation_id", None)
+            else f"{info.name}_{method_lower}"
+        )
+        operation: dict[str, Any] = {
+            "summary": info.summary or info.name,
+            "operationId": op_id,
+            "responses": {
+                "200": {
+                    "description": info.response_description,
+                },
+            },
+        }
+
+        if info.description:
+            operation["description"] = info.description
+
+        if info.tags:
+            operation["tags"] = info.tags
+
+        if info.deprecated:
+            operation["deprecated"] = True
+
+        # OpenAPI 3.1 §4.8.8 — route-level `callbacks` map emitted verbatim.
+        if getattr(info, "callbacks", None):
+            operation["callbacks"] = info.callbacks
+
+        # Extract parameters and request body from handler signature
+        handler = info.handler
+        try:
+            sig = inspect.signature(handler)
+            hints = get_type_hints(handler) if hasattr(handler, "__annotations__") else {}
+        except (ValueError, TypeError):
+            sig = None
+            hints = {}
+
+        parameters: list[dict] = []
+        request_body_schema: dict | None = None
+
+        if sig:
+            for pname, param in sig.parameters.items():
+                if pname in ("self", "request"):
+                    continue
+
+                # Skip Depends() / Security() parameters
+                from veloce.dependency import Depends
+
+                if isinstance(param.default, Depends):
+                    continue
+
+                annotation = hints.get(pname)
+
+                # Handle parameter marker classes (Query, Path, Header, Cookie, Body, Form, File)
+                from veloce.routing.params import Body as BodyParam
+                from veloce.routing.params import Cookie as CookieParam
+                from veloce.routing.params import File as FileParam
+                from veloce.routing.params import Form as FormParam
+                from veloce.routing.params import Header as HeaderParam
+                from veloce.routing.params import Path as PathParam
+                from veloce.routing.params import _ParamBase
+
+                marker = None
+                if isinstance(param.default, _ParamBase):
+                    marker = param.default
+                    # `include_in_schema=False` — resolved at
+                    # runtime but omitted from the OpenAPI document.
+                    if not getattr(marker, "include_in_schema", True):
+                        continue
+
+                # Check if it's a Pydantic model (request body)
+                if (
+                    annotation
+                    and isinstance(annotation, type)
+                    and issubclass(annotation, BaseModel)
+                ):
+                    model_schema = _pydantic_to_schema(annotation, schemas_registry)
+                    request_body_schema = model_schema
+                    continue
+
+                # Determine parameter location
+                if marker and isinstance(marker, HeaderParam):
+                    param_location = "header"
+                    param_alias = marker.alias or pname
+                elif marker and isinstance(marker, CookieParam):
+                    param_location = "cookie"
+                    param_alias = marker.alias or pname
+                elif marker and isinstance(marker, (BodyParam, FormParam, FileParam)):
+                    # Body/Form/File go into requestBody, not parameters
+                    continue
+                elif pname in info.param_names or (marker and isinstance(marker, PathParam)):
+                    param_location = "path"
+                    param_alias = pname
+                else:
+                    param_location = "query"
+                    param_alias = marker.alias if marker and marker.alias else pname
+
+                param_schema = _python_type_to_schema(annotation)
+
+                # Add constraints from marker
+                if marker:
+                    if getattr(marker, "title", None):
+                        param_schema["title"] = marker.title
+                    if marker.description:
+                        param_schema["description"] = marker.description
+                    if marker.ge is not None:
+                        param_schema["minimum"] = marker.ge
+                    if marker.le is not None:
+                        param_schema["maximum"] = marker.le
+                    # OpenAPI 3.1 / JSON Schema 2020-12: gt/lt map to the
+                    # numeric `exclusiveMinimum` / `exclusiveMaximum`.
+                    if marker.gt is not None:
+                        param_schema["exclusiveMinimum"] = marker.gt
+                    if marker.lt is not None:
+                        param_schema["exclusiveMaximum"] = marker.lt
+                    if marker.min_length is not None:
+                        param_schema["minLength"] = marker.min_length
+                    if marker.max_length is not None:
+                        param_schema["maxLength"] = marker.max_length
+                    if getattr(marker, "multiple_of", None) is not None:
+                        param_schema["multipleOf"] = marker.multiple_of
+                    if marker.regex is not None:
+                        param_schema["pattern"] = marker.regex
+                    # OpenAPI 3.1 / JSON Schema 2020-12 — `examples` is an
+                    # array of sample values on the schema object.
+                    if getattr(marker, "examples", None):
+                        param_schema["examples"] = list(marker.examples or [])
+
+                # Determine required status and default
+                if marker:
+                    required = not marker.has_default
+                    if marker.has_default and marker.default is not ...:
+                        default_val = marker.default
+                        if isinstance(default_val, (str, int, float, bool, type(None))):
+                            param_schema["default"] = default_val
+                elif param_location == "path":
+                    required = True
+                else:
+                    required = param.default is inspect.Parameter.empty
+                    if not required and param.default is not inspect.Parameter.empty:
+                        default_val = param.default
+                        if isinstance(default_val, (str, int, float, bool, type(None))):
+                            param_schema["default"] = default_val
+
+                param_info: dict[str, Any] = {
+                    "name": param_alias,
+                    "in": param_location,
+                    "required": required,
+                    "schema": param_schema,
+                }
+
+                # OpenAPI 3.1 §4.8.12.1 — array-valued query parameters
+                # default to `style: form`, `explode: true` (one
+                # `?key=v1&key=v2` pair per item).
+                if param_location == "query" and param_schema.get("type") == "array":
+                    param_info["style"] = "form"
+                    param_info["explode"] = True
+
+                if marker and marker.deprecated:
+                    param_info["deprecated"] = True
+
+                parameters.append(param_info)
+
+        if parameters:
+            operation["parameters"] = parameters
+
+        if request_body_schema:
+            operation["requestBody"] = {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": request_body_schema,
+                    }
+                },
+            }
+
+        # Walk this route's Security() chain to register OpenAPI security
+        # schemes and attach the operation-level `security` requirement.
+        security_requirements = _collect_security_requirements(info, security_schemes_registry)
+        if security_requirements:
+            operation["security"] = security_requirements
+
+        # Success response uses the route's status_code (default 200).
+        primary_status = str(info.status_code if info.status_code else 200)
+        if primary_status != "200":
+            # Re-key the default entry built earlier.
+            default_resp = operation["responses"].pop("200")
+            operation["responses"][primary_status] = default_resp
+
+        # `response_model` — render its schema under the success status entry.
+        if info.response_model is not None:
+            resp_schema = _response_model_to_schema(info.response_model, schemas_registry)
+            if resp_schema is not None:
+                operation["responses"][primary_status]["content"] = {
+                    "application/json": {"schema": resp_schema}
+                }
+
+        # `responses={400: {"model": Err, "description": "Bad input"}}`.
+        # Each entry can carry `model`, `description`, or an arbitrary
+        # OpenAPI fragment which we merge into the operation's responses.
+        for status_code, spec in (info.responses or {}).items():
+            key = str(status_code)
+            existing = operation["responses"].setdefault(key, {})
+            if not isinstance(spec, dict):
+                continue
+            extra_model = spec.get("model")
+            if extra_model is not None:
+                extra_schema = _response_model_to_schema(extra_model, schemas_registry)
+                if extra_schema is not None:
+                    existing.setdefault("content", {})["application/json"] = {
+                        "schema": extra_schema
+                    }
+            if "description" in spec:
+                existing["description"] = spec["description"]
+            elif "description" not in existing:
+                existing["description"] = ""
+            # Allow free-form merging of any other keys (headers, links, etc.).
+            for k, v in spec.items():
+                if k in ("model", "description"):
+                    continue
+                existing[k] = v
+
+        # `openapi_extra` — deep-merge the user-supplied dict over
+        # the generated operation. Nested dicts merge key-by-key; scalars
+        # and lists in `openapi_extra` overwrite.
+        extra = getattr(info, "openapi_extra", None)
+        if extra:
+            _deep_merge(operation, extra)
+
+        schema["paths"][path][method_lower] = operation
+
+    # OpenAPI 3.1 §4.8.1 `webhooks` — routes registered on `app.webhooks`
+    # are documentation-only (never dispatched). Each is keyed by its
+    # event name (the path passed to `@app.webhooks.post("name")`).
+    webhooks_router = getattr(app, "webhooks", None)
+    walker = getattr(webhooks_router, "_walk_routes", None) if webhooks_router else None
+    if walker is not None:
+        webhook_items: dict[str, Any] = {}
+        for wpath, wmethods, winfo in walker():
+            event = wpath.strip("/") or wpath
+            for wmethod in wmethods:
+                op: dict[str, Any] = {
+                    "summary": winfo.summary or winfo.name,
+                    "operationId": f"{winfo.name}_{wmethod.lower()}",
+                    "responses": {"200": {"description": winfo.response_description}},
+                }
+                if winfo.description:
+                    op["description"] = winfo.description
+                body = _webhook_request_body(winfo.handler, schemas_registry)
+                if body is not None:
+                    op["requestBody"] = {
+                        "required": True,
+                        "content": {"application/json": {"schema": body}},
+                    }
+                webhook_items.setdefault(event, {})[wmethod.lower()] = op
+        if webhook_items:
+            schema["webhooks"] = webhook_items
+
+    if schemas_registry:
+        schema["components"]["schemas"] = schemas_registry
+    if security_schemes_registry:
+        schema["components"]["securitySchemes"] = security_schemes_registry
+
+    return schema
+
+
+def _webhook_request_body(handler: Any, registry: dict[str, dict]) -> dict | None:
+    """Return the OpenAPI schema for a webhook handler's Pydantic body param.
+
+    A webhook handler documents the payload an external caller will
+    POST; the first BaseModel-typed parameter is treated as that body.
+    """
+    try:
+        sig = inspect.signature(handler)
+        hints = get_type_hints(handler) if hasattr(handler, "__annotations__") else {}
+    except (TypeError, ValueError):
+        return None
+    for pname in sig.parameters:
+        if pname in ("self", "request"):
+            continue
+        annotation = hints.get(pname)
+        if annotation and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return _pydantic_to_schema(annotation, registry)
+    return None
+
+
+def _python_type_to_schema(annotation: Any) -> dict:
+    """Convert Python type to OpenAPI schema type."""
+    if annotation is None or annotation is inspect.Parameter.empty:
+        return {"type": "string"}
+    from typing import get_args, get_origin
+
+    # Parametrised `list[T]` / `set[T]` → an array schema with typed items.
+    origin = get_origin(annotation)
+    if origin in (list, set, tuple):
+        args = get_args(annotation)
+        item = _python_type_to_schema(args[0]) if args else {}
+        return {"type": "array", "items": item}
+    type_map: dict[Any, dict[str, Any]] = {
+        str: {"type": "string"},
+        int: {"type": "integer"},
+        float: {"type": "number"},
+        bool: {"type": "boolean"},
+        bytes: {"type": "string", "format": "binary"},
+        list: {"type": "array", "items": {}},
+        dict: {"type": "object"},
+    }
+    return type_map.get(annotation, {"type": "string"})
+
+
+def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
+    """Inspect a Security() target and return (name, OpenAPI security
+    scheme object) for known scheme classes, or None.
+
+    The name is derived from the scheme class so duplicate registrations
+    of the same scheme reuse the same components.securitySchemes entry.
+    """
+    cls = type(scheme).__name__
+    if cls == "OAuth2PasswordBearer":
+        return cls, {
+            "type": "oauth2",
+            "flows": {
+                "password": {
+                    "tokenUrl": getattr(scheme, "token_url", ""),
+                    "scopes": getattr(scheme, "scopes", {}) or {},
+                }
+            },
+        }
+    if cls == "OAuth2AuthorizationCodeBearer":
+        flow: dict[str, Any] = {
+            "authorizationUrl": getattr(scheme, "authorizationUrl", ""),
+            "tokenUrl": getattr(scheme, "tokenUrl", ""),
+            "scopes": getattr(scheme, "scopes", {}) or {},
+        }
+        refresh = getattr(scheme, "refreshUrl", None)
+        if refresh:
+            flow["refreshUrl"] = refresh
+        return cls, {
+            "type": "oauth2",
+            "flows": {"authorizationCode": flow},
+        }
+    if cls == "OpenIdConnect":
+        return cls, {
+            "type": "openIdConnect",
+            "openIdConnectUrl": getattr(scheme, "openIdConnectUrl", ""),
+        }
+    if cls == "HTTPBearer":
+        return cls, {
+            "type": "http",
+            "scheme": "bearer",
+        }
+    if cls == "HTTPBasic":
+        return cls, {
+            "type": "http",
+            "scheme": "basic",
+        }
+    if cls == "APIKeyHeader":
+        return cls, {
+            "type": "apiKey",
+            "in": "header",
+            "name": getattr(scheme, "name", ""),
+        }
+    if cls == "APIKeyQuery":
+        return cls, {
+            "type": "apiKey",
+            "in": "query",
+            "name": getattr(scheme, "name", ""),
+        }
+    if cls == "APIKeyCookie":
+        return cls, {
+            "type": "apiKey",
+            "in": "cookie",
+            "name": getattr(scheme, "name", ""),
+        }
+    return None
+
+
+def _collect_security_requirements(
+    info: Any, registry: dict[str, dict]
+) -> list[dict[str, list[str]]]:
+    """Walk the route's dependency chain, collecting one OpenAPI security
+    requirement per `Security(scheme, scopes=[...])` discovered.
+
+    Mutates `registry` to add components.securitySchemes entries.
+    Returns the operation-level `security` list — a sequence of
+    `{schemeName: [scopes]}` dicts. Empty when no Security() is reachable.
+    """
+    from veloce.dependency import Depends
+
+    requirements: list[dict[str, list[str]]] = []
+    seen: set[int] = set()
+
+    def visit(dep: Any) -> None:
+        # `dep` is either a Depends/Security marker, or a callable that
+        # might be one of the known scheme classes.
+        if isinstance(dep, Depends):
+            target = dep.dependency
+            scheme_def = _scheme_definition(target)
+            if scheme_def is not None:
+                name, definition = scheme_def
+                registry.setdefault(name, definition)
+                # Scopes only matter for OAuth2; Security() carries them,
+                # plain Depends doesn't.
+                scopes = list(getattr(dep, "scopes", []) or [])
+                requirements.append({name: scopes})
+                # Don't recurse past a known scheme — its internals are
+                # implementation, not policy.
+                return
+            # Generic dep — recurse into its handler signature.
+            inner = target
+        else:
+            inner = dep
+
+        if inner is None or id(inner) in seen:
+            return
+        seen.add(id(inner))
+
+        try:
+            sig = inspect.signature(inner)
+        except (TypeError, ValueError):
+            return
+        for param in sig.parameters.values():
+            default = param.default
+            if isinstance(default, Depends):
+                visit(default)
+
+    # Route-level dependencies (the `dependencies=[Depends(...)]` kwarg).
+    for d in getattr(info, "dependencies", ()) or ():
+        visit(d)
+    # Plus anything in the handler's own parameter defaults.
+    handler = info.handler
+    try:
+        sig = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return requirements
+    for param in sig.parameters.values():
+        default = param.default
+        if isinstance(default, Depends):
+            visit(default)
+    # The walker emits security requirements alongside Security() instances
+    # specifically — plain `Depends` traversal still picks up Security
+    # nested inside, but a top-level `Depends(some_dep)` without Security
+    # somewhere below should not add a security entry. Filter:
+    return [r for r in requirements if any(isinstance(v, list) for v in r.values())]
+
+
+def _response_model_to_schema(response_model: Any, registry: dict[str, dict]) -> dict | None:
+    """Render `response_model` into an OpenAPI schema object.
+
+    Handles three shapes:
+    - `MyModel` (Pydantic BaseModel subclass) → `{"$ref": ".../MyModel"}`.
+    - `list[MyModel]` (or any `Sequence[MyModel]`) → array-of-refs.
+    - Anything else → `None` (caller omits the schema).
+    """
+    from typing import get_args, get_origin
+
+    origin = get_origin(response_model)
+    if origin is list:
+        args = get_args(response_model)
+        if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+            inner = _pydantic_to_schema(args[0], registry)
+            return {"type": "array", "items": inner}
+        return {"type": "array", "items": {}}
+
+    if isinstance(response_model, type) and issubclass(response_model, BaseModel):
+        return _pydantic_to_schema(response_model, registry)
+
+    return None
+
+
+def _pydantic_to_schema(model: type[BaseModel], registry: dict[str, dict]) -> dict:
+    """Convert a Pydantic model to OpenAPI schema, adding to registry."""
+    name = model.__name__
+    if name not in registry:
+        try:
+            schema = model.model_json_schema()
+            # Extract definitions
+            if "$defs" in schema:
+                for def_name, def_schema in schema["$defs"].items():
+                    registry[def_name] = def_schema
+                del schema["$defs"]
+            registry[name] = schema
+        except Exception:
+            registry[name] = {"type": "object"}
+    return {"$ref": f"#/components/schemas/{name}"}
+
+
+SWAGGER_HTML = """<!DOCTYPE html>
+<html>
+<head>
+    <title>{title} — Swagger UI</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+    const ui = SwaggerUIBundle({{
+        url: "{openapi_url}",
+        dom_id: '#swagger-ui',
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+        layout: "StandaloneLayout",
+        {ui_params}
+    }});
+    {init_oauth}
+    </script>
+</body>
+</html>"""
+
+
+REDOC_HTML = """<!DOCTYPE html>
+<html>
+<head>
+    <title>{title} — ReDoc</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
+    <style>body {{ margin: 0; padding: 0; }}</style>
+</head>
+<body>
+    <redoc spec-url='{openapi_url}'></redoc>
+    <script src="https://unpkg.com/redoc@latest/bundles/redoc.standalone.js"></script>
+</body>
+</html>"""
+
+
+def setup_openapi_routes(
+    app: Any, openapi_url: str = "/openapi.json", docs_url: str = "/docs", redoc_url: str = "/redoc"
+) -> None:
+    """Register OpenAPI schema and documentation routes."""
+    _cached_schema: dict[str, Any] = {}
+
+    @app.get(openapi_url, tags=["openapi"], name="openapi_schema")
+    async def openapi_schema(request: Any):
+        # Route through `app.openapi()` so a user override / customised
+        # `app.openapi_schema` flows to the JSON endpoint and Swagger UI.
+        return JSONResponse(app.openapi())
+
+    @app.get(docs_url, tags=["openapi"], name="swagger_ui")
+    async def swagger_ui(request: Any):
+        import json
+
+        # Render extra SwaggerUIBundle options inline as JSON. The HTML
+        # template wraps them with the surrounding `{}` of the config
+        # object, so we emit `"key": value, "key2": value2` without
+        # outer braces.
+        params = getattr(app, "swagger_ui_parameters", None) or {}
+        if params:
+            ui_params = ", ".join(f"{json.dumps(k)}: {json.dumps(v)}" for k, v in params.items())
+        else:
+            ui_params = ""
+
+        oauth_init = getattr(app, "swagger_ui_init_oauth", None)
+        init_oauth = f"ui.initOAuth({json.dumps(oauth_init)});" if oauth_init else ""
+
+        html = SWAGGER_HTML.format(
+            title=app.title,
+            openapi_url=openapi_url,
+            ui_params=ui_params,
+            init_oauth=init_oauth,
+        )
+        return HTMLResponse(html)
+
+    @app.get(redoc_url, tags=["openapi"], name="redoc_ui")
+    async def redoc_ui(request: Any):
+        html = REDOC_HTML.format(title=app.title, openapi_url=openapi_url)
+        return HTMLResponse(html)
