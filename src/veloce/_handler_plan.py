@@ -13,6 +13,7 @@ Reflection happens at registration time only, never on the hot path.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import types
 from collections.abc import Callable
@@ -202,18 +203,20 @@ def build_plan(handler: Callable) -> HandlerPlan:
     except (TypeError, ValueError):
         return HandlerPlan(handler, [], [])
 
-    # `inspect.signature` already follows the class -> `__init__` and
-    # callable-instance -> `__call__` indirection, but `get_type_hints`
-    # does not — on a class it returns the *class-level* annotations, not
-    # `__init__`'s parameter annotations. Point it at the same object the
-    # signature was resolved from, so class dependencies keep their
-    # `__init__` parameter types.
-    if inspect.isclass(handler):
-        hint_target: Any = handler.__init__
-    elif not inspect.isfunction(handler) and not inspect.ismethod(handler) and callable(handler):
-        hint_target = type(handler).__call__
+    # `inspect.signature` transparently follows the class -> `__init__`,
+    # callable-instance -> `__call__`, and `functools.partial` -> wrapped
+    # function indirection, but `get_type_hints` does not — on a class it
+    # returns the *class-level* annotations, not `__init__`'s. Resolve the
+    # same object `signature` did so dependencies keep their parameter types.
+    real: Any = handler
+    while isinstance(real, functools.partial):
+        real = real.func
+    if inspect.isclass(real):
+        hint_target: Any = real.__init__
+    elif not inspect.isfunction(real) and not inspect.ismethod(real) and callable(real):
+        hint_target = type(real).__call__
     else:
-        hint_target = handler
+        hint_target = real
 
     try:
         # `include_extras=True` keeps PEP 593 `Annotated[T, Depends(...)]`
