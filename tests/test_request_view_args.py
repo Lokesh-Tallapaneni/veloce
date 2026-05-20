@@ -1,0 +1,33 @@
+"""Request.view_args — an alias for path_params."""
+
+from __future__ import annotations
+
+from veloce import Request, Veloce
+from veloce.testclient import TestClient
+
+
+def test_view_args_empty_by_default():
+    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    assert req.view_args == {}
+
+
+def test_view_args_aliases_path_params():
+    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    req.path_params = {"id": "7"}
+    assert req.view_args == {"id": "7"}
+    assert req.view_args is req.path_params
+
+
+def test_view_args_populated_after_match():
+    app = Veloce(openapi_url=None)
+    captured: dict = {}
+
+    @app.get("/items/{item_id:int}")
+    async def item(request: Request, item_id: int):
+        captured["view_args"] = dict(request.view_args)
+        return {}
+
+    with TestClient(app) as client:
+        client.get("/items/42")
+
+    assert captured["view_args"] == {"item_id": 42}

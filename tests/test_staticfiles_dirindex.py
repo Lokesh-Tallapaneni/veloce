@@ -1,0 +1,80 @@
+"""StaticFiles directory listing."""
+
+from __future__ import annotations
+
+import pytest
+
+from veloce import Request
+from veloce.contrib.staticfiles import StaticFiles
+
+
+def _req(path: str) -> Request:
+    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+
+
+@pytest.mark.asyncio
+async def test_directory_index_off_by_default(tmp_path):
+    (tmp_path / "a.txt").write_bytes(b"a")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s")
+    # Hitting a directory (no index.html) returns None → 404.
+    resp = await sf.handle(_req("/s/"))
+    assert resp is None
+
+
+@pytest.mark.asyncio
+async def test_directory_index_lists_files(tmp_path):
+    (tmp_path / "a.txt").write_bytes(b"a")
+    (tmp_path / "b.txt").write_bytes(b"b")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", directory_index=True)
+    resp = await sf.handle(_req("/s/"))
+    assert resp is not None
+    assert resp.status_code == 200
+    body = resp.body.decode()
+    assert "a.txt" in body
+    assert "b.txt" in body
+    assert resp.content_type.startswith("text/html")
+
+
+@pytest.mark.asyncio
+async def test_directory_index_hides_dotfiles(tmp_path):
+    (tmp_path / "visible.txt").write_bytes(b"x")
+    (tmp_path / ".hidden").write_bytes(b"x")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", directory_index=True)
+    resp = await sf.handle(_req("/s/"))
+    body = resp.body.decode()
+    assert "visible.txt" in body
+    assert ".hidden" not in body
+
+
+@pytest.mark.asyncio
+async def test_directory_index_marks_subdirectories(tmp_path):
+    (tmp_path / "sub").mkdir()
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", directory_index=True)
+    resp = await sf.handle(_req("/s/"))
+    body = resp.body.decode()
+    # Subdir gets a trailing slash in the rendered link.
+    assert 'href="sub/">sub/' in body
+
+
+@pytest.mark.asyncio
+async def test_directory_index_escapes_dangerous_filenames(tmp_path):
+    # `<` / `>` are not allowed in Windows filenames, but `&` is. The
+    # render path uses `html.escape` which escapes `&` → `&amp;`,
+    # `<` → `&lt;`, etc. We use `&` to exercise the same code path
+    # cross-platform.
+    (tmp_path / "a&b.txt").write_text("x")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", directory_index=True)
+    resp = await sf.handle(_req("/s/"))
+    body = resp.body.decode()
+    # Filename appears HTML-escaped — raw `&` does not.
+    assert "a&amp;b.txt" in body
+
+
+@pytest.mark.asyncio
+async def test_directory_index_does_not_supersede_index_html(tmp_path):
+    """If `html=True` and `index.html` exists, the file is served, not a listing."""
+    (tmp_path / "index.html").write_text("HELLO")
+    (tmp_path / "other.txt").write_text("x")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", html=True, directory_index=True)
+    resp = await sf.handle(_req("/s/"))
+    assert resp.body == b"HELLO"
