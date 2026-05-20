@@ -111,14 +111,17 @@ async def test_round_trip_through_app():
 @pytest.mark.asyncio
 async def test_fresh_instance_per_request():
     """Each request constructs a new instance — request-state isolation."""
-    seen: list[int] = []
+    # Keep references to every instance for the whole test so their
+    # lifetimes overlap — `is`-distinctness is then sound. Comparing
+    # id() across non-overlapping lifetimes is not: CPython reuses the
+    # address of a collected object.
+    instances: list[MethodView] = []
 
     class V(MethodView):
         def __init__(self):
-            self.id = id(self)
+            instances.append(self)
 
         async def get(self, request):
-            seen.append(self.id)
             return {}
 
     app = Veloce(debug=True, openapi_url=None)
@@ -126,5 +129,6 @@ async def test_fresh_instance_per_request():
 
     await app.handle_request(_req("/x"))
     await app.handle_request(_req("/x"))
-    assert len(seen) == 2
-    assert seen[0] != seen[1]
+    # Two requests → two instances, both still referenced here.
+    assert len(instances) == 2
+    assert instances[0] is not instances[1]

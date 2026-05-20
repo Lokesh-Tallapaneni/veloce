@@ -697,10 +697,17 @@ class Router:
     # alias so calling code reads cleanly.
     url_path_for = url_for
 
-    def _collect_all_routes(self) -> list[tuple[str, str, RouteInfo]]:
-        """Collect all routes as (method, path, info) tuples — used for OpenAPI."""
+    def _collect_all_routes(self, include_hidden: bool = False) -> list[tuple[str, str, RouteInfo]]:
+        """Collect routes as (method, path, info) tuples.
+
+        By default only schema-visible HTTP routes are returned (the set
+        OpenAPI generation needs). Pass ``include_hidden=True`` to also get
+        WebSocket routes and routes registered with ``include_in_schema=False``
+        — required when re-registering a blueprint's routes onto an app, where
+        every route must enter the radix tree regardless of schema visibility.
+        """
         routes: list[tuple[str, str, RouteInfo]] = []
-        self._walk_tree(self._root, [], routes)
+        self._walk_tree(self._root, [], routes, include_hidden)
         return routes
 
     def _walk_tree(
@@ -708,11 +715,12 @@ class Router:
         node: RadixNode,
         path_parts: list[str],
         out: list[tuple[str, str, RouteInfo]],
+        include_hidden: bool = False,
     ) -> None:
         if node.handlers:
             path = "/" + "/".join(path_parts) if path_parts else "/"
             for method, info in node.handlers.items():
-                if method != "WEBSOCKET" and info.include_in_schema:
+                if include_hidden or (method != "WEBSOCKET" and info.include_in_schema):
                     out.append((method, path, info))
         for child in node.children:
             seg = child.segment
@@ -720,7 +728,7 @@ class Router:
                 seg = "{" + (child.param_name or "") + "}"
             elif child.is_wildcard:
                 seg = "{path}"
-            self._walk_tree(child, path_parts + [seg], out)
+            self._walk_tree(child, path_parts + [seg], out, include_hidden)
 
     def include_router(self, router: Router, prefix: str = "") -> None:
         """Include another router (a sub-router with its own prefix, tags, and hooks)."""

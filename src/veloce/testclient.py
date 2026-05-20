@@ -642,13 +642,19 @@ class _WebSocketSession:
             for k, v in self._headers.items():
                 scope_headers.append((k.lower().encode("latin-1"), v.encode("latin-1")))
 
+            # Split any `?query` off the connect path, mirroring
+            # `_make_request` for HTTP. A real ASGI server does this; the
+            # in-memory client must too, or route matching sees the `?`
+            # and `WebSocket.query_params` stays empty.
+            ws_path, _, ws_query = self._path.partition("?")
+
             scope = {
                 "type": "websocket",
                 "asgi": {"version": "3.0", "spec_version": "2.3"},
                 "scheme": "ws",
-                "path": self._path,
-                "raw_path": self._path.encode("ascii"),
-                "query_string": b"",
+                "path": ws_path,
+                "raw_path": ws_path.encode("ascii"),
+                "query_string": ws_query.encode("ascii"),
                 "root_path": "",
                 "headers": scope_headers,
                 "client": ("testclient", 50000),

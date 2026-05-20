@@ -55,7 +55,7 @@ class EventSourceResponse(Response):
 
     def __init__(
         self,
-        content: AsyncIterator[ServerSentEvent],
+        content: AsyncIterator[ServerSentEvent | str | bytes],
         status_code: int = 200,
         headers: dict[str, str] | None = None,
     ) -> None:
@@ -73,7 +73,29 @@ class EventSourceResponse(Response):
             content_type="text/event-stream",
             headers=hdrs,
         )
-        self._stream = content
+        # Normalise every yielded item to bytes up front, so the ASGI
+        # transport and the raw-socket transport consume an identical
+        # `bytes` stream — see `_encode_stream`.
+        self._stream = self._encode_stream(content)
+
+    @staticmethod
+    async def _encode_stream(
+        content: AsyncIterator[ServerSentEvent | str | bytes],
+    ) -> AsyncIterator[bytes]:
+        """Encode each yielded item to `bytes`.
+
+        Accepts `ServerSentEvent` objects (encoded via `.encode()`), plain
+        `str` (UTF-8 encoded), or already-encoded `bytes`. This keeps both
+        transports consistent: the ASGI streaming branch and `stream_to`
+        each receive `bytes` regardless of what the handler yields.
+        """
+        async for item in content:
+            if isinstance(item, ServerSentEvent):
+                yield item.encode()
+            elif isinstance(item, str):
+                yield item.encode("utf-8")
+            else:
+                yield item
 
     async def stream_to(self, transport: Any) -> None:
         """Stream SSE events to transport."""
@@ -92,8 +114,8 @@ class EventSourceResponse(Response):
         parts.append("\r\n")
         transport.write("".join(parts).encode("latin-1"))
 
-        async for event in self._stream:
-            chunk = event.encode()
+        async for chunk in self._stream:
+            # `_stream` is normalised to bytes by `_encode_stream`.
             size = format(len(chunk), "x")
             transport.write(f"{size}\r\n".encode() + chunk + b"\r\n")
 

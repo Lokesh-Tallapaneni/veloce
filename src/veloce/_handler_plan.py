@@ -202,11 +202,24 @@ def build_plan(handler: Callable) -> HandlerPlan:
     except (TypeError, ValueError):
         return HandlerPlan(handler, [], [])
 
+    # `inspect.signature` already follows the class -> `__init__` and
+    # callable-instance -> `__call__` indirection, but `get_type_hints`
+    # does not — on a class it returns the *class-level* annotations, not
+    # `__init__`'s parameter annotations. Point it at the same object the
+    # signature was resolved from, so class dependencies keep their
+    # `__init__` parameter types.
+    if inspect.isclass(handler):
+        hint_target: Any = handler.__init__
+    elif not inspect.isfunction(handler) and not inspect.ismethod(handler) and callable(handler):
+        hint_target = type(handler).__call__
+    else:
+        hint_target = handler
+
     try:
         # `include_extras=True` keeps PEP 593 `Annotated[T, Depends(...)]`
         # metadata in the result so we can detect dependency markers
         # without forcing users to use the default-value form.
-        hints = get_type_hints(handler, include_extras=True)
+        hints = get_type_hints(hint_target, include_extras=True)
     except Exception:
         # get_type_hints chokes on forward refs / private modules; degrade
         # gracefully — slots that need annotations become K_DEFAULT/K_NONE.

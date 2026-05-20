@@ -47,11 +47,15 @@ def test_as_view_sets_name_and_view_class():
 
 
 def test_init_every_request_true_makes_fresh_instances():
-    instances: list[int] = []
+    # Keep a reference to every instance for the whole test so their
+    # lifetimes overlap — `is`-distinctness is then sound. Comparing
+    # id() across non-overlapping lifetimes is not: CPython reuses the
+    # address of a collected object.
+    instances: list[View] = []
 
     class Counter(View):
         def __init__(self):
-            instances.append(id(self))
+            instances.append(self)
 
         async def dispatch_request(self, request):
             return {}
@@ -61,9 +65,9 @@ def test_init_every_request_true_makes_fresh_instances():
     with TestClient(app) as client:
         client.get("/c")
         client.get("/c")
-    # Two requests → two distinct instances.
+    # Two requests → two instances, both still referenced here.
     assert len(instances) == 2
-    assert instances[0] != instances[1]
+    assert instances[0] is not instances[1]
 
 
 def test_init_every_request_false_reuses_instance():
