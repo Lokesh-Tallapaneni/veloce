@@ -2025,7 +2025,10 @@ class Veloce(Router):
         if isinstance(result, (dict, list)):
             return JSONResponse(result)
         if isinstance(result, str):
-            return Response(body=result.encode(), content_type="text/plain")
+            # A bare `str` return defaults to text/html — the same default
+            # `make_response()` applies, so the media type is consistent
+            # whichever path produced the response.
+            return Response(body=result.encode(), content_type="text/html; charset=utf-8")
         if isinstance(result, bytes):
             return Response(body=result, content_type="application/octet-stream")
         # Pydantic model

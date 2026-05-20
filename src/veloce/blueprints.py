@@ -199,7 +199,9 @@ class Blueprint(Router):
         """
         results: list[tuple[str, list[str], RouteInfo]] = []
         own_prefix = self.url_prefix.rstrip("/")
-        for method, path, info in self._collect_all_routes():
+        # include_hidden=True: a blueprint's WebSocket routes and its
+        # include_in_schema=False routes must still enter the app's tree.
+        for method, path, info in self._collect_all_routes(include_hidden=True):
             stripped = path
             if own_prefix and path.startswith(own_prefix):
                 stripped = path[len(own_prefix) :] or "/"
