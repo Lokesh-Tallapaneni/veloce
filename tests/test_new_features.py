@@ -10,6 +10,7 @@ from veloce import (
     APIKeyHeader,
     APIKeyQuery,
     Depends,
+    EventSourceResponse,
     FormData,
     Headers,
     HTMLResponse,
@@ -874,3 +875,21 @@ class TestRouteMetadata:
 
         schema = get_openapi_schema(app)
         assert schema["paths"]["/old"]["get"]["deprecated"] is True
+
+
+def test_eventsource_response_accepts_serversentevent_objects():
+    """EventSourceResponse encodes yielded ServerSentEvent objects over ASGI."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/sse")
+    async def sse(request):
+        async def generate():
+            yield ServerSentEvent(data="hello", event="greeting")
+
+        return EventSourceResponse(generate())
+
+    resp = app.test_client().get("/sse")
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.content_type
+    assert b"data: hello" in resp.body
+    assert b"event: greeting" in resp.body

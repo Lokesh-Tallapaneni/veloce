@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from veloce import Veloce
 from veloce.websocket import WebSocket
 
 
@@ -35,3 +36,17 @@ def test_url_without_query():
 def test_url_with_query():
     ws = _ws(b"token=t", path="/chat")
     assert ws.url == "/chat?token=t"
+
+
+def test_websocket_connect_parses_query_string():
+    """websocket_connect splits the query string off the connect path."""
+    app = Veloce(openapi_url=None)
+
+    @app.websocket("/ws")
+    async def handler(ws: WebSocket):
+        await ws.accept()
+        await ws.send_json(dict(ws.query_params))
+        await ws.close()
+
+    with app.test_client().websocket_connect("/ws?token=abc") as ws:
+        assert ws.receive_json() == {"token": "abc"}

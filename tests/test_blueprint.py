@@ -161,3 +161,34 @@ def test_register_blueprint_type_check():
     app = Veloce(openapi_url=None)
     with pytest.raises(TypeError, match="expects a Blueprint"):
         app.register_blueprint("not a blueprint")  # type: ignore[arg-type]
+
+
+def test_blueprint_hidden_route_is_reachable():
+    """include_in_schema=False hides a route from OpenAPI; it stays reachable."""
+    bp = Blueprint("demo", url_prefix="")
+
+    @bp.get("/hidden", include_in_schema=False)
+    async def hidden():
+        return {"ok": True}
+
+    app = Veloce(openapi_url=None)
+    app.register_blueprint(bp)
+
+    assert app.test_client().get("/hidden").status_code == 200
+
+
+def test_blueprint_websocket_route_is_registered():
+    """A blueprint's WebSocket route enters the app's radix tree."""
+    bp = Blueprint("ws_demo", url_prefix="")
+
+    @bp.websocket("/bws")
+    async def handler(ws):
+        await ws.accept()
+        await ws.send_text("hi")
+        await ws.close()
+
+    app = Veloce(openapi_url=None)
+    app.register_blueprint(bp)
+
+    with app.test_client().websocket_connect("/bws") as ws:
+        assert ws.receive_text() == "hi"

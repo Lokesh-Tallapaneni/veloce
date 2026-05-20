@@ -160,3 +160,19 @@ def test_make_response_unsupported_raises():
     app = Veloce()
     with pytest.raises(TypeError):
         app.make_response(object())
+
+
+def test_bare_str_return_and_make_response_str_share_content_type():
+    """A bare `str` return and make_response(str) produce the same media type."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/a")
+    async def a(request):
+        return "hello"
+
+    @app.get("/b")
+    async def b(request):
+        return app.make_response("hello")
+
+    client = app.test_client()
+    assert client.get("/a").content_type == client.get("/b").content_type

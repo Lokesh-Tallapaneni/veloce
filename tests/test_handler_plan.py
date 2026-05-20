@@ -266,3 +266,20 @@ async def test_plan_avoids_inspect_signature_on_hot_path(app: Veloce, monkeypatc
     await app.handle_request(_make_request(path="/fast"))
     # Zero signature calls expected on the dispatch path.
     assert calls["n"] == 0, "inspect.signature should not run on the hot path"
+
+
+def test_class_dependency_resolves_init_annotations():
+    """A class used as a dependency coerces __init__ params by annotation."""
+    app = Veloce(openapi_url=None)
+
+    class Pager:
+        def __init__(self, page: int = 1):
+            self.page = page
+            self.page_type = type(page).__name__
+
+    @app.get("/pager")
+    async def pager(p: Pager = Depends(Pager)):
+        return {"page_value": p.page, "page_type": p.page_type}
+
+    body = app.test_client().get("/pager?page=5").json()
+    assert body == {"page_value": 5, "page_type": "int"}
