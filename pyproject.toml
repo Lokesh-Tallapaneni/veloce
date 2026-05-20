@@ -54,6 +54,10 @@ dev = [
     "mypy>=1.10",
     "click>=8.1",
 ]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/veloce"]

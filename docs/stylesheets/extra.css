@@ -1,0 +1,210 @@
+/* ==========================================================================
+   Veloce documentation theme — "Velocity"
+   Brand palette: Veloce Violet (#5b3df0) + Ember accent (#ff6a1a)
+   ========================================================================== */
+
+/* ----------------------------------------------------------------- Light -- */
+[data-md-color-scheme="default"] {
+  --vl-violet:       #5b3df0;
+  --vl-violet-light: #7d63f4;
+  --vl-violet-dark:  #4326cf;
+  --vl-ember:        #ff6a1a;
+  --vl-ink:          #1b1b25;
+
+  --md-primary-fg-color:        var(--vl-violet);
+  --md-primary-fg-color--light: var(--vl-violet-light);
+  --md-primary-fg-color--dark:  var(--vl-violet-dark);
+  --md-primary-bg-color:        #ffffff;
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.72);
+
+  --md-accent-fg-color:             var(--vl-ember);
+  --md-accent-fg-color--transparent: rgba(255, 106, 26, 0.10);
+
+  --md-typeset-a-color:  var(--vl-violet);
+  --md-default-bg-color: #fcfcfe;
+  --md-default-fg-color: var(--vl-ink);
+
+  --md-footer-bg-color:       #14141d;
+  --md-footer-bg-color--dark: #0d0d13;
+
+  --vl-surface:        #ffffff;
+  --vl-border:         rgba(27, 27, 37, 0.10);
+  --vl-glow:           rgba(91, 61, 240, 0.16);
+}
+
+/* ------------------------------------------------------------------ Dark -- */
+[data-md-color-scheme="slate"] {
+  --md-hue: 252;
+
+  --vl-violet: #9b86ff;
+  --vl-ember:  #ff8a3d;
+
+  --md-primary-fg-color: #14141f;
+  --md-primary-bg-color: #ffffff;
+
+  --md-accent-fg-color:             var(--vl-ember);
+  --md-accent-fg-color--transparent: rgba(255, 138, 61, 0.12);
+
+  --md-typeset-a-color: var(--vl-violet);
+
+  --vl-surface: #16161f;
+  --vl-border:  rgba(255, 255, 255, 0.10);
+  --vl-glow:    rgba(155, 134, 255, 0.18);
+}
+
+/* ----------------------------------------------------------------- Header -- */
+.md-header {
+  box-shadow: 0 1px 0 var(--vl-border);
+}
+.md-header__title {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* Sticky tab bar gets a subtle hairline */
+.md-tabs {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+/* ------------------------------------------------------------------- Hero -- */
+.vl-hero {
+  margin: 0 0 3rem;
+  padding: 4rem 1.2rem 3.4rem;
+  text-align: center;
+  border-radius: 1.1rem;
+  border: 1px solid var(--vl-border);
+  background:
+    radial-gradient(ellipse 60% 80% at 50% 0%, var(--vl-glow), transparent 70%),
+    linear-gradient(165deg, rgba(125, 99, 244, 0.10), rgba(255, 106, 26, 0.05));
+}
+.md-typeset .vl-hero h1.vl-hero__title {
+  margin: 0;
+  font-size: 3.5rem;
+  line-height: 1.05;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  background: linear-gradient(100deg, var(--vl-violet-light, #9b86ff), var(--vl-ember));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.vl-hero__tagline {
+  max-width: 36rem;
+  margin: 0.9rem auto 1.8rem;
+  font-size: 1.05rem;
+  color: var(--md-default-fg-color--light);
+}
+.vl-hero .md-button {
+  margin: 0.25rem 0.35rem;
+}
+
+/* Monospace eyebrow above the hero title */
+.vl-eyebrow {
+  display: inline-block;
+  margin-bottom: 0.9rem;
+  padding: 0.2rem 0.7rem;
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--md-accent-fg-color);
+  border: 1px solid var(--vl-border);
+  border-radius: 2rem;
+  background: var(--md-accent-fg-color--transparent);
+}
+
+/* ------------------------------------------------------------------ Cards -- */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border: 1px solid var(--vl-border);
+  border-radius: 0.8rem;
+  padding: 1.1rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid > .card:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 0.5rem 1.5rem var(--vl-glow);
+  transform: translateY(-3px);
+}
+.md-typeset .grid.cards > ul > li > hr {
+  margin: 0.6rem 0;
+  border-color: var(--vl-border);
+}
+
+/* ------------------------------------------------------------------ Buttons -- */
+.md-typeset .md-button {
+  border-radius: 0.5rem;
+  font-weight: 600;
+  border-width: 1px;
+  transition: transform 0.12s ease, box-shadow 0.2s ease;
+}
+.md-typeset .md-button--primary {
+  box-shadow: 0 0.35rem 0.9rem var(--vl-glow);
+}
+.md-typeset .md-button:hover {
+  transform: translateY(-2px);
+}
+
+/* -------------------------------------------------------------------- Code -- */
+.md-typeset pre > code {
+  border-radius: 0.6rem;
+}
+.md-typeset code {
+  border-radius: 0.3rem;
+}
+.highlight .filename,
+.md-typeset .tabbed-labels {
+  font-size: 0.74rem;
+}
+
+/* Inline-code in headings inherits brand colour */
+.md-typeset h2 code,
+.md-typeset h3 code {
+  color: var(--md-typeset-a-color);
+}
+
+/* ------------------------------------------------------------- Admonitions -- */
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 0.6rem;
+  border-left-width: 0.18rem;
+}
+
+/* --------------------------------------------------------------- Table-of-c -- */
+.md-typeset .headerlink {
+  transition: color 0.15s ease;
+}
+
+/* ------------------------------------------------------------------ Footer -- */
+.md-footer-meta {
+  background: var(--md-footer-bg-color--dark);
+}
+
+/* --------------------------------------------------------------- Selection -- */
+::selection {
+  background: var(--md-accent-fg-color);
+  color: #ffffff;
+}
+
+/* Brand-tinted scrollbar (WebKit) */
+* {
+  scrollbar-color: var(--md-primary-fg-color) transparent;
+}
+::-webkit-scrollbar {
+  width: 0.6rem;
+  height: 0.6rem;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--md-primary-fg-color);
+  border-radius: 1rem;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--md-accent-fg-color);
+}
+
+/* ------------------------------------------------------------- Home tweaks -- */
+/* Centre the home page content block and widen it a touch */
+.vl-home .md-typeset .grid {
+  margin-top: 0.5rem;
+}
