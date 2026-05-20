@@ -283,3 +283,21 @@ def test_class_dependency_resolves_init_annotations():
 
     body = app.test_client().get("/pager?page=5").json()
     assert body == {"page_value": 5, "page_type": "int"}
+
+
+def test_partial_dependency_resolves_wrapped_annotations():
+    """A functools.partial dependency keeps the wrapped function's annotations."""
+    import functools
+
+    app = Veloce(openapi_url=None)
+
+    def make_pager(page: int = 1, fixed: str = "x"):
+        return {"page": page, "page_type": type(page).__name__}
+
+    pager_dep = functools.partial(make_pager, fixed="bound")
+
+    @app.get("/p")
+    async def p(data: dict = Depends(pager_dep)):
+        return data
+
+    assert app.test_client().get("/p?page=7").json() == {"page": 7, "page_type": "int"}

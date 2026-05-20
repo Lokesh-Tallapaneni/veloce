@@ -47,6 +47,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OAuth2 password and authorization-code flows, password hashing, and
   signed-value serialisation.
 
+### Changed
+
+- A handler that returns a bare `str` now defaults to
+  `Content-Type: text/html; charset=utf-8` (previously `text/plain`), so a
+  bare-`str` return and `make_response(str)` produce the same media type.
+
+### Fixed
+
+- `register_blueprint` no longer drops a blueprint's routes registered with
+  `include_in_schema=False`, nor its WebSocket routes — every route is added
+  to the radix tree.
+- `EventSourceResponse` encodes yielded `ServerSentEvent` objects over the
+  ASGI transport instead of raising `TypeError`.
+- Dependency type hints are resolved from the right object for class
+  dependencies (`__init__`), callable instances (`__call__`), and
+  `functools.partial` wrappers, so their parameter types are coerced.
+- The in-memory `TestClient` accepts WebSocket connect paths that include a
+  query string.
+
 ### Performance
 
 - Per-request reflection eliminated from the hot path: handler
