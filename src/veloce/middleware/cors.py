@@ -58,9 +58,21 @@ class CORSMiddleware(Middleware):
         self.max_age = max_age
         self.expose_headers = expose_headers or []
 
+        # Precomputed membership structures so the per-request CORS checks
+        # are O(1): origin lookups hit a frozenset, and the preflight
+        # header intersection reuses one lowercased set instead of
+        # rebuilding it each request. `allow_headers` itself stays a list
+        # — it is `", ".join`-ed into the response header.
+        self._allow_origins_set: frozenset[str] = frozenset(self.allow_origins)
+        self._allow_origins_has_star = "*" in self._allow_origins_set
+        self._allow_headers_lower: frozenset[str] = frozenset(h.lower() for h in self.allow_headers)
+        self._allow_headers_has_star = "*" in self.allow_headers
+
         # Wildcard-with-credentials is invalid per spec — fail loudly at
         # construction so a misconfigured app never serves it.
-        if self.allow_credentials and ("*" in self.allow_origins or "*" in self.allow_headers):
+        if self.allow_credentials and (
+            self._allow_origins_has_star or self._allow_headers_has_star
+        ):
             raise ValueError(
                 "CORSMiddleware: allow_credentials=True cannot be combined with "
                 "wildcard allow_origins or allow_headers (Fetch CORS spec §3.2.4)"
@@ -72,7 +84,7 @@ class CORSMiddleware(Middleware):
         """True if `origin` matches the configured allow-list or regex."""
         if not origin:
             return False
-        if "*" in self.allow_origins or origin in self.allow_origins:
+        if self._allow_origins_has_star or origin in self._allow_origins_set:
             return True
         return bool(self.allow_origin_regex and self.allow_origin_regex.fullmatch(origin))
 
@@ -88,7 +100,7 @@ class CORSMiddleware(Middleware):
             return None
         if self.allow_credentials:
             return origin  # never `*` when credentials are involved
-        if "*" in self.allow_origins:
+        if self._allow_origins_has_star:
             return "*"
         return origin
 
@@ -112,13 +124,12 @@ class CORSMiddleware(Middleware):
             self._add_cors_headers(response, origin, preflight=True)
             # Echo the requested headers (filtered) and method.
             requested = request.headers.get("access-control-request-headers", "")
-            if requested and "*" in self.allow_headers:
+            if requested and self._allow_headers_has_star:
                 response.headers["Access-Control-Allow-Headers"] = requested
             elif requested:
-                # Intersect requested vs allow-list.
+                # Intersect requested vs the precomputed lowercased allow-set.
                 tokens = [t.strip() for t in requested.split(",") if t.strip()]
-                allowed = {h.lower() for h in self.allow_headers}
-                matched = [t for t in tokens if t.lower() in allowed]
+                matched = [t for t in tokens if t.lower() in self._allow_headers_lower]
                 if matched:
                     response.headers["Access-Control-Allow-Headers"] = ", ".join(matched)
             response.headers["Access-Control-Max-Age"] = str(self.max_age)
@@ -155,7 +166,7 @@ class CORSMiddleware(Middleware):
 
         if preflight:
             response.headers["Access-Control-Allow-Methods"] = ", ".join(self.allow_methods)
-            if "*" in self.allow_headers:
+            if self._allow_headers_has_star:
                 response.headers["Access-Control-Allow-Headers"] = "*"
             else:
                 response.headers["Access-Control-Allow-Headers"] = ", ".join(self.allow_headers)

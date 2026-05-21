@@ -86,6 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StaticFiles` resolves the served root's real path once at construction
   rather than on every request; the request-scoped `g` store is allocated
   lazily, so handlers that never touch `g` pay no allocation.
+- A parameter's `pattern` / `regex` constraint is compiled once at
+  declaration time instead of recompiled on every `validate` call.
+- `CORSMiddleware` precomputes its origin allow-list as a frozenset and a
+  lowercased header allow-set at construction, so per-request CORS checks
+  are O(1) instead of scanning a list.
 
 ### Security
 
