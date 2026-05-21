@@ -6,20 +6,24 @@ cross-cutting concerns: CORS, compression, security headers, logging.
 
 ## Adding middleware
 
-`app.add_middleware()` accepts a configured middleware instance:
+`app.add_middleware()` accepts middleware in two forms — a configured
+instance, or a class together with its keyword options:
 
 ```python
 from veloce import CORSMiddleware, Veloce
 
 app = Veloce()
 
+# Instance form — build the middleware, then add it.
 app.add_middleware(
     CORSMiddleware(
         allow_origins=["*"],
         allow_methods=["GET", "POST", "PUT", "DELETE"],
-        allow_credentials=True,
     )
 )
+
+# Class form — pass the class and its options; Veloce constructs it.
+app.add_middleware(CORSMiddleware, allow_origins=["*"])
 ```
 
 Middleware can also be passed when constructing the app, via the
@@ -35,7 +39,7 @@ Middleware can also be passed when constructing the app, via the
 | `SessionMiddleware`       | Signed, timestamped session cookies            |
 | `TrustedHostMiddleware`   | Host-header allow-list                         |
 | `HTTPSRedirectMiddleware` | Redirect plain HTTP to HTTPS                   |
-| `ProxyFixMiddleware`      | Honour `X-Forwarded-*` from trusted proxies    |
+| `ProxyFix`                | Honour `X-Forwarded-*` from trusted proxies    |
 
 All are importable from the top-level `veloce` package.
 

@@ -63,8 +63,11 @@ rationale, and `register_converter` for adding your own.
 
 ## Query parameters
 
-Handler parameters that are not path parameters and have a default value
-are read from the query string and coerced:
+A handler parameter that is not a path parameter — and is not the
+`Request`, a dependency, or a request-body model — is read from the
+query string and coerced to its annotated type. A default value makes
+the parameter optional; without one it is a required query parameter,
+and a missing value produces a `422`:
 
 ```python
 @app.get("/search")
