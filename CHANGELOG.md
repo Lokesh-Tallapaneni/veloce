@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `HTTP_421_MISDIRECTED_REQUEST` for full IANA HTTP status coverage.
 - `constant_time_compare(a, b)` — a timing-safe secret-comparison helper
   (wrapping `hmac.compare_digest`), exported from the top-level package.
+- The built-in development server's WebSocket parser reassembles
+  fragmented messages — a `FIN=0` data frame followed by continuation
+  frames (RFC 6455 §5.4); control frames may be interleaved without
+  disturbing the in-progress message.
 
 ### Changed
 
