@@ -352,11 +352,37 @@ def _webhook_request_body(handler: Any, registry: dict[str, dict]) -> dict | Non
     return None
 
 
+def _literal_enum_schema(values: list) -> dict[str, Any]:
+    """Build an OpenAPI schema for a fixed set of literal / enum values."""
+    schema: dict[str, Any] = {"enum": values}
+    if not values:
+        return schema
+    if all(isinstance(v, bool) for v in values):
+        schema["type"] = "boolean"
+    elif all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+        schema["type"] = "integer"
+    elif all(isinstance(v, str) for v in values):
+        schema["type"] = "string"
+    return schema
+
+
 def _python_type_to_schema(annotation: Any) -> dict:
-    """Convert Python type to OpenAPI schema type."""
+    """Convert a Python type to its OpenAPI 3.1 / JSON Schema 2020-12 form.
+
+    Beyond the primitive scalars this resolves the richer annotations a
+    query / path / header / cookie parameter can carry — `datetime`,
+    `date`, `time`, `UUID`, `Decimal`, `Enum` subclasses and
+    `Literal[...]` — so the emitted parameter schema is complete rather
+    than collapsing every non-primitive to a bare string.
+    """
     if annotation is None or annotation is inspect.Parameter.empty:
         return {"type": "string"}
-    from typing import get_args, get_origin
+
+    import datetime as _datetime
+    import enum as _enum
+    import uuid as _uuid
+    from decimal import Decimal
+    from typing import Literal, get_args, get_origin
 
     # Parametrised `list[T]` / `set[T]` → an array schema with typed items.
     origin = get_origin(annotation)
@@ -364,6 +390,10 @@ def _python_type_to_schema(annotation: Any) -> dict:
         args = get_args(annotation)
         item = _python_type_to_schema(args[0]) if args else {}
         return {"type": "array", "items": item}
+    # `Literal["a", "b"]` → an enum schema of the literal values.
+    if origin is Literal:
+        return _literal_enum_schema(list(get_args(annotation)))
+
     type_map: dict[Any, dict[str, Any]] = {
         str: {"type": "string"},
         int: {"type": "integer"},
@@ -372,8 +402,22 @@ def _python_type_to_schema(annotation: Any) -> dict:
         bytes: {"type": "string", "format": "binary"},
         list: {"type": "array", "items": {}},
         dict: {"type": "object"},
+        _datetime.datetime: {"type": "string", "format": "date-time"},
+        _datetime.date: {"type": "string", "format": "date"},
+        _datetime.time: {"type": "string", "format": "time"},
+        _datetime.timedelta: {"type": "string", "format": "duration"},
+        _uuid.UUID: {"type": "string", "format": "uuid"},
+        Decimal: {"type": "number"},
     }
-    return type_map.get(annotation, {"type": "string"})
+    mapped = type_map.get(annotation)
+    if mapped is not None:
+        return mapped
+
+    # `Enum` subclass → an enum schema carrying the member values.
+    if isinstance(annotation, type) and issubclass(annotation, _enum.Enum):
+        return _literal_enum_schema([member.value for member in annotation])
+
+    return {"type": "string"}
 
 
 def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:

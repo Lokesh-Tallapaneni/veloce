@@ -8,10 +8,12 @@ the handler signature per request.
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 from collections.abc import Callable
 from typing import Any, get_args, get_origin
 
+from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from veloce._handler_plan import (
@@ -85,6 +87,48 @@ class SecurityScopes:
         return f"SecurityScopes({self.scopes!r})"
 
 
+@functools.lru_cache(maxsize=512)
+def _type_adapter(target_type: Any) -> TypeAdapter:
+    """Build (once) and cache a Pydantic ``TypeAdapter`` for a parameter type.
+
+    Adapters are keyed on the annotation object, so a route that declares
+    `created: datetime = Query(...)` pays the adapter-construction cost once
+    at first request, never again.
+    """
+    return TypeAdapter(target_type)
+
+
+def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
+    """Validate and coerce a request value through Pydantic.
+
+    The fast scalar branches of `_coerce_value` cover `str` / `int` / `float`
+    / `bool` / `Enum`; every other annotation — `datetime`, `date`, `time`,
+    `UUID`, `Decimal`, `Literal[...]`, `Path`, constrained generics — is
+    handled here so query / path / header / cookie parameters get the same
+    full validation a request-body model already enjoys.
+
+    If Pydantic cannot build an adapter for the annotation the raw value is
+    returned unchanged, preserving the previous pass-through behaviour.
+    """
+    try:
+        adapter = _type_adapter(target_type)
+    except Exception:
+        return value
+    try:
+        return adapter.validate_python(value)
+    except PydanticValidationError as err:
+        raise RequestValidationError(
+            [
+                {
+                    "loc": [loc, param_name],
+                    "msg": e["msg"],
+                    "type": e["type"],
+                }
+                for e in err.errors()
+            ]
+        ) from err
+
+
 def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
     """Coerce a string value to the target type."""
     if target_type is str or target_type is Any or target_type is None:
@@ -113,7 +157,6 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
                         }
                     ]
                 ) from err
-        return value
     except (ValueError, TypeError) as err:
         raise RequestValidationError(
             [
@@ -124,6 +167,10 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
                 }
             ]
         ) from err
+
+    # No fast scalar branch matched — hand the rest to Pydantic for full
+    # type coverage and validation.
+    return _coerce_via_pydantic(value, target_type, param_name, loc)
 
 
 _MARKER_LOC = {

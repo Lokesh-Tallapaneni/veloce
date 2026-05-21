@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fragmented messages — a `FIN=0` data frame followed by continuation
   frames (RFC 6455 §5.4); control frames may be interleaved without
   disturbing the in-progress message.
+- Query / path / header / cookie parameters are now validated through
+  Pydantic for any annotation the fast scalar path does not cover —
+  `datetime`, `date`, `time`, `UUID`, `Decimal`, `Literal[...]` and other
+  rich types are parsed and rejected with a `422` on bad input, the same
+  treatment a request-body model already received. The `str` / `int` /
+  `float` / `bool` / `Enum` dispatch fast path is untouched. OpenAPI
+  parameter schemas now emit the matching `format` / `enum` keywords
+  instead of collapsing every non-primitive to a bare string.
 
 ### Changed
 
