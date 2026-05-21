@@ -24,7 +24,7 @@ from veloce.http.response import (
     Response,
     _reject_header_crlf,
 )
-from veloce.middleware import Middleware
+from veloce.middleware import BaseHTTPMiddleware, Middleware
 from veloce.routing.router import Router
 
 
@@ -294,13 +294,32 @@ class Veloce(Router):
         if isinstance(middleware, type):
             if issubclass(middleware, Middleware):
                 self._middlewares.append(middleware(**options))
+            elif issubclass(middleware, BaseHTTPMiddleware):
+                # `BaseHTTPMiddleware` is a dispatch-shape middleware, not
+                # an ASGI app — registering it as ASGI would wire the app
+                # in as its `dispatch` and fail at request time.
+                raise TypeError(
+                    f"{middleware.__name__} is a BaseHTTPMiddleware "
+                    "(dispatch-shape) — register it with add_http_middleware(), "
+                    "not add_middleware()."
+                )
             else:
                 # A standard ASGI middleware class — it needs the app it
                 # wraps, so defer construction until the stack is built.
                 self._asgi_middleware.append((middleware, options))
                 self._asgi_stack = None
-        else:
+        elif isinstance(middleware, Middleware):
             self._middlewares.append(middleware)
+        else:
+            # A bare ASGI middleware instance cannot be wired up — veloce
+            # has to supply the wrapped app, which only the class form
+            # allows.
+            raise TypeError(
+                f"add_middleware() received a {type(middleware).__name__} instance; "
+                "pass a Middleware instance, a Middleware subclass, or an ASGI "
+                "middleware *class* (so veloce can supply the wrapped app). "
+                "Register a BaseHTTPMiddleware via add_http_middleware()."
+            )
 
     def use_secure_defaults(self) -> None:
         """Apply a security-hardened configuration baseline.

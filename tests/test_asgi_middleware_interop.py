@@ -8,8 +8,10 @@ observability) plug into a veloce app.
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Veloce
-from veloce.middleware import Middleware
+from veloce.middleware import BaseHTTPMiddleware, Middleware
 
 
 class _HeaderMiddleware:
@@ -182,3 +184,56 @@ def test_asgi_and_native_middleware_compose():
     resp = app.test_client().get("/")
     assert resp.headers.get("X-ASGI") == "yes"
     assert resp.headers.get("X-Native") == "1"
+
+
+# ── misrouting is rejected with a clear error ─────────────────────────
+
+
+def test_base_http_middleware_class_rejected():
+    """A `BaseHTTPMiddleware` subclass is dispatch-shape, not ASGI — it
+    must be rejected with a message pointing at `add_http_middleware`."""
+
+    class _Dispatch(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            return await call_next(request)
+
+    app = Veloce(openapi_url=None)
+    with pytest.raises(TypeError, match="add_http_middleware"):
+        app.add_middleware(_Dispatch)
+
+
+def test_non_middleware_instance_rejected():
+    """A bare object instance cannot be an ASGI middleware (veloce must
+    supply the wrapped app) — it is rejected at registration time."""
+    app = Veloce(openapi_url=None)
+    with pytest.raises(TypeError, match="ASGI middleware"):
+        app.add_middleware(object())
+
+
+# ── ASGI middleware sees every scope type ─────────────────────────────
+
+
+def test_asgi_middleware_sees_websocket_scope():
+    seen: list[str] = []
+
+    class _ScopeRecorder:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            seen.append(scope["type"])
+            await self.app(scope, receive, send)
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(_ScopeRecorder)
+
+    @app.websocket("/ws")
+    async def echo(ws):
+        await ws.accept()
+        await ws.send_text("hi")
+        await ws.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws") as conn:
+        assert conn.receive_text() == "hi"
+    assert "websocket" in seen
