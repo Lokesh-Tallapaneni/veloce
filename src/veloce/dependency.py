@@ -8,10 +8,13 @@ the handler signature per request.
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 from collections.abc import Callable
-from typing import Any, get_args, get_origin
+from enum import Enum
+from typing import Any, Literal, get_args, get_origin
 
+from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from veloce._handler_plan import (
@@ -85,6 +88,93 @@ class SecurityScopes:
         return f"SecurityScopes({self.scopes!r})"
 
 
+@functools.lru_cache(maxsize=512)
+def _type_adapter(target_type: Any) -> TypeAdapter | None:
+    """Build (once) and cache a Pydantic ``TypeAdapter`` for a parameter type.
+
+    Adapters are keyed on the annotation object, so a route that declares
+    `created: datetime = Query(...)` pays the adapter-construction cost once
+    at first request, never again. ``None`` — the result for an annotation
+    Pydantic cannot build an adapter for — is cached too, so an un-adaptable
+    type is not re-attempted (and re-failed) on every subsequent request.
+    """
+    try:
+        return TypeAdapter(target_type)
+    except Exception:
+        return None
+
+
+def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
+    """Match a request value against a `Literal[...]` parameter.
+
+    Request values arrive as strings, so Pydantic's strict literal check
+    rejects an `int` / `bool` literal outright. Each plausible coercion of
+    the value — the raw string, a bool, an int, a float — is compared
+    against the literal members by *exact* runtime type, sidestepping
+    Python's loose `1 == True` equivalence.
+    """
+    members = get_args(target_type)
+    candidates: list[Any] = [value]
+    if isinstance(value, str):
+        candidates.append(value.lower() in ("true", "1", "yes"))
+        with contextlib.suppress(ValueError):
+            candidates.append(int(value))
+        with contextlib.suppress(ValueError):
+            candidates.append(float(value))
+    for member in members:
+        # An `Enum` member is matched against its underlying value, so a
+        # `str` / `int`-backed enum member still accepts the plain request
+        # value while the original member object is what gets returned.
+        comparand = member.value if isinstance(member, Enum) else member
+        for candidate in candidates:
+            if type(candidate) is type(comparand) and candidate == comparand:
+                return member
+    raise RequestValidationError(
+        [
+            {
+                "loc": [loc, param_name],
+                "msg": f"Input should be one of: {', '.join(repr(m) for m in members)}",
+                "type": "literal_error",
+            }
+        ]
+    )
+
+
+def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
+    """Validate and coerce a request value through Pydantic.
+
+    The fast scalar branches of `_coerce_value` cover `str` / `int` / `float`
+    / `bool` / `Enum`; every other annotation — `datetime`, `date`, `time`,
+    `UUID`, `Decimal`, `Path`, constrained generics — is handled here so
+    query / path / header / cookie parameters get the same full validation a
+    request-body model already enjoys.
+
+    If Pydantic cannot build an adapter for the annotation the raw value is
+    returned unchanged, preserving the previous pass-through behaviour.
+    """
+    try:
+        adapter = _type_adapter(target_type)
+    except TypeError:
+        # Unhashable annotation — `lru_cache` cannot key it. Fall back to
+        # the raw value, the behaviour before Pydantic coercion existed.
+        return value
+    if adapter is None:
+        return value
+    try:
+        return adapter.validate_python(value)
+    except PydanticValidationError as err:
+        raise RequestValidationError(
+            [
+                {
+                    "loc": [loc, param_name],
+                    "msg": e["msg"],
+                    "type": e["type"],
+                }
+                for e in err.errors()
+            ]
+        ) from err
+
+
 def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
     """Coerce a string value to the target type."""
     if target_type is str or target_type is Any or target_type is None:
@@ -113,7 +203,6 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
                         }
                     ]
                 ) from err
-        return value
     except (ValueError, TypeError) as err:
         raise RequestValidationError(
             [
@@ -124,6 +213,12 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
                 }
             ]
         ) from err
+
+    # No fast scalar branch matched. `Literal[...]` needs string-aware
+    # member matching; everything else goes to Pydantic for full coverage.
+    if get_origin(target_type) is Literal:
+        return _coerce_literal(value, target_type, param_name, loc)
+    return _coerce_via_pydantic(value, target_type, param_name, loc)
 
 
 _MARKER_LOC = {

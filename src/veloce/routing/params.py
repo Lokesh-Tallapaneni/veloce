@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from typing import Any
 
 
@@ -115,7 +116,7 @@ class _ParamBase:
         if value is None and self.has_default:
             return self.default
 
-        if isinstance(value, (int, float)):
+        if isinstance(value, (int, float, Decimal)):
             if self.ge is not None and value < self.ge:
                 raise ValueError(f"{name} must be >= {self.ge}")
             if self.le is not None and value > self.le:
@@ -125,7 +126,10 @@ class _ParamBase:
             if self.lt is not None and value >= self.lt:
                 raise ValueError(f"{name} must be < {self.lt}")
             if self.multiple_of is not None:
-                quotient = value / self.multiple_of
+                # Coerce both operands to `float`: `Decimal` cannot be mixed
+                # with `float` in arithmetic, and either side may be either
+                # type (a `Decimal` value, or a `Decimal` `multiple_of`).
+                quotient = float(value) / float(self.multiple_of)
                 if abs(quotient - round(quotient)) > 1e-9:
                     raise ValueError(f"{name} must be a multiple of {self.multiple_of}")
 
