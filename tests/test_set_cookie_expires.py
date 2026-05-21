@@ -71,3 +71,26 @@ def test_delete_cookie_minimal_form_unchanged():
     assert "Max-Age=0" in c
     assert "Secure" not in c
     assert "HttpOnly" not in c
+
+
+# ── samesite default (S8) ────────────────────────────────────────────
+
+
+def test_set_cookie_defaults_to_samesite_lax():
+    """A CSRF-resistant default that matches modern browser behaviour."""
+    resp = Response()
+    resp.set_cookie("k", "v")
+    assert "SameSite=Lax" in _cookie(resp)
+
+
+def test_set_cookie_samesite_override():
+    resp = Response()
+    resp.set_cookie("k", "v", samesite="Strict")
+    assert "SameSite=Strict" in _cookie(resp)
+
+
+def test_set_cookie_samesite_none_omits_attribute():
+    """Explicit `samesite=None` drops the attribute entirely."""
+    resp = Response()
+    resp.set_cookie("k", "v", samesite=None)
+    assert "SameSite" not in _cookie(resp)

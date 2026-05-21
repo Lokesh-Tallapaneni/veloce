@@ -16,6 +16,24 @@ constant-time. The implementation is derived from RFC 2104 (HMAC) and
 RFC 4648 §5 (base64url); the observable token shape matches
 a timestamped signer's `URLSafeTimedSerializer` so swapping is straightforward,
 but no a timestamped signer code is copied.
+
+Why an in-tree signer (rather than depending on `itsdangerous`)
+---------------------------------------------------------------
+Veloce keeps this ~150-line signer instead of taking the `itsdangerous`
+dependency — a considered trade-off, not an oversight:
+
+- Signing rests entirely on the standard library (`hmac`, `hashlib`,
+  `base64`, `struct`), so the dependency surface stays minimal and the
+  whole implementation is small enough to audit in one sitting.
+- The security-critical properties are deliberately narrow and covered
+  by `tests/test_signing.py`: HMAC-SHA256, a salt mixed into the MAC key
+  (so tokens for different purposes never cross-validate), constant-time
+  comparison, and — importantly — signature verified *before* the
+  timestamp and payload are decoded, so a malformed token cannot drive
+  the JSON parser ahead of the MAC check.
+- The token shape is wire-compatible with `URLSafeTimedSerializer`, so
+  migrating to `itsdangerous` later (should that ever be wanted) is a
+  low-risk drop-in.
 """
 
 from __future__ import annotations
