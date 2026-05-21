@@ -46,6 +46,7 @@ K_DEFAULT = 9
 K_NONE = 10
 K_SECURITY_SCOPES = 11
 K_RESPONSE = 12
+K_WEBSOCKET = 13
 
 # Marker kinds (for K_PARAM_MARKER slots).
 MK_QUERY = 0
@@ -165,12 +166,16 @@ class HandlerPlan:
         self.route_dep_plans = route_dep_plans
 
 
-def _build_depends_slot(name: str, dep: Any, inferred: Any = None) -> _Slot:
+def _build_depends_slot(
+    name: str, dep: Any, inferred: Any = None, *, websocket: bool = False
+) -> _Slot:
     """Build a K_DEPENDS slot, recursively planning the sub-callable.
 
     `Depends()` with no explicit dependency falls back to `inferred`
     (the parameter's type annotation) — the shorthand for
-    `x: SomeClass = Depends()`.
+    `x: SomeClass = Depends()`. `websocket` is threaded down the chain so
+    a dependency of a WebSocket handler can itself receive the
+    `WebSocket` connection by annotation or `ws` / `websocket` name.
     """
     slot = _Slot(K_DEPENDS, name)
     slot.use_cache = dep.use_cache
@@ -179,7 +184,7 @@ def _build_depends_slot(name: str, dep: Any, inferred: Any = None) -> _Slot:
     slot.dep_is_coro = inspect.iscoroutinefunction(callable_)
     slot.dep_is_gen = inspect.isgeneratorfunction(callable_)
     slot.dep_is_async_gen = inspect.isasyncgenfunction(callable_)
-    slot.sub_plan = build_plan(callable_)
+    slot.sub_plan = build_plan(callable_, websocket=websocket)
     # Security() scopes flow down the chain so a `SecurityScopes`
     # parameter anywhere below sees the union. Plain `Depends` has no
     # scopes attribute; we read defensively.
@@ -189,14 +194,26 @@ def _build_depends_slot(name: str, dep: Any, inferred: Any = None) -> _Slot:
     return slot
 
 
-def build_plan(handler: Callable) -> HandlerPlan:
+def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
     """Inspect `handler` and freeze a resolution plan.
 
     Called exactly once per route registration. Safe to call on builtins,
     lambdas, partials, or callable classes — returns an empty plan for
     handlers without inspectable signatures.
+
+    When `websocket` is set, a parameter typed `WebSocket` (or named `ws`
+    / `websocket`) is bound to a `K_WEBSOCKET` slot instead of being read
+    from the request — the same plan machinery then drives WebSocket
+    dependency injection, giving it `yield`-teardown and `Security` parity
+    with the HTTP path.
     """
     from veloce.dependency import Depends  # local import breaks the import cycle
+
+    ws_type: Any = None
+    if websocket:
+        from veloce.websocket import WebSocket
+
+        ws_type = WebSocket
 
     try:
         sig = inspect.signature(handler)
@@ -256,21 +273,33 @@ def build_plan(handler: Callable) -> HandlerPlan:
                 has_default = True
             annotation = base_type
 
+        # WebSocket injection (websocket plans only) — by annotation or by
+        # the `ws` / `websocket` parameter name. Checked first so it wins
+        # over the request/path fallbacks for a WebSocket handler.
+        if websocket and (annotation is ws_type or param_name in ("ws", "websocket")):
+            slots.append(_Slot(K_WEBSOCKET, param_name))
+            continue
+
         # Request injection — either by name or by annotation.
         if param_name == "request" or annotation is Request:
             slots.append(_Slot(K_REQUEST, param_name))
             continue
 
-        # BackgroundTasks injection by annotation.
+        # BackgroundTasks injection by annotation. A WebSocket handshake
+        # has no response cycle to attach tasks to, so the parameter is
+        # left to its handler default rather than injected.
         if annotation is BackgroundTasks:
-            slots.append(_Slot(K_BG_TASKS, param_name))
+            if not websocket:
+                slots.append(_Slot(K_BG_TASKS, param_name))
             continue
 
         # Response injection by annotation. The handler
         # receives a fresh Response it can mutate (status_code, headers,
         # cookies); the dispatcher merges those onto the final response.
+        # There is no HTTP Response on a WebSocket route — skip it there.
         if annotation is Response:
-            slots.append(_Slot(K_RESPONSE, param_name))
+            if not websocket:
+                slots.append(_Slot(K_RESPONSE, param_name))
             continue
 
         # SecurityScopes — receives the accumulated Security() chain scopes.
@@ -285,14 +314,22 @@ def build_plan(handler: Callable) -> HandlerPlan:
         # with no callable infers the dependency from the annotation
         # (`x: SomeClass = Depends()`).
         if isinstance(default, Depends):
-            slots.append(_build_depends_slot(param_name, default, inferred=annotation))
+            slots.append(
+                _build_depends_slot(param_name, default, inferred=annotation, websocket=websocket)
+            )
             continue
 
         # Explicit parameter markers (Query/Path/Header/Cookie/Body/Form/File).
         if isinstance(default, _ParamBase):
+            marker_kind = _marker_kind(default)
+            # Body / Form / File markers read the HTTP request body, which
+            # a WebSocket handshake does not have — skip them so the
+            # handler default applies instead of crashing at resolve time.
+            if websocket and marker_kind in (MK_BODY, MK_FORM, MK_FILE):
+                continue
             slot = _Slot(K_PARAM_MARKER, param_name)
             slot.marker = default
-            slot.marker_kind = _marker_kind(default)
+            slot.marker_kind = marker_kind
             slot.lookup_name = default.alias or param_name
             # An un-aliased Header param converts `_` → `-`
             # in its name (`x_token` → `x-token`) unless disabled.
@@ -313,19 +350,23 @@ def build_plan(handler: Callable) -> HandlerPlan:
         )
         is_list, list_inner = _unwrap_list(inner_type) if inner_type else (False, inner_type)
 
-        # UploadFile binding (with or without Optional).
+        # UploadFile binding (with or without Optional). A WebSocket has no
+        # multipart form body, so the parameter is left to its default.
         if annotation is UploadFile or (is_optional and inner_type is UploadFile):
-            slot = _Slot(K_UPLOAD_FILE, param_name)
-            slot.is_optional = is_optional
-            slots.append(slot)
+            if not websocket:
+                slot = _Slot(K_UPLOAD_FILE, param_name)
+                slot.is_optional = is_optional
+                slots.append(slot)
             continue
 
-        # Pydantic model from body.
+        # Pydantic model from body. A WebSocket handshake has no request
+        # body to validate, so the parameter is left to its default.
         if inner_type and isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
-            slot = _Slot(K_BODY_MODEL, param_name)
-            slot.model = inner_type
-            slot.is_optional = is_optional
-            slots.append(slot)
+            if not websocket:
+                slot = _Slot(K_BODY_MODEL, param_name)
+                slot.model = inner_type
+                slot.is_optional = is_optional
+                slots.append(slot)
             continue
 
         # List-typed parameter: read from query as a list.
@@ -353,12 +394,12 @@ def build_plan(handler: Callable) -> HandlerPlan:
     return HandlerPlan(handler, slots, [])
 
 
-def build_route_dep_plans(route_dependencies: list) -> list[_Slot]:
+def build_route_dep_plans(route_dependencies: list, *, websocket: bool = False) -> list[_Slot]:
     """Pre-plan a route's `dependencies=[Depends(...), ...]` list."""
     from veloce.dependency import Depends  # local import breaks the cycle
 
     out: list[_Slot] = []
     for dep in route_dependencies:
         if isinstance(dep, Depends):
-            out.append(_build_depends_slot("", dep))
+            out.append(_build_depends_slot("", dep, websocket=websocket))
     return out

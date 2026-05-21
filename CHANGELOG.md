@@ -80,6 +80,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CSRF-resistant default that matches modern browser behaviour. Pass
   `samesite=None` to omit the attribute, or `"None"` (with `secure=True`)
   for a genuinely cross-site cookie.
+- WebSocket dependency injection now runs through the same pre-planned
+  `HandlerPlan` / `DependencyResolver` as HTTP dispatch. WebSocket
+  dependencies gain `yield`-style teardown and `Security` /
+  `SecurityScopes` support, and path parameters are coerced to their
+  annotated type — previously WebSocket DI used a separate, weaker
+  resolver that supported none of these.
 
 ### Fixed
 

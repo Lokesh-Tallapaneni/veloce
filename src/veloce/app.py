@@ -1957,38 +1957,6 @@ class Veloce(Router):
             return "." in host
         return leftmost == subdomain
 
-    async def _resolve_ws_depends(self, dep: Any, ws: Any, cache: dict) -> Any:
-        """Resolve a `Depends()` chain for WebSocket handlers (W8).
-
-        Walks the dependency's signature, recursing into nested
-        `Depends`. Same-callable de-duplication via `cache` so a
-        dependency referenced twice in one handshake runs once.
-        Injects the `WebSocket` instance for parameters typed as
-        `WebSocket` or named `ws`/`websocket`. Plain `path_params`
-        injection is handled by the outer dispatcher.
-        """
-        from veloce.websocket import WebSocket
-
-        fn = dep.dependency
-        if fn in cache:
-            return cache[fn]
-
-        sub_kwargs: dict[str, Any] = {}
-        sig = inspect.signature(fn)
-        for name, param in sig.parameters.items():
-            ann = param.annotation
-            if ann is WebSocket or name in ("ws", "websocket"):
-                sub_kwargs[name] = ws
-                continue
-            if isinstance(param.default, Depends):
-                sub_kwargs[name] = await self._resolve_ws_depends(param.default, ws, cache)
-        if inspect.iscoroutinefunction(fn):
-            result = await fn(**sub_kwargs)
-        else:
-            result = fn(**sub_kwargs)
-        cache[fn] = result
-        return result
-
     async def _call_handler(
         self, handler: Callable, kwargs: dict, is_coro: bool | None = None
     ) -> Any:
@@ -2596,39 +2564,35 @@ class Veloce(Router):
 
             ws = WebSocket.from_asgi(scope, receive, send)
             ws.path_params = ws_match.path_params
+            route_info = ws_match.route_info
+            # A fresh resolver per connection: a WebSocket is long-lived,
+            # so its yield-dependency teardown stack must not be cleared
+            # by a concurrent request resetting the shared HTTP resolver.
+            ws_resolver = DependencyResolver()
+            ws_resolver._overrides = self._dependency_overrides
+            ws_exc: BaseException | None = None
             try:
-                handler = ws_match.route_info.handler
-                # Build kwargs from the handler signature: WebSocket
-                # injection (by annotation or by the
-                # `ws`/`websocket` parameter name), path params, plus
-                # `Depends()` defaults resolved through `_resolve_ws_depends`
-                # (W8). Cache shared across the chain so the same dep
-                # called twice in one handshake is only run once.
-                kwargs: dict[str, Any] = {}
-                if ws_match.route_info.handler_plan is not None:
-                    for name in ws_match.route_info.param_names:
-                        if name in ws_match.path_params:
-                            kwargs[name] = ws_match.path_params[name]
-                sig = inspect.signature(handler)
-                ws_dep_cache: dict[Any, Any] = {}
-                for name, param in sig.parameters.items():
-                    if name in kwargs:
-                        continue
-                    ann = param.annotation
-                    if ann is WebSocket or name in ("ws", "websocket"):
-                        kwargs[name] = ws
-                        continue
-                    if isinstance(param.default, Depends):
-                        try:
-                            kwargs[name] = await self._resolve_ws_depends(
-                                param.default, ws, ws_dep_cache
-                            )
-                        except RequestValidationError as exc:
-                            # A WebSocket dependency failed validation —
-                            # surface it as the WS-specific error (V9).
-                            raise WebSocketRequestValidationError(
-                                getattr(exc, "errors", []) or []
-                            ) from exc
+                handler = route_info.handler
+                # WebSocket DI runs through the shared HandlerPlan /
+                # DependencyResolver — the same path as HTTP dispatch — so
+                # WebSocket dependencies get `yield`-style teardown and
+                # `Security` / `SecurityScopes` support (F8).
+                if route_info.handler_plan is not None:
+                    try:
+                        kwargs = await ws_resolver.resolve_ws_plan(
+                            route_info.handler_plan,
+                            ws,
+                            ws_match.path_params,
+                            route_info.route_dep_plans,
+                        )
+                    except RequestValidationError as exc:
+                        # A WebSocket dependency failed validation —
+                        # surface it as the WS-specific error (V9).
+                        raise WebSocketRequestValidationError(
+                            getattr(exc, "errors", []) or []
+                        ) from exc
+                else:
+                    kwargs = {}
                 await handler(**kwargs)
             except WebSocketRequestValidationError:
                 # Dependency validation failure — close with 1008
@@ -2642,7 +2606,8 @@ class Veloce(Router):
                 if not ws._closed:
                     with contextlib.suppress(Exception):
                         await ws.close(code=exc.code, reason=exc.reason or "")
-            except Exception:
+            except Exception as exc:
+                ws_exc = exc
                 if not ws._closed:
                     with contextlib.suppress(Exception):
                         await ws.close(code=1011)  # internal error
@@ -2651,6 +2616,10 @@ class Veloce(Router):
                 if not ws._closed:
                     with contextlib.suppress(Exception):
                         await ws.close()
+            finally:
+                # Drain any `yield`-style dependency teardowns the
+                # handshake set up, exception-aware.
+                await ws_resolver.run_teardowns(ws_exc)
 
         elif scope["type"] == "lifespan":
             while True:
