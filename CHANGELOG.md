@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fragmented messages — a `FIN=0` data frame followed by continuation
   frames (RFC 6455 §5.4); control frames may be interleaved without
   disturbing the in-progress message.
+- `add_middleware` now accepts a standard ASGI middleware class — any
+  class that is not a veloce `Middleware` subclass is treated as ASGI
+  middleware and wraps the whole application (`cls(app, **options)`),
+  so the third-party ASGI ecosystem (tracing, profiling, observability)
+  plugs into a veloce app. The first-registered ASGI middleware is the
+  outermost wrapper. Native `Middleware` classes are unaffected.
 - Query / path / header / cookie parameters are now validated through
   Pydantic for any annotation the fast scalar path does not cover —
   `datetime`, `date`, `time`, `UUID`, `Decimal`, `Literal[...]` and other
