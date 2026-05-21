@@ -24,7 +24,7 @@ from veloce.http.response import (
     Response,
     _reject_header_crlf,
 )
-from veloce.middleware import Middleware
+from veloce.middleware import BaseHTTPMiddleware, Middleware
 from veloce.routing.router import Router
 
 
@@ -145,6 +145,11 @@ class Veloce(Router):
         self.logger = logging.getLogger(self.import_name)
 
         self._middlewares: list[Middleware] = []
+        # Standard ASGI middleware — `(class, options)` pairs. Each wraps the
+        # whole ASGI application (instantiated as `cls(app, **options)`) and
+        # is assembled lazily into `_asgi_stack` on the first request.
+        self._asgi_middleware: list[tuple[Any, dict[str, Any]]] = []
+        self._asgi_stack: Callable | None = None
         self._exception_handlers: dict[type, Callable] = {}
         self._status_handlers: dict[int, Callable] = {}
         # `exception_handlers=` ctor mapping — keys are
@@ -269,19 +274,52 @@ class Veloce(Router):
     # ── Middleware ────────────────────────────────────────────────
 
     def add_middleware(self, middleware: Any, **options: Any) -> None:
-        """Add middleware to the pipeline — ASGI shape.
+        """Add middleware to the pipeline.
 
-        Two call forms:
+        Call forms:
 
-        - `add_middleware(MiddlewareClass, **options)`:
-          the class is instantiated with `**options` and appended.
-        - `add_middleware(instance)` — append an already-built
-          middleware instance directly.
+        - `add_middleware(VeloceMiddlewareClass, **options)` — a class
+          subclassing `Middleware` is instantiated with `**options` and
+          appended to the request/response pipeline.
+        - `add_middleware(instance)` — append an already-built `Middleware`
+          instance directly.
+        - `add_middleware(ASGIMiddlewareClass, **options)` — a class that
+          is *not* a `Middleware` subclass is treated as a standard ASGI
+          middleware: it wraps the whole application and is instantiated
+          as `ASGIMiddlewareClass(app, **options)` when the ASGI stack is
+          assembled. This is what lets third-party ASGI middleware
+          (observability, tracing, profiling, ...) plug in. Middleware
+          added first is the outermost wrapper.
         """
         if isinstance(middleware, type):
-            self._middlewares.append(middleware(**options))
-        else:
+            if issubclass(middleware, Middleware):
+                self._middlewares.append(middleware(**options))
+            elif issubclass(middleware, BaseHTTPMiddleware):
+                # `BaseHTTPMiddleware` is a dispatch-shape middleware, not
+                # an ASGI app — registering it as ASGI would wire the app
+                # in as its `dispatch` and fail at request time.
+                raise TypeError(
+                    f"{middleware.__name__} is a BaseHTTPMiddleware "
+                    "(dispatch-shape) — register it with add_http_middleware(), "
+                    "not add_middleware()."
+                )
+            else:
+                # A standard ASGI middleware class — it needs the app it
+                # wraps, so defer construction until the stack is built.
+                self._asgi_middleware.append((middleware, options))
+                self._asgi_stack = None
+        elif isinstance(middleware, Middleware):
             self._middlewares.append(middleware)
+        else:
+            # A bare ASGI middleware instance cannot be wired up — veloce
+            # has to supply the wrapped app, which only the class form
+            # allows.
+            raise TypeError(
+                f"add_middleware() received a {type(middleware).__name__} instance; "
+                "pass a Middleware instance, a Middleware subclass, or an ASGI "
+                "middleware *class* (so veloce can supply the wrapped app). "
+                "Register a BaseHTTPMiddleware via add_http_middleware()."
+            )
 
     def use_secure_defaults(self) -> None:
         """Apply a security-hardened configuration baseline.
@@ -2343,8 +2381,35 @@ class Veloce(Router):
         )
         await send({"type": "http.response.body", "body": body})
 
+    def _build_asgi_stack(self) -> Callable:
+        """Wrap the core ASGI app with each registered ASGI middleware.
+
+        The first-registered middleware ends up the outermost wrapper, so
+        it sees the request first and the response last.
+        """
+        app: Callable = self._asgi_app
+        for cls, options in reversed(self._asgi_middleware):
+            app = cls(app, **options)
+        return app
+
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
-        """ASGI interface — allows running under uvicorn/hypercorn if desired."""
+        """ASGI interface — allows running under uvicorn/hypercorn if desired.
+
+        Any third-party ASGI middleware registered via `add_middleware` wraps
+        the core application here; with none registered this is a direct call
+        to `_asgi_app` with no measurable overhead.
+        """
+        if self._asgi_middleware:
+            stack = self._asgi_stack
+            if stack is None:
+                stack = self._build_asgi_stack()
+                self._asgi_stack = stack
+            await stack(scope, receive, send)
+        else:
+            await self._asgi_app(scope, receive, send)
+
+    async def _asgi_app(self, scope: dict, receive: Callable, send: Callable) -> None:
+        """The core ASGI application — HTTP / WebSocket / lifespan handling."""
         self._setup_openapi()
         if scope["type"] == "http":
             # Build request from ASGI scope. Construct headers from the raw
