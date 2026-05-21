@@ -19,7 +19,9 @@ class RadixNode:
 
     __slots__ = (
         "segment",
-        "children",
+        "static_children",
+        "param_children",
+        "wildcard_child",
         "handlers",
         "param_name",
         "is_param",
@@ -31,7 +33,12 @@ class RadixNode:
 
     def __init__(self, segment: str = "") -> None:
         self.segment = segment
-        self.children: list[RadixNode] = []
+        # Static children are indexed by exact segment for O(1) match-time
+        # lookup. Param and wildcard children are few; they stay in their
+        # own small containers and are scanned only after a static miss.
+        self.static_children: dict[str, RadixNode] = {}
+        self.param_children: list[RadixNode] = []
+        self.wildcard_child: RadixNode | None = None
         self.handlers: dict[str, RouteInfo] = {}  # method -> RouteInfo
         self.param_name: str | None = None
         self.is_param = False
@@ -276,16 +283,14 @@ class Router:
                 converter = parse_converter(conv_spec) if conv_spec else StringConverter()
                 param_names.append(param_name)
 
-                # Find an existing param child with the same name AND matching
+                # Reuse an existing param child with the same name AND matching
                 # converter type; otherwise add a new one. Different converters
                 # for the same name on the same segment slot would be ambiguous,
                 # so we treat them as distinct param children.
                 child = None
-                for c in node.children:
+                for c in node.param_children:
                     if (
-                        c.is_param
-                        and c.param_name == param_name
-                        and type(c.converter) is type(converter)  # noqa: E721
+                        c.param_name == param_name and type(c.converter) is type(converter)  # noqa: E721
                     ):
                         child = c
                         break
@@ -294,29 +299,29 @@ class Router:
                     child.is_param = True
                     child.param_name = param_name
                     child.converter = converter
-                    node.children.append(child)
+                    node.param_children.append(child)
                 node = child
                 # Greedy converter (path) must terminate the rule — it consumes
                 # everything that follows.
                 if converter.greedy:
                     break
             elif seg == "*":
-                # Wildcard
-                child = RadixNode(seg)
-                child.is_wildcard = True
-                node.children.append(child)
+                # Wildcard (legacy `*` syntax). Reuse the slot so two routes
+                # registering `*` at the same node — e.g. a GET and a POST —
+                # share one node and both handlers stay reachable.
+                child = node.wildcard_child
+                if child is None:
+                    child = RadixNode(seg)
+                    child.is_wildcard = True
+                    node.wildcard_child = child
                 node = child
                 break
             else:
-                # Static segment
-                child = None
-                for c in node.children:
-                    if not c.is_param and not c.is_wildcard and c.segment == seg:
-                        child = c
-                        break
+                # Static segment — O(1) dict lookup-or-create.
+                child = node.static_children.get(seg)
                 if child is None:
                     child = RadixNode(seg)
-                    node.children.append(child)
+                    node.static_children[seg] = child
                 node = child
 
         if has_trailing_slash:
@@ -418,18 +423,16 @@ class Router:
 
         seg = segments[idx]
 
-        # Try static match first (fastest path).
-        for child in node.children:
-            if not child.is_param and not child.is_wildcard and child.segment == seg:
-                result = self._match_node(child, segments, idx + 1, params)
-                if result is not None:
-                    return result
+        # Try static match first (fastest path) — O(1) dict lookup.
+        static_child = node.static_children.get(seg)
+        if static_child is not None:
+            result = self._match_node(static_child, segments, idx + 1, params)
+            if result is not None:
+                return result
 
         # Try param match — each candidate validates the segment via its
         # converter. Greedy converters (path) consume the remainder in one go.
-        for child in node.children:
-            if not child.is_param:
-                continue
+        for child in node.param_children:
             converter = child.converter
             assert converter is not None  # always set in add_route
             if converter.greedy:
@@ -450,10 +453,9 @@ class Router:
             del params[child.param_name]  # type: ignore[arg-type]
 
         # Try wildcard (legacy `*` syntax — kept for back-compat).
-        for child in node.children:
-            if child.is_wildcard:
-                params["_wildcard"] = "/".join(segments[idx:])
-                return child
+        if node.wildcard_child is not None:
+            params["_wildcard"] = "/".join(segments[idx:])
+            return node.wildcard_child
 
         return None
 
@@ -722,13 +724,13 @@ class Router:
             for method, info in node.handlers.items():
                 if include_hidden or (method != "WEBSOCKET" and info.include_in_schema):
                     out.append((method, path, info))
-        for child in node.children:
-            seg = child.segment
-            if child.is_param:
-                seg = "{" + (child.param_name or "") + "}"
-            elif child.is_wildcard:
-                seg = "{path}"
+        for child in node.static_children.values():
+            self._walk_tree(child, path_parts + [child.segment], out, include_hidden)
+        for child in node.param_children:
+            seg = "{" + (child.param_name or "") + "}"
             self._walk_tree(child, path_parts + [seg], out, include_hidden)
+        if node.wildcard_child is not None:
+            self._walk_tree(node.wildcard_child, path_parts + ["{path}"], out, include_hidden)
 
     def include_router(self, router: Router, prefix: str = "") -> None:
         """Include another router (a sub-router with its own prefix, tags, and hooks)."""
@@ -759,11 +761,9 @@ class Router:
                         converter = parse_converter(conv_spec) if conv_spec else StringConverter()
                         param_names.append(param_name)
                         child = None
-                        for c in cur.children:
+                        for c in cur.param_children:
                             if (
-                                c.is_param
-                                and c.param_name == param_name
-                                and type(c.converter) is type(converter)  # noqa: E721
+                                c.param_name == param_name and type(c.converter) is type(converter)  # noqa: E721
                             ):
                                 child = c
                                 break
@@ -772,25 +772,23 @@ class Router:
                             child.is_param = True
                             child.param_name = param_name
                             child.converter = converter
-                            cur.children.append(child)
+                            cur.param_children.append(child)
                         cur = child
                         if converter.greedy:
                             break
                     elif seg == "*":
-                        child = RadixNode(seg)
-                        child.is_wildcard = True
-                        cur.children.append(child)
+                        child = cur.wildcard_child
+                        if child is None:
+                            child = RadixNode(seg)
+                            child.is_wildcard = True
+                            cur.wildcard_child = child
                         cur = child
                         break
                     else:
-                        child = None
-                        for c in cur.children:
-                            if not c.is_param and not c.is_wildcard and c.segment == seg:
-                                child = c
-                                break
+                        child = cur.static_children.get(seg)
                         if child is None:
                             child = RadixNode(seg)
-                            cur.children.append(child)
+                            cur.static_children[seg] = child
                         cur = child
 
                 route_info = RouteInfo(
@@ -825,5 +823,11 @@ class Router:
                 # Update named routes
                 self._named_routes[info.name] = (full_path, info.param_names)
 
-        for child in node.children:
+        for child in node.static_children.values():
             self._merge_node(child, prefix, path_segments + [child.segment])
+        for child in node.param_children:
+            self._merge_node(child, prefix, path_segments + [child.segment])
+        if node.wildcard_child is not None:
+            self._merge_node(
+                node.wildcard_child, prefix, path_segments + [node.wildcard_child.segment]
+            )

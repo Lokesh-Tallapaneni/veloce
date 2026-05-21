@@ -57,6 +57,10 @@ class StaticFiles:
         directory_index: bool = False,
     ) -> None:
         self.directory = os.path.abspath(directory)
+        # The served root's real (symlink-resolved) path. Constant for the
+        # life of the handler, so resolve it once here rather than calling
+        # realpath on it per request in the containment check.
+        self._real_root = os.path.realpath(self.directory)
         self.prefix = prefix.rstrip("/")
         self.html = html
         # Generate an HTML directory listing for paths that resolve to
@@ -112,7 +116,7 @@ class StaticFiles:
         # still inside the served root — a symlink planted in the served
         # directory must not expose files elsewhere on the filesystem.
         real_path = await loop.run_in_executor(None, os.path.realpath, file_path)
-        real_root = await loop.run_in_executor(None, os.path.realpath, self.directory)
+        real_root = self._real_root
         try:
             contained = os.path.commonpath([real_path, real_root]) == real_root
         except ValueError:

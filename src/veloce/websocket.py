@@ -333,6 +333,13 @@ class WebSocket:
         `message` is forwarded straight to the ASGI `send` callable,
         e.g. `{"type": "websocket.send", "text": "..."}`.
         """
+        # Same handshake state machine the typed send_* helpers enforce:
+        # the raw escape hatch must not be a way around accept-before-send
+        # or send-after-close.
+        if not self._accepted:
+            raise RuntimeError("WebSocket.send(): call accept() before sending")
+        if self._closed:
+            raise WebSocketDisconnect()
         if not self._is_asgi:
             raise RuntimeError(
                 "WebSocket.send() is ASGI-mode only; use send_text/send_bytes "

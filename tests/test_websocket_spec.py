@@ -209,3 +209,23 @@ async def test_websocket_accept_rejects_crlf_in_custom_header():
     ws = WebSocket(transport=None, headers={})
     with pytest.raises(ValueError):
         await ws.accept(headers={"X-Evil": "a\r\nInjected: 1"})
+
+
+async def test_websocket_raw_send_before_accept_raises():
+    """The raw `send()` escape hatch enforces accept-before-send too —
+    not just the typed send_text / send_bytes helpers."""
+    ws = WebSocket(transport=None, headers={})
+    with pytest.raises(RuntimeError, match="accept"):
+        await ws.send({"type": "websocket.send", "text": "hi"})
+
+
+async def test_websocket_raw_send_after_close_raises():
+    """`send()` after the connection is closed raises WebSocketDisconnect,
+    matching send_text / send_bytes."""
+    from veloce.exceptions import WebSocketDisconnect
+
+    ws, _ = _make_ws()
+    await ws.accept()
+    await ws.close(code=1000)
+    with pytest.raises(WebSocketDisconnect):
+        await ws.send({"type": "websocket.send", "text": "late"})
