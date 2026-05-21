@@ -90,6 +90,7 @@ from veloce.http.response import (
     StreamingResponse,
     UJSONResponse,
 )
+from veloce.instrumentation import RequestMetrics
 
 # HTML-safe strings
 from veloce.markup import Markup, escape
@@ -268,6 +269,8 @@ __all__ = [
     "escape",
     # Encoders
     "jsonable_encoder",
+    # Observability
+    "RequestMetrics",
     # Filesystem-safety
     "secure_filename",
     "safe_join",

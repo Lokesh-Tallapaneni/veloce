@@ -6,8 +6,8 @@ signal-based application code stays small.
 
 Veloce ships four standard signals:
 
-- `request_started(sender=app)`
-- `request_finished(sender=app, response=...)`
+- `request_started(sender=app, request=...)`
+- `request_finished(sender=app, request=..., response=...)`
 - `request_tearing_down(sender=app, exc=...)`
 - `got_request_exception(sender=app, exception=...)`
 

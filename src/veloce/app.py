@@ -7,6 +7,7 @@ import contextlib
 import functools
 import inspect
 import signal
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -150,6 +151,10 @@ class Veloce(Router):
         # is assembled lazily into `_asgi_stack` on the first request.
         self._asgi_middleware: list[tuple[Any, dict[str, Any]]] = []
         self._asgi_stack: Callable | None = None
+        # Observability instrumentation hooks — each is invoked once per
+        # finished HTTP request with a `RequestMetrics` record. Empty by
+        # default, so an un-instrumented app pays nothing.
+        self._instrumentation: list[Callable] = []
         self._exception_handlers: dict[type, Callable] = {}
         self._status_handlers: dict[int, Callable] = {}
         # `exception_handlers=` ctor mapping — keys are
@@ -320,6 +325,28 @@ class Veloce(Router):
                 "middleware *class* (so veloce can supply the wrapped app). "
                 "Register a BaseHTTPMiddleware via add_http_middleware()."
             )
+
+    def add_instrumentation(self, hook: Callable) -> Callable:
+        """Register an observability instrumentation hook.
+
+        `hook` is called once per finished HTTP request with a
+        `RequestMetrics` record — the request method, the concrete path,
+        the matched route *template* (a low-cardinality metric label), the
+        status code, and the wall-clock duration in milliseconds. It may be
+        a plain function or a coroutine function. A hook that raises is
+        logged and skipped, so instrumentation never breaks a response.
+
+        Returns `hook` unchanged, so it also works as a decorator:
+
+            @app.add_instrumentation
+            def export(metrics):
+                statsd.timing(metrics.route or "unmatched", metrics.duration_ms)
+
+        With no hook registered the request path carries no instrumentation
+        cost — not even a clock read.
+        """
+        self._instrumentation.append(hook)
+        return hook
 
     def use_secure_defaults(self) -> None:
         """Apply a security-hardened configuration baseline.
@@ -1541,7 +1568,7 @@ class Veloce(Router):
         from veloce.signals import request_finished, request_started
 
         if request_started.has_receivers_for(self):
-            request_started.send(self)
+            request_started.send(self, request=request)
 
         # Drain `before_first_request` hooks exactly once. The double-check
         # under the lock is the canonical pattern: the unlocked check
@@ -1572,19 +1599,42 @@ class Veloce(Router):
                     status_code=413,
                 )
 
-        # If @app.middleware("http") funcs are registered, wrap dispatch in call_next chain
-        if self._http_middleware_funcs:
-            response = await self._run_http_middleware_chain(request)
-        else:
-            response = await self._dispatch_request(request)
+        # Time the dispatch only when instrumentation hooks are registered —
+        # an un-instrumented app does not even read the clock.
+        instrument = self._instrumentation
+        started = time.perf_counter() if instrument else 0.0
+
+        try:
+            # If @app.middleware("http") funcs are registered, wrap dispatch
+            # in the call_next chain.
+            if self._http_middleware_funcs:
+                response = await self._run_http_middleware_chain(request)
+            else:
+                response = await self._dispatch_request(request)
+        except Exception:
+            # Dispatch propagated an exception (e.g. PROPAGATE_EXCEPTIONS is
+            # set). Record a `500` metric before the exception continues
+            # out, so error requests are never dropped from observability.
+            if instrument:
+                with contextlib.suppress(Exception):
+                    await self._run_instrumentation(
+                        request, 500, (time.perf_counter() - started) * 1000.0
+                    )
+            raise
 
         # Signal: request finished. Sender is the app, `response=` is the
-        # final Response. Receivers may peek but not replace.
+        # final Response, `request=` lets a receiver correlate with the
+        # matching `request_started`. Receivers may peek but not replace.
         if request_finished.has_receivers_for(self):
             try:
-                request_finished.send(self, response=response)
+                request_finished.send(self, response=response, request=request)
             except Exception:
                 self.logger.exception("request_finished signal raised an exception")
+
+        if instrument:
+            await self._run_instrumentation(
+                request, response.status_code, (time.perf_counter() - started) * 1000.0
+            )
 
         return response
 
@@ -2151,6 +2201,31 @@ class Veloce(Router):
         for mw in reversed(self._middlewares):
             response = await mw.process_response(request, response)
         return response
+
+    async def _run_instrumentation(
+        self, request: Request, status_code: int, duration_ms: float
+    ) -> None:
+        """Deliver a `RequestMetrics` record to every instrumentation hook.
+
+        A hook may be sync or async; one that raises is logged and skipped
+        so observability code can never break the response.
+        """
+        from veloce.instrumentation import RequestMetrics
+
+        metrics = RequestMetrics(
+            method=request.method,
+            path=request.path,
+            route=request.url_rule,
+            status_code=status_code,
+            duration_ms=duration_ms,
+        )
+        for hook in self._instrumentation:
+            try:
+                result = hook(metrics)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                self.logger.exception("instrumentation hook raised an exception")
 
     # ── Server ───────────────────────────────────────────────────
 
