@@ -7,7 +7,14 @@ so WebSocket dependencies get the same `yield`-style teardown and
 
 from __future__ import annotations
 
-from veloce import Depends, Security, SecurityScopes, Veloce, WebSocket
+from pydantic import BaseModel
+
+from veloce import BackgroundTasks, Depends, Response, Security, SecurityScopes, Veloce, WebSocket
+
+
+class _Item(BaseModel):
+    name: str
+
 
 # ── yield-style dependency teardown ───────────────────────────────────
 
@@ -175,3 +182,53 @@ def test_websocket_path_param_still_injected():
     client = app.test_client()
     with client.websocket_connect("/room/7") as conn:
         assert conn.receive_text() == "7:int"
+
+
+# ── HTTP-only parameter kinds are inert on WebSocket handlers ──────────
+
+
+def test_websocket_background_tasks_param_is_inert():
+    """A `BackgroundTasks` parameter is not injected into a WebSocket
+    handler — its handler default applies, no crash."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.websocket("/ws")
+    async def echo(ws, bg: BackgroundTasks = None):
+        await ws.accept()
+        await ws.send_text("inert" if bg is None else "injected")
+        await ws.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws") as conn:
+        assert conn.receive_text() == "inert"
+
+
+def test_websocket_response_param_is_inert():
+    """A `Response` parameter is not injected into a WebSocket handler."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.websocket("/ws")
+    async def echo(ws, resp: Response = None):
+        await ws.accept()
+        await ws.send_text("inert" if resp is None else "injected")
+        await ws.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws") as conn:
+        assert conn.receive_text() == "inert"
+
+
+def test_websocket_body_model_param_is_inert():
+    """A Pydantic-model parameter is not treated as a request body on a
+    WebSocket handler — its handler default applies."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.websocket("/ws")
+    async def echo(ws, item: _Item = None):
+        await ws.accept()
+        await ws.send_text("inert" if item is None else "injected")
+        await ws.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws") as conn:
+        assert conn.receive_text() == "inert"

@@ -285,16 +285,21 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
             slots.append(_Slot(K_REQUEST, param_name))
             continue
 
-        # BackgroundTasks injection by annotation.
+        # BackgroundTasks injection by annotation. A WebSocket handshake
+        # has no response cycle to attach tasks to, so the parameter is
+        # left to its handler default rather than injected.
         if annotation is BackgroundTasks:
-            slots.append(_Slot(K_BG_TASKS, param_name))
+            if not websocket:
+                slots.append(_Slot(K_BG_TASKS, param_name))
             continue
 
         # Response injection by annotation. The handler
         # receives a fresh Response it can mutate (status_code, headers,
         # cookies); the dispatcher merges those onto the final response.
+        # There is no HTTP Response on a WebSocket route — skip it there.
         if annotation is Response:
-            slots.append(_Slot(K_RESPONSE, param_name))
+            if not websocket:
+                slots.append(_Slot(K_RESPONSE, param_name))
             continue
 
         # SecurityScopes — receives the accumulated Security() chain scopes.
@@ -316,9 +321,15 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
 
         # Explicit parameter markers (Query/Path/Header/Cookie/Body/Form/File).
         if isinstance(default, _ParamBase):
+            marker_kind = _marker_kind(default)
+            # Body / Form / File markers read the HTTP request body, which
+            # a WebSocket handshake does not have — skip them so the
+            # handler default applies instead of crashing at resolve time.
+            if websocket and marker_kind in (MK_BODY, MK_FORM, MK_FILE):
+                continue
             slot = _Slot(K_PARAM_MARKER, param_name)
             slot.marker = default
-            slot.marker_kind = _marker_kind(default)
+            slot.marker_kind = marker_kind
             slot.lookup_name = default.alias or param_name
             # An un-aliased Header param converts `_` → `-`
             # in its name (`x_token` → `x-token`) unless disabled.
@@ -339,19 +350,23 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
         )
         is_list, list_inner = _unwrap_list(inner_type) if inner_type else (False, inner_type)
 
-        # UploadFile binding (with or without Optional).
+        # UploadFile binding (with or without Optional). A WebSocket has no
+        # multipart form body, so the parameter is left to its default.
         if annotation is UploadFile or (is_optional and inner_type is UploadFile):
-            slot = _Slot(K_UPLOAD_FILE, param_name)
-            slot.is_optional = is_optional
-            slots.append(slot)
+            if not websocket:
+                slot = _Slot(K_UPLOAD_FILE, param_name)
+                slot.is_optional = is_optional
+                slots.append(slot)
             continue
 
-        # Pydantic model from body.
+        # Pydantic model from body. A WebSocket handshake has no request
+        # body to validate, so the parameter is left to its default.
         if inner_type and isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
-            slot = _Slot(K_BODY_MODEL, param_name)
-            slot.model = inner_type
-            slot.is_optional = is_optional
-            slots.append(slot)
+            if not websocket:
+                slot = _Slot(K_BODY_MODEL, param_name)
+                slot.model = inner_type
+                slot.is_optional = is_optional
+                slots.append(slot)
             continue
 
         # List-typed parameter: read from query as a list.
