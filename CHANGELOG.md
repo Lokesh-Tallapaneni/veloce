@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A handler that returns a bare `str` now defaults to
   `Content-Type: text/html; charset=utf-8` (previously `text/plain`), so a
   bare-`str` return and `make_response(str)` produce the same media type.
+- Multipart form parsing now uses the `python-multipart` streaming
+  parser instead of an in-memory `body.split` — it correctly handles a
+  boundary token that happens to occur inside binary file data, and a
+  malformed body degrades to the parts that parsed cleanly rather than a
+  `500`.
+- `app.run()` starts the built-in **development** server; it now logs a
+  startup reminder that production deployments should run under uvicorn
+  (or another ASGI server). See the new Deployment guide.
 
 ### Fixed
 
@@ -97,6 +105,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MAX_CONTENT_LENGTH` is now enforced incrementally — an oversized
   request body is refused with `413` while still being received, before
   the whole payload is buffered into memory.
+- The built-in development server enforces a request-read timeout
+  (`HttpProtocol.REQUEST_TIMEOUT`, 30 s) — a half-sent request is dropped
+  with `408`, bounding how long a slowloris-style slow client can pin a
+  connection open.
 - `WebSocketOriginMiddleware` rejects cross-site WebSocket handshakes
   (CSWSH) by checking the handshake `Origin` against an allow-list.
 - `SecurityHeadersMiddleware` attaches `X-Content-Type-Options`,

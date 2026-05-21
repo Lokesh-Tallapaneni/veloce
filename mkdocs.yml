@@ -125,6 +125,7 @@ nav:
       - Middleware: guide/middleware.md
       - WebSockets: guide/websockets.md
       - Testing: guide/testing.md
+      - Deployment: guide/deployment.md
   - Design Notes:
       - Handler plan: design/handler-plan.md
       - Path converters: design/path-converters.md
