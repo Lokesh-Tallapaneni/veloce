@@ -384,8 +384,12 @@ class Router:
         # will rebuild on demand in that case.
         from veloce._handler_plan import build_plan, build_route_dep_plans
 
-        route_info.handler_plan = build_plan(handler)
-        route_info.route_dep_plans = build_route_dep_plans(route_info.dependencies)
+        # A WebSocket route's plan is built in websocket mode so the
+        # `WebSocket` connection is bound by annotation / name and its
+        # dependency graph runs through the shared resolver.
+        is_ws = any(m.upper() == "WEBSOCKET" for m in methods)
+        route_info.handler_plan = build_plan(handler, websocket=is_ws)
+        route_info.route_dep_plans = build_route_dep_plans(route_info.dependencies, websocket=is_ws)
         # Classify the route for dispatch: a handler with no parameter
         # slots and no route-level dependencies needs nothing resolved.
         route_info.is_trivial_plan = (

@@ -46,6 +46,7 @@ K_DEFAULT = 9
 K_NONE = 10
 K_SECURITY_SCOPES = 11
 K_RESPONSE = 12
+K_WEBSOCKET = 13
 
 # Marker kinds (for K_PARAM_MARKER slots).
 MK_QUERY = 0
@@ -165,12 +166,16 @@ class HandlerPlan:
         self.route_dep_plans = route_dep_plans
 
 
-def _build_depends_slot(name: str, dep: Any, inferred: Any = None) -> _Slot:
+def _build_depends_slot(
+    name: str, dep: Any, inferred: Any = None, *, websocket: bool = False
+) -> _Slot:
     """Build a K_DEPENDS slot, recursively planning the sub-callable.
 
     `Depends()` with no explicit dependency falls back to `inferred`
     (the parameter's type annotation) — the shorthand for
-    `x: SomeClass = Depends()`.
+    `x: SomeClass = Depends()`. `websocket` is threaded down the chain so
+    a dependency of a WebSocket handler can itself receive the
+    `WebSocket` connection by annotation or `ws` / `websocket` name.
     """
     slot = _Slot(K_DEPENDS, name)
     slot.use_cache = dep.use_cache
@@ -179,7 +184,7 @@ def _build_depends_slot(name: str, dep: Any, inferred: Any = None) -> _Slot:
     slot.dep_is_coro = inspect.iscoroutinefunction(callable_)
     slot.dep_is_gen = inspect.isgeneratorfunction(callable_)
     slot.dep_is_async_gen = inspect.isasyncgenfunction(callable_)
-    slot.sub_plan = build_plan(callable_)
+    slot.sub_plan = build_plan(callable_, websocket=websocket)
     # Security() scopes flow down the chain so a `SecurityScopes`
     # parameter anywhere below sees the union. Plain `Depends` has no
     # scopes attribute; we read defensively.
@@ -189,14 +194,26 @@ def _build_depends_slot(name: str, dep: Any, inferred: Any = None) -> _Slot:
     return slot
 
 
-def build_plan(handler: Callable) -> HandlerPlan:
+def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
     """Inspect `handler` and freeze a resolution plan.
 
     Called exactly once per route registration. Safe to call on builtins,
     lambdas, partials, or callable classes — returns an empty plan for
     handlers without inspectable signatures.
+
+    When `websocket` is set, a parameter typed `WebSocket` (or named `ws`
+    / `websocket`) is bound to a `K_WEBSOCKET` slot instead of being read
+    from the request — the same plan machinery then drives WebSocket
+    dependency injection, giving it `yield`-teardown and `Security` parity
+    with the HTTP path.
     """
     from veloce.dependency import Depends  # local import breaks the import cycle
+
+    ws_type: Any = None
+    if websocket:
+        from veloce.websocket import WebSocket
+
+        ws_type = WebSocket
 
     try:
         sig = inspect.signature(handler)
@@ -256,6 +273,13 @@ def build_plan(handler: Callable) -> HandlerPlan:
                 has_default = True
             annotation = base_type
 
+        # WebSocket injection (websocket plans only) — by annotation or by
+        # the `ws` / `websocket` parameter name. Checked first so it wins
+        # over the request/path fallbacks for a WebSocket handler.
+        if websocket and (annotation is ws_type or param_name in ("ws", "websocket")):
+            slots.append(_Slot(K_WEBSOCKET, param_name))
+            continue
+
         # Request injection — either by name or by annotation.
         if param_name == "request" or annotation is Request:
             slots.append(_Slot(K_REQUEST, param_name))
@@ -285,7 +309,9 @@ def build_plan(handler: Callable) -> HandlerPlan:
         # with no callable infers the dependency from the annotation
         # (`x: SomeClass = Depends()`).
         if isinstance(default, Depends):
-            slots.append(_build_depends_slot(param_name, default, inferred=annotation))
+            slots.append(
+                _build_depends_slot(param_name, default, inferred=annotation, websocket=websocket)
+            )
             continue
 
         # Explicit parameter markers (Query/Path/Header/Cookie/Body/Form/File).
@@ -353,12 +379,12 @@ def build_plan(handler: Callable) -> HandlerPlan:
     return HandlerPlan(handler, slots, [])
 
 
-def build_route_dep_plans(route_dependencies: list) -> list[_Slot]:
+def build_route_dep_plans(route_dependencies: list, *, websocket: bool = False) -> list[_Slot]:
     """Pre-plan a route's `dependencies=[Depends(...), ...]` list."""
     from veloce.dependency import Depends  # local import breaks the cycle
 
     out: list[_Slot] = []
     for dep in route_dependencies:
         if isinstance(dep, Depends):
-            out.append(_build_depends_slot("", dep))
+            out.append(_build_depends_slot("", dep, websocket=websocket))
     return out

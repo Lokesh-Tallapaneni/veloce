@@ -29,6 +29,7 @@ from veloce._handler_plan import (
     K_RESPONSE,
     K_SECURITY_SCOPES,
     K_UPLOAD_FILE,
+    K_WEBSOCKET,
 )
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
@@ -292,6 +293,29 @@ class DependencyResolver:
 
         return await self._resolve_slots(plan.slots, request, path_params)
 
+    async def resolve_ws_plan(
+        self,
+        plan: Any,
+        websocket: Any,
+        path_params: dict[str, str],
+        route_dep_plans: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a WebSocket handler's plan.
+
+        The shared slot machinery is reused — the `WebSocket` is passed
+        where an HTTP resolve passes the `Request`, so `K_WEBSOCKET` slots,
+        the `Depends` graph (with `yield`-teardown and `Security` scope
+        accumulation), and `path` parameters all resolve through one code
+        path. Run teardowns with `run_teardowns()` once the handler returns.
+        """
+        self.reset()
+
+        if route_dep_plans:
+            for slot in route_dep_plans:
+                await self._exec_depends(slot, websocket, path_params)
+
+        return await self._resolve_slots(plan.slots, websocket, path_params)
+
     async def run_teardowns(self, exc: BaseException | None = None) -> None:
         """Run yield-dependency teardowns in reverse registration order.
 
@@ -354,6 +378,12 @@ class DependencyResolver:
             name = slot.name
 
             if kind == K_REQUEST:
+                kwargs[name] = request
+                continue
+
+            if kind == K_WEBSOCKET:
+                # WebSocket plans pass the connection where an HTTP resolve
+                # passes the `Request`, so the same object is bound here.
                 kwargs[name] = request
                 continue
 
