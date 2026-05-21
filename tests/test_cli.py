@@ -110,3 +110,44 @@ def test_routes_command_no_routes(tmp_path, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "No routes registered" in out
+
+
+# ── S7: `veloce check` security audit command ─────────────────────────
+
+
+def test_check_command_reports_issues(tmp_path, monkeypatch, capsys):
+    module_path = tmp_path / "cli_check_bad.py"
+    module_path.write_text(
+        textwrap.dedent(
+            """
+            from veloce import Veloce
+            app = Veloce(debug=True, openapi_url=None)
+            """
+        )
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop("cli_check_bad", None)
+    rc = main(["check", "cli_check_bad:app"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "issue" in out.lower()
+
+
+def test_check_command_clean_app(tmp_path, monkeypatch, capsys):
+    module_path = tmp_path / "cli_check_good.py"
+    module_path.write_text(
+        textwrap.dedent(
+            """
+            from veloce import Veloce
+            app = Veloce(openapi_url=None)
+            app.config["SECRET_KEY"] = "a-real-secret"
+            app.use_secure_defaults()
+            """
+        )
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop("cli_check_good", None)
+    rc = main(["check", "cli_check_good:app"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no issues" in out.lower()

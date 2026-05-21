@@ -259,9 +259,26 @@ class Request:
                 items = parse_qsl(self.body.decode("utf-8"), keep_blank_values=True)
                 self._form = FormData(items)
             elif "multipart/form-data" in content_type:
-                from veloce.http.datastructures import parse_multipart_form
+                from veloce.http.datastructures import (
+                    DEFAULT_MAX_MULTIPART_PART_SIZE,
+                    DEFAULT_MAX_MULTIPART_PARTS,
+                    parse_multipart_form,
+                )
 
-                self._form = parse_multipart_form(self.body, content_type)
+                # Per-app multipart caps come from config when an app is
+                # bound; otherwise the module defaults apply.
+                max_parts = DEFAULT_MAX_MULTIPART_PARTS
+                max_part_size = DEFAULT_MAX_MULTIPART_PART_SIZE
+                cfg = getattr(self.app, "config", None) if self.app is not None else None
+                if cfg is not None:
+                    max_parts = cfg.get("MAX_FORM_PARTS", max_parts) or max_parts
+                    max_part_size = cfg.get("MAX_FORM_PART_SIZE", max_part_size) or max_part_size
+                self._form = parse_multipart_form(
+                    self.body,
+                    content_type,
+                    max_parts=max_parts,
+                    max_part_size=max_part_size,
+                )
             else:
                 from veloce.http.datastructures import FormData
 

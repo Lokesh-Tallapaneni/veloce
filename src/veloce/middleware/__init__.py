@@ -9,7 +9,9 @@ from veloce.middleware.proxy_fix import ProxyFix
 from veloce.middleware.security import (
     HTTPSRedirectMiddleware,
     RateLimitMiddleware,
+    SecurityHeadersMiddleware,
     TrustedHostMiddleware,
+    WebSocketOriginMiddleware,
 )
 from veloce.middleware.sessions import SessionMiddleware
 
@@ -22,6 +24,8 @@ __all__ = [
     "TrustedHostMiddleware",
     "RateLimitMiddleware",
     "HTTPSRedirectMiddleware",
+    "SecurityHeadersMiddleware",
+    "WebSocketOriginMiddleware",
     "LoggingMiddleware",
     "RequestIDMiddleware",
     "SessionMiddleware",

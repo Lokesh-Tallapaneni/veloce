@@ -283,6 +283,55 @@ class Veloce(Router):
         else:
             self._middlewares.append(middleware)
 
+    def use_secure_defaults(self) -> None:
+        """Apply a security-hardened configuration baseline.
+
+        - Marks the session cookie `Secure`, `HttpOnly`, and (unless
+          already configured) `SameSite=Lax`.
+        - Registers `SecurityHeadersMiddleware` — `nosniff`, frame-deny,
+          a referrer policy, and a one-year HSTS max-age — unless one is
+          already present.
+
+        Call once after construction, before serving. Production-oriented:
+        the `Secure` cookie flag means cookies are not sent over plain
+        HTTP, so do not call this for local HTTP development.
+        """
+        self.config["SESSION_COOKIE_SECURE"] = True
+        self.config["SESSION_COOKIE_HTTPONLY"] = True
+        if self.config.get("SESSION_COOKIE_SAMESITE") is None:
+            self.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+        from veloce.middleware.security import SecurityHeadersMiddleware
+
+        if not any(isinstance(m, SecurityHeadersMiddleware) for m in self._middlewares):
+            self.add_middleware(SecurityHeadersMiddleware(hsts_max_age=31536000))
+
+    def security_audit(self) -> list[str]:
+        """Return human-readable warnings about the current security posture.
+
+        An empty list means nothing was flagged. Drives the
+        `veloce check` CLI command and is also callable directly from a
+        pre-deploy script or a test.
+        """
+        from veloce.middleware.security import SecurityHeadersMiddleware
+        from veloce.middleware.sessions import SessionMiddleware
+
+        warnings: list[str] = []
+        if self.debug or self.config.get("DEBUG"):
+            warnings.append("DEBUG is enabled — disable it before deploying to production.")
+        if not self.config.get("SECRET_KEY"):
+            warnings.append("SECRET_KEY is not set — session signing falls back to weak defaults.")
+        has_session = any(isinstance(m, SessionMiddleware) for m in self._middlewares)
+        if has_session and not self.config.get("SESSION_COOKIE_SECURE"):
+            warnings.append(
+                "SESSION_COOKIE_SECURE is off — the session cookie can be sent over plain HTTP."
+            )
+        if not any(isinstance(m, SecurityHeadersMiddleware) for m in self._middlewares):
+            warnings.append(
+                "No SecurityHeadersMiddleware registered — responses ship without hardening "
+                "headers (call app.use_secure_defaults())."
+            )
+        return warnings
+
     @property
     def json(self) -> Any:
         """Active `JSONProvider` instance.
@@ -2254,6 +2303,33 @@ class Veloce(Router):
 
     # ── ASGI compatibility layer ─────────────────────────────────
 
+    async def _emit_413(self, send: Callable, limit: int) -> None:
+        """Emit a 413 response directly over ASGI.
+
+        Used by the incremental body-size guard in `__call__`, which
+        runs before a `Request` object exists.
+        """
+        resp = JSONResponse(
+            {
+                "detail": "Request body exceeds MAX_CONTENT_LENGTH",
+                "status_code": 413,
+                "limit": limit,
+            },
+            status_code=413,
+        )
+        body = resp.body
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", resp.content_type.encode()),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
         """ASGI interface — allows running under uvicorn/hypercorn if desired."""
         self._setup_openapi()
@@ -2266,10 +2342,34 @@ class Veloce(Router):
                 (k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", [])
             )
 
+            # Enforce MAX_CONTENT_LENGTH while the body is still being
+            # received, so an oversized upload is rejected before the whole
+            # payload is buffered into memory (RFC 9110 §15.5.14). A declared
+            # Content-Length over the limit is refused up front; the running
+            # total catches chunked bodies that omit it.
+            max_size = self.config.get("MAX_CONTENT_LENGTH")
+            if max_size is not None:
+                declared = headers.get("content-length")
+                if declared is not None:
+                    try:
+                        over = int(declared) > max_size
+                    except ValueError:
+                        over = False
+                    if over:
+                        await self._emit_413(send, max_size)
+                        return
+
             body_parts = []
+            received = 0
             while True:
                 message = await receive()
-                body_parts.append(message.get("body", b""))
+                chunk = message.get("body", b"")
+                if chunk:
+                    body_parts.append(chunk)
+                    received += len(chunk)
+                    if max_size is not None and received > max_size:
+                        await self._emit_413(send, max_size)
+                        return
                 if not message.get("more_body", False):
                     break
 
@@ -2406,17 +2506,32 @@ class Veloce(Router):
             # the same way they are for HTTP.
             from veloce.websocket import WebSocket
 
-            # Host validation for WebSocket handshakes — an HTTP middleware
-            # such as TrustedHostMiddleware never sees a `websocket` scope,
-            # so apply any host allow-list directly here.
+            # Host and Origin validation for WebSocket handshakes — an HTTP
+            # middleware such as TrustedHostMiddleware or
+            # WebSocketOriginMiddleware never sees a `websocket` scope, so
+            # apply any host allow-list and Origin allow-list directly here.
             ws_host = ""
+            ws_origin = ""
+            _host_seen = False
+            _origin_seen = False
             for _hk, _hv in scope.get("headers", []):
-                if _hk == b"host":
+                # First occurrence of each header wins — a duplicate
+                # `Origin` must not be able to shadow the real one.
+                if _hk == b"host" and not _host_seen:
                     ws_host = _hv.decode("latin-1").split(":", 1)[0].lower()
-                    break
+                    _host_seen = True
+                elif _hk == b"origin" and not _origin_seen:
+                    ws_origin = _hv.decode("latin-1")
+                    _origin_seen = True
             for _mw in self._middlewares:
                 _host_check = getattr(_mw, "is_host_allowed", None)
                 if _host_check is not None and not _host_check(ws_host):
+                    msg = await receive()
+                    if msg["type"] == "websocket.connect":
+                        await send({"type": "websocket.close", "code": 1008})
+                    return
+                _origin_check = getattr(_mw, "is_websocket_origin_allowed", None)
+                if _origin_check is not None and not _origin_check(ws_origin):
                     msg = await receive()
                     if msg["type"] == "websocket.connect":
                         await send({"type": "websocket.close", "code": 1008})

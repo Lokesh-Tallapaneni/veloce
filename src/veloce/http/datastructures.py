@@ -588,8 +588,29 @@ class QueryParams(MultiDict):
         return cls(items)
 
 
-def parse_multipart_form(body: bytes, content_type: str) -> FormData:
-    """Parse multipart/form-data into FormData with UploadFile support."""
+# Multipart-parsing safety limits — guard against algorithmic-complexity
+# DoS from a body crafted with pathologically many or oversized parts. A
+# body within MAX_CONTENT_LENGTH can still carry millions of tiny parts;
+# these caps bound the work and memory the parser will commit to.
+DEFAULT_MAX_MULTIPART_PARTS = 1000
+DEFAULT_MAX_MULTIPART_PART_SIZE = 10 * 1024 * 1024  # 10 MiB per part
+
+
+def parse_multipart_form(
+    body: bytes,
+    content_type: str,
+    *,
+    max_parts: int = DEFAULT_MAX_MULTIPART_PARTS,
+    max_part_size: int = DEFAULT_MAX_MULTIPART_PART_SIZE,
+) -> FormData:
+    """Parse multipart/form-data into FormData with UploadFile support.
+
+    `max_parts` caps how many parts the form may contain and
+    `max_part_size` caps each part's body size. Exceeding either raises
+    `RequestEntityTooLarge` (413), so a maliciously structured form
+    cannot exhaust memory or CPU even when its total size is within
+    `MAX_CONTENT_LENGTH`.
+    """
     boundary = ""
     for seg in content_type.split(";"):
         seg = seg.strip()
@@ -604,9 +625,21 @@ def parse_multipart_form(body: bytes, content_type: str) -> FormData:
     delimiter = f"--{boundary}".encode()
     parts = body.split(delimiter)
 
+    # Count real parts as they are encountered and bail the moment the
+    # cap is crossed — exact regardless of whether the body carries a
+    # well-formed `--boundary--` epilogue, and it stops before the
+    # expensive per-part decoding for everything past the limit.
+    parts_seen = 0
+
     for part in parts[1:]:
         if part.strip() == b"--" or not part.strip():
             continue
+
+        parts_seen += 1
+        if parts_seen > max_parts:
+            from veloce.exceptions import RequestEntityTooLarge
+
+            raise RequestEntityTooLarge(f"multipart form exceeds the {max_parts}-part limit")
         if b"\r\n\r\n" not in part:
             continue
 
@@ -614,6 +647,13 @@ def parse_multipart_form(body: bytes, content_type: str) -> FormData:
         # Strip trailing \r\n
         if body_section.endswith(b"\r\n"):
             body_section = body_section[:-2]
+
+        if len(body_section) > max_part_size:
+            from veloce.exceptions import RequestEntityTooLarge
+
+            raise RequestEntityTooLarge(
+                f"multipart part exceeds the {max_part_size}-byte size limit"
+            )
 
         headers_text = header_section.decode("utf-8", errors="replace")
         disposition = ""
