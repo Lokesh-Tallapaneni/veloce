@@ -9,8 +9,43 @@ import os
 from collections.abc import AsyncIterator
 from http import HTTPStatus
 from typing import Any
+from urllib.parse import quote
 
 import orjson
+
+# Characters that must never appear in an HTTP header field name or value
+# — they enable response splitting / header injection (RFC 9110 §5.5).
+_ILLEGAL_HEADER_CHARS = ("\r", "\n", "\x00")
+
+
+def _reject_header_crlf(value: str, what: str) -> str:
+    """Reject CR, LF, or NUL in a header field name or value.
+
+    Untrusted data carrying these characters enables HTTP response
+    splitting / header injection. Raising — rather than silently
+    stripping — surfaces the bug at the offending call site.
+    """
+    for ch in _ILLEGAL_HEADER_CHARS:
+        if ch in value:
+            raise ValueError(f"{what} contains an illegal control character (CR, LF, or NUL)")
+    return value
+
+
+def _format_content_disposition(disposition: str, filename: str) -> str:
+    """Build a safe RFC 6266 ``Content-Disposition`` header value.
+
+    The filename is reduced to a quoted ASCII ``filename="..."`` form with
+    backslashes, double-quotes, and control characters neutralised, so a
+    crafted filename cannot break out of the header. When the original
+    name had non-ASCII characters, an RFC 5987 ``filename*=UTF-8''...``
+    parameter is appended for modern browsers.
+    """
+    ascii_name = filename.encode("ascii", "replace").decode("ascii")
+    safe_ascii = "".join("_" if (c in '"\\' or c < " " or c == "\x7f") else c for c in ascii_name)
+    value = f'{disposition}; filename="{safe_ascii}"'
+    if ascii_name != filename:  # the original had non-ASCII characters
+        value += f"; filename*=UTF-8''{quote(filename, safe='')}"
+    return value
 
 
 def _file_etag(path: str, size: int, mtime: float) -> str:
@@ -158,7 +193,17 @@ class Response:
         final_headers.update(self.headers)
 
         for key, value in final_headers.items():
-            parts.append(f"{key}: {value}\r\n")
+            if key.lower() == "set-cookie":
+                # One `Set-Cookie` dict entry may carry several cookies
+                # joined by the internal separator; emit and CRLF-validate
+                # each as its own header line.
+                for line in str(value).split("\r\nSet-Cookie: "):
+                    _reject_header_crlf(line, "Set-Cookie value")
+                    parts.append(f"Set-Cookie: {line}\r\n")
+            else:
+                _reject_header_crlf(str(key), "header name")
+                _reject_header_crlf(str(value), f"{key} header value")
+                parts.append(f"{key}: {value}\r\n")
         parts.append("\r\n")
 
         self._encoded = "".join(parts).encode("latin-1") + self.body
@@ -190,7 +235,13 @@ class Response:
         cookie is keyed to the top-level site, so embedded third-party
         contexts each get an isolated jar. `Partitioned` requires
         `Secure`, so it is only emitted when `secure=True`.
+
+        The cookie name and value are rejected if they contain CR, LF, or
+        NUL — untrusted data must not be able to inject additional cookies
+        or response headers.
         """
+        _reject_header_crlf(key, "cookie name")
+        _reject_header_crlf(value, "cookie value")
         cookie = f"{key}={value}; Path={path}"
         if max_age is not None:
             # `max_age` may be passed as a `timedelta`; coerce to
@@ -908,14 +959,7 @@ class Response:
         RFC 5987 `filename*=UTF-8''…` form for modern browsers.
         Returns the header value written.
         """
-        value = disposition
-        if filename:
-            ascii_name = filename.encode("ascii", "replace").decode("ascii")
-            value += f'; filename="{ascii_name}"'
-            if ascii_name != filename:
-                from urllib.parse import quote
-
-                value += f"; filename*=UTF-8''{quote(filename)}"
+        value = _format_content_disposition(disposition, filename) if filename else disposition
         self.headers["Content-Disposition"] = value
         self._encoded = None
         return value
@@ -1050,7 +1094,12 @@ class RedirectResponse(Response):
         headers: dict[str, str] | None = None,
     ) -> None:
         hdrs = headers or {}
-        hdrs["Location"] = url
+        # Reject CR/LF in the target and percent-encode it, so a crafted
+        # URL or Host header cannot inject extra response headers. The
+        # safe set keeps URL-structural characters (RFC 3986) and `%`
+        # so an already-encoded URL is not double-encoded.
+        _reject_header_crlf(url, "redirect URL")
+        hdrs["Location"] = quote(url, safe="/:?#[]@!$&'()*+,;=%~")
         super().__init__(
             status_code=status_code,
             body=b"",
@@ -1106,7 +1155,14 @@ class StreamingResponse(Response):
         }
         final_headers.update(self.headers)
         for key, value in final_headers.items():
-            parts.append(f"{key}: {value}\r\n")
+            if key.lower() == "set-cookie":
+                for line in str(value).split("\r\nSet-Cookie: "):
+                    _reject_header_crlf(line, "Set-Cookie value")
+                    parts.append(f"Set-Cookie: {line}\r\n")
+            else:
+                _reject_header_crlf(str(key), "header name")
+                _reject_header_crlf(str(value), f"{key} header value")
+                parts.append(f"{key}: {value}\r\n")
         parts.append("\r\n")
         return "".join(parts).encode("latin-1")
 
@@ -1143,7 +1199,9 @@ class FileResponse(Response):
         if filename:
             # `content_disposition_type` — "attachment" (force a
             # download dialog) or "inline" (render in the browser).
-            hdrs["Content-Disposition"] = f'{content_disposition_type}; filename="{filename}"'
+            hdrs["Content-Disposition"] = _format_content_disposition(
+                content_disposition_type, filename
+            )
 
         st = os.stat(path)
         if "Last-Modified" not in hdrs and "last-modified" not in hdrs:
@@ -1191,7 +1249,9 @@ class FileResponse(Response):
 
         hdrs = headers or {}
         if filename:
-            hdrs["Content-Disposition"] = f'{content_disposition_type}; filename="{filename}"'
+            hdrs["Content-Disposition"] = _format_content_disposition(
+                content_disposition_type, filename
+            )
         if "Last-Modified" not in hdrs and "last-modified" not in hdrs:
             from email.utils import formatdate
 

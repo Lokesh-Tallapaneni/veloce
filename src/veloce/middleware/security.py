@@ -32,7 +32,13 @@ class TrustedHostMiddleware(Middleware):
         )
         self._allow_all = "*" in self._exact
 
-    def _host_allowed(self, host: str) -> bool:
+    def is_host_allowed(self, host: str) -> bool:
+        """Whether `host` (bare hostname, no port) passes the allow-list.
+
+        Public so the WebSocket dispatch path can apply the same check —
+        a WebSocket handshake never reaches an HTTP middleware's
+        `process_request`.
+        """
         if self._allow_all or host in self._exact:
             return True
         # `*.example.com` matches `a.example.com`, `a.b.example.com`, but
@@ -43,7 +49,7 @@ class TrustedHostMiddleware(Middleware):
     async def process_request(self, request: Request) -> Response | None:
         # Strip port for matching; Host header may carry `example.com:8080`.
         host = request.headers.get("host", "").split(":", 1)[0].lower()
-        if not self._host_allowed(host):
+        if not self.is_host_allowed(host):
             return Response(status_code=400, body=b"Invalid host header")
         return None
 
@@ -55,15 +61,27 @@ class RateLimitMiddleware(Middleware):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self._buckets: dict[str, list[float]] = {}
+        # Timestamp of the last full eviction sweep — see `process_request`.
+        self._last_sweep = time.monotonic()
 
     async def process_request(self, request: Request) -> Response | None:
         client = request.client_host or "unknown"
         now = time.monotonic()
+        cutoff = now - self.window_seconds
+
+        # Periodic eviction: at most once per window, drop every bucket
+        # whose most recent timestamp has aged out. Without this the dict
+        # grows for the lifetime count of unique client IPs — an unbounded
+        # memory leak in a long-running, internet-facing deployment.
+        if now - self._last_sweep >= self.window_seconds:
+            self._buckets = {
+                ip: stamps for ip, stamps in self._buckets.items() if stamps and stamps[-1] > cutoff
+            }
+            self._last_sweep = now
 
         if client not in self._buckets:
             self._buckets[client] = []
 
-        cutoff = now - self.window_seconds
         self._buckets[client] = [t for t in self._buckets[client] if t > cutoff]
         bucket = self._buckets[client]
 

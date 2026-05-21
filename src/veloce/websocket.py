@@ -12,6 +12,7 @@ from typing import Any
 import orjson
 
 from veloce.exceptions import WebSocketDisconnect
+from veloce.http.response import _reject_header_crlf
 
 
 class WebSocketState(enum.IntEnum):
@@ -214,6 +215,22 @@ class WebSocket:
         headers: dict[str, str] | None = None,
     ) -> None:
         """Complete the WebSocket handshake."""
+        # Enforce the handshake state machine: accepting an already-accepted
+        # or already-closed connection is a programming error — surface it
+        # as a clear exception rather than re-running the handshake.
+        if self._accepted:
+            raise RuntimeError("WebSocket.accept(): connection is already accepted")
+        if self._closed:
+            raise RuntimeError("WebSocket.accept(): connection is already closed")
+        # Reject CR/LF in the negotiated subprotocol and any custom
+        # handshake headers — they are written into the 101 response.
+        if subprotocol:
+            _reject_header_crlf(subprotocol, "WebSocket subprotocol")
+        if headers:
+            for _k, _v in headers.items():
+                _reject_header_crlf(_k, "WebSocket header name")
+                _reject_header_crlf(_v, "WebSocket header value")
+
         if self._is_asgi:
             # ASGI: consume the connect message, then emit accept.
             msg = await self._asgi_receive()
@@ -253,6 +270,8 @@ class WebSocket:
 
     async def send_text(self, data: str) -> None:
         """Send a text frame."""
+        if not self._accepted:
+            raise RuntimeError("WebSocket.send_text(): call accept() before sending")
         if self._closed:
             raise WebSocketDisconnect()
         if self._is_asgi:
@@ -276,6 +295,8 @@ class WebSocket:
 
     async def send_bytes(self, data: bytes) -> None:
         """Send a binary frame."""
+        if not self._accepted:
+            raise RuntimeError("WebSocket.send_bytes(): call accept() before sending")
         if self._closed:
             raise WebSocketDisconnect()
         if self._is_asgi:

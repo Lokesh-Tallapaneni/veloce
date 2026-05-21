@@ -106,3 +106,17 @@ def test_openapi_schema_mutation_persists():
     # Second call returns same dict with mutation.
     again = app.openapi()
     assert again["info"]["x-logo"] == {"url": "https://example.com/logo.png"}
+
+
+def test_docs_url_none_disables_swagger_ui_only():
+    client = Veloce(docs_url=None).test_client()
+    assert client.get("/openapi.json").status_code == 200
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 200
+
+
+def test_redoc_url_none_disables_redoc_only():
+    client = Veloce(redoc_url=None).test_client()
+    assert client.get("/openapi.json").status_code == 200
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/docs").status_code == 200

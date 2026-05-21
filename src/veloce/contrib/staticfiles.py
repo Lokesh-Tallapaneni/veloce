@@ -107,6 +107,19 @@ class StaticFiles:
             if not exists:
                 return None
 
+        # Symlink safety: `safe_join` blocks `..` traversal but does not
+        # resolve symlinks. Dereference the real path and confirm it is
+        # still inside the served root — a symlink planted in the served
+        # directory must not expose files elsewhere on the filesystem.
+        real_path = await loop.run_in_executor(None, os.path.realpath, file_path)
+        real_root = await loop.run_in_executor(None, os.path.realpath, self.directory)
+        try:
+            contained = os.path.commonpath([real_path, real_root]) == real_root
+        except ValueError:
+            contained = False  # different drives / unrelated roots (Windows)
+        if not contained:
+            return Response(status_code=403, body=b"Forbidden")
+
         stat_result = await loop.run_in_executor(None, os.stat, file_path)
         mtime = stat_result.st_mtime
         cache_key = file_path

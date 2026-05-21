@@ -22,6 +22,7 @@ from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
     Response,
+    _reject_header_crlf,
 )
 from veloce.middleware import Middleware
 from veloce.routing.router import Router
@@ -2067,11 +2068,14 @@ class Veloce(Router):
         if self._openapi_url:
             from veloce.contrib.openapi import setup_openapi_routes
 
+            # Pass the configured URLs through unchanged — `None` means
+            # "do not register that UI", and must not be replaced by a
+            # default path.
             setup_openapi_routes(
                 self,
                 openapi_url=self._openapi_url,
-                docs_url=self._docs_url or "/docs",
-                redoc_url=self._redoc_url or "/redoc",
+                docs_url=self._docs_url,
+                redoc_url=self._redoc_url,
             )
 
     def openapi(self) -> dict[str, Any]:
@@ -2269,8 +2273,14 @@ class Veloce(Router):
             # `http.response.body` chunks instead of one buffered
             # payload. No `content-length`: the ASGI server frames it.
             if response.is_streamed:
+                # CRLF-validate every header value — the ASGI emit path
+                # bypasses `Response.encode()`, so the splitting guard must
+                # be applied here too.
                 stream_headers: list[tuple[bytes, bytes]] = [
-                    (b"content-type", response.content_type.encode()),
+                    (
+                        b"content-type",
+                        _reject_header_crlf(response.content_type, "content-type").encode(),
+                    ),
                 ]
                 for sk, sv in response.headers.items():
                     sk_lower = sk.lower()
@@ -2278,8 +2288,12 @@ class Veloce(Router):
                         continue
                     if sk_lower == "set-cookie":
                         for piece in sv.split("\r\nSet-Cookie:"):
-                            stream_headers.append((b"set-cookie", piece.strip().encode()))
+                            cookie = piece.strip()
+                            _reject_header_crlf(cookie, "Set-Cookie value")
+                            stream_headers.append((b"set-cookie", cookie.encode()))
                     else:
+                        _reject_header_crlf(sk, "header name")
+                        _reject_header_crlf(sv, f"{sk} header value")
                         stream_headers.append((sk_lower.encode(), sv.encode()))
                 await send(
                     {
@@ -2327,8 +2341,14 @@ class Veloce(Router):
             content_length = (
                 head_content_length if head_content_length is not None else len(body_out)
             )
+            # CRLF-validate every header value — the ASGI emit path
+            # bypasses `Response.encode()`, so the response-splitting
+            # guard must be applied here too.
             asgi_headers: list[tuple[bytes, bytes]] = [
-                (b"content-type", response.content_type.encode()),
+                (
+                    b"content-type",
+                    _reject_header_crlf(response.content_type, "content-type").encode(),
+                ),
                 (b"content-length", str(content_length).encode()),
             ]
             for k, v in response.headers.items():
@@ -2339,8 +2359,12 @@ class Veloce(Router):
                     # raw HTTP/1.1 wire path. Split it back into per-cookie
                     # ASGI tuples regardless of how many cookies are there.
                     for piece in v.split("\r\nSet-Cookie:"):
-                        asgi_headers.append((b"set-cookie", piece.strip().encode()))
+                        cookie = piece.strip()
+                        _reject_header_crlf(cookie, "Set-Cookie value")
+                        asgi_headers.append((b"set-cookie", cookie.encode()))
                 else:
+                    _reject_header_crlf(k, "header name")
+                    _reject_header_crlf(v, f"{k} header value")
                     asgi_headers.append((k_lower.encode(), v.encode()))
 
             await send(
@@ -2363,6 +2387,22 @@ class Veloce(Router):
             # from the ASGI receive/send pair. Path params are coerced
             # the same way they are for HTTP.
             from veloce.websocket import WebSocket
+
+            # Host validation for WebSocket handshakes — an HTTP middleware
+            # such as TrustedHostMiddleware never sees a `websocket` scope,
+            # so apply any host allow-list directly here.
+            ws_host = ""
+            for _hk, _hv in scope.get("headers", []):
+                if _hk == b"host":
+                    ws_host = _hv.decode("latin-1").split(":", 1)[0].lower()
+                    break
+            for _mw in self._middlewares:
+                _host_check = getattr(_mw, "is_host_allowed", None)
+                if _host_check is not None and not _host_check(ws_host):
+                    msg = await receive()
+                    if msg["type"] == "websocket.connect":
+                        await send({"type": "websocket.close", "code": 1008})
+                    return
 
             ws_match = self.match("WEBSOCKET", scope.get("path", "/"))
             if ws_match is None:

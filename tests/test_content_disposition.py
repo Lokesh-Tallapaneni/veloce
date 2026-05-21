@@ -39,3 +39,15 @@ def test_returns_header_value():
     resp = Response()
     returned = resp.set_content_disposition("attachment", filename="x.txt")
     assert returned == resp.headers["Content-Disposition"]
+
+
+def test_file_response_neutralises_unsafe_filename(tmp_path):
+    from veloce import FileResponse
+
+    f = tmp_path / "d.bin"
+    f.write_bytes(b"x")
+    resp = FileResponse(str(f), filename='a"\r\nX-Injected: 1.txt')
+    cd = resp.headers["Content-Disposition"]
+    assert "\r" not in cd and "\n" not in cd
+    # The embedded double-quote is neutralised — only the wrapping quotes remain.
+    assert cd.count('"') == 2

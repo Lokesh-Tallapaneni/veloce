@@ -893,3 +893,22 @@ def test_eventsource_response_accepts_serversentevent_objects():
     assert "text/event-stream" in resp.content_type
     assert b"data: hello" in resp.body
     assert b"event: greeting" in resp.body
+
+
+async def test_rate_limit_middleware_evicts_stale_buckets():
+    """The bucket dict must not grow unbounded with unique client IPs."""
+    import time as _time
+
+    mw = RateLimitMiddleware(max_requests=1000, window_seconds=1)
+    now = _time.monotonic()
+    stale = now - 3600
+    mw._buckets = {f"stale-{i}": [stale] for i in range(100)}
+    mw._buckets["fresh"] = [now]  # a live bucket — must survive the sweep
+    mw._last_sweep = stale  # force the next request to trigger a sweep
+
+    req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    await mw.process_request(req)
+
+    # The 100 stale buckets are evicted; the live bucket is kept.
+    assert not any(k.startswith("stale-") for k in mw._buckets)
+    assert "fresh" in mw._buckets
