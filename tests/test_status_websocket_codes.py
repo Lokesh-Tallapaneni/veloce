@@ -52,3 +52,10 @@ def test_codes_usable_as_close_code():
     # is expected.
     assert isinstance(status.WS_1000_NORMAL_CLOSURE, int)
     assert status.WS_1001_GOING_AWAY + 0 == 1001
+
+
+def test_http_status_iana_parity_codes():
+    """The three standard HTTP codes added for full IANA parity."""
+    assert status.HTTP_208_ALREADY_REPORTED == 208
+    assert status.HTTP_226_IM_USED == 226
+    assert status.HTTP_421_MISDIRECTED_REQUEST == 421

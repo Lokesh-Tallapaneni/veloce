@@ -14,6 +14,20 @@ from typing import Any, get_args, get_origin
 
 from pydantic import ValidationError as PydanticValidationError
 
+from veloce._handler_plan import (
+    K_BG_TASKS,
+    K_BODY_MODEL,
+    K_DEPENDS,
+    K_PARAM_MARKER,
+    K_PATH,
+    K_QUERY,
+    K_QUERY_LIST,
+    K_REQUEST,
+    K_RESPONSE,
+    K_SECURITY_SCOPES,
+    K_UPLOAD_FILE,
+)
+from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
 from veloce.http.request import Request
 
@@ -228,24 +242,6 @@ class DependencyResolver:
         request: Request,
         path_params: dict[str, str],
     ) -> dict[str, Any]:
-        # Local imports of kind tags + types: import once per call rather than
-        # per slot. These are module-level constants; the local binding is a
-        # micro-opt that keeps the per-slot branch costs minimal.
-        from veloce._handler_plan import (
-            K_BG_TASKS,
-            K_BODY_MODEL,
-            K_DEPENDS,
-            K_PARAM_MARKER,
-            K_PATH,
-            K_QUERY,
-            K_QUERY_LIST,
-            K_REQUEST,
-            K_RESPONSE,
-            K_SECURITY_SCOPES,
-            K_UPLOAD_FILE,
-        )
-        from veloce.background import BackgroundTasks
-
         kwargs: dict[str, Any] = {}
 
         for slot in slots:

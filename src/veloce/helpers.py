@@ -512,8 +512,13 @@ class _RequestGlobals:
         return self._get_store().setdefault(name, default)
 
     def _reset(self) -> None:
-        """Reset g for a new request."""
-        self._ctx_var.set({})
+        """Reset g for a new request.
+
+        Clears the var to `None` rather than binding a fresh dict —
+        `_get_store` allocates lazily on first access, so a request whose
+        handler never touches `g` pays no allocation.
+        """
+        self._ctx_var.set(None)
 
 
 # Singleton

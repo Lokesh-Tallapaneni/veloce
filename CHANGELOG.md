@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security helpers** — HTTP Basic / Bearer / Digest, API key schemes,
   OAuth2 password and authorization-code flows, password hashing, and
   signed-value serialisation.
+- `veloce.status` gains `HTTP_208_ALREADY_REPORTED`, `HTTP_226_IM_USED`,
+  and `HTTP_421_MISDIRECTED_REQUEST` for full IANA HTTP status coverage.
 
 ### Changed
 
@@ -65,9 +67,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `functools.partial` wrappers, so their parameter types are coerced.
 - The in-memory `TestClient` accepts WebSocket connect paths that include a
   query string.
+- `WebSocket.send()` — the raw ASGI-message escape hatch — now enforces the
+  same handshake state machine as `send_text` / `send_bytes`: sending before
+  `accept()` or after `close()` raises instead of proceeding silently.
 
 ### Performance
 
 - Per-request reflection eliminated from the hot path: handler
   signatures are inspected once at registration into a frozen
   resolution plan.
+- Static route lookup is O(1) per tree level — static child nodes are
+  indexed in a dict instead of scanned linearly, so match cost no longer
+  grows with the number of sibling routes.
+- Request dispatch matches each route once per request instead of twice.
+- The dependency resolver no longer re-imports its slot-kind constants on
+  every call, and `_call_handler` skips a per-request
+  coroutine-function probe by reading the precomputed handler plan.
+- `StaticFiles` resolves the served root's real path once at construction
+  rather than on every request; the request-scoped `g` store is allocated
+  lazily, so handlers that never touch `g` pay no allocation.

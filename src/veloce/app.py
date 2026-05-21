@@ -1525,13 +1525,15 @@ class Veloce(Router):
                 if early_response is not None:
                     return await self._run_response_middleware(request, early_response)
 
-            # Pre-match the route so `request.endpoint` is populated before
-            # before_request hooks run, so a hook can read
-            # `request.endpoint` to gate on the route name.
-            _pre_match = self.match(request.method, request.path)
-            if _pre_match is not None:
-                request.endpoint = _pre_match.route_info.name
-                request._state["url_rule"] = _pre_match.route_info.path_template
+            # Match the route once. `request.endpoint` is populated here so
+            # before_request hooks can gate on the route name; the same
+            # match object is reused for dispatch below.
+            _matched_path = request.path
+            _matched_method = request.method
+            match = self.match(request.method, request.path)
+            if match is not None:
+                request.endpoint = match.route_info.name
+                request._state["url_rule"] = match.route_info.path_template
 
             # Run before_request hooks
             for hook in self._before_request_hooks:
@@ -1564,8 +1566,11 @@ class Veloce(Router):
                 if response is not None:
                     return await self._run_response_middleware(request, response)
 
-            # Route matching
-            match = self.match(request.method, request.path)
+            # Route matching — reuse the match taken above unless a
+            # before_request hook rewrote the request path or method, in
+            # which case the routing inputs changed and we must re-match.
+            if request.path != _matched_path or request.method != _matched_method:
+                match = self.match(request.method, request.path)
 
             # Subdomain constraint check — if the matched route declares a
             # `subdomain`, the request's host must be `{subdomain}.{SERVER_NAME}`.
@@ -1660,7 +1665,13 @@ class Veloce(Router):
                     ],
                 )
 
-            result = await self._call_handler(match.route_info.handler, kwargs)
+            result = await self._call_handler(
+                route_info.handler,
+                kwargs,
+                is_coro=(
+                    route_info.handler_plan.is_coro if route_info.handler_plan is not None else None
+                ),
+            )
 
             # Apply response_model validation + dump flags before coercion.
             # The handler may return a dict/BaseModel/list; if the route
@@ -1919,17 +1930,24 @@ class Veloce(Router):
         cache[fn] = result
         return result
 
-    async def _call_handler(self, handler: Callable, kwargs: dict) -> Any:
+    async def _call_handler(
+        self, handler: Callable, kwargs: dict, is_coro: bool | None = None
+    ) -> Any:
         """Call a handler, supporting both sync and async.
 
         Sync handlers are offloaded to the default thread pool executor
-        to prevent blocking the event loop.
+        to prevent blocking the event loop. When the caller already knows
+        whether the handler is a coroutine — the handler plan precomputes
+        it at registration — it passes `is_coro` to skip the per-request
+        `inspect.iscoroutinefunction` probe.
         """
-        if inspect.iscoroutinefunction(handler):
+        if is_coro is None:
+            is_coro = inspect.iscoroutinefunction(handler)
+        if is_coro:
             return await handler(**kwargs)
         # Run sync handlers in executor to avoid blocking the event loop
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: handler(**kwargs))
+        return await loop.run_in_executor(None, functools.partial(handler, **kwargs))
 
     async def _call_exc_handler(
         self, handler: Callable, request: Request, exc: BaseException
