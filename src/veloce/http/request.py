@@ -992,12 +992,16 @@ class Request:
         return False
 
     async def stream(self) -> Any:
-        """Async-iterate the request body — ASGI shape.
+        """Async-iterate the request body in bounded chunks — ASGI shape.
 
-        Veloce buffers the whole body before dispatch, so this yields
-        the entire body as a single chunk (then terminates). It exists
-        so handlers written against the streaming API
-        (`async for chunk in request.stream(): ...`) keep working unchanged.
+        The body is buffered before dispatch, so the chunks are sliced
+        from that buffer rather than pulled from the socket; each yielded
+        slice is capped at 64 KiB so a handler written against the
+        streaming API (`async for chunk in request.stream(): ...`) can
+        process a large body incrementally without materialising a second
+        full copy of it.
         """
-        if self.body:
-            yield self.body
+        body = self.body
+        chunk_size = 65536
+        for offset in range(0, len(body), chunk_size):
+            yield body[offset : offset + chunk_size]

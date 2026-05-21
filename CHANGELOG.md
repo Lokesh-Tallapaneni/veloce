@@ -101,6 +101,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SecurityScopes` support, and path parameters are coerced to their
   annotated type — previously WebSocket DI used a separate, weaker
   resolver that supported none of these.
+- An uploaded file is now backed by a `SpooledTemporaryFile`: each
+  multipart part streams into one as it is parsed, staying in memory
+  while small and rolling over to a real temp file on disk once it grows
+  past 1 MiB. A large upload no longer holds two or three full copies of
+  itself in RAM (raw body + per-part `bytearray` + `BytesIO`).
+- `request.stream()` now yields the body in bounded 64 KiB chunks instead
+  of one chunk covering the whole body, so a handler can process a large
+  body incrementally.
 
 ### Fixed
 
