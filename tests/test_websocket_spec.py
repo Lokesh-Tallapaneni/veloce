@@ -203,3 +203,9 @@ async def test_websocket_double_accept_raises():
     ws._accepted = True
     with pytest.raises(RuntimeError, match="already accepted"):
         await ws.accept()
+
+
+async def test_websocket_accept_rejects_crlf_in_custom_header():
+    ws = WebSocket(transport=None, headers={})
+    with pytest.raises(ValueError):
+        await ws.accept(headers={"X-Evil": "a\r\nInjected: 1"})

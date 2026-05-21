@@ -900,12 +900,15 @@ async def test_rate_limit_middleware_evicts_stale_buckets():
     import time as _time
 
     mw = RateLimitMiddleware(max_requests=1000, window_seconds=1)
-    stale = _time.monotonic() - 3600
-    mw._buckets = {f"ip-{i}": [stale] for i in range(100)}
+    now = _time.monotonic()
+    stale = now - 3600
+    mw._buckets = {f"stale-{i}": [stale] for i in range(100)}
+    mw._buckets["fresh"] = [now]  # a live bucket — must survive the sweep
     mw._last_sweep = stale  # force the next request to trigger a sweep
 
     req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
     await mw.process_request(req)
 
-    # All 100 stale buckets evicted; only the current client's bucket remains.
-    assert len(mw._buckets) <= 1
+    # The 100 stale buckets are evicted; the live bucket is kept.
+    assert not any(k.startswith("stale-") for k in mw._buckets)
+    assert "fresh" in mw._buckets

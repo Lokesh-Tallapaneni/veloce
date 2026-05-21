@@ -22,6 +22,7 @@ from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
     Response,
+    _reject_header_crlf,
 )
 from veloce.middleware import Middleware
 from veloce.routing.router import Router
@@ -2272,8 +2273,14 @@ class Veloce(Router):
             # `http.response.body` chunks instead of one buffered
             # payload. No `content-length`: the ASGI server frames it.
             if response.is_streamed:
+                # CRLF-validate every header value — the ASGI emit path
+                # bypasses `Response.encode()`, so the splitting guard must
+                # be applied here too.
                 stream_headers: list[tuple[bytes, bytes]] = [
-                    (b"content-type", response.content_type.encode()),
+                    (
+                        b"content-type",
+                        _reject_header_crlf(response.content_type, "content-type").encode(),
+                    ),
                 ]
                 for sk, sv in response.headers.items():
                     sk_lower = sk.lower()
@@ -2281,8 +2288,12 @@ class Veloce(Router):
                         continue
                     if sk_lower == "set-cookie":
                         for piece in sv.split("\r\nSet-Cookie:"):
-                            stream_headers.append((b"set-cookie", piece.strip().encode()))
+                            cookie = piece.strip()
+                            _reject_header_crlf(cookie, "Set-Cookie value")
+                            stream_headers.append((b"set-cookie", cookie.encode()))
                     else:
+                        _reject_header_crlf(sk, "header name")
+                        _reject_header_crlf(sv, f"{sk} header value")
                         stream_headers.append((sk_lower.encode(), sv.encode()))
                 await send(
                     {
@@ -2330,8 +2341,14 @@ class Veloce(Router):
             content_length = (
                 head_content_length if head_content_length is not None else len(body_out)
             )
+            # CRLF-validate every header value — the ASGI emit path
+            # bypasses `Response.encode()`, so the response-splitting
+            # guard must be applied here too.
             asgi_headers: list[tuple[bytes, bytes]] = [
-                (b"content-type", response.content_type.encode()),
+                (
+                    b"content-type",
+                    _reject_header_crlf(response.content_type, "content-type").encode(),
+                ),
                 (b"content-length", str(content_length).encode()),
             ]
             for k, v in response.headers.items():
@@ -2342,8 +2359,12 @@ class Veloce(Router):
                     # raw HTTP/1.1 wire path. Split it back into per-cookie
                     # ASGI tuples regardless of how many cookies are there.
                     for piece in v.split("\r\nSet-Cookie:"):
-                        asgi_headers.append((b"set-cookie", piece.strip().encode()))
+                        cookie = piece.strip()
+                        _reject_header_crlf(cookie, "Set-Cookie value")
+                        asgi_headers.append((b"set-cookie", cookie.encode()))
                 else:
+                    _reject_header_crlf(k, "header name")
+                    _reject_header_crlf(v, f"{k} header value")
                     asgi_headers.append((k_lower.encode(), v.encode()))
 
             await send(

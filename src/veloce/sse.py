@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from veloce.http.response import Response
+from veloce.http.response import Response, _reject_header_crlf
 
 
 class ServerSentEvent:
@@ -110,6 +110,7 @@ class EventSourceResponse(Response):
             "Transfer-Encoding": "chunked",
             **self.headers,
         }.items():
+            _reject_header_crlf(str(value), f"{key} header value")
             parts.append(f"{key}: {value}\r\n")
         parts.append("\r\n")
         transport.write("".join(parts).encode("latin-1"))

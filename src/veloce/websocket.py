@@ -12,6 +12,7 @@ from typing import Any
 import orjson
 
 from veloce.exceptions import WebSocketDisconnect
+from veloce.http.response import _reject_header_crlf
 
 
 class WebSocketState(enum.IntEnum):
@@ -221,6 +222,15 @@ class WebSocket:
             raise RuntimeError("WebSocket.accept(): connection is already accepted")
         if self._closed:
             raise RuntimeError("WebSocket.accept(): connection is already closed")
+        # Reject CR/LF in the negotiated subprotocol and any custom
+        # handshake headers — they are written into the 101 response.
+        if subprotocol:
+            _reject_header_crlf(subprotocol, "WebSocket subprotocol")
+        if headers:
+            for _k, _v in headers.items():
+                _reject_header_crlf(_k, "WebSocket header name")
+                _reject_header_crlf(_v, "WebSocket header value")
+
         if self._is_asgi:
             # ASGI: consume the connect message, then emit accept.
             msg = await self._asgi_receive()
