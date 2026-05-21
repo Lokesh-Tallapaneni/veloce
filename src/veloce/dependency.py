@@ -11,6 +11,7 @@ import contextlib
 import functools
 import inspect
 from collections.abc import Callable
+from enum import Enum
 from typing import Any, Literal, get_args, get_origin
 
 from pydantic import TypeAdapter
@@ -121,8 +122,12 @@ def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> 
         with contextlib.suppress(ValueError):
             candidates.append(float(value))
     for member in members:
+        # An `Enum` member is matched against its underlying value, so a
+        # `str` / `int`-backed enum member still accepts the plain request
+        # value while the original member object is what gets returned.
+        comparand = member.value if isinstance(member, Enum) else member
         for candidate in candidates:
-            if type(candidate) is type(member) and candidate == member:
+            if type(candidate) is type(comparand) and candidate == comparand:
                 return member
     raise RequestValidationError(
         [

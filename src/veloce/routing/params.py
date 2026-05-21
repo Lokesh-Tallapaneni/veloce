@@ -126,9 +126,10 @@ class _ParamBase:
             if self.lt is not None and value >= self.lt:
                 raise ValueError(f"{name} must be < {self.lt}")
             if self.multiple_of is not None:
-                # `float()` first: a `Decimal` value cannot be divided by a
-                # `float` multiple directly (Python forbids the mixed type).
-                quotient = float(value) / self.multiple_of
+                # Coerce both operands to `float`: `Decimal` cannot be mixed
+                # with `float` in arithmetic, and either side may be either
+                # type (a `Decimal` value, or a `Decimal` `multiple_of`).
+                quotient = float(value) / float(self.multiple_of)
                 if abs(quotient - round(quotient)) > 1e-9:
                     raise ValueError(f"{name} must be a multiple of {self.multiple_of}")
 

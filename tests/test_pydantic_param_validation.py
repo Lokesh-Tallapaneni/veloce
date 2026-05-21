@@ -335,3 +335,44 @@ async def test_decimal_param_ge_constraint_enforced():
     assert ok.status_code == 200
     bad = await app.handle_request(make_request(path="/p", query_string="amount=-1"))
     assert bad.status_code == 422
+
+
+async def test_decimal_param_multiple_of_constraint_enforced():
+    """A `Decimal` `multiple_of` must not raise — both operands coerce."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/m")
+    async def m(amount: Decimal = Query(multiple_of=Decimal("0.5"))):
+        return {"amount": str(amount)}
+
+    ok = await app.handle_request(make_request(path="/m", query_string="amount=1.5"))
+    assert ok.status_code == 200
+    bad = await app.handle_request(make_request(path="/m", query_string="amount=1.7"))
+    assert bad.status_code == 422
+
+
+# ── Literal of Enum members ───────────────────────────────────────────
+
+
+async def test_str_enum_literal_query_param_accepts_member():
+    """`Literal[StrEnum.member, ...]` matches the plain request string."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/co")
+    async def co(c: Literal[Color.red, Color.green] = Query(default=Color.red)):
+        return {"value": c.value}
+
+    resp = await app.handle_request(make_request(path="/co", query_string="c=green"))
+    assert resp.status_code == 200
+    assert b'"green"' in resp.body
+
+
+async def test_str_enum_literal_query_param_rejects_non_member():
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/co")
+    async def co(c: Literal[Color.red, Color.green] = Query(default=Color.red)):
+        return {"value": c.value}
+
+    resp = await app.handle_request(make_request(path="/co", query_string="c=purple"))
+    assert resp.status_code == 422
