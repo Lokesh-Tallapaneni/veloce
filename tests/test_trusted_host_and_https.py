@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import HTTPSRedirectMiddleware, TrustedHostMiddleware, Veloce
 from veloce.testclient import TestClient
 
@@ -157,3 +159,25 @@ def test_redirects_when_neither_scope_nor_header_says_https():
     client = TestClient(_make_https_app())
     resp = client.get("/x", headers={"host": "example.com"})
     assert resp.status_code == 308
+
+
+def test_trusted_host_middleware_rejects_websocket_from_bad_host():
+    app = Veloce(openapi_url=None)
+    app.add_middleware(TrustedHostMiddleware(allowed_hosts=["good.example"]))
+
+    @app.websocket("/ws")
+    async def handler(ws):
+        await ws.accept()
+        await ws.send_text("hi")
+        await ws.close()
+
+    client = app.test_client()
+
+    with client.websocket_connect("/ws", headers={"host": "good.example"}) as conn:
+        assert conn.receive_text() == "hi"
+
+    with (
+        pytest.raises(RuntimeError),
+        client.websocket_connect("/ws", headers={"host": "evil.example"}),
+    ):
+        pass

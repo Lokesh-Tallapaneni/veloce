@@ -2067,11 +2067,14 @@ class Veloce(Router):
         if self._openapi_url:
             from veloce.contrib.openapi import setup_openapi_routes
 
+            # Pass the configured URLs through unchanged — `None` means
+            # "do not register that UI", and must not be replaced by a
+            # default path.
             setup_openapi_routes(
                 self,
                 openapi_url=self._openapi_url,
-                docs_url=self._docs_url or "/docs",
-                redoc_url=self._redoc_url or "/redoc",
+                docs_url=self._docs_url,
+                redoc_url=self._redoc_url,
             )
 
     def openapi(self) -> dict[str, Any]:
@@ -2363,6 +2366,22 @@ class Veloce(Router):
             # from the ASGI receive/send pair. Path params are coerced
             # the same way they are for HTTP.
             from veloce.websocket import WebSocket
+
+            # Host validation for WebSocket handshakes — an HTTP middleware
+            # such as TrustedHostMiddleware never sees a `websocket` scope,
+            # so apply any host allow-list directly here.
+            ws_host = ""
+            for _hk, _hv in scope.get("headers", []):
+                if _hk == b"host":
+                    ws_host = _hv.decode("latin-1").split(":", 1)[0].lower()
+                    break
+            for _mw in self._middlewares:
+                _host_check = getattr(_mw, "is_host_allowed", None)
+                if _host_check is not None and not _host_check(ws_host):
+                    msg = await receive()
+                    if msg["type"] == "websocket.connect":
+                        await send({"type": "websocket.close", "code": 1008})
+                    return
 
             ws_match = self.match("WEBSOCKET", scope.get("path", "/"))
             if ws_match is None:

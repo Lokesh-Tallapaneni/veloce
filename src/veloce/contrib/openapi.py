@@ -595,10 +595,17 @@ REDOC_HTML = """<!DOCTYPE html>
 
 
 def setup_openapi_routes(
-    app: Any, openapi_url: str = "/openapi.json", docs_url: str = "/docs", redoc_url: str = "/redoc"
+    app: Any,
+    openapi_url: str = "/openapi.json",
+    docs_url: str | None = "/docs",
+    redoc_url: str | None = "/redoc",
 ) -> None:
-    """Register OpenAPI schema and documentation routes."""
-    _cached_schema: dict[str, Any] = {}
+    """Register OpenAPI schema and documentation routes.
+
+    `docs_url` / `redoc_url` of `None` disable the Swagger UI / ReDoc UI
+    respectively — the JSON schema route is still registered, so tooling
+    can consume the schema without a public interactive explorer.
+    """
 
     @app.get(openapi_url, tags=["openapi"], name="openapi_schema")
     async def openapi_schema(request: Any):
@@ -606,7 +613,6 @@ def setup_openapi_routes(
         # `app.openapi_schema` flows to the JSON endpoint and Swagger UI.
         return JSONResponse(app.openapi())
 
-    @app.get(docs_url, tags=["openapi"], name="swagger_ui")
     async def swagger_ui(request: Any):
         import json
 
@@ -631,7 +637,13 @@ def setup_openapi_routes(
         )
         return HTMLResponse(html)
 
-    @app.get(redoc_url, tags=["openapi"], name="redoc_ui")
     async def redoc_ui(request: Any):
         html = REDOC_HTML.format(title=app.title, openapi_url=openapi_url)
         return HTMLResponse(html)
+
+    # Register each interactive UI only when its URL is set — a `None`
+    # disables that UI while leaving the JSON schema route in place.
+    if docs_url is not None:
+        app.get(docs_url, tags=["openapi"], name="swagger_ui")(swagger_ui)
+    if redoc_url is not None:
+        app.get(redoc_url, tags=["openapi"], name="redoc_ui")(redoc_ui)

@@ -214,6 +214,13 @@ class WebSocket:
         headers: dict[str, str] | None = None,
     ) -> None:
         """Complete the WebSocket handshake."""
+        # Enforce the handshake state machine: accepting an already-accepted
+        # or already-closed connection is a programming error — surface it
+        # as a clear exception rather than re-running the handshake.
+        if self._accepted:
+            raise RuntimeError("WebSocket.accept(): connection is already accepted")
+        if self._closed:
+            raise RuntimeError("WebSocket.accept(): connection is already closed")
         if self._is_asgi:
             # ASGI: consume the connect message, then emit accept.
             msg = await self._asgi_receive()
@@ -253,6 +260,8 @@ class WebSocket:
 
     async def send_text(self, data: str) -> None:
         """Send a text frame."""
+        if not self._accepted:
+            raise RuntimeError("WebSocket.send_text(): call accept() before sending")
         if self._closed:
             raise WebSocketDisconnect()
         if self._is_asgi:
@@ -276,6 +285,8 @@ class WebSocket:
 
     async def send_bytes(self, data: bytes) -> None:
         """Send a binary frame."""
+        if not self._accepted:
+            raise RuntimeError("WebSocket.send_bytes(): call accept() before sending")
         if self._closed:
             raise WebSocketDisconnect()
         if self._is_asgi:

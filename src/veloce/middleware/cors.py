@@ -103,6 +103,11 @@ class CORSMiddleware(Middleware):
         # Honour both shapes so common patterns work; we still echo only
         # ACR-Headers when that header is actually present.
         if request.method == "OPTIONS" and origin:
+            # A preflight from a disallowed origin gets a diagnostic 400
+            # rather than a bare 204 — the browser would block it either
+            # way, but 400 makes the rejection visible to developers.
+            if not self._origin_allowed(origin):
+                return Response(status_code=400, body=b"Disallowed CORS origin")
             response = Response(status_code=204, body=b"")
             self._add_cors_headers(response, origin, preflight=True)
             # Echo the requested headers (filtered) and method.

@@ -154,9 +154,9 @@ def test_preflight_with_wildcard_headers_echoes_requested():
     assert resp.headers.get("access-control-allow-headers") == "X-One, X-Two"
 
 
-def test_preflight_from_disallowed_origin_omits_allow_headers():
-    """A preflight from a disallowed origin still returns 204 (browsers
-    enforce the block) but carries no Access-Control-Allow-* headers."""
+def test_preflight_from_disallowed_origin_is_rejected():
+    """A preflight from a disallowed origin gets a diagnostic 400 and no
+    Access-Control-Allow-* headers."""
     client = TestClient(_make_app(allow_origins=["http://a.example"]))
     resp = client.options(
         "/x",
@@ -165,7 +165,7 @@ def test_preflight_from_disallowed_origin_omits_allow_headers():
             "access-control-request-method": "POST",
         },
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 400
     assert resp.headers.get("access-control-allow-origin") is None
 
 

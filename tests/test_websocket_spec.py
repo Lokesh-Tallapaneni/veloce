@@ -186,3 +186,20 @@ async def test_close_idempotent():
     n_writes_after_first = len(transport.writes)
     await ws.close(code=1001)
     assert len(transport.writes) == n_writes_after_first
+
+
+async def test_websocket_send_before_accept_raises():
+    from veloce.websocket import WebSocket
+
+    ws = WebSocket(transport=None, headers={})
+    with pytest.raises(RuntimeError, match="accept"):
+        await ws.send_text("hello")
+
+
+async def test_websocket_double_accept_raises():
+    from veloce.websocket import WebSocket
+
+    ws = WebSocket(transport=None, headers={})
+    ws._accepted = True
+    with pytest.raises(RuntimeError, match="already accepted"):
+        await ws.accept()
