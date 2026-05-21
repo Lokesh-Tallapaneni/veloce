@@ -166,3 +166,36 @@ def test_no_response_model_is_a_passthrough():
 
     body = TestClient(app).get("/raw").json()
     assert body == {"x": 1, "y": 2}
+
+
+# ── list[Model] fast path (P-5) ──────────────────────────────────────
+
+
+def test_response_model_list_of_target_model_instances():
+    """`list[Model]` with handler-returned instances of the target model —
+    the fast path dumps them directly without a re-validation round-trip."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/users", response_model=list[_UserPublic])
+    async def users():
+        return [_UserPublic(id=1, name="alice"), _UserPublic(id=2, name="bob")]
+
+    body = TestClient(app).get("/users").json()
+    assert body == [{"id": 1, "name": "alice"}, {"id": 2, "name": "bob"}]
+
+
+def test_response_model_list_exclude_unset_per_element():
+    """`exclude_unset` applies per element: the fast path keeps each
+    instance's fields-set markers, which a validate round-trip would erase."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    class M(BaseModel):
+        a: str = "default-a"
+        b: str = "default-b"
+
+    @app.get("/items", response_model=list[M], response_model_exclude_unset=True)
+    async def items():
+        return [M(a="x"), M(b="y")]  # each leaves one field unset
+
+    body = TestClient(app).get("/items").json()
+    assert body == [{"a": "x"}, {"b": "y"}]

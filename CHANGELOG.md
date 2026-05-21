@@ -105,6 +105,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CORSMiddleware` precomputes its origin allow-list as a frozenset and a
   lowercased header allow-set at construction, so per-request CORS checks
   are O(1) instead of scanning a list.
+- `Jinja2Templates` `auto_reload` now follows the bound app's `debug`
+  flag when left unset — production rendering skips the per-render
+  template `stat` syscall. Pass an explicit `auto_reload=` to pin it.
+- `response_model=list[Model]` dumps a handler-returned element that is
+  already an instance of the target model directly, skipping a
+  re-validation round-trip (and correctly preserving per-element
+  `exclude_unset`, matching the scalar `response_model` path).
+- The ASGI entry point decodes request headers via a list comprehension
+  rather than a generator, trimming a per-header generator-frame resume.
 
 ### Security
 

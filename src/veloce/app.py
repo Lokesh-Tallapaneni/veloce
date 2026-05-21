@@ -2050,7 +2050,18 @@ class Veloce(Router):
                 from pydantic import BaseModel as _BM
 
                 if isinstance(inner, type) and issubclass(inner, _BM):
-                    return [inner.model_validate(item).model_dump(**dump_kwargs) for item in result]
+                    dumped: list[Any] = []
+                    for item in result:
+                        # Fast path: an element already of the target model
+                        # is dumped directly — skipping a re-validation
+                        # round-trip and preserving the fields-set markers
+                        # that `exclude_unset` reads (matching the scalar
+                        # branch below).
+                        if isinstance(item, inner):
+                            dumped.append(item.model_dump(**dump_kwargs))
+                        else:
+                            dumped.append(inner.model_validate(item).model_dump(**dump_kwargs))
+                    return dumped
             return result
 
         # Scalar Pydantic model.
@@ -2362,8 +2373,12 @@ class Veloce(Router):
             # tuple list so duplicate headers (Set-Cookie, etc.) are preserved.
             from veloce.http.datastructures import Headers
 
+            # Ingest the raw ASGI byte pairs as a list rather than a
+            # generator — `CIMultiDict` consumes the list in one tight
+            # loop, avoiding a generator-frame resume per header while
+            # keeping duplicate-header and case-insensitive semantics.
             headers = Headers(
-                (k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", [])
+                [(k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", [])]
             )
 
             # Enforce MAX_CONTENT_LENGTH while the body is still being
