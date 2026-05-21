@@ -114,6 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `exclude_unset`, matching the scalar `response_model` path).
 - The ASGI entry point decodes request headers via a list comprehension
   rather than a generator, trimming a per-header generator-frame resume.
+- A route whose handler takes no injected parameters and declares no
+  dependencies is now dispatched through a trivial-route fast path that
+  skips the dependency resolver entirely instead of resolving to `{}`.
 
 ### Security
 

@@ -1698,12 +1698,22 @@ class Veloce(Router):
             resolver._overrides = self._dependency_overrides
             route_info = match.route_info
             if route_info.handler_plan is not None:
-                kwargs = await resolver.resolve_plan(
-                    route_info.handler_plan,
-                    request,
-                    match.path_params,
-                    route_info.route_dep_plans,
-                )
+                if route_info.is_trivial_plan:
+                    # Trivial-route executor: the handler takes no injected
+                    # parameters and the route declares no dependencies, so
+                    # the dependency subsystem has nothing to produce. Skip
+                    # it entirely — just clear the shared resolver's
+                    # per-request state — instead of awaiting a resolve that
+                    # would return `{}`.
+                    resolver.reset()
+                    kwargs = {}
+                else:
+                    kwargs = await resolver.resolve_plan(
+                        route_info.handler_plan,
+                        request,
+                        match.path_params,
+                        route_info.route_dep_plans,
+                    )
             else:
                 kwargs = await resolver.resolve(
                     route_info.handler,

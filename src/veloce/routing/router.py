@@ -83,6 +83,7 @@ class RouteInfo:
         "callbacks",
         "handler_plan",
         "route_dep_plans",
+        "is_trivial_plan",
         "subdomain",
         "host",
     )
@@ -172,6 +173,11 @@ class RouteInfo:
         # the build-plan-on-demand path.
         self.handler_plan: Any = None
         self.route_dep_plans: list[Any] = []
+        # True when the handler takes no injected parameters and the route
+        # carries no dependencies — the dispatcher then skips the
+        # dependency resolver entirely (the "trivial-route" fast path).
+        # Set by `add_route` once the plans are built.
+        self.is_trivial_plan = False
 
 
 class RouteMatch:
@@ -380,6 +386,11 @@ class Router:
 
         route_info.handler_plan = build_plan(handler)
         route_info.route_dep_plans = build_route_dep_plans(route_info.dependencies)
+        # Classify the route for dispatch: a handler with no parameter
+        # slots and no route-level dependencies needs nothing resolved.
+        route_info.is_trivial_plan = (
+            not route_info.handler_plan.slots and not route_info.route_dep_plans
+        )
 
         for method in methods:
             node.handlers[method.upper()] = route_info
@@ -818,6 +829,7 @@ class Router:
                 # Reuse the parent's pre-computed plan — same handler, same plan.
                 route_info.handler_plan = info.handler_plan
                 route_info.route_dep_plans = info.route_dep_plans
+                route_info.is_trivial_plan = info.is_trivial_plan
                 cur.handlers[method] = route_info
 
                 # Update named routes
