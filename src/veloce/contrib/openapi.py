@@ -380,12 +380,20 @@ def _python_type_to_schema(annotation: Any) -> dict:
 
     import datetime as _datetime
     import enum as _enum
+    import types as _types
     import uuid as _uuid
     from decimal import Decimal
-    from typing import Literal, get_args, get_origin
+    from typing import Literal, Union, get_args, get_origin
+
+    origin = get_origin(annotation)
+    # Unwrap `Optional[T]` / `T | None` to the inner type so a nullable
+    # rich-typed parameter still emits its `format` / `enum` keywords.
+    if origin is Union or origin is _types.UnionType:
+        inner = [a for a in get_args(annotation) if a is not type(None)]
+        if len(inner) == 1:
+            return _python_type_to_schema(inner[0])
 
     # Parametrised `list[T]` / `set[T]` → an array schema with typed items.
-    origin = get_origin(annotation)
     if origin in (list, set, tuple):
         args = get_args(annotation)
         item = _python_type_to_schema(args[0]) if args else {}

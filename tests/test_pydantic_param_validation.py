@@ -267,3 +267,71 @@ def test_openapi_int_param_still_integer():
         return {}
 
     assert _param_schema(app, "/i", "n")["type"] == "integer"
+
+
+def test_openapi_optional_datetime_param_keeps_format():
+    """An `Optional[datetime]` parameter must still emit `date-time`."""
+    app = Veloce()
+
+    @app.get("/o")
+    async def o(created: datetime.datetime | None = Query(default=None)):
+        return {}
+
+    sch = _param_schema(app, "/o", "created")
+    assert sch["format"] == "date-time"
+
+
+# ── non-string Literal parameters at runtime ──────────────────────────
+
+
+async def test_int_literal_query_param_accepts_member():
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/lvl")
+    async def lvl(level: Literal[1, 2, 3] = Query(default=1)):
+        return {"level": level, "type": type(level).__name__}
+
+    resp = await app.handle_request(make_request(path="/lvl", query_string="level=2"))
+    assert resp.status_code == 200
+    assert b'"int"' in resp.body
+    assert b'"level":2' in resp.body or b'"level": 2' in resp.body
+
+
+async def test_int_literal_query_param_rejects_non_member():
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/lvl")
+    async def lvl(level: Literal[1, 2, 3] = Query(default=1)):
+        return {"level": level}
+
+    resp = await app.handle_request(make_request(path="/lvl", query_string="level=9"))
+    assert resp.status_code == 422
+
+
+async def test_bool_literal_query_param_accepts_member():
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/flag")
+    async def flag(on: Literal[True, False] = Query(default=False)):
+        return {"on": on, "type": type(on).__name__}
+
+    resp = await app.handle_request(make_request(path="/flag", query_string="on=true"))
+    assert resp.status_code == 200
+    assert b'"bool"' in resp.body
+    assert b'"on":true' in resp.body or b'"on": true' in resp.body
+
+
+# ── Decimal numeric constraints are enforced ──────────────────────────
+
+
+async def test_decimal_param_ge_constraint_enforced():
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/p")
+    async def p(amount: Decimal = Query(ge=0)):
+        return {"amount": str(amount)}
+
+    ok = await app.handle_request(make_request(path="/p", query_string="amount=5"))
+    assert ok.status_code == 200
+    bad = await app.handle_request(make_request(path="/p", query_string="amount=-1"))
+    assert bad.status_code == 422
