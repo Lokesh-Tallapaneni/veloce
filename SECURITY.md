@@ -46,6 +46,30 @@ Out of scope: the built-in development server is **not** intended for
 production (see `docs/guide/deployment.md`); deployment-hardening of a
 production ASGI server (uvicorn, etc.) is that server's responsibility.
 
+## Hardening features the framework ships
+
+The bundled middleware in `veloce.middleware.security` covers the
+common hardening primitives — register the ones your deployment
+needs:
+
+- **`SecurityHeadersMiddleware`** — `nosniff`, `X-Frame-Options`,
+  HSTS, `Referrer-Policy`, an optional CSP. Also installed by
+  `app.use_secure_defaults()`.
+- **`TrustedHostMiddleware`** — `Host`-header allow-list; rejects
+  spoofed `Host` headers used to abuse URL generation or cache keys.
+- **`HTTPSRedirectMiddleware`** — redirects plain HTTP to HTTPS when
+  the framework is behind a TLS-terminating proxy.
+- **`WebSocketOriginMiddleware`** — allow-list for the WebSocket
+  handshake `Origin` header. **This is not covered by
+  `use_secure_defaults()`** because the allow-list can't be inferred
+  from the app — register it explicitly when you serve WebSockets.
+  See [WebSockets → Origin validation](docs/guide/websockets.md#origin-validation-cswsh-defence)
+  for the full walkthrough and the per-handler
+  `WebSocket.check_origin(allowed)` alternative.
+
+For the underlying CORS preflight + browser-fetch enforcement (HTTP,
+not WebSocket), use `veloce.middleware.cors.CORSMiddleware`.
+
 ## Before 1.0
 
 An external security review of the request path is planned ahead of the
