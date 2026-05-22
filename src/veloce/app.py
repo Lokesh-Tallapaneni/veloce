@@ -1604,11 +1604,23 @@ class Veloce(Router):
         instrument = self._instrumentation
         started = time.perf_counter() if instrument else 0.0
 
-        # If @app.middleware("http") funcs are registered, wrap dispatch in call_next chain
-        if self._http_middleware_funcs:
-            response = await self._run_http_middleware_chain(request)
-        else:
-            response = await self._dispatch_request(request)
+        try:
+            # If @app.middleware("http") funcs are registered, wrap dispatch
+            # in the call_next chain.
+            if self._http_middleware_funcs:
+                response = await self._run_http_middleware_chain(request)
+            else:
+                response = await self._dispatch_request(request)
+        except Exception:
+            # Dispatch propagated an exception (e.g. PROPAGATE_EXCEPTIONS is
+            # set). Record a `500` metric before the exception continues
+            # out, so error requests are never dropped from observability.
+            if instrument:
+                with contextlib.suppress(Exception):
+                    await self._run_instrumentation(
+                        request, 500, (time.perf_counter() - started) * 1000.0
+                    )
+            raise
 
         # Signal: request finished. Sender is the app, `response=` is the
         # final Response, `request=` lets a receiver correlate with the
@@ -1621,7 +1633,7 @@ class Veloce(Router):
 
         if instrument:
             await self._run_instrumentation(
-                request, response, (time.perf_counter() - started) * 1000.0
+                request, response.status_code, (time.perf_counter() - started) * 1000.0
             )
 
         return response
@@ -2191,7 +2203,7 @@ class Veloce(Router):
         return response
 
     async def _run_instrumentation(
-        self, request: Request, response: Response, duration_ms: float
+        self, request: Request, status_code: int, duration_ms: float
     ) -> None:
         """Deliver a `RequestMetrics` record to every instrumentation hook.
 
@@ -2204,7 +2216,7 @@ class Veloce(Router):
             method=request.method,
             path=request.path,
             route=request.url_rule,
-            status_code=response.status_code,
+            status_code=status_code,
             duration_ms=duration_ms,
         )
         for hook in self._instrumentation:

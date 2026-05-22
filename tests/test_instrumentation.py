@@ -7,6 +7,10 @@ a `RequestMetrics` record; the request-lifecycle signals also carry the
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
+import pytest
+
 from veloce import HTTPException, RequestMetrics, Veloce
 from veloce.signals import request_finished, request_started
 
@@ -140,6 +144,51 @@ def test_no_hook_registered_is_inert():
     resp = app.test_client().get("/items/4")
     assert resp.status_code == 200
     assert app._instrumentation == []
+
+
+def test_no_hook_skips_the_clock_read():
+    """The advertised zero-cost guarantee: with no hook registered the
+    request path does not even read `perf_counter`."""
+    app = _app()
+    with patch("veloce.app.time.perf_counter") as clock:
+        app.test_client().get("/items/4")
+    assert not clock.called
+
+
+# ── error requests are still instrumented ─────────────────────────────
+
+
+def test_hook_fires_on_propagated_exception():
+    """With PROPAGATE_EXCEPTIONS the exception leaves dispatch uncaught —
+    the hook must still record a 500 so error metrics are never dropped."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["PROPAGATE_EXCEPTIONS"] = True
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append)
+
+    @app.get("/explode")
+    async def explode():
+        raise ValueError("kaboom")
+
+    client = app.test_client()
+    with pytest.raises(ValueError, match="kaboom"):
+        client.get("/explode")
+
+    assert len(seen) == 1
+    assert seen[0].status_code == 500
+    assert seen[0].route == "/explode"
+
+
+def test_405_reports_route_none():
+    """A 405 (path exists, wrong method) carries no matched route — it is
+    reported like a 404; `status_code` keeps the two apart."""
+    app = _app()
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append)
+
+    app.test_client().post("/items/5")
+    assert seen[0].status_code == 405
+    assert seen[0].route is None
 
 
 # ── lifecycle signals carry the request ───────────────────────────────

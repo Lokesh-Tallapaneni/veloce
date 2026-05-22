@@ -15,9 +15,11 @@ class RequestMetrics:
     """A finished HTTP request, as seen by an instrumentation hook.
 
     `route` is the matched route's path template (`/items/{id}`), which is
-    safe to use as a metric label; it is `None` when no route matched
-    (a 404). `path` is the concrete request path and is high-cardinality —
-    prefer `route` for aggregation.
+    safe to use as a metric label; it is `None` whenever no route+method
+    pair matched — both a `404` (no such path) and a `405` (the path
+    exists but the method is not allowed). Group by `(route, status_code)`
+    to keep those apart. `path` is the concrete request path and is
+    high-cardinality — prefer `route` for aggregation.
     """
 
     __slots__ = ("method", "path", "route", "status_code", "duration_ms")
