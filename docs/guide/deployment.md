@@ -27,12 +27,13 @@ request's bytes start arriving, the whole request must complete within
 `HttpProtocol.REQUEST_TIMEOUT` seconds (default 30) or the connection is
 dropped with `408` — and an idle keep-alive timeout.
 
-It **does** reassemble fragmented (continuation-frame) WebSocket
-messages per RFC 6455 §5.4. It **does not** implement HTTP/2 —
-production HTTP/2 workloads should run under uvicorn, which implements
-it. This is a deliberate scope line: hardening a from-scratch
-production server is not the project's goal when mature ASGI servers
-already exist.
+It serves **HTTP/1.1 only** — it performs no WebSocket upgrade
+handshake and does not implement HTTP/2. Run WebSocket routes and
+HTTP/2 workloads under uvicorn, which implements both; Veloce's
+WebSocket support is reached through the ASGI server, not the built-in
+development server. This is a deliberate scope line: hardening a
+from-scratch production server is not the project's goal when mature
+ASGI servers already exist.
 
 ## Running with multiple workers
 

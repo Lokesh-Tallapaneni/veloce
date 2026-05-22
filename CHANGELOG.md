@@ -50,10 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `HTTP_421_MISDIRECTED_REQUEST` for full IANA HTTP status coverage.
 - `constant_time_compare(a, b)` — a timing-safe secret-comparison helper
   (wrapping `hmac.compare_digest`), exported from the top-level package.
-- The built-in development server's WebSocket parser reassembles
-  fragmented messages — a `FIN=0` data frame followed by continuation
-  frames (RFC 6455 §5.4); control frames may be interleaved without
-  disturbing the in-progress message.
+- Veloce's `WebSocket` frame parser reassembles fragmented messages —
+  a `FIN=0` data frame followed by continuation frames (RFC 6455 §5.4);
+  control frames may be interleaved without disturbing the in-progress
+  message.
 - `add_middleware` now accepts a standard ASGI middleware class — any
   class that is not a veloce `Middleware` subclass is treated as ASGI
   middleware and wraps the whole application (`cls(app, **options)`),
@@ -183,10 +183,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name — it now iterates the form's `(key, value)` pairs once.
 - Documentation corrected against the code: sync (`def`) handlers are
   documented as supported (run in a thread-pool executor); the built-in
-  server is documented as reassembling fragmented WebSocket messages; the
-  shipped `ServerSessionMiddleware` / `SessionStore` replaces a stale
-  "on the roadmap" note; and scoped request hooks are clarified as a
-  `Blueprint` feature, not a plain `Router` one.
+  development server is documented as HTTP/1.1-only (WebSocket and HTTP/2
+  workloads run under an external ASGI server); the shipped
+  `ServerSessionMiddleware` / `SessionStore` replaces a stale "on the
+  roadmap" note; and scoped request hooks are clarified as a `Blueprint`
+  feature, not a plain `Router` one.
 
 ### Performance
 
