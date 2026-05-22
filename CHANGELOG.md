@@ -192,6 +192,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Request.files()` no longer returns duplicate `UploadFile` entries, nor
   runs in O(n²), when several files are uploaded under one form field
   name — it now iterates the form's `(key, value)` pairs once.
+- `StaticFiles._etag_cache` is now a bounded LRU (default cap 1 024 entries
+  per instance, configurable via the class attribute `ETAG_CACHE_MAX`).
+  The previous unbounded dict grew for the lifetime of the worker on a
+  large static tree.
+- `LoggingMiddleware` no longer keeps a per-instance dict keyed by
+  `id(request)`. The start timestamp lives on `request._state`, so it
+  cannot leak when a handler raises, and a recycled `id()` cannot
+  collide with a stale entry to log a nonsensical duration.
+- `jsonable_encoder(obj, include=..., exclude=...)` forwards the filters
+  into recursive calls — `exclude={"password"}` now strips the field at
+  every depth, matching the dataclass branch.
+- `Signal` actually filters by sender. A receiver connected with
+  `signal.connect(fn, sender=X)` fires only when `send(X)` runs (matched
+  by `is`, falling back to `==`). A receiver connected with the default
+  `sender=ANY_SENDER` (sentinel re-exported from `veloce.signals`) still
+  fires for every send.
+- `UploadFile.read`/`write`/`seek`/`close` now offload the blocking
+  filesystem syscalls to a thread once the spool has rolled over to
+  disk; the cheap in-memory `BytesIO` path stays on the loop.
+- `hash_password_async` / `verify_password_async` — async-safe wrappers
+  that run the scrypt KDF on a thread. The sync `hash_password` /
+  `verify_password` are unchanged; calling either from an `async def`
+  handler blocks the loop for ~100 ms, so async handlers should reach
+  for the `_async` variants. Both are exported from the top-level
+  package.
+- `WebSocket._receive_queue` is now bounded (default `maxsize=64`;
+  configurable via the `recv_queue_maxsize` constructor argument). The
+  cap turns the previously-unbounded queue into a backpressure signal:
+  a peer that sends faster than the handler reads now blocks the
+  producer on `put` instead of growing the queue without limit.
+- `tests/test_async_safety.py::test_sync_handler_reasonable_overhead`
+  no longer asserts a hard-coded 500 µs wall-clock budget — it now
+  measures async dispatch in the same run and asserts sync is within
+  20× of it. Catches a real regression without flaking on CPU-loaded
+  CI machines.
 - Documentation corrected against the code: sync (`def`) handlers are
   documented as supported (run in a thread-pool executor); the built-in
   development server is documented as HTTP/1.1-only (WebSocket and HTTP/2

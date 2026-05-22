@@ -34,12 +34,31 @@ class WebSocket:
 
     GUID = "258EAFA5-E914-47DA-95CA-5AB5DC525D63"
 
-    def __init__(self, transport: asyncio.Transport, headers: dict[str, str]) -> None:
+    # Cap inbound frame backlog. An unbounded `asyncio.Queue` lets a peer
+    # that sends faster than the handler reads grow it without limit —
+    # a DoS / backpressure vector. With a cap, the protocol's `put` (the
+    # producer) `await`s once the cap is hit, which is the backpressure
+    # signal: the application either reads faster or closes the
+    # connection. Configurable via constructor for apps with legitimate
+    # high-burst peers.
+    DEFAULT_RECV_QUEUE_MAXSIZE = 64
+
+    def __init__(
+        self,
+        transport: asyncio.Transport,
+        headers: dict[str, str],
+        recv_queue_maxsize: int | None = None,
+    ) -> None:
         self.transport = transport
         self.headers = headers
         self._accepted = False
         self._closed = False
-        self._receive_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        maxsize = (
+            recv_queue_maxsize
+            if recv_queue_maxsize is not None
+            else self.DEFAULT_RECV_QUEUE_MAXSIZE
+        )
+        self._receive_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=maxsize)
         # Fragmented-message reassembly state (RFC 6455 §5.4). `_frag_opcode`
         # is the data opcode of the message currently being assembled, or
         # `None` when no fragmented message is in progress.

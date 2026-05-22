@@ -7,6 +7,7 @@ the `getlist` alias on top of multidict's native `getall`.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import tempfile
@@ -38,16 +39,29 @@ class UploadFile:
         self.headers = headers or {}
 
     async def read(self, size: int = -1) -> bytes:
-        return self.file.read(size)
+        # In-memory `BytesIO` reads are non-blocking; once the spool has
+        # rolled over to a real temp file these are blocking syscalls,
+        # so hop to a thread to keep the event loop free.
+        if isinstance(self.file, io.BytesIO):
+            return self.file.read(size)
+        return await asyncio.to_thread(self.file.read, size)
 
     async def write(self, data: bytes) -> int:
-        return self.file.write(data)
+        if isinstance(self.file, io.BytesIO):
+            return self.file.write(data)
+        return await asyncio.to_thread(self.file.write, data)
 
     async def seek(self, offset: int) -> None:
-        self.file.seek(offset)
+        if isinstance(self.file, io.BytesIO):
+            self.file.seek(offset)
+            return
+        await asyncio.to_thread(self.file.seek, offset)
 
     async def close(self) -> None:
-        self.file.close()
+        if isinstance(self.file, io.BytesIO):
+            self.file.close()
+            return
+        await asyncio.to_thread(self.file.close)
 
     async def __aenter__(self) -> UploadFile:
         return self

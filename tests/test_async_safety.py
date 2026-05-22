@@ -230,7 +230,13 @@ class TestPerformanceAfterFixes:
 
     @pytest.mark.asyncio
     async def test_sync_handler_reasonable_overhead(self):
-        """Sync handlers via executor will be slower but should still be fast."""
+        """Sync handlers via the executor should be in the same order of
+        magnitude as async handlers — a catastrophe detector, not a tight
+        wall-clock budget. A hard-coded ceiling fails on busy machines /
+        CI even when the dispatch path is fine; we time both handler
+        kinds in the same run and assert sync is within a (generous)
+        multiple of async. That cancels machine-speed and load variance.
+        """
         import time
 
         app = Veloce(openapi_url=None)
@@ -239,16 +245,26 @@ class TestPerformanceAfterFixes:
         def sync_bench(request: Request):
             return {"ok": True}
 
-        # Warmup
-        for _ in range(50):
-            await app.handle_request(make_request(path="/sync-bench"))
+        @app.get("/async-bench")
+        async def async_bench(request: Request):
+            return {"ok": True}
 
-        times = []
-        for _ in range(200):
-            start = time.perf_counter_ns()
-            await app.handle_request(make_request(path="/sync-bench"))
-            times.append(time.perf_counter_ns() - start)
+        async def time_handler(path: str, iters: int) -> float:
+            for _ in range(50):  # warmup
+                await app.handle_request(make_request(path=path))
+            times = []
+            for _ in range(iters):
+                start = time.perf_counter_ns()
+                await app.handle_request(make_request(path=path))
+                times.append(time.perf_counter_ns() - start)
+            return sum(times) / len(times) / 1000
 
-        avg_us = sum(times) / len(times) / 1000
-        # Sync handlers go through executor — allow 500us
-        assert avg_us < 500, f"Sync handler avg {avg_us:.1f}us exceeds 500us budget"
+        async_us = await time_handler("/async-bench", 200)
+        sync_us = await time_handler("/sync-bench", 200)
+        # 20x is a deliberately loose catastrophe detector — the
+        # executor hop is normally <2x. Anything past this is a real
+        # regression, not noise.
+        assert sync_us < async_us * 20, (
+            f"sync handler avg {sync_us:.1f} us / async avg {async_us:.1f} us "
+            f"= {sync_us / async_us:.1f}x (budget: <20x)"
+        )

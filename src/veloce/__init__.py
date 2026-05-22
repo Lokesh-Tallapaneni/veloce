@@ -115,7 +115,13 @@ from veloce.middleware import (
 )
 
 # Password hashing helpers
-from veloce.passwords import hash_password, is_strong_password, verify_password
+from veloce.passwords import (
+    hash_password,
+    hash_password_async,
+    is_strong_password,
+    verify_password,
+    verify_password_async,
+)
 from veloce.routing.params import Body, Cookie, File, Form, Header, Path, Query
 
 # Routing
@@ -291,7 +297,9 @@ __all__ = [
     "BadData",
     # Passwords
     "hash_password",
+    "hash_password_async",
     "verify_password",
+    "verify_password_async",
     "is_strong_password",
     # Status
     "status",
