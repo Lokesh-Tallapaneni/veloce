@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import mimetypes
 import os
+from collections import OrderedDict
 from email.utils import formatdate, parsedate_to_datetime
 from typing import Any
 
@@ -49,6 +50,11 @@ def _parse_http_date(value: str) -> float | None:
 class StaticFiles:
     """Serve static files from a directory — all file I/O runs in executor."""
 
+    # Per-instance bound on the ETag cache. Capping it keeps memory
+    # bounded for long-running workers serving large static trees —
+    # without a cap, every served path lives in the dict forever.
+    ETAG_CACHE_MAX = 1024
+
     def __init__(
         self,
         directory: str,
@@ -68,7 +74,17 @@ class StaticFiles:
         # directory listings are an information-disclosure risk and
         # most production deployments don't want them.
         self.directory_index = directory_index
-        self._etag_cache: dict[str, tuple[str, float]] = {}
+        # Bounded LRU: insertion order doubles as recency; the oldest
+        # entry is dropped when the cap is hit. Capacity is per-instance
+        # so a deployment with many static handlers stays bounded.
+        self._etag_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
+
+    def _remember_etag(self, key: str, etag: str, mtime: float) -> None:
+        """Record an ETag in the LRU, evicting the oldest if at the cap."""
+        self._etag_cache[key] = (etag, mtime)
+        self._etag_cache.move_to_end(key)
+        while len(self._etag_cache) > self.ETAG_CACHE_MAX:
+            self._etag_cache.popitem(last=False)
 
     async def handle(self, request: Request) -> Response | None:
         """Handle a static file request — file I/O offloaded to thread pool."""
@@ -132,12 +148,14 @@ class StaticFiles:
             cached_etag, cached_mtime = self._etag_cache[cache_key]
             if cached_mtime == mtime:
                 etag = cached_etag
+                # Record the hit as recent usage so the LRU keeps it.
+                self._etag_cache.move_to_end(cache_key)
             else:
                 etag = self._compute_etag(file_path, mtime)
-                self._etag_cache[cache_key] = (etag, mtime)
+                self._remember_etag(cache_key, etag, mtime)
         else:
             etag = self._compute_etag(file_path, mtime)
-            self._etag_cache[cache_key] = (etag, mtime)
+            self._remember_etag(cache_key, etag, mtime)
 
         last_modified = _format_http_date(mtime)
 

@@ -29,14 +29,26 @@ class LoggingMiddleware(Middleware):
                 self.logger.setLevel(logging.INFO)
         else:
             self.logger = logger
-        self._request_times: dict[int, float] = {}
+
+    # Stash the start timestamp on the request itself rather than in a
+    # middleware-owned dict keyed by id(request). A handler exception
+    # used to leave the entry in the dict forever (memory leak), and
+    # CPython can recycle id()s of GC'd requests for unrelated objects
+    # — a future request could read a stale timestamp and log
+    # nonsensical durations. Tying the start time to the request's
+    # lifetime sidesteps both problems.
+    _START_KEY = "__veloce_logging_start"
 
     async def process_request(self, request: Request) -> Response | None:
-        self._request_times[id(request)] = time.monotonic()
+        request._state[self._START_KEY] = time.monotonic()
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
-        start = self._request_times.pop(id(request), None)
+        # `pop` rather than `get` so a downstream second-pass through
+        # this middleware on the same request (rewriting via
+        # `make_response`, after_request hooks, etc.) does not read a
+        # stale start time and report the wrong duration.
+        start = request._state.pop(self._START_KEY, None)
         duration_ms = (time.monotonic() - start) * 1000 if start else 0
         self.logger.info(
             "%s %s %d %.1fms",

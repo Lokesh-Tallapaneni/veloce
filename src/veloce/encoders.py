@@ -26,6 +26,10 @@ def jsonable_encoder(
     Handles Pydantic models, dataclasses, datetime, Decimal, UUID, Enum, Path,
     sets, frozensets, generators, and nested structures.
 
+    `include` / `exclude` apply to dict keys at **every depth** — passing
+    `exclude={"password"}` strips a `password` key wherever it appears
+    in the structure, not only at the top level.
+
     Usage:
         data = jsonable_encoder(my_pydantic_model, exclude={"password"})
     """
@@ -54,14 +58,19 @@ def jsonable_encoder(
                 continue
             if exclude and str_key in exclude:
                 continue
-            result[str_key] = jsonable_encoder(value)
+            # Forward the filters into the recursion so nested dicts
+            # honour them too — matches the dataclass branch above.
+            result[str_key] = jsonable_encoder(value, include=include, exclude=exclude)
         return result
 
     if isinstance(obj, (list, tuple)):
-        return [jsonable_encoder(item) for item in obj]
+        return [jsonable_encoder(item, include=include, exclude=exclude) for item in obj]
 
     if isinstance(obj, (set, frozenset)):
-        return [jsonable_encoder(item) for item in sorted(obj, key=str)]
+        return [
+            jsonable_encoder(item, include=include, exclude=exclude)
+            for item in sorted(obj, key=str)
+        ]
 
     if isinstance(obj, enum.Enum):
         return obj.value

@@ -30,97 +30,136 @@ import weakref
 from collections.abc import Callable
 from typing import Any
 
+# Sentinel for "connect to all senders" — the public API exports it so
+# callers can write `signal.connect(fn, sender=ANY_SENDER)` explicitly.
+# Identity comparison only; never construct another instance.
+ANY_SENDER: Any = object()
+
+
+def _matches(subscribed: Any, sent: Any) -> bool:
+    """A receiver subscribed for `subscribed` should fire on `sent`."""
+    if subscribed is ANY_SENDER:
+        return True
+    if subscribed is sent:
+        return True
+    # Fall back to equality so primitive senders ("login", 1, ...) work
+    # the way callers expect; guard against types whose `__eq__` raises.
+    try:
+        return bool(subscribed == sent)
+    except Exception:
+        return False
+
 
 class Signal:
     """A named pub/sub signal — standard shape.
 
-    Receivers connect via `connect(receiver, sender=ANY)` and detach
-    via `disconnect(receiver, sender=ANY)`. `send(sender, **kwargs)`
-    fires every connected receiver, passing `sender` positionally and
-    forwarding `kwargs`. Return values are collected into a list of
-    `(receiver, value)` tuples so callers can introspect what fired,
-    though veloce's own code ignores the return value.
+    Receivers connect via `connect(receiver, sender=ANY_SENDER)` and
+    detach via `disconnect(receiver, sender=ANY_SENDER)`.
+    `send(sender, **kwargs)` fires every receiver subscribed for that
+    exact `sender` (compared by `is`, falling back to `==`) plus every
+    receiver subscribed for `ANY_SENDER`. Return values are collected
+    into a list of `(receiver, value)` tuples so callers can introspect
+    what fired, though veloce's own code ignores the return value.
     """
 
-    __slots__ = ("name", "_receivers", "_strong")
+    __slots__ = ("name", "_subs")
 
     def __init__(self, name: str = "") -> None:
         self.name = name
-        # Two parallel slots for weak vs strong refs. Strong refs go
-        # into `_strong` (a plain list); weak refs into `_receivers` (a
-        # list of weakref objects). Lookup walks both.
-        self._receivers: list[Any] = []
-        self._strong: list[Callable] = []
+        # Each subscription: (sender, ref_or_callable, is_weak). `sender`
+        # is `ANY_SENDER` for unfiltered receivers, else the sender
+        # itself (strong reference — typical senders are app singletons
+        # that already outlive the signal anyway).
+        self._subs: list[tuple[Any, Any, bool]] = []
 
-    def connect(self, receiver: Callable, weak: bool = True) -> Callable:
-        """Register `receiver` to fire on `send`. Returns the receiver
-        unchanged so it can be used as a decorator."""
-        if not weak:
-            self._strong.append(receiver)
-            return receiver
+    def connect(
+        self,
+        receiver: Callable,
+        weak: bool = True,
+        *,
+        sender: Any = ANY_SENDER,
+    ) -> Callable:
+        """Register `receiver` to fire when `send(sender)` runs.
 
-        try:
-            ref: Any = weakref.WeakMethod(receiver)
-        except TypeError:
-            ref = weakref.ref(receiver)
-        self._receivers.append(ref)
+        `sender=ANY_SENDER` (the default) subscribes to every send.
+        Pass a specific sender to filter — the receiver then only fires
+        when `send` is called with that exact sender. Returns the
+        receiver unchanged so it can be used as a decorator.
+        """
+        if weak:
+            try:
+                ref: Any = weakref.WeakMethod(receiver)
+            except TypeError:
+                ref = weakref.ref(receiver)
+            self._subs.append((sender, ref, True))
+        else:
+            self._subs.append((sender, receiver, False))
         return receiver
 
-    def disconnect(self, receiver: Callable) -> None:
-        """Remove `receiver` from the receiver set (no-op if absent)."""
-        # Strong refs first — direct identity compare.
-        try:
-            self._strong.remove(receiver)
-            return
-        except ValueError:
-            pass
-        # Walk weak refs and drop the one whose target is `receiver`.
-        for i, ref in enumerate(self._receivers):
-            try:
-                target = ref()
-            except Exception:
-                target = None
-            if target is receiver:
-                del self._receivers[i]
+    def disconnect(self, receiver: Callable, *, sender: Any = ANY_SENDER) -> None:
+        """Remove the subscription for `(receiver, sender)`.
+
+        Mirrors `connect` — to detach a per-sender subscription pass the
+        same `sender`. With the default `sender=ANY_SENDER` it removes
+        any subscription matching `receiver`, regardless of which sender
+        it was bound to (back-compat with the previous unfiltered API).
+
+        Targeted detach matches the **stored** `sender` directly, not via
+        `_matches` — `_matches` is the `send`-time rule ("does this
+        subscription fire for that sender?"), where a stored
+        `ANY_SENDER` deliberately matches every send. Reusing that rule
+        in `disconnect` would silently delete an `ANY_SENDER`
+        subscription whenever the caller targeted a specific sender.
+        """
+        for i, (sub_sender, ref, is_weak) in enumerate(self._subs):
+            target = ref() if is_weak else ref
+            if target is not receiver:
+                continue
+            if sender is ANY_SENDER:
+                # "Detach any subscription for this receiver."
+                del self._subs[i]
                 return
+            # Targeted detach: match the stored sender directly.
+            if sub_sender is sender:
+                del self._subs[i]
+                return
+            try:
+                if sub_sender == sender:
+                    del self._subs[i]
+                    return
+            except Exception:
+                continue
 
     def send(self, sender: Any = None, **kwargs: Any) -> list[tuple[Callable, Any]]:
-        """Fire every connected receiver. Returns `(receiver, value)`
-        pairs in registration order (strong refs first, then weak)."""
+        """Fire receivers subscribed for `sender` (and for ANY_SENDER).
+
+        Returns `(receiver, value)` pairs in registration order.
+        """
         results: list[tuple[Callable, Any]] = []
-        for fn in list(self._strong):
-            results.append((fn, fn(sender, **kwargs)))
-        live: list[Any] = []
-        for ref in self._receivers:
-            try:
-                target = ref()
-            except Exception:
-                target = None
-            if target is None:
+        live: list[tuple[Any, Any, bool]] = []
+        for sub_sender, ref, is_weak in self._subs:
+            target = ref() if is_weak else ref
+            if target is None:  # dead weakref — drop on the next pass
                 continue
-            live.append(ref)
-            results.append((target, target(sender, **kwargs)))
-        # Purge dead refs lazily.
-        if len(live) != len(self._receivers):
-            self._receivers = live
+            live.append((sub_sender, ref, is_weak))
+            if _matches(sub_sender, sender):
+                results.append((target, target(sender, **kwargs)))
+        if len(live) != len(self._subs):
+            self._subs = live
         return results
 
     def has_receivers_for(self, sender: Any = None) -> bool:
         """`True` if any connected receiver would fire for `sender`."""
-        _ = sender  # sender-specific filtering not yet implemented
-        if self._strong:
-            return True
-        for ref in self._receivers:
-            try:
-                if ref() is not None:
-                    return True
-            except Exception:
-                pass
+        for sub_sender, ref, is_weak in self._subs:
+            target = ref() if is_weak else ref
+            if target is None:
+                continue
+            if _matches(sub_sender, sender):
+                return True
         return False
 
     def __repr__(self) -> str:
-        n_recvs = len(self._strong) + len(self._receivers)
-        return f"<Signal name={self.name!r} receivers={n_recvs}>"
+        return f"<Signal name={self.name!r} receivers={len(self._subs)}>"
 
 
 # ── Standard signals ────────────────────────────────────────────────

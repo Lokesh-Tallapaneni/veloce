@@ -76,6 +76,27 @@ class TestJsonableEncoder:
         result = jsonable_encoder({"a": 1, "b": 2}, exclude={"b"})
         assert result == {"a": 1}
 
+    def test_exclude_recurses_into_nested_dicts(self):
+        """`exclude` strips matching keys at every depth — not only the
+        top level. Catches a regression where nested calls dropped the
+        filter and let `password` leak through inner dicts."""
+        payload = {
+            "user": {"name": "alice", "password": "p1"},
+            "audit": [{"actor": "alice", "password": "p2"}],
+            "password": "p0",
+        }
+        result = jsonable_encoder(payload, exclude={"password"})
+        assert result == {"user": {"name": "alice"}, "audit": [{"actor": "alice"}]}
+
+    def test_include_recurses_into_nested_dicts(self):
+        """`include` keeps the same keys at every depth too."""
+        payload = {"a": 1, "b": {"a": 2, "c": 3}, "d": 4}
+        result = jsonable_encoder(payload, include={"a", "b"})
+        # Top level keeps a and b; the nested dict under b also keeps
+        # only the keys named in `include` (a). c at the inner level is
+        # dropped because it is not in the include set.
+        assert result == {"a": 1, "b": {"a": 2}}
+
     def test_datetime(self):
         dt = datetime.datetime(2024, 1, 15, 12, 30, 0)
         result = jsonable_encoder(dt)

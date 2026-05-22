@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import enum
 import hashlib
 import struct
@@ -34,12 +35,31 @@ class WebSocket:
 
     GUID = "258EAFA5-E914-47DA-95CA-5AB5DC525D63"
 
-    def __init__(self, transport: asyncio.Transport, headers: dict[str, str]) -> None:
+    # Cap inbound frame backlog. An unbounded `asyncio.Queue` lets a peer
+    # that sends faster than the handler reads grow it without limit —
+    # a DoS / backpressure vector. With a cap, the protocol's `put` (the
+    # producer) `await`s once the cap is hit, which is the backpressure
+    # signal: the application either reads faster or closes the
+    # connection. Configurable via constructor for apps with legitimate
+    # high-burst peers.
+    DEFAULT_RECV_QUEUE_MAXSIZE = 64
+
+    def __init__(
+        self,
+        transport: asyncio.Transport,
+        headers: dict[str, str],
+        recv_queue_maxsize: int | None = None,
+    ) -> None:
         self.transport = transport
         self.headers = headers
         self._accepted = False
         self._closed = False
-        self._receive_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        maxsize = (
+            recv_queue_maxsize
+            if recv_queue_maxsize is not None
+            else self.DEFAULT_RECV_QUEUE_MAXSIZE
+        )
+        self._receive_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=maxsize)
         # Fragmented-message reassembly state (RFC 6455 §5.4). `_frag_opcode`
         # is the data opcode of the message currently being assembled, or
         # `None` when no fragmented message is in progress.
@@ -512,7 +532,7 @@ class WebSocket:
                 # Unfragmented message — deliver immediately.
                 self._frag_opcode = None
                 self._frag_buffer = bytearray()
-                self._receive_queue.put_nowait(bytes(payload))
+                self._enqueue_or_close(bytes(payload))
             else:
                 # Opening frame of a fragmented message — start buffering
                 # (supersedes any abandoned partial).
@@ -526,9 +546,36 @@ class WebSocket:
             self._frag_buffer += payload
             if fin:
                 # Final fragment — the reassembled message is complete.
-                self._receive_queue.put_nowait(bytes(self._frag_buffer))
+                self._enqueue_or_close(bytes(self._frag_buffer))
                 self._frag_opcode = None
                 self._frag_buffer = bytearray()
+
+    def _enqueue_or_close(self, payload: bytes) -> None:
+        """Push a reassembled message onto the receive queue.
+
+        The queue has a finite `maxsize`; if a peer outpaces the
+        application reader it fills up. `put_nowait` raising
+        `QueueFull` is the backpressure signal at this layer — we
+        close the connection with `1009 Message Too Big` rather than
+        let the exception unwind into the asyncio Protocol callback,
+        and rather than grow the queue without bound (the DoS the
+        cap was added to prevent).
+        """
+        try:
+            self._receive_queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            # Close synchronously — no `await` available from inside
+            # `feed_data`. The frame writer is synchronous and only
+            # needs the transport.
+            with contextlib.suppress(Exception):
+                self._send_frame(
+                    (1009).to_bytes(2, "big"),
+                    opcode=0x8,  # Close
+                )
+            self._closed = True
+            with contextlib.suppress(Exception):
+                if self.transport is not None:
+                    self.transport.close()
 
     def _send_frame(self, data: bytes, opcode: int) -> None:
         """Send a WebSocket frame."""

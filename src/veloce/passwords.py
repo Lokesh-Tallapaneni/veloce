@@ -25,6 +25,7 @@ Spec anchors:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -165,6 +166,33 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
 
     # Unknown method tag — fail closed.
     return False
+
+
+async def hash_password_async(
+    password: str | bytes,
+    method: str = "scrypt",
+    salt_length: int = _SALT_BYTES,
+) -> str:
+    """Async-safe wrapper for `hash_password` — runs the KDF on a thread.
+
+    `hash_password` calls `hashlib.scrypt` / `pbkdf2_hmac` synchronously;
+    those are deliberately slow (~100 ms) and would block the event loop
+    if called directly from an async handler. This wrapper offloads the
+    work to the default executor so the loop stays free for other
+    requests. Use this from `async def` handlers; keep the sync
+    `hash_password` for sync handlers / scripts / CLI tools.
+    """
+    return await asyncio.to_thread(hash_password, password, method, salt_length)
+
+
+async def verify_password_async(stored: str, candidate: str | bytes) -> bool:
+    """Async-safe wrapper for `verify_password` — runs the KDF on a thread.
+
+    Same rationale as `hash_password_async`: the scrypt / PBKDF2 verify
+    is ~100 ms of CPU; calling it synchronously from an async handler
+    blocks the event loop. Offload it.
+    """
+    return await asyncio.to_thread(verify_password, stored, candidate)
 
 
 def is_strong_password(password: str, *, min_length: int = 8) -> bool:

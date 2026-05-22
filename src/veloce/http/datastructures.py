@@ -7,6 +7,7 @@ the `getlist` alias on top of multidict's native `getall`.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import tempfile
@@ -37,17 +38,46 @@ class UploadFile:
         self.size = size
         self.headers = headers or {}
 
+    def _file_is_in_memory(self) -> bool:
+        """`True` when reads/writes are pure-Python memory ops.
+
+        Both a `BytesIO` (the constructor default) *and* a
+        `SpooledTemporaryFile` that has not rolled over to disk fall
+        into this category — the multipart parser hands us the
+        latter, and that's the production hot path. Once the spool
+        rolls over to a real file, every op becomes a syscall and
+        must go to a thread.
+
+        `_rolled` is a `SpooledTemporaryFile` attribute (stdlib);
+        anything else falls back to "treat as on-disk" for safety.
+        """
+        if isinstance(self.file, io.BytesIO):
+            return True
+        return getattr(self.file, "_rolled", None) is False
+
     async def read(self, size: int = -1) -> bytes:
-        return self.file.read(size)
+        # In-memory file objects stay on the loop; rolled-over spools
+        # and arbitrary file-likes hop to a thread.
+        if self._file_is_in_memory():
+            return self.file.read(size)
+        return await asyncio.to_thread(self.file.read, size)
 
     async def write(self, data: bytes) -> int:
-        return self.file.write(data)
+        if self._file_is_in_memory():
+            return self.file.write(data)
+        return await asyncio.to_thread(self.file.write, data)
 
     async def seek(self, offset: int) -> None:
-        self.file.seek(offset)
+        if self._file_is_in_memory():
+            self.file.seek(offset)
+            return
+        await asyncio.to_thread(self.file.seek, offset)
 
     async def close(self) -> None:
-        self.file.close()
+        if self._file_is_in_memory():
+            self.file.close()
+            return
+        await asyncio.to_thread(self.file.close)
 
     async def __aenter__(self) -> UploadFile:
         return self
