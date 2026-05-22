@@ -9,7 +9,7 @@ import inspect
 import signal
 import time
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.dependency import DependencyResolver, Depends
@@ -27,6 +27,9 @@ from veloce.http.response import (
 )
 from veloce.middleware import BaseHTTPMiddleware, Middleware
 from veloce.routing.router import Router
+
+if TYPE_CHECKING:
+    import ssl
 
 
 class Veloce(Router):
@@ -2281,6 +2284,7 @@ class Veloce(Router):
         port: int = 8000,
         workers: int = 1,
         access_log: bool = True,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         """Start the built-in **development** server.
 
@@ -2289,6 +2293,12 @@ class Veloce(Router):
         ASGI server — ``uvicorn your_module:app`` — which veloce is fully
         compatible with through its ASGI ``__call__`` interface.
         ``run()`` logs a reminder of this on startup.
+
+        ``ssl_context`` — an ``ssl.SSLContext`` — turns on HTTPS for local
+        testing; it is handed straight to ``loop.create_server(ssl=...)``.
+        Left ``None`` (the default) the serving path is byte-for-byte the
+        same as plain HTTP. Production should still terminate TLS at
+        uvicorn or a reverse proxy.
         """
         self._setup_openapi()
 
@@ -2318,15 +2328,16 @@ class Veloce(Router):
             pass
 
         if access_log:
+            scheme = "https" if ssl_context is not None else "http"
             print(f"\n  Veloce v{self.version}")
-            print(f"  Listening on http://{host}:{port}")
+            print(f"  Listening on {scheme}://{host}:{port}")
             print("  Press Ctrl+C to stop\n")
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         try:
-            loop.run_until_complete(self._serve(host, port, access_log))
+            loop.run_until_complete(self._serve(host, port, access_log, ssl_context))
         except KeyboardInterrupt:
             pass
         finally:
@@ -2334,7 +2345,7 @@ class Veloce(Router):
             loop.run_until_complete(self._graceful_shutdown(loop))
             loop.close()
 
-    async def _serve(self, host: str, port: int, access_log: bool) -> None:
+    async def _serve(self, host: str, port: int, access_log: bool, ssl_context: Any = None) -> None:
         """Create the server and run forever."""
         from veloce.serving.protocol import HttpProtocol
 
@@ -2344,11 +2355,14 @@ class Veloce(Router):
         # Run startup hooks
         await self._run_lifecycle("startup")
 
+        # `ssl=None` (the default) makes `create_server` behave exactly as
+        # the plain-HTTP path; TLS cost is paid only when a context is set.
         server = await loop.create_server(
             lambda: HttpProtocol(self, loop),
             host,
             port,
             reuse_port=True,
+            ssl=ssl_context,
         )
         self._server_ref = server
 
