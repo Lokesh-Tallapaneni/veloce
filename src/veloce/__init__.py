@@ -108,6 +108,7 @@ from veloce.middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
+    ServerSessionMiddleware,
     SessionMiddleware,
     TrustedHostMiddleware,
     WebSocketOriginMiddleware,
@@ -141,7 +142,7 @@ from veloce.security import (
 )
 
 # Sessions
-from veloce.sessions import Session
+from veloce.sessions import InMemorySessionStore, Session, SessionStore
 
 # HMAC-signed value serialiser
 from veloce.signing import BadData, BadSignature, BadTimeSignature, Signer
@@ -196,9 +197,12 @@ __all__ = [
     "LoggingMiddleware",
     "RequestIDMiddleware",
     "SessionMiddleware",
+    "ServerSessionMiddleware",
     "ProxyFix",
     # Sessions
     "Session",
+    "SessionStore",
+    "InMemorySessionStore",
     # WebSocket
     "WebSocket",
     "WebSocketDisconnect",

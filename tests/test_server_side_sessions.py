@@ -1,0 +1,155 @@
+"""F2 — server-side session backend with revocation.
+
+`ServerSessionMiddleware` keeps the session payload in a `SessionStore`;
+the cookie carries only an opaque session id, so a session can be
+revoked server-side and a tampered cookie cannot forge one.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from veloce import (
+    InMemorySessionStore,
+    Request,
+    ServerSessionMiddleware,
+    SessionStore,
+    Veloce,
+)
+
+
+def _session_app() -> tuple[Veloce, InMemorySessionStore]:
+    store = InMemorySessionStore()
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(ServerSessionMiddleware(store=store))
+
+    @app.post("/login")
+    async def login(request: Request):
+        request.session["user"] = "alice"
+        return {"ok": True}
+
+    @app.get("/whoami")
+    async def whoami(request: Request):
+        return {"user": request.session.get("user")}
+
+    @app.post("/logout")
+    async def logout(request: Request):
+        request.session.clear()
+        return {"ok": True}
+
+    return app, store
+
+
+# ── round-trip ────────────────────────────────────────────────────────
+
+
+def test_session_round_trips_across_requests():
+    app, _ = _session_app()
+    client = app.test_client()
+
+    client.post("/login")
+    resp = client.get("/whoami")
+    assert resp.json() == {"user": "alice"}
+
+
+def test_separate_clients_get_separate_sessions():
+    app, _ = _session_app()
+    c1 = app.test_client()
+    c2 = app.test_client()
+
+    c1.post("/login")
+    assert c1.get("/whoami").json() == {"user": "alice"}
+    # A second client never logged in — it has no session.
+    assert c2.get("/whoami").json() == {"user": None}
+
+
+# ── the cookie is an opaque id, not the payload ───────────────────────
+
+
+def test_cookie_carries_only_an_opaque_id():
+    app, store = _session_app()
+    client = app.test_client()
+
+    resp = client.post("/login")
+    set_cookie = resp.headers.get("Set-Cookie", "")
+    # The session value never appears in the cookie — only an id does.
+    assert "alice" not in set_cookie
+    # ...and the payload is what actually lives in the store.
+    assert any("alice" in str(v) for v in store._entries.values())
+
+
+# ── revocation ────────────────────────────────────────────────────────
+
+
+def test_clearing_the_session_revokes_it():
+    app, store = _session_app()
+    client = app.test_client()
+
+    client.post("/login")
+    assert len(store._entries) == 1
+
+    client.post("/logout")
+    # The store entry is gone — the session was revoked server-side.
+    assert len(store._entries) == 0
+    assert client.get("/whoami").json() == {"user": None}
+
+
+def test_store_delete_revokes_a_session_by_id():
+    app, store = _session_app()
+    client = app.test_client()
+    client.post("/login")
+
+    # An admin revokes the session straight from the store.
+    session_id = next(iter(store._entries))
+    asyncio.run(store.delete(session_id))
+
+    assert client.get("/whoami").json() == {"user": None}
+
+
+def test_unknown_cookie_yields_a_fresh_session():
+    app, _ = _session_app()
+    client = app.test_client()
+    client.cookies["session"] = "this-id-was-never-issued"
+
+    assert client.get("/whoami").json() == {"user": None}
+
+
+def test_unmodified_session_sets_no_cookie():
+    app, _ = _session_app()
+    client = app.test_client()
+
+    resp = client.get("/whoami")  # reads, never writes
+    assert "Set-Cookie" not in resp.headers
+
+
+# ── the store itself ──────────────────────────────────────────────────
+
+
+async def test_in_memory_store_read_write_delete():
+    store = InMemorySessionStore()
+    await store.write("sid-1", {"k": "v"}, max_age=60)
+    assert await store.read("sid-1") == {"k": "v"}
+
+    await store.delete("sid-1")
+    assert await store.read("sid-1") is None
+
+
+async def test_in_memory_store_expires_entries():
+    store = InMemorySessionStore()
+    await store.write("sid-2", {"k": "v"}, max_age=0)  # already expired
+    assert await store.read("sid-2") is None
+    # The expired entry was evicted, not just hidden.
+    assert "sid-2" not in store._entries
+
+
+async def test_in_memory_store_returns_a_copy():
+    """Mutating a read payload must not corrupt the stored copy."""
+    store = InMemorySessionStore()
+    await store.write("sid-3", {"items": [1]}, max_age=60)
+    got = await store.read("sid-3")
+    got["items"] = "tampered"
+    assert (await store.read("sid-3")) == {"items": [1]}
+
+
+def test_in_memory_store_is_a_session_store():
+    assert isinstance(InMemorySessionStore(), SessionStore)

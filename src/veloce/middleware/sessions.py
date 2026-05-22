@@ -14,12 +14,13 @@ keep validating until they age out.
 from __future__ import annotations
 
 import json
+import secrets
 from typing import Any
 
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
-from veloce.sessions import Session
+from veloce.sessions import InMemorySessionStore, Session, SessionStore
 from veloce.signing import BadSignature, Signer
 
 
@@ -99,3 +100,86 @@ class SessionMiddleware(Middleware):
         response.headers["Set-Cookie"] = cookie
         response._encoded = None
         return response
+
+
+class ServerSessionMiddleware(Middleware):
+    """Server-side session — the cookie carries only an opaque session id.
+
+    The session payload lives in a `SessionStore`, not in the cookie, so a
+    session is *revocable*: empty it in a handler (`session.clear()`) or
+    delete it straight from the store (`await store.delete(session_id)`)
+    and it is gone server-side. A tampered or stale cookie simply fails to
+    resolve to a stored payload and is treated as a fresh session.
+
+    The default store is a process-local `InMemorySessionStore`; pass a
+    shared backend (e.g. a Redis-backed `SessionStore`) for a multi-worker
+    deployment. The store is a plain object the caller owns — keep a
+    reference to it to revoke sessions by id.
+    """
+
+    def __init__(
+        self,
+        store: SessionStore | None = None,
+        cookie_name: str = "session",
+        max_age: int = 86400 * 14,
+        path: str = "/",
+        httponly: bool = True,
+        secure: bool = False,
+        samesite: str = "lax",
+    ) -> None:
+        self.store = store if store is not None else InMemorySessionStore()
+        self.cookie_name = cookie_name
+        self.max_age = max_age
+        self.path = path
+        self.httponly = httponly
+        self.secure = secure
+        self.samesite = samesite
+
+    async def process_request(self, request: Request) -> Response | None:
+        data: dict[str, Any] | None = None
+        session_id = request.cookies.get(self.cookie_name)
+        if session_id:
+            data = await self.store.read(session_id)
+        if data is not None:
+            session = Session(data)
+            session.new = False
+            # Stash the id so process_response writes back under it.
+            request._state["_session_id"] = session_id
+        else:
+            session = Session()
+            session.new = True
+        request._state["session"] = session
+        return None
+
+    async def process_response(self, request: Request, response: Response) -> Response:
+        session = request._state.get("session")
+        if session is None or not getattr(session, "modified", False):
+            return response
+
+        session_id = request._state.get("_session_id")
+        if not session:
+            # The handler emptied the session — revoke it server-side and
+            # tell the client to drop the cookie.
+            if session_id is not None:
+                await self.store.delete(session_id)
+                response.headers["Set-Cookie"] = self._cookie("", 0)
+                response._encoded = None
+            return response
+
+        if session_id is None:
+            # A fresh session — mint an unguessable id (256 bits of entropy).
+            session_id = secrets.token_urlsafe(32)
+        await self.store.write(session_id, dict(session), self.max_age)
+        response.headers["Set-Cookie"] = self._cookie(session_id, self.max_age)
+        response._encoded = None
+        return response
+
+    def _cookie(self, session_id: str, max_age: int) -> str:
+        cookie = f"{self.cookie_name}={session_id}; Path={self.path}; Max-Age={max_age}"
+        if self.httponly:
+            cookie += "; HttpOnly"
+        if self.secure:
+            cookie += "; Secure"
+        if self.samesite:
+            cookie += f"; SameSite={self.samesite}"
+        return cookie
