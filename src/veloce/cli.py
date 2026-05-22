@@ -139,6 +139,22 @@ def _cmd_routes(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_check(args: argparse.Namespace) -> int:
+    """`veloce check` — run a pre-deploy security audit of the app."""
+    app = _load_app(args.app)
+    if not hasattr(app, "security_audit"):
+        raise SystemExit(f"{args.app} is not a Veloce app (missing `.security_audit()`)")
+
+    warnings = app.security_audit()
+    if not warnings:
+        print("Security audit: no issues found.")
+        return 0
+    print(f"Security audit: {len(warnings)} issue(s) found:")
+    for warning in warnings:
+        print(f"  - {warning}")
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser. Exposed for testing."""
     parser = argparse.ArgumentParser(
@@ -159,6 +175,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_routes = sub.add_parser("routes", help="Print the route table.")
     p_routes.add_argument("app", help="App reference in 'module:attribute' form.")
     p_routes.set_defaults(func=_cmd_routes)
+
+    p_check = sub.add_parser("check", help="Run a pre-deploy security audit.")
+    p_check.add_argument("app", help="App reference in 'module:attribute' form.")
+    p_check.set_defaults(func=_cmd_check)
 
     p_shell = sub.add_parser("shell", help="Interactive Python shell with the app loaded.")
     p_shell.add_argument("app", help="App reference in 'module:attribute' form.")

@@ -29,7 +29,14 @@ Veloce-specific knobs:
 - `safe_methods` — override the bypass set.
 - `cookie_secure` / `cookie_httponly` / `cookie_samesite` — cookie
   attribute flags. Default `httponly=False` is required (the
-  *client-side* JS must read the cookie to echo it in the header).
+  *client-side* JS must read the cookie to echo it in the header);
+  `secure` defaults to `True` so the cookie is never sent over plain
+  HTTP — pass `cookie_secure=False` for local HTTP development.
+- `secret` — when set, the token in the cookie is HMAC-signed. The
+  double-submit equality check still applies, but the signature also
+  proves the value was minted by this server, closing the
+  cookie-injection gap where an attacker able to write the victim's
+  `csrf_token` cookie could otherwise also forge the matching header.
 - `token_factory` — overridable for tests; default
   `secrets.token_urlsafe(32)`.
 """
@@ -53,10 +60,11 @@ class CSRFMiddleware(Middleware):
         header_name: str = "X-CSRF-Token",
         form_field: str = "csrf_token",
         safe_methods: tuple[str, ...] = ("GET", "HEAD", "OPTIONS", "TRACE"),
-        cookie_secure: bool = False,
+        cookie_secure: bool = True,
         cookie_httponly: bool = False,
         cookie_samesite: str = "Lax",
         token_factory: Any = None,
+        secret: str | None = None,
     ) -> None:
         self.cookie_name = cookie_name
         self.header_name = header_name
@@ -66,6 +74,14 @@ class CSRFMiddleware(Middleware):
         self.cookie_httponly = cookie_httponly
         self.cookie_samesite = cookie_samesite
         self.token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
+        # When a `secret` is supplied the cookie token is HMAC-signed, so
+        # a planted (cookie-injected) value fails verification even when
+        # the attacker also controls the echoed header.
+        self._signer: Any = None
+        if secret:
+            from veloce.signing import Signer
+
+            self._signer = Signer(secret, salt="veloce.csrf")
 
     async def process_request(self, request: Request) -> Response | None:
         # Stash existing cookie value (or None) on request._state for the
@@ -81,6 +97,15 @@ class CSRFMiddleware(Middleware):
         cookie_val = existing
         if not cookie_val:
             return self._forbidden("CSRF cookie missing")
+        # With signing enabled, the cookie value must additionally carry a
+        # valid server signature — an injected cookie can't produce one.
+        if self._signer is not None:
+            from veloce.signing import BadSignature
+
+            try:
+                self._signer.loads(cookie_val)
+            except BadSignature:
+                return self._forbidden("CSRF cookie signature invalid")
         # Case-insensitive header lookup (Headers is CIMultiDict).
         header_val = request.headers.get(self.header_name)
         if header_val and secrets.compare_digest(header_val, cookie_val):
@@ -105,8 +130,11 @@ class CSRFMiddleware(Middleware):
         existing = request._state.get("_csrf_cookie") if request._state else None
         if existing:
             return response
-        # First request — mint a token and set the cookie.
+        # First request — mint a token and set the cookie. When signing
+        # is enabled the stored value is the signed token.
         token = self.token_factory()
+        if self._signer is not None:
+            token = self._signer.dumps(token)
         response.set_cookie(
             self.cookie_name,
             token,

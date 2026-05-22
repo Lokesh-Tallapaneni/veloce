@@ -86,3 +86,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StaticFiles` resolves the served root's real path once at construction
   rather than on every request; the request-scoped `g` store is allocated
   lazily, so handlers that never touch `g` pay no allocation.
+
+### Security
+
+- `MAX_CONTENT_LENGTH` is now enforced incrementally — an oversized
+  request body is refused with `413` while still being received, before
+  the whole payload is buffered into memory.
+- `WebSocketOriginMiddleware` rejects cross-site WebSocket handshakes
+  (CSWSH) by checking the handshake `Origin` against an allow-list.
+- `SecurityHeadersMiddleware` attaches `X-Content-Type-Options`,
+  `X-Frame-Options`, `Referrer-Policy`, and optional HSTS / CSP /
+  `Permissions-Policy` response headers.
+- `CSRFMiddleware` accepts a `secret` that HMAC-signs the token, so a
+  cookie-injected value carrying no valid signature is refused; the CSRF
+  cookie now defaults to `Secure`.
+- `parse_multipart_form` caps the part count and per-part size, raising
+  `413` — a guard against algorithmic-complexity DoS from a maliciously
+  structured form.
+- `app.use_secure_defaults()` applies a hardened baseline (secure session
+  cookies + `SecurityHeadersMiddleware`); `app.security_audit()` and the
+  new `veloce check` CLI command report configuration risks before
+  deployment.

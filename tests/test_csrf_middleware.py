@@ -160,3 +160,67 @@ async def test_custom_header_name_honored():
         )
     )
     assert resp.status_code == 200
+
+
+# ── S5: signed (HMAC) CSRF token + secure-by-default cookie ───────────
+
+
+async def test_csrf_cookie_is_secure_by_default():
+    """The minted CSRF cookie carries the `Secure` attribute by default."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(token_factory=lambda: "TKN"))
+
+    @app.get("/x")
+    async def x():
+        return {}
+
+    resp = await app.handle_request(_req("GET"))
+    assert "Secure" in resp.headers.get("Set-Cookie", "")
+
+
+async def test_signed_csrf_rejects_unsigned_injected_token():
+    """With a `secret` configured, a cookie value carrying no valid
+    server signature is refused even when the header echoes it — the
+    cookie-injection scenario the signature closes."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(secret="test-secret"))
+
+    @app.post("/x")
+    async def x():
+        return {}
+
+    # Attacker plants the same value in cookie and header — but cannot
+    # produce a valid signature for it.
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={"cookie": "csrf_token=attacker", "x-csrf-token": "attacker"},
+        )
+    )
+    assert resp.status_code == 403
+
+
+async def test_signed_csrf_roundtrip_passes():
+    """A token minted by the signed middleware verifies on the way back."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(secret="test-secret"))
+
+    @app.get("/g")
+    async def g():
+        return {}
+
+    @app.post("/x")
+    async def x():
+        return {"ok": True}
+
+    minted = await app.handle_request(_req("GET", path="/g"))
+    set_cookie = minted.headers.get("Set-Cookie", "")
+    token = set_cookie.split("csrf_token=", 1)[1].split(";", 1)[0]
+
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={"cookie": f"csrf_token={token}", "x-csrf-token": token},
+        )
+    )
+    assert resp.status_code == 200

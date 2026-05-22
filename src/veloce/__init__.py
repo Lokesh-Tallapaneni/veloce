@@ -106,8 +106,10 @@ from veloce.middleware import (
     ProxyFix,
     RateLimitMiddleware,
     RequestIDMiddleware,
+    SecurityHeadersMiddleware,
     SessionMiddleware,
     TrustedHostMiddleware,
+    WebSocketOriginMiddleware,
 )
 
 # Password hashing helpers
@@ -188,6 +190,8 @@ __all__ = [
     "TrustedHostMiddleware",
     "RateLimitMiddleware",
     "HTTPSRedirectMiddleware",
+    "SecurityHeadersMiddleware",
+    "WebSocketOriginMiddleware",
     "LoggingMiddleware",
     "RequestIDMiddleware",
     "SessionMiddleware",

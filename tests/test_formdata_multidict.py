@@ -179,3 +179,41 @@ def test_is_json_false_for_text_plain():
 def test_is_json_false_for_missing_content_type():
     req = Request(method="GET", path="/", query_string="", headers={}, body=b"")
     assert req.is_json is False
+
+
+# ── S6: multipart DoS caps ────────────────────────────────────────────
+
+
+def test_multipart_part_count_cap_rejects():
+    """A form with more parts than `max_parts` raises RequestEntityTooLarge."""
+    from veloce.exceptions import RequestEntityTooLarge
+    from veloce.http.datastructures import parse_multipart_form
+
+    boundary = "veloceboundary123"
+    body = _multipart_body(boundary, [(f"f{i}", "v") for i in range(10)])
+    ct = f"multipart/form-data; boundary={boundary}"
+    with pytest.raises(RequestEntityTooLarge):
+        parse_multipart_form(body, ct, max_parts=3)
+
+
+def test_multipart_part_size_cap_rejects():
+    """A part whose body exceeds `max_part_size` raises RequestEntityTooLarge."""
+    from veloce.exceptions import RequestEntityTooLarge
+    from veloce.http.datastructures import parse_multipart_form
+
+    boundary = "veloceboundary123"
+    body = _multipart_body(boundary, [("big", "x" * 5000)])
+    ct = f"multipart/form-data; boundary={boundary}"
+    with pytest.raises(RequestEntityTooLarge):
+        parse_multipart_form(body, ct, max_part_size=1000)
+
+
+def test_multipart_within_caps_parses_normally():
+    from veloce.http.datastructures import parse_multipart_form
+
+    boundary = "veloceboundary123"
+    body = _multipart_body(boundary, [("a", "1"), ("b", "2")])
+    ct = f"multipart/form-data; boundary={boundary}"
+    form = parse_multipart_form(body, ct, max_parts=10, max_part_size=1000)
+    assert form["a"] == "1"
+    assert form["b"] == "2"

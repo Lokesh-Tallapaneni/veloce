@@ -84,3 +84,38 @@ def test_actual_body_over_limit_rejected_even_without_content_length():
     )
     resp = asyncio.new_event_loop().run_until_complete(app.handle_request(req))
     assert resp.status_code == 413
+
+
+async def test_incremental_limit_rejects_chunked_body_mid_stream():
+    """A chunked body that omits Content-Length is rejected once the
+    running total crosses MAX_CONTENT_LENGTH — caught while still being
+    received, before the whole payload is buffered."""
+    app = _app(max_size=100)
+
+    chunks = [
+        {"type": "http.request", "body": b"x" * 60, "more_body": True},
+        {"type": "http.request", "body": b"x" * 60, "more_body": True},
+        {"type": "http.request", "body": b"x" * 60, "more_body": False},
+    ]
+    pending = iter(chunks)
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return next(pending)
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/echo",
+        "query_string": b"",
+        "headers": [],  # deliberately no content-length
+    }
+    await app(scope, receive, send)
+
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 413
+    # Rejected mid-stream: the third chunk was never consumed.
+    assert next(pending) is chunks[2]

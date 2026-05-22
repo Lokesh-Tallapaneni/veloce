@@ -325,3 +325,41 @@ class TestSyncHandlers:
         response = await app.handle_request(make_request(path="/sync"))
         assert response.status_code == 200
         assert b"sync" in response.body
+
+
+# ── S7: secure-by-default preset + security audit ─────────────────────
+
+
+def test_use_secure_defaults_sets_cookie_flags_and_middleware():
+    from veloce import SecurityHeadersMiddleware
+
+    secured = Veloce(openapi_url=None)
+    secured.use_secure_defaults()
+    assert secured.config["SESSION_COOKIE_SECURE"] is True
+    assert secured.config["SESSION_COOKIE_HTTPONLY"] is True
+    assert secured.config["SESSION_COOKIE_SAMESITE"] == "Lax"
+    assert any(isinstance(m, SecurityHeadersMiddleware) for m in secured._middlewares)
+
+
+def test_use_secure_defaults_is_idempotent():
+    from veloce import SecurityHeadersMiddleware
+
+    secured = Veloce(openapi_url=None)
+    secured.use_secure_defaults()
+    secured.use_secure_defaults()
+    count = sum(isinstance(m, SecurityHeadersMiddleware) for m in secured._middlewares)
+    assert count == 1
+
+
+def test_security_audit_flags_insecure_app():
+    insecure = Veloce(debug=True, openapi_url=None)
+    warnings = insecure.security_audit()
+    assert any("DEBUG" in w for w in warnings)
+    assert any("SECRET_KEY" in w for w in warnings)
+
+
+def test_security_audit_clean_after_hardening():
+    secured = Veloce(openapi_url=None)
+    secured.config["SECRET_KEY"] = "a-real-secret"
+    secured.use_secure_defaults()
+    assert secured.security_audit() == []
