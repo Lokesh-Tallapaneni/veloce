@@ -1486,13 +1486,25 @@ class Veloce(Router):
         """Mount a sub-application at a path prefix.
 
         A veloce sub-app is dispatched through the parent's request
-        pipeline. Any other ASGI application — a Starlette app, an ASGI
-        micro-app, an instrumentation shim — is dispatched at the ASGI
-        layer instead: the matched prefix is stripped from the scope's
-        `path` and moved onto `root_path`, so the mounted app sees a
-        normal root-relative request.
+        pipeline. Any other ASGI application — an ASGI micro-app, an
+        instrumentation shim — is dispatched at the ASGI layer instead:
+        the matched prefix is stripped from the scope's `path` and moved
+        onto `root_path`, so the mounted app sees a normal root-relative
+        request.
+
+        Scope: a mounted ASGI app receives `http` and `websocket` scopes
+        only. The parent app owns the `lifespan` cycle and does not fan it
+        out, so a mounted app must not depend on ASGI `lifespan` events
+        for its setup. A mounted ASGI app owns its entire prefix subtree —
+        a native route registered under the same prefix is unreachable.
+        Mounts are matched in registration order (first match wins), so
+        register a more specific prefix before a broader one.
         """
         prefix = prefix.rstrip("/")
+        # A request path always starts with "/"; normalise a prefix given
+        # without one so the mount is not silently unreachable.
+        if prefix and not prefix.startswith("/"):
+            prefix = "/" + prefix
         if isinstance(app, Veloce):
             self._mounted_apps.append((prefix, app))
         else:

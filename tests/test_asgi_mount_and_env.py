@@ -8,6 +8,8 @@ dotenv-style file.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from veloce import Request, Veloce
@@ -139,3 +141,82 @@ def test_from_env_file_ignores_malformed_lines(tmp_path):
 
     assert app.config["VALID"] == "ok"
     assert app.config["ANOTHER"] == "fine"
+
+
+# ── mount edge cases ──────────────────────────────────────────────────
+
+
+async def _tiny_ws_asgi(scope, receive, send):
+    """A minimal standalone ASGI WebSocket app — echoes its scope path."""
+    await receive()  # websocket.connect
+    await send({"type": "websocket.accept"})
+    await send({"type": "websocket.send", "text": f"ws path={scope['path']}"})
+    await send({"type": "websocket.close"})
+
+
+def test_mounted_asgi_app_receives_websocket_scopes():
+    app = Veloce(debug=True, openapi_url=None)
+    app.mount("/wsext", _tiny_ws_asgi)
+
+    client = app.test_client()
+    with client.websocket_connect("/wsext/room") as conn:
+        # The mounted app saw the prefix-stripped path.
+        assert conn.receive_text() == "ws path=/room"
+
+
+def test_mount_normalises_a_missing_leading_slash():
+    app = Veloce(debug=True, openapi_url=None)
+    app.mount("ext", _tiny_asgi)  # no leading slash
+
+    resp = app.test_client().get("/ext/x")
+    assert resp.status_code == 200
+    assert resp.body == b"path=/x root=/ext"
+
+
+def test_overlapping_mounts_match_in_registration_order():
+    app = Veloce(debug=True, openapi_url=None)
+
+    async def broad(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"broad"})
+
+    async def specific(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"specific"})
+
+    app.mount("/api", broad)
+    app.mount("/api/v2", specific)  # registered later — shadowed by /api
+
+    assert app.test_client().get("/api/v2/x").body == b"broad"
+
+
+def test_mounted_asgi_app_does_not_receive_lifespan_scopes():
+    """The parent owns the lifespan cycle — a mounted ASGI app sees only
+    http / websocket scopes and must self-initialise."""
+    seen: list[str] = []
+
+    async def recorder(scope, receive, send):
+        seen.append(scope["type"])
+        if scope["type"] == "http":
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+    app = Veloce(debug=True, openapi_url=None)
+    app.mount("/ext", recorder)
+
+    async def drive_lifespan():
+        events = [{"type": "lifespan.startup"}, {"type": "lifespan.shutdown"}]
+
+        async def receive():
+            return events.pop(0)
+
+        async def send(message):
+            pass
+
+        await app({"type": "lifespan"}, receive, send)
+
+    asyncio.run(drive_lifespan())
+    assert "lifespan" not in seen  # never forwarded to the mount
+
+    app.test_client().get("/ext/x")
+    assert "http" in seen  # http still reaches it
