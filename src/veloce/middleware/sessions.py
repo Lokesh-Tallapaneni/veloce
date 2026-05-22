@@ -87,14 +87,14 @@ class SessionMiddleware(Middleware):
         cookie_value = self._signer.dumps(session)
         # A `permanent` session uses the longer lifetime for `Max-Age`.
         lifetime = self.permanent_lifetime if getattr(session, "permanent", False) else self.max_age
-        cookie = f"{self.cookie_name}={cookie_value}; Path={self.path}; Max-Age={lifetime}"
+        parts = [f"{self.cookie_name}={cookie_value}", f"Path={self.path}", f"Max-Age={lifetime}"]
         if self.httponly:
-            cookie += "; HttpOnly"
+            parts.append("HttpOnly")
         if self.secure:
-            cookie += "; Secure"
+            parts.append("Secure")
         if self.samesite:
-            cookie += f"; SameSite={self.samesite}"
-        response.headers["Set-Cookie"] = cookie
+            parts.append(f"SameSite={self.samesite}")
+        response.headers["Set-Cookie"] = "; ".join(parts)
         response._encoded = None
         return response
 
@@ -187,11 +187,11 @@ class ServerSessionMiddleware(Middleware):
         return response
 
     def _cookie(self, session_id: str, max_age: int) -> str:
-        cookie = f"{self.cookie_name}={session_id}; Path={self.path}; Max-Age={max_age}"
+        parts = [f"{self.cookie_name}={session_id}", f"Path={self.path}", f"Max-Age={max_age}"]
         if self.httponly:
-            cookie += "; HttpOnly"
+            parts.append("HttpOnly")
         if self.secure:
-            cookie += "; Secure"
+            parts.append("Secure")
         if self.samesite:
-            cookie += f"; SameSite={self.samesite}"
-        return cookie
+            parts.append(f"SameSite={self.samesite}")
+        return "; ".join(parts)

@@ -42,6 +42,11 @@ if TYPE_CHECKING:
 # hot-reloader churns through registered callables.
 _iscoro_cache: weakref.WeakKeyDictionary[Callable[..., Any], bool] = weakref.WeakKeyDictionary()
 
+# Sentinel for cache misses where `None` is itself a valid cache hit
+# (e.g. "no exception handler matched this type"). Plain `cache.get(k)`
+# would re-walk the MRO every time for an unhandled exception type.
+_MISSING: Any = object()
+
 
 def _is_async_callable(fn: Callable[..., Any]) -> bool:
     """Memoised `inspect.iscoroutinefunction` for hot-path hook dispatch.
@@ -200,6 +205,14 @@ class Veloce(Router):
         self._watchdog: Any = None
         self._exception_handlers: dict[type, Callable] = {}
         self._status_handlers: dict[int, Callable] = {}
+        # Cached `_find_exception_handler` MRO walks; invalidated on
+        # any `register_error_handler` call. The cache assumes the
+        # exception-type space is bounded — typical applications raise
+        # a fixed set of exception classes, so it never grows beyond a
+        # few dozen entries. An app that synthesises new exception
+        # classes per request would grow this unboundedly; not a target
+        # workload.
+        self._exc_handler_cache: dict[type, Callable | None] = {}
         # `exception_handlers=` ctor mapping — keys are
         # exception classes or integer status codes.
         for _key, _handler in (exception_handlers or {}).items():
@@ -858,6 +871,10 @@ class Veloce(Router):
             self._status_handlers[code_or_exception] = func
         else:
             self._exception_handlers[code_or_exception] = func
+            # The MRO-walk cache is invalidated on any registration so a
+            # newly-added handler for a base class takes effect for the
+            # already-cached subclasses.
+            self._exc_handler_cache.clear()
 
     def _should_propagate_exceptions(self) -> bool:
         """Whether unhandled exceptions should re-raise out of dispatch.
@@ -875,12 +892,19 @@ class Veloce(Router):
 
         Handlers registered against a base class catch every subclass —
         e.g. `@app.exception_handler(HTTPException)` catches every
-        `NotFound`, `Forbidden`, etc. raised through `abort()`.
+        `NotFound`, `Forbidden`, etc. raised through `abort()`. The
+        lookup result is cached per exception type; the cache is cleared
+        on every `register_error_handler` call.
         """
+        cached = self._exc_handler_cache.get(exc_type, _MISSING)
+        if cached is not _MISSING:
+            return cached
         for cls in exc_type.__mro__:
             handler = self._exception_handlers.get(cls)
             if handler is not None:
+                self._exc_handler_cache[exc_type] = handler
                 return handler
+        self._exc_handler_cache[exc_type] = None
         return None
 
     def exception_handler(self, exc_class_or_status: type | int) -> Callable:

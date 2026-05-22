@@ -71,6 +71,31 @@ async def test_directory_index_escapes_dangerous_filenames(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_directory_index_symlinked_dir_not_marked_as_dir(tmp_path):
+    """Symlinks in the listing are classified by the symlink itself.
+
+    `os.scandir`'s `is_dir(follow_symlinks=False)` deliberately does not
+    follow the link target — a symlink to a real directory renders as a
+    plain entry rather than a directory entry. Matches the symlink-safety
+    stance the static handler already takes elsewhere (refusing to serve
+    a file whose realpath escapes the served root).
+    """
+    import os
+
+    (tmp_path / "real").mkdir()
+    try:
+        os.symlink(str(tmp_path / "real"), str(tmp_path / "link"))
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform / user")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", directory_index=True)
+    resp = await sf.handle(_req("/s/"))
+    body = resp.body.decode()
+    # Real dir renders with trailing slash; the symlink to it does not.
+    assert 'href="real/">real/' in body
+    assert 'href="link">link<' in body
+
+
+@pytest.mark.asyncio
 async def test_directory_index_does_not_supersede_index_html(tmp_path):
     """If `html=True` and `index.html` exists, the file is served, not a listing."""
     (tmp_path / "index.html").write_text("HELLO")

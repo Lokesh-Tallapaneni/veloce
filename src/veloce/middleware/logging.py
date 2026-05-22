@@ -40,10 +40,17 @@ class LoggingMiddleware(Middleware):
     _START_KEY = "__veloce_logging_start"
 
     async def process_request(self, request: Request) -> Response | None:
-        request._state[self._START_KEY] = time.monotonic()
+        # Skip the `time.monotonic()` call entirely when the logger is
+        # not actually going to emit anything — the (typically) muted
+        # access log is a common production setup, and the clock read
+        # is cheap but non-zero.
+        if self.logger.isEnabledFor(logging.INFO):
+            request._state[self._START_KEY] = time.monotonic()
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        if not self.logger.isEnabledFor(logging.INFO):
+            return response
         # `pop` rather than `get` so a downstream second-pass through
         # this middleware on the same request (rewriting via
         # `make_response`, after_request hooks, etc.) does not read a

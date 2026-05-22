@@ -143,9 +143,21 @@ class Signer:
         Raises `BadSignature` on tamper / unknown secret, `BadTimeSignature`
         when `max_age` is set and the token's timestamp is older than that.
         """
-        if not isinstance(token, str) or token.count(".") != 2:
+        if not isinstance(token, str):
             raise BadData(f"malformed token: {token!r}")
-        payload_b64, ts_b64, sig_b64 = token.split(".")
+        # Single split-with-cap instead of `count(".") != 2` + `split(".")`.
+        # `split(".", 2)` returns at most 3 parts: a well-formed token gives
+        # exactly 3, a truncated token gives fewer. A token with extra dots
+        # beyond the second packs them into `sig_b64`; `urlsafe_b64decode`
+        # tolerates non-alphabet characters (binascii's relaxed mode strips
+        # them), so the segment decodes to nonsense, the HMAC compare fails,
+        # and the caller sees `BadSignature` instead of `BadData`. Both are
+        # caught by `except BadSignature`, so the change of diagnostic does
+        # not affect handlers.
+        parts = token.split(".", 2)
+        if len(parts) != 3:
+            raise BadData(f"malformed token: {token!r}")
+        payload_b64, ts_b64, sig_b64 = parts
         try:
             sig_bytes = _b64decode(sig_b64)
         except (ValueError, OSError) as err:

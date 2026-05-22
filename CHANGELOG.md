@@ -255,6 +255,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- `_find_exception_handler` now memoises the MRO walk per exception
+  type. The cache is cleared whenever a new error handler is
+  registered so a fresh registration takes effect for previously
+  cached subclasses.
+- `SignedSerializer.loads` does a single `token.split(".", 2)`
+  instead of `token.count(".") != 2` + `token.split(".")`. The
+  early-validation path is now one pass over the string.
+- `LoggingMiddleware` short-circuits when the logger has the access
+  level disabled — both the `time.monotonic()` clock read on entry
+  and the duration calculation on response.
+- `SessionMiddleware._cookie` / cookie composition use
+  `"; ".join(parts)` instead of a chain of `+=` concatenations,
+  cutting intermediate string allocations.
+- `StaticFiles` directory listing reads `is_dir` from `os.scandir`'s
+  cached dirent — saves a per-entry `os.path.isdir` syscall.
+  Behaviour note: symlinks inside a listed directory are now classified
+  via the symlink itself, not its target — a symlink to a subdirectory
+  renders as a plain entry rather than a directory entry. This avoids
+  advertising symlink targets in the listing and matches the
+  symlink-safety stance the static handler already takes.
 - `Response.encode()` no longer rebuilds the header dict on every
   response: the three framework defaults (`Content-Type`,
   `Content-Length`, `Connection`) are emitted inline only when the
