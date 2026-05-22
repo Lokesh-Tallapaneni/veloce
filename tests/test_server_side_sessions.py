@@ -236,6 +236,18 @@ async def test_in_memory_store_replace_only_writes_when_present():
     assert await store.read("sid") is None
 
 
+async def test_in_memory_store_replace_treats_an_expired_entry_as_absent():
+    """An entry past its TTL but not yet lazily evicted must not be
+    revived by `replace` — a stale session stays dead."""
+    store = InMemorySessionStore()
+    await store.write("sid", {"k": "v"}, max_age=0)  # already expired
+    # The entry is still physically present (nothing has read/deleted it)...
+    assert "sid" in store._entries
+    # ...but replace treats it as absent and does not resurrect it.
+    assert await store.replace("sid", {"k": "fresh"}, max_age=60) is False
+    assert await store.read("sid") is None
+
+
 async def test_base_session_store_replace_default_is_conditional():
     """The base-class `replace` default (read-then-write) writes only when
     the id still exists, so a custom store inherits the race-safe contract

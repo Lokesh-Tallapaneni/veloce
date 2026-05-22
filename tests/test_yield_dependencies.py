@@ -212,8 +212,13 @@ async def test_yield_dep_state_does_not_leak_across_requests():
 async def test_concurrent_requests_keep_independent_teardown_stacks():
     """Two requests in flight at once must not share teardown state: a
     request being dispatched must not wipe an already-parked request's
-    pending `yield`-dependency teardowns. Each request gets its own
-    resolver, so both teardowns run."""
+    pending `yield`-dependency teardowns.
+
+    With a single shared resolver, dispatching /b clears /a's teardown
+    stack while /a is parked — the orphaned dependency generator is then
+    torn down early (during /b's dispatch, before /a's handler even
+    finishes). A per-request resolver keeps /a's teardown until /a
+    itself completes, so it must run *after* /a's handler."""
     app = Veloce(debug=True, openapi_url=None)
     events: list[str] = []
     gate = asyncio.Event()
@@ -237,6 +242,7 @@ async def test_concurrent_requests_keep_independent_teardown_stacks():
         # Park here, mid-request, so /b is dispatched while /a is still
         # in flight with its teardown already on the resolver.
         await gate.wait()
+        events.append("handler:a:done")
         return {"s": s}
 
     @app.get("/b")
@@ -254,3 +260,6 @@ async def test_concurrent_requests_keep_independent_teardown_stacks():
     # Both requests' teardowns ran exactly once — neither clobbered the other.
     assert events.count("teardown:a") == 1
     assert events.count("teardown:b") == 1
+    # /a's teardown must run only after /a's handler completes. A shared
+    # resolver tears it down early during /b's dispatch — this fails there.
+    assert events.index("teardown:a") > events.index("handler:a:done")

@@ -162,7 +162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `accept()` or after `close()` raises instead of proceeding silently.
 - Multipart parsing no longer leaks a `SpooledTemporaryFile` when a request
   is rejected by a DoS cap (oversized part or too many parts): the
-  in-progress spooled file is closed on the reject path.
+  in-progress part's spool and every spool already collected from
+  completed parts are closed on the reject path.
 - Server-side sessions use a conditional store write: a session revoked by
   a concurrent request (logout, `store.delete(...)`) while another request
   is in flight is no longer resurrected when that request writes back —

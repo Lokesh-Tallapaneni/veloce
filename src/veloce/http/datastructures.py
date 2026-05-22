@@ -745,11 +745,19 @@ def parse_multipart_form(
         with contextlib.suppress(FormParserError):
             parser.write(body)
             parser.finalize()
+    except BaseException:
+        # A DoS-cap rejection (`RequestEntityTooLarge`) raised out of a
+        # part callback. `result` is discarded unreturned, so close every
+        # spooled file already handed to an `UploadFile` in it — otherwise
+        # each already-completed part leaks a temp file / file descriptor.
+        for value in result.values():
+            if isinstance(value, UploadFile):
+                with contextlib.suppress(Exception):
+                    value.file.close()
+        raise
     finally:
-        # A DoS-cap rejection (oversized part / too many parts) raises out
-        # of a part callback, leaving that part's spooled file open and
-        # unowned. Close it so the reject path does not leak a temp file
-        # or file descriptor on every oversized request.
+        # Close the in-progress part's spool — left open by a DoS-cap
+        # rejection mid-part, or by a suppressed malformed-body error.
         in_progress = state["spool"]
         if in_progress is not None:
             with contextlib.suppress(Exception):

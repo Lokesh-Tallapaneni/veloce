@@ -159,6 +159,42 @@ def test_rejected_oversized_part_closes_its_spooled_file(monkeypatch):
     assert all(spool.closed for spool in spools)
 
 
+def test_rejected_later_part_closes_earlier_completed_part_spools(monkeypatch):
+    """When a *later* part trips a DoS cap, the spools of the parts that
+    already parsed cleanly — handed to `UploadFile`s in the now-discarded
+    form — must also be closed, not just the in-progress part's spool."""
+    spools: list = []
+    real_cls = tempfile.SpooledTemporaryFile
+
+    def tracking(*args, **kwargs):
+        spool = real_cls(*args, **kwargs)
+        spools.append(spool)
+        return spool
+
+    monkeypatch.setattr(tempfile, "SpooledTemporaryFile", tracking)
+
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["MAX_FORM_PART_SIZE"] = 1024
+
+    @app.post("/u")
+    async def upload(request: Request):
+        await request.form()
+        return {"ok": True}
+
+    resp = app.test_client().post(
+        "/u",
+        files={
+            "first": ("ok.bin", b"small enough"),
+            "second": ("big.bin", b"A" * 5000),
+        },
+    )
+    assert resp.status_code == 413
+    # The completed first part and the oversized second part both had
+    # their spooled files closed by the reject path.
+    assert len(spools) >= 2
+    assert all(spool.closed for spool in spools)
+
+
 def test_upload_save_works_after_rollover(tmp_path):
     """A rolled-over upload still saves correctly via UploadFile.save()."""
     app = Veloce(debug=True, openapi_url=None)

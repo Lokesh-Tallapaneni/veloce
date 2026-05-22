@@ -167,8 +167,12 @@ class InMemorySessionStore(SessionStore):
     async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
         # Atomic against the event loop: this coroutine does no `await`,
         # so a concurrent `delete` cannot land between the check and the
-        # write — a revoked session stays revoked.
-        if session_id not in self._entries:
+        # write — a revoked session stays revoked. An expired entry that
+        # has not yet been lazily evicted counts as absent (mirrors
+        # `read`), so a stale session is never rewritten back to life.
+        entry = self._entries.get(session_id)
+        if entry is None or entry[1] <= time.time():
+            self._entries.pop(session_id, None)
             return False
         self._entries[session_id] = (dict(data), time.time() + max_age)
         return True
