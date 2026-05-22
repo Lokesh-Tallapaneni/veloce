@@ -62,6 +62,11 @@ Workloads: `json-hello`, `path-param`.
   Disable with `--no-cold-round` if you want to inspect that overhead.
 - Run order is shuffled with a random seed printed at the top of every
   output. Pin it with `--seed N` for byte-exact reproducibility.
+- On Windows, `proc.terminate()` is `TerminateProcess` — a hard-kill.
+  The port the killed uvicorn was bound to can briefly linger in
+  `TIME_WAIT`, which is exactly why `measure()` retries once on a
+  readiness-timeout with a fresh port. The retry only triggers on the
+  port-race; a body-mismatch surfaces immediately.
 
 ## Caveats — read before quoting any number out of context
 

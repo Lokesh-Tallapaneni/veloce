@@ -51,6 +51,16 @@ class RunResult:
         return s[idx] / 1000
 
 
+class ReadinessTimeout(RuntimeError):
+    """Server did not answer within the readiness deadline.
+
+    Raised distinctly from a body-mismatch (which is also a `RuntimeError`
+    but a programming error, not a flaky-port symptom). `measure` only
+    retries on this one, so a genuine bad-body response surfaces
+    immediately instead of eating another readiness window.
+    """
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -60,32 +70,33 @@ def _free_port() -> int:
 async def _wait_ready(
     client: httpx.AsyncClient,
     url: str,
-    expected_body: bytes | None = None,
+    expected_substring: bytes | None = None,
     deadline_s: float = 10.0,
 ) -> None:
     """Poll until the server answers with a non-error response, or time out.
 
     A non-error response is `200 <= status < 400`; a `405`/`5xx` reply
     means the framework is not actually serving this workload yet.
-    If `expected_body` is given, validate the first successful response
-    against it as a cheap "is this serving the right thing" check —
-    catches a regression that returns a 200 with the wrong payload.
+    If `expected_substring` is given, the response body must contain
+    it — catches a regression that returns 200 with empty / wrong
+    payload, without tripping on the three frameworks' subtly different
+    JSON whitespace and key ordering.
     """
     end = time.monotonic() + deadline_s
     while time.monotonic() < end:
         try:
             resp = await client.get(url, timeout=0.5)
             if 200 <= resp.status_code < 400:
-                if expected_body is not None and resp.content != expected_body:
+                if expected_substring is not None and expected_substring not in resp.content:
                     raise RuntimeError(
-                        f"server at {url} returned unexpected body "
-                        f"{resp.content!r} (expected {expected_body!r})"
+                        f"server at {url} returned body that does not contain "
+                        f"{expected_substring!r} (got {resp.content!r})"
                     )
                 return
         except (httpx.HTTPError, OSError):
             pass
         await asyncio.sleep(0.05)
-    raise RuntimeError(f"server at {url} did not become ready within {deadline_s}s")
+    raise ReadinessTimeout(f"server at {url} did not become ready within {deadline_s}s")
 
 
 async def _drive_load(
@@ -130,7 +141,7 @@ async def _measure_once(
     warmup_s: float,
     concurrency: int,
     path: str,
-    expected_body: bytes | None,
+    expected_substring: bytes | None,
 ) -> RunResult:
     """One full attempt: bind a port, boot uvicorn, drive load, tear down."""
     port = _free_port()
@@ -167,7 +178,7 @@ async def _measure_once(
             max_keepalive_connections=concurrency,
         )
         async with httpx.AsyncClient(timeout=5.0, limits=limits) as client:
-            await _wait_ready(client, url, expected_body=expected_body)
+            await _wait_ready(client, url, expected_substring=expected_substring)
             # Warmup discards its samples; it also spins up the
             # connection pool so the measured window does not pay for it.
             await _drive_load(client, url, warmup_s, concurrency)
@@ -196,7 +207,7 @@ async def measure(
     warmup_s: float = 1.0,
     concurrency: int = 8,
     path: str = "/",
-    expected_body: bytes | None = None,
+    expected_substring: bytes | None = None,
     retries: int = 1,
 ) -> RunResult:
     """Boot `module:app` under uvicorn, drive load, return latencies.
@@ -210,7 +221,7 @@ async def measure(
     port and uvicorn's bind, another process can grab it. On a readiness
     failure we retry once with a fresh port.
     """
-    last_exc: Exception | None = None
+    last_exc: ReadinessTimeout | None = None
     for _ in range(retries + 1):
         try:
             return await _measure_once(
@@ -220,9 +231,13 @@ async def measure(
                 warmup_s=warmup_s,
                 concurrency=concurrency,
                 path=path,
-                expected_body=expected_body,
+                expected_substring=expected_substring,
             )
-        except RuntimeError as exc:
+        except ReadinessTimeout as exc:
+            # Only the port-race / cold-start timeout is retried. A
+            # body-mismatch `RuntimeError` from `_wait_ready` is a real
+            # framework bug; let it surface immediately instead of
+            # burning another ~10 s readiness window on a retry.
             last_exc = exc
             continue
     assert last_exc is not None
