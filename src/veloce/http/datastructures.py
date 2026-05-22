@@ -38,27 +38,43 @@ class UploadFile:
         self.size = size
         self.headers = headers or {}
 
-    async def read(self, size: int = -1) -> bytes:
-        # In-memory `BytesIO` reads are non-blocking; once the spool has
-        # rolled over to a real temp file these are blocking syscalls,
-        # so hop to a thread to keep the event loop free.
+    def _file_is_in_memory(self) -> bool:
+        """`True` when reads/writes are pure-Python memory ops.
+
+        Both a `BytesIO` (the constructor default) *and* a
+        `SpooledTemporaryFile` that has not rolled over to disk fall
+        into this category — the multipart parser hands us the
+        latter, and that's the production hot path. Once the spool
+        rolls over to a real file, every op becomes a syscall and
+        must go to a thread.
+
+        `_rolled` is a `SpooledTemporaryFile` attribute (stdlib);
+        anything else falls back to "treat as on-disk" for safety.
+        """
         if isinstance(self.file, io.BytesIO):
+            return True
+        return getattr(self.file, "_rolled", None) is False
+
+    async def read(self, size: int = -1) -> bytes:
+        # In-memory file objects stay on the loop; rolled-over spools
+        # and arbitrary file-likes hop to a thread.
+        if self._file_is_in_memory():
             return self.file.read(size)
         return await asyncio.to_thread(self.file.read, size)
 
     async def write(self, data: bytes) -> int:
-        if isinstance(self.file, io.BytesIO):
+        if self._file_is_in_memory():
             return self.file.write(data)
         return await asyncio.to_thread(self.file.write, data)
 
     async def seek(self, offset: int) -> None:
-        if isinstance(self.file, io.BytesIO):
+        if self._file_is_in_memory():
             self.file.seek(offset)
             return
         await asyncio.to_thread(self.file.seek, offset)
 
     async def close(self) -> None:
-        if isinstance(self.file, io.BytesIO):
+        if self._file_is_in_memory():
             self.file.close()
             return
         await asyncio.to_thread(self.file.close)

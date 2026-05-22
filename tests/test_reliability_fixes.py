@@ -172,6 +172,31 @@ def test_signal_has_receivers_for_filters_by_sender():
     assert not sig.has_receivers_for(ANY_SENDER)
 
 
+def test_signal_disconnect_targets_the_correct_subscription():
+    """A receiver connected for both ANY_SENDER and a specific sender
+    used to lose its ANY_SENDER subscription when the caller asked to
+    detach the per-sender one — `_matches(ANY_SENDER, ...)` returned
+    True, deleting the wrong entry. Disconnect now matches the stored
+    sender directly."""
+
+    def handler(sender, **kw):
+        pass
+
+    sig = Signal("test-disconnect-target")
+    sig.connect(handler, weak=False, sender=ANY_SENDER)
+    sig.connect(handler, weak=False, sender="login")
+
+    # Detach only the per-sender binding.
+    sig.disconnect(handler, sender="login")
+
+    # The ANY_SENDER subscription must survive — a send for an
+    # unrelated sender should still find it.
+    assert sig.has_receivers_for("anything")
+    # The per-sender one is gone (only one subscription remains).
+    assert len(sig._subs) == 1
+    assert sig._subs[0][0] is ANY_SENDER
+
+
 # ── Issue #54 — UploadFile async-safe spilled I/O ────────────────────
 
 
@@ -182,14 +207,14 @@ async def test_uploadfile_read_does_not_block_on_spilled_spool():
     coroutine must continue to run while a spilled-upload read is
     in flight. (We use a SpooledTemporaryFile that already rolled over.)
     """
-    # Manually construct a spooled file that has rolled over to disk —
-    # write a payload bigger than the threshold so `_rolled` is True.
-    # The spool's lifetime is owned by `UploadFile`, which closes it
-    # at the end of the test; no `with` block here.
+    # Manually construct a spooled file and force the rollover via the
+    # public `rollover()` API — avoids depending on the `_rolled`
+    # implementation-detail attribute. The spool's lifetime is owned by
+    # `UploadFile`, which closes it at the end of the test.
     spool = tempfile.SpooledTemporaryFile(max_size=128)  # noqa: SIM115
     spool.write(b"A" * 2048)
+    spool.rollover()
     spool.seek(0)
-    assert spool._rolled is True
 
     upload = UploadFile(filename="big.bin", file=spool, size=2048)
     ticked = 0
@@ -215,6 +240,23 @@ async def test_uploadfile_in_memory_read_stays_on_loop():
     BytesIO reads stay on the loop."""
     upload = UploadFile(filename="tiny.txt", file=io.BytesIO(b"hi"), size=2)
     assert await upload.read() == b"hi"
+    await upload.close()
+
+
+@pytest.mark.asyncio
+async def test_uploadfile_unrolled_spool_stays_on_loop():
+    """The production multipart-parser path hands `UploadFile` a
+    `SpooledTemporaryFile`, not a `BytesIO`. A small upload that has
+    NOT rolled over is still in memory — it must stay on the loop, not
+    pay a thread-hop tax for every read/write."""
+    spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024)  # noqa: SIM115
+    spool.write(b"small")
+    spool.seek(0)
+    upload = UploadFile(filename="tiny.bin", file=spool, size=5)
+    # `_file_is_in_memory()` returns True for an unrolled spool —
+    # otherwise the optimisation never fires for real uploads.
+    assert upload._file_is_in_memory() is True
+    assert await upload.read() == b"small"
     await upload.close()
 
 
@@ -258,17 +300,11 @@ async def test_hash_password_async_does_not_block_the_loop():
 
 def test_websocket_receive_queue_is_capped_by_default():
     """The unbounded queue was a DoS vector. Default is now a finite
-    cap so a runaway producer blocks on put rather than growing the
-    queue without limit."""
+    cap; the underlying `asyncio.Queue.maxsize` carries the limit."""
 
     async def go() -> None:
         ws = WebSocket(transport=None, headers={})  # type: ignore[arg-type]
         assert ws._receive_queue.maxsize == WebSocket.DEFAULT_RECV_QUEUE_MAXSIZE
-        # The cap propagates: put_nowait raises once we exceed it.
-        for _ in range(WebSocket.DEFAULT_RECV_QUEUE_MAXSIZE):
-            ws._receive_queue.put_nowait(b"frame")
-        with pytest.raises(asyncio.QueueFull):
-            ws._receive_queue.put_nowait(b"one-too-many")
 
     asyncio.run(go())
 
@@ -280,6 +316,50 @@ def test_websocket_receive_queue_maxsize_override():
     async def go() -> None:
         ws = WebSocket(transport=None, headers={}, recv_queue_maxsize=4)  # type: ignore[arg-type]
         assert ws._receive_queue.maxsize == 4
+
+    asyncio.run(go())
+
+
+def test_websocket_queue_full_closes_connection_with_1009():
+    """When the receive queue fills up, the next inbound frame must not
+    raise `QueueFull` out of `feed_data` (which is a synchronous asyncio
+    Protocol callback). Instead the connection is closed with `1009
+    Message Too Big` and the transport is shut down — the documented
+    backpressure mechanism at this layer."""
+
+    closed: list[bool] = []
+    written: list[bytes] = []
+
+    class FakeTransport:
+        def write(self, data: bytes) -> None:
+            written.append(data)
+
+        def close(self) -> None:
+            closed.append(True)
+
+        def is_closing(self) -> bool:
+            return bool(closed)
+
+    async def go() -> None:
+        ws = WebSocket(
+            transport=FakeTransport(),  # type: ignore[arg-type]
+            headers={},
+            recv_queue_maxsize=2,
+        )
+        # A tiny unfragmented text frame: FIN=1, opcode=1, payload=b"x".
+        # Frame bytes: 0x81, 0x01, b'x'.
+        frame = b"\x81\x01x"
+        # Fill the queue, then deliver one more — the third one
+        # would have raised QueueFull; instead the WS closes itself.
+        ws.feed_data(frame)
+        ws.feed_data(frame)
+        ws.feed_data(frame)
+        assert ws._closed is True
+        assert closed == [True]
+        # A Close frame was sent first — opcode 0x8 with code 1009 in
+        # the payload (big-endian 16-bit).
+        assert written, "expected a Close frame on the way out"
+        assert written[-1][0] & 0x0F == 0x8
 
     asyncio.run(go())
 

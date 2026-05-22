@@ -103,14 +103,32 @@ class Signal:
         same `sender`. With the default `sender=ANY_SENDER` it removes
         any subscription matching `receiver`, regardless of which sender
         it was bound to (back-compat with the previous unfiltered API).
+
+        Targeted detach matches the **stored** `sender` directly, not via
+        `_matches` — `_matches` is the `send`-time rule ("does this
+        subscription fire for that sender?"), where a stored
+        `ANY_SENDER` deliberately matches every send. Reusing that rule
+        in `disconnect` would silently delete an `ANY_SENDER`
+        subscription whenever the caller targeted a specific sender.
         """
         for i, (sub_sender, ref, is_weak) in enumerate(self._subs):
             target = ref() if is_weak else ref
             if target is not receiver:
                 continue
-            if sender is ANY_SENDER or _matches(sub_sender, sender):
+            if sender is ANY_SENDER:
+                # "Detach any subscription for this receiver."
                 del self._subs[i]
                 return
+            # Targeted detach: match the stored sender directly.
+            if sub_sender is sender:
+                del self._subs[i]
+                return
+            try:
+                if sub_sender == sender:
+                    del self._subs[i]
+                    return
+            except Exception:
+                continue
 
     def send(self, sender: Any = None, **kwargs: Any) -> list[tuple[Callable, Any]]:
         """Fire receivers subscribed for `sender` (and for ANY_SENDER).

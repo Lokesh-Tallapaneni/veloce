@@ -44,7 +44,11 @@ class LoggingMiddleware(Middleware):
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
-        start = request._state.get(self._START_KEY)
+        # `pop` rather than `get` so a downstream second-pass through
+        # this middleware on the same request (rewriting via
+        # `make_response`, after_request hooks, etc.) does not read a
+        # stale start time and report the wrong duration.
+        start = request._state.pop(self._START_KEY, None)
         duration_ms = (time.monotonic() - start) * 1000 if start else 0
         self.logger.info(
             "%s %s %d %.1fms",
