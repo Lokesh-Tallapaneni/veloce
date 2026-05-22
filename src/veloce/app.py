@@ -8,6 +8,7 @@ import functools
 import inspect
 import signal
 import time
+import weakref
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,41 @@ from veloce.routing.router import Router
 
 if TYPE_CHECKING:
     import ssl
+
+
+# Memoised `inspect.iscoroutinefunction` results. A `WeakValueDictionary`
+# would not work — the value here is a bool, but bools are singletons in
+# CPython and weak references to them are not supported. Instead we use a
+# `WeakKeyDictionary` so that when a hook callable is garbage-collected
+# its cache entry disappears with it. This sidesteps the id-reuse hazard
+# of an `id()`-keyed dict and keeps memory bounded if a test harness or
+# hot-reloader churns through registered callables.
+_iscoro_cache: weakref.WeakKeyDictionary[Callable[..., Any], bool] = weakref.WeakKeyDictionary()
+
+
+def _is_async_callable(fn: Callable[..., Any]) -> bool:
+    """Memoised `inspect.iscoroutinefunction` for hot-path hook dispatch.
+
+    `iscoroutinefunction` walks attributes and CO_COROUTINE flags on every
+    call. Per-request teardown / before-request / after-request hook loops
+    re-probe the same handler object repeatedly; cache the result keyed by
+    the callable itself. The cache is a `WeakKeyDictionary`, so freeing a
+    hook auto-evicts its entry — no unbounded growth, no id-reuse.
+    """
+    try:
+        cached = _iscoro_cache.get(fn)
+    except TypeError:
+        # `fn` is unhashable / not weakly referenceable — fall back to a
+        # plain probe. Built-in functions go down this path.
+        return inspect.iscoroutinefunction(fn)
+    if cached is not None:
+        return cached
+    result = inspect.iscoroutinefunction(fn)
+    with contextlib.suppress(TypeError):
+        # Not weak-referenceable (e.g. some C-level callables). The
+        # cache silently skips them; the next call re-probes.
+        _iscoro_cache[fn] = result
+    return result
 
 
 class Veloce(Router):
@@ -2045,7 +2081,7 @@ class Veloce(Router):
             # Teardown hooks — always run, even on exceptions.
             for hook in self._teardown_request_hooks:
                 try:
-                    if inspect.iscoroutinefunction(hook):
+                    if _is_async_callable(hook):
                         await hook(_exc)
                     else:
                         loop = asyncio.get_running_loop()
@@ -2059,7 +2095,7 @@ class Veloce(Router):
             # None. Errors are logged, never re-raised.
             for hook in self._teardown_appcontext_hooks:
                 try:
-                    if inspect.iscoroutinefunction(hook):
+                    if _is_async_callable(hook):
                         await hook(_exc)
                     else:
                         loop = asyncio.get_running_loop()
@@ -2131,7 +2167,7 @@ class Veloce(Router):
         `inspect.iscoroutinefunction` probe.
         """
         if is_coro is None:
-            is_coro = inspect.iscoroutinefunction(handler)
+            is_coro = _is_async_callable(handler)
         if is_coro:
             return await handler(**kwargs)
         # Run sync handlers in executor to avoid blocking the event loop

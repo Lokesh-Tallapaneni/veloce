@@ -255,6 +255,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- `Response.encode()` no longer rebuilds the header dict on every
+  response: the three framework defaults (`Content-Type`,
+  `Content-Length`, `Connection`) are emitted inline only when the
+  caller has not supplied them. A case-insensitive check at the same
+  time removes a latent duplicate-header bug where a user-supplied
+  `"content-type"` (lowercase) would land alongside the default
+  `"Content-Type"` in the encoded line. Reason phrase comes from the
+  module-level `{code: phrase}` map already added for `Response.status`.
+- `StaticFiles` now satisfies the existence + stat with a single
+  executor `os.stat` call, classifying file/dir from `st_mode` —
+  the previous request path issued `isfile` and then a second `stat`
+  for size/mtime, doubling executor round-trips.
+- WebSocket `_send_frame` hands the header + payload to the transport
+  as two separate buffers via `writelines` instead of
+  `bytearray.extend(data)` + `bytes(frame)`. On a 64 KiB frame that
+  saves a 64 KiB memcpy on the way out.
+- SSE: single-line event payloads skip the `data.split("\n")` list
+  allocation; chunked SSE writes use `transport.writelines` instead
+  of concatenating size-line + body + trailer into one fresh bytes
+  per chunk.
+- SSE status-line reuses the response-module `_STATUS_PHRASES` table
+  rather than `from http import HTTPStatus` + `HTTPStatus(code).phrase`
+  on every stream startup.
+- `http_date(None)` (the per-response `Date:` header) caches the
+  RFC 9110 IMF-fixdate to one-second resolution — `formatdate()` ran
+  once per response despite the output only changing once a second.
+- App-level hook dispatch (`teardown_request`, `teardown_appcontext`,
+  `_call_handler`) reads `iscoroutinefunction` from a memoised cache
+  keyed by `id(fn)`. Hooks register once and are dispatched many times;
+  the inline `inspect.iscoroutinefunction(...)` walk on every request
+  is replaced by a dict lookup.
+- `CORSMiddleware` precomputes `", ".join(self.allow_methods)`,
+  `", ".join(self.allow_headers)`, and `", ".join(self.expose_headers)`
+  at construction. Per-response preflight emission now hits the
+  precomputed strings instead of rebuilding them on every cross-origin
+  reply.
+- Cookie-based `SessionMiddleware` drops the
+  `json.dumps(sort_keys=True)` mutation tripwire (computed on entry
+  *and* on exit) in favour of the `Session.modified` flag the
+  `Session` container already maintains — saves two full
+  serialisations on every request that traverses the middleware.
 - WebSocket frame unmasking is now bulk-XOR via `int.from_bytes` /
   `to_bytes` over the tiled mask, replacing a Python-level per-byte
   loop. Saves measurable CPU on any frame past a handful of bytes

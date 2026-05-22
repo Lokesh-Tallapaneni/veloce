@@ -37,6 +37,17 @@ def test_update_marks_modified():
     assert s.modified is True
 
 
+def test_ior_marks_modified():
+    # PEP 584 in-place merge — `dict.__ior__` runs at the C level and
+    # does not route through `__setitem__`, so without an explicit
+    # override the mutation would not flip `modified` and the session
+    # middleware would silently skip the re-sign.
+    s = Session()
+    s |= {"k": "v"}
+    assert s["k"] == "v"
+    assert s.modified is True
+
+
 def test_pop_missing_key_with_default_does_not_mark_modified():
     s = Session({"a": 1})
     assert s.pop("absent", None) is None

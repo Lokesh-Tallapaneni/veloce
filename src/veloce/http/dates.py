@@ -16,6 +16,23 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
 from time import struct_time
+from time import time as _time
+
+# `http_date(None)` is the per-response `Date:` header. Formatting that
+# string costs ~3 µs on every response but only changes once a second;
+# cache the result keyed by the whole-second bucket.
+_now_cache: tuple[int, str] = (-1, "")
+
+
+def _http_date_now() -> str:
+    """Return the current HTTP-date, cached to a 1-second granularity."""
+    global _now_cache
+    sec = int(_time())
+    bucket, cached = _now_cache
+    if sec != bucket:
+        cached = formatdate(sec, usegmt=True)
+        _now_cache = (sec, cached)
+    return cached
 
 
 def http_date(value: datetime | date | struct_time | int | float | None = None) -> str:
@@ -31,8 +48,8 @@ def http_date(value: datetime | date | struct_time | int | float | None = None) 
     Always emits the `GMT` zone suffix per the spec.
     """
     if value is None:
-        ts: float = datetime.now(tz=timezone.utc).timestamp()
-    elif isinstance(value, datetime):
+        return _http_date_now()
+    if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         ts = value.timestamp()

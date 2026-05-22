@@ -13,7 +13,6 @@ keep validating until they age out.
 
 from __future__ import annotations
 
-import json
 import secrets
 from typing import Any
 
@@ -75,16 +74,14 @@ class SessionMiddleware(Middleware):
         # `new` is True when the request carried no valid session cookie.
         session.new = is_new
         request._state["session"] = session
-        # Snapshot canonical form so process_response can detect mutation
-        # without re-signing on every response (signing is the expensive bit).
-        request._state["_session_original"] = json.dumps(session_data, sort_keys=True)
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
-        session = request._state.get("session", {})
-        original = request._state.get("_session_original", "{}")
-        current = json.dumps(session, sort_keys=True)
-        if current == original:
+        session = request._state.get("session")
+        # `Session` flips `.modified` on any mutating operation, so we can
+        # skip the re-sign + Set-Cookie when the handler never touched it.
+        # No session attached (handler bypassed middleware?) → nothing to do.
+        if session is None or not getattr(session, "modified", False):
             return response
 
         cookie_value = self._signer.dumps(session)

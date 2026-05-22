@@ -92,6 +92,16 @@ class Session(dict[str, Any]):
         super().update(*args, **kwargs)
         self.modified = True
 
+    def __ior__(self, other: Any) -> Session:  # type: ignore[override,misc]
+        # PEP 584 `|=` goes through the C-level merge, not `__setitem__`.
+        # Without this override the mutation is invisible to `.modified`
+        # and the cookie middleware would skip the re-sign. The `misc`
+        # ignore is the standard workaround for dict's `__or__` / `__ior__`
+        # signature interaction with subclasses (see python/mypy#3553).
+        super().__ior__(other)
+        self.modified = True
+        return self
+
 
 class SessionStore:
     """Server-side session backend interface.

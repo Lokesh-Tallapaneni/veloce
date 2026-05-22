@@ -182,17 +182,23 @@ class Response:
         if self._encoded is not None:
             return self._encoded
 
-        reason = HTTPStatus(self.status_code).phrase
-        parts = [f"HTTP/1.1 {self.status_code} {reason}\r\n"]
+        reason = _STATUS_PHRASES.get(self.status_code, "")
+        parts = [f"HTTP/1.1 {self.status_code} {reason}".rstrip() + "\r\n"]
 
-        final_headers = {
-            "Content-Type": self.content_type,
-            "Content-Length": str(len(self.body)),
-            "Connection": "keep-alive",
-        }
-        final_headers.update(self.headers)
+        user_headers = self.headers
+        # User-supplied keys win for Content-Type/Length/Connection.
+        # Detect case-insensitively so a user-passed "content-type"
+        # doesn't get silently shadowed by — or duplicated alongside —
+        # the framework default.
+        user_keys_lc = {k.lower() for k in user_headers}
+        if "content-type" not in user_keys_lc:
+            parts.append(f"Content-Type: {self.content_type}\r\n")
+        if "content-length" not in user_keys_lc:
+            parts.append(f"Content-Length: {len(self.body)}\r\n")
+        if "connection" not in user_keys_lc:
+            parts.append("Connection: keep-alive\r\n")
 
-        for key, value in final_headers.items():
+        for key, value in user_headers.items():
             if key.lower() == "set-cookie":
                 # One `Set-Cookie` dict entry may carry several cookies
                 # joined by the internal separator; emit and CRLF-validate

@@ -67,6 +67,12 @@ class CORSMiddleware(Middleware):
         self._allow_origins_has_star = "*" in self._allow_origins_set
         self._allow_headers_lower: frozenset[str] = frozenset(h.lower() for h in self.allow_headers)
         self._allow_headers_has_star = "*" in self.allow_headers
+        # Precompute the joined header strings — these are constant for
+        # the middleware lifetime, so the per-response `", ".join(...)`
+        # in `_add_cors_headers` is wasted work.
+        self._allow_methods_joined = ", ".join(self.allow_methods)
+        self._allow_headers_joined = ", ".join(self.allow_headers)
+        self._expose_headers_joined = ", ".join(self.expose_headers)
 
         # Wildcard-with-credentials is invalid per spec — fail loudly at
         # construction so a misconfigured app never serves it.
@@ -165,14 +171,14 @@ class CORSMiddleware(Middleware):
                 response.headers["Vary"] = "Origin"
 
         if preflight:
-            response.headers["Access-Control-Allow-Methods"] = ", ".join(self.allow_methods)
+            response.headers["Access-Control-Allow-Methods"] = self._allow_methods_joined
             if self._allow_headers_has_star:
                 response.headers["Access-Control-Allow-Headers"] = "*"
             else:
-                response.headers["Access-Control-Allow-Headers"] = ", ".join(self.allow_headers)
+                response.headers["Access-Control-Allow-Headers"] = self._allow_headers_joined
 
         if self.allow_credentials:
             response.headers["Access-Control-Allow-Credentials"] = "true"
 
         if self.expose_headers:
-            response.headers["Access-Control-Expose-Headers"] = ", ".join(self.expose_headers)
+            response.headers["Access-Control-Expose-Headers"] = self._expose_headers_joined

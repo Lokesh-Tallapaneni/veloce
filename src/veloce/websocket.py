@@ -670,19 +670,32 @@ class WebSocket:
                     self.transport.close()
 
     def _send_frame(self, data: bytes, opcode: int) -> None:
-        """Send a WebSocket frame."""
-        frame = bytearray()
-        frame.append(0x80 | opcode)  # FIN + opcode
+        """Send a WebSocket frame.
+
+        The header is built into a small bytearray and the payload is
+        handed to the transport via `writelines` — that avoids a
+        bytearray.extend copy of the (potentially KiB-sized) payload
+        followed by a `bytes(frame)` copy on the way out the door.
+        """
+        header = bytearray()
+        header.append(0x80 | opcode)  # FIN + opcode
 
         length = len(data)
         if length < 126:
-            frame.append(length)
+            header.append(length)
         elif length < 65536:
-            frame.append(126)
-            frame.extend(struct.pack("!H", length))
+            header.append(126)
+            header.extend(struct.pack("!H", length))
         else:
-            frame.append(127)
-            frame.extend(struct.pack("!Q", length))
+            header.append(127)
+            header.extend(struct.pack("!Q", length))
 
-        frame.extend(data)
-        self.transport.write(bytes(frame))
+        # `transport.writelines` (where supported) keeps the header and
+        # payload as separate buffers; otherwise fall back to a single
+        # concatenated `write` for transports / test fakes that only
+        # implement the basic `WriteTransport` API.
+        writelines = getattr(self.transport, "writelines", None)
+        if writelines is not None:
+            writelines((bytes(header), data))
+        else:
+            self.transport.write(bytes(header) + bytes(data))
