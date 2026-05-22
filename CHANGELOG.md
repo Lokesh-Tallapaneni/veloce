@@ -222,11 +222,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cap turns the previously-unbounded queue into a backpressure signal:
   a peer that sends faster than the handler reads now blocks the
   producer on `put` instead of growing the queue without limit.
-- `tests/test_async_safety.py::test_sync_handler_reasonable_overhead`
-  no longer asserts a hard-coded 500 µs wall-clock budget — it now
-  measures async dispatch in the same run and asserts sync is within
-  20× of it. Catches a real regression without flaking on CPU-loaded
-  CI machines.
+- All four wall-clock perf checks in the test suite —
+  `TestPerformanceAfterFixes` (`tests/test_async_safety.py`),
+  `TestNoSyncIOInHotPath` (`tests/test_async_io.py`), and
+  `TestPerformance` (`tests/test_iteration3.py`) — are now marked
+  `@pytest.mark.perf` and excluded from the default `pytest` run via
+  `addopts = ["-m", "not perf"]` in `pyproject.toml`. The
+  relative-to-async budget alone was still flaky under full-suite CPU
+  contention; opt in with `pytest -m perf` on a quiet machine. Catastrophic
+  dispatch regressions remain gated in CI by
+  `bench/dispatch_bench.py --min-rps 2000`.
 - Documentation corrected against the code: sync (`def`) handlers are
   documented as supported (run in a thread-pool executor); the built-in
   development server is documented as HTTP/1.1-only (WebSocket and HTTP/2

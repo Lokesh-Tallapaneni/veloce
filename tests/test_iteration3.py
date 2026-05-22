@@ -312,7 +312,13 @@ class TestAppState:
 # ═══════════════════════════════════════════════════════════════
 
 
+@pytest.mark.perf
 class TestPerformance:
+    """Wall-clock dispatch checks — flaky under full-suite CPU contention,
+    so the class is marked `perf` and excluded from the default `pytest`
+    run. Opt in with `pytest -m perf` on a quiet machine.
+    """
+
     @pytest.mark.asyncio
     async def test_simple_route_under_50us(self):
         """Sanity check: simple route should complete in under 50 microseconds."""
