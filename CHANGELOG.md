@@ -60,6 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the third-party ASGI ecosystem (tracing, profiling, observability)
   plugs into a veloce app. The first-registered ASGI middleware is the
   outermost wrapper. Native `Middleware` classes are unaffected.
+- `app.add_instrumentation(hook)` registers an observability hook called
+  once per finished HTTP request with a `RequestMetrics` record — method,
+  concrete path, matched route *template* (a low-cardinality metric
+  label), status code, and wall-clock duration. Hooks may be sync or
+  async; one that raises is logged and never breaks the response. With no
+  hook registered the request path pays nothing — not even a clock read.
+  The `request_started` / `request_finished` signals now also carry the
+  `Request`, so a tracing bridge can correlate a request's start with its
+  finish.
 - Query / path / header / cookie parameters are now validated through
   Pydantic for any annotation the fast scalar path does not cover —
   `datetime`, `date`, `time`, `UUID`, `Decimal`, `Literal[...]` and other
