@@ -301,3 +301,83 @@ async def test_websocket_data_frame_clears_abandoned_fragment_state():
     # progress and is dropped, rather than appending to "abandoned-".
     ws.feed_data(_client_frame(0x0, b"stale", fin=True))
     assert ws._receive_queue.empty()
+
+
+# ── C3 — receive-side state-machine guards ─────────────────────────
+
+
+def test_receive_text_before_accept_raises():
+    """Calling `receive_text` before `accept()` is a programming error
+    — without the guard the caller hung on the empty queue forever."""
+    import asyncio
+
+    async def go() -> None:
+        ws = WebSocket(_FakeTransport(), {})
+        with pytest.raises(RuntimeError, match="call accept"):
+            await ws.receive_text(timeout=0.01)
+
+    asyncio.run(go())
+
+
+def test_receive_bytes_before_accept_raises():
+    import asyncio
+
+    async def go() -> None:
+        ws = WebSocket(_FakeTransport(), {})
+        with pytest.raises(RuntimeError, match="call accept"):
+            await ws.receive_bytes(timeout=0.01)
+
+    asyncio.run(go())
+
+
+def test_receive_json_before_accept_raises():
+    """`receive_json` routes through `receive_text`, so it inherits the
+    guard — pin so a future refactor cannot regress it."""
+    import asyncio
+
+    async def go() -> None:
+        ws = WebSocket(_FakeTransport(), {})
+        with pytest.raises(RuntimeError, match="call accept"):
+            await ws.receive_json(timeout=0.01)
+
+    asyncio.run(go())
+
+
+def test_raw_receive_before_accept_raises():
+    """The raw ASGI `receive()` escape hatch must enforce the same
+    handshake state machine as the typed `receive_*` helpers — otherwise
+    it consumes the `websocket.connect` envelope and corrupts the next
+    `accept()`. Symmetric with the existing `WebSocket.send()` guard."""
+    import asyncio
+
+    async def go() -> None:
+        # Build an ASGI-mode WebSocket so `receive()` is in-scope.
+        async def fake_recv() -> dict:
+            return {"type": "websocket.connect"}
+
+        async def fake_send(message: dict) -> None:
+            return None
+
+        scope = {"type": "websocket", "headers": []}
+        ws = WebSocket.from_asgi(scope, fake_recv, fake_send)
+        with pytest.raises(RuntimeError, match="call accept"):
+            await ws.receive()
+
+    asyncio.run(go())
+
+
+def test_receive_after_close_raises_disconnect():
+    """A receive after the application closed the connection is a
+    `WebSocketDisconnect`, matching the `send_*` close-state behaviour."""
+    import asyncio
+
+    from veloce.exceptions import WebSocketDisconnect
+
+    async def go() -> None:
+        ws = WebSocket(_FakeTransport(), {})
+        ws._accepted = True
+        ws._closed = True
+        with pytest.raises(WebSocketDisconnect):
+            await ws.receive_text(timeout=0.01)
+
+    asyncio.run(go())

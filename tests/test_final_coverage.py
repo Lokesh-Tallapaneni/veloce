@@ -255,6 +255,11 @@ class TestWebSocketTimeout:
                 return None
 
         ws = WebSocket(FakeTransport(), {"sec-websocket-key": "test"})
+        # Skip the full handshake — the test only exercises the
+        # `wait_for(_receive_queue.get())` timeout, but `receive_text`
+        # now refuses to run before `accept()` (a real handshake state
+        # check). Flipping the flag mirrors the post-accept state.
+        ws._accepted = True
 
         with pytest.raises(asyncio.TimeoutError):
             await ws.receive_text(timeout=0.01)

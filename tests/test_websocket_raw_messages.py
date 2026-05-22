@@ -43,6 +43,10 @@ def test_raw_send_forwards_message():
 def test_raw_receive_non_asgi_raises():
     # A transport-mode WebSocket has no ASGI receive callable.
     ws = WebSocket(transport=None, headers={})
+    # Skip the handshake — `receive()` now enforces accept-before-receive,
+    # which would fire first. This test pins the *other* check
+    # (transport-mode → no ASGI escape hatch).
+    ws._accepted = True
     import asyncio
 
     with __import__("pytest").raises(RuntimeError, match="ASGI-mode only"):

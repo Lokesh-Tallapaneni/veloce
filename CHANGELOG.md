@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workloads, and wins rps vs Flask by ~57 % (Flask wins p50/p99 under
   `asgiref.WsgiToAsgi` at low concurrency — see caveats in
   `docs/bench/README.md`).
+- `WebSocket.origin` accessor returns the handshake `Origin` header
+  (or `None`); `WebSocket.check_origin(allowed)` returns `True` only
+  when the origin is on the allow-list. Normalisation
+  (`.rstrip("/").lower()`) and wildcard (`"*"`) semantics match the
+  registered-once `WebSocketOriginMiddleware`, so allow-lists are
+  interchangeable between the two APIs. `Origin: null` (sandboxed
+  iframes / `file://`) is rejected. The pair lets handlers reject
+  Cross-Site WebSocket Hijacking before `accept()` — the WebSocket
+  handshake is plain HTTP, so Same-Origin Policy and CORS do not apply.
 - **Application core** — `Veloce` app object with HTTP method decorators
   (`get`/`post`/`put`/`patch`/`delete`/`head`/`options`/`trace`),
   lifespan handling, configurable docs URLs, and `app.run()`.
@@ -171,6 +180,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WebSocket.send()` — the raw ASGI-message escape hatch — now enforces the
   same handshake state machine as `send_text` / `send_bytes`: sending before
   `accept()` or after `close()` raises instead of proceeding silently.
+- `WebSocket.receive_text` / `receive_bytes` / `receive_json` enforce the
+  same handshake state machine as their `send_*` siblings: calling them
+  before `accept()` raises `RuntimeError` (was: hung on an empty queue)
+  and calling them after `close()` raises `WebSocketDisconnect`.
 - Multipart parsing no longer leaks a `SpooledTemporaryFile` when a request
   is rejected by a DoS cap (oversized part or too many parts): the
   in-progress part's spool and every spool already collected from
