@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from email.utils import parsedate_to_datetime
 from typing import Any, NamedTuple
 
 import orjson
@@ -587,8 +588,6 @@ class Request:
         if not raw:
             return None
         try:
-            from email.utils import parsedate_to_datetime
-
             dt = parsedate_to_datetime(raw.strip())
         except (TypeError, ValueError):
             return None
@@ -645,8 +644,6 @@ class Request:
         if stripped.startswith('"') or stripped.startswith('W/"'):
             return (stripped, None)
         try:
-            from email.utils import parsedate_to_datetime
-
             dt = parsedate_to_datetime(stripped)
         except (TypeError, ValueError):
             return ("", None)
@@ -667,8 +664,6 @@ class Request:
         if not raw:
             return None
         try:
-            from email.utils import parsedate_to_datetime
-
             dt = parsedate_to_datetime(raw.strip())
         except (TypeError, ValueError):
             return None

@@ -255,6 +255,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- WebSocket frame unmasking is now bulk-XOR via `int.from_bytes` /
+  `to_bytes` over the tiled mask, replacing a Python-level per-byte
+  loop. Saves measurable CPU on any frame past a handful of bytes
+  (WebSocket payloads are usually hundreds to KiB-sized).
+- `Response.status` reads the reason phrase from a module-level
+  `{code: phrase}` map built once at import time, instead of
+  constructing an `HTTPStatus(code)` IntEnum-walk on every access.
+- `email.utils.parsedate_to_datetime` is now imported at module load
+  in `veloce.http.request` instead of re-imported inside four
+  conditional-request hot properties.
+- `StaticFiles` caches `mimetypes.guess_type` per file path
+  (bounded LRU, 512 entries) — `guess_type` was running its full MIME
+  table walk on every static hit.
+- `safe.secure_filename` uses a module-level compiled regex for the
+  underscore-run collapser, removing the per-call `re` cache lookup.
 - Per-request reflection eliminated from the hot path: handler
   signatures are inspected once at registration into a frozen
   resolution plan.

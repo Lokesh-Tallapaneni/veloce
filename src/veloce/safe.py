@@ -22,6 +22,9 @@ import unicodedata
 # Permitted characters in a sanitised filename: ASCII letters, digits,
 # underscore, period, hyphen. Everything else collapses to underscore.
 _VALID_FILENAME_CHAR = re.compile(r"[^A-Za-z0-9_.\-]")
+# Run-of-underscores collapser — kept module-level so the compile cost
+# is paid once instead of every `re.sub` cache lookup.
+_UNDERSCORE_RUN = re.compile(r"_+")
 
 # Windows reserved device names — case-insensitive. Even on POSIX, blocking
 # these prevents subtle cross-platform breakage in mounted Windows shares.
@@ -67,7 +70,7 @@ def secure_filename(name: str) -> str:
 
     # Strip surrounds and collapse repeated underscores.
     name = name.strip("._ ")
-    name = re.sub(r"_+", "_", name)
+    name = _UNDERSCORE_RUN.sub("_", name)
 
     if not name:
         return ""
