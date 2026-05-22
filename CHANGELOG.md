@@ -97,11 +97,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SecurityHeadersMiddleware` attaches `X-Content-Type-Options`,
   `X-Frame-Options`, `Referrer-Policy`, and optional HSTS / CSP /
   `Permissions-Policy` response headers.
-- `CSRFMiddleware` accepts a `secret` that HMAC-signs the token, so a
-  cookie-injected value carrying no valid signature is refused; the CSRF
-  cookie now defaults to `Secure`.
-- `parse_multipart_form` caps the part count and per-part size, raising
-  `413` — a guard against algorithmic-complexity DoS from a maliciously
+- `CSRFMiddleware` accepts a `secret` that HMAC-signs the token (with an
+  optional `max_age` expiry), so a cookie value carrying no valid server
+  signature is refused — raising the bar against cookie-injection CSRF.
+  The CSRF cookie now defaults to `Secure`.
+- Multipart form parsing caps the part count and per-part size
+  (`MAX_FORM_PARTS` / `MAX_FORM_PART_SIZE` config keys), raising `413`
+  — a guard against algorithmic-complexity DoS from a maliciously
   structured form.
 - `app.use_secure_defaults()` applies a hardened baseline (secure session
   cookies + `SecurityHeadersMiddleware`); `app.security_audit()` and the

@@ -217,3 +217,24 @@ def test_multipart_within_caps_parses_normally():
     form = parse_multipart_form(body, ct, max_parts=10, max_part_size=1000)
     assert form["a"] == "1"
     assert form["b"] == "2"
+
+
+def test_multipart_part_count_cap_from_app_config():
+    """The `MAX_FORM_PARTS` config key drives the per-app part cap that a
+    live request hits through `request.form()`."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["MAX_FORM_PARTS"] = 2
+
+    @app.post("/u")
+    async def u(request: Request):
+        await request.form()
+        return {"ok": True}
+
+    boundary = "veloceboundary123"
+    body = _multipart_body(boundary, [("a", "1"), ("b", "2"), ("c", "3"), ("d", "4")])
+    resp = TestClient(app).post(
+        "/u",
+        content=body,
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+    )
+    assert resp.status_code == 413

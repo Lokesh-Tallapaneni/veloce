@@ -625,17 +625,21 @@ def parse_multipart_form(
     delimiter = f"--{boundary}".encode()
     parts = body.split(delimiter)
 
-    # `parts` is [preamble, part, ..., epilogue]; the real parts sit
-    # between. Reject before the per-part loop materialises a
-    # pathological number of FormData entries.
-    if len(parts) - 2 > max_parts:
-        from veloce.exceptions import RequestEntityTooLarge
-
-        raise RequestEntityTooLarge(f"multipart form exceeds the {max_parts}-part limit")
+    # Count real parts as they are encountered and bail the moment the
+    # cap is crossed — exact regardless of whether the body carries a
+    # well-formed `--boundary--` epilogue, and it stops before the
+    # expensive per-part decoding for everything past the limit.
+    parts_seen = 0
 
     for part in parts[1:]:
         if part.strip() == b"--" or not part.strip():
             continue
+
+        parts_seen += 1
+        if parts_seen > max_parts:
+            from veloce.exceptions import RequestEntityTooLarge
+
+            raise RequestEntityTooLarge(f"multipart form exceeds the {max_parts}-part limit")
         if b"\r\n\r\n" not in part:
             continue
 

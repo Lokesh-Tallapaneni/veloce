@@ -45,6 +45,8 @@ class Config(dict[str, Any]):
             "APPLICATION_ROOT": "/",
             "PREFERRED_URL_SCHEME": "http",
             "MAX_CONTENT_LENGTH": None,
+            "MAX_FORM_PARTS": 1000,
+            "MAX_FORM_PART_SIZE": 10 * 1024 * 1024,
             "MAX_COOKIE_SIZE": 4093,
             "SESSION_COOKIE_NAME": "session",
             "SESSION_COOKIE_HTTPONLY": True,

@@ -224,3 +224,27 @@ async def test_signed_csrf_roundtrip_passes():
         )
     )
     assert resp.status_code == 200
+
+
+async def test_signed_csrf_respects_max_age():
+    """A signed token older than `max_age` is refused. `max_age=-1`
+    rejects even a just-minted token (age >= 0 > -1), proving the bound
+    is passed through to signature verification."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(secret="test-secret", max_age=-1))
+
+    @app.get("/g")
+    async def g():
+        return {}
+
+    @app.post("/x")
+    async def x():
+        return {}
+
+    minted = await app.handle_request(_req("GET", path="/g"))
+    token = minted.headers.get("Set-Cookie", "").split("csrf_token=", 1)[1].split(";", 1)[0]
+
+    resp = await app.handle_request(
+        _req("POST", headers={"cookie": f"csrf_token={token}", "x-csrf-token": token})
+    )
+    assert resp.status_code == 403

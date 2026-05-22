@@ -33,10 +33,15 @@ Veloce-specific knobs:
   `secure` defaults to `True` so the cookie is never sent over plain
   HTTP — pass `cookie_secure=False` for local HTTP development.
 - `secret` — when set, the token in the cookie is HMAC-signed. The
-  double-submit equality check still applies, but the signature also
-  proves the value was minted by this server, closing the
-  cookie-injection gap where an attacker able to write the victim's
-  `csrf_token` cookie could otherwise also forge the matching header.
+  double-submit equality check still applies; the signature additionally
+  proves the value was minted by this server, so an attacker who can
+  plant a cookie but cannot obtain a server-issued token (network/HTTP
+  cookie injection, a cookie-writing sibling subdomain) is refused.
+  Signing alone does **not** stop an attacker who can obtain their own
+  valid token — bind the token to the authenticated session for that.
+- `max_age` — when set together with `secret`, a signed token older
+  than this many seconds is rejected, bounding how long a leaked token
+  stays replayable.
 - `token_factory` — overridable for tests; default
   `secrets.token_urlsafe(32)`.
 """
@@ -65,6 +70,7 @@ class CSRFMiddleware(Middleware):
         cookie_samesite: str = "Lax",
         token_factory: Any = None,
         secret: str | None = None,
+        max_age: int | None = None,
     ) -> None:
         self.cookie_name = cookie_name
         self.header_name = header_name
@@ -74,9 +80,10 @@ class CSRFMiddleware(Middleware):
         self.cookie_httponly = cookie_httponly
         self.cookie_samesite = cookie_samesite
         self.token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
-        # When a `secret` is supplied the cookie token is HMAC-signed, so
-        # a planted (cookie-injected) value fails verification even when
-        # the attacker also controls the echoed header.
+        # When a `secret` is supplied the cookie token is HMAC-signed: a
+        # value carrying no valid server signature fails verification
+        # even when the attacker also echoes it in the header.
+        self._max_age = max_age
         self._signer: Any = None
         if secret:
             from veloce.signing import Signer
@@ -97,15 +104,16 @@ class CSRFMiddleware(Middleware):
         cookie_val = existing
         if not cookie_val:
             return self._forbidden("CSRF cookie missing")
-        # With signing enabled, the cookie value must additionally carry a
-        # valid server signature — an injected cookie can't produce one.
+        # With signing enabled, the cookie value must additionally carry
+        # a valid (and, when `max_age` is set, unexpired) server
+        # signature before the double-submit comparison is trusted.
         if self._signer is not None:
             from veloce.signing import BadSignature
 
             try:
-                self._signer.loads(cookie_val)
+                self._signer.loads(cookie_val, max_age=self._max_age)
             except BadSignature:
-                return self._forbidden("CSRF cookie signature invalid")
+                return self._forbidden("CSRF cookie signature invalid or expired")
         # Case-insensitive header lookup (Headers is CIMultiDict).
         header_val = request.headers.get(self.header_name)
         if header_val and secrets.compare_digest(header_val, cookie_val):

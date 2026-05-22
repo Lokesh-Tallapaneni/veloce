@@ -2512,11 +2512,17 @@ class Veloce(Router):
             # apply any host allow-list and Origin allow-list directly here.
             ws_host = ""
             ws_origin = ""
+            _host_seen = False
+            _origin_seen = False
             for _hk, _hv in scope.get("headers", []):
-                if _hk == b"host":
+                # First occurrence of each header wins — a duplicate
+                # `Origin` must not be able to shadow the real one.
+                if _hk == b"host" and not _host_seen:
                     ws_host = _hv.decode("latin-1").split(":", 1)[0].lower()
-                elif _hk == b"origin":
+                    _host_seen = True
+                elif _hk == b"origin" and not _origin_seen:
                     ws_origin = _hv.decode("latin-1")
+                    _origin_seen = True
             for _mw in self._middlewares:
                 _host_check = getattr(_mw, "is_host_allowed", None)
                 if _host_check is not None and not _host_check(ws_host):
