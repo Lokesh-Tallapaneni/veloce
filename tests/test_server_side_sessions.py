@@ -122,6 +122,64 @@ def test_unmodified_session_sets_no_cookie():
     assert "Set-Cookie" not in resp.headers
 
 
+def test_emptying_a_never_stored_session_sets_no_cookie():
+    """A handler that touches then leaves a brand-new session empty must
+    not emit a cookie or leave an orphan store entry."""
+    store = InMemorySessionStore()
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(ServerSessionMiddleware(store=store))
+
+    @app.post("/noop")
+    async def noop(request: Request):
+        request.session.clear()  # empty, and there was no prior cookie
+        return {"ok": True}
+
+    resp = app.test_client().post("/noop")
+    assert "Set-Cookie" not in resp.headers
+    assert len(store._entries) == 0
+
+
+# ── session-id rotation (fixation defence) ────────────────────────────
+
+
+def test_regenerate_id_rotates_the_session_id():
+    """`session.regenerate_id()` at a privilege boundary mints a fresh id
+    and drops the old one, carrying the payload across."""
+    store = InMemorySessionStore()
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(ServerSessionMiddleware(store=store))
+
+    @app.post("/visit")
+    async def visit(request: Request):
+        request.session["seen"] = True
+        return {"ok": True}
+
+    @app.post("/login")
+    async def login(request: Request):
+        request.session["user"] = "alice"
+        request.session.regenerate_id()
+        return {"ok": True}
+
+    @app.get("/whoami")
+    async def whoami(request: Request):
+        return {
+            "user": request.session.get("user"),
+            "seen": request.session.get("seen"),
+        }
+
+    client = app.test_client()
+    client.post("/visit")
+    old_id = next(iter(store._entries))
+
+    client.post("/login")
+    # The pre-login id no longer resolves; exactly one fresh id replaced it.
+    assert old_id not in store._entries
+    assert len(store._entries) == 1
+    assert next(iter(store._entries)) != old_id
+    # The payload survived the rotation.
+    assert client.get("/whoami").json() == {"user": "alice", "seen": True}
+
+
 # ── the store itself ──────────────────────────────────────────────────
 
 

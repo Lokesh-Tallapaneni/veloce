@@ -166,8 +166,13 @@ class ServerSessionMiddleware(Middleware):
                 response._encoded = None
             return response
 
-        if session_id is None:
-            # A fresh session — mint an unguessable id (256 bits of entropy).
+        if session_id is None or session.regenerate:
+            # A fresh session, or an explicit id rotation requested via
+            # `session.regenerate_id()` at a privilege boundary. Drop the
+            # old store entry so the previous id can no longer resolve.
+            if session_id is not None and session.regenerate:
+                await self.store.delete(session_id)
+            # Mint an unguessable id — 256 bits of entropy.
             session_id = secrets.token_urlsafe(32)
         await self.store.write(session_id, dict(session), self.max_age)
         response.headers["Set-Cookie"] = self._cookie(session_id, self.max_age)

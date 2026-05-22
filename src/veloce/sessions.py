@@ -17,7 +17,7 @@ from typing import Any
 class Session(dict[str, Any]):
     """The request session — a dict that knows when it has changed."""
 
-    __slots__ = ("new", "modified")
+    __slots__ = ("new", "modified", "regenerate")
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         # dict's C-level init populates without routing through our
@@ -26,6 +26,22 @@ class Session(dict[str, Any]):
         super().__init__(*args, **kwargs)
         self.new = False
         self.modified = False
+        # Set by `regenerate_id()` — asks a server-side session backend to
+        # mint a fresh id for this session on the next response.
+        self.regenerate = False
+
+    def regenerate_id(self) -> None:
+        """Request a fresh server-side session id on the next response.
+
+        Call this at a privilege boundary — login, role change — so a
+        pre-existing (possibly attacker-planted) session id cannot be
+        replayed against the now-elevated session: the session-fixation
+        defence. It marks the session modified so the rotation is written
+        back. Harmless with cookie-only sessions, which carry no
+        server-side id to rotate.
+        """
+        self.regenerate = True
+        self.modified = True
 
     @property
     def permanent(self) -> bool:
