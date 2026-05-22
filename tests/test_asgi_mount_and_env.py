@@ -143,6 +143,40 @@ def test_from_env_file_ignores_malformed_lines(tmp_path):
     assert app.config["ANOTHER"] == "fine"
 
 
+def test_from_env_file_strips_an_unquoted_inline_comment(tmp_path):
+    """An unquoted value drops a trailing ` #` inline comment instead of
+    keeping it as part of the value."""
+    env = tmp_path / ".env"
+    env.write_text("HOST=localhost  # the dev host\nPORT=8000\n")
+    app = Veloce(openapi_url=None)
+    app.config.from_env_file(str(env))
+
+    assert app.config["HOST"] == "localhost"
+    assert app.config["PORT"] == "8000"
+
+
+def test_from_env_file_keeps_a_hash_inside_a_quoted_value(tmp_path):
+    """A `#` inside quotes is literal; only a comment after the closing
+    quote is stripped."""
+    env = tmp_path / ".env"
+    env.write_text('PASSWORD="p#ss w#rd"  # not part of the value\n')
+    app = Veloce(openapi_url=None)
+    app.config.from_env_file(str(env))
+
+    assert app.config["PASSWORD"] == "p#ss w#rd"
+
+
+def test_from_env_file_keeps_a_bare_hash_without_leading_space(tmp_path):
+    """Only a whitespace-delimited ` #` starts a comment — a `#` with no
+    leading space is part of the value."""
+    env = tmp_path / ".env"
+    env.write_text("COLOR=#ff0000\n")
+    app = Veloce(openapi_url=None)
+    app.config.from_env_file(str(env))
+
+    assert app.config["COLOR"] == "#ff0000"
+
+
 # ── mount edge cases ──────────────────────────────────────────────────
 
 
@@ -173,21 +207,47 @@ def test_mount_normalises_a_missing_leading_slash():
     assert resp.body == b"path=/x root=/ext"
 
 
-def test_overlapping_mounts_match_in_registration_order():
+def test_a_prefix_nested_under_an_existing_mount_is_rejected():
+    """Overlapping mounts would shadow each other order-dependently, so a
+    prefix nested under an existing mount is rejected outright."""
     app = Veloce(debug=True, openapi_url=None)
+    app.mount("/api", _tiny_asgi)
+    with pytest.raises(ValueError, match="overlaps"):
+        app.mount("/api/v2", _tiny_asgi)
 
-    async def broad(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"broad"})
 
-    async def specific(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"specific"})
+def test_a_prefix_containing_an_existing_mount_is_rejected():
+    app = Veloce(debug=True, openapi_url=None)
+    app.mount("/api/v2", _tiny_asgi)
+    with pytest.raises(ValueError, match="overlaps"):
+        app.mount("/api", _tiny_asgi)  # would contain the existing /api/v2
 
-    app.mount("/api", broad)
-    app.mount("/api/v2", specific)  # registered later — shadowed by /api
 
-    assert app.test_client().get("/api/v2/x").body == b"broad"
+def test_a_duplicate_mount_prefix_is_rejected():
+    app = Veloce(debug=True, openapi_url=None)
+    app.mount("/api", _tiny_asgi)
+    with pytest.raises(ValueError, match="overlaps"):
+        app.mount("/api", _tiny_asgi)
+
+
+def test_sibling_mount_prefixes_are_allowed():
+    """Non-overlapping prefixes register fine — including one that shares
+    leading text but is not a path-segment ancestor."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.mount("/api", _tiny_asgi)
+    app.mount("/apix", _tiny_asgi)  # shares text with /api, not an ancestor
+    app.mount("/web", _tiny_asgi)
+    assert len(app._asgi_mounts) == 3
+
+
+def test_overlap_is_detected_across_asgi_and_veloce_mounts():
+    """An ASGI mount and a veloce sub-app are tracked in separate lists,
+    but a prefix overlap between the two is still rejected."""
+    app = Veloce(debug=True, openapi_url=None)
+    sub = Veloce(debug=True, openapi_url=None)
+    app.mount("/svc", sub)  # veloce sub-app
+    with pytest.raises(ValueError, match="overlaps"):
+        app.mount("/svc/inner", _tiny_asgi)  # ASGI app nested under it
 
 
 def test_mounted_asgi_app_does_not_receive_lifespan_scopes():

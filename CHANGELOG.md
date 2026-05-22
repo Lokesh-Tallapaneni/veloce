@@ -71,7 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   veloce sub-apps keep their existing dispatch path. A mounted ASGI app
   receives `http` and `websocket` scopes — the parent app owns the
   `lifespan` cycle, so a mounted app must self-initialise rather than
-  rely on ASGI `lifespan` events. Mounts match in registration order.
+  rely on ASGI `lifespan` events. Mount prefixes must not overlap.
 - `Config.from_env_file(path)` loads a dotenv-style `.env` file —
   `KEY=VALUE` lines, `#` comments, an optional `export ` prefix, and
   quoted values — into the app config (UPPERCASE keys only).
@@ -160,6 +160,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WebSocket.send()` — the raw ASGI-message escape hatch — now enforces the
   same handshake state machine as `send_text` / `send_bytes`: sending before
   `accept()` or after `close()` raises instead of proceeding silently.
+- Multipart parsing no longer leaks a `SpooledTemporaryFile` when a request
+  is rejected by a DoS cap (oversized part or too many parts): the
+  in-progress spooled file is closed on the reject path.
+- Server-side sessions use a conditional store write: a session revoked by
+  a concurrent request (logout, `store.delete(...)`) while another request
+  is in flight is no longer resurrected when that request writes back —
+  `SessionStore` gains a race-safe `replace()` method.
+- HTTP requests each get their own `DependencyResolver` instead of sharing
+  one: a concurrent request can no longer clear another in-flight request's
+  pending `yield`-dependency teardowns (database session close, file-handle
+  release), which previously could be silently skipped under load.
+- `Config.from_env_file` strips an unquoted inline ` #` comment from a
+  `.env` value (`KEY=value  # note` → `value`) while leaving a `#` inside a
+  quoted value intact.
+- `app.mount()` rejects an overlapping prefix registration (a prefix equal
+  to, nested under, or containing an existing mount) with `ValueError`,
+  instead of silently shadowing one mount with another.
 
 ### Performance
 

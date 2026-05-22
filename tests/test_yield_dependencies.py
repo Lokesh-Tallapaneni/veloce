@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
@@ -205,3 +206,51 @@ async def test_yield_dep_state_does_not_leak_across_requests():
     # Two requests → two setup/teardown pairs.
     assert events.count("setup") == 2
     assert events.count("teardown") == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_keep_independent_teardown_stacks():
+    """Two requests in flight at once must not share teardown state: a
+    request being dispatched must not wipe an already-parked request's
+    pending `yield`-dependency teardowns. Each request gets its own
+    resolver, so both teardowns run."""
+    app = Veloce(debug=True, openapi_url=None)
+    events: list[str] = []
+    gate = asyncio.Event()
+
+    def dep_a() -> Iterator[str]:
+        events.append("setup:a")
+        try:
+            yield "a"
+        finally:
+            events.append("teardown:a")
+
+    def dep_b() -> Iterator[str]:
+        events.append("setup:b")
+        try:
+            yield "b"
+        finally:
+            events.append("teardown:b")
+
+    @app.get("/a")
+    async def handler_a(s: str = Depends(dep_a)):
+        # Park here, mid-request, so /b is dispatched while /a is still
+        # in flight with its teardown already on the resolver.
+        await gate.wait()
+        return {"s": s}
+
+    @app.get("/b")
+    async def handler_b(s: str = Depends(dep_b)):
+        # /b is now fully dispatched (its resolver set up). With a single
+        # shared resolver this point is exactly where /a's teardown would
+        # have been cleared. Release /a and let both unwind.
+        gate.set()
+        return {"s": s}
+
+    await asyncio.gather(
+        app.handle_request(_req("/a")),
+        app.handle_request(_req("/b")),
+    )
+    # Both requests' teardowns ran exactly once — neither clobbered the other.
+    assert events.count("teardown:a") == 1
+    assert events.count("teardown:b") == 1

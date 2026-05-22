@@ -175,7 +175,6 @@ class Veloce(Router):
         self._on_startup: list[Callable] = []
         self._on_shutdown: list[Callable] = []
         self._static_handlers: list[StaticFiles] = []
-        self._dependency_resolver = DependencyResolver()
         self._dependency_overrides: dict[Callable, Callable] = {}
         self._before_request_hooks: list[Callable] = []
         self._before_first_request_hooks: list[Callable] = []
@@ -1510,14 +1509,31 @@ class Veloce(Router):
         out, so a mounted app must not depend on ASGI `lifespan` events
         for its setup. A mounted ASGI app owns its entire prefix subtree —
         a native route registered under the same prefix is unreachable.
-        Mounts are matched in registration order (first match wins), so
-        register a more specific prefix before a broader one.
+
+        Prefixes must not overlap: registering a prefix equal to, nested
+        under, or containing an existing mount raises `ValueError`, since
+        overlapping mounts would shadow each other in a confusing,
+        order-dependent way.
         """
         prefix = prefix.rstrip("/")
         # A request path always starts with "/"; normalise a prefix given
         # without one so the mount is not silently unreachable.
         if prefix and not prefix.startswith("/"):
             prefix = "/" + prefix
+        # Reject an overlapping registration. Two prefixes overlap when
+        # one is a path-segment ancestor of the other (or they are
+        # equal) — mounts are matched in registration order, so an
+        # overlap means one mount silently shadows the other.
+        for existing, _ in (*self._mounted_apps, *self._asgi_mounts):
+            if (
+                prefix == existing
+                or prefix.startswith(existing + "/")
+                or existing.startswith(prefix + "/")
+            ):
+                raise ValueError(
+                    f"mount prefix {prefix or '/'!r} overlaps the "
+                    f"already-mounted prefix {existing or '/'!r}"
+                )
         if isinstance(app, Veloce):
             self._mounted_apps.append((prefix, app))
         else:
@@ -1709,6 +1725,13 @@ class Veloce(Router):
     async def _dispatch_request(self, request: Request) -> Response:
         """Core request dispatch — middleware, routing, handler execution."""
         _exc: Exception | None = None
+        # A fresh resolver per request. Its `_cache`, `_teardowns` and
+        # `_scope_stack` are per-request state; a single shared resolver
+        # would let a concurrent request's `reset()` wipe this request's
+        # pending `yield`-dependency teardown stack (mirrors the
+        # per-connection resolver the WebSocket path already uses).
+        resolver = DependencyResolver()
+        resolver._overrides = self._dependency_overrides
         try:
             # Run middleware (request phase)
             for mw in self._middlewares:
@@ -1836,18 +1859,15 @@ class Veloce(Router):
             # Resolve dependencies (with overrides) and call handler.
             # Fast path: consume the pre-built handler plan that Router.add_route
             # cached on RouteInfo at registration time.
-            resolver = self._dependency_resolver
-            resolver._overrides = self._dependency_overrides
             route_info = match.route_info
             if route_info.handler_plan is not None:
                 if route_info.is_trivial_plan:
                     # Trivial-route executor: the handler takes no injected
                     # parameters and the route declares no dependencies, so
                     # the dependency subsystem has nothing to produce. Skip
-                    # it entirely — just clear the shared resolver's
-                    # per-request state — instead of awaiting a resolve that
-                    # would return `{}`.
-                    resolver.reset()
+                    # it entirely instead of awaiting a resolve that would
+                    # return `{}`; the per-request resolver is freshly
+                    # constructed, so there is no stale state to clear.
                     kwargs = {}
                 else:
                     kwargs = await resolver.resolve_plan(
@@ -2018,7 +2038,7 @@ class Veloce(Router):
             # swallowed inside `run_teardowns` so the response cycle stays
             # intact.
             try:
-                await self._dependency_resolver.run_teardowns(_exc)
+                await resolver.run_teardowns(_exc)
             except Exception:
                 self.logger.exception("yield-dependency teardown raised")
 

@@ -131,6 +131,34 @@ def test_oversized_file_part_is_rejected_with_413():
     assert resp.status_code == 413
 
 
+def test_rejected_oversized_part_closes_its_spooled_file(monkeypatch):
+    """A DoS-cap rejection must close the in-progress spooled file, so the
+    reject path leaks neither a temp file nor a file descriptor."""
+    spools: list = []
+    real_cls = tempfile.SpooledTemporaryFile
+
+    def tracking(*args, **kwargs):
+        spool = real_cls(*args, **kwargs)
+        spools.append(spool)
+        return spool
+
+    monkeypatch.setattr(tempfile, "SpooledTemporaryFile", tracking)
+
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["MAX_FORM_PART_SIZE"] = 1024
+
+    @app.post("/u")
+    async def upload(request: Request):
+        await request.form()
+        return {"ok": True}
+
+    resp = app.test_client().post("/u", files={"file": ("big.bin", b"A" * 5000)})
+    assert resp.status_code == 413
+    # A spool was created for the part, and the reject path closed it.
+    assert spools
+    assert all(spool.closed for spool in spools)
+
+
 def test_upload_save_works_after_rollover(tmp_path):
     """A rolled-over upload still saves correctly via UploadFile.save()."""
     app = Veloce(debug=True, openapi_url=None)

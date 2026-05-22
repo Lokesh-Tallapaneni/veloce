@@ -136,9 +136,11 @@ class Config(dict[str, Any]):
     def from_env_file(self, filename: str = ".env", silent: bool = False) -> bool:
         """Load ``KEY=VALUE`` pairs from a dotenv-style ``.env`` file.
 
-        `#` comments and blank lines are skipped, an optional `export `
-        prefix is accepted, and a value wrapped in matching single or
-        double quotes is unquoted. Values are stored as plain strings —
+        Full-line `#` comments and blank lines are skipped, an optional
+        `export ` prefix is accepted, and a value wrapped in matching
+        single or double quotes is unquoted. An unquoted value may carry
+        a trailing ` #` inline comment, which is stripped; a `#` inside
+        quotes is kept literal. Values are stored as plain strings —
         a `.env` file carries no types. Only UPPERCASE keys are kept (see
         `from_mapping`). With `silent=True` a missing file returns
         `False` rather than raising.
@@ -162,8 +164,20 @@ class Config(dict[str, Any]):
                 continue
             key = key.strip()
             value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                value = value[1:-1]
+            if value[:1] in ("'", '"'):
+                # Quoted value — take the span up to the matching close
+                # quote. Anything after it is an inline comment and is
+                # dropped; a `#` *inside* the quotes stays literal.
+                quote = value[0]
+                close = value.find(quote, 1)
+                value = value[1:close] if close != -1 else value[1:]
+            else:
+                # Unquoted value — a whitespace-delimited `#` starts an
+                # inline comment. A bare `#` (no leading space) is kept,
+                # since it may be a legitimate part of the value.
+                comment = value.find(" #")
+                if comment != -1:
+                    value = value[:comment].rstrip()
             parsed[key] = value
         return self.from_mapping(parsed)
 

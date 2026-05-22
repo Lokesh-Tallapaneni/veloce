@@ -172,9 +172,19 @@ class ServerSessionMiddleware(Middleware):
             # old store entry so the previous id can no longer resolve.
             if session_id is not None and session.regenerate:
                 await self.store.delete(session_id)
-            # Mint an unguessable id — 256 bits of entropy.
+            # Mint an unguessable id — 256 bits of entropy — and create it.
             session_id = secrets.token_urlsafe(32)
-        await self.store.write(session_id, dict(session), self.max_age)
+            await self.store.write(session_id, dict(session), self.max_age)
+        else:
+            # An already-stored session: write back only if it still
+            # exists. A concurrent request may have revoked it (logout,
+            # `store.delete(...)`) while this one was in flight — a plain
+            # `write` would resurrect it, so use the conditional `replace`.
+            if not await self.store.replace(session_id, dict(session), self.max_age):
+                # Revoked under us — honour the revocation and drop the cookie.
+                response.headers["Set-Cookie"] = self._cookie("", 0)
+                response._encoded = None
+                return response
         response.headers["Set-Cookie"] = self._cookie(session_id, self.max_age)
         response._encoded = None
         return response
