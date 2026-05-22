@@ -11,10 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Comparative bench harness** (`bench/comparative/`): head-to-head
   latency and throughput measurements vs Flask and FastAPI under the
   same uvicorn runtime. Each workload runs all three frameworks in
-  randomised order through a single `httpx.AsyncClient`, reporting
-  median rps, p50, p99. Initial workloads: `json-hello` and
-  `path-param`. Results recorded under `docs/bench/`. Veloce beats
-  both rivals on rps and p99 (median of 5 runs) on both.
+  randomised order through a single `httpx.AsyncClient`, with a
+  discarded cold-cache round to dampen first-run penalties. Reports
+  median rps, p50, p99. `--seed` pins the schedule for reproducibility.
+  Initial workloads: `json-hello` and `path-param`. Results recorded
+  under `docs/bench/`. Veloce wins rps + p50 + p99 vs FastAPI on both
+  workloads, and wins rps vs Flask by ~57 % (Flask wins p50/p99 under
+  `asgiref.WsgiToAsgi` at low concurrency — see caveats in
+  `docs/bench/README.md`).
 - **Application core** — `Veloce` app object with HTTP method decorators
   (`get`/`post`/`put`/`patch`/`delete`/`head`/`options`/`trace`),
   lifespan handling, configurable docs URLs, and `app.run()`.

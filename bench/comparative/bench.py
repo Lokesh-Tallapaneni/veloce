@@ -24,23 +24,42 @@ from dataclasses import dataclass
 
 from bench.comparative.runner import RunResult, measure
 
-# workload -> (request_path, {framework: module_path})
-WORKLOADS: dict[str, tuple[str, dict[str, str]]] = {
-    "json-hello": (
-        "/",
-        {
+
+@dataclass(frozen=True)
+class Workload:
+    """One bench workload — three apps + the URL path + an expected body.
+
+    `expected_body` is checked once per run in the readiness probe to
+    catch a regression that returns 200 with the wrong payload (which
+    would otherwise benchmark as "fast"). `None` skips that check.
+    """
+
+    path: str
+    apps: dict[str, str]
+    expected_body: bytes | None
+
+
+# workload -> Workload
+WORKLOADS: dict[str, Workload] = {
+    "json-hello": Workload(
+        path="/",
+        apps={
             "veloce": "bench.comparative.apps.veloce_json",
             "fastapi": "bench.comparative.apps.fastapi_json",
             "flask": "bench.comparative.apps.flask_json",
         },
+        # Frameworks differ in JSON key order / whitespace; check
+        # nothing for now and rely on the per-request 200 check.
+        expected_body=None,
     ),
-    "path-param": (
-        "/items/42",
-        {
+    "path-param": Workload(
+        path="/items/42",
+        apps={
             "veloce": "bench.comparative.apps.veloce_path",
             "fastapi": "bench.comparative.apps.fastapi_path",
             "flask": "bench.comparative.apps.flask_path",
         },
+        expected_body=None,
     ),
 }
 
@@ -71,35 +90,54 @@ async def run_workload(
     runs: int,
     duration_s: float,
     concurrency: int,
+    rng: random.Random,
+    discard_cold_round: bool,
 ) -> list[Summary]:
     if workload not in WORKLOADS:
         raise SystemExit(f"unknown workload {workload!r}; known: {', '.join(WORKLOADS)}")
-    path, frameworks = WORKLOADS[workload]
-    # Randomise run order so a warmup advantage cannot accrue to one framework.
-    schedule: list[tuple[str, str]] = []
-    for _ in range(runs):
-        items = list(frameworks.items())
-        random.shuffle(items)
-        schedule.extend(items)
+    spec = WORKLOADS[workload]
+    # An extra leading round whose results are discarded — its purpose
+    # is only to fill the OS file cache, Python bytecode cache, kernel
+    # TCP cache, etc. so the first *measured* round does not pay the
+    # cold-start tax. The per-round shuffle does not fix this on its
+    # own: whichever framework lands first in the very first round
+    # still eats the cold cache.
+    measured_rounds = runs
+    total_rounds = runs + (1 if discard_cold_round else 0)
+    schedule: list[tuple[str, str, bool]] = []  # (fw, module, measured?)
+    for r in range(total_rounds):
+        items = list(spec.apps.items())
+        rng.shuffle(items)
+        measured = not (discard_cold_round and r == 0)
+        schedule.extend((fw, mod, measured) for fw, mod in items)
 
-    by_framework: dict[str, list[RunResult]] = {fw: [] for fw in frameworks}
-    for framework, module in schedule:
+    by_framework: dict[str, list[RunResult]] = {fw: [] for fw in spec.apps}
+    for framework, module, measured in schedule:
         result = await measure(
             framework,
             module,
             duration_s=duration_s,
             concurrency=concurrency,
-            path=path,
+            path=spec.path,
+            expected_body=spec.expected_body,
         )
+        if not measured:
+            print(
+                f"  [{framework:>8}] cold-cache round (discarded): "
+                f"{result.rps:>9,.0f} rps  p50={result.p50_us:>6.0f} us  "
+                f"p99={result.p99_us:>6.0f} us  errors={result.errors}",
+                flush=True,
+            )
+            continue
         by_framework[framework].append(result)
         print(
-            f"  [{framework:>8}] run {len(by_framework[framework])}/{runs}: "
+            f"  [{framework:>8}] run {len(by_framework[framework])}/{measured_rounds}: "
             f"{result.rps:>9,.0f} rps  p50={result.p50_us:>6.0f} us  "
             f"p99={result.p99_us:>6.0f} us  errors={result.errors}",
             flush=True,
         )
 
-    return [_summarise(by_framework[fw]) for fw in frameworks]
+    return [_summarise(by_framework[fw]) for fw in spec.apps]
 
 
 def print_table(workload: str, summaries: list[Summary]) -> None:
@@ -140,8 +178,34 @@ def main() -> int:
     # a discriminating server-side measurement; raise it only if you
     # know your client can drive harder load.
     parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="seed for the run-order shuffle; if unset, a random seed is "
+        "picked and printed for traceability",
+    )
+    parser.add_argument(
+        "--no-cold-round",
+        dest="discard_cold_round",
+        action="store_false",
+        help="skip the extra leading cold-cache round (default: discard it)",
+    )
+    parser.set_defaults(discard_cold_round=True)
     args = parser.parse_args()
-    summaries = asyncio.run(run_workload(args.workload, args.runs, args.duration, args.concurrency))
+    seed = args.seed if args.seed is not None else random.SystemRandom().randint(0, 2**31 - 1)
+    print(f"seed: {seed}", flush=True)
+    rng = random.Random(seed)
+    summaries = asyncio.run(
+        run_workload(
+            args.workload,
+            args.runs,
+            args.duration,
+            args.concurrency,
+            rng,
+            args.discard_cold_round,
+        )
+    )
     print_table(args.workload, summaries)
     return 0
 
