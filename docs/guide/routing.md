@@ -97,8 +97,10 @@ async def status(request: Request):
 app.include_router(api)        # now serving GET /api/v2/status
 ```
 
-Routers can be nested, carry their own `dependencies=` and `responses=`,
-and define scoped lifecycle hooks.
+Routers can be nested and carry their own `dependencies=` and
+`responses=`. Scoped `before_request` / `after_request` /
+`teardown_request` hooks are a `Blueprint` feature — a plain `Router`
+has none.
 
 ## Reverse URLs
 

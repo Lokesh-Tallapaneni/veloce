@@ -297,10 +297,12 @@ class Request:
 
         form = await self.form()
         files = FormData()
-        for key in form:
-            for value in form.getlist(key):
-                if isinstance(value, UploadFile):
-                    files.add(key, value)
+        # `items()` yields every (key, value) pair once — including
+        # repeats of a name. Iterating keys and re-`getlist`-ing each
+        # would re-emit every value once per repeat: O(n²) and duplicated.
+        for key, value in form.items():
+            if isinstance(value, UploadFile):
+                files.add(key, value)
         return files
 
     @property

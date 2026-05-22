@@ -1,8 +1,8 @@
 # Veloce
 
-Ultra-fast async Python web framework. ASGI-native, batteries included —
-routing, dependency injection, OpenAPI, WebSockets, templating, sessions,
-and a built-in test client, all in one tree.
+Fast, ergonomic async Python web framework. ASGI-native, batteries
+included — routing, dependency injection, OpenAPI, WebSockets,
+templating, sessions, and a built-in test client, all in one tree.
 
 ## Install
 
