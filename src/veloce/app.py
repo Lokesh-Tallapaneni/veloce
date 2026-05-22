@@ -8,7 +8,7 @@ import functools
 import inspect
 import signal
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from veloce.contrib.staticfiles import StaticFiles
@@ -2410,11 +2410,15 @@ class Veloce(Router):
                     handler()
 
             # Dev-mode event-loop blocking watchdog — opt-in, so an app
-            # that does not set the config key never builds one.
-            if self.config.get("EVENT_LOOP_WATCHDOG") and self._watchdog is None:
+            # that does not set the config key never builds one. The key
+            # may be a plain truthy value, or a mapping of watchdog kwargs
+            # (`interval`, `stall_threshold`) for tuning.
+            _wd_config = self.config.get("EVENT_LOOP_WATCHDOG")
+            if _wd_config and self._watchdog is None:
                 from veloce.watchdog import EventLoopWatchdog
 
-                self._watchdog = EventLoopWatchdog(asyncio.get_running_loop())
+                _wd_kwargs = dict(_wd_config) if isinstance(_wd_config, Mapping) else {}
+                self._watchdog = EventLoopWatchdog(asyncio.get_running_loop(), **_wd_kwargs)
                 self._watchdog.start()
         else:
             if self._watchdog is not None:
