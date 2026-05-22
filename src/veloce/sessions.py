@@ -10,13 +10,14 @@ the session cookie's `Max-Age` instead of the default `max_age`.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 
 class Session(dict[str, Any]):
     """The request session — a dict that knows when it has changed."""
 
-    __slots__ = ("new", "modified")
+    __slots__ = ("new", "modified", "regenerate")
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         # dict's C-level init populates without routing through our
@@ -25,6 +26,22 @@ class Session(dict[str, Any]):
         super().__init__(*args, **kwargs)
         self.new = False
         self.modified = False
+        # Set by `regenerate_id()` — asks a server-side session backend to
+        # mint a fresh id for this session on the next response.
+        self.regenerate = False
+
+    def regenerate_id(self) -> None:
+        """Request a fresh server-side session id on the next response.
+
+        Call this at a privilege boundary — login, role change — so a
+        pre-existing (possibly attacker-planted) session id cannot be
+        replayed against the now-elevated session: the session-fixation
+        defence. It marks the session modified so the rotation is written
+        back. Harmless with cookie-only sessions, which carry no
+        server-side id to rotate.
+        """
+        self.regenerate = True
+        self.modified = True
 
     @property
     def permanent(self) -> bool:
@@ -74,3 +91,58 @@ class Session(dict[str, Any]):
     def update(self, *args: Any, **kwargs: Any) -> None:
         super().update(*args, **kwargs)
         self.modified = True
+
+
+class SessionStore:
+    """Server-side session backend interface.
+
+    A concrete store persists session payloads keyed by an opaque session
+    id; `ServerSessionMiddleware` drives it. The methods are async so a
+    network-backed store (Redis, a database) can implement them without
+    blocking the event loop — the bundled `InMemorySessionStore` satisfies
+    the contract without any real awaiting.
+    """
+
+    async def read(self, session_id: str) -> dict[str, Any] | None:
+        """Return the stored payload for `session_id`, or `None` when it
+        is absent, expired, or has been revoked."""
+        raise NotImplementedError
+
+    async def write(self, session_id: str, data: dict[str, Any], max_age: int) -> None:
+        """Persist `data` under `session_id`, to expire after `max_age` seconds."""
+        raise NotImplementedError
+
+    async def delete(self, session_id: str) -> None:
+        """Revoke `session_id` — a later `read` of it must return `None`."""
+        raise NotImplementedError
+
+
+class InMemorySessionStore(SessionStore):
+    """A process-local `SessionStore` — a dict with per-entry expiry.
+
+    Fine for a single-process app and for tests. It does not share state
+    across workers, so a multi-worker deployment needs a shared backend
+    (e.g. Redis) implementing the `SessionStore` interface.
+    """
+
+    __slots__ = ("_entries",)
+
+    def __init__(self) -> None:
+        # session_id -> (payload, unix-timestamp when it expires)
+        self._entries: dict[str, tuple[dict[str, Any], float]] = {}
+
+    async def read(self, session_id: str) -> dict[str, Any] | None:
+        entry = self._entries.get(session_id)
+        if entry is None:
+            return None
+        data, expires_at = entry
+        if expires_at <= time.time():
+            del self._entries[session_id]  # lazily evict on access
+            return None
+        return dict(data)
+
+    async def write(self, session_id: str, data: dict[str, Any], max_age: int) -> None:
+        self._entries[session_id] = (dict(data), time.time() + max_age)
+
+    async def delete(self, session_id: str) -> None:
+        self._entries.pop(session_id, None)

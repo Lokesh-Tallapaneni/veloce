@@ -60,6 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the third-party ASGI ecosystem (tracing, profiling, observability)
   plugs into a veloce app. The first-registered ASGI middleware is the
   outermost wrapper. Native `Middleware` classes are unaffected.
+- `ServerSessionMiddleware` keeps the session payload server-side in a
+  pluggable `SessionStore` (default: an in-process `InMemorySessionStore`)
+  — the cookie carries only an opaque, high-entropy session id. Sessions
+  are now *revocable*: empty one in a handler (`session.clear()`) or
+  delete it straight from the store (`await store.delete(session_id)`),
+  and a tampered or stale cookie simply fails to resolve. A network
+  backend (e.g. Redis) plugs in by implementing the async `SessionStore`
+  interface. The existing signed-cookie `SessionMiddleware` is unchanged.
 - `app.add_instrumentation(hook)` registers an observability hook called
   once per finished HTTP request with a `RequestMetrics` record — method,
   concrete path, matched route *template* (a low-cardinality metric
