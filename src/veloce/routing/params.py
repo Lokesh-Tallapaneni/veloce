@@ -22,6 +22,7 @@ Usage:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -41,6 +42,7 @@ class _ParamBase:
         "max_length",
         "multiple_of",
         "regex",
+        "_regex_compiled",
         "deprecated",
         "examples",
         "embed",
@@ -85,6 +87,10 @@ class _ParamBase:
         # the renamed `regex` → `pattern`; accept either,
         # `pattern` wins when both are supplied.
         self.regex = pattern if pattern is not None else regex
+        # Compile the pattern once here, at declaration time, so per-request
+        # `validate` does no `re` compile-cache lookup. `regex` stays a
+        # string for OpenAPI's `pattern` schema field and error messages.
+        self._regex_compiled = re.compile(self.regex) if self.regex is not None else None
         self.deprecated = deprecated
         self.examples = examples
         # `Body(embed=True)` — nest the value under the param
@@ -128,11 +134,8 @@ class _ParamBase:
                 raise ValueError(f"{name} must have at least {self.min_length} characters")
             if self.max_length is not None and len(value) > self.max_length:
                 raise ValueError(f"{name} must have at most {self.max_length} characters")
-            if self.regex is not None:
-                import re
-
-                if not re.match(self.regex, value):
-                    raise ValueError(f"{name} does not match pattern {self.regex}")
+            if self._regex_compiled is not None and not self._regex_compiled.match(value):
+                raise ValueError(f"{name} does not match pattern {self.regex}")
 
         return value
 
