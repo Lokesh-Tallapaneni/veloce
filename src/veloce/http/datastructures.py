@@ -696,7 +696,11 @@ def parse_multipart_form(
             elif token.startswith("filename="):
                 filename = token[9:].strip('"')
 
+        # Take the spool out of `state` — from here it is either handed to
+        # an `UploadFile` or closed, so `state["spool"]` no longer owns it
+        # (and the error-path cleanup below will not double-handle it).
         spool = state["spool"]
+        state["spool"] = None
         if not name:
             spool.close()  # unnamed part — discard its spooled data
             return
@@ -737,7 +741,25 @@ def parse_multipart_form(
     # return whatever parsed cleanly rather than surfacing a low-level
     # parser error as a 500. `RequestEntityTooLarge` from the DoS-cap
     # callbacks is not a `FormParserError`, so it still reaches the caller.
-    with contextlib.suppress(FormParserError):
-        parser.write(body)
-        parser.finalize()
+    try:
+        with contextlib.suppress(FormParserError):
+            parser.write(body)
+            parser.finalize()
+    except BaseException:
+        # A DoS-cap rejection (`RequestEntityTooLarge`) raised out of a
+        # part callback. `result` is discarded unreturned, so close every
+        # spooled file already handed to an `UploadFile` in it — otherwise
+        # each already-completed part leaks a temp file / file descriptor.
+        for value in result.values():
+            if isinstance(value, UploadFile):
+                with contextlib.suppress(Exception):
+                    value.file.close()
+        raise
+    finally:
+        # Close the in-progress part's spool — left open by a DoS-cap
+        # rejection mid-part, or by a suppressed malformed-body error.
+        in_progress = state["spool"]
+        if in_progress is not None:
+            with contextlib.suppress(Exception):
+                in_progress.close()
     return result

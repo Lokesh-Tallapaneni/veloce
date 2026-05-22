@@ -211,3 +211,129 @@ async def test_in_memory_store_returns_a_copy():
 
 def test_in_memory_store_is_a_session_store():
     assert isinstance(InMemorySessionStore(), SessionStore)
+
+
+# ── conditional write (replace) — revocation race ─────────────────────
+
+
+async def test_in_memory_store_replace_only_writes_when_present():
+    """`replace` is the race-safe write: it updates an existing id and
+    reports success, but refuses to (re)create an absent one."""
+    store = InMemorySessionStore()
+
+    # An absent id is not resurrected.
+    assert await store.replace("ghost", {"k": "v"}, max_age=60) is False
+    assert await store.read("ghost") is None
+
+    await store.write("sid", {"k": "v1"}, max_age=60)
+    # A present id is updated.
+    assert await store.replace("sid", {"k": "v2"}, max_age=60) is True
+    assert await store.read("sid") == {"k": "v2"}
+
+    # Once deleted, replace no longer succeeds.
+    await store.delete("sid")
+    assert await store.replace("sid", {"k": "v3"}, max_age=60) is False
+    assert await store.read("sid") is None
+
+
+async def test_in_memory_store_replace_treats_an_expired_entry_as_absent():
+    """An entry past its TTL but not yet lazily evicted must not be
+    revived by `replace` — a stale session stays dead."""
+    store = InMemorySessionStore()
+    await store.write("sid", {"k": "v"}, max_age=0)  # already expired
+    # The entry is still physically present (nothing has read/deleted it)...
+    assert "sid" in store._entries
+    # ...but replace treats it as absent and does not resurrect it.
+    assert await store.replace("sid", {"k": "fresh"}, max_age=60) is False
+    assert await store.read("sid") is None
+
+
+async def test_base_session_store_replace_default_is_conditional():
+    """The base-class `replace` default (read-then-write) writes only when
+    the id still exists, so a custom store inherits the race-safe contract
+    without implementing its own conditional write."""
+
+    class DictStore(SessionStore):
+        def __init__(self) -> None:
+            self.data: dict[str, dict] = {}
+
+        async def read(self, session_id):
+            entry = self.data.get(session_id)
+            return dict(entry) if entry is not None else None
+
+        async def write(self, session_id, data, max_age):
+            self.data[session_id] = dict(data)
+
+        async def delete(self, session_id):
+            self.data.pop(session_id, None)
+
+    store = DictStore()
+    assert await store.replace("missing", {"x": 1}, max_age=60) is False
+    assert await store.read("missing") is None
+
+    await store.write("sid", {"x": 1}, max_age=60)
+    assert await store.replace("sid", {"x": 2}, max_age=60) is True
+    assert await store.read("sid") == {"x": 2}
+
+
+def test_session_revoked_mid_request_is_not_resurrected():
+    """A session deleted from the store while a request is in flight must
+    not be written back: the in-flight `process_response` honours the
+    revocation and drops the cookie instead of resurrecting the entry."""
+    store = InMemorySessionStore()
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(ServerSessionMiddleware(store=store))
+
+    @app.post("/login")
+    async def login(request: Request):
+        request.session["user"] = "alice"
+        return {"ok": True}
+
+    @app.post("/touch-while-revoked")
+    async def touch(request: Request):
+        # Mutate the session, then simulate a concurrent revocation by
+        # deleting the underlying store entry before the response runs.
+        request.session["count"] = 1
+        await store.delete(request._state["_session_id"])
+        return {"ok": True}
+
+    @app.get("/whoami")
+    async def whoami(request: Request):
+        return {"user": request.session.get("user")}
+
+    client = app.test_client()
+    client.post("/login")
+    assert len(store._entries) == 1
+
+    resp = client.post("/touch-while-revoked")
+    # The revoked session was not written back — no orphan store entry.
+    assert len(store._entries) == 0
+    # The client is told to drop its now-dead cookie.
+    assert "Max-Age=0" in resp.headers.get("Set-Cookie", "")
+    # A follow-up request sees no session.
+    assert client.get("/whoami").json() == {"user": None}
+
+
+def test_modifying_a_live_session_still_writes_back():
+    """The conditional write must not break the normal path: a session
+    that is still present in the store is updated as before."""
+    store = InMemorySessionStore()
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(ServerSessionMiddleware(store=store))
+
+    @app.post("/login")
+    async def login(request: Request):
+        request.session["hits"] = 1
+        return {"ok": True}
+
+    @app.post("/bump")
+    async def bump(request: Request):
+        request.session["hits"] = request.session.get("hits", 0) + 1
+        return {"hits": request.session["hits"]}
+
+    client = app.test_client()
+    client.post("/login")
+    assert client.post("/bump").json() == {"hits": 2}
+    assert client.post("/bump").json() == {"hits": 3}
+    # Still exactly one live session entry.
+    assert len(store._entries) == 1

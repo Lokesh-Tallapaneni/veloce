@@ -116,6 +116,23 @@ class SessionStore:
         """Revoke `session_id` — a later `read` of it must return `None`."""
         raise NotImplementedError
 
+    async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
+        """Write `data` for `session_id` **only if it still exists**.
+
+        Returns `True` on success, `False` when the id is absent — it was
+        revoked or expired. This is the race-safe write the middleware
+        uses for an already-stored session, so a request still in flight
+        cannot resurrect a session a concurrent `delete` removed.
+
+        The default is a non-atomic read-then-write; a store with an
+        atomic conditional write (Redis `SET ... XX`, a DB `UPDATE`)
+        should override this to close the check-then-write window.
+        """
+        if await self.read(session_id) is None:
+            return False
+        await self.write(session_id, data, max_age)
+        return True
+
 
 class InMemorySessionStore(SessionStore):
     """A process-local `SessionStore` — a dict with per-entry expiry.
@@ -146,3 +163,16 @@ class InMemorySessionStore(SessionStore):
 
     async def delete(self, session_id: str) -> None:
         self._entries.pop(session_id, None)
+
+    async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
+        # Atomic against the event loop: this coroutine does no `await`,
+        # so a concurrent `delete` cannot land between the check and the
+        # write — a revoked session stays revoked. An expired entry that
+        # has not yet been lazily evicted counts as absent (mirrors
+        # `read`), so a stale session is never rewritten back to life.
+        entry = self._entries.get(session_id)
+        if entry is None or entry[1] <= time.time():
+            self._entries.pop(session_id, None)
+            return False
+        self._entries[session_id] = (dict(data), time.time() + max_age)
+        return True
