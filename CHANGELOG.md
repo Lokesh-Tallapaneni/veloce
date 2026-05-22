@@ -60,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the third-party ASGI ecosystem (tracing, profiling, observability)
   plugs into a veloce app. The first-registered ASGI middleware is the
   outermost wrapper. Native `Middleware` classes are unaffected.
+- `AsyncTestClient` (and the `app.async_test_client()` factory) — the
+  async counterpart of `TestClient`. Used as `async with` inside an
+  async test, its request methods are coroutines awaited on the test's
+  own running event loop. Cookie persistence, redirect following, and
+  the JSON / form / files body shapes match `TestClient`.
 - `app.mount(prefix, app)` now accepts any ASGI application, not only a
   veloce sub-app. A non-veloce app is dispatched at the ASGI layer with
   the matched prefix moved from the scope's `path` onto `root_path`;

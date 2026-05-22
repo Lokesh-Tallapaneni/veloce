@@ -734,7 +734,7 @@ class _TestClientCookies:
 
     __slots__ = ("_client",)
 
-    def __init__(self, client: TestClient) -> None:
+    def __init__(self, client: TestClient | AsyncTestClient) -> None:
         self._client = client
 
     def __getitem__(self, key: str) -> str:
@@ -775,3 +775,311 @@ class _TestClientCookies:
 
     def __repr__(self) -> str:
         return f"<TestClient cookies: {self._client._cookies}>"
+
+
+class AsyncTestClient:
+    """Async in-memory test client — drives the app through its ASGI surface.
+
+    The async counterpart of `TestClient`: used as an async context
+    manager inside an async test, so each request is `await`ed on the
+    test's own running event loop instead of through a private loop. The
+    request methods (`get` / `post` / …) are coroutines.
+
+        async with AsyncTestClient(app) as client:
+            resp = await client.get("/")
+
+    Cookie persistence, redirect following, and the JSON / form / files
+    body shapes match `TestClient` exactly. WebSocket testing stays on
+    the sync `TestClient.websocket_connect`.
+    """
+
+    __test__ = False  # don't let pytest collect this as a test class
+
+    _MAX_REDIRECTS = 10
+
+    def __init__(
+        self,
+        app: Any,
+        base_url: str = "http://testserver",
+        follow_redirects: bool = False,
+    ) -> None:
+        self.app = app
+        self.base_url = base_url
+        self.follow_redirects = follow_redirects
+        self._cookies: dict[str, str] = {}
+        self._base_headers: dict[str, str] = {}
+        self._lifespan_run = False
+        # True between `__aenter__` and `__aexit__`. Async startup work
+        # cannot run in `__init__`, so requests are refused until the
+        # client has been entered as a context manager.
+        self._entered = False
+
+    # ── async context manager ────────────────────────────────────────
+
+    async def __aenter__(self) -> AsyncTestClient:
+        self._entered = True
+        if hasattr(self.app, "_run_lifecycle"):
+            await self.app._run_lifecycle("startup")
+            self._lifespan_run = True
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        if self._lifespan_run and hasattr(self.app, "_run_lifecycle"):
+            await self.app._run_lifecycle("shutdown")
+            self._lifespan_run = False
+        self._entered = False
+
+    # ── cookie management ────────────────────────────────────────────
+
+    @property
+    def cookies(self) -> _TestClientCookies:
+        """Live view of the client's cookie jar (see `TestClient.cookies`)."""
+        return _TestClientCookies(self)
+
+    def set_cookie(self, key: str, value: str) -> None:
+        """Add or update a cookie sent on every subsequent request."""
+        self._cookies[key] = value
+
+    def delete_cookie(self, key: str) -> None:
+        """Remove a cookie from the jar. No-op if not present."""
+        self._cookies.pop(key, None)
+
+    # ── header / cookie plumbing ─────────────────────────────────────
+
+    def _build_headers(self, extra: dict[str, str] | None) -> dict[str, str]:
+        merged = dict(self._base_headers)
+        if self._cookies:
+            merged["cookie"] = "; ".join(f"{k}={v}" for k, v in self._cookies.items())
+        if extra:
+            merged.update(extra)
+        return merged
+
+    def _update_cookies(self, response: TestResponse) -> None:
+        for k, v in response.cookies.items():
+            self._cookies[k] = v
+
+    # ── ASGI dispatch ────────────────────────────────────────────────
+
+    async def _send_one_request(
+        self,
+        method: str,
+        path: str,
+        query_string: str,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> TestResponse:
+        scope = _build_scope(method, path, query_string, headers)
+
+        body_sent = False
+
+        async def receive() -> dict[str, Any]:
+            nonlocal body_sent
+            if body_sent:
+                await asyncio.Event().wait()
+            body_sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        status_code = 500
+        raw_headers: list[tuple[bytes, bytes]] = []
+        body_chunks: list[bytes] = []
+
+        async def send(message: dict[str, Any]) -> None:
+            nonlocal status_code, raw_headers
+            mtype = message["type"]
+            if mtype == "http.response.start":
+                status_code = message["status"]
+                raw_headers = list(message.get("headers") or [])
+            elif mtype == "http.response.body":
+                chunk = message.get("body", b"")
+                if chunk:
+                    body_chunks.append(chunk)
+
+        await self.app(scope, receive, send)
+        return TestResponse(status_code, b"".join(body_chunks), raw_headers)
+
+    async def _make_request(
+        self,
+        method: str,
+        path: str,
+        headers: dict[str, str] | None = None,
+        body: bytes = b"",
+        query_string: str = "",
+        follow_redirects: bool | None = None,
+    ) -> TestResponse:
+        if not self._entered:
+            raise RuntimeError(
+                "AsyncTestClient must be used as an async context manager: "
+                "`async with app.async_test_client() as client: ...`"
+            )
+
+        if "?" in path:
+            path, query_string = path.split("?", 1)
+
+        follow = self.follow_redirects if follow_redirects is None else follow_redirects
+        current_method, current_path = method, path
+        current_query, current_body = query_string, body
+        current_headers = headers
+
+        for _ in range(self._MAX_REDIRECTS + 1):
+            all_headers = self._build_headers(current_headers)
+            resp = await self._send_one_request(
+                current_method, current_path, current_query, all_headers, current_body
+            )
+            self._update_cookies(resp)
+            if not follow or resp.status_code not in (301, 302, 303, 307, 308):
+                return resp
+            location = resp.headers.get("location") or resp.headers.get("Location")
+            if not location:
+                return resp
+            # 301/302/303 → GET with no body (browser convention);
+            # 307/308 preserve method + body.
+            if resp.status_code in (301, 302, 303):
+                current_method, current_body = "GET", b""
+            current_path, current_query = location, ""
+            if "?" in current_path:
+                current_path, current_query = current_path.split("?", 1)
+            # `current_headers` is intentionally kept across the hop — the
+            # caller's headers (Authorization, custom headers) must reach
+            # the redirected request, matching the sync TestClient.
+        raise RuntimeError(
+            f"AsyncTestClient exceeded {self._MAX_REDIRECTS} redirects following {method} {path}"
+        )
+
+    def _assemble_body(
+        self,
+        json: Any,
+        data: dict[str, str] | None,
+        content: bytes | None,
+        files: dict[str, Any] | None,
+        headers: dict[str, str] | None,
+    ) -> tuple[bytes, dict[str, str]]:
+        hdrs = dict(headers or {})
+        body = b""
+        if files is not None:
+            body, ct = _encode_multipart(files, data or {})
+            hdrs["content-type"] = ct
+        elif json is not None:
+            body = orjson.dumps(json)
+            hdrs.setdefault("content-type", "application/json")
+        elif data is not None:
+            body = urlencode(data).encode()
+            hdrs.setdefault("content-type", "application/x-www-form-urlencoded")
+        elif content is not None:
+            body = content
+        return body, hdrs
+
+    # ── method shortcuts ─────────────────────────────────────────────
+
+    async def get(
+        self,
+        path: str,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
+        follow_redirects: bool | None = None,
+    ) -> TestResponse:
+        qs = urlencode(params) if params else ""
+        return await self._make_request(
+            "GET", path, headers=headers, query_string=qs, follow_redirects=follow_redirects
+        )
+
+    async def post(
+        self,
+        path: str,
+        json: Any = None,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        content: bytes | None = None,
+        files: dict[str, Any] | None = None,
+        follow_redirects: bool | None = None,
+    ) -> TestResponse:
+        body, hdrs = self._assemble_body(json, data, content, files, headers)
+        return await self._make_request(
+            "POST", path, headers=hdrs, body=body, follow_redirects=follow_redirects
+        )
+
+    async def put(
+        self,
+        path: str,
+        json: Any = None,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        content: bytes | None = None,
+        files: dict[str, Any] | None = None,
+        follow_redirects: bool | None = None,
+    ) -> TestResponse:
+        body, hdrs = self._assemble_body(json, data, content, files, headers)
+        return await self._make_request(
+            "PUT", path, headers=hdrs, body=body, follow_redirects=follow_redirects
+        )
+
+    async def patch(
+        self,
+        path: str,
+        json: Any = None,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        content: bytes | None = None,
+        files: dict[str, Any] | None = None,
+        follow_redirects: bool | None = None,
+    ) -> TestResponse:
+        body, hdrs = self._assemble_body(json, data, content, files, headers)
+        return await self._make_request(
+            "PATCH", path, headers=hdrs, body=body, follow_redirects=follow_redirects
+        )
+
+    async def delete(
+        self,
+        path: str,
+        headers: dict[str, str] | None = None,
+        follow_redirects: bool | None = None,
+    ) -> TestResponse:
+        return await self._make_request(
+            "DELETE", path, headers=headers, follow_redirects=follow_redirects
+        )
+
+    async def head(
+        self,
+        path: str,
+        headers: dict[str, str] | None = None,
+        follow_redirects: bool | None = None,
+    ) -> TestResponse:
+        return await self._make_request(
+            "HEAD", path, headers=headers, follow_redirects=follow_redirects
+        )
+
+    async def options(
+        self,
+        path: str,
+        headers: dict[str, str] | None = None,
+        follow_redirects: bool | None = None,
+    ) -> TestResponse:
+        return await self._make_request(
+            "OPTIONS", path, headers=headers, follow_redirects=follow_redirects
+        )
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        json: Any = None,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        content: bytes | None = None,
+        files: dict[str, Any] | None = None,
+        params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
+        follow_redirects: bool | None = None,
+    ) -> TestResponse:
+        """Generic verb-agnostic request dispatcher (see `TestClient.request`)."""
+        verb = method.upper()
+        if json is not None or data is not None or content is not None or files is not None:
+            body, hdrs = self._assemble_body(json, data, content, files, headers)
+            return await self._make_request(
+                verb, path, headers=hdrs, body=body, follow_redirects=follow_redirects
+            )
+        qs = urlencode(params) if params else ""
+        return await self._make_request(
+            verb, path, headers=headers, query_string=qs, follow_redirects=follow_redirects
+        )
+
+    def __repr__(self) -> str:
+        return f"<AsyncTestClient app={self.app!r}>"
