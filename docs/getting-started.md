@@ -50,10 +50,13 @@ python -m uvicorn main:app
 Then visit [http://localhost:8000/hello/world](http://localhost:8000/hello/world)
 — you should get `{"hello": "world"}`.
 
-!!! note "Handlers are `async def`"
+!!! note "`async def` is preferred, `def` is supported"
 
-    Every route handler is a coroutine. There is no synchronous
-    fallback — define handlers with `async def`.
+    Define handlers with `async def` for best performance — they run
+    directly on the event loop. A plain `def` handler also works:
+    Veloce detects it and runs it in a thread-pool executor so it never
+    blocks the loop. Reach for a sync handler when calling blocking
+    library code you cannot await.
 
 ## What just happened
 

@@ -78,3 +78,26 @@ async def test_files_extracts_uploads_from_multipart():
     # Only the file part — the plain "title" field is excluded.
     assert "doc" in files
     assert "title" not in files
+
+
+@pytest.mark.asyncio
+async def test_files_handles_multiple_uploads_under_one_field_name():
+    """Several files sharing one field name must yield exactly that many
+    entries — not N×N duplicates from re-`getlist`-ing each repeated key."""
+    boundary = "----testbound"
+    parts = [
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="doc"; filename="f{i}.txt"\r\n'
+        "Content-Type: text/plain\r\n\r\n"
+        f"contents-{i}\r\n"
+        for i in range(4)
+    ]
+    body = ("".join(parts) + f"--{boundary}--\r\n").encode()
+    req = _req(body=body, content_type=f"multipart/form-data; boundary={boundary}")
+
+    files = await req.files()
+    # Four uploads in, four entries out — no N×N duplication.
+    assert len(files) == 4
+    docs = files.getlist("doc")
+    assert len(docs) == 4
+    assert sorted(d.filename for d in docs) == ["f0.txt", "f1.txt", "f2.txt", "f3.txt"]

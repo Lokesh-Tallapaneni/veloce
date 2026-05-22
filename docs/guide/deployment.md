@@ -27,11 +27,12 @@ request's bytes start arriving, the whole request must complete within
 `HttpProtocol.REQUEST_TIMEOUT` seconds (default 30) or the connection is
 dropped with `408` — and an idle keep-alive timeout.
 
-It **does not** implement fragmented (continuation-frame) WebSocket
-messages or HTTP/2. Production WebSocket and HTTP/2 workloads should run
-under uvicorn, which implements both. This is a deliberate scope line:
-hardening a from-scratch production server is not the project's goal
-when mature ASGI servers already exist.
+It **does** reassemble fragmented (continuation-frame) WebSocket
+messages per RFC 6455 §5.4. It **does not** implement HTTP/2 —
+production HTTP/2 workloads should run under uvicorn, which implements
+it. This is a deliberate scope line: hardening a from-scratch
+production server is not the project's goal when mature ASGI servers
+already exist.
 
 ## Running with multiple workers
 
@@ -50,8 +51,10 @@ consequence for any state Veloce keeps in-process:
 Guidance:
 
 - **Sessions** — signed cookies are stateless, so multi-worker is fine.
-  If you need server-side, revocable sessions, back them with a shared
-  store (Redis, a database). A pluggable backend is on the roadmap.
+  For server-side, revocable sessions use `ServerSessionMiddleware` with
+  a `SessionStore` backend. The bundled `InMemorySessionStore` is
+  per-process, so a multi-worker deployment needs a shared store (Redis,
+  a database) implementing the `SessionStore` interface.
 - **Rate limiting** — `RateLimitMiddleware` is in-memory and therefore
   per-worker. For an accurate global limit across workers, put the
   limiter in a reverse proxy (nginx `limit_req`) or back it with Redis.

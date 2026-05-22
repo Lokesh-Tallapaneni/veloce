@@ -11,9 +11,9 @@ hide:
 # Veloce { .vl-hero__title }
 
 <p class="vl-hero__tagline" markdown>
-Ultra-fast async Python web framework. Routing, dependency injection,
-OpenAPI, WebSockets, templating, sessions, and a built-in test client —
-all in one tree.
+Fast, ergonomic async Python web framework. Routing, dependency
+injection, OpenAPI, WebSockets, templating, sessions, and a built-in
+test client — all in one tree.
 </p>
 
 [Get started](getting-started.md){ .md-button .md-button--primary }

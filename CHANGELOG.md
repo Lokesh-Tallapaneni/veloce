@@ -178,6 +178,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `app.mount()` rejects an overlapping prefix registration (a prefix equal
   to, nested under, or containing an existing mount) with `ValueError`,
   instead of silently shadowing one mount with another.
+- `Request.files()` no longer returns duplicate `UploadFile` entries, nor
+  runs in O(n²), when several files are uploaded under one form field
+  name — it now iterates the form's `(key, value)` pairs once.
+- Documentation corrected against the code: sync (`def`) handlers are
+  documented as supported (run in a thread-pool executor); the built-in
+  server is documented as reassembling fragmented WebSocket messages; the
+  shipped `ServerSessionMiddleware` / `SessionStore` replaces a stale
+  "on the roadmap" note; and scoped request hooks are clarified as a
+  `Blueprint` feature, not a plain `Router` one.
 
 ### Performance
 
