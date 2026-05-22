@@ -9,7 +9,7 @@ import inspect
 import signal
 import time
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.dependency import DependencyResolver, Depends
@@ -27,6 +27,9 @@ from veloce.http.response import (
 )
 from veloce.middleware import BaseHTTPMiddleware, Middleware
 from veloce.routing.router import Router
+
+if TYPE_CHECKING:
+    import ssl
 
 
 class Veloce(Router):
@@ -2281,7 +2284,7 @@ class Veloce(Router):
         port: int = 8000,
         workers: int = 1,
         access_log: bool = True,
-        ssl_context: Any = None,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         """Start the built-in **development** server.
 
