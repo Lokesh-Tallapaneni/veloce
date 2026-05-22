@@ -60,6 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the third-party ASGI ecosystem (tracing, profiling, observability)
   plugs into a veloce app. The first-registered ASGI middleware is the
   outermost wrapper. Native `Middleware` classes are unaffected.
+- `app.mount(prefix, app)` now accepts any ASGI application, not only a
+  veloce sub-app — a Starlette app, an ASGI micro-app, or an
+  instrumentation shim. A non-veloce app is dispatched at the ASGI layer
+  with the matched prefix moved from the scope's `path` onto
+  `root_path`; veloce sub-apps keep their existing dispatch path.
+- `Config.from_env_file(path)` loads a dotenv-style `.env` file —
+  `KEY=VALUE` lines, `#` comments, an optional `export ` prefix, and
+  quoted values — into the app config (UPPERCASE keys only).
 - `app.run(ssl_context=...)` — the built-in development server now
   accepts an optional `ssl.SSLContext`, handed straight to
   `loop.create_server(ssl=...)`, for local HTTPS testing. Left unset the
