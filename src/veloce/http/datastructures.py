@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import tempfile
 from collections.abc import Mapping
 from typing import Any, BinaryIO
 
@@ -597,6 +598,10 @@ class QueryParams(MultiDict):
 # these caps bound the work and memory the parser will commit to.
 DEFAULT_MAX_MULTIPART_PARTS = 1000
 DEFAULT_MAX_MULTIPART_PART_SIZE = 10 * 1024 * 1024  # 10 MiB per part
+# A multipart part is streamed into a `SpooledTemporaryFile`: it stays in
+# memory until it grows past this size, then transparently rolls over to a
+# real temp file on disk — so a large upload never sits fully in RAM.
+MULTIPART_SPOOL_MAX_SIZE = 1024 * 1024  # 1 MiB in memory, then spill to disk
 
 
 def parse_multipart_form(
@@ -634,7 +639,11 @@ def parse_multipart_form(
         "header_field": bytearray(),
         "header_value": bytearray(),
         "headers": {},
-        "data": bytearray(),
+        # Each part's body streams into its own `SpooledTemporaryFile`
+        # (`spool`) rather than a single in-memory bytearray; `part_size`
+        # tracks the running byte count for the per-part size cap.
+        "spool": None,
+        "part_size": 0,
     }
 
     from veloce.exceptions import RequestEntityTooLarge
@@ -649,7 +658,12 @@ def parse_multipart_form(
         state["headers"] = {}
         state["header_field"] = bytearray()
         state["header_value"] = bytearray()
-        state["data"] = bytearray()
+        # Deliberately not a context manager: a file part's spool is handed
+        # to an `UploadFile` that outlives this parse, so it stays open.
+        state["spool"] = tempfile.SpooledTemporaryFile(  # noqa: SIM115
+            max_size=MULTIPART_SPOOL_MAX_SIZE
+        )
+        state["part_size"] = 0
 
     def on_header_field(data: bytes, start: int, end: int) -> None:
         state["header_field"] += data[start:end]
@@ -666,9 +680,10 @@ def parse_multipart_form(
 
     def on_part_data(data: bytes, start: int, end: int) -> None:
         chunk = data[start:end]
-        if len(state["data"]) + len(chunk) > max_part_size:
+        state["part_size"] += len(chunk)
+        if state["part_size"] > max_part_size:
             _too_large(f"multipart part exceeds the {max_part_size}-byte size limit")
-        state["data"] += chunk
+        state["spool"].write(chunk)
 
     def on_part_end() -> None:
         disposition = state["headers"].get("content-disposition", "")
@@ -681,25 +696,31 @@ def parse_multipart_form(
             elif token.startswith("filename="):
                 filename = token[9:].strip('"')
 
+        spool = state["spool"]
         if not name:
+            spool.close()  # unnamed part — discard its spooled data
             return
 
-        body_section = bytes(state["data"])
+        spool.seek(0)
         if filename is not None:
-            # File upload — `add()` keeps repeated `name` parts (multiple
-            # `<input multiple>` files under one name) distinct.
+            # File upload — the `UploadFile` takes ownership of the spooled
+            # file (in memory while small, on disk once it rolled over).
+            # `add()` keeps repeated `name` parts (multiple `<input
+            # multiple>` files under one name) distinct.
             result.add(
                 name,
                 UploadFile(
                     filename=filename,
                     content_type=state["headers"].get("content-type", "text/plain"),
-                    file=io.BytesIO(body_section),
-                    size=len(body_section),
+                    file=spool,
+                    size=state["part_size"],
                 ),
             )
         else:
-            # Regular field — `add()` likewise preserves duplicate names.
-            result.add(name, body_section.decode("utf-8", errors="replace"))
+            # Regular field — small; read it back, then release the spool.
+            value = spool.read().decode("utf-8", errors="replace")
+            spool.close()
+            result.add(name, value)
 
     parser = MultipartParser(
         boundary.encode("latin-1"),
