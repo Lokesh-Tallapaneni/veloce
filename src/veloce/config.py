@@ -131,6 +131,42 @@ class Config(dict[str, Any]):
                 self[name] = getattr(module, name)
         return True
 
+    # ── from_env_file ────────────────────────────────────────────────
+
+    def from_env_file(self, filename: str = ".env", silent: bool = False) -> bool:
+        """Load ``KEY=VALUE`` pairs from a dotenv-style ``.env`` file.
+
+        `#` comments and blank lines are skipped, an optional `export `
+        prefix is accepted, and a value wrapped in matching single or
+        double quotes is unquoted. Values are stored as plain strings —
+        a `.env` file carries no types. Only UPPERCASE keys are kept (see
+        `from_mapping`). With `silent=True` a missing file returns
+        `False` rather than raising.
+        """
+        try:
+            with open(filename, encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except OSError:
+            if silent:
+                return False
+            raise
+        parsed: dict[str, Any] = {}
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].lstrip()
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            parsed[key] = value
+        return self.from_mapping(parsed)
+
     # ── from_envvar ──────────────────────────────────────────────────
 
     def from_envvar(self, varname: str, silent: bool = False) -> bool:

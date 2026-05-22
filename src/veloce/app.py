@@ -188,6 +188,9 @@ class Veloce(Router):
         self._teardown_appcontext_hooks: list[Callable] = []
         self._context_processors: list[Callable] = []
         self._mounted_apps: list[tuple[str, Any]] = []
+        # Arbitrary ASGI apps mounted at a prefix — dispatched at the ASGI
+        # layer with the raw scope, distinct from veloce sub-apps above.
+        self._asgi_mounts: list[tuple[str, Any]] = []
         self._http_middleware_funcs: list[Callable] = []  # @app.middleware("http") funcs
         # Jinja2 helper registrations — applied to the env on each render.
         self._template_filters: list[tuple[str, Callable]] = []
@@ -1480,8 +1483,39 @@ class Veloce(Router):
     # ── Mount sub-applications ────────────────────────────────────
 
     def mount(self, prefix: str, app: Any) -> None:
-        """Mount a sub-application at a prefix."""
-        self._mounted_apps.append((prefix.rstrip("/"), app))
+        """Mount a sub-application at a path prefix.
+
+        A veloce sub-app is dispatched through the parent's request
+        pipeline. Any other ASGI application — an ASGI micro-app, an
+        instrumentation shim — is dispatched at the ASGI layer instead:
+        the matched prefix is stripped from the scope's `path` and moved
+        onto `root_path`, so the mounted app sees a normal root-relative
+        request.
+
+        Scope: a mounted ASGI app receives `http` and `websocket` scopes
+        only. The parent app owns the `lifespan` cycle and does not fan it
+        out, so a mounted app must not depend on ASGI `lifespan` events
+        for its setup. A mounted ASGI app owns its entire prefix subtree —
+        a native route registered under the same prefix is unreachable.
+        Mounts are matched in registration order (first match wins), so
+        register a more specific prefix before a broader one.
+        """
+        prefix = prefix.rstrip("/")
+        # A request path always starts with "/"; normalise a prefix given
+        # without one so the mount is not silently unreachable.
+        if prefix and not prefix.startswith("/"):
+            prefix = "/" + prefix
+        if isinstance(app, Veloce):
+            self._mounted_apps.append((prefix, app))
+        else:
+            self._asgi_mounts.append((prefix, app))
+
+    def _match_asgi_mount(self, path: str) -> tuple[str, Any] | None:
+        """Return the `(prefix, app)` whose prefix owns `path`, if any."""
+        for prefix, mounted in self._asgi_mounts:
+            if path == prefix or path.startswith(prefix + "/"):
+                return prefix, mounted
+        return None
 
     # ── Lifecycle events ─────────────────────────────────────────
 
@@ -2520,6 +2554,22 @@ class Veloce(Router):
     async def _asgi_app(self, scope: dict, receive: Callable, send: Callable) -> None:
         """The core ASGI application — HTTP / WebSocket / lifespan handling."""
         self._setup_openapi()
+
+        # Mounted arbitrary ASGI apps are dispatched here with the raw
+        # scope — the matched prefix is moved from `path` to `root_path`.
+        if self._asgi_mounts and scope["type"] in ("http", "websocket"):
+            mount = self._match_asgi_mount(scope.get("path", ""))
+            if mount is not None:
+                prefix, mounted = mount
+                sub_scope = dict(scope)
+                sub_scope["path"] = scope["path"][len(prefix) :] or "/"
+                sub_scope["root_path"] = scope.get("root_path", "") + prefix
+                # Drop the now-stale absolute `raw_path`; the mounted app
+                # falls back to the rewritten `path`.
+                sub_scope.pop("raw_path", None)
+                await mounted(sub_scope, receive, send)
+                return
+
         if scope["type"] == "http":
             # Build request from ASGI scope. Construct headers from the raw
             # tuple list so duplicate headers (Set-Cookie, etc.) are preserved.
