@@ -116,6 +116,21 @@ def test_regular_form_field_still_parses_alongside_a_file():
     assert resp.json() == {"field": "a photo", "file": "pic.jpg"}
 
 
+def test_oversized_file_part_is_rejected_with_413():
+    """The per-part size cap still fires for a file part with the new
+    spool-write-then-check ordering."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["MAX_FORM_PART_SIZE"] = 1024  # 1 KiB per-part cap
+
+    @app.post("/u")
+    async def upload(request: Request):
+        await request.form()
+        return {"ok": True}
+
+    resp = app.test_client().post("/u", files={"file": ("big.bin", b"A" * 5000)})
+    assert resp.status_code == 413
+
+
 def test_upload_save_works_after_rollover(tmp_path):
     """A rolled-over upload still saves correctly via UploadFile.save()."""
     app = Veloce(debug=True, openapi_url=None)
