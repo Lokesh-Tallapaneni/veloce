@@ -8,7 +8,7 @@ import functools
 import inspect
 import signal
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from veloce.contrib.staticfiles import StaticFiles
@@ -155,6 +155,10 @@ class Veloce(Router):
         # finished HTTP request with a `RequestMetrics` record. Empty by
         # default, so an un-instrumented app pays nothing.
         self._instrumentation: list[Callable] = []
+        # Dev-mode event-loop blocking watchdog — armed during startup only
+        # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
+        # (and free) for every other app.
+        self._watchdog: Any = None
         self._exception_handlers: dict[type, Callable] = {}
         self._status_handlers: dict[int, Callable] = {}
         # `exception_handlers=` ctor mapping — keys are
@@ -2404,7 +2408,23 @@ class Veloce(Router):
                     await handler()
                 else:
                     handler()
+
+            # Dev-mode event-loop blocking watchdog — opt-in, so an app
+            # that does not set the config key never builds one. The key
+            # may be a plain truthy value, or a mapping of watchdog kwargs
+            # (`interval`, `stall_threshold`) for tuning.
+            _wd_config = self.config.get("EVENT_LOOP_WATCHDOG")
+            if _wd_config and self._watchdog is None:
+                from veloce.watchdog import EventLoopWatchdog
+
+                _wd_kwargs = dict(_wd_config) if isinstance(_wd_config, Mapping) else {}
+                self._watchdog = EventLoopWatchdog(asyncio.get_running_loop(), **_wd_kwargs)
+                self._watchdog.start()
         else:
+            if self._watchdog is not None:
+                self._watchdog.stop()
+                self._watchdog = None
+
             for handler in self._on_shutdown:
                 if inspect.iscoroutinefunction(handler):
                     await handler()

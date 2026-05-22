@@ -60,6 +60,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the third-party ASGI ecosystem (tracing, profiling, observability)
   plugs into a veloce app. The first-registered ASGI middleware is the
   outermost wrapper. Native `Middleware` classes are unaffected.
+- `EventLoopWatchdog` — an opt-in development aid that detects a
+  coroutine blocking the event loop (a synchronous driver, `time.sleep`,
+  a CPU-heavy loop) and logs a warning carrying the blocked stack and a
+  prescriptive hint (blocking-I/O vs CPU-bound). A loop heartbeat plus a
+  separate daemon thread spot the stall. Enable it with the
+  `EVENT_LOOP_WATCHDOG` config key; unset (the default) nothing is
+  constructed, so a production app pays nothing.
 - `ServerSessionMiddleware` keeps the session payload server-side in a
   pluggable `SessionStore` (default: an in-process `InMemorySessionStore`)
   — the cookie carries only an opaque, high-entropy session id. Sessions

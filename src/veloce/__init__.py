@@ -156,6 +156,9 @@ from veloce.testclient import TestClient
 # Class-based views
 from veloce.views import MethodView, View
 
+# Event-loop watchdog
+from veloce.watchdog import EventLoopWatchdog
+
 # WebSocket
 from veloce.websocket import WebSocket
 
@@ -275,6 +278,7 @@ __all__ = [
     "jsonable_encoder",
     # Observability
     "RequestMetrics",
+    "EventLoopWatchdog",
     # Filesystem-safety
     "secure_filename",
     "safe_join",
