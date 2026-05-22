@@ -7,7 +7,9 @@ test's own running event loop.
 
 from __future__ import annotations
 
-from veloce import AsyncTestClient, Request, Veloce
+import pytest
+
+from veloce import AsyncTestClient, Request, UploadFile, Veloce
 from veloce.http.response import RedirectResponse
 
 
@@ -42,6 +44,24 @@ def _app() -> Veloce:
     @app.get("/whoami")
     async def whoami(request: Request):
         return {"seen": request.cookies.get("token")}
+
+    @app.get("/redir-to-auth")
+    async def redir_to_auth():
+        return RedirectResponse("/auth-check", status_code=307)
+
+    @app.get("/auth-check")
+    async def auth_check(request: Request):
+        return {"auth": request.headers.get("authorization")}
+
+    @app.get("/loop")
+    async def loop():
+        return RedirectResponse("/loop", status_code=307)
+
+    @app.post("/upload")
+    async def upload(request: Request):
+        form = await request.form()
+        f = form.get("file")
+        return {"name": f.filename if isinstance(f, UploadFile) else None}
 
     return app
 
@@ -109,6 +129,38 @@ async def test_redirect_not_followed_by_default():
         resp = await client.get("/old")
         assert resp.status_code == 307
         assert resp.headers.get("location") == "/"
+
+
+async def test_caller_headers_survive_a_followed_redirect():
+    """A caller header (Authorization) must reach the redirected request."""
+    async with AsyncTestClient(_app(), follow_redirects=True) as client:
+        resp = await client.get("/redir-to-auth", headers={"Authorization": "Bearer XYZ"})
+        assert resp.status_code == 200
+        assert resp.json() == {"auth": "Bearer XYZ"}
+
+
+async def test_redirect_loop_hits_the_cap():
+    async with AsyncTestClient(_app(), follow_redirects=True) as client:
+        with pytest.raises(RuntimeError, match="redirects"):
+            await client.get("/loop")
+
+
+# ── files ─────────────────────────────────────────────────────────────
+
+
+async def test_post_files_multipart():
+    async with AsyncTestClient(_app()) as client:
+        resp = await client.post("/upload", files={"file": ("doc.txt", b"data")})
+        assert resp.json() == {"name": "doc.txt"}
+
+
+# ── misuse ────────────────────────────────────────────────────────────
+
+
+async def test_request_without_async_with_raises():
+    client = AsyncTestClient(_app())  # never entered
+    with pytest.raises(RuntimeError, match="async context manager"):
+        await client.get("/")
 
 
 # ── lifespan ──────────────────────────────────────────────────────────

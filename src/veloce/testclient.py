@@ -809,10 +809,15 @@ class AsyncTestClient:
         self._cookies: dict[str, str] = {}
         self._base_headers: dict[str, str] = {}
         self._lifespan_run = False
+        # True between `__aenter__` and `__aexit__`. Async startup work
+        # cannot run in `__init__`, so requests are refused until the
+        # client has been entered as a context manager.
+        self._entered = False
 
     # ── async context manager ────────────────────────────────────────
 
     async def __aenter__(self) -> AsyncTestClient:
+        self._entered = True
         if hasattr(self.app, "_run_lifecycle"):
             await self.app._run_lifecycle("startup")
             self._lifespan_run = True
@@ -822,6 +827,7 @@ class AsyncTestClient:
         if self._lifespan_run and hasattr(self.app, "_run_lifecycle"):
             await self.app._run_lifecycle("shutdown")
             self._lifespan_run = False
+        self._entered = False
 
     # ── cookie management ────────────────────────────────────────────
 
@@ -900,6 +906,12 @@ class AsyncTestClient:
         query_string: str = "",
         follow_redirects: bool | None = None,
     ) -> TestResponse:
+        if not self._entered:
+            raise RuntimeError(
+                "AsyncTestClient must be used as an async context manager: "
+                "`async with app.async_test_client() as client: ...`"
+            )
+
         if "?" in path:
             path, query_string = path.split("?", 1)
 
@@ -926,7 +938,9 @@ class AsyncTestClient:
             current_path, current_query = location, ""
             if "?" in current_path:
                 current_path, current_query = current_path.split("?", 1)
-            current_headers = None
+            # `current_headers` is intentionally kept across the hop — the
+            # caller's headers (Authorization, custom headers) must reach
+            # the redirected request, matching the sync TestClient.
         raise RuntimeError(
             f"AsyncTestClient exceeded {self._MAX_REDIRECTS} redirects following {method} {path}"
         )
