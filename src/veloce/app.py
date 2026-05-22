@@ -729,6 +729,19 @@ class Veloce(Router):
 
         return TestClient(self, **kwargs)
 
+    def async_test_client(self, **kwargs: Any) -> Any:
+        """Return an `AsyncTestClient` for this app.
+
+        The async counterpart of `test_client()` — used as
+        `async with app.async_test_client() as client:` inside an async
+        test, so requests are awaited on the test's own running loop
+        rather than driven through a private loop. Kwargs are forwarded
+        to `AsyncTestClient.__init__`.
+        """
+        from veloce.testclient import AsyncTestClient
+
+        return AsyncTestClient(self, **kwargs)
+
     def app_context(self) -> _AppContext:
         """Bind `current_app` and reset `g` for use outside a request.
 
