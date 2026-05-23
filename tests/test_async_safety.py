@@ -202,8 +202,16 @@ class TestGracefulShutdownStructure:
         assert "appcontext_teardown" in log
 
 
+@pytest.mark.perf
 class TestPerformanceAfterFixes:
-    """Sanity check that async fixes didn't kill performance."""
+    """Sanity check that async fixes didn't kill performance.
+
+    Marked `perf` because every assertion is a wall-clock measurement —
+    OS-scheduler jitter under full-suite CPU contention makes them flaky
+    even with a generous budget, so they are excluded from the default
+    `pytest` run. Opt in with `pytest -m perf` on a quiet machine to
+    actually exercise these checks.
+    """
 
     @pytest.mark.asyncio
     async def test_async_handler_under_50us(self):
