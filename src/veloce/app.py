@@ -66,6 +66,27 @@ _exc_handler_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool
 # would re-walk the MRO every time for an unhandled exception type.
 _MISSING: Any = object()
 
+# Pre-encoded ASCII bytes for the content-type strings the built-in
+# response classes emit. Hit at ASGI emit time before the per-request
+# `_reject_header_crlf(...).encode()` round-trip; values here are
+# trusted (they originate from response.py class definitions) so the
+# CRLF/NUL check is skipped on cache hit. Mutation of the cached
+# strings is impossible — str is immutable — so a handler-side write
+# like `response.content_type = "text/csv"` falls through to the
+# uncached path and is validated as before.
+_CT_BYTES_CACHE: dict[str, bytes] = {
+    "application/json": b"application/json",
+    "text/html; charset=utf-8": b"text/html; charset=utf-8",
+    "text/plain; charset=utf-8": b"text/plain; charset=utf-8",
+    "application/octet-stream": b"application/octet-stream",
+}
+
+# Pre-encoded ASCII bytes for small content-length values. Body sizes
+# below 2048 cover the entire json-hello / path-param hot path and the
+# vast majority of typical JSON API responses; larger payloads fall
+# through to the per-request `str(n).encode()` allocation.
+_CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(2048))
+
 
 def _endpoint_blueprint(endpoint: str | None) -> str | None:
     """Return the blueprint name encoded in an endpoint, or `None`.
@@ -1876,14 +1897,15 @@ class Veloce(Router):
     async def _dispatch_request(self, request: Request) -> Response:
         """Core request dispatch — middleware, routing, handler execution."""
         _exc: Exception | None = None
-        # A fresh resolver per request. Its `_cache`, `_teardowns` and
-        # `_scope_stack` are per-request state; a single shared resolver
-        # would let a concurrent request's `reset()` wipe this request's
-        # pending `yield`-dependency teardown stack (mirrors the
-        # per-connection resolver the WebSocket path already uses).
-        resolver = DependencyResolver()
-        resolver._overrides = self._dependency_overrides
-        resolver._override_subplans = self._override_subplans
+        # Resolver allocation is deferred until a non-trivial route demands
+        # it. A trivial-plan route (no injected params, no dependencies)
+        # never touches the resolver, so allocating one upfront — plus its
+        # internal dict / WeakKeyDictionary / list members — would be pure
+        # waste for the static-GET hot path. Per-request fresh allocation
+        # is still preserved: a single shared resolver would let one
+        # request's `reset()` clobber another's `yield`-teardown stack
+        # (matches the per-connection resolver the WebSocket path uses).
+        resolver: DependencyResolver | None = None
         try:
             # Run middleware (request phase)
             for mw in self._middlewares:
@@ -2032,6 +2054,9 @@ class Veloce(Router):
                     # constructed, so there is no stale state to clear.
                     kwargs = {}
                 else:
+                    resolver = DependencyResolver()
+                    resolver._overrides = self._dependency_overrides
+                    resolver._override_subplans = self._override_subplans
                     kwargs = await resolver.resolve_plan(
                         route_info.handler_plan,
                         request,
@@ -2039,6 +2064,9 @@ class Veloce(Router):
                         route_info.route_dep_plans,
                     )
             else:
+                resolver = DependencyResolver()
+                resolver._overrides = self._dependency_overrides
+                resolver._override_subplans = self._override_subplans
                 kwargs = await resolver.resolve(
                     route_info.handler,
                     request,
@@ -2145,7 +2173,11 @@ class Veloce(Router):
                         lambda t: t.exception() if not t.cancelled() else None
                     )
 
-            return await self._run_response_middleware(request, response)
+            # Inline empty-middleware gate skips the awaited no-op coroutine
+            # creation in the common case (no middleware registered).
+            if self._middlewares:
+                response = await self._run_response_middleware(request, response)
+            return response
 
         except HTTPException as exc:
             _exc = exc
@@ -2210,7 +2242,7 @@ class Veloce(Router):
             # intact.
             # `run_teardowns` is async; the common no-yield-dep case has
             # an empty stack, so skip the coroutine + await entirely.
-            if resolver._teardowns:
+            if resolver is not None and resolver._teardowns:
                 try:
                     await resolver.run_teardowns(_exc)
                 except Exception:
@@ -2797,20 +2829,29 @@ class Veloce(Router):
                 return
 
         if scope["type"] == "http":
-            # CIMultiDict consumes the raw ASGI tuple list in one tight C
-            # loop, preserving duplicate-header and case-insensitive semantics.
-            headers = Headers(
-                [(k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", [])]
-            )
+            # Hand the raw ASGI `(bytes, bytes)` header list to `Request`
+            # untouched; the CIMultiDict + per-tuple latin-1 decode is
+            # deferred until the handler reads `request.headers`. The
+            # hot json-hello / path-param path never reads them.
+            raw_headers = scope.get("headers", [])
 
             # MAX_CONTENT_LENGTH: declared value refused up front; the
-            # running total catches chunked bodies that omit it.
+            # running total catches chunked bodies that omit it. The check
+            # walks raw bytes tuples rather than forcing the Headers build.
             max_size = self.config.get("MAX_CONTENT_LENGTH")
             if max_size is not None:
-                declared = headers.get("content-length")
-                if declared is not None:
+                declared_b: bytes | None = None
+                # ASGI mandates lowercase header names, but `.lower()`
+                # defends against a non-compliant server before we trust
+                # the declared length. The loop only runs when
+                # `MAX_CONTENT_LENGTH` is configured (cold on the hot path).
+                for _hk, _hv in raw_headers:
+                    if _hk.lower() == b"content-length":
+                        declared_b = _hv
+                        break
+                if declared_b is not None:
                     try:
-                        over = int(declared) > max_size
+                        over = int(declared_b) > max_size
                     except ValueError:
                         over = False
                     if over:
@@ -2840,14 +2881,16 @@ class Veloce(Router):
                 await self._emit_413(send, max_size)
                 return
 
-            path = scope.get("path", "/")
-            query = scope.get("query_string", b"").decode("ascii")
+            # ASGI HTTP scope mandates `path` and `query_string` keys —
+            # direct subscript skips the `.get(default)` default-arg pop.
+            path = scope["path"]
+            query = scope["query_string"].decode("ascii")
 
             request = Request(
                 method=scope["method"],
                 path=path,
                 query_string=query,
-                headers=headers,
+                headers=raw_headers,
                 body=body,
                 scope=scope,
             )
@@ -2860,12 +2903,13 @@ class Veloce(Router):
             if response.is_streamed:
                 # CRLF-validate every header value — the ASGI emit path
                 # bypasses `Response.encode()`, so the splitting guard must
-                # be applied here too.
+                # be applied here too. Built-in content types hit the cache.
+                _ct = response.content_type
+                _ct_bytes = _CT_BYTES_CACHE.get(_ct)
+                if _ct_bytes is None:
+                    _ct_bytes = _reject_header_crlf(_ct, "content-type").encode()
                 stream_headers: list[tuple[bytes, bytes]] = [
-                    (
-                        b"content-type",
-                        _reject_header_crlf(response.content_type, "content-type").encode(),
-                    ),
+                    (b"content-type", _ct_bytes),
                 ]
                 for sk, sv in response.headers.items():
                     sk_lower = sk.lower()
@@ -2928,13 +2972,20 @@ class Veloce(Router):
             )
             # CRLF-validate every header value — the ASGI emit path
             # bypasses `Response.encode()`, so the response-splitting
-            # guard must be applied here too.
+            # guard must be applied here too. Built-in content types and
+            # small content-length values hit the precomputed caches.
+            _ct = response.content_type
+            _ct_bytes = _CT_BYTES_CACHE.get(_ct)
+            if _ct_bytes is None:
+                _ct_bytes = _reject_header_crlf(_ct, "content-type").encode()
+            _cl_bytes = (
+                _CL_BYTES_SMALL[content_length]
+                if 0 <= content_length < 2048
+                else str(content_length).encode("ascii")
+            )
             asgi_headers: list[tuple[bytes, bytes]] = [
-                (
-                    b"content-type",
-                    _reject_header_crlf(response.content_type, "content-type").encode(),
-                ),
-                (b"content-length", str(content_length).encode()),
+                (b"content-type", _ct_bytes),
+                (b"content-length", _cl_bytes),
             ]
             if response.headers:
                 for k, v in response.headers.items():

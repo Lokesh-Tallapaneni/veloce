@@ -1,0 +1,22 @@
+seed: 42
+  [ fastapi] cold-cache round (discarded):     1,286 rps  p50=  5877 us  p99=  8833 us  errors=0
+  [  veloce] cold-cache round (discarded):     1,329 rps  p50=  5808 us  p99=  7711 us  errors=0
+  [   flask] cold-cache round (discarded):       829 rps  p50=  4657 us  p99=  6830 us  errors=0
+  [   flask] run 1/3:       828 rps  p50=  4653 us  p99=  6936 us  errors=0
+  [ fastapi] run 1/3:     1,243 rps  p50=  5950 us  p99=  7518 us  errors=0
+  [  veloce] run 1/3:     1,327 rps  p50=  5784 us  p99=  8209 us  errors=0
+  [ fastapi] run 2/3:     1,288 rps  p50=  5966 us  p99=  8038 us  errors=0
+  [   flask] run 2/3:       778 rps  p50=  4757 us  p99= 11000 us  errors=0
+  [  veloce] run 2/3:     1,204 rps  p50=  6317 us  p99=  9584 us  errors=0
+  [ fastapi] run 3/3:     1,240 rps  p50=  6028 us  p99= 11376 us  errors=0
+  [   flask] run 3/3:       856 rps  p50=  4821 us  p99= 15564 us  errors=0
+  [  veloce] run 3/3:     1,267 rps  p50=  6013 us  p99=  8518 us  errors=0
+
+== workload: path-param ==
+framework     rps (med)     p50 us     p99 us   errors
+veloce            1,267       6013       8518        0
+fastapi           1,243       5966       8038        0
+flask               828       4757      11000        0
+
+Veloce does NOT beat:
+  p99  — fastapi

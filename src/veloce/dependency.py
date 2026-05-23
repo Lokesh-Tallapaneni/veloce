@@ -238,6 +238,15 @@ _MARKER_LOC = {
 }
 
 
+# Shared empty sentinels for resolvers that never see app-level overrides
+# (the dispatcher overwrites the slot before any read). Module-level so
+# they are not reallocated per request. `_EMPTY_OVERRIDES` is treated as
+# immutable by all readers — only `.get(...)` and iteration; the
+# dispatcher swaps in a real dict whenever overrides exist.
+_EMPTY_OVERRIDES: dict[Callable, Callable] = {}
+_EMPTY_OVERRIDE_SUBPLANS: weakref.WeakKeyDictionary[Callable, Any] = weakref.WeakKeyDictionary()
+
+
 class DependencyResolver:
     """Walks a `HandlerPlan` to produce kwargs for a handler.
 
@@ -256,14 +265,14 @@ class DependencyResolver:
 
     def __init__(self) -> None:
         self._cache: dict[Callable, Any] = {}
-        self._overrides: dict[Callable, Callable] = {}
-        # Per-override sub-plan cache: build once on first call to an override.
-        # Veloce overrides the slot with its WeakKeyDictionary instance at
-        # dispatch time; this fallback is for resolvers used outside the app
-        # (e.g. unit tests that construct DependencyResolver() directly).
-        self._override_subplans: weakref.WeakKeyDictionary[Callable, Any] = (
-            weakref.WeakKeyDictionary()
-        )
+        # `_overrides` and `_override_subplans` are immediately overwritten
+        # by `Veloce._dispatch_request` with the app-scoped instances. Skip
+        # the throwaway dict + WeakKeyDictionary allocation here on the hot
+        # path; the module-level sentinels below provide the same
+        # iteration / `.get(...)` semantics for resolvers constructed
+        # outside the dispatcher (unit tests, direct callers).
+        self._overrides: dict[Callable, Callable] = _EMPTY_OVERRIDES
+        self._override_subplans: weakref.WeakKeyDictionary[Callable, Any] = _EMPTY_OVERRIDE_SUBPLANS
         # Per-request stack of yield-style dependency teardowns. Each entry is
         # `(kind, generator)` where kind is "sync" or "async". The stack is
         # drained in reverse by `run_teardowns()` after the response.
