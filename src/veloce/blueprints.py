@@ -201,9 +201,22 @@ class Blueprint(Router):
         own_prefix = self.url_prefix.rstrip("/")
         # include_hidden=True: a blueprint's WebSocket routes and its
         # include_in_schema=False routes must still enter the app's tree.
-        for method, path, info in self._collect_all_routes(include_hidden=True):
-            stripped = path
-            if own_prefix and path.startswith(own_prefix):
-                stripped = path[len(own_prefix) :] or "/"
+        for method, _path, info in self._collect_all_routes(include_hidden=True):
+            # `_walk_tree` reconstructs the path from the radix structure,
+            # which loses the trailing-slash distinction the router
+            # collapses at storage time (both `@bp.get("/")` and
+            # `@bp.get("")` map to the same radix node). Read from
+            # `RouteInfo.path_template` instead — it carries the original
+            # `prefix + user_path` string so we can tell the two apart
+            # and re-prefix correctly.
+            full_path = info.path_template
+            if own_prefix and full_path.startswith(own_prefix):
+                # Strip the prefix verbatim — preserving an empty
+                # remainder (`@bp.get("")` against the bare prefix) and
+                # an explicit `/` remainder (`@bp.get("/")`) as their
+                # own distinct shapes for the re-prefix step.
+                stripped = full_path[len(own_prefix) :]
+            else:
+                stripped = full_path
             results.append((stripped, [method], info))
         return results

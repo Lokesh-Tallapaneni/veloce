@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import functools
 import inspect
 import signal
@@ -951,6 +952,10 @@ class Veloce(Router):
                 self._status_handlers[exc_class_or_status] = func
             else:
                 self._exception_handlers[exc_class_or_status] = func
+                # Invalidate the MRO walk cache so a freshly-decorated
+                # handler for a base class doesn't get shadowed by a
+                # stale negative cache populated before its registration.
+                self._exc_handler_cache.clear()
             return func
 
         return decorator
@@ -970,6 +975,10 @@ class Veloce(Router):
             self._status_handlers[exc_class_or_status] = handler
         else:
             self._exception_handlers[exc_class_or_status] = handler
+            # Same invalidation as `register_error_handler` /
+            # `@exception_handler` — a late-bound handler for a base
+            # class must take effect for already-cached subclasses.
+            self._exc_handler_cache.clear()
 
     def log_exception(self, exc: BaseException) -> None:
         """Log an exception with traceback.
@@ -2249,9 +2258,19 @@ class Veloce(Router):
             is_coro = _is_async_callable(handler)
         if is_coro:
             return await handler(**kwargs)
-        # Run sync handlers in executor to avoid blocking the event loop
+        # Run sync handlers in executor to avoid blocking the event loop.
+        # Snapshot the current context so request-scoped `ContextVar`s
+        # (`_current_request_var`, `_current_app_var`, `g`'s store)
+        # remain readable in the worker thread — without `ctx.run`,
+        # `loop.run_in_executor` runs the call in the executor's bare
+        # context and helpers like `flash()`, `current_app.config[...]`,
+        # and the `request` / `session` proxies all see "unbound". The
+        # snapshot is read-only from the caller's perspective: a
+        # `ContextVar.set(...)` inside the sync handler does not
+        # propagate back.
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, functools.partial(handler, **kwargs))
+        ctx = contextvars.copy_context()
+        return await loop.run_in_executor(None, ctx.run, functools.partial(handler, **kwargs))
 
     async def _call_exc_handler(
         self, handler: Callable, request: Request, exc: BaseException
@@ -3106,7 +3125,16 @@ class _TestRequestContext:
         # read it via the same `current_request`-style helpers used at
         # dispatch time.
         from veloce.helpers import _current_request_var
+        from veloce.sessions import Session
 
+        # Provide an in-memory `Session` so helpers that read the
+        # request's session (`flash`, `get_flashed_messages`,
+        # `session` proxy) work inside the block without requiring
+        # the caller to also install `SessionMiddleware`. Production
+        # dispatch installs one via the middleware; the context just
+        # mirrors that surface.
+        if "session" not in self._request._state:
+            self._request._state["session"] = Session()
         self._request_token = _current_request_var.set(self._request)
         return self._request
 

@@ -3,6 +3,7 @@ current_app, send_from_directory."""
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 from typing import Any, NoReturn
 
@@ -528,6 +529,27 @@ g = _RequestGlobals()
 # ── flash() / get_flashed_messages() ─────────────────────────────
 
 
+def _flash_store() -> Any:
+    """Resolve the session dict the flash queue lives in.
+
+    A previous implementation wrote to `g` (a per-request `contextvars`
+    namespace), which made `flash()` silently lose the message across
+    the POST/redirect/GET round-trip that flashes are designed for —
+    the redirected GET sees a fresh `g` with no `_flashes` key. Now
+    we route through the active session so the signed-cookie /
+    server-side session carries the queue across requests, matching
+    the round-trip contract the docstring promises.
+    """
+    req = _current_request_var.get()
+    if req is None or "session" not in req._state:
+        raise RuntimeError(
+            "flash() requires an active request with SessionMiddleware "
+            "(or ServerSessionMiddleware) installed — the flashes are "
+            "carried across requests via the session, not the per-request `g`."
+        )
+    return req._state["session"]
+
+
 def flash(message: str, category: str = "message") -> None:
     """Flash a message for the next request — requires SessionMiddleware.
 
@@ -535,9 +557,16 @@ def flash(message: str, category: str = "message") -> None:
         flash("Item created successfully")
         flash("Invalid input", "error")
     """
-    store = g._get_store()
+    store = _flash_store()
     flashes = store.setdefault("_flashes", [])
     flashes.append((category, message))
+    # `Session.setdefault` of an unseen key flips `.modified`, but the
+    # subsequent `flashes.append(...)` mutates an existing list — that
+    # mutation is invisible to the Session container, so the cookie
+    # would not be re-signed if `setdefault` short-circuited (key
+    # already present). Mark explicitly to cover both paths.
+    with contextlib.suppress(AttributeError):
+        store.modified = True
     # `message_flashed` signal — fires for every flash() call.
     from veloce.signals import message_flashed
 
@@ -553,7 +582,16 @@ def get_flashed_messages(
         messages = get_flashed_messages()
         messages = get_flashed_messages(with_categories=True)
     """
-    store = g._get_store()
+    req = _current_request_var.get()
+    # Reading without an active request returns an empty list — calling
+    # this from a template render outside a request shouldn't crash.
+    if req is None or "session" not in req._state:
+        return []
+    store = req._state["session"]
+    # `Session.pop` already flips `.modified` when the key existed —
+    # no need to set it again here. Non-Session dict subclasses that
+    # don't override `pop` won't carry the flag, but their callers
+    # aren't using the cookie middleware anyway.
     flashes = store.pop("_flashes", [])
     if category_filter:
         flashes = [(cat, msg) for cat, msg in flashes if cat in category_filter]

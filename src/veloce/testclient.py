@@ -86,6 +86,27 @@ class TestResponse:
         return f"<TestResponse [{self.status_code}]>"
 
 
+def _guess_content_type(filename: str | None, content: Any) -> str:
+    """Pick a Content-Type for a multipart file part.
+
+    Prefers the file-like object's `.type` attribute when present (matches
+    Python's `cgi.FieldStorage` shape that some test helpers expose), then
+    falls back to `mimetypes.guess_type(filename)`, finally to the
+    `application/octet-stream` default the multipart spec recommends for
+    unknown payloads.
+    """
+    explicit = getattr(content, "type", None)
+    if explicit:
+        return str(explicit)
+    if filename:
+        import mimetypes
+
+        guess = mimetypes.guess_type(filename)[0]
+        if guess:
+            return guess
+    return "application/octet-stream"
+
+
 def _encode_multipart(
     files: dict[str, Any],
     fields: dict[str, str],
@@ -93,10 +114,16 @@ def _encode_multipart(
     """Build a `multipart/form-data` body from files + extra form fields.
 
     `files` shape per RFC 7578 §4 — values can be:
-    - `bytes` / `str`: raw file content, filename inferred from key,
-      content-type defaults to `application/octet-stream`.
-    - `(filename, content)`: 2-tuple.
-    - `(filename, content, content_type)`: 3-tuple.
+    - `bytes` / `str`: raw file content, filename inferred from key.
+    - file-like (`BytesIO`, open file handle, anything with `.read()`):
+      content read on demand, filename from `getattr(spec, "name", key)`.
+    - `(filename, content_or_filelike)`: 2-tuple.
+    - `(filename, content_or_filelike, content_type)`: 3-tuple.
+
+    For shapes that don't carry an explicit content-type, the helper
+    guesses one from the filename extension and falls back to
+    `application/octet-stream`. Mirrors `requests` / `httpx` shape so
+    test code migrating from those clients works unchanged.
 
     `fields` are non-file form parts. Both files and fields appear in
     the body in registration order. Returns `(body, content_type)`
@@ -115,15 +142,31 @@ def _encode_multipart(
         parts.append(b"\r\n")
 
     for name, spec in files.items():
+        # Match `requests` / `httpx`: accept bytes / str, file-likes (any
+        # object with `.read()` — BytesIO, open file handle, IO[bytes]),
+        # 2-tuple `(filename, content_or_filelike)`, or 3-tuple
+        # `(filename, content_or_filelike, content_type)`. Tests
+        # migrating from `requests.post(files={"f": BytesIO(...)})`
+        # used to crash with a TypeError here.
         if isinstance(spec, (bytes, str)):
             filename, content, ct = name, spec, "application/octet-stream"
         elif isinstance(spec, tuple) and len(spec) == 2:
             filename, content = spec
-            ct = "application/octet-stream"
+            ct = _guess_content_type(filename, content)
         elif isinstance(spec, tuple) and len(spec) == 3:
             filename, content, ct = spec
+        elif hasattr(spec, "read"):
+            # Bare file-like — pull filename from `.name` when present
+            # (open()'d files set it; BytesIO doesn't), fall back to
+            # the field name.
+            filename = getattr(spec, "name", None) or name
+            content = spec
+            ct = _guess_content_type(filename, content)
         else:
-            raise TypeError(f"files[{name!r}] must be bytes, str, or 2/3-tuple")
+            raise TypeError(f"files[{name!r}] must be bytes, str, file-like, or 2/3-tuple")
+        # Resolve the body bytes for any file-like content.
+        if hasattr(content, "read"):
+            content = content.read()
         if isinstance(content, str):
             content = content.encode("utf-8")
         parts.append(b"--" + b + b"\r\n")
