@@ -7,6 +7,7 @@ the handler signature per request.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import functools
 import inspect
@@ -374,24 +375,30 @@ class DependencyResolver:
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
 
-        for slot in slots:
+        i = 0
+        n = len(slots)
+        while i < n:
+            slot = slots[i]
             kind = slot.kind
             name = slot.name
 
             if kind == K_REQUEST:
                 kwargs[name] = request
+                i += 1
                 continue
 
             if kind == K_WEBSOCKET:
                 # WebSocket plans pass the connection where an HTTP resolve
                 # passes the `Request`, so the same object is bound here.
                 kwargs[name] = request
+                i += 1
                 continue
 
             if kind == K_BG_TASKS:
                 if request._background_tasks is None:
                     request._background_tasks = BackgroundTasks()
                 kwargs[name] = request._background_tasks
+                i += 1
                 continue
 
             if kind == K_RESPONSE:
@@ -406,24 +413,46 @@ class DependencyResolver:
                     injected.status_code = 0
                     request._state["_injected_response"] = injected
                 kwargs[name] = injected
+                i += 1
                 continue
 
             if kind == K_SECURITY_SCOPES:
                 # Snapshot the accumulated scopes — copy so later
                 # mutations of `_scope_stack` don't affect this instance.
                 kwargs[name] = SecurityScopes(list(self._scope_stack))
+                i += 1
                 continue
 
             if kind == K_DEPENDS:
+                # Look ahead for a contiguous run of `K_DEPENDS` siblings
+                # that can safely run in parallel. The constraints
+                # — no Security() scope mutation, no yield-style
+                # dependencies, no two slots sharing a use_cache=True
+                # callable — protect the shared resolver state. When
+                # the run isn't safe (or is just one slot), fall back to
+                # the sequential await. See `_parallel_dep_group_end`.
+                end = self._parallel_dep_group_end(slots, i)
+                if end > i + 1:
+                    group = slots[i:end]
+                    results = await asyncio.gather(
+                        *(self._exec_depends(s, request, path_params) for s in group)
+                    )
+                    for s, r in zip(group, results, strict=True):
+                        kwargs[s.name] = r
+                    i = end
+                    continue
                 kwargs[name] = await self._exec_depends(slot, request, path_params)
+                i += 1
                 continue
 
             if kind == K_PARAM_MARKER:
                 kwargs[name] = await self._resolve_marker(slot, request, path_params)
+                i += 1
                 continue
 
             if kind == K_BODY_MODEL:
                 kwargs[name] = self._resolve_body_model(slot, request)
+                i += 1
                 continue
 
             if kind == K_UPLOAD_FILE:
@@ -434,6 +463,7 @@ class DependencyResolver:
                 elif upload is not None:
                     kwargs[name] = upload
                 # else: leave unset (handler default will apply if any)
+                i += 1
                 continue
 
             if kind == K_QUERY_LIST:
@@ -452,6 +482,7 @@ class DependencyResolver:
                     kwargs[name] = slot.default
                 elif slot.is_optional:
                     kwargs[name] = None
+                i += 1
                 continue
 
             if kind == K_QUERY:
@@ -469,6 +500,7 @@ class DependencyResolver:
                     kwargs[name] = slot.default
                 elif slot.is_optional:
                     kwargs[name] = None
+                i += 1
                 continue
 
             # K_PATH and K_NONE are not currently emitted by build_plan; future-proof.
@@ -481,9 +513,54 @@ class DependencyResolver:
                     kwargs[name] = slot.default
                 elif slot.is_optional:
                     kwargs[name] = None
+                i += 1
                 continue
 
+            # Fall-through: kind didn't match anything; advance so the
+            # loop terminates instead of spinning on an unknown slot.
+            i += 1
+
         return kwargs
+
+    def _parallel_dep_group_end(self, slots: list[Any], start: int) -> int:
+        """Return the index past the last K_DEPENDS sibling safely
+        parallelisable with `slots[start]`.
+
+        A run is parallelisable when every slot in it:
+        - is `K_DEPENDS`,
+        - pushes no `SecurityScopes` (`slot.target_type` is not a list
+          of scope strings — Security() deps mutate `_scope_stack`,
+          which is shared state),
+        - is not a yield-style dependency (sync/async generator —
+          we don't interleave generator entries),
+        - and does not share a `use_cache=True` callable with another
+          slot in the run (would race for `self._cache[callable]`).
+
+        Returns `start + 1` when the run cannot be expanded, so the
+        caller falls back to the sequential await.
+        """
+        n = len(slots)
+        if start >= n:
+            return start
+        seen_cached: set[Any] = set()
+        end = start
+        while end < n:
+            s = slots[end]
+            if s.kind != K_DEPENDS:
+                break
+            # Security() — `target_type` carries the scope list.
+            if isinstance(s.target_type, list) and s.target_type:
+                break
+            # Yield-style — generator-driven teardown stack.
+            if getattr(s, "dep_is_gen", False) or getattr(s, "dep_is_async_gen", False):
+                break
+            # Cache collision with an earlier sibling in this same run.
+            if s.use_cache:
+                if s.dep_callable in seen_cached:
+                    break
+                seen_cached.add(s.dep_callable)
+            end += 1
+        return end
 
     def _resolve_body_model(self, slot: Any, request: Request) -> Any:
         try:

@@ -13,6 +13,10 @@ from veloce.routing.converters import (
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 
+# Sentinel returned when a match captures no path params — avoids allocating
+# a fresh dict on every parameter-free request.
+_EMPTY_PARAMS: dict[str, str] = {}
+
 
 class RadixNode:
     """A node in the radix tree."""
@@ -21,6 +25,7 @@ class RadixNode:
         "segment",
         "static_children",
         "param_children",
+        "_param_index",
         "wildcard_child",
         "handlers",
         "param_name",
@@ -38,6 +43,9 @@ class RadixNode:
         # own small containers and are scanned only after a static miss.
         self.static_children: dict[str, RadixNode] = {}
         self.param_children: list[RadixNode] = []
+        # O(1) registration-time lookup keyed by (param_name, converter_type).
+        # The ordered list above is still the source of truth at match time.
+        self._param_index: dict[tuple[str, type], RadixNode] = {}
         self.wildcard_child: RadixNode | None = None
         self.handlers: dict[str, RouteInfo] = {}  # method -> RouteInfo
         self.param_name: str | None = None
@@ -227,7 +235,9 @@ class Router:
 
     def _split_path(self, path: str) -> list[str]:
         """Split path into segments."""
-        return [s for s in path.strip("/").split("/") if s]
+        # The empty-string filter handles leading, trailing, and consecutive
+        # slashes uniformly; no separate strip() pass needed.
+        return [s for s in path.split("/") if s]
 
     def add_route(
         self,
@@ -293,19 +303,15 @@ class Router:
                 # converter type; otherwise add a new one. Different converters
                 # for the same name on the same segment slot would be ambiguous,
                 # so we treat them as distinct param children.
-                child = None
-                for c in node.param_children:
-                    if (
-                        c.param_name == param_name and type(c.converter) is type(converter)  # noqa: E721
-                    ):
-                        child = c
-                        break
+                key = (param_name, type(converter))
+                child = node._param_index.get(key)
                 if child is None:
                     child = RadixNode(seg)
                     child.is_param = True
                     child.param_name = param_name
                     child.converter = converter
                     node.param_children.append(child)
+                    node._param_index[key] = child
                 node = child
                 # Greedy converter (path) must terminate the rule — it consumes
                 # everything that follows.
@@ -775,19 +781,15 @@ class Router:
                             param_name, conv_spec = spec, ""
                         converter = parse_converter(conv_spec) if conv_spec else StringConverter()
                         param_names.append(param_name)
-                        child = None
-                        for c in cur.param_children:
-                            if (
-                                c.param_name == param_name and type(c.converter) is type(converter)  # noqa: E721
-                            ):
-                                child = c
-                                break
+                        key = (param_name, type(converter))
+                        child = cur._param_index.get(key)
                         if child is None:
                             child = RadixNode(seg)
                             child.is_param = True
                             child.param_name = param_name
                             child.converter = converter
                             cur.param_children.append(child)
+                            cur._param_index[key] = child
                         cur = child
                         if converter.greedy:
                             break
