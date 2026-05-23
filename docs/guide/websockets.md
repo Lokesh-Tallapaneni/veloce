@@ -91,11 +91,12 @@ async def chat(ws):
 `allowed` is a single origin string or an iterable of allowed origins.
 Comparison is `.rstrip("/").lower()` on both sides, so
 `"https://app.example.com"` matches `"https://APP.example.com/"`. The
-literal `"*"` is the explicit "accept any origin" escape hatch
-(use only when you have another check). `Origin: null` (sandboxed
-iframes, `file://` pages) is rejected, as is a missing header — branch
-on `ws.origin is None` explicitly if you need to allow non-browser
-clients.
+literal `"*"` is the explicit "accept any origin" escape hatch — and it
+**also accepts a missing or `null` `Origin`**, so reach for it only
+when another check covers the same surface. `Origin: null` (sandboxed
+iframes, `file://` pages) is otherwise rejected, as is a missing
+header — branch on `ws.origin is None` explicitly if you need to allow
+non-browser clients.
 
 ### Registered-once — `WebSocketOriginMiddleware`
 
@@ -110,7 +111,7 @@ app = Veloce()
 app.add_middleware(
     WebSocketOriginMiddleware(
         allowed_origins=["https://app.example.com"],
-        allow_missing=True,  # accept handshakes with no Origin
+        allow_missing=True,  # default; see note below
     )
 )
 ```
@@ -119,10 +120,33 @@ The middleware closes the handshake with `1008` on a mismatch — same
 contract as the per-handler helper. Plain HTTP requests pass straight
 through; `Origin` enforcement for HTTP is `CORSMiddleware`'s job.
 
-The two APIs use the same normalisation, so allow-lists are
-interchangeable. Pick the per-handler form when only a few routes need
-the check or when each route needs a different allow-list; pick the
-middleware when one policy covers everything.
+`allow_missing=True` (the default) still blocks every **browser-driven**
+CSWSH attempt, because browsers always send `Origin` on the WebSocket
+handshake (RFC 6455 §4.1) — what it lets through is non-browser clients
+(mobile apps, service-to-service) that legitimately omit the header.
+Set `allow_missing=False` only when the route should be browser-only;
+otherwise the default is the safer choice.
+
+### Picking between the two
+
+The two APIs share normalisation (`.rstrip("/").lower()`, wildcard
+`"*"`), so an allow-list written for one is reusable in the other.
+They **differ on the default missing-`Origin` policy**: the per-handler
+`check_origin` rejects missing origins (use `ws.origin is None` to opt
+in), while the middleware accepts them unless you pass
+`allow_missing=False`. A swap between the two is not policy-neutral —
+read the previous paragraph before you switch.
+
+Pick the per-handler form when only a few routes need the check, when
+each route needs a different allow-list, or when you want
+strict-by-default missing-`Origin` rejection. Pick the middleware when
+one policy covers everything.
+
+> **Heads-up:** `app.use_secure_defaults()` does **not** register
+> `WebSocketOriginMiddleware`. The helper sets cookie defaults and
+> registers `SecurityHeadersMiddleware` (which is purely HTTP). Add a
+> `WebSocketOriginMiddleware` explicitly — there is no allow-list it
+> could infer from the app.
 
 ## Handshake data and dependencies
 
