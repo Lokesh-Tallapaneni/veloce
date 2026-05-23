@@ -735,7 +735,10 @@ class _WebSocketSession:
             if first["type"] == "websocket.close":
                 code = first.get("code", 1000)
                 raise RuntimeError(f"WebSocket rejected with close code {code}")
-            assert first["type"] == "websocket.accept"
+            if first["type"] != "websocket.accept":
+                raise RuntimeError(
+                    f"WebSocket handshake produced an unexpected ASGI message: {first['type']!r}"
+                )
             self.accepted_subprotocol = first.get("subprotocol")
 
         self._client._loop.run_until_complete(_start())

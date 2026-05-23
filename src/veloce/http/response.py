@@ -510,8 +510,9 @@ class Response:
         """
         if isinstance(value, str):
             value = value.encode("utf-8")
+        # The `body` property setter clears `_encoded`; no separate
+        # invalidation needed.
         self.body = value
-        self._encoded = None
         # If `Content-Length` was explicitly set (e.g. by caller after
         # the prior body), refresh it to match. The ASGI emit path
         # always recomputes Content-Length from `body`, so leaving
@@ -1244,25 +1245,31 @@ class FileResponse(Response):
         if "ETag" not in hdrs and "etag" not in hdrs:
             hdrs["ETag"] = _file_etag(path, st.st_size, st.st_mtime)
 
-        # Refuse to do a blocking `open()` + `read()` when an event loop
-        # is running — a 50 MB read on the loop pauses every other
-        # request for the duration of the read. The cheap factory
-        # `await FileResponse.from_path(path)` streams the same file
-        # through `loop.run_in_executor` without blocking. Sync
-        # construction stays valid in scripts / CLI tools that run
-        # outside a loop.
+        # Warn when called on a running loop — a 50 MB read on the loop
+        # pauses every other request. The cheap factory
+        # `await FileResponse.from_path(path)` streams the file through
+        # `loop.run_in_executor` without blocking. We emit a
+        # DeprecationWarning instead of raising so the established sync
+        # helpers (`send_file`, `Veloce.send_static_file`) keep working
+        # for now; the next major bump will tighten this to a hard error.
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            with open(path, "rb") as f:
-                body = f.read()
+            pass
         else:
-            raise RuntimeError(
-                "FileResponse(path) does a blocking read on the event loop. "
-                "Use `await FileResponse.from_path(path, ...)` from an async "
-                "handler. The sync constructor is still available in "
-                "non-async contexts (CLI scripts, sync test fixtures)."
+            import warnings
+
+            warnings.warn(
+                "FileResponse(path) does a blocking read on the running "
+                "event loop. Use `await FileResponse.from_path(path, ...)` "
+                "from async handlers, or wrap the sync call in "
+                "`asyncio.to_thread(...)`. This will raise in a future "
+                "release.",
+                DeprecationWarning,
+                stacklevel=2,
             )
+        with open(path, "rb") as f:
+            body = f.read()
 
         super().__init__(
             status_code=200,

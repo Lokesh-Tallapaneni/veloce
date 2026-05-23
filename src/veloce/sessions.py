@@ -90,13 +90,21 @@ class Session(dict[str, Any]):
 
     def update(self, *args: Any, **kwargs: Any) -> None:
         super().update(*args, **kwargs)
-        # Skip the cookie re-write when the update actually changed nothing
-        # — a defensive `session.update(state.get("extras", {}))` call
-        # against an empty mapping should not force a Set-Cookie on every
-        # request.
-        has_input = bool(kwargs) or (bool(args) and bool(args[0]))
-        if has_input:
+        # Skip the cookie re-write only for the unambiguously-empty case
+        # (`session.update({})` / `session.update()` with no kwargs).
+        # Non-empty mappings flip `modified`; non-mapping arguments
+        # (iterators of key-value pairs, generators) cannot be checked
+        # for emptiness after the super().update consumed them, so they
+        # conservatively flip `modified` too.
+        if kwargs:
             self.modified = True
+            return
+        if not args:
+            return
+        first = args[0]
+        if isinstance(first, dict) and not first:
+            return
+        self.modified = True
 
     def __ior__(self, other: Any) -> Session:  # type: ignore[override,misc]
         # PEP 584 `|=` goes through the C-level merge, not `__setitem__`.

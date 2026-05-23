@@ -76,17 +76,18 @@ async def test_async_caller_supplied_etag_wins(tmp_path):
     assert resp.headers["ETag"] == '"custom"'
 
 
-@pytest.mark.asyncio
 async def test_async_etag_matches_sync_for_same_file(tmp_path):
     p = tmp_path / "a.txt"
     p.write_bytes(b"hello")
-    # The sync `FileResponse(path)` constructor refuses to do a
-    # blocking `open()` on the event loop. Drive it through
-    # `asyncio.to_thread` so the same code path a CLI caller would
-    # hit (no loop in that thread) is exercised here.
-    import asyncio
+    # The sync `FileResponse(path)` constructor emits a
+    # `DeprecationWarning` on a running loop (it still does blocking I/O,
+    # just no longer raises). Silence the warning here — the comparison
+    # is the test's actual concern, not the deprecation surface.
+    import warnings
 
-    sync_e = (await asyncio.to_thread(FileResponse, str(p))).headers["ETag"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        sync_e = FileResponse(str(p)).headers["ETag"]
     async_e = (await FileResponse.from_path(str(p))).headers["ETag"]
     assert sync_e == async_e
 

@@ -88,7 +88,13 @@ class HttpProtocol(asyncio.Protocol):
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         # ASGI/HTTP runs over a full duplex transport; the Liskov-correct
         # signature widens to `BaseTransport`, so narrow back here.
-        assert isinstance(transport, asyncio.Transport)
+        # Explicit raise (not `assert`) so `python -O` does not strip the
+        # check and let a half-duplex transport flow into code that
+        # assumes full-duplex semantics two frames deeper.
+        if not isinstance(transport, asyncio.Transport):
+            raise RuntimeError(
+                f"expected a full-duplex asyncio.Transport, got {type(transport).__name__}"
+            )
         self.transport = transport
         self._start_keep_alive_timer()
 
