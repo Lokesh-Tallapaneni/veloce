@@ -33,6 +33,11 @@ def jsonable_encoder(
     Usage:
         data = jsonable_encoder(my_pydantic_model, exclude={"password"})
     """
+    # Common-case primitives short-circuit — most leaf calls hit these
+    # before any of the heavier isinstance checks below.
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+
     if isinstance(obj, BaseModel):
         kwargs: dict[str, Any] = {}
         if include:
@@ -92,9 +97,6 @@ def jsonable_encoder(
 
     if isinstance(obj, bytes):
         return obj.decode("utf-8", errors="replace")
-
-    if isinstance(obj, (str, int, float, bool, type(None))):
-        return obj
 
     # Fallback: try to convert to dict
     try:

@@ -30,9 +30,10 @@ def _reject_header_crlf(value: str, what: str) -> str:
     splitting / header injection. Raising — rather than silently
     stripping — surfaces the bug at the offending call site.
     """
-    for ch in _ILLEGAL_HEADER_CHARS:
-        if ch in value:
-            raise ValueError(f"{what} contains an illegal control character (CR, LF, or NUL)")
+    # Inline three `__contains__` calls — CPython short-circuits on the
+    # first match, and a typical clean header value scans them in C.
+    if "\r" in value or "\n" in value or "\x00" in value:
+        raise ValueError(f"{what} contains an illegal control character (CR, LF, or NUL)")
     return value
 
 

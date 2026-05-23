@@ -41,3 +41,4 @@ CLAUDE.local.md
 CLAUDE.md
 .claude/
 .claude-dev-helper/
+.playwright-mcp/

@@ -99,7 +99,9 @@ class WebSocket:
         ws.headers = headers
         ws._accepted = False
         ws._closed = False
-        ws._receive_queue = asyncio.Queue()  # unused in ASGI mode
+        # Bounded — even though ASGI mode never feeds this queue, an
+        # unbounded queue is a footgun if any future change starts pushing.
+        ws._receive_queue = asyncio.Queue(maxsize=cls.DEFAULT_RECV_QUEUE_MAXSIZE)
         ws._frag_opcode = None  # unused in ASGI mode (no raw frame parsing)
         ws._frag_buffer = bytearray()
         ws._asgi_receive = receive

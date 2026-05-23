@@ -721,16 +721,21 @@ class DependencyResolver:
             is_gen = slot.dep_is_gen
             is_async_gen = slot.dep_is_async_gen
         else:
-            # Override: build (and cache) a sub-plan for the replacement.
-            sub_plan = self._override_subplans.get(actual)
-            if sub_plan is None:
+            # Override path: subplan + the three callable-kind flags are
+            # memoised on the override callable; the resolver shares this
+            # cache across requests via the Veloce instance.
+            entry = self._override_subplans.get(actual)
+            if entry is None:
                 from veloce._handler_plan import build_plan
 
-                sub_plan = build_plan(actual)
-                self._override_subplans[actual] = sub_plan
-            is_coro = inspect.iscoroutinefunction(actual)
-            is_gen = inspect.isgeneratorfunction(actual)
-            is_async_gen = inspect.isasyncgenfunction(actual)
+                entry = (
+                    build_plan(actual),
+                    inspect.iscoroutinefunction(actual),
+                    inspect.isgeneratorfunction(actual),
+                    inspect.isasyncgenfunction(actual),
+                )
+                self._override_subplans[actual] = entry
+            sub_plan, is_coro, is_gen, is_async_gen = entry
 
         # Push this Security()'s scopes onto the stack so a `SecurityScopes`
         # slot inside the sub-plan sees them. Plain `Depends` has no scopes

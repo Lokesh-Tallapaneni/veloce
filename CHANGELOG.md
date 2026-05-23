@@ -6,6 +6,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Per-request dispatch ~+17 %.** Profile-driven pass over the in-loop
+  ASGI hot path: `_setup_openapi` gated at call sites so the no-op
+  branch costs one attribute read instead of a frame; `_endpoint_blueprint`
+  no longer parsed three times per request when no blueprint hooks are
+  registered; `Headers`, the `current_app`/`current_request` contextvars,
+  and the `request_started`/`request_finished` signals hoisted to module
+  top instead of being re-imported per request; single-chunk request
+  body fast-path skips the `body_parts` list + `b"".join`;
+  `_reject_header_crlf` inlined as three short-circuited `in` checks;
+  `Signal.has_receivers_for` short-circuits on empty subscriber list;
+  `_run_teardowns` await skipped when no yield-dependencies registered.
+  In-loop bench (`bench/hot_dispatch_bench.py`): static GET 62.5k →
+  72.8k req/s (+16.5 %), path-param 47.8k → 57.0k (+19.4 %), POST 64-byte
+  body 54.8k → 64.2k (+17.2 %).
+- **Router micro-ops.** `Router.match` tries the raw method on
+  `handlers.get` before `method.upper()` (RFC-conforming clients send
+  uppercase already); `_match_node` flattens static-only descent into a
+  `while` loop when the current node has no param/wildcard alternatives,
+  shaving one Python frame per static segment; single-param-child path
+  skips the rollback `del` (no alternative to back off to);
+  `FloatConverter.match` checks `"e" / "E"` directly instead of
+  allocating `value.lower()`.
+- **Per-request rate-limit O(N) → O(1).** `RateLimitMiddleware` switches
+  from per-request list comprehension to `collections.deque` +
+  amortised `popleft`. Periodic eviction sweep now mutates in place
+  with a snapshot-then-recheck guard so an append racing with the
+  sweep is not silently dropped.
+- **Override-dependency sub-plan cache hoisted to the app.** Each
+  request's fresh `DependencyResolver` shares
+  `Veloce._override_subplans`, eliminating the per-request `build_plan`
+  + triple `inspect.is*function` probe on override hits. The cache is
+  cleared when `dependency_overrides` is reassigned.
+- **Mount-prefix slash precomputed.** `_mounted_apps` /
+  `_asgi_mounts` now store `(prefix, prefix + "/", app)` so dispatch
+  doesn't reallocate `prefix + "/"` per request per mount.
+- **Exception-handler signature cache.** `_call_exc_handler` memoises
+  `(wants_request, wants_exc)` flags per handler in a
+  `WeakKeyDictionary`, eliminating the `inspect.signature` walk per
+  raised exception.
+- **`jsonable_encoder` primitives short-circuit.** The
+  `None | str | int | float | bool` branch is hoisted to the top of
+  the dispatch so leaf calls hit it before any of the heavier
+  `isinstance` checks.
+
+### Fixed
+
+- **ETag drift between StaticFiles and FileResponse.** `StaticFiles._compute_etag`
+  now delegates to `veloce.http.response._file_etag` so a static handler
+  and `FileResponse` over the same file emit identical ETags and
+  validate identically against `If-None-Match`. Signature changed
+  from `(path, mtime)` to `(path, size, mtime)` — `_`-prefixed and
+  therefore private, but flagged for subclassers.
+- **WebSocket ASGI-mode unbounded queue.** `WebSocket.from_asgi`
+  builds `_receive_queue` with `maxsize=DEFAULT_RECV_QUEUE_MAXSIZE`
+  instead of an unbounded queue. The queue is unused in ASGI mode
+  today; the bound prevents a footgun if future changes start feeding
+  it.
+
 ### Added
 
 - **Comparative bench harness** (`bench/comparative/`): head-to-head

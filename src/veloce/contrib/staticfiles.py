@@ -13,7 +13,6 @@ Spec anchors:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import mimetypes
 import os
 from collections import OrderedDict
@@ -189,6 +188,7 @@ class StaticFiles:
         # stat_result was populated by the existence check above; reuse it.
         assert stat_result is not None  # narrowed by the `not is_file` returns
         mtime = stat_result.st_mtime
+        size = stat_result.st_size
         cache_key = file_path
 
         if cache_key in self._etag_cache:
@@ -198,10 +198,10 @@ class StaticFiles:
                 # Record the hit as recent usage so the LRU keeps it.
                 self._etag_cache.move_to_end(cache_key)
             else:
-                etag = self._compute_etag(file_path, mtime)
+                etag = self._compute_etag(file_path, size, mtime)
                 self._remember_etag(cache_key, etag, mtime)
         else:
-            etag = self._compute_etag(file_path, mtime)
+            etag = self._compute_etag(file_path, size, mtime)
             self._remember_etag(cache_key, etag, mtime)
 
         last_modified = _format_http_date(mtime)
@@ -346,10 +346,13 @@ class StaticFiles:
         finally:
             await loop.run_in_executor(None, fh.close)
 
-    def _compute_etag(self, path: str, mtime: float) -> str:
-        """Compute ETag from file path and modification time."""
-        key = f"{path}:{mtime}".encode()
-        return f'"{hashlib.md5(key).hexdigest()}"'
+    def _compute_etag(self, path: str, size: int, mtime: float) -> str:
+        """Compute ETag — delegates to the shared `_file_etag` helper so the
+        StaticFiles handler and `FileResponse` validate against the same
+        `If-None-Match` value for the same file."""
+        from veloce.http.response import _file_etag
+
+        return _file_etag(path, size, mtime)
 
     async def _render_directory_index(self, dir_path: str, url_path: str, loop: Any) -> Response:
         """Render an HTML index of `dir_path`'s entries.

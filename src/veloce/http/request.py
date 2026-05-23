@@ -99,7 +99,9 @@ class Request:
         app: Any = None,
         scope: dict | None = None,
     ) -> None:
-        self.method = method.upper()
+        # ASGI servers and `Veloce.add_route` already feed an uppercase
+        # method; skip the allocation when the caller already complies.
+        self.method = method if method.isupper() else method.upper()
         self.path = path
         self.query_string = query_string
         # Always normalise into a Headers (CIMultiDict) so case-insensitive,
