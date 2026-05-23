@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-23
+
+Metadata-only release. No code, behaviour, or dependency changes
+against 0.1.0 — this version exists solely to correct the maintainer
+email recorded in the PyPI package metadata.
+
+### Changed
+
+- `pyproject.toml`: `authors` and `maintainers` email corrected from
+  `revanthravella@gmail.com` to `lokeshtallapaneni@gmail.com`. The PyPI
+  v0.1.0 metadata is immutable, so the fix lands as 0.1.1; users on
+  v0.1.0 will pick up the corrected metadata on the next
+  `pip install --upgrade veloceframework`.
+
 ## [0.1.0] - 2026-05-23
 
 First public release. Veloce is published to PyPI as `veloceframework`;

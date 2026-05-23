@@ -4,16 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veloceframework"
-version = "0.1.0"
+version = "0.1.1"
 description = "Ultra-fast async Python web framework — ASGI-native, batteries included"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Lokesh Tallapaneni", email = "revanthravella@gmail.com" },
+    { name = "Lokesh Tallapaneni", email = "lokeshtallapaneni@gmail.com" },
 ]
 maintainers = [
-    { name = "Lokesh Tallapaneni", email = "revanthravella@gmail.com" },
+    { name = "Lokesh Tallapaneni", email = "lokeshtallapaneni@gmail.com" },
 ]
 keywords = ["asgi", "async", "web", "framework", "http", "api", "websocket", "openapi"]
 classifiers = [
