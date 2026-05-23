@@ -424,11 +424,15 @@ class Router:
 
         # Handlers are stored uppercase — RFC-conforming clients send the
         # method already uppercased, so try the raw form first and only
-        # uppercase on miss.
+        # uppercase on miss. `.isupper()` is the right guard: CPython does
+        # not promise identity for `str.upper()` even when the input is
+        # already uppercase, so an `is`-based shortcut would be a lie.
         handler_info = result.handlers.get(method)
         if handler_info is None:
-            method_upper = method.upper() if not method.isupper() else method
-            if method_upper is not method:
+            if method.isupper():
+                method_upper = method
+            else:
+                method_upper = method.upper()
                 handler_info = result.handlers.get(method_upper)
             # RFC 9110 §9.3.2: HEAD falls back to GET; the dispatcher
             # strips the body on the way out.

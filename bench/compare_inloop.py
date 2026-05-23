@@ -46,8 +46,14 @@ def build_veloce():
     async def show(item_id: int):
         return {"id": item_id}
 
+    # Parse the request body as JSON so the POST workload is work-equivalent
+    # with the FastAPI side, which also parses + validates a `dict` payload.
+    # A raw-body length read on one side vs JSON-parse + Pydantic on the
+    # other is not a fair comparison — see `.claude/rules/perf-changes.md`
+    # on attribute-every-claimed-win.
     async def echo(request):
-        return {"len": len(request.body)}
+        payload = request.json()
+        return {"len": len(payload) if isinstance(payload, dict) else 0}
 
     app.add_route("/", index, ["GET"])
     app.add_route("/items/{item_id}", show, ["GET"])
@@ -70,7 +76,7 @@ def build_fastapi():
 
     @app.post("/echo")
     async def echo(payload: dict = {}):  # noqa: B006
-        return {"len": len(str(payload))}
+        return {"len": len(payload)}
 
     return app
 

@@ -22,7 +22,7 @@ from functools import lru_cache
 from typing import Any
 
 from veloce.http.request import Request
-from veloce.http.response import Response
+from veloce.http.response import Response, _file_etag
 
 
 @lru_cache(maxsize=512)
@@ -350,7 +350,6 @@ class StaticFiles:
         """Compute ETag — delegates to the shared `_file_etag` helper so the
         StaticFiles handler and `FileResponse` validate against the same
         `If-None-Match` value for the same file."""
-        from veloce.http.response import _file_etag
 
         return _file_etag(path, size, mtime)
 

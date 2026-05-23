@@ -70,15 +70,16 @@ class RateLimitMiddleware(Middleware):
         cutoff = now - self.window_seconds
 
         # Periodic eviction sweep — bounded memory across unique client IPs.
-        # Mutates in place so an append racing with the sweep is not lost.
+        # The stale list is captured before deletion because mutating a
+        # dict mid-iteration is a RuntimeError; no `await` runs between
+        # the comprehension and the delete loop, so cooperative
+        # interleaving cannot drop an append.
         if now - self._last_sweep >= self.window_seconds:
             stale = [
                 ip for ip, stamps in self._buckets.items() if not stamps or stamps[-1] <= cutoff
             ]
             for ip in stale:
-                b = self._buckets.get(ip)
-                if b is not None and (not b or b[-1] <= cutoff):
-                    del self._buckets[ip]
+                del self._buckets[ip]
             self._last_sweep = now
 
         bucket = self._buckets.get(client)

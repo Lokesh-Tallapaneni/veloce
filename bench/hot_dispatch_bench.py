@@ -112,8 +112,8 @@ async def amain(iters: int, warmup: int) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--iters", type=int, default=20_000)
-    ap.add_argument("--warmup", type=int, default=2000)
+    ap.add_argument("--iters", type=int, default=30_000)
+    ap.add_argument("--warmup", type=int, default=3000)
     args = ap.parse_args()
     asyncio.run(amain(args.iters, args.warmup))
 

@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import functools
 import inspect
+import weakref
 from collections.abc import Callable
 from enum import Enum
 from typing import Any, Literal, get_args, get_origin
@@ -257,7 +258,12 @@ class DependencyResolver:
         self._cache: dict[Callable, Any] = {}
         self._overrides: dict[Callable, Callable] = {}
         # Per-override sub-plan cache: build once on first call to an override.
-        self._override_subplans: dict[Callable, Any] = {}
+        # Veloce overrides the slot with its WeakKeyDictionary instance at
+        # dispatch time; this fallback is for resolvers used outside the app
+        # (e.g. unit tests that construct DependencyResolver() directly).
+        self._override_subplans: weakref.WeakKeyDictionary[Callable, Any] = (
+            weakref.WeakKeyDictionary()
+        )
         # Per-request stack of yield-style dependency teardowns. Each entry is
         # `(kind, generator)` where kind is "sync" or "async". The stack is
         # drained in reverse by `run_teardowns()` after the response.
@@ -726,6 +732,7 @@ class DependencyResolver:
             # cache across requests via the Veloce instance.
             entry = self._override_subplans.get(actual)
             if entry is None:
+                # local: avoids dependency <-> _handler_plan cycle
                 from veloce._handler_plan import build_plan
 
                 entry = (
@@ -734,7 +741,11 @@ class DependencyResolver:
                     inspect.isgeneratorfunction(actual),
                     inspect.isasyncgenfunction(actual),
                 )
-                self._override_subplans[actual] = entry
+                # Override targets that aren't weak-referenceable (some
+                # C-level callables) silently skip caching — re-probing
+                # is fine, leaking the entry is not.
+                with contextlib.suppress(TypeError):
+                    self._override_subplans[actual] = entry
             sub_plan, is_coro, is_gen, is_async_gen = entry
 
         # Push this Security()'s scopes onto the stack so a `SecurityScopes`

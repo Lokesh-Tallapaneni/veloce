@@ -21,7 +21,7 @@ from veloce.exceptions import (
     WebSocketException,
     WebSocketRequestValidationError,
 )
-from veloce.helpers import _current_app_var, _current_request_var, g
+from veloce.helpers import _current_app_var, _current_request_var, _RequestGlobals, g
 from veloce.http.datastructures import Headers
 from veloce.http.request import Request
 from veloce.http.response import (
@@ -31,7 +31,15 @@ from veloce.http.response import (
 )
 from veloce.middleware import BaseHTTPMiddleware, Middleware
 from veloce.routing.router import Router
-from veloce.signals import request_finished, request_started
+from veloce.signals import (
+    appcontext_popped,
+    appcontext_pushed,
+    appcontext_tearing_down,
+    got_request_exception,
+    request_finished,
+    request_started,
+    request_tearing_down,
+)
 
 if TYPE_CHECKING:
     import ssl
@@ -252,7 +260,13 @@ class Veloce(Router):
         # Cross-request cache of `(sub_plan, is_coro, is_gen, is_async_gen)`
         # for overridden dependencies. Hoisted to the app so each request's
         # fresh DependencyResolver doesn't pay the build + triple-probe cost.
-        self._override_subplans: dict[Callable, Any] = {}
+        # WeakKeyDictionary so a transient override target (a per-test
+        # lambda, a hot-reloaded factory) does not pin its plan for the
+        # process lifetime — strong-keyed callable caches become leaks
+        # under test-suite churn.
+        self._override_subplans: weakref.WeakKeyDictionary[Callable, Any] = (
+            weakref.WeakKeyDictionary()
+        )
         self._before_request_hooks: list[Callable] = []
         self._before_first_request_hooks: list[Callable] = []
         # Single-fire guard: lock prevents concurrent first requests from
@@ -2235,9 +2249,7 @@ class Veloce(Router):
             # Signals: fire `got_request_exception` first when an exc bubbled
             # up, then always fire `request_tearing_down`. Receivers may
             # raise — log + continue so a buggy listener doesn't poison
-            # the dispatch path.
-            from veloce.signals import got_request_exception, request_tearing_down
-
+            # the dispatch path. Names hoisted to module top.
             try:
                 if _exc is not None and got_request_exception.has_receivers_for(self):
                     got_request_exception.send(self, exception=_exc)
@@ -3116,9 +3128,6 @@ class _AppContext:
         self._g_token: Any = None
 
     def __enter__(self) -> Veloce:
-        from veloce.helpers import _current_app_var, _RequestGlobals
-        from veloce.signals import appcontext_pushed
-
         self._app_token = _current_app_var.set(self._app)
         # Fresh `g` store — each app_context block gets its own.
         self._g_token = _RequestGlobals._ctx_var.set({})
@@ -3126,9 +3135,6 @@ class _AppContext:
         return self._app
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        from veloce.helpers import _current_app_var, _RequestGlobals
-        from veloce.signals import appcontext_popped, appcontext_tearing_down
-
         appcontext_tearing_down.send(self._app, exc=exc)
         if self._app_token is not None:
             _current_app_var.reset(self._app_token)
