@@ -17,6 +17,11 @@ import orjson
 # — they enable response splitting / header injection (RFC 9110 §5.5).
 _ILLEGAL_HEADER_CHARS = ("\r", "\n", "\x00")
 
+# Reason-phrase lookup for `Response.status` — `HTTPStatus(code).phrase`
+# walks the IntEnum on every access, which shows up on the hot
+# status-line path. Build the mapping once at import time.
+_STATUS_PHRASES: dict[int, str] = {s.value: s.phrase for s in HTTPStatus}
+
 
 def _reject_header_crlf(value: str, what: str) -> str:
     """Reject CR, LF, or NUL in a header field name or value.
@@ -159,12 +164,7 @@ class Response:
         (`"200"`), or a full status line (`"200 OK"` / `"404 Not
         Found"`). The leading integer is parsed into `status_code`.
         """
-        from http import HTTPStatus
-
-        try:
-            phrase = HTTPStatus(self.status_code).phrase
-        except ValueError:
-            phrase = ""
+        phrase = _STATUS_PHRASES.get(self.status_code, "")
         return f"{self.status_code} {phrase}".rstrip()
 
     @status.setter

@@ -18,10 +18,23 @@ import mimetypes
 import os
 from collections import OrderedDict
 from email.utils import formatdate, parsedate_to_datetime
+from functools import lru_cache
 from typing import Any
 
 from veloce.http.request import Request
 from veloce.http.response import Response
+
+
+@lru_cache(maxsize=512)
+def _guess_content_type(path: str) -> str:
+    """Cache `mimetypes.guess_type` by full path.
+
+    `guess_type` walks the registered MIME table on every call and a
+    static-file server hits the same extensions over and over. Caching
+    the result keeps the lookup off the hot path. Bounded so a hostile
+    client probing arbitrary paths can't grow the cache without bound.
+    """
+    return mimetypes.guess_type(path)[0] or "application/octet-stream"
 
 
 def _format_http_date(timestamp: float) -> str:
@@ -182,7 +195,7 @@ class StaticFiles:
                     headers={"ETag": etag, "Last-Modified": last_modified},
                 )
 
-        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+        content_type = _guess_content_type(file_path)
         size = stat_result.st_size
 
         # Range request — RFC 9110 §14.2. Single-range only; multi-range

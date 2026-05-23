@@ -589,10 +589,18 @@ class WebSocket:
         if len(data) < offset + payload_len:
             return
 
-        payload = bytearray(data[offset : offset + payload_len])
-        if masked:
-            for i in range(len(payload)):
-                payload[i] ^= mask[i % 4]
+        payload_bytes = bytes(data[offset : offset + payload_len])
+        if masked and payload_len:
+            # Bulk XOR via Python's bignum int. Tile the 4-byte mask to
+            # the payload length and XOR in a single C-level op — far
+            # cheaper than a Python-level per-byte loop for any frame
+            # past a handful of bytes (and WebSocket frames are usually
+            # hundreds to KiB-sized).
+            tiled = (mask * ((payload_len + 3) // 4))[:payload_len]
+            payload_bytes = (
+                int.from_bytes(payload_bytes, "big") ^ int.from_bytes(tiled, "big")
+            ).to_bytes(payload_len, "big")
+        payload = bytearray(payload_bytes)
 
         # Control frames (close / ping / pong) — never fragmented; handled
         # independently of any fragmented message in progress.
