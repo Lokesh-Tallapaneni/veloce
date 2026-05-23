@@ -64,12 +64,72 @@ async def negotiated(ws):
     await ws.close()
 ```
 
+## Origin validation (CSWSH defence)
+
+The WebSocket handshake is a plain HTTP/1.1 request, so neither
+Same-Origin Policy nor CORS apply. A page on **any** origin can open a
+socket to your app unless you check the handshake `Origin`. The attack
+is Cross-Site WebSocket Hijacking (CSWSH); the defence is an allow-list.
+
+Veloce ships two complementary APIs:
+
+### Per-handler — `WebSocket.check_origin(allowed)`
+
+Call before `accept()` and close on mismatch:
+
+```python
+@app.websocket("/ws")
+async def chat(ws):
+    if not ws.check_origin("https://app.example.com"):
+        await ws.close(code=1008)  # policy violation
+        return
+    await ws.accept()
+    async for msg in ws.iter_text():
+        ...
+```
+
+`allowed` is a single origin string or an iterable of allowed origins.
+Comparison is `.rstrip("/").lower()` on both sides, so
+`"https://app.example.com"` matches `"https://APP.example.com/"`. The
+literal `"*"` is the explicit "accept any origin" escape hatch
+(use only when you have another check). `Origin: null` (sandboxed
+iframes, `file://` pages) is rejected, as is a missing header — branch
+on `ws.origin is None` explicitly if you need to allow non-browser
+clients.
+
+### Registered-once — `WebSocketOriginMiddleware`
+
+When every WebSocket route in your app shares the same allow-list,
+register the middleware so the check runs before any handler:
+
+```python
+from veloce import Veloce
+from veloce.middleware.security import WebSocketOriginMiddleware
+
+app = Veloce()
+app.add_middleware(
+    WebSocketOriginMiddleware(
+        allowed_origins=["https://app.example.com"],
+        allow_missing=True,  # accept handshakes with no Origin
+    )
+)
+```
+
+The middleware closes the handshake with `1008` on a mismatch — same
+contract as the per-handler helper. Plain HTTP requests pass straight
+through; `Origin` enforcement for HTTP is `CORSMiddleware`'s job.
+
+The two APIs use the same normalisation, so allow-lists are
+interchangeable. Pick the per-handler form when only a few routes need
+the check or when each route needs a different allow-list; pick the
+middleware when one policy covers everything.
+
 ## Handshake data and dependencies
 
 The `WebSocket` exposes `query_params`, `headers`, `cookies`, `client`,
-and `url` from the handshake request. `Depends()` works on WebSocket
-handlers too, so authentication and shared setup are resolved the same
-way as for HTTP routes.
+`origin`, and `url` from the handshake request. `Depends()` works on
+WebSocket handlers too, so authentication and shared setup are resolved
+the same way as for HTTP routes.
 
 ## Testing WebSockets
 
