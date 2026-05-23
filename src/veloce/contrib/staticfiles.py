@@ -120,24 +120,36 @@ class StaticFiles:
 
         loop = asyncio.get_running_loop()
 
-        # Offload stat/isfile checks to executor.
-        exists = await loop.run_in_executor(None, os.path.isfile, file_path)
-        if not exists:
+        # Single stat call replaces isfile + later stat. `stat` raises
+        # FileNotFoundError on a missing entry, and `S_ISREG`/`S_ISDIR`
+        # on the result tells us file-vs-dir without another syscall.
+        import stat as _stat
+
+        def _try_stat(p: str) -> os.stat_result | None:
+            try:
+                return os.stat(p)
+            except (FileNotFoundError, NotADirectoryError):
+                return None
+
+        stat_result: os.stat_result | None = await loop.run_in_executor(None, _try_stat, file_path)
+        is_dir = stat_result is not None and _stat.S_ISDIR(stat_result.st_mode)
+        is_file = stat_result is not None and _stat.S_ISREG(stat_result.st_mode)
+
+        if not is_file:
             # Try the .html-suffixed variant when `html=True` is set
             # (handles `/about` → `/about.html` mappings).
             if self.html and not relative.endswith(".html"):
                 file_path_html = file_path + ".html"
-                exists_html = await loop.run_in_executor(None, os.path.isfile, file_path_html)
-                if exists_html:
+                stat_html = await loop.run_in_executor(None, _try_stat, file_path_html)
+                if stat_html is not None and _stat.S_ISREG(stat_html.st_mode):
                     file_path = file_path_html
-                    exists = True
-            if not exists and self.directory_index:
+                    stat_result = stat_html
+                    is_file = True
+            if not is_file and self.directory_index and is_dir:
                 # Last-chance fallback: render an HTML directory listing
                 # when the path resolves to a real dir.
-                is_dir = await loop.run_in_executor(None, os.path.isdir, file_path)
-                if is_dir:
-                    return await self._render_directory_index(file_path, request.path, loop)
-            if not exists:
+                return await self._render_directory_index(file_path, request.path, loop)
+            if not is_file:
                 return None
 
         # Symlink safety: `safe_join` blocks `..` traversal but does not
@@ -153,7 +165,8 @@ class StaticFiles:
         if not contained:
             return Response(status_code=403, body=b"Forbidden")
 
-        stat_result = await loop.run_in_executor(None, os.stat, file_path)
+        # stat_result was populated by the existence check above; reuse it.
+        assert stat_result is not None  # narrowed by the `not is_file` returns
         mtime = stat_result.st_mtime
         cache_key = file_path
 

@@ -32,6 +32,26 @@ if TYPE_CHECKING:
     import ssl
 
 
+_iscoro_cache: dict[int, bool] = {}
+
+
+def _is_async_callable(fn: Callable[..., Any]) -> bool:
+    """Memoised `inspect.iscoroutinefunction` for hot-path hook dispatch.
+
+    `iscoroutinefunction` walks attributes and CO_COROUTINE flags on every
+    call. Per-request teardown / before-request / after-request hook loops
+    re-probe the same handler object repeatedly; cache the result keyed by
+    `id(fn)`. App-registered hooks live for the app's lifetime, so id-reuse
+    can't produce stale entries in practice.
+    """
+    fid = id(fn)
+    cached = _iscoro_cache.get(fid)
+    if cached is None:
+        cached = inspect.iscoroutinefunction(fn)
+        _iscoro_cache[fid] = cached
+    return cached
+
+
 class Veloce(Router):
     """Ultra-fast async web framework.
 
@@ -2045,7 +2065,7 @@ class Veloce(Router):
             # Teardown hooks — always run, even on exceptions.
             for hook in self._teardown_request_hooks:
                 try:
-                    if inspect.iscoroutinefunction(hook):
+                    if _is_async_callable(hook):
                         await hook(_exc)
                     else:
                         loop = asyncio.get_running_loop()
@@ -2059,7 +2079,7 @@ class Veloce(Router):
             # None. Errors are logged, never re-raised.
             for hook in self._teardown_appcontext_hooks:
                 try:
-                    if inspect.iscoroutinefunction(hook):
+                    if _is_async_callable(hook):
                         await hook(_exc)
                     else:
                         loop = asyncio.get_running_loop()
@@ -2131,7 +2151,7 @@ class Veloce(Router):
         `inspect.iscoroutinefunction` probe.
         """
         if is_coro is None:
-            is_coro = inspect.iscoroutinefunction(handler)
+            is_coro = _is_async_callable(handler)
         if is_coro:
             return await handler(**kwargs)
         # Run sync handlers in executor to avoid blocking the event loop

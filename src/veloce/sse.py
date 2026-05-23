@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from veloce.http.response import Response, _reject_header_crlf
+from veloce.http.response import _STATUS_PHRASES, Response, _reject_header_crlf
 
 
 class ServerSentEvent:
@@ -33,8 +33,14 @@ class ServerSentEvent:
             lines.append(f"event: {self.event}")
         if self.retry is not None:
             lines.append(f"retry: {self.retry}")
-        for line in self.data.split("\n"):
-            lines.append(f"data: {line}")
+        data = self.data
+        # Single-line payloads — by far the common case — skip the
+        # `split("\n")` allocation and emit the field directly.
+        if "\n" not in data:
+            lines.append(f"data: {data}")
+        else:
+            for line in data.split("\n"):
+                lines.append(f"data: {line}")
         lines.append("")
         lines.append("")
         return "\n".join(lines).encode("utf-8")
@@ -99,10 +105,8 @@ class EventSourceResponse(Response):
 
     async def stream_to(self, transport: Any) -> None:
         """Stream SSE events to transport."""
-        from http import HTTPStatus
-
-        reason = HTTPStatus(self.status_code).phrase
-        parts = [f"HTTP/1.1 {self.status_code} {reason}\r\n"]
+        reason = _STATUS_PHRASES.get(self.status_code, "")
+        parts = [f"HTTP/1.1 {self.status_code} {reason}".rstrip() + "\r\n"]
         for key, value in {
             "Content-Type": self.content_type,
             "Cache-Control": "no-cache",
@@ -117,7 +121,10 @@ class EventSourceResponse(Response):
 
         async for chunk in self._stream:
             # `_stream` is normalised to bytes by `_encode_stream`.
-            size = format(len(chunk), "x")
-            transport.write(f"{size}\r\n".encode() + chunk + b"\r\n")
+            # `writelines` keeps the size-line, payload, and trailer as
+            # separate buffers instead of concatenating them into a fresh
+            # bytes object per chunk.
+            size = format(len(chunk), "x").encode("ascii")
+            transport.writelines((size, b"\r\n", chunk, b"\r\n"))
 
         transport.write(b"0\r\n\r\n")
