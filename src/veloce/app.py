@@ -8,6 +8,7 @@ import functools
 import inspect
 import signal
 import time
+import weakref
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -32,7 +33,14 @@ if TYPE_CHECKING:
     import ssl
 
 
-_iscoro_cache: dict[int, bool] = {}
+# Memoised `inspect.iscoroutinefunction` results. A `WeakValueDictionary`
+# would not work — the value here is a bool, but bools are singletons in
+# CPython and weak references to them are not supported. Instead we use a
+# `WeakKeyDictionary` so that when a hook callable is garbage-collected
+# its cache entry disappears with it. This sidesteps the id-reuse hazard
+# of an `id()`-keyed dict and keeps memory bounded if a test harness or
+# hot-reloader churns through registered callables.
+_iscoro_cache: weakref.WeakKeyDictionary[Callable[..., Any], bool] = weakref.WeakKeyDictionary()
 
 
 def _is_async_callable(fn: Callable[..., Any]) -> bool:
@@ -41,15 +49,23 @@ def _is_async_callable(fn: Callable[..., Any]) -> bool:
     `iscoroutinefunction` walks attributes and CO_COROUTINE flags on every
     call. Per-request teardown / before-request / after-request hook loops
     re-probe the same handler object repeatedly; cache the result keyed by
-    `id(fn)`. App-registered hooks live for the app's lifetime, so id-reuse
-    can't produce stale entries in practice.
+    the callable itself. The cache is a `WeakKeyDictionary`, so freeing a
+    hook auto-evicts its entry — no unbounded growth, no id-reuse.
     """
-    fid = id(fn)
-    cached = _iscoro_cache.get(fid)
-    if cached is None:
-        cached = inspect.iscoroutinefunction(fn)
-        _iscoro_cache[fid] = cached
-    return cached
+    try:
+        cached = _iscoro_cache.get(fn)
+    except TypeError:
+        # `fn` is unhashable / not weakly referenceable — fall back to a
+        # plain probe. Built-in functions go down this path.
+        return inspect.iscoroutinefunction(fn)
+    if cached is not None:
+        return cached
+    result = inspect.iscoroutinefunction(fn)
+    with contextlib.suppress(TypeError):
+        # Not weak-referenceable (e.g. some C-level callables). The
+        # cache silently skips them; the next call re-probes.
+        _iscoro_cache[fn] = result
+    return result
 
 
 class Veloce(Router):

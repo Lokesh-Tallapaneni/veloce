@@ -123,15 +123,23 @@ class StaticFiles:
         # Single stat call replaces isfile + later stat. `stat` raises
         # FileNotFoundError on a missing entry, and `S_ISREG`/`S_ISDIR`
         # on the result tells us file-vs-dir without another syscall.
+        # `PermissionError` returns a tagged sentinel so we can surface
+        # 403 — matching the `safe_join` traversal guard above — rather
+        # than letting it bubble to a 500.
         import stat as _stat
 
-        def _try_stat(p: str) -> os.stat_result | None:
+        def _try_stat(p: str) -> tuple[os.stat_result | None, bool]:
+            """Return (stat_result, permission_denied)."""
             try:
-                return os.stat(p)
+                return (os.stat(p), False)
             except (FileNotFoundError, NotADirectoryError):
-                return None
+                return (None, False)
+            except PermissionError:
+                return (None, True)
 
-        stat_result: os.stat_result | None = await loop.run_in_executor(None, _try_stat, file_path)
+        stat_result, denied = await loop.run_in_executor(None, _try_stat, file_path)
+        if denied:
+            return Response(status_code=403, body=b"Forbidden")
         is_dir = stat_result is not None and _stat.S_ISDIR(stat_result.st_mode)
         is_file = stat_result is not None and _stat.S_ISREG(stat_result.st_mode)
 
@@ -140,7 +148,11 @@ class StaticFiles:
             # (handles `/about` → `/about.html` mappings).
             if self.html and not relative.endswith(".html"):
                 file_path_html = file_path + ".html"
-                stat_html = await loop.run_in_executor(None, _try_stat, file_path_html)
+                stat_html, denied_html = await loop.run_in_executor(
+                    None, _try_stat, file_path_html
+                )
+                if denied_html:
+                    return Response(status_code=403, body=b"Forbidden")
                 if stat_html is not None and _stat.S_ISREG(stat_html.st_mode):
                     file_path = file_path_html
                     stat_result = stat_html
