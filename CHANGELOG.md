@@ -255,6 +255,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- Radix-tree param-child lookup is now O(1) at registration via a
+  `(param_name, converter_type)` sidecar index (CL40 / CL41). The
+  ordered list remains the source of truth at match time so traversal
+  semantics are unchanged. `_split_path` also drops its `strip("/")`
+  pass — the empty-string filter on the split already handles
+  leading, trailing, and consecutive slashes.
+- Independent sibling `Depends()` slots now resolve in parallel via
+  `asyncio.gather` when safe (CL10). The resolver looks ahead for
+  contiguous `K_DEPENDS` siblings and dispatches them concurrently
+  unless the run contains a `Security()` scope-pushing slot, a
+  yield-style dependency, or two siblings sharing a `use_cache=True`
+  callable — those cases preserve the sequential semantics that
+  protect the resolver's shared cache, security-scope stack, and
+  teardown ordering. Handlers with multiple I/O-bound deps now wait
+  for `max(durations)` instead of `sum(durations)`.
+- Blueprint hooks (`before_request`, `after_request`,
+  `teardown_request`) are now bucketed by blueprint at registration
+  (CL22). Dispatch reads the bucket for the matched route's endpoint
+  prefix instead of iterating every blueprint's gated wrapper and
+  doing a `startswith` no-op on each — eliminates the O(B·H)
+  per-request overhead for apps with many blueprints.
+- `StaticFiles` streams files at or above `STREAM_THRESHOLD` (1 MiB
+  default) via `StreamingResponse` instead of buffering the whole
+  body (CL4). Worker RSS no longer grows by the file size for the
+  duration of a large download. Range requests still buffer the
+  slice, which is already bounded by the client.
+- `Request.mimetype` and `Request.mimetype_params` now share a single
+  cached parse (CL14): the first access populates `_parsed_ct` with a
+  `(mimetype, params)` tuple; subsequent reads on either property hit
+  the cache. Handlers that touch `content_type` repeatedly (form
+  parsers, validators) stop re-splitting the same string per access.
 - `_find_exception_handler` now memoises the MRO walk per exception
   type. The cache is cleared whenever a new error handler is
   registered so a fresh registration takes effect for previously

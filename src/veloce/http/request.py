@@ -85,6 +85,7 @@ class Request:
         "_cookies",
         "_url",
         "_background_tasks",
+        "_parsed_ct",
     )
 
     def __init__(
@@ -123,6 +124,10 @@ class Request:
         self._cookies: Cookies | None = None
         self._url: Any = None
         self._background_tasks: Any = None
+        # Lazily-parsed `(mimetype, params)` pair for `Content-Type`.
+        # `None` means "not yet parsed"; the parse happens at most once
+        # per request, on first read of `mimetype` or `mimetype_params`.
+        self._parsed_ct: tuple[str, dict[str, str]] | None = None
 
     @property
     def query_params(self) -> QueryParams:
@@ -359,6 +364,32 @@ class Request:
     def content_type(self) -> str:
         return self.headers.get("content-type", "")
 
+    def _parse_content_type(self) -> tuple[str, dict[str, str]]:
+        """Parse `Content-Type` into `(mimetype, params)` and cache.
+
+        `application/json; charset=utf-8` → `("application/json", {"charset": "utf-8"})`.
+        Same parser as the legacy split-on-each-property approach, but
+        runs once per request instead of once per `mimetype` / `mimetype_params`
+        access. Result is stashed on `_parsed_ct` for subsequent reads.
+        """
+        ct = self.content_type
+        if not ct:
+            return ("", {})
+        mt, _, rest = ct.partition(";")
+        mimetype = mt.strip().lower()
+        params: dict[str, str] = {}
+        if rest:
+            for chunk in rest.split(";"):
+                chunk = chunk.strip()
+                if "=" not in chunk:
+                    continue
+                k, _, v = chunk.partition("=")
+                v = v.strip()
+                if v.startswith('"') and v.endswith('"') and len(v) >= 2:
+                    v = v[1:-1]
+                params[k.strip().lower()] = v
+        return (mimetype, params)
+
     @property
     def mimetype(self) -> str:
         """`Content-Type` without parameters.
@@ -366,8 +397,9 @@ class Request:
         `application/json; charset=utf-8` → `application/json`. Lower-cased
         and stripped — per RFC 9110 §8.3 the media type is case-insensitive.
         """
-        ct = self.content_type
-        return ct.split(";", 1)[0].strip().lower() if ct else ""
+        if self._parsed_ct is None:
+            self._parsed_ct = self._parse_content_type()
+        return self._parsed_ct[0]
 
     @property
     def mimetype_params(self) -> dict[str, str]:
@@ -376,20 +408,9 @@ class Request:
         Each parameter is `key=value`; quoted values have their surrounding
         double-quotes stripped. Keys are lower-cased; values preserve case.
         """
-        ct = self.content_type
-        if not ct or ";" not in ct:
-            return {}
-        result: dict[str, str] = {}
-        for chunk in ct.split(";")[1:]:
-            chunk = chunk.strip()
-            if "=" not in chunk:
-                continue
-            k, _, v = chunk.partition("=")
-            v = v.strip()
-            if v.startswith('"') and v.endswith('"') and len(v) >= 2:
-                v = v[1:-1]
-            result[k.strip().lower()] = v
-        return result
+        if self._parsed_ct is None:
+            self._parsed_ct = self._parse_content_type()
+        return self._parsed_ct[1]
 
     @property
     def content_length(self) -> int | None:

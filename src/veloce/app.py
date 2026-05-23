@@ -48,6 +48,19 @@ _iscoro_cache: weakref.WeakKeyDictionary[Callable[..., Any], bool] = weakref.Wea
 _MISSING: Any = object()
 
 
+def _endpoint_blueprint(endpoint: str | None) -> str | None:
+    """Return the blueprint name encoded in an endpoint, or `None`.
+
+    Blueprint routes have endpoints of the form `"{bp}.{routename}"`;
+    app-level routes have a bare `"routename"` (no dot). This is the
+    same convention `register_blueprint` and `url_for` already use.
+    """
+    if not endpoint:
+        return None
+    dot = endpoint.find(".")
+    return endpoint[:dot] if dot >= 0 else None
+
+
 def _is_async_callable(fn: Callable[..., Any]) -> bool:
     """Memoised `inspect.iscoroutinefunction` for hot-path hook dispatch.
 
@@ -233,6 +246,13 @@ class Veloce(Router):
         self._first_request_lock = asyncio.Lock()
         self._after_request_hooks: list[Callable] = []
         self._teardown_request_hooks: list[Callable] = []
+        # Blueprint hooks bucketed by blueprint name. Dispatch only walks
+        # the bucket whose name matches the matched route's `endpoint`
+        # prefix, avoiding the O(B·H) per-request no-op gate iteration
+        # the flattened-with-startswith-gate approach used to incur.
+        self._bp_before_hooks: dict[str, list[Callable]] = {}
+        self._bp_after_hooks: dict[str, list[Callable]] = {}
+        self._bp_teardown_hooks: dict[str, list[Callable]] = {}
         self._teardown_appcontext_hooks: list[Callable] = []
         self._context_processors: list[Callable] = []
         self._mounted_apps: list[tuple[str, Any]] = []
@@ -662,12 +682,20 @@ class Veloce(Router):
         Walks the registered hooks in order; if any hook returns a
         non-None value it short-circuits the chain and that value is
         returned (the contract — a non-None return becomes the
-        response). Both sync and async hooks are supported.
+        response). Both sync and async hooks are supported. App-level
+        hooks fire first, then the matched-blueprint bucket — the
+        same shape `_dispatch_request` uses.
         """
         for hook in self._before_request_hooks:
             result = await self._call_handler(hook, {"request": request})
             if result is not None:
                 return result
+        bp = _endpoint_blueprint(getattr(request, "endpoint", None))
+        if bp is not None and self._bp_before_hooks:
+            for hook in self._bp_before_hooks.get(bp, ()):
+                result = await self._call_handler(hook, {"request": request})
+                if result is not None:
+                    return result
         return None
 
     async def process_response(self, request: Request, response: Any) -> Any:
@@ -675,12 +703,20 @@ class Veloce(Router):
 
         Hooks fire in **reverse** registration order; each hook may
         return a replacement response (the contract: a None return
-        keeps the existing response).
+        keeps the existing response). App-level hooks reverse-iterate
+        first, then the matched-blueprint bucket — mirrors
+        `_dispatch_request`'s ordering.
         """
         for hook in reversed(self._after_request_hooks):
             new = await self._call_handler(hook, {"request": request, "response": response})
             if new is not None:
                 response = new
+        bp = _endpoint_blueprint(getattr(request, "endpoint", None))
+        if bp is not None and self._bp_after_hooks:
+            for hook in reversed(self._bp_after_hooks.get(bp, ())):
+                new = await self._call_handler(hook, {"request": request, "response": response})
+                if new is not None:
+                    response = new
         return response
 
     @staticmethod
@@ -1099,20 +1135,29 @@ class Veloce(Router):
     def before_request_funcs(self) -> dict[Any, list[Callable]]:
         """View of registered `before_request` hooks.
 
-        Returns `{blueprint_name_or_None: [hook, ...]}`. Like
-        `error_handler_spec`, veloce flattens blueprint hooks into the
-        app's list at registration time, so the returned dict carries
-        a single `None` key.
+        Returns `{blueprint_name_or_None: [hook, ...]}`. App-level hooks
+        live under the `None` key; blueprint hooks under the blueprint's
+        name. The dispatcher walks the `None` bucket plus the bucket
+        whose name matches the matched route's endpoint prefix.
         """
-        return {None: list(self._before_request_hooks)}
+        result: dict[Any, list[Callable]] = {None: list(self._before_request_hooks)}
+        for bp, hooks in self._bp_before_hooks.items():
+            result[bp] = list(hooks)
+        return result
 
     @property
     def after_request_funcs(self) -> dict[Any, list[Callable]]:
-        return {None: list(self._after_request_hooks)}
+        result: dict[Any, list[Callable]] = {None: list(self._after_request_hooks)}
+        for bp, hooks in self._bp_after_hooks.items():
+            result[bp] = list(hooks)
+        return result
 
     @property
     def teardown_request_funcs(self) -> dict[Any, list[Callable]]:
-        return {None: list(self._teardown_request_hooks)}
+        result: dict[Any, list[Callable]] = {None: list(self._teardown_request_hooks)}
+        for bp, hooks in self._bp_teardown_hooks.items():
+            result[bp] = list(hooks)
+        return result
 
     @property
     def blueprints(self) -> dict[str, Any]:
@@ -1439,42 +1484,31 @@ class Veloce(Router):
                 operation_id=info.operation_id,
             )
 
-        # Wrap each blueprint hook with an endpoint-prefix gate so the
-        # hook fires only for routes that belong to this blueprint.
-        gate_prefix = f"{bp_name}."
-
-        def _gate(hook: Callable) -> Callable:
-            if inspect.iscoroutinefunction(hook):
-
-                async def _gated_async(*args: Any, **kwargs: Any) -> Any:
-                    req = args[0] if args else kwargs.get("request")
-                    if req is None or not (req.endpoint or "").startswith(gate_prefix):
-                        return None
-                    return await hook(*args, **kwargs)
-
-                return _gated_async
-
-            def _gated_sync(*args: Any, **kwargs: Any) -> Any:
-                req = args[0] if args else kwargs.get("request")
-                if req is None or not (req.endpoint or "").startswith(gate_prefix):
-                    return None
-                return hook(*args, **kwargs)
-
-            return _gated_sync
-
-        for hook in blueprint._before_request_hooks:
-            self._before_request_hooks.append(_gate(hook))
-        for hook in blueprint._after_request_hooks:
-            self._after_request_hooks.append(_gate(hook))
-        for hook in blueprint._teardown_request_hooks:
-            self._teardown_request_hooks.append(_gate(hook))
+        # Bucket the blueprint's hooks under its name so dispatch can
+        # look them up by the matched route's endpoint prefix instead of
+        # walking every blueprint's gated wrapper on every request.
+        # Previously: a `_gate` closure per hook in the flat
+        # `_before_request_hooks` list did a `req.endpoint.startswith(...)`
+        # check on every hook for every request — O(B·H) no-op work for
+        # apps with many blueprints. Now the dispatcher reads
+        # `_bp_before_hooks[bp_name]` directly.
+        if blueprint._before_request_hooks:
+            self._bp_before_hooks.setdefault(bp_name, []).extend(blueprint._before_request_hooks)
+        if blueprint._after_request_hooks:
+            self._bp_after_hooks.setdefault(bp_name, []).extend(blueprint._after_request_hooks)
+        if blueprint._teardown_request_hooks:
+            self._bp_teardown_hooks.setdefault(bp_name, []).extend(
+                blueprint._teardown_request_hooks
+            )
 
         # URL processors (L7) — wrapped so they only fire for endpoints
         # belonging to the blueprint. The endpoint string is the first
         # arg of the `(endpoint, values)` callable.
+        url_gate_prefix = f"{bp_name}."
+
         def _proc_gate(fn: Callable) -> Callable:
             def _gated(endpoint: str, values: dict) -> Any:
-                if endpoint and endpoint.startswith(gate_prefix):
+                if endpoint and endpoint.startswith(url_gate_prefix):
                     return fn(endpoint, values)
                 return None
 
@@ -1809,13 +1843,22 @@ class Veloce(Router):
                 request.endpoint = match.route_info.name
                 request._state["url_rule"] = match.route_info.path_template
 
-            # Run before_request hooks
+            # Run before_request hooks — app-level first, then the
+            # blueprint's own (matched via the endpoint's `{bp}.` prefix).
             for hook in self._before_request_hooks:
                 result = await self._call_handler(hook, {"request": request})
                 if result is not None:
                     return await self._run_response_middleware(
                         request, self._coerce_response(result)
                     )
+            _bp_for_req = _endpoint_blueprint(request.endpoint)
+            if _bp_for_req is not None and self._bp_before_hooks:
+                for hook in self._bp_before_hooks.get(_bp_for_req, ()):
+                    result = await self._call_handler(hook, {"request": request})
+                    if result is not None:
+                        return await self._run_response_middleware(
+                            request, self._coerce_response(result)
+                        )
 
             # Check mounted sub-apps
             for prefix, sub_app in self._mounted_apps:
@@ -1986,13 +2029,21 @@ class Veloce(Router):
                         response.headers[hk] = hv
                 response._encoded = None
 
-            # Run after_request hooks
+            # Run after_request hooks — app-level then matched blueprint.
             for hook in self._after_request_hooks:
                 hook_result = await self._call_handler(
                     hook, {"request": request, "response": response}
                 )
                 if hook_result is not None and isinstance(hook_result, Response):
                     response = hook_result
+            _bp_after = _endpoint_blueprint(request.endpoint)
+            if _bp_after is not None and self._bp_after_hooks:
+                for hook in self._bp_after_hooks.get(_bp_after, ()):
+                    hook_result = await self._call_handler(
+                        hook, {"request": request, "response": response}
+                    )
+                    if hook_result is not None and isinstance(hook_result, Response):
+                        response = hook_result
 
             # Drain one-shot `after_this_request(fn)` callbacks. These run
             # *after* the global hooks (so per-request adjustments see the
@@ -2103,7 +2154,11 @@ class Veloce(Router):
                 self.logger.exception("yield-dependency teardown raised")
 
             # Teardown hooks — always run, even on exceptions.
-            for hook in self._teardown_request_hooks:
+            _bp_td = _endpoint_blueprint(request.endpoint)
+            _td_hooks: list[Callable] = list(self._teardown_request_hooks)
+            if _bp_td is not None and self._bp_teardown_hooks:
+                _td_hooks.extend(self._bp_teardown_hooks.get(_bp_td, ()))
+            for hook in _td_hooks:
                 try:
                     if _is_async_callable(hook):
                         await hook(_exc)

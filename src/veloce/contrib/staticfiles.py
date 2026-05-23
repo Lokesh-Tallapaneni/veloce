@@ -17,6 +17,7 @@ import hashlib
 import mimetypes
 import os
 from collections import OrderedDict
+from collections.abc import AsyncIterator
 from email.utils import formatdate, parsedate_to_datetime
 from functools import lru_cache
 from typing import Any
@@ -67,6 +68,16 @@ class StaticFiles:
     # bounded for long-running workers serving large static trees —
     # without a cap, every served path lives in the dict forever.
     ETAG_CACHE_MAX = 1024
+    # Files at or above this size are streamed in chunks rather than
+    # buffered into one bytes object. 1 MiB strikes the balance: small
+    # files keep the single-message ASGI fast path, larger files don't
+    # hold their full content in worker RSS for the duration of the
+    # transfer. Tune by subclassing or assigning on the instance.
+    STREAM_THRESHOLD = 1 * 1024 * 1024
+    # Chunk size for the streaming path. 64 KiB matches asyncio's
+    # default transport write-buffer high-water mark, so chunks ride
+    # the wire without rebuffering.
+    STREAM_CHUNK_SIZE = 64 * 1024
 
     def __init__(
         self,
@@ -270,6 +281,35 @@ class StaticFiles:
                 },
             )
 
+        common_headers = {
+            "ETag": etag,
+            "Last-Modified": last_modified,
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=3600",
+        }
+
+        # Files at or above `STREAM_THRESHOLD` use chunked streaming so
+        # the whole file never sits in memory at once — a single large
+        # download (or many concurrent ones) no longer balloons the
+        # worker's RSS by the file size. Smaller files stay buffered
+        # because (a) the response is one ASGI message instead of N,
+        # and (b) the per-chunk syscall overhead dominates at small
+        # sizes. Range responses always buffer their slice — a range is
+        # already bounded by the client.
+        if size >= self.STREAM_THRESHOLD:
+            from veloce.http.response import StreamingResponse
+
+            # Don't emit `Content-Length` alongside chunked transfer —
+            # RFC 9112 §6.1 forbids carrying both, and a strict proxy
+            # may drop or 502 the response. Clients that need a
+            # progress hint can issue a HEAD or read `ETag`.
+            return StreamingResponse(
+                content=self._iter_file(file_path, loop),
+                status_code=200,
+                content_type=content_type,
+                headers=dict(common_headers),
+            )
+
         def _read() -> bytes:
             with open(file_path, "rb") as f:
                 return f.read()
@@ -280,13 +320,31 @@ class StaticFiles:
             status_code=200,
             body=body,
             content_type=content_type,
-            headers={
-                "ETag": etag,
-                "Last-Modified": last_modified,
-                "Accept-Ranges": "bytes",
-                "Cache-Control": "public, max-age=3600",
-            },
+            headers=common_headers,
         )
+
+    async def _iter_file(self, path: str, loop: Any) -> AsyncIterator[bytes]:
+        """Yield the file in `STREAM_CHUNK_SIZE`-byte chunks via the executor.
+
+        The file handle is opened on the executor (blocking syscall) and
+        closed in a finally so a client disconnect mid-stream doesn't
+        leak a descriptor. Each `read` runs on the executor too — the
+        event loop stays responsive while a slow disk delivers bytes.
+        """
+
+        def _open() -> Any:
+            return open(path, "rb")  # noqa: SIM115 — closed in finally
+
+        chunk_size = self.STREAM_CHUNK_SIZE
+        fh = await loop.run_in_executor(None, _open)
+        try:
+            while True:
+                chunk = await loop.run_in_executor(None, fh.read, chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            await loop.run_in_executor(None, fh.close)
 
     def _compute_etag(self, path: str, mtime: float) -> str:
         """Compute ETag from file path and modification time."""
