@@ -219,10 +219,15 @@ class Response:
         domain: str | None = None,
         secure: bool = False,
         httponly: bool = False,
-        samesite: str | None = None,
+        samesite: str | None = "Lax",
         partitioned: bool = False,
     ) -> None:
         """Build a `Set-Cookie` header per RFC 6265.
+
+        `samesite` defaults to `"Lax"` — a CSRF-resistant default that
+        matches modern browser behaviour. Pass `samesite="None"` (with
+        `secure=True`) for a cookie that must travel on cross-site
+        requests, or `samesite=None`/`""` to omit the attribute.
 
         `expires=` accepts a `datetime`, a Unix timestamp `int|float`,
         or an already-formatted IMF-fixdate `str`. When both `max_age`

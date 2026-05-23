@@ -60,3 +60,41 @@ Guidance:
 
 A single-worker deployment behind a reverse proxy sidesteps all of the
 above; scale out with more workers only once shared state is externalised.
+
+## Security considerations
+
+### Hardening checklist
+
+- Call `app.use_secure_defaults()` (secure session cookies +
+  `SecurityHeadersMiddleware`) for any internet-facing deployment.
+- Run `veloce check your_module:app` before deploying — it flags
+  `DEBUG`, a missing `SECRET_KEY`, insecure session cookies, and missing
+  security headers.
+- Set `MAX_CONTENT_LENGTH` so oversized uploads are refused.
+- Keep `debug=False` for anything reachable beyond `localhost` — debug
+  tracebacks leak source and internals.
+
+### Regex constraints and ReDoS
+
+A `pattern=` (or `regex=`) constraint on `Query`, `Path`, `Header`,
+`Cookie`, or `Form` is compiled once and then matched **synchronously on
+the event loop** against the request value. A pattern with catastrophic
+backtracking — typically nested quantifiers like `(a+)+`, `(.*)*`, or
+overlapping alternations — can take super-linear time on a crafted
+input, stalling the loop and every other request on that worker
+(a regular-expression denial of service, ReDoS).
+
+Guidance for developer-supplied patterns:
+
+- Prefer simple, linear-time patterns; avoid nested quantifiers and
+  quantified groups that can match the same text more than one way.
+- Anchor patterns (`^…$`) so the engine does not retry at every offset.
+- Pair a pattern with a `max_length` constraint so the input the regex
+  runs against is bounded.
+- Test any non-trivial pattern against a deliberately adversarial input
+  before shipping it.
+
+Veloce compiles each pattern once at route registration, so the
+compile cost is paid up front — but the *match* cost is still the
+developer's responsibility to keep linear.
+

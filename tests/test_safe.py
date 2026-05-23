@@ -1,10 +1,36 @@
-"""secure_filename + safe_join tests (SEC11, SEC12)."""
+"""secure_filename + safe_join + constant_time_compare tests (SEC11, SEC12, S8)."""
 
 from __future__ import annotations
 
 import os
 
-from veloce.safe import safe_join, secure_filename
+from veloce.safe import constant_time_compare, safe_join, secure_filename
+
+# ── constant_time_compare (S8) ───────────────────────────────────────
+
+
+def test_constant_time_compare_equal_strings():
+    assert constant_time_compare("s3cr3t-token", "s3cr3t-token") is True
+
+
+def test_constant_time_compare_unequal_strings():
+    assert constant_time_compare("s3cr3t-token", "wrong-token!!") is False
+
+
+def test_constant_time_compare_equal_bytes():
+    assert constant_time_compare(b"\x00\x01key", b"\x00\x01key") is True
+
+
+def test_constant_time_compare_type_mismatch_is_false():
+    """str vs bytes is a plain non-match, not an exception."""
+    assert constant_time_compare("token", b"token") is False
+
+
+def test_constant_time_compare_exported_from_package():
+    from veloce import constant_time_compare as exported
+
+    assert exported is constant_time_compare
+
 
 # ── secure_filename ──────────────────────────────────────────────────
 

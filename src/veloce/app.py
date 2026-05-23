@@ -2193,6 +2193,16 @@ class Veloce(Router):
             "run under uvicorn (or another hardened ASGI server) in production."
         )
 
+        # Debug tracebacks leak source and internals — binding a non-local
+        # host with debug=True exposes them to the network.
+        if self.debug and host not in ("127.0.0.1", "::1", "localhost"):
+            self.logger.warning(
+                "debug=True with a non-local bind (host=%r) exposes debug "
+                "tracebacks to the network — set debug=False for any deployment "
+                "reachable beyond localhost.",
+                host,
+            )
+
         # Use uvloop if available (2-4x faster event loop)
         try:
             import uvloop

@@ -120,7 +120,7 @@ from veloce.routing.params import Body, Cookie, File, Form, Header, Path, Query
 from veloce.routing.router import Router
 
 # Filesystem-safety helpers
-from veloce.safe import safe_join, secure_filename
+from veloce.safe import constant_time_compare, safe_join, secure_filename
 
 # Security
 from veloce.security import (
@@ -271,6 +271,7 @@ __all__ = [
     # Filesystem-safety
     "secure_filename",
     "safe_join",
+    "constant_time_compare",
     # Signing
     "Signer",
     "BadSignature",

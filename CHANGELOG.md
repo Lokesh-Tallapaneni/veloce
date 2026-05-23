@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signed-value serialisation.
 - `veloce.status` gains `HTTP_208_ALREADY_REPORTED`, `HTTP_226_IM_USED`,
   and `HTTP_421_MISDIRECTED_REQUEST` for full IANA HTTP status coverage.
+- `constant_time_compare(a, b)` — a timing-safe secret-comparison helper
+  (wrapping `hmac.compare_digest`), exported from the top-level package.
 
 ### Changed
 
@@ -62,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `app.run()` starts the built-in **development** server; it now logs a
   startup reminder that production deployments should run under uvicorn
   (or another ASGI server). See the new Deployment guide.
+- `Response.set_cookie` now defaults `samesite` to `"Lax"` — a
+  CSRF-resistant default that matches modern browser behaviour. Pass
+  `samesite=None` to omit the attribute, or `"None"` (with `secure=True`)
+  for a genuinely cross-site cookie.
 
 ### Fixed
 
