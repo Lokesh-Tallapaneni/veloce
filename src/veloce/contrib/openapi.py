@@ -677,16 +677,13 @@ def setup_openapi_routes(
             # without spaces, so the outer separator stays spaceless to
             # keep the rendered literal consistent throughout.
             ui_params = ",".join(
-                f"{orjson.dumps(k).decode()}:{orjson.dumps(v).decode()}"
-                for k, v in params.items()
+                f"{orjson.dumps(k).decode()}:{orjson.dumps(v).decode()}" for k, v in params.items()
             )
         else:
             ui_params = ""
 
         oauth_init = getattr(app, "swagger_ui_init_oauth", None)
-        init_oauth = (
-            f"ui.initOAuth({orjson.dumps(oauth_init).decode()});" if oauth_init else ""
-        )
+        init_oauth = f"ui.initOAuth({orjson.dumps(oauth_init).decode()});" if oauth_init else ""
 
         html = SWAGGER_HTML.format(
             title=app.title,

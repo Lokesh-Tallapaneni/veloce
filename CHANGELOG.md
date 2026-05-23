@@ -8,6 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Per-request dispatch +21-39 % (profile-driven DSA pass).** Walked the
+  json-hello / path-param hot path under `cProfile` and applied seven
+  targeted shaves, each attributed to a measured delta:
+  * `Veloce._dispatch_request` defers `DependencyResolver()` until a
+    non-trivial route demands it. Trivial-plan routes (no injected
+    params, no dependencies) never construct the resolver — saves the
+    resolver allocation + two attribute writes per static-GET request.
+  * `DependencyResolver.__init__` no longer allocates a throwaway
+    `dict` + `WeakKeyDictionary` for `_overrides` / `_override_subplans`;
+    they default to module-level empty sentinels and the dispatcher
+    swaps in the real instances only when overrides exist.
+  * `Request.headers` is now a lazy property backed by `_headers_raw`
+    (raw ASGI `(bytes, bytes)` tuples). The `CIMultiDict` + per-tuple
+    `latin-1` decode is built only on first read. The hot path never
+    reads `request.headers`, so 2-3 us / req of work was being burned
+    on every dispatch.
+  * `_run_response_middleware` is gated at the main hot-path return
+    so the no-op coroutine + await is skipped when no middleware is
+    registered (avoids ~940 ns / req of frame setup).
+  * `_asgi_app` reads `scope["path"]` / `scope["query_string"]` via
+    subscript (ASGI mandates both keys), skipping `dict.get` default
+    handling.
+  * Built-in `Content-Type` strings (`application/json`,
+    `text/html; charset=utf-8`, `text/plain; charset=utf-8`,
+    `application/octet-stream`) and small `Content-Length` values
+    (0-2047) hit precomputed bytes caches; the per-request
+    `_reject_header_crlf(...).encode()` + `str(n).encode()`
+    allocations are skipped on cache hit.
+  * `Response._stream` joins `__slots__` initialised to `None`; the
+    `is_streamed` / `freeze` / `iter_encoded` / `iter_chunked` /
+    `cache_control` lookups become a direct slot load instead of a
+    `getattr(..., None)` walk.
+  In-loop bench (`bench/hot_dispatch_bench.py`) median of 3 runs:
+  static GET 68.1k → 94.8k req/s (+39 %),
+  path-param GET 54.5k → 66.0k (+21 %),
+  POST 64-byte body 62.0k → 77.2k (+25 %).
+  cProfile total time for 16k mixed dispatches dropped 1.51 s → 0.59 s
+  (~2.56×).
 - **Stdlib `json` dropped in favour of `orjson` at the remaining two
   sites.** `Config.from_prefixed_env`'s default `loads` is now
   `orjson.loads`; `Config.from_file`'s default `load` is a new tiny

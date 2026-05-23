@@ -71,7 +71,8 @@ class Request:
         "method",
         "path",
         "query_string",
-        "headers",
+        "_headers",
+        "_headers_raw",
         "body",
         "transport",
         "app",
@@ -104,12 +105,24 @@ class Request:
         self.method = method if method.isupper() else method.upper()
         self.path = path
         self.query_string = query_string
-        # Always normalise into a Headers (CIMultiDict) so case-insensitive,
-        # multi-value access works no matter how the caller passed headers in.
+        # Defer CIMultiDict construction (and the latin-1 decode of every
+        # header tuple) until the handler actually reads `request.headers`.
+        # The hot json-hello / path-param path never touches headers, so
+        # eager construction was pure waste — 2-3 us per request.
+        self._headers_raw: list[tuple[bytes, bytes]] | None = None
         if isinstance(headers, Headers):
-            self.headers: Headers = headers
+            self._headers: Headers | None = headers
+        elif (
+            isinstance(headers, list) and headers and isinstance(headers[0][0], (bytes, bytearray))
+        ):
+            # ASGI raw `(bytes, bytes)` tuples — defer decode + Headers build.
+            self._headers = None
+            self._headers_raw = headers
+        elif isinstance(headers, list) and not headers:
+            # Empty list — cheap to materialize, no point deferring.
+            self._headers = Headers()
         else:
-            self.headers = Headers(headers)  # type: ignore[arg-type]
+            self._headers = Headers(headers)  # type: ignore[arg-type]
         self.body = body
         self.transport = transport
         self.app = app
@@ -130,6 +143,24 @@ class Request:
         # `None` means "not yet parsed"; the parse happens at most once
         # per request, on first read of `mimetype` or `mimetype_params`.
         self._parsed_ct: tuple[str, dict[str, str]] | None = None
+
+    @property
+    def headers(self) -> Headers:
+        h = self._headers
+        if h is None:
+            # Materialise from the raw ASGI tuples on first access. After
+            # this point the cached `Headers` is reused; the raw list is
+            # released so it can be garbage-collected.
+            raw = self._headers_raw or ()
+            h = Headers([(k.decode("latin-1"), v.decode("latin-1")) for k, v in raw])
+            self._headers = h
+            self._headers_raw = None
+        return h
+
+    @headers.setter
+    def headers(self, value: Headers | dict[str, str] | list[tuple[str, str]]) -> None:
+        self._headers = value if isinstance(value, Headers) else Headers(value)
+        self._headers_raw = None
 
     @property
     def query_params(self) -> QueryParams:

@@ -66,7 +66,15 @@ def _file_etag(path: str, size: int, mtime: float) -> str:
 class Response:
     """Base HTTP response."""
 
-    __slots__ = ("status_code", "body", "content_type", "headers", "_encoded", "background")
+    __slots__ = (
+        "status_code",
+        "body",
+        "content_type",
+        "headers",
+        "_encoded",
+        "background",
+        "_stream",
+    )
 
     def __init__(
         self,
@@ -85,6 +93,10 @@ class Response:
         # dispatch layer after this response is built. None when no task
         # is attached. `Response(content=..., background=BackgroundTask(fn))`.
         self.background = background
+        # `StreamingResponse` rewrites this with an async iterator; for a
+        # base `Response` the slot stays `None` so `is_streamed` is a
+        # direct attribute load (no `getattr` fallback to None).
+        self._stream: Any = None
 
     # ── `media_type` alias ────────────────────────────────────────────
     # ASGI servers name this attribute `media_type`; veloce's
@@ -302,7 +314,7 @@ class Response:
     @property
     def is_streamed(self) -> bool:
         """`True` when the response body is a streaming iterator."""
-        return getattr(self, "_stream", None) is not None
+        return self._stream is not None
 
     @property
     def charset(self) -> str:
@@ -837,7 +849,7 @@ class Response:
         access pays no encode cost. For streaming responses, no-op.
         Used by response caching layers that want immutable bytes.
         """
-        if getattr(self, "_stream", None) is not None:
+        if self._stream is not None:
             return
         if self._encoded is None:
             self.encode()
@@ -862,7 +874,7 @@ class Response:
         to the underlying async iterator. Lets callers drain a
         response without going through ASGI emit.
         """
-        stream = getattr(self, "_stream", None)
+        stream = self._stream
         if stream is not None:
             return stream
         return iter([self.body]) if self.body else iter([])
@@ -877,7 +889,7 @@ class Response:
         """
         if size <= 0:
             raise ValueError("iter_chunked size must be positive")
-        stream = getattr(self, "_stream", None)
+        stream = self._stream
         if stream is not None:
             return stream
         body = self.body

@@ -1,0 +1,15 @@
+veloce in-loop dispatch bench
+  iterations: 50000, warmup: 5000
+  static GET             94,120 req/s   ( 10.62 us)
+  path-param GET         64,356 req/s   ( 15.54 us)
+  POST 64 body           77,558 req/s   ( 12.89 us)
+veloce in-loop dispatch bench
+  iterations: 50000, warmup: 5000
+  static GET             94,262 req/s   ( 10.61 us)
+  path-param GET         65,336 req/s   ( 15.31 us)
+  POST 64 body           77,073 req/s   ( 12.97 us)
+veloce in-loop dispatch bench
+  iterations: 50000, warmup: 5000
+  static GET             94,967 req/s   ( 10.53 us)
+  path-param GET         65,424 req/s   ( 15.29 us)
+  POST 64 body           76,191 req/s   ( 13.12 us)
