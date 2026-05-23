@@ -22,7 +22,7 @@ async def inspect(request: Request):
 
 `request.headers` and `request.query_params` are multi-value mappings:
 `headers["x"]` returns the first value, `headers.getlist("x")` returns
-all of them. See [MultiDict semantics](../design/multidict-semantics.md).
+all of them.
 
 ## Returning responses
 

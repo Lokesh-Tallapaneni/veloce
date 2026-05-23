@@ -58,8 +58,7 @@ async def serve(rest: str):
     return {"path": rest}   # "/files/a/b/c.txt" -> rest == "a/b/c.txt"
 ```
 
-See [Path converters](../design/path-converters.md) for the design
-rationale, and `register_converter` for adding your own.
+Use `register_converter` to add your own.
 
 ## Query parameters
 

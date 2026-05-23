@@ -78,8 +78,7 @@ async def report(session=Depends(db_session)):
     return session.query(...)
 ```
 
-Multiple `yield` dependencies tear down in reverse order. See
-[yield dependencies](../design/yield-dependencies.md) for the details.
+Multiple `yield` dependencies tear down in reverse order.
 
 ## Security dependencies
 
