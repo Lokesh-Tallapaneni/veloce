@@ -22,7 +22,6 @@ from veloce.exceptions import (
     WebSocketRequestValidationError,
 )
 from veloce.helpers import _current_app_var, _current_request_var, _RequestGlobals, g
-from veloce.http.datastructures import Headers
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
