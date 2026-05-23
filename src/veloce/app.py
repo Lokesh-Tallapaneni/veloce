@@ -682,12 +682,20 @@ class Veloce(Router):
         Walks the registered hooks in order; if any hook returns a
         non-None value it short-circuits the chain and that value is
         returned (the contract — a non-None return becomes the
-        response). Both sync and async hooks are supported.
+        response). Both sync and async hooks are supported. App-level
+        hooks fire first, then the matched-blueprint bucket — the
+        same shape `_dispatch_request` uses.
         """
         for hook in self._before_request_hooks:
             result = await self._call_handler(hook, {"request": request})
             if result is not None:
                 return result
+        bp = _endpoint_blueprint(getattr(request, "endpoint", None))
+        if bp is not None and self._bp_before_hooks:
+            for hook in self._bp_before_hooks.get(bp, ()):
+                result = await self._call_handler(hook, {"request": request})
+                if result is not None:
+                    return result
         return None
 
     async def process_response(self, request: Request, response: Any) -> Any:
@@ -695,12 +703,20 @@ class Veloce(Router):
 
         Hooks fire in **reverse** registration order; each hook may
         return a replacement response (the contract: a None return
-        keeps the existing response).
+        keeps the existing response). App-level hooks reverse-iterate
+        first, then the matched-blueprint bucket — mirrors
+        `_dispatch_request`'s ordering.
         """
         for hook in reversed(self._after_request_hooks):
             new = await self._call_handler(hook, {"request": request, "response": response})
             if new is not None:
                 response = new
+        bp = _endpoint_blueprint(getattr(request, "endpoint", None))
+        if bp is not None and self._bp_after_hooks:
+            for hook in reversed(self._bp_after_hooks.get(bp, ())):
+                new = await self._call_handler(hook, {"request": request, "response": response})
+                if new is not None:
+                    response = new
         return response
 
     @staticmethod

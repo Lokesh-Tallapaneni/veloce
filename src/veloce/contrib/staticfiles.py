@@ -299,16 +299,15 @@ class StaticFiles:
         if size >= self.STREAM_THRESHOLD:
             from veloce.http.response import StreamingResponse
 
-            stream_headers = dict(common_headers)
-            # `Content-Length` is known up front; emit it so clients can
-            # render progress bars even though the transfer is chunked
-            # at the HTTP/1.1 framing layer.
-            stream_headers["Content-Length"] = str(size)
+            # Don't emit `Content-Length` alongside chunked transfer —
+            # RFC 9112 §6.1 forbids carrying both, and a strict proxy
+            # may drop or 502 the response. Clients that need a
+            # progress hint can issue a HEAD or read `ETag`.
             return StreamingResponse(
                 content=self._iter_file(file_path, loop),
                 status_code=200,
                 content_type=content_type,
-                headers=stream_headers,
+                headers=dict(common_headers),
             )
 
         def _read() -> bytes:

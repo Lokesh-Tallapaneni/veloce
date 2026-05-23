@@ -30,9 +30,11 @@ async def test_handle_returns_streamingresponse_for_large_files(tmp_path):
 
     assert isinstance(resp, StreamingResponse)
     assert resp.status_code == 200
-    # Content-Length is still emitted so clients can render progress
-    # even though the framing layer uses chunked transfer.
-    assert resp.headers["Content-Length"] == str(len(payload))
+    # `Content-Length` and `Transfer-Encoding: chunked` cannot coexist
+    # per RFC 9112 §6.1; chunked framing handles delivery and the
+    # ETag / Last-Modified pair still lets clients reason about freshness.
+    assert "Content-Length" not in resp.headers
+    assert resp.headers["ETag"]
 
 
 @pytest.mark.asyncio

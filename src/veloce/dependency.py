@@ -528,11 +528,16 @@ class DependencyResolver:
 
         A run is parallelisable when every slot in it:
         - is `K_DEPENDS`,
-        - pushes no `SecurityScopes` (`slot.target_type` is not a list
-          of scope strings — Security() deps mutate `_scope_stack`,
-          which is shared state),
-        - is not a yield-style dependency (sync/async generator —
-          we don't interleave generator entries),
+        - pushes no `SecurityScopes` **transitively** — neither the
+          slot itself nor any K_DEPENDS in its `sub_plan.slots` may
+          carry a scope list. Security() deps mutate the shared
+          `_scope_stack` around their inner resolve, and two parallel
+          siblings whose sub-plans each push different scopes would
+          interleave on that shared list and corrupt the snapshot any
+          `SecurityScopes` parameter sees.
+        - is not a yield-style dependency, transitively — generator-
+          driven teardowns push onto a shared list whose order we
+          would otherwise lose,
         - and does not share a `use_cache=True` callable with another
           slot in the run (would race for `self._cache[callable]`).
 
@@ -548,11 +553,7 @@ class DependencyResolver:
             s = slots[end]
             if s.kind != K_DEPENDS:
                 break
-            # Security() — `target_type` carries the scope list.
-            if isinstance(s.target_type, list) and s.target_type:
-                break
-            # Yield-style — generator-driven teardown stack.
-            if getattr(s, "dep_is_gen", False) or getattr(s, "dep_is_async_gen", False):
+            if not self._slot_safe_for_parallel(s, set()):
                 break
             # Cache collision with an earlier sibling in this same run.
             if s.use_cache:
@@ -561,6 +562,31 @@ class DependencyResolver:
                 seen_cached.add(s.dep_callable)
             end += 1
         return end
+
+    def _slot_safe_for_parallel(self, slot: Any, seen_plans: set[int]) -> bool:
+        """Transitive safety check: the slot itself and every
+        `K_DEPENDS` reachable through its `sub_plan` chain must avoid
+        the shared-state hazards (Security() scope push, yield-style
+        teardown).
+
+        Cycle-guarded via `seen_plans` so a self-referential plan
+        graph doesn't blow the recursion stack.
+        """
+        if isinstance(slot.target_type, list) and slot.target_type:
+            return False
+        if getattr(slot, "dep_is_gen", False) or getattr(slot, "dep_is_async_gen", False):
+            return False
+        sub_plan = getattr(slot, "sub_plan", None)
+        if sub_plan is None:
+            return True
+        plan_id = id(sub_plan)
+        if plan_id in seen_plans:
+            return True
+        seen_plans.add(plan_id)
+        for sub in getattr(sub_plan, "slots", ()):
+            if sub.kind == K_DEPENDS and not self._slot_safe_for_parallel(sub, seen_plans):
+                return False
+        return True
 
     def _resolve_body_model(self, slot: Any, request: Request) -> Any:
         try:

@@ -24,14 +24,23 @@ from veloce.testclient import TestClient
 
 
 def test_independent_async_siblings_run_in_parallel():
-    """Two sibling Depends() that each sleep for ~50 ms should land in ~50 ms total."""
+    """Two sibling Depends() begin concurrently rather than sequentially.
+
+    The robust assertion is the **start-time delta**, not total elapsed
+    — under a noisy CI scheduler total elapsed jitters but the start
+    delta between two concurrently-scheduled coroutines stays small
+    even when each individual coroutine takes longer than expected.
+    """
     app = Veloce(openapi_url=None)
+    starts: list[float] = []
 
     async def slow_a() -> str:
+        starts.append(time.monotonic())
         await asyncio.sleep(0.05)
         return "a"
 
     async def slow_b() -> str:
+        starts.append(time.monotonic())
         await asyncio.sleep(0.05)
         return "b"
 
@@ -39,15 +48,15 @@ def test_independent_async_siblings_run_in_parallel():
     async def handler(a: str = Depends(slow_a), b: str = Depends(slow_b)) -> dict:
         return {"a": a, "b": b}
 
-    t0 = time.perf_counter()
     resp = TestClient(app).get("/parallel")
-    elapsed = time.perf_counter() - t0
-
     assert resp.status_code == 200
     assert resp.json() == {"a": "a", "b": "b"}
-    # Sequential would be ~100 ms; parallel ~50 ms. Allow generous
-    # headroom for CI; the win is ~2x even with overhead.
-    assert elapsed < 0.085, f"expected parallel resolve, got {elapsed:.3f}s"
+    assert len(starts) == 2
+    # Both deps must begin within a tiny window of each other —
+    # sequential would mean the second waits ~50 ms behind the first.
+    assert abs(starts[1] - starts[0]) < 0.010, (
+        f"siblings did not start concurrently: delta={starts[1] - starts[0]:.4f}s"
+    )
 
 
 def test_shared_use_cache_dependency_runs_once():
@@ -118,6 +127,7 @@ async def test_group_end_helper_stops_at_security_dependency():
         dep_is_async_gen=False,
         use_cache=False,
         dep_callable=lambda: None,
+        sub_plan=None,
     )
     sec = SimpleNamespace(
         kind=K_DEPENDS,
@@ -126,8 +136,60 @@ async def test_group_end_helper_stops_at_security_dependency():
         dep_is_async_gen=False,
         use_cache=False,
         dep_callable=lambda: None,
+        sub_plan=None,
     )
     resolver = DependencyResolver()
     # plain, plain, sec, plain — the run should stop at the Security() slot.
     end = resolver._parallel_dep_group_end([plain, plain, sec, plain], 0)
     assert end == 2
+
+
+@pytest.mark.asyncio
+async def test_group_end_helper_refuses_nested_security():
+    """An outer plain `Depends` whose sub_plan transitively contains
+    a Security() slot must not be parallelised — the shared
+    `_scope_stack` would otherwise be corrupted by interleaved
+    push/pop pairs across sibling tasks.
+    """
+    from types import SimpleNamespace
+
+    from veloce.dependency import K_DEPENDS, DependencyResolver
+
+    # An inner Security slot reachable through outer plain's sub_plan.
+    inner_sec = SimpleNamespace(
+        kind=K_DEPENDS,
+        target_type=["s1"],
+        dep_is_gen=False,
+        dep_is_async_gen=False,
+        use_cache=False,
+        dep_callable=lambda: None,
+        sub_plan=None,
+    )
+    outer_with_nested_sec = SimpleNamespace(
+        kind=K_DEPENDS,
+        target_type=None,  # plain at the outer level...
+        dep_is_gen=False,
+        dep_is_async_gen=False,
+        use_cache=False,
+        dep_callable=lambda: None,
+        sub_plan=SimpleNamespace(slots=[inner_sec]),  # ...but nested!
+    )
+    plain = SimpleNamespace(
+        kind=K_DEPENDS,
+        target_type=None,
+        dep_is_gen=False,
+        dep_is_async_gen=False,
+        use_cache=False,
+        dep_callable=lambda: None,
+        sub_plan=None,
+    )
+    resolver = DependencyResolver()
+    # The first slot fails the safety check, so the parallelisable run
+    # cannot be expanded at all — `end == start`, which the caller
+    # treats as "fall back to sequential" (it only gathers when
+    # `end > start + 1`).
+    end = resolver._parallel_dep_group_end([outer_with_nested_sec, plain], 0)
+    assert end == 0
+    # The transitive-safe helper directly returns False, too.
+    assert resolver._slot_safe_for_parallel(outer_with_nested_sec, set()) is False
+    assert resolver._slot_safe_for_parallel(plain, set()) is True
