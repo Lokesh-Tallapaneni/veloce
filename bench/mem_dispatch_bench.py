@@ -116,7 +116,11 @@ async def amain(iters: int, warmup: int) -> None:
             f"per-req peak p50={r['per_req_peak_p50']:>6,d} B  "
             f"p99={r['per_req_peak_p99']:>6,d} B  "
             f"retained/req={r['retained_bytes_per_req']:>+5.2f} B  "
-            + (f"rss d={r['rss_delta']/1024:>+5.0f} KB" if r["rss_delta"] is not None else "rss n/a")
+            + (
+                f"rss d={r['rss_delta'] / 1024:>+5.0f} KB"
+                if r["rss_delta"] is not None
+                else "rss n/a"
+            )
         )
 
 
