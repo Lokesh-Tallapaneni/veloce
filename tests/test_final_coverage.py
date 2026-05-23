@@ -197,44 +197,91 @@ class TestSendFromDirectory:
 
 
 class TestFlashMessages:
-    """Test flash/get_flashed_messages."""
+    """Test flash / get_flashed_messages.
+
+    After B-3, flashes live in the session, not in `g` — so a flash from
+    a POST handler survives a redirect to the next GET. These tests use
+    a real Veloce app with `SessionMiddleware` installed and drive both
+    sides of the round-trip via in-process handler calls (the
+    middleware sets `request._state["session"]` for `flash()` and
+    `get_flashed_messages()` to consume).
+    """
+
+    def _make_app(self):
+        from veloce import Veloce
+        from veloce.middleware.sessions import SessionMiddleware
+
+        app = Veloce(openapi_url=None)
+        app.add_middleware(SessionMiddleware, secret_key="t" * 32)
+        return app
 
     def test_flash_and_retrieve(self):
-        from veloce.helpers import flash, g, get_flashed_messages
+        from veloce.helpers import flash, get_flashed_messages
+        from veloce.testclient import TestClient
 
-        g._reset()
+        app = self._make_app()
 
-        flash("Item created", "success")
-        flash("Check email", "info")
+        @app.post("/set")
+        def set_handler():
+            flash("Item created", "success")
+            flash("Check email", "info")
+            return {"ok": True}
 
-        messages = get_flashed_messages()
-        assert messages == ["Item created", "Check email"]
+        @app.get("/get")
+        def get_handler():
+            return {"messages": get_flashed_messages()}
 
-        # Messages should be consumed
-        assert get_flashed_messages() == []
+        client = TestClient(app)
+        client.post("/set")
+        # Same TestClient instance carries the session cookie forward,
+        # so the GET sees the flashes the POST stored.
+        resp = client.get("/get")
+        assert resp.json() == {"messages": ["Item created", "Check email"]}
+        # Messages are consumed: a second GET sees an empty list.
+        assert client.get("/get").json() == {"messages": []}
 
     def test_flash_with_categories(self):
-        from veloce.helpers import flash, g, get_flashed_messages
+        from veloce.helpers import flash, get_flashed_messages
+        from veloce.testclient import TestClient
 
-        g._reset()
+        app = self._make_app()
 
-        flash("Error occurred", "error")
-        flash("All good", "success")
+        @app.post("/set")
+        def set_handler():
+            flash("Error occurred", "error")
+            flash("All good", "success")
+            return {"ok": True}
 
-        messages = get_flashed_messages(with_categories=True)
-        assert messages == [("error", "Error occurred"), ("success", "All good")]
+        @app.get("/get")
+        def get_handler():
+            return {"m": get_flashed_messages(with_categories=True)}
+
+        client = TestClient(app)
+        client.post("/set")
+        resp = client.get("/get")
+        assert resp.json() == {"m": [["error", "Error occurred"], ["success", "All good"]]}
 
     def test_flash_category_filter(self):
-        from veloce.helpers import flash, g, get_flashed_messages
+        from veloce.helpers import flash, get_flashed_messages
+        from veloce.testclient import TestClient
 
-        g._reset()
+        app = self._make_app()
 
-        flash("Error 1", "error")
-        flash("Success 1", "success")
-        flash("Error 2", "error")
+        @app.post("/set")
+        def set_handler():
+            flash("Error 1", "error")
+            flash("Success 1", "success")
+            flash("Error 2", "error")
+            return {"ok": True}
 
-        errors = get_flashed_messages(category_filter=["error"])
-        assert len(errors) == 2
+        @app.get("/get")
+        def get_handler():
+            return {"errors": get_flashed_messages(category_filter=["error"])}
+
+        client = TestClient(app)
+        client.post("/set")
+        resp = client.get("/get")
+        assert resp.json() == {"errors": ["Error 1", "Error 2"]}
 
 
 class TestWebSocketTimeout:
