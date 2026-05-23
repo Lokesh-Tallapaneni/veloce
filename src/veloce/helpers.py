@@ -3,6 +3,7 @@ current_app, send_from_directory."""
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 from typing import Any, NoReturn
 
@@ -537,7 +538,7 @@ def _flash_store() -> Any:
     the redirected GET sees a fresh `g` with no `_flashes` key. Now
     we route through the active session so the signed-cookie /
     server-side session carries the queue across requests, matching
-    the Flask contract the docstring promises.
+    the round-trip contract the docstring promises.
     """
     req = _current_request_var.get()
     if req is None or "session" not in req._state:
@@ -564,8 +565,6 @@ def flash(message: str, category: str = "message") -> None:
     # mutation is invisible to the Session container, so the cookie
     # would not be re-signed if `setdefault` short-circuited (key
     # already present). Mark explicitly to cover both paths.
-    import contextlib
-
     with contextlib.suppress(AttributeError):
         store.modified = True
     # `message_flashed` signal — fires for every flash() call.
@@ -589,12 +588,11 @@ def get_flashed_messages(
     if req is None or "session" not in req._state:
         return []
     store = req._state["session"]
+    # `Session.pop` already flips `.modified` when the key existed —
+    # no need to set it again here. Non-Session dict subclasses that
+    # don't override `pop` won't carry the flag, but their callers
+    # aren't using the cookie middleware anyway.
     flashes = store.pop("_flashes", [])
-    if flashes:
-        import contextlib
-
-        with contextlib.suppress(AttributeError):
-            store.modified = True
     if category_filter:
         flashes = [(cat, msg) for cat, msg in flashes if cat in category_filter]
     if with_categories:

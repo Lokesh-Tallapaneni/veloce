@@ -196,15 +196,23 @@ def test_flash_survives_redirect_via_session():
 def test_flash_outside_session_raises_clear_error():
     """`flash()` without SessionMiddleware must raise a descriptive
     RuntimeError — the previous silent g-backed behaviour gave no
-    indication that the message would be lost on redirect."""
-    app = Veloce(openapi_url=None)  # No SessionMiddleware.
+    indication that the message would be lost on redirect.
 
-    @app.get("/x")
-    def handler():
-        flash("you'll never see me")
-        return {"ok": True}
+    Asserts the message text so a future regression that swallows the
+    helpful hint into a generic 500 is caught.
+    """
+    import pytest
 
-    client = TestClient(app)
-    resp = client.get("/x")
-    # The handler raises a 500 (HTTPException becomes the response body).
-    assert resp.status_code == 500
+    from veloce.helpers import _current_request_var
+    from veloce.http.request import Request
+
+    # Synthesise a request without a session so we can assert the
+    # message directly. Going through `TestClient` would convert the
+    # exception into a 500 and lose the text.
+    req = Request(method="GET", path="/x", query_string="", headers={}, body=b"")
+    token = _current_request_var.set(req)
+    try:
+        with pytest.raises(RuntimeError, match="SessionMiddleware"):
+            flash("you'll never see me")
+    finally:
+        _current_request_var.reset(token)

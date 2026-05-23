@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import functools
 import inspect
 import signal
@@ -2263,9 +2264,10 @@ class Veloce(Router):
         # remain readable in the worker thread — without `ctx.run`,
         # `loop.run_in_executor` runs the call in the executor's bare
         # context and helpers like `flash()`, `current_app.config[...]`,
-        # and the `request` / `session` proxies all see "unbound".
-        import contextvars
-
+        # and the `request` / `session` proxies all see "unbound". The
+        # snapshot is read-only from the caller's perspective: a
+        # `ContextVar.set(...)` inside the sync handler does not
+        # propagate back.
         loop = asyncio.get_running_loop()
         ctx = contextvars.copy_context()
         return await loop.run_in_executor(None, ctx.run, functools.partial(handler, **kwargs))
