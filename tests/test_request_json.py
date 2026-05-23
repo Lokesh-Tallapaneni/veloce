@@ -1,6 +1,14 @@
-"""Request.get_json(force=, silent=, cache=) accessor."""
+"""Request body-as-JSON accessors.
+
+`Request.json()` is async (matches Starlette / FastAPI / Quart;
+exercised via `await request.json()`).
+`Request.get_json(force=, silent=, cache=)` is the synchronous
+Flask-shape alias.
+"""
 
 from __future__ import annotations
+
+import inspect
 
 import pytest
 
@@ -75,3 +83,31 @@ def test_cache_false_reparses():
     assert first == second
     # Different object identity proves the re-parse happened.
     assert first is not second
+
+
+# ── async Request.json() — pins issue #74 ─────────────────────────────
+
+
+def test_request_json_is_coroutine_function():
+    """`Request.json` must remain `async def`. A future contributor reverting
+    it to a sync method would break the Starlette / FastAPI / Quart
+    `await request.json()` idiom; this is the regression guard."""
+    assert inspect.iscoroutinefunction(Request.json)
+
+
+def test_request_get_json_stays_synchronous():
+    """The Flask-shape `get_json()` keeps the sync signature so callers
+    porting from Flask do not need to rewrite their code."""
+    assert not inspect.iscoroutinefunction(Request.get_json)
+
+
+async def test_request_json_awaits_to_parsed_value():
+    """End-to-end of the async API: `await request.json()` resolves to
+    the parsed dict."""
+    assert await _req(b'{"a": 1}').json() == {"a": 1}
+
+
+async def test_request_json_empty_body_resolves_to_none():
+    """Empty body hits the `if self.body` short-circuit and returns
+    `None` rather than raising. Pins the branch the inspector flagged."""
+    assert await _req(b"").json() is None
