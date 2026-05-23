@@ -25,7 +25,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --all-extras --dev
 
       - name: Lint
         run: |
@@ -50,10 +50,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --all-extras --dev
 
-      # Surfaces dispatch throughput in the CI log so a performance
-      # regression is visible on every push. A hard pass/fail gate needs
-      # a stored baseline and is tracked separately.
+      # Surfaces dispatch throughput in the CI log on every push, and
+      # fails the build on a catastrophic (multi-x) regression via a
+      # deliberately loose floor — runner variance stays well above it.
+      # A finer baseline-relative gate is tracked separately.
       - name: Benchmark
-        run: uv run python bench/dispatch_bench.py
+        run: uv run python bench/dispatch_bench.py --min-rps 2000
