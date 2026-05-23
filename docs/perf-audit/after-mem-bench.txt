@@ -1,5 +1,0 @@
-veloce dispatch memory bench
-  iterations: 20000, warmup: 2000
-  static GET      per-req peak p50=46,625 B  p99=81,393 B  retained/req=+0.26 B  rss d=  +84 KB
-  path-param GET  per-req peak p50=56,164 B  p99=90,932 B  retained/req=+0.74 B  rss d=   +4 KB
-  POST 64 body    per-req peak p50=56,121 B  p99=90,889 B  retained/req=+0.73 B  rss d=   +0 KB

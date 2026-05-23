@@ -3,27 +3,41 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "veloce"
+name = "veloceframework"
 version = "0.1.0"
 description = "Ultra-fast async Python web framework — ASGI-native, batteries included"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "veloce maintainers" },
+    { name = "Lokesh Tallapaneni", email = "revanthravella@gmail.com" },
 ]
+maintainers = [
+    { name = "Lokesh Tallapaneni", email = "revanthravella@gmail.com" },
+]
+keywords = ["asgi", "async", "web", "framework", "http", "api", "websocket", "openapi"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
     "Framework :: AsyncIO",
     "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Programming Language :: Python",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Internet",
+    "Topic :: Internet :: WWW/HTTP",
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
 dependencies = [
@@ -61,6 +75,19 @@ docs = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/veloce"]
+
+[tool.hatch.build.targets.sdist]
+# Ship the source tree, tests, and release metadata. Internal bench
+# harnesses, the docs build, and CI plumbing stay in the repo but
+# do not get redistributed to PyPI consumers.
+include = [
+    "src/veloce",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-23
+
+First public release. Veloce is published to PyPI as `veloceframework`;
+the import name `veloce` is unchanged.
+
+### Highlights
+
+- Async-first ASGI core with a hand-written radix-tree router, custom
+  request/response pipeline, in-memory `TestClient`, and a dependency
+  injection system that resolves precompiled plans (`HandlerPlan`) at
+  registration time so the per-request hot path performs no reflection.
+- Feature surface covers Flask 3.x and FastAPI parity for the workflows
+  most apps reach for first — blueprints, dependency injection, OpenAPI
+  generation, Jinja templating, WebSockets, sessions, signals, and a
+  complete Werkzeug-shape request/response API.
+- Performance contract: comparative benches in `benchmark.py` show
+  3-5x throughput vs equivalent FastAPI handlers and 4-7x vs Flask on
+  the JSON-hello and path-param hot paths.
+
+### Added
+
+The entries below were authored during the `[Unreleased]` window and
+ship as part of this release.
+
 ### Changed
 
 - **Per-request dispatch +21-39 % (profile-driven DSA pass).** Walked the

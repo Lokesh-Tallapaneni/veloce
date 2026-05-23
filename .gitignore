@@ -42,3 +42,8 @@ CLAUDE.md
 .claude/
 .claude-dev-helper/
 .playwright-mcp/
+
+# Internal scratch (perf-audit dumps, bench notes) — never shipped
+internal/
+*.png
+board-after-upload.png
