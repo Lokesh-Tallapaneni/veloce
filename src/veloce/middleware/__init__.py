@@ -3,7 +3,7 @@
 from veloce.middleware.base import BaseHTTPMiddleware, Middleware
 from veloce.middleware.compression import GZipMiddleware
 from veloce.middleware.cors import CORSMiddleware
-from veloce.middleware.csrf import CSRFMiddleware
+from veloce.middleware.csrf import CSRFMiddleware, rotate_csrf_token
 from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
 from veloce.middleware.proxy_fix import ProxyFix
 from veloce.middleware.security import (
@@ -20,6 +20,7 @@ __all__ = [
     "BaseHTTPMiddleware",
     "CORSMiddleware",
     "CSRFMiddleware",
+    "rotate_csrf_token",
     "GZipMiddleware",
     "TrustedHostMiddleware",
     "RateLimitMiddleware",

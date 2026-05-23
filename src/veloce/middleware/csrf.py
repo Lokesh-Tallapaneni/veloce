@@ -136,10 +136,13 @@ class CSRFMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         existing = request._state.get("_csrf_cookie") if request._state else None
-        if existing:
+        # `rotate_csrf_token()` sets this sentinel on the request state to
+        # force a fresh token regardless of an existing cookie. Without
+        # this, an anonymous session's CSRF cookie would persist across
+        # login — a session-fixation pathway.
+        force_rotate = bool(request._state.get("_csrf_rotate") if request._state else False)
+        if existing and not force_rotate:
             return response
-        # First request — mint a token and set the cookie. When signing
-        # is enabled the stored value is the signed token.
         token = self.token_factory()
         if self._signer is not None:
             token = self._signer.dumps(token)
@@ -160,3 +163,29 @@ class CSRFMiddleware(Middleware):
             {"detail": detail},
             status_code=403,
         )
+
+
+def rotate_csrf_token(request: Request) -> None:
+    """Force the active `CSRFMiddleware` to mint a fresh token on response.
+
+    Call this at the end of an authentication handler (login, logout,
+    permission elevation) so the CSRF cookie issued to the
+    pre-authentication session is replaced by a fresh one bound to the
+    new authentication state. Without rotation an attacker who plants
+    a known CSRF cookie on an anonymous victim can submit forged
+    requests after the victim logs in (session-fixation pathway).
+
+    Usage::
+
+        @app.post("/login")
+        async def login(request: Request):
+            user = authenticate(...)
+            request.session["user_id"] = user.id
+            rotate_csrf_token(request)
+            return RedirectResponse("/")
+
+    No-op when `CSRFMiddleware` is not installed.
+    """
+    if request._state is None:
+        return
+    request._state["_csrf_rotate"] = True

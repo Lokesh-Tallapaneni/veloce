@@ -68,7 +68,7 @@ class Response:
 
     __slots__ = (
         "status_code",
-        "body",
+        "_body",
         "content_type",
         "headers",
         "_encoded",
@@ -85,10 +85,10 @@ class Response:
         background: Any = None,
     ) -> None:
         self.status_code = status_code
-        self.body = body
+        self._encoded: bytes | None = None
+        self._body = body
         self.content_type = content_type
         self.headers = headers or {}
-        self._encoded: bytes | None = None
         # Optional `BackgroundTask` or `BackgroundTasks` fired by the
         # dispatch layer after this response is built. None when no task
         # is attached. `Response(content=..., background=BackgroundTask(fn))`.
@@ -97,6 +97,21 @@ class Response:
         # base `Response` the slot stays `None` so `is_streamed` is a
         # direct attribute load (no `getattr` fallback to None).
         self._stream: Any = None
+
+    # ── `body` ───────────────────────────────────────────────────────
+    # Backed by `_body` so the setter can invalidate the encode cache.
+    # Middleware that mutates `response.body = new_bytes` after a prior
+    # `.encode()` call would otherwise emit stale bytes + wrong
+    # Content-Length on the next encode.
+
+    @property
+    def body(self) -> bytes:
+        return self._body
+
+    @body.setter
+    def body(self, value: bytes) -> None:
+        self._body = value
+        self._encoded = None
 
     # ── `media_type` alias ────────────────────────────────────────────
     # ASGI servers name this attribute `media_type`; veloce's
@@ -137,8 +152,6 @@ class Response:
         JSON response without re-decoding `body` by hand. Raises if the
         body is non-empty and not valid JSON.
         """
-        import orjson
-
         body = self.body
         return orjson.loads(body) if body else None
 
@@ -497,8 +510,9 @@ class Response:
         """
         if isinstance(value, str):
             value = value.encode("utf-8")
+        # The `body` property setter clears `_encoded`; no separate
+        # invalidation needed.
         self.body = value
-        self._encoded = None
         # If `Content-Length` was explicitly set (e.g. by caller after
         # the prior body), refresh it to match. The ASGI emit path
         # always recomputes Content-Length from `body`, so leaving
@@ -1231,8 +1245,29 @@ class FileResponse(Response):
         if "ETag" not in hdrs and "etag" not in hdrs:
             hdrs["ETag"] = _file_etag(path, st.st_size, st.st_mtime)
 
-        # Read file synchronously in __init__ for backward compat
-        # (constructors can't be async). For async path, use FileResponse.from_path()
+        # Warn when called on a running loop — a 50 MB read on the loop
+        # pauses every other request. The cheap factory
+        # `await FileResponse.from_path(path)` streams the file through
+        # `loop.run_in_executor` without blocking. We emit a
+        # DeprecationWarning instead of raising so the established sync
+        # helpers (`send_file`, `Veloce.send_static_file`) keep working
+        # for now; the next major bump will tighten this to a hard error.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            import warnings
+
+            warnings.warn(
+                "FileResponse(path) does a blocking read on the running "
+                "event loop. Use `await FileResponse.from_path(path, ...)` "
+                "from async handlers, or wrap the sync call in "
+                "`asyncio.to_thread(...)`. This will raise in a future "
+                "release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         with open(path, "rb") as f:
             body = f.read()
 

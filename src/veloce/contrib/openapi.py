@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any, get_type_hints
 
 import orjson
 from pydantic import BaseModel
 
 from veloce.http.response import HTMLResponse, JSONResponse
+
+_logger = logging.getLogger("veloce.openapi")
 
 
 def _deep_merge(target: dict, overlay: dict) -> None:
@@ -601,22 +604,58 @@ def _pydantic_to_schema(model: type[BaseModel], registry: dict[str, dict]) -> di
                     registry[def_name] = def_schema
                 del schema["$defs"]
             registry[name] = schema
-        except Exception:
+        except Exception as exc:
+            # Silently degrading to `{type: object}` hides genuine schema
+            # bugs in the user's models. Log loudly at WARNING so the
+            # failure surfaces in dev logs, then fall back so /docs still
+            # renders (an underspecified schema beats a 500 on /openapi.json).
+            _logger.warning(
+                "OpenAPI schema generation failed for %s: %s. "
+                "Falling back to {type: object}. "
+                "Inspect the model definition or attach a debugger to "
+                "veloce.openapi to see the full traceback.",
+                name,
+                exc,
+                exc_info=_logger.isEnabledFor(logging.DEBUG),
+            )
             registry[name] = {"type": "object"}
     return {"$ref": f"#/components/schemas/{name}"}
 
 
-SWAGGER_HTML = """<!DOCTYPE html>
+# Swagger UI / ReDoc bundles are pinned to a specific patch version and
+# loaded with a Subresource Integrity hash. Together with
+# `crossorigin="anonymous"` the browser refuses to execute the script
+# if the CDN ever serves bytes that do not hash to this exact digest,
+# so a CDN compromise cannot inject arbitrary JavaScript onto a
+# `/docs` page. Bump the versions in lock-step with the hashes — the
+# hash will not match if you change one without the other.
+_SWAGGER_UI_VERSION = "5.18.2"
+_SWAGGER_UI_CSS_INTEGRITY = "sha512-xRGj65XGEcpPTE7Cn6ujJWokpXVLxqLxdtNZ/n1w52+76XaCRO7UWKZl9yJHvzpk99A0EP6EW+opPcRwPDxwkA=="
+_SWAGGER_UI_JS_INTEGRITY = "sha512-9tBcCofqWq+PelL6USpUB7OJrCaObfefi9ht9nVZuKt1XP7eHDs7NwVljLSLVtSsErax1Tz3pG3O82eeq546Rg=="
+_REDOC_VERSION = "2.1.5"
+_REDOC_JS_INTEGRITY = "sha384-0GrsyTQc9Oqd8h+b2dbc4XdR2T/DYpy0tLNNstyx+LBMUyiBbcWPbEs9aRmUcaxD"
+
+SWAGGER_HTML = (
+    """<!DOCTYPE html>
 <html>
 <head>
     <title>{title} — Swagger UI</title>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/__SUV__/swagger-ui.min.css"
+      integrity="__SUC__"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer">
 </head>
 <body>
     <div id="swagger-ui"></div>
-    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/__SUV__/swagger-ui-bundle.min.js"
+      integrity="__SUJ__"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"></script>
     <script>
     const ui = SwaggerUIBundle({{
         url: "{openapi_url}",
@@ -628,7 +667,10 @@ SWAGGER_HTML = """<!DOCTYPE html>
     {init_oauth}
     </script>
 </body>
-</html>"""
+</html>""".replace("__SUV__", _SWAGGER_UI_VERSION)
+    .replace("__SUC__", _SWAGGER_UI_CSS_INTEGRITY)
+    .replace("__SUJ__", _SWAGGER_UI_JS_INTEGRITY)
+)
 
 
 REDOC_HTML = """<!DOCTYPE html>
@@ -642,9 +684,13 @@ REDOC_HTML = """<!DOCTYPE html>
 </head>
 <body>
     <redoc spec-url='{openapi_url}'></redoc>
-    <script src="https://unpkg.com/redoc@latest/bundles/redoc.standalone.js"></script>
+    <script
+      src="https://unpkg.com/redoc@__RDV__/bundles/redoc.standalone.js"
+      integrity="__RDJ__"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"></script>
 </body>
-</html>"""
+</html>""".replace("__RDV__", _REDOC_VERSION).replace("__RDJ__", _REDOC_JS_INTEGRITY)
 
 
 def setup_openapi_routes(

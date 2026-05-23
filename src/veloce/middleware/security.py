@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import deque
 
@@ -56,13 +57,32 @@ class TrustedHostMiddleware(Middleware):
 
 
 class RateLimitMiddleware(Middleware):
-    """Simple in-memory token-bucket rate limiter."""
+    """In-process token-bucket rate limiter.
+
+    Counters live in a per-instance dict and are NOT shared across
+    worker processes. Multi-worker deployments (`uvicorn --workers N`)
+    will see an effective limit of roughly `N × max_requests` per
+    window because each worker counts independently. For accurate
+    cross-worker limits use a reverse-proxy limiter (nginx
+    `limit_req`) or a Redis-backed implementation; the in-process
+    limiter is intended for single-worker development and small
+    deployments.
+    """
 
     def __init__(self, max_requests: int = 100, window_seconds: int = 60) -> None:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self._buckets: dict[str, deque[float]] = {}
         self._last_sweep = time.monotonic()
+        # Lazy-allocated on first sweep so the lock binds to the running
+        # event loop, not to whatever loop is current at construction
+        # time (matches the same pattern used for `Veloce`'s first-request
+        # lock). Guards the timestamp-check + dict-rebuild + timestamp-
+        # update sequence — single-threaded asyncio already serialises
+        # this block today because it contains no `await`, but any
+        # future async cache backend that introduces an `await` inside
+        # the sweep block would otherwise open a check-then-act race.
+        self._sweep_lock: asyncio.Lock | None = None
 
     async def process_request(self, request: Request) -> Response | None:
         client = request.client_host or "unknown"
@@ -70,17 +90,21 @@ class RateLimitMiddleware(Middleware):
         cutoff = now - self.window_seconds
 
         # Periodic eviction sweep — bounded memory across unique client IPs.
-        # The stale list is captured before deletion because mutating a
-        # dict mid-iteration is a RuntimeError; no `await` runs between
-        # the comprehension and the delete loop, so cooperative
-        # interleaving cannot drop an append.
         if now - self._last_sweep >= self.window_seconds:
-            stale = [
-                ip for ip, stamps in self._buckets.items() if not stamps or stamps[-1] <= cutoff
-            ]
-            for ip in stale:
-                del self._buckets[ip]
-            self._last_sweep = now
+            if self._sweep_lock is None:
+                self._sweep_lock = asyncio.Lock()
+            async with self._sweep_lock:
+                # Double-check under the lock so a request that lost the
+                # race to acquire the lock does not redo the sweep.
+                if now - self._last_sweep >= self.window_seconds:
+                    stale = [
+                        ip
+                        for ip, stamps in self._buckets.items()
+                        if not stamps or stamps[-1] <= cutoff
+                    ]
+                    for ip in stale:
+                        del self._buckets[ip]
+                    self._last_sweep = now
 
         bucket = self._buckets.get(client)
         if bucket is None:

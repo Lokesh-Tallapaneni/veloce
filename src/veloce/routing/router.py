@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
 from typing import Any
+from urllib.parse import urlencode
 
 from veloce.routing.converters import (
     StringConverter,
@@ -484,7 +485,12 @@ class Router:
         single_param = len(param_children) == 1
         for child in param_children:
             converter = child.converter
-            assert converter is not None  # always set in add_route
+            if converter is None:
+                # add_route always populates this slot; a bare param child
+                # with no converter is a routing-tree corruption, not a
+                # client error. Loud failure beats a `'NoneType' is not
+                # callable` two frames deeper.
+                raise RuntimeError(f"radix-tree param child {child.param_name!r} has no converter")
             if converter.greedy:
                 rest = "/".join(segments[idx:])
                 ok, coerced = converter.match(rest)
@@ -722,8 +728,6 @@ class Router:
         # behaviour). Order matches caller's kwarg order via dict insertion.
         extras = {k: v for k, v in path_params.items() if k not in consumed}
         if extras:
-            from urllib.parse import urlencode
-
             path = f"{path}?{urlencode(extras, doseq=True)}"
 
         if anchor is not None:
@@ -860,12 +864,31 @@ class Router:
                     include_in_schema=info.include_in_schema,
                     responses=info.responses,
                     operation_id=info.operation_id,
+                    # Carry constraints from the source RouteInfo — without
+                    # these, sub-routers merged via include_router would
+                    # silently lose their subdomain / host / openapi_extra
+                    # / defaults / callbacks declarations.
+                    openapi_extra=getattr(info, "openapi_extra", None),
+                    defaults=getattr(info, "defaults", None),
+                    callbacks=getattr(info, "callbacks", None),
+                    subdomain=getattr(info, "subdomain", None),
+                    host=getattr(info, "host", None),
                 )
                 # Reuse the parent's pre-computed plan — same handler, same plan.
                 route_info.handler_plan = info.handler_plan
                 route_info.route_dep_plans = info.route_dep_plans
                 route_info.is_trivial_plan = info.is_trivial_plan
                 cur.handlers[method] = route_info
+
+                # Propagate slash-handling flags from the source node so a
+                # router declared with `strict_slashes=False` keeps that
+                # behaviour after merge, and `add_route` calls that set
+                # `trailing_slash` on the source see the flag reflected
+                # on the merged node.
+                if node.trailing_slash:
+                    cur.trailing_slash = True
+                if node.tolerant_slash:
+                    cur.tolerant_slash = True
 
                 # Update named routes
                 self._named_routes[info.name] = (full_path, info.param_names)
