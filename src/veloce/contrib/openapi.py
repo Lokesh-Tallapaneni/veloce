@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, get_type_hints
 
+import orjson
 from pydantic import BaseModel
 
 from veloce.http.response import HTMLResponse, JSONResponse
@@ -666,20 +667,26 @@ def setup_openapi_routes(
         return JSONResponse(app.openapi())
 
     async def swagger_ui(request: Any):
-        import json
-
-        # Render extra SwaggerUIBundle options inline as JSON. The HTML
-        # template wraps them with the surrounding `{}` of the config
-        # object, so we emit `"key": value, "key2": value2` without
-        # outer braces.
+        # Render extra SwaggerUIBundle options inline as JSON literals.
+        # `orjson.dumps` returns bytes, so decode for string concatenation
+        # into the HTML template; the surrounding page is utf-8, so
+        # orjson's raw-UTF-8 output (vs json's ensure_ascii) is fine.
         params = getattr(app, "swagger_ui_parameters", None) or {}
         if params:
-            ui_params = ", ".join(f"{json.dumps(k)}: {json.dumps(v)}" for k, v in params.items())
+            # Compact `key:value` join — orjson serialises nested values
+            # without spaces, so the outer separator stays spaceless to
+            # keep the rendered literal consistent throughout.
+            ui_params = ",".join(
+                f"{orjson.dumps(k).decode()}:{orjson.dumps(v).decode()}"
+                for k, v in params.items()
+            )
         else:
             ui_params = ""
 
         oauth_init = getattr(app, "swagger_ui_init_oauth", None)
-        init_oauth = f"ui.initOAuth({json.dumps(oauth_init)});" if oauth_init else ""
+        init_oauth = (
+            f"ui.initOAuth({orjson.dumps(oauth_init).decode()});" if oauth_init else ""
+        )
 
         html = SWAGGER_HTML.format(
             title=app.title,

@@ -38,9 +38,10 @@ def test_swagger_ui_parameters_inserted_into_bundle():
         return {}
 
     html = TestClient(app).get("/docs").text
-    assert '"defaultModelsExpandDepth": -1' in html
-    assert '"persistAuthorization": true' in html
-    assert '"docExpansion": "none"' in html
+    # Compact form — see `test_swagger_ui_init_oauth_emitted_when_configured`.
+    assert '"defaultModelsExpandDepth":-1' in html
+    assert '"persistAuthorization":true' in html
+    assert '"docExpansion":"none"' in html
 
 
 def test_swagger_ui_init_oauth_emitted_when_configured():
@@ -60,8 +61,11 @@ def test_swagger_ui_init_oauth_emitted_when_configured():
 
     html = TestClient(app).get("/docs").text
     assert "ui.initOAuth(" in html
-    assert '"clientId": "swagger-ui-client"' in html
-    assert '"appName": "Veloce Demo"' in html
+    # `orjson.dumps` produces compact output (no space after `:`); the
+    # substring check matches the on-wire form Swagger UI's JSON parser
+    # consumes — whitespace inside the literal is incidental.
+    assert '"clientId":"swagger-ui-client"' in html
+    assert '"appName":"Veloce Demo"' in html
 
 
 def test_swagger_ui_parameters_default_to_none_attribute():
@@ -83,5 +87,5 @@ def test_swagger_ui_with_both_params_and_oauth():
         return {}
 
     html = TestClient(app).get("/docs").text
-    assert '"persistAuthorization": true' in html
+    assert '"persistAuthorization":true' in html
     assert "ui.initOAuth(" in html
