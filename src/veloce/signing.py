@@ -143,9 +143,17 @@ class Signer:
         Raises `BadSignature` on tamper / unknown secret, `BadTimeSignature`
         when `max_age` is set and the token's timestamp is older than that.
         """
-        if not isinstance(token, str) or token.count(".") != 2:
+        if not isinstance(token, str):
             raise BadData(f"malformed token: {token!r}")
-        payload_b64, ts_b64, sig_b64 = token.split(".")
+        # Single split-with-cap instead of `count(".") != 2` + `split(".")`
+        # — `split(".", 2)` returns exactly 3 parts on a well-formed token
+        # and fewer on a malformed one. Catches the "more than two dots"
+        # case implicitly because the trailing part would contain dots
+        # the b64 decode then rejects.
+        parts = token.split(".", 2)
+        if len(parts) != 3:
+            raise BadData(f"malformed token: {token!r}")
+        payload_b64, ts_b64, sig_b64 = parts
         try:
             sig_bytes = _b64decode(sig_b64)
         except (ValueError, OSError) as err:

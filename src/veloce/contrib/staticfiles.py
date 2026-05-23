@@ -148,9 +148,7 @@ class StaticFiles:
             # (handles `/about` → `/about.html` mappings).
             if self.html and not relative.endswith(".html"):
                 file_path_html = file_path + ".html"
-                stat_html, denied_html = await loop.run_in_executor(
-                    None, _try_stat, file_path_html
-                )
+                stat_html, denied_html = await loop.run_in_executor(None, _try_stat, file_path_html)
                 if denied_html:
                     return Response(status_code=403, body=b"Forbidden")
                 if stat_html is not None and _stat.S_ISREG(stat_html.st_mode):
@@ -305,14 +303,27 @@ class StaticFiles:
         """
         import html
 
-        def _list_dir() -> list[str]:
+        def _list_dir() -> list[tuple[str, bool]]:
+            """Return `(name, is_dir)` tuples for the directory.
+
+            `os.scandir` answers `is_dir()` from cached stat data on the
+            same syscall that produced the entry, so we don't need a
+            second `os.path.isdir` per item.
+            """
             try:
-                names = sorted(os.listdir(dir_path))
+                with os.scandir(dir_path) as it:
+                    return sorted(
+                        (
+                            (e.name, e.is_dir(follow_symlinks=False))
+                            for e in it
+                            if not e.name.startswith(".")
+                        ),
+                        key=lambda t: t[0],
+                    )
             except OSError:
                 return []
-            return [n for n in names if not n.startswith(".")]
 
-        names = await loop.run_in_executor(None, _list_dir)
+        entries = await loop.run_in_executor(None, _list_dir)
         base = url_path if url_path.endswith("/") else url_path + "/"
 
         rows: list[str] = []
@@ -320,9 +331,7 @@ class StaticFiles:
         if base.rstrip("/") != self.prefix:
             rows.append('<li><a href="../">../</a></li>')
 
-        for name in names:
-            entry_path = os.path.join(dir_path, name)
-            is_dir = await loop.run_in_executor(None, os.path.isdir, entry_path)
+        for name, is_dir in entries:
             display = html.escape(name) + ("/" if is_dir else "")
             rows.append(
                 f'<li><a href="{html.escape(name)}{("/" if is_dir else "")}">{display}</a></li>'
