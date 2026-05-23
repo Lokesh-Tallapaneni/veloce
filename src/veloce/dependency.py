@@ -239,10 +239,14 @@ _MARKER_LOC = {
 
 
 # Shared empty sentinels for resolvers that never see app-level overrides
-# (the dispatcher overwrites the slot before any read). Module-level so
-# they are not reallocated per request. `_EMPTY_OVERRIDES` is treated as
-# immutable by all readers — only `.get(...)` and iteration; the
-# dispatcher swaps in a real dict whenever overrides exist.
+# (the dispatcher overwrites the slot before any read, so the sentinels
+# never appear on the dispatch path). Module-level so they are not
+# reallocated per request. `_EMPTY_OVERRIDES` is only ever `.get(...)`'d
+# by `_exec_depends`, so it stays untouched. `_EMPTY_OVERRIDE_SUBPLANS`
+# is read AND written by `_exec_depends`; the writer swaps the slot to a
+# fresh `WeakKeyDictionary` on the first write so the sentinel is never
+# mutated and cross-resolver contamination is impossible for direct
+# `DependencyResolver()` callers (tests, public-API users).
 _EMPTY_OVERRIDES: dict[Callable, Callable] = {}
 _EMPTY_OVERRIDE_SUBPLANS: weakref.WeakKeyDictionary[Callable, Any] = weakref.WeakKeyDictionary()
 
