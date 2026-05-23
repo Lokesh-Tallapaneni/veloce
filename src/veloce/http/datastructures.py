@@ -7,11 +7,14 @@ the `getlist` alias on top of multidict's native `getall`.
 
 from __future__ import annotations
 
+import contextlib
 import io
 from collections.abc import Mapping
 from typing import Any, BinaryIO
 
 from multidict import CIMultiDict, MultiDict
+from python_multipart import MultipartParser
+from python_multipart.exceptions import FormParserError
 
 
 class UploadFile:
@@ -622,50 +625,53 @@ def parse_multipart_form(
         return FormData()
 
     result = FormData()
-    delimiter = f"--{boundary}".encode()
-    parts = body.split(delimiter)
+    # Per-part accumulators, driven by the streaming `MultipartParser`
+    # callbacks below. A stateful parser (vs. a naive `body.split`)
+    # correctly handles a boundary token that happens to occur inside
+    # binary file data.
+    state: dict[str, Any] = {
+        "parts_seen": 0,
+        "header_field": bytearray(),
+        "header_value": bytearray(),
+        "headers": {},
+        "data": bytearray(),
+    }
 
-    # Count real parts as they are encountered and bail the moment the
-    # cap is crossed — exact regardless of whether the body carries a
-    # well-formed `--boundary--` epilogue, and it stops before the
-    # expensive per-part decoding for everything past the limit.
-    parts_seen = 0
+    from veloce.exceptions import RequestEntityTooLarge
 
-    for part in parts[1:]:
-        if part.strip() == b"--" or not part.strip():
-            continue
+    def _too_large(message: str) -> None:
+        raise RequestEntityTooLarge(message)
 
-        parts_seen += 1
-        if parts_seen > max_parts:
-            from veloce.exceptions import RequestEntityTooLarge
+    def on_part_begin() -> None:
+        state["parts_seen"] += 1
+        if state["parts_seen"] > max_parts:
+            _too_large(f"multipart form exceeds the {max_parts}-part limit")
+        state["headers"] = {}
+        state["header_field"] = bytearray()
+        state["header_value"] = bytearray()
+        state["data"] = bytearray()
 
-            raise RequestEntityTooLarge(f"multipart form exceeds the {max_parts}-part limit")
-        if b"\r\n\r\n" not in part:
-            continue
+    def on_header_field(data: bytes, start: int, end: int) -> None:
+        state["header_field"] += data[start:end]
 
-        header_section, body_section = part.split(b"\r\n\r\n", 1)
-        # Strip trailing \r\n
-        if body_section.endswith(b"\r\n"):
-            body_section = body_section[:-2]
+    def on_header_value(data: bytes, start: int, end: int) -> None:
+        state["header_value"] += data[start:end]
 
-        if len(body_section) > max_part_size:
-            from veloce.exceptions import RequestEntityTooLarge
+    def on_header_end() -> None:
+        name = bytes(state["header_field"]).decode("utf-8", errors="replace").lower()
+        value = bytes(state["header_value"]).decode("utf-8", errors="replace")
+        state["headers"][name] = value
+        state["header_field"] = bytearray()
+        state["header_value"] = bytearray()
 
-            raise RequestEntityTooLarge(
-                f"multipart part exceeds the {max_part_size}-byte size limit"
-            )
+    def on_part_data(data: bytes, start: int, end: int) -> None:
+        chunk = data[start:end]
+        if len(state["data"]) + len(chunk) > max_part_size:
+            _too_large(f"multipart part exceeds the {max_part_size}-byte size limit")
+        state["data"] += chunk
 
-        headers_text = header_section.decode("utf-8", errors="replace")
-        disposition = ""
-        part_content_type = "text/plain"
-        for line in headers_text.split("\r\n"):
-            line_lower = line.lower()
-            if line_lower.startswith("content-disposition:"):
-                disposition = line.split(":", 1)[1].strip()
-            elif line_lower.startswith("content-type:"):
-                part_content_type = line.split(":", 1)[1].strip()
-
-        # Extract name and filename from disposition
+    def on_part_end() -> None:
+        disposition = state["headers"].get("content-disposition", "")
         name = ""
         filename = None
         for token in disposition.split(";"):
@@ -676,21 +682,41 @@ def parse_multipart_form(
                 filename = token[9:].strip('"')
 
         if not name:
-            continue
+            return
 
+        body_section = bytes(state["data"])
         if filename is not None:
-            # File upload — use `add()` so repeated `name` parts (multiple
-            # `<input multiple>` files under one name) are preserved.
-            file_obj = io.BytesIO(body_section)
-            upload = UploadFile(
-                filename=filename,
-                content_type=part_content_type,
-                file=file_obj,
-                size=len(body_section),
+            # File upload — `add()` keeps repeated `name` parts (multiple
+            # `<input multiple>` files under one name) distinct.
+            result.add(
+                name,
+                UploadFile(
+                    filename=filename,
+                    content_type=state["headers"].get("content-type", "text/plain"),
+                    file=io.BytesIO(body_section),
+                    size=len(body_section),
+                ),
             )
-            result.add(name, upload)
         else:
-            # Regular field — same: `add()` preserves duplicate names.
+            # Regular field — `add()` likewise preserves duplicate names.
             result.add(name, body_section.decode("utf-8", errors="replace"))
 
+    parser = MultipartParser(
+        boundary.encode("latin-1"),
+        {
+            "on_part_begin": on_part_begin,
+            "on_header_field": on_header_field,
+            "on_header_value": on_header_value,
+            "on_header_end": on_header_end,
+            "on_part_data": on_part_data,
+            "on_part_end": on_part_end,
+        },
+    )
+    # A malformed body raises `FormParserError`; treat it leniently and
+    # return whatever parsed cleanly rather than surfacing a low-level
+    # parser error as a 500. `RequestEntityTooLarge` from the DoS-cap
+    # callbacks is not a `FormParserError`, so it still reaches the caller.
+    with contextlib.suppress(FormParserError):
+        parser.write(body)
+        parser.finalize()
     return result

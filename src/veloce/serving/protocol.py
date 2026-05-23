@@ -27,12 +27,18 @@ class HttpProtocol(asyncio.Protocol):
         "_keep_alive",
         "_current_task",
         "_keep_alive_handle",
+        "_request_timer",
     )
 
     # Strong reference set to prevent GC of in-flight tasks
     _active_tasks: set[asyncio.Task] = set()
 
     KEEP_ALIVE_TIMEOUT = 75  # seconds (matches nginx default)
+    # Slowloris guard: once a request's bytes start arriving, the whole
+    # request line + headers + body must complete within this budget,
+    # otherwise the connection is dropped with 408. Bounds how long a
+    # deliberately slow client can pin a connection open.
+    REQUEST_TIMEOUT = 30  # seconds
 
     def __init__(self, app: Veloce, loop: asyncio.AbstractEventLoop) -> None:
         self.app = app
@@ -47,6 +53,7 @@ class HttpProtocol(asyncio.Protocol):
         self._keep_alive = True
         self._current_task: asyncio.Task | None = None
         self._keep_alive_handle: asyncio.TimerHandle | None = None
+        self._request_timer: asyncio.TimerHandle | None = None
 
     # ── httptools callbacks ──────────────────────────────────────
 
@@ -65,6 +72,11 @@ class HttpProtocol(asyncio.Protocol):
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
             self._keep_alive_handle = None
+        # The request finished arriving in time — stand the slowloris
+        # guard down.
+        if self._request_timer is not None:
+            self._request_timer.cancel()
+            self._request_timer = None
         # Create task with strong reference to prevent GC and log errors
         task = self.loop.create_task(self._dispatch())
         self._current_task = task
@@ -84,7 +96,31 @@ class HttpProtocol(asyncio.Protocol):
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
             self._keep_alive_handle = None
+        if self._request_timer is not None:
+            self._request_timer.cancel()
+            self._request_timer = None
         self.transport = None
+
+    def _arm_request_timer(self) -> None:
+        """Start the slowloris read budget when a request's bytes begin
+        arriving. The connection is no longer idle, so the keep-alive
+        timer is stood down in favour of the (shorter) request timer."""
+        if self._keep_alive_handle is not None:
+            self._keep_alive_handle.cancel()
+            self._keep_alive_handle = None
+        self._request_timer = self.loop.call_later(self.REQUEST_TIMEOUT, self._request_timeout)
+
+    def _request_timeout(self) -> None:
+        """A client took too long to send a complete request — drop it."""
+        self._request_timer = None
+        if self.transport and not self.transport.is_closing():
+            self.transport.write(
+                b"HTTP/1.1 408 Request Timeout\r\n"
+                b"Content-Length: 15\r\n"
+                b"Connection: close\r\n\r\n"
+                b"Request Timeout"
+            )
+            self.transport.close()
 
     def _start_keep_alive_timer(self) -> None:
         """Start idle timeout — close connection if no request arrives."""
@@ -114,6 +150,9 @@ class HttpProtocol(asyncio.Protocol):
             )
 
     def data_received(self, data: bytes) -> None:
+        # First bytes of a fresh request — arm the slowloris read budget.
+        if self._request_timer is None and not self.request_complete:
+            self._arm_request_timer()
         try:
             self.parser.feed_data(data)
         except httptools.HttpParserError:

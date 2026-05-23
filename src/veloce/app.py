@@ -2176,8 +2176,22 @@ class Veloce(Router):
         workers: int = 1,
         access_log: bool = True,
     ) -> None:
-        """Start the server."""
+        """Start the built-in **development** server.
+
+        Veloce's from-scratch HTTP server is intended for local
+        development only. For production, run the app under a hardened
+        ASGI server — ``uvicorn your_module:app`` — which veloce is fully
+        compatible with through its ASGI ``__call__`` interface.
+        ``run()`` logs a reminder of this on startup.
+        """
         self._setup_openapi()
+
+        # The from-scratch server is dev-grade — make the production
+        # recommendation impossible to miss.
+        self.logger.warning(
+            "veloce's built-in server (app.run()) is for local development only — "
+            "run under uvicorn (or another hardened ASGI server) in production."
+        )
 
         # Use uvloop if available (2-4x faster event loop)
         try:
