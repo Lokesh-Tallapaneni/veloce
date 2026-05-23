@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Stdlib `json` dropped in favour of `orjson` at the remaining two
+  sites.** `Config.from_prefixed_env`'s default `loads` is now
+  `orjson.loads`; `Config.from_file`'s default `load` is a new tiny
+  `_orjson_load(fp)` adaptor (orjson has no file-object loader).
+  `Swagger UI` HTML render emits `swagger_ui_parameters` and
+  `swagger_ui_init_oauth` via `orjson.dumps(...).decode()`. orjson
+  produces compact JSON (no space after `:`); the on-wire format
+  for embedded literals is now `"key":value` rather than `"key": value`
+  — the whitespace was never part of any contract and the JS parser
+  consumes both identically. Behaviour-equivalent for valid JSON;
+  catch sites unchanged because `orjson.JSONDecodeError` is a
+  `ValueError` subclass.
 - **Per-request dispatch ~+17 %.** Profile-driven pass over the in-loop
   ASGI hot path: `_setup_openapi` gated at call sites so the no-op
   branch costs one attribute read instead of a frame; `_endpoint_blueprint`
