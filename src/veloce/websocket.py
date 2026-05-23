@@ -8,6 +8,7 @@ import contextlib
 import enum
 import hashlib
 import struct
+from collections.abc import Iterable
 from typing import Any
 
 import orjson
@@ -207,6 +208,47 @@ class WebSocket:
         return self.application_state
 
     @property
+    def origin(self) -> str | None:
+        """The client-supplied `Origin` header, or `None` if absent.
+
+        WebSocket handshakes carry `Origin` per RFC 6455 §10.2 / §4.1.
+        Browsers always send it; non-browser clients may omit it. The
+        header is the application's primary defence against Cross-Site
+        WebSocket Hijacking — CSWSH bypasses CORS because the handshake
+        is plain HTTP/1.1 and Same-Origin Policy does not apply to it.
+        Pair this accessor with `check_origin(allowed)` before `accept()`.
+        """
+        return self.headers.get("origin")
+
+    def check_origin(self, allowed: str | Iterable[str]) -> bool:
+        """Return `True` when the handshake's `Origin` is in `allowed`.
+
+        Pass a single origin string or an iterable of allowed origins
+        (e.g. `["https://app.example.com", "https://admin.example.com"]`).
+        Exact match — origins are case-insensitive on scheme/host per
+        RFC 6454 §4, so both sides are lowercased before comparison.
+        A missing `Origin` header returns `False`; if your protocol
+        wants to allow non-browser clients (no `Origin`), check
+        `ws.origin is None` separately.
+
+        Usage:
+            @app.websocket("/ws")
+            async def chat(ws: WebSocket):
+                if not ws.check_origin("https://app.example.com"):
+                    await ws.close(code=1008)  # policy violation
+                    return
+                await ws.accept()
+                ...
+        """
+        origin = self.origin
+        if origin is None:
+            return False
+        origin_lc = origin.lower()
+        if isinstance(allowed, str):
+            return origin_lc == allowed.lower()
+        return origin_lc in {a.lower() for a in allowed}
+
+    @property
     def requested_subprotocols(self) -> list[str]:
         """Subprotocols the client offered in `Sec-WebSocket-Protocol`.
 
@@ -374,8 +416,23 @@ class WebSocket:
             )
         await self._asgi_send(message)
 
+    def _check_can_receive(self, method: str) -> None:
+        """Enforce the handshake state machine for receive operations.
+
+        Mirrors the `send_text`/`send_bytes` guards — a handler that
+        calls a receive method before `accept()` would otherwise hang on
+        an empty queue (raw transport) or on the ASGI receive callable
+        (ASGI mode), with no clear failure mode. A receive on a
+        already-closed connection is a `WebSocketDisconnect`.
+        """
+        if not self._accepted:
+            raise RuntimeError(f"WebSocket.{method}(): call accept() before receiving")
+        if self._closed:
+            raise WebSocketDisconnect()
+
     async def receive_text(self, timeout: float | None = None) -> str:
         """Receive a text message. Raises asyncio.TimeoutError if timeout exceeded."""
+        self._check_can_receive("receive_text")
         if self._is_asgi:
             msg = await asyncio.wait_for(self._asgi_recv_msg(), timeout=timeout)
             data = msg.get("text") or (msg.get("bytes") or b"").decode("utf-8")
@@ -385,11 +442,13 @@ class WebSocket:
 
     async def receive_json(self, timeout: float | None = None) -> Any:
         """Receive and parse JSON."""
+        # Routes through `receive_text`, which enforces the state guards.
         text = await self.receive_text(timeout=timeout)
         return orjson.loads(text)
 
     async def receive_bytes(self, timeout: float | None = None) -> bytes:
         """Receive binary data. Raises asyncio.TimeoutError if timeout exceeded."""
+        self._check_can_receive("receive_bytes")
         if self._is_asgi:
             msg = await asyncio.wait_for(self._asgi_recv_msg(), timeout=timeout)
             return msg.get("bytes") or msg.get("text", "").encode("utf-8")

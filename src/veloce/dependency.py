@@ -34,6 +34,7 @@ from veloce._handler_plan import (
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
 from veloce.http.request import Request
+from veloce.http.response import Response
 
 
 class Depends:
@@ -399,8 +400,6 @@ class DependencyResolver:
                 # that also declares the parameter. `status_code = 0` is
                 # the "not set by the handler" sentinel the dispatcher
                 # checks before merging.
-                from veloce.http.response import Response
-
                 injected = request._state.get("_injected_response")
                 if injected is None:
                     injected = Response()
