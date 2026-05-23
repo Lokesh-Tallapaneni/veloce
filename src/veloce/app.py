@@ -1639,8 +1639,35 @@ class Veloce(Router):
                 )
         if isinstance(app, Veloce):
             self._mounted_apps.append((prefix, app))
-        else:
-            self._asgi_mounts.append((prefix, app))
+            return
+        # `StaticFiles` looks ASGI-shaped (it's an object you'd
+        # naturally hand to `mount`), but it speaks Veloce's
+        # `.handle(request)` protocol, not ASGI. Without a special
+        # case, `app.mount("/static", StaticFiles(...))` registered
+        # successfully and then 500'd every request when the ASGI
+        # dispatcher tried `await mounted(scope, receive, send)`.
+        # Route it through the static-handler list with the mount
+        # prefix as the lookup prefix instead.
+        if isinstance(app, StaticFiles):
+            # Re-point the handler at the requested prefix so a
+            # `StaticFiles` constructed with one prefix and mounted at
+            # another responds to the mount path the user gave here.
+            app.prefix = prefix.rstrip("/")
+            self._static_handlers.append(app)
+            return
+        # Anything else must be callable in the ASGI shape — reject
+        # plain objects up front rather than discovering the
+        # `TypeError` per-request.
+        if not callable(app):
+            raise TypeError(
+                f"mount({prefix or '/'!r}, ...) expected an ASGI application "
+                f"(callable taking `(scope, receive, send)`), a `Veloce` sub-app, "
+                f"or a `StaticFiles` instance — got "
+                f"{type(app).__name__} which is none of those. "
+                f"For Veloce's own static-file handler, prefer "
+                f"`app.mount_static(prefix=..., directory=...)`."
+            )
+        self._asgi_mounts.append((prefix, app))
 
     def _match_asgi_mount(self, path: str) -> tuple[str, Any] | None:
         """Return the `(prefix, app)` whose prefix owns `path`, if any."""
