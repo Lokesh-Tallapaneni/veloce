@@ -112,7 +112,9 @@ class Request:
         self._headers_raw: list[tuple[bytes, bytes]] | None = None
         if isinstance(headers, Headers):
             self._headers: Headers | None = headers
-        elif isinstance(headers, list) and headers and isinstance(headers[0][0], (bytes, bytearray)):
+        elif (
+            isinstance(headers, list) and headers and isinstance(headers[0][0], (bytes, bytearray))
+        ):
             # ASGI raw `(bytes, bytes)` tuples — defer decode + Headers build.
             self._headers = None
             self._headers_raw = headers  # type: ignore[assignment]

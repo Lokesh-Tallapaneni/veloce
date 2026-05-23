@@ -66,7 +66,15 @@ def _file_etag(path: str, size: int, mtime: float) -> str:
 class Response:
     """Base HTTP response."""
 
-    __slots__ = ("status_code", "body", "content_type", "headers", "_encoded", "background", "_stream")
+    __slots__ = (
+        "status_code",
+        "body",
+        "content_type",
+        "headers",
+        "_encoded",
+        "background",
+        "_stream",
+    )
 
     def __init__(
         self,
