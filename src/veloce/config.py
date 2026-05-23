@@ -14,11 +14,22 @@ only the observable behaviour is modelled.
 from __future__ import annotations
 
 import importlib
-import json
 import os
 import types
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import IO, Any
+
+import orjson
+
+
+def _orjson_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:
+    """File-object loader matching `json.load`'s shape, backed by orjson.
+
+    `orjson` only exposes `loads(bytes | str)`; this thin adaptor reads
+    the file once and delegates so `Config.from_file(load=...)` keeps
+    its `Callable[[file], Mapping[str, Any]]` contract.
+    """
+    return orjson.loads(fp.read())
 
 
 class Config(dict[str, Any]):
@@ -197,7 +208,7 @@ class Config(dict[str, Any]):
     def from_prefixed_env(
         self,
         prefix: str = "VELOCE",
-        loads: Callable[[str], Any] = json.loads,
+        loads: Callable[[str], Any] = orjson.loads,
     ) -> bool:
         """Pull env vars starting with `<prefix>_`, strip the prefix, store
         with JSON-decoded values (falling back to the raw string when JSON
@@ -236,7 +247,7 @@ class Config(dict[str, Any]):
     def from_file(
         self,
         filename: str,
-        load: Callable[[Any], Mapping[str, Any]] = json.load,
+        load: Callable[[Any], Mapping[str, Any]] = _orjson_load,
         silent: bool = False,
         text: bool = True,
     ) -> bool:
