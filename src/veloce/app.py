@@ -291,8 +291,13 @@ class Veloce(Router):
         self._before_first_request_hooks: list[Callable] = []
         # Single-fire guard: lock prevents concurrent first requests from
         # both seeing `_first_request_fired = False` and running hooks twice.
+        # The lock itself is lazy-allocated on first use so it binds to the
+        # currently-running event loop, not to whatever loop happens to be
+        # current at app-construction time (which is typically no loop at
+        # all when Veloce() is instantiated at module scope, and a
+        # different loop when TestClient spins one up later).
         self._first_request_fired = False
-        self._first_request_lock = asyncio.Lock()
+        self._first_request_lock: asyncio.Lock | None = None
         self._after_request_hooks: list[Callable] = []
         self._teardown_request_hooks: list[Callable] = []
         # Blueprint hooks bucketed by blueprint name. Dispatch only walks
@@ -947,7 +952,11 @@ class Veloce(Router):
 
             return decorator
         else:
-            assert not isinstance(middleware_class_or_type, str)
+            if isinstance(middleware_class_or_type, str):
+                raise TypeError(
+                    "middleware(middleware_class) is the class form; "
+                    "@app.middleware('http') is the decorator form"
+                )
             self.add_middleware(middleware_class_or_type(**kwargs))
 
     # ── Exception handlers ───────────────────────────────────────
@@ -1039,7 +1048,9 @@ class Veloce(Router):
         """
         self.logger.error("Exception on request", exc_info=exc)
 
-    async def handle_http_exception(self, exc: HTTPException) -> Response:
+    async def handle_http_exception(
+        self, exc: HTTPException, request: Request | None = None
+    ) -> Response:
         """Build the response for an `HTTPException`.
 
         Walks registered status-code + class handlers first (matching
@@ -1047,15 +1058,22 @@ class Veloce(Router):
         with `exc.headers` applied. Useful for code paths outside the
         normal request cycle (e.g. background tasks) that want
         framework-consistent error shapes.
+
+        Pass `request=` when calling from inside a request scope so the
+        registered error handler receives the real failing request
+        (with the actual `path`, `method`, `path_params`, `state`, etc.)
+        instead of a synthetic `GET /`. Callers without a request (the
+        original out-of-band use case) can omit it.
         """
         handler = self._status_handlers.get(exc.status_code) or self._find_exception_handler(
             type(exc)
         )
         if handler is not None:
-            from veloce.http.request import Request as _Req
+            if request is None:
+                from veloce.http.request import Request as _Req
 
-            req = _Req(method="GET", path="/", query_string="", headers={}, body=b"")
-            result = await self._call_exc_handler(handler, req, exc)
+                request = _Req(method="GET", path="/", query_string="", headers={}, body=b"")
+            result = await self._call_exc_handler(handler, request, exc)
             if isinstance(result, Response):
                 return result
             return self._coerce_response(result)
@@ -1109,21 +1127,27 @@ class Veloce(Router):
             trap_bad_request = True
         return bool(trap_bad_request) and 400 <= (exc.status_code or 0) < 500
 
-    async def handle_user_exception(self, exc: BaseException) -> Response:
+    async def handle_user_exception(
+        self, exc: BaseException, request: Request | None = None
+    ) -> Response:
         """Dispatch an arbitrary exception.
 
         `HTTPException` → `handle_http_exception`. Otherwise walks
         registered class handlers (MRO); on no match, logs via
-        `log_exception` and returns 500.
+        `log_exception` and returns 500. Pass `request=` to propagate
+        the real failing request to the registered handler; omit to
+        get a synthetic `GET /` for out-of-band callers (background
+        tasks, CLI hooks).
         """
         if isinstance(exc, HTTPException):
-            return await self.handle_http_exception(exc)
+            return await self.handle_http_exception(exc, request=request)
         handler = self._find_exception_handler(type(exc))
         if handler is not None:
-            from veloce.http.request import Request as _Req
+            if request is None:
+                from veloce.http.request import Request as _Req
 
-            req = _Req(method="GET", path="/", query_string="", headers={}, body=b"")
-            result = await self._call_exc_handler(handler, req, exc)
+                request = _Req(method="GET", path="/", query_string="", headers={}, body=b"")
+            result = await self._call_exc_handler(handler, request, exc)
             if isinstance(result, Response):
                 return result
             return self._coerce_response(result)
@@ -1817,6 +1841,8 @@ class Veloce(Router):
         # the lock; the locked check guarantees single-fire when concurrent
         # first requests race.
         if not self._first_request_fired and self._before_first_request_hooks:
+            if self._first_request_lock is None:
+                self._first_request_lock = asyncio.Lock()
             async with self._first_request_lock:
                 if not self._first_request_fired:
                     for hook in self._before_first_request_hooks:

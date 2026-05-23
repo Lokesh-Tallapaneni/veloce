@@ -90,7 +90,13 @@ class Session(dict[str, Any]):
 
     def update(self, *args: Any, **kwargs: Any) -> None:
         super().update(*args, **kwargs)
-        self.modified = True
+        # Skip the cookie re-write when the update actually changed nothing
+        # — a defensive `session.update(state.get("extras", {}))` call
+        # against an empty mapping should not force a Set-Cookie on every
+        # request.
+        has_input = bool(kwargs) or (bool(args) and bool(args[0]))
+        if has_input:
+            self.modified = True
 
     def __ior__(self, other: Any) -> Session:  # type: ignore[override,misc]
         # PEP 584 `|=` goes through the C-level merge, not `__setitem__`.

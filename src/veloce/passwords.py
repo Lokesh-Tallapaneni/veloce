@@ -141,6 +141,15 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
             n, r, p = int(n_str), int(r_str), int(p_str)
         except ValueError:
             return False
+        # Refuse to verify against attacker-controlled cost parameters
+        # that fall below the cost floor `hash_password` itself uses.
+        # A tampered hash with `N=2` would otherwise verify in
+        # microseconds, defeating scrypt's ~100 ms work floor and
+        # turning a database leak into a free-credentials oracle.
+        # `r` and `p` must also be positive — `hashlib.scrypt` would
+        # accept `r=0` and silently produce a degenerate derivation.
+        if n < _SCRYPT_N or r < _SCRYPT_R or p < _SCRYPT_P:
+            return False
         try:
             # Size maxmem based on the stored parameters so verifying a
             # legacy hash with different N/r/p still works.

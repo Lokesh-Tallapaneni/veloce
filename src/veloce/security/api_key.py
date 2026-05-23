@@ -20,7 +20,7 @@ class APIKeyHeader:
         key = request.headers.get(self.name)
         if key is None:
             if self.auto_error:
-                raise HTTPException(403, "Not authenticated")
+                raise HTTPException(401, "Not authenticated")
             return None
         return key
 
@@ -36,7 +36,7 @@ class APIKeyQuery:
         key = request.query_params.get(self.name)
         if key is None:
             if self.auto_error:
-                raise HTTPException(403, "Not authenticated")
+                raise HTTPException(401, "Not authenticated")
             return None
         return key
 
@@ -52,6 +52,6 @@ class APIKeyCookie:
         key = request.cookies.get(self.name)
         if key is None:
             if self.auto_error:
-                raise HTTPException(403, "Not authenticated")
+                raise HTTPException(401, "Not authenticated")
             return None
         return key

@@ -80,7 +80,13 @@ async def test_async_caller_supplied_etag_wins(tmp_path):
 async def test_async_etag_matches_sync_for_same_file(tmp_path):
     p = tmp_path / "a.txt"
     p.write_bytes(b"hello")
-    sync_e = FileResponse(str(p)).headers["ETag"]
+    # The sync `FileResponse(path)` constructor refuses to do a
+    # blocking `open()` on the event loop. Drive it through
+    # `asyncio.to_thread` so the same code path a CLI caller would
+    # hit (no loop in that thread) is exercised here.
+    import asyncio
+
+    sync_e = (await asyncio.to_thread(FileResponse, str(p))).headers["ETag"]
     async_e = (await FileResponse.from_path(str(p))).headers["ETag"]
     assert sync_e == async_e
 

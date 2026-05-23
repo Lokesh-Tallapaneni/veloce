@@ -131,13 +131,22 @@ def _encode_multipart(
     """
     import secrets
 
+    def _q(value: str) -> str:
+        # Per RFC 7578 §4.2 / RFC 2616 §2.2 quoted-string: escape `"` and
+        # `\`; reject embedded CR or LF which cannot be carried inside a
+        # quoted-string and would otherwise let a caller inject header
+        # fields into the multipart preamble.
+        if "\r" in value or "\n" in value:
+            raise ValueError("multipart name / filename must not contain CR or LF")
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
     boundary = "----veloce-" + secrets.token_hex(16)
     parts: list[bytes] = []
     b = boundary.encode("ascii")
 
     for name, value in fields.items():
         parts.append(b"--" + b + b"\r\n")
-        parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        parts.append(f'Content-Disposition: form-data; name="{_q(name)}"\r\n\r\n'.encode())
         parts.append(value.encode("utf-8") if isinstance(value, str) else value)
         parts.append(b"\r\n")
 
@@ -172,8 +181,8 @@ def _encode_multipart(
         parts.append(b"--" + b + b"\r\n")
         parts.append(
             (
-                f'Content-Disposition: form-data; name="{name}"; '
-                f'filename="{filename}"\r\n'
+                f'Content-Disposition: form-data; name="{_q(name)}"; '
+                f'filename="{_q(filename)}"\r\n'
                 f"Content-Type: {ct}\r\n\r\n"
             ).encode()
         )
@@ -212,7 +221,11 @@ def _build_scope(
         "method": method.upper(),
         "scheme": scheme,
         "path": path,
-        "raw_path": path.encode("ascii"),
+        # ASGI permits non-ASCII bytes in `raw_path` (UTF-8 is the only
+        # universally-decodable encoding for percent-decoded paths). Plain
+        # `path.encode("ascii")` would crash the moment a test reached a
+        # non-ASCII URL.
+        "raw_path": path.encode("utf-8"),
         "query_string": query_string.encode("ascii"),
         "root_path": root_path,
         "headers": raw_headers,
@@ -349,10 +362,12 @@ class TestClient:
         async def receive() -> dict[str, Any]:
             nonlocal body_sent
             if body_sent:
-                # Idle forever after the request is fully delivered. ASGI
-                # apps that try to read past end-of-body will await this
-                # coroutine; we never resolve it.
-                await asyncio.Event().wait()
+                # ASGI middleware that legitimately reads past end-of-body
+                # (introspection, fan-out, replay) should see a clean
+                # `http.disconnect` rather than hang forever on a
+                # never-set Event. The old behaviour leaked the coroutine
+                # and froze the test on the second receive.
+                return {"type": "http.disconnect"}
             body_sent = True
             return {"type": "http.request", "body": body, "more_body": False}
 
@@ -696,7 +711,7 @@ class _WebSocketSession:
                 "asgi": {"version": "3.0", "spec_version": "2.3"},
                 "scheme": "ws",
                 "path": ws_path,
-                "raw_path": ws_path.encode("ascii"),
+                "raw_path": ws_path.encode("utf-8"),
                 "query_string": ws_query.encode("ascii"),
                 "root_path": "",
                 "headers": scope_headers,
