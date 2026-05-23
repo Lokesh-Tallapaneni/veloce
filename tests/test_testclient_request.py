@@ -15,7 +15,7 @@ def _app() -> Veloce:
 
     @app.post("/p")
     async def p(request: Request):
-        return {"verb": "POST", "body": request.json()}
+        return {"verb": "POST", "body": await request.json()}
 
     @app.patch("/pa")
     async def pa():

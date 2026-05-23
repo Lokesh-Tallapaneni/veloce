@@ -52,7 +52,7 @@ def build_veloce():
     # other is not a fair comparison — see `.claude/rules/perf-changes.md`
     # on attribute-every-claimed-win.
     async def echo(request):
-        payload = request.json()
+        payload = await request.json()
         return {"len": len(payload) if isinstance(payload, dict) else 0}
 
     app.add_route("/", index, ["GET"])

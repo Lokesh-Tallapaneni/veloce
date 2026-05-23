@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veloceframework"
-version = "0.1.1"
+version = "0.1.2"
 description = "Ultra-fast async Python web framework — ASGI-native, batteries included"
 readme = "README.md"
 license = "MIT"
@@ -47,7 +47,18 @@ dependencies = [
     "multidict>=6.0.0",
     "python-multipart>=0.0.6",
     "httptools>=0.6.0",
+    "uvicorn[standard]>=0.23",
+    "jinja2>=3.1",
+    "click>=8.1",
 ]
+
+[project.optional-dependencies]
+# WebSocket apps need the `websockets` library — pull it in via
+# `pip install veloceframework[ws]`. Kept optional so REST-only deploys
+# do not download the WS implementation.
+ws = ["websockets>=12"]
+# Everything optional in one shot.
+all = ["websockets>=12"]
 
 [project.scripts]
 veloce = "veloce.cli:main"
@@ -59,14 +70,14 @@ Issues = "https://github.com/Lokesh-Tallapaneni/veloce/issues"
 Changelog = "https://github.com/Lokesh-Tallapaneni/veloce/blob/main/CHANGELOG.md"
 
 [dependency-groups]
+# Runtime deps (uvicorn, jinja2, click) are now in [project.dependencies]
+# so they're picked up by `pip install veloceframework` directly; the
+# dev group covers only test + lint + type-check tooling.
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
-    "uvicorn>=0.23",
-    "jinja2>=3.1",
     "ruff>=0.6",
     "mypy>=1.10",
-    "click>=8.1",
 ]
 docs = [
     "mkdocs-material>=9.5",

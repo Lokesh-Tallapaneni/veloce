@@ -470,7 +470,7 @@ class DependencyResolver:
                 continue
 
             if kind == K_BODY_MODEL:
-                kwargs[name] = self._resolve_body_model(slot, request)
+                kwargs[name] = await self._resolve_body_model(slot, request)
                 i += 1
                 continue
 
@@ -607,9 +607,9 @@ class DependencyResolver:
                 return False
         return True
 
-    def _resolve_body_model(self, slot: Any, request: Request) -> Any:
+    async def _resolve_body_model(self, slot: Any, request: Request) -> Any:
         try:
-            body_data = request.json()
+            body_data = await request.json()
             return slot.model.model_validate(body_data)
         except PydanticValidationError as e:
             raise RequestValidationError(
@@ -681,7 +681,7 @@ class DependencyResolver:
         elif mk == 3:  # MK_COOKIE
             raw = request.cookies.get(lookup)
         elif mk == 4:  # MK_BODY
-            body = request.json() if request.body else None
+            body = await request.json() if request.body else None
             # `Body(embed=True)` — the value lives under the param name
             # inside the JSON object, rather than being the whole body.
             if getattr(marker, "embed", False) and isinstance(body, dict):

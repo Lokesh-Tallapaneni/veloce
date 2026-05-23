@@ -28,6 +28,15 @@ from veloce.blueprints import Blueprint
 # Static files
 from veloce.contrib.staticfiles import StaticFiles
 
+# Templating — Flask-style top-level shortcuts. The full Jinja2Templates
+# class stays under veloce.contrib.templating for callers that want the
+# class-based API.
+from veloce.contrib.templating import (
+    Jinja2Templates,
+    render_template,
+    render_template_string,
+)
+
 # Dependency injection
 from veloce.dependency import Depends, Security, SecurityScopes
 
@@ -168,7 +177,17 @@ from veloce.watchdog import EventLoopWatchdog
 # WebSocket
 from veloce.websocket import WebSocket
 
-__version__ = "0.1.0"
+try:
+    from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("veloceframework")
+    del _pkg_version, _PackageNotFoundError
+except Exception:
+    # Editable install before metadata is materialised, or an
+    # unsupported runtime. Fall back to a hand-maintained constant so
+    # `veloce.__version__` is never undefined.
+    __version__ = "0.1.2"
 
 # some users reach for `APIRouter`; it is the same primitive as
 # Veloce's `Blueprint` (a mountable group of routes + hooks).
@@ -278,6 +297,10 @@ __all__ = [
     "has_app_context",
     "has_request_context",
     "stream_with_context",
+    # Templating
+    "Jinja2Templates",
+    "render_template",
+    "render_template_string",
     # HTML-safe strings
     "Markup",
     "escape",

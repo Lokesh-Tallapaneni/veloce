@@ -204,8 +204,18 @@ class Request:
         """
         return self._path_params
 
-    def json(self) -> Any:
-        """Parse JSON body using orjson (3-10x faster than stdlib json)."""
+    async def json(self) -> Any:
+        """Parse the request body as JSON, async to match Starlette / FastAPI / Quart.
+
+        Veloce buffers the body at construction time, so no I/O actually
+        happens inside the await — the coroutine resolves immediately
+        with the cached parse. The async signature exists so the
+        `await request.json()` idiom Starlette and FastAPI callers
+        reach for first does not blow up at runtime.
+
+        For Flask muscle-memory call `request.get_json()` instead — that
+        remains synchronous to match Flask's `Request.get_json`.
+        """
         if self._json is None:
             self._json = orjson.loads(self.body) if self.body else None
         return self._json

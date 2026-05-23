@@ -26,7 +26,7 @@ def _app() -> Veloce:
 
     @app.post("/echo")
     async def echo(request: Request):
-        return {"received": request.json()}
+        return {"received": await request.json()}
 
     @app.post("/form")
     async def form(request: Request):
