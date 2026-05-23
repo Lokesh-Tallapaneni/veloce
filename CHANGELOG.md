@@ -6,6 +6,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-23
+
+First post-release iteration. Closes four rough edges surfaced by the
+end-to-end smoke test of the published `veloceframework==0.1.1` wheel.
+
+### Changed
+
+- **`Request.json()` is now `async`** (#74). Previous releases shipped
+  `json()` as a synchronous method while `form()` was already `async`;
+  the asymmetry broke the `await request.json()` idiom Starlette,
+  FastAPI, and Quart callers reach for first. Migration: any call site
+  that wrote `request.json()` now writes `await request.json()`. The
+  Flask-flavoured `request.get_json()` stays synchronous so Flask
+  muscle-memory continues to work.
+- `pyproject.toml` runtime dependencies extended with `uvicorn[standard]`,
+  `jinja2`, and `click` (#77). They were declared only in the dev
+  dependency group on 0.1.1, so a fresh `pip install veloceframework`
+  left users without `uvicorn` on the path and without `jinja2` for the
+  templating helpers the docs point at. WebSocket support stays opt-in
+  through the new `veloceframework[ws]` extra (`pip install
+  veloceframework[ws]`) so REST-only deploys do not pull the
+  `websockets` library.
+- `veloce.__version__` is now derived from package metadata via
+  `importlib.metadata.version("veloceframework")` (#75), with a literal
+  fallback for editable installs without materialised metadata. The
+  hand-maintained constant in `__init__.py` could and did drift from
+  the wheel's `pyproject.toml` version (`0.1.0` vs `0.1.1` on the
+  previous release); deriving from metadata makes the two impossible
+  to disagree.
+
+### Added
+
+- `render_template`, `render_template_string`, and `Jinja2Templates`
+  are now exported from the top-level `veloce` package (#76). The
+  helpers always lived under `veloce.contrib.templating`; surfacing
+  them at the root matches the Flask muscle-memory that the rest of
+  the Veloce API preserves (`g`, `flash`, `current_app`,
+  `before_request`, `redirect`, `make_response`, `abort`, `url_for`).
+
 ## [0.1.1] - 2026-05-23
 
 Metadata-only release. No code, behaviour, or dependency changes

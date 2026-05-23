@@ -120,7 +120,7 @@ async def api_status(request: Request):
 
 @api_v2.post("/echo")
 async def echo(request: Request):
-    body = request.json()
+    body = await request.json()
     return {"echo": body}
 
 
