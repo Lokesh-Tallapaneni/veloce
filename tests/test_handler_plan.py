@@ -301,3 +301,15 @@ def test_partial_dependency_resolves_wrapped_annotations():
         return data
 
     assert app.test_client().get("/p?page=7").json() == {"page": 7, "page_type": "int"}
+
+
+def test_response_import_is_module_level_in_dependency():
+    """P-3: the `Response` symbol must be bound on the dependency
+    module at import time. The previous inline `from veloce.http.response
+    import Response` inside `_resolve_slots` paid an import-system
+    lookup on every request whose handler injected a Response."""
+    import veloce.dependency as dep
+    from veloce.http.response import Response
+
+    assert hasattr(dep, "Response")
+    assert dep.Response is Response

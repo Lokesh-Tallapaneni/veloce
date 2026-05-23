@@ -225,11 +225,22 @@ class WebSocket:
 
         Pass a single origin string or an iterable of allowed origins
         (e.g. `["https://app.example.com", "https://admin.example.com"]`).
-        Exact match — origins are case-insensitive on scheme/host per
-        RFC 6454 §4, so both sides are lowercased before comparison.
-        A missing `Origin` header returns `False`; if your protocol
-        wants to allow non-browser clients (no `Origin`), check
-        `ws.origin is None` separately.
+        Normalisation matches `WebSocketOriginMiddleware`: each side is
+        lowercased *and* has any trailing slash stripped, so allow-lists
+        written for one API are interchangeable with the other.
+
+        - **Wildcard.** `"*"` in `allowed` accepts any origin and is the
+          opt-in "I have my own check elsewhere" escape hatch — the
+          symmetric behaviour to `WebSocketOriginMiddleware`'s
+          `allowed_origins=["*"]`.
+        - **Missing `Origin`** (no header at all, or a literal
+          `Origin: null` from a sandboxed iframe / `file://` page) is
+          a non-match and returns `False`. Non-browser clients
+          legitimately omit the header — if you want to allow them,
+          branch on `ws.origin is None` explicitly. The
+          `WebSocketOriginMiddleware` middleware path also offers an
+          `allow_missing=True` switch; this in-handler helper is
+          deliberately strict-by-default.
 
         Usage:
             @app.websocket("/ws")
@@ -239,14 +250,21 @@ class WebSocket:
                     return
                 await ws.accept()
                 ...
+
+        For the middleware-style check (registered once, runs before
+        the handler) reach for `veloce.SecurityHeadersMiddleware`'s
+        sibling `WebSocketOriginMiddleware`.
         """
-        origin = self.origin
-        if origin is None:
+        allowed_set = frozenset((allowed,)) if isinstance(allowed, str) else frozenset(allowed)
+        # Wildcard short-circuit — accept anything, including a missing
+        # `Origin`. Matches the middleware's `_allow_all` branch.
+        if "*" in allowed_set:
+            return True
+        if self.origin is None or self.origin == "null":
             return False
-        origin_lc = origin.lower()
-        if isinstance(allowed, str):
-            return origin_lc == allowed.lower()
-        return origin_lc in {a.lower() for a in allowed}
+        origin_norm = self.origin.rstrip("/").lower()
+        normalised = {a.rstrip("/").lower() for a in allowed_set}
+        return origin_norm in normalised
 
     @property
     def requested_subprotocols(self) -> list[str]:
@@ -388,7 +406,14 @@ class WebSocket:
         `websocket.disconnect` message raises `WebSocketDisconnect`.
         ASGI-mode only — raw asyncio-transport connections don't carry
         ASGI message envelopes.
+
+        The same handshake state machine the typed `receive_*` helpers
+        enforce: the raw escape hatch must not be a way around
+        receive-before-accept or receive-after-close (which would
+        consume the `websocket.connect` envelope and corrupt the next
+        `accept()`).
         """
+        self._check_can_receive("receive")
         if not self._is_asgi:
             raise RuntimeError(
                 "WebSocket.receive() is ASGI-mode only; use receive_text/"

@@ -21,8 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/bench/README.md`).
 - `WebSocket.origin` accessor returns the handshake `Origin` header
   (or `None`); `WebSocket.check_origin(allowed)` returns `True` only
-  when the origin is on the allow-list (case-insensitive scheme/host
-  comparison per RFC 6454 §4). The two together let handlers reject
+  when the origin is on the allow-list. Normalisation
+  (`.rstrip("/").lower()`) and wildcard (`"*"`) semantics match the
+  registered-once `WebSocketOriginMiddleware`, so allow-lists are
+  interchangeable between the two APIs. `Origin: null` (sandboxed
+  iframes / `file://`) is rejected. The pair lets handlers reject
   Cross-Site WebSocket Hijacking before `accept()` — the WebSocket
   handshake is plain HTTP, so Same-Origin Policy and CORS do not apply.
 - **Application core** — `Veloce` app object with HTTP method decorators
