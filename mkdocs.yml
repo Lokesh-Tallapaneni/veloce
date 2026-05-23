@@ -57,7 +57,7 @@ extra:
       link: https://github.com/Lokesh-Tallapaneni/veloce
       name: Veloce on GitHub
     - icon: fontawesome/brands/python
-      link: https://pypi.org/project/veloce/
+      link: https://pypi.org/project/veloceframework/
       name: Veloce on PyPI
 
 markdown_extensions:
