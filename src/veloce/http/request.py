@@ -117,7 +117,7 @@ class Request:
         ):
             # ASGI raw `(bytes, bytes)` tuples — defer decode + Headers build.
             self._headers = None
-            self._headers_raw = headers  # type: ignore[assignment]
+            self._headers_raw = headers
         elif isinstance(headers, list) and not headers:
             # Empty list — cheap to materialize, no point deferring.
             self._headers = Headers()
@@ -159,7 +159,7 @@ class Request:
 
     @headers.setter
     def headers(self, value: Headers | dict[str, str] | list[tuple[str, str]]) -> None:
-        self._headers = value if isinstance(value, Headers) else Headers(value)  # type: ignore[arg-type]
+        self._headers = value if isinstance(value, Headers) else Headers(value)
         self._headers_raw = None
 
     @property

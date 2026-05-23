@@ -753,6 +753,14 @@ class DependencyResolver:
                 # Override targets that aren't weak-referenceable (some
                 # C-level callables) silently skip caching — re-probing
                 # is fine, leaking the entry is not.
+                # Before the first write, replace the shared module-level
+                # sentinel with a per-resolver `WeakKeyDictionary`. Without
+                # this swap, a resolver constructed outside the dispatcher
+                # (tests, direct callers — see `__init__` docstring) would
+                # mutate the sentinel and silently accumulate plans
+                # process-globally across unrelated callers.
+                if self._override_subplans is _EMPTY_OVERRIDE_SUBPLANS:
+                    self._override_subplans = weakref.WeakKeyDictionary()
                 with contextlib.suppress(TypeError):
                     self._override_subplans[actual] = entry
             sub_plan, is_coro, is_gen, is_async_gen = entry
