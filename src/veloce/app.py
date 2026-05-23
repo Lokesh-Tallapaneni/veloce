@@ -206,7 +206,12 @@ class Veloce(Router):
         self._exception_handlers: dict[type, Callable] = {}
         self._status_handlers: dict[int, Callable] = {}
         # Cached `_find_exception_handler` MRO walks; invalidated on
-        # any `register_error_handler` call.
+        # any `register_error_handler` call. The cache assumes the
+        # exception-type space is bounded — typical applications raise
+        # a fixed set of exception classes, so it never grows beyond a
+        # few dozen entries. An app that synthesises new exception
+        # classes per request would grow this unboundedly; not a target
+        # workload.
         self._exc_handler_cache: dict[type, Callable | None] = {}
         # `exception_handlers=` ctor mapping — keys are
         # exception classes or integer status codes.

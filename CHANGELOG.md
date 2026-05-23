@@ -270,6 +270,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cutting intermediate string allocations.
 - `StaticFiles` directory listing reads `is_dir` from `os.scandir`'s
   cached dirent — saves a per-entry `os.path.isdir` syscall.
+  Behaviour note: symlinks inside a listed directory are now classified
+  via the symlink itself, not its target — a symlink to a subdirectory
+  renders as a plain entry rather than a directory entry. This avoids
+  advertising symlink targets in the listing and matches the
+  symlink-safety stance the static handler already takes.
 - `Response.encode()` no longer rebuilds the header dict on every
   response: the three framework defaults (`Content-Type`,
   `Content-Length`, `Connection`) are emitted inline only when the
