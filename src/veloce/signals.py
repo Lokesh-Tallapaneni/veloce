@@ -150,7 +150,10 @@ class Signal:
 
     def has_receivers_for(self, sender: Any = None) -> bool:
         """`True` if any connected receiver would fire for `sender`."""
-        for sub_sender, ref, is_weak in self._subs:
+        subs = self._subs
+        if not subs:
+            return False
+        for sub_sender, ref, is_weak in subs:
             target = ref() if is_weak else ref
             if target is None:
                 continue

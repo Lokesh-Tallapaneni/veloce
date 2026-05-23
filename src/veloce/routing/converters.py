@@ -82,7 +82,7 @@ class FloatConverter(_Converter):
             return False, None
         # the float converter rejects "nan"/"inf" and scientific
         # notation; require a '.' to make this a clear float vs int.
-        if "." not in value and "e" not in value.lower():
+        if "." not in value and "e" not in value and "E" not in value:
             return False, None
         try:
             f = float(value)

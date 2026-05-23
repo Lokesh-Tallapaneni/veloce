@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 
 from veloce.http.request import Request
 from veloce.http.response import Response
@@ -60,8 +61,7 @@ class RateLimitMiddleware(Middleware):
     def __init__(self, max_requests: int = 100, window_seconds: int = 60) -> None:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self._buckets: dict[str, list[float]] = {}
-        # Timestamp of the last full eviction sweep — see `process_request`.
+        self._buckets: dict[str, deque[float]] = {}
         self._last_sweep = time.monotonic()
 
     async def process_request(self, request: Request) -> Response | None:
@@ -69,21 +69,27 @@ class RateLimitMiddleware(Middleware):
         now = time.monotonic()
         cutoff = now - self.window_seconds
 
-        # Periodic eviction: at most once per window, drop every bucket
-        # whose most recent timestamp has aged out. Without this the dict
-        # grows for the lifetime count of unique client IPs — an unbounded
-        # memory leak in a long-running, internet-facing deployment.
+        # Periodic eviction sweep — bounded memory across unique client IPs.
+        # The stale list is captured before deletion because mutating a
+        # dict mid-iteration is a RuntimeError; no `await` runs between
+        # the comprehension and the delete loop, so cooperative
+        # interleaving cannot drop an append.
         if now - self._last_sweep >= self.window_seconds:
-            self._buckets = {
-                ip: stamps for ip, stamps in self._buckets.items() if stamps and stamps[-1] > cutoff
-            }
+            stale = [
+                ip for ip, stamps in self._buckets.items() if not stamps or stamps[-1] <= cutoff
+            ]
+            for ip in stale:
+                del self._buckets[ip]
             self._last_sweep = now
 
-        if client not in self._buckets:
-            self._buckets[client] = []
+        bucket = self._buckets.get(client)
+        if bucket is None:
+            bucket = deque()
+            self._buckets[client] = bucket
 
-        self._buckets[client] = [t for t in self._buckets[client] if t > cutoff]
-        bucket = self._buckets[client]
+        # Amortized O(1) eviction — popleft until the oldest stamp is fresh.
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
 
         if len(bucket) >= self.max_requests:
             return Response(

@@ -422,16 +422,24 @@ class Router:
             if not result.trailing_slash and request_has_slash and result.handlers:
                 return None
 
-        method_upper = method.upper()
-        handler_info = result.handlers.get(method_upper)
-        # RFC 9110 §9.3.2: HEAD is semantically identical to GET except
-        # the response carries no body. If no explicit HEAD is registered,
-        # fall back to the GET handler — the dispatcher strips the body
-        # on the way out.
-        if handler_info is None and method_upper == "HEAD":
-            handler_info = result.handlers.get("GET")
+        # Handlers are stored uppercase — RFC-conforming clients send the
+        # method already uppercased, so try the raw form first and only
+        # uppercase on miss. `.isupper()` is the right guard: CPython does
+        # not promise identity for `str.upper()` even when the input is
+        # already uppercase, so an `is`-based shortcut would be a lie.
+        handler_info = result.handlers.get(method)
         if handler_info is None:
-            return None
+            if method.isupper():
+                method_upper = method
+            else:
+                method_upper = method.upper()
+                handler_info = result.handlers.get(method_upper)
+            # RFC 9110 §9.3.2: HEAD falls back to GET; the dispatcher
+            # strips the body on the way out.
+            if handler_info is None and method_upper == "HEAD":
+                handler_info = result.handlers.get("GET")
+            if handler_info is None:
+                return None
 
         return RouteMatch(route_info=handler_info, path_params=params)
 
@@ -439,12 +447,25 @@ class Router:
         self, node: RadixNode, segments: list[str], idx: int, params: dict[str, Any]
     ) -> RadixNode | None:
         """Recursive radix tree traversal with per-converter validation."""
-        if idx == len(segments):
+        # Flatten static-only descent — when the current node has no
+        # alternative branches to backtrack into, recursing per static
+        # segment burns one Python frame per hop for no gain.
+        seg_count = len(segments)
+        while idx < seg_count and not node.param_children and node.wildcard_child is None:
+            static_child = node.static_children.get(segments[idx])
+            if static_child is None:
+                return None
+            node = static_child
+            idx += 1
+
+        if idx == seg_count:
             return node if node.handlers else None
 
         seg = segments[idx]
 
-        # Try static match first (fastest path) — O(1) dict lookup.
+        # Try static match first (fastest path) — O(1) dict lookup. We can
+        # still get here when alternative param/wildcard branches exist on
+        # this node, so the recursion preserves backtracking semantics.
         static_child = node.static_children.get(seg)
         if static_child is not None:
             result = self._match_node(static_child, segments, idx + 1, params)
@@ -453,7 +474,15 @@ class Router:
 
         # Try param match — each candidate validates the segment via its
         # converter. Greedy converters (path) consume the remainder in one go.
-        for child in node.param_children:
+        # When this node has exactly one param child, a failed inner match
+        # has no alternative to back off to, so the rollback `del` is moot.
+        # Invariant: `params` is owned by the top-level `match()` call and
+        # discarded when traversal returns None, so any leaked key is
+        # confined to that throwaway dict. Sharing `params` across sibling
+        # subtrees in a future refactor would break this assumption.
+        param_children = node.param_children
+        single_param = len(param_children) == 1
+        for child in param_children:
             converter = child.converter
             assert converter is not None  # always set in add_route
             if converter.greedy:
@@ -462,7 +491,6 @@ class Router:
                 if ok and child.handlers:
                     params[child.param_name] = coerced  # type: ignore[index]
                     return child
-                # Greedy match either succeeds and terminates, or skip this child.
                 continue
             ok, coerced = converter.match(seg)
             if not ok:
@@ -471,7 +499,8 @@ class Router:
             result = self._match_node(child, segments, idx + 1, params)
             if result is not None:
                 return result
-            del params[child.param_name]  # type: ignore[arg-type]
+            if not single_param:
+                del params[child.param_name]  # type: ignore[arg-type]
 
         # Try wildcard (legacy `*` syntax — kept for back-compat).
         if node.wildcard_child is not None:
