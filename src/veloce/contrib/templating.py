@@ -92,7 +92,7 @@ class Jinja2Templates:
     def __init__(
         self,
         directory: str = "templates",
-        auto_reload: bool = True,
+        auto_reload: bool | None = None,
         autoescape: Any = None,
     ) -> None:
         try:
@@ -106,22 +106,42 @@ class Jinja2Templates:
         # explicit `autoescape=` to override (bool or callable).
         if autoescape is None:
             autoescape = select_autoescape(["html", "htm", "xhtml", "xml"])
+        # `auto_reload=None` (the default) tracks the bound app's `debug`
+        # flag at render time — on in development, off in production,
+        # where the per-render template `stat` is pure overhead. Pass an
+        # explicit `True`/`False` to pin it. The Environment starts
+        # `auto_reload=True` so standalone (no-app) rendering still
+        # hot-reloads.
+        self._auto_reload = auto_reload
+        initial_reload = auto_reload if auto_reload is not None else True
         # `enable_async=False` so `Template.render(...)` is plain sync —
         # required because `TemplateResponse` is invoked inside an
         # already-running event loop, and `render` with `enable_async=True`
         # would `asyncio.run()` internally and crash.
         self.env = Environment(
             loader=FileSystemLoader(directory),
-            auto_reload=auto_reload,
+            auto_reload=initial_reload,
             enable_async=False,
             autoescape=autoescape,
         )
         # Lazily-built async-enabled twin used by `render_async`. Built
         # on first use so apps that never render async pay nothing.
         self._async_directory = directory
-        self._async_auto_reload = auto_reload
+        self._async_auto_reload = initial_reload
         self._async_autoescape = autoescape
         self._async_env: Any = None
+
+    def _apply_auto_reload(self, env: Any) -> None:
+        """When `auto_reload` was left unset, track the bound app's
+        `debug` flag — production (`debug=False`) skips the per-render
+        template `stat`. Explicit settings are left untouched."""
+        if self._auto_reload is not None:
+            return
+        from veloce.helpers import _current_app_var
+
+        app = _current_app_var.get()
+        if app is not None:
+            env.auto_reload = bool(getattr(app, "debug", False))
 
     def TemplateResponse(
         self,
@@ -131,6 +151,7 @@ class Jinja2Templates:
         headers: dict[str, str] | None = None,
     ) -> HTMLResponse:
         """Render a template and return as HTMLResponse."""
+        self._apply_auto_reload(self.env)
         _sync_app_jinja_helpers(self.env)
         template = self.env.get_template(name)
         merged = _gather_context_processors(context)
@@ -144,6 +165,7 @@ class Jinja2Templates:
         `render_template(name, **ctx)` helper can plug in
         without building an HTMLResponse around the result.
         """
+        self._apply_auto_reload(self.env)
         _sync_app_jinja_helpers(self.env)
         template = self.env.get_template(name)
         merged = _gather_context_processors(context or {})
@@ -151,6 +173,7 @@ class Jinja2Templates:
 
     def render_string(self, source: str, context: dict[str, Any]) -> str:
         """Render a template from string."""
+        self._apply_auto_reload(self.env)
         _sync_app_jinja_helpers(self.env)
         template = self.env.from_string(source)
         merged = _gather_context_processors(context)
@@ -173,6 +196,7 @@ class Jinja2Templates:
                 enable_async=True,
                 autoescape=self._async_autoescape,
             )
+        self._apply_auto_reload(self._async_env)
         _sync_app_jinja_helpers(self._async_env)
         template = self._async_env.get_template(name)
         merged = _gather_context_processors(context or {})
