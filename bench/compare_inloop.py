@@ -131,10 +131,16 @@ async def amain(iters: int, warmup: int) -> None:
     await lifespan_startup(veloce_app)
     await lifespan_startup(fastapi_app)
 
+    # A valid JSON dict body (~64 bytes) so both handlers traverse their
+    # success path — `request.json()` on the Veloce side, Pydantic body
+    # validation + `dict` injection on the FastAPI side. A raw `b"x" * 64`
+    # parses as invalid JSON and would route both sides into their
+    # exception pipelines instead of the steady-state POST dispatch.
+    json_body = b'{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}'
     workloads = [
         ("static GET     ", "GET", "/", b""),
         ("path-param GET ", "GET", "/items/42", b""),
-        ("POST 64 body   ", "POST", "/echo", b"x" * 64),
+        ("POST JSON body ", "POST", "/echo", json_body),
     ]
 
     print(f"in-loop ASGI bench — {iters} iters, {warmup} warmup")
