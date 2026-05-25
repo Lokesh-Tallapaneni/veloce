@@ -46,7 +46,7 @@ class Config(dict[str, Any]):
         Seeded into `app.config` at construction so reads never raise
         `KeyError`. Values are the documented defaults; veloce-specific
         behaviour reads several of these (`MAX_CONTENT_LENGTH`,
-        `JSON_SORT_KEYS`, `PROPAGATE_EXCEPTIONS`, `TRAP_HTTP_EXCEPTIONS`).
+        `JSON_SORT_KEYS`, `PROPAGATE_EXCEPTIONS`).
         """
         return {
             "DEBUG": False,
@@ -67,9 +67,8 @@ class Config(dict[str, Any]):
             "JSON_SORT_KEYS": True,
             "JSONIFY_PRETTYPRINT_REGULAR": False,
             "PROPAGATE_EXCEPTIONS": None,
-            "TRAP_HTTP_EXCEPTIONS": False,
-            "TRAP_BAD_REQUEST_ERRORS": None,
             "SEND_FILE_MAX_AGE_DEFAULT": None,
+            "REQUEST_HANDLER_TIMEOUT": 30,
         }
 
     @staticmethod
@@ -79,7 +78,7 @@ class Config(dict[str, Any]):
             return False
         if not ("A" <= name[0] <= "Z"):
             return False
-        return all(c.isupper() or c.isdigit() or c == "_" for c in name)
+        return all(("A" <= c <= "Z") or c.isdigit() or c == "_" for c in name)
 
     # ── from_mapping ─────────────────────────────────────────────────
 
@@ -249,7 +248,7 @@ class Config(dict[str, Any]):
         filename: str,
         load: Callable[[Any], Mapping[str, Any]] = _orjson_load,
         silent: bool = False,
-        text: bool = True,
+        text: bool = False,
     ) -> bool:
         """Load any structured file (JSON, TOML via `tomllib.load`, YAML …).
 

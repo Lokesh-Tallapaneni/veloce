@@ -13,8 +13,10 @@ from typing import Any
 
 import orjson
 
+from veloce._internal import _reject_header_crlf
 from veloce.exceptions import WebSocketDisconnect
-from veloce.http.response import _reject_header_crlf
+from veloce.http.cookies import parse_cookie
+from veloce.http.datastructures import Address, QueryParams, State
 
 
 class WebSocketState(enum.IntEnum):
@@ -74,6 +76,8 @@ class WebSocket:
         self.scope: dict | None = None
         self.path: str = ""
         self.path_params: dict[str, Any] = {}
+        self._query_params: Any = None
+        self._cookies: dict[str, str] | None = None
 
     @classmethod
     def from_asgi(
@@ -99,9 +103,7 @@ class WebSocket:
         ws.headers = headers
         ws._accepted = False
         ws._closed = False
-        # Bounded — even though ASGI mode never feeds this queue, an
-        # unbounded queue is a footgun if any future change starts pushing.
-        ws._receive_queue = asyncio.Queue(maxsize=cls.DEFAULT_RECV_QUEUE_MAXSIZE)
+        ws._receive_queue = None  # type: ignore[assignment]
         ws._frag_opcode = None  # unused in ASGI mode (no raw frame parsing)
         ws._frag_buffer = bytearray()
         ws._asgi_receive = receive
@@ -109,6 +111,8 @@ class WebSocket:
         ws.scope = scope
         ws.path = scope.get("path", "")
         ws.path_params = {}
+        ws._query_params = None
+        ws._cookies = None
         return ws
 
     @property
@@ -123,13 +127,14 @@ class WebSocket:
         `QueryParams` (multi-value, `getlist`-aware). Empty when the
         scope carries no `query_string`.
         """
-        from veloce.http.datastructures import QueryParams
-
+        if self._query_params is not None:
+            return self._query_params
         raw = b""
         if self.scope:
             raw = self.scope.get("query_string", b"") or b""
         qs = raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
-        return QueryParams.from_query_string(qs)
+        self._query_params = QueryParams.from_query_string(qs)
+        return self._query_params
 
     @property
     def url(self) -> str:
@@ -150,8 +155,6 @@ class WebSocket:
         Reads `scope["client"]` (the ASGI `(host, port)` pair).
         Returns `None` when the scope carries no client info.
         """
-        from veloce.http.request import Address
-
         client = self.scope.get("client") if self.scope else None
         if client:
             return Address(client[0], client[1])
@@ -164,8 +167,6 @@ class WebSocket:
         Lazily-created `State` (a dict subclass) supporting both
         `ws.state.user = ...` attribute access and `ws.state["user"]`.
         """
-        from veloce.http.request import State
-
         existing = getattr(self, "_state", None)
         if existing is None:
             existing = State()
@@ -179,9 +180,10 @@ class WebSocket:
         Parses the handshake `Cookie` header into `{name: value}`.
         Empty when no cookie header was present.
         """
-        from veloce.http.cookies import parse_cookie
-
-        return parse_cookie(self.headers.get("cookie", ""))
+        if self._cookies is not None:
+            return self._cookies
+        self._cookies = parse_cookie(self.headers.get("cookie", ""))
+        return self._cookies
 
     @property
     def application_state(self) -> WebSocketState:
@@ -491,8 +493,6 @@ class WebSocket:
         Terminates cleanly on `WebSocketDisconnect`. Other exceptions
         propagate.
         """
-        from veloce.exceptions import WebSocketDisconnect
-
         try:
             while True:
                 yield await self.receive_text()
@@ -501,8 +501,6 @@ class WebSocket:
 
     async def iter_bytes(self) -> Any:
         """Async-iterate over incoming binary frames until the peer closes."""
-        from veloce.exceptions import WebSocketDisconnect
-
         try:
             while True:
                 yield await self.receive_bytes()
@@ -511,8 +509,6 @@ class WebSocket:
 
     async def iter_json(self) -> Any:
         """Async-iterate over incoming JSON-decoded frames until peer closes."""
-        from veloce.exceptions import WebSocketDisconnect
-
         try:
             while True:
                 yield await self.receive_json()

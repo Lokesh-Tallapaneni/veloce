@@ -113,7 +113,7 @@ class Signal:
         """
         for i, (sub_sender, ref, is_weak) in enumerate(self._subs):
             target = ref() if is_weak else ref
-            if target is not receiver:
+            if target != receiver:
                 continue
             if sender is ANY_SENDER:
                 # "Detach any subscription for this receiver."

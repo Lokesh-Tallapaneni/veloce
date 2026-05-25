@@ -1,14 +1,23 @@
-"""HTTP and validation exceptions.
+"""HTTP and validation exceptions, plus default exception handlers.
 
 Each named HTTP exception below corresponds to a status code from RFC 9110
 (HTTP Semantics) and RFC 6585 (Additional HTTP Status Codes). The subclass
 identity lets handlers register a single class and catch every subclass via
 the standard Python exception-class hierarchy.
+
+The two default handler functions at the end of this module render
+``HTTPException`` and ``RequestValidationError`` as JSON responses.
+Applications can wrap or delegate to them when registering custom handlers.
 """
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from veloce.http.response import JSONResponse
+
+if TYPE_CHECKING:
+    from veloce.http.response import Response
 
 
 class HTTPException(Exception):
@@ -83,42 +92,6 @@ class Forbidden(HTTPException):
 class NotFound(HTTPException):
     code = 404
     description = "Not Found"
-
-
-class Aborter:
-    """A callable that turns a status code into an HTTPException.
-
-    Used as `app.aborter(404)` or `app.aborter(403, "Forbidden")`.
-    The mapping from status code to exception class is configurable
-    by subclass — override `mapping` to add custom exception classes.
-    Identical to the module-level `abort()` helper in behaviour, but
-    expressed as an instance so subclasses can override the mapping
-    without monkey-patching the helper.
-    """
-
-    mapping: dict[int, type] = {}  # populated below after subclass defs
-
-    def __init__(self, extra_mapping: dict[int, type] | None = None) -> None:
-        # Per-instance overlay on top of the class-level mapping.
-        self._mapping: dict[int, type] = {}
-        if extra_mapping:
-            self._mapping.update(extra_mapping)
-
-    def __call__(
-        self,
-        code: int,
-        detail: str = "",
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        if not detail:
-            from http import HTTPStatus
-
-            try:
-                detail = HTTPStatus(code).phrase
-            except ValueError:
-                detail = "Error"
-        cls = self._mapping.get(code) or self.mapping.get(code) or exception_for_status(code)
-        raise cls(status_code=code, detail=detail, headers=headers)
 
 
 class MethodNotAllowed(HTTPException):
@@ -357,3 +330,40 @@ def exception_for_status(status_code: int) -> type[HTTPException]:
     registered against the subclass match.
     """
     return _BY_CODE.get(status_code, HTTPException)
+
+
+# ── Default exception handlers ──────────────────────────────────────
+
+
+async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
+    """Render an ``HTTPException`` as a JSON ``{"detail": ...}`` response.
+
+    Honours ``exc.status_code``, ``exc.detail`` (falling back to the
+    subclass description), and ``exc.headers``.
+    """
+    status = exc.status_code or 500
+    detail = exc.detail or getattr(exc, "description", "") or "Error"
+    return JSONResponse(
+        {"detail": detail},
+        status_code=status,
+        headers=dict(exc.headers) if getattr(exc, "headers", None) else None,
+    )
+
+
+async def request_validation_exception_handler(
+    request: Any, exc: RequestValidationError
+) -> Response:
+    """Render a ``RequestValidationError`` as a 422 with the error list.
+
+    Uses the structured shape ``{"detail": [ ...per-field errors... ]}``.
+    """
+    return JSONResponse({"detail": exc.errors or []}, status_code=422)
+
+
+# Backward-compat re-export — Aborter moved to veloce.helpers.
+def __getattr__(name: str) -> Any:
+    if name == "Aborter":
+        from veloce.helpers import Aborter
+
+        return Aborter
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

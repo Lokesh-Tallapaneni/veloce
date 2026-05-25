@@ -13,7 +13,7 @@
 
 ---
 
-**Documentation:** <https://veloceframework.com>
+**Documentation:** [veloceframework.com](https://veloceframework.com)
 
 **Source code:** <https://github.com/Lokesh-Tallapaneni/veloce>
 
@@ -24,7 +24,11 @@ request/response pipeline, dependency injection system, OpenAPI
 generator, WebSocket layer, and test client are all in-tree — not
 wrappers around an existing stack.
 
-Key design points:
+## Position
+
+Veloce is a from-scratch async Python web framework — not a wrapper around Starlette, FastAPI, or Flask. It provides FastAPI-style typed dependency injection, Pydantic v2 request/response validation, OpenAPI 3.1 schema generation, WebSocket support, and Flask-compatible helpers (g, flash, blueprints, session) in a single tree. Production-ready with a radix-tree router, an in-memory test client, and built-in CORS/CSRF/session/rate-limit/security-headers middleware.
+
+## Key design points
 
 * **Async-only handlers.** No sync fallback; every request runs on the
   event loop.

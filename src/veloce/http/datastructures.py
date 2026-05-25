@@ -8,15 +8,55 @@ the `getlist` alias on top of multidict's native `getall`.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import io
-import tempfile
 from collections.abc import Mapping
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, NamedTuple
+from urllib.parse import parse_qsl
 
 from multidict import CIMultiDict, MultiDict
-from python_multipart import MultipartParser
-from python_multipart.exceptions import FormParserError
+
+
+class Address(NamedTuple):
+    """Client/server address — ASGI shape.
+
+    A two-field named tuple so `request.client.host` /
+    `request.client.port` work, while `host, port = request.client`
+    unpacking also works (tuple semantics).
+    """
+
+    host: str
+    port: int
+
+
+class State(dict):
+    """Per-request scratch namespace — supports both styles.
+
+    ASGI servers expose `request.state` for attribute-style
+    storage (`request.state.user = ...`). Veloce's dispatcher also
+    stashes framework internals (`session`, `url_rule`, …) here by
+    key. `State` is a `dict` subclass whose attribute access maps to
+    items, so `state.user` and `state["user"]` / `state.get("user")`
+    are interchangeable — neither call site needs to know the other.
+    """
+
+    __slots__ = ()
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
+    def __delattr__(self, name: str) -> None:
+        try:
+            del self[name]
+        except KeyError:
+            raise AttributeError(name) from None
 
 
 class UploadFile:
@@ -56,6 +96,7 @@ class UploadFile:
         return getattr(self.file, "_rolled", None) is False
 
     async def read(self, size: int = -1) -> bytes:
+        """Read up to size bytes from the upload."""
         # In-memory file objects stay on the loop; rolled-over spools
         # and arbitrary file-likes hop to a thread.
         if self._file_is_in_memory():
@@ -63,17 +104,20 @@ class UploadFile:
         return await asyncio.to_thread(self.file.read, size)
 
     async def write(self, data: bytes) -> int:
+        """Write data to the upload's spool file."""
         if self._file_is_in_memory():
             return self.file.write(data)
         return await asyncio.to_thread(self.file.write, data)
 
     async def seek(self, offset: int) -> None:
+        """Seek to a position in the upload's spool file."""
         if self._file_is_in_memory():
             self.file.seek(offset)
             return
         await asyncio.to_thread(self.file.seek, offset)
 
     async def close(self) -> None:
+        """Close the upload's underlying spool file."""
         if self._file_is_in_memory():
             self.file.close()
             return
@@ -87,6 +131,13 @@ class UploadFile:
 
     @property
     def content(self) -> bytes:
+        """Return the full file content as bytes.
+
+        Warning: this is a synchronous property. For large uploads that
+        have been spooled to disk (i.e. ``_file_is_in_memory()`` returns
+        False), the underlying ``read()`` call performs blocking I/O.
+        Prefer ``await read()`` in async contexts for spooled files.
+        """
         pos = self.file.tell()
         self.file.seek(0)
         data = self.file.read()
@@ -119,8 +170,6 @@ class UploadFile:
         finally:
             # If the underlying stream rejects re-seeking (closed,
             # one-shot stream, …) just swallow — we're done with it.
-            import contextlib
-
             with contextlib.suppress(ValueError, OSError):
                 self.file.seek(pos)
 
@@ -173,6 +222,7 @@ class URL:
         query_string: str,
         scope_scheme: str | None = None,
     ) -> URL:
+        """Construct a URL from request headers and path components."""
         host_header = headers.get("host", "localhost")
         # Precedence (ASGI §HTTP scope): the scope's `scheme` is the
         # authoritative answer when one was supplied — that's
@@ -185,7 +235,20 @@ class URL:
             scheme = "https"
         else:
             scheme = "http"
-        if ":" in host_header:
+        if "[" in host_header:
+            # Bracketed IPv6: [::1]:8080
+            bracket_end = host_header.index("]")
+            if bracket_end + 1 < len(host_header) and host_header[bracket_end + 1] == ":":
+                port_str = host_header[bracket_end + 2 :]
+                port = int(port_str) if port_str else None
+            else:
+                port = None
+            host = host_header[1:bracket_end]
+        elif host_header.count(":") >= 2:
+            # Bare IPv6: 2001:db8::1 (no port)
+            host = host_header
+            port = None
+        elif ":" in host_header:
             host, port_str = host_header.rsplit(":", 1)
             try:
                 port = int(port_str)
@@ -205,9 +268,12 @@ class URL:
 
     @property
     def netloc(self) -> str:
-        if self.port and self.port not in (80, 443):
-            return f"{self.host}:{self.port}"
-        return self.host
+        """Return the network location (host:port)."""
+        default_ports = {"http": 80, "https": 443}
+        host_str = f"[{self.host}]" if ":" in self.host else self.host
+        if self.port and self.port != default_ports.get(self.scheme):
+            return f"{host_str}:{self.port}"
+        return host_str
 
     def __str__(self) -> str:
         if self._full is None:
@@ -217,6 +283,7 @@ class URL:
         return self._full
 
     def replace(self, **kwargs: Any) -> URL:
+        """Return a new URL with the specified components replaced."""
         return URL(
             scheme=kwargs.get("scheme", self.scheme),
             host=kwargs.get("host", self.host),
@@ -237,6 +304,7 @@ class FormData(MultiDict):
     """
 
     def getlist(self, key: str) -> list:
+        """Return all values for the given key as a list."""
         try:
             return self.getall(key)
         except KeyError:
@@ -504,8 +572,6 @@ class Authorization:
         scheme_lower = scheme.lower()
 
         if scheme_lower == "basic":
-            import base64
-
             try:
                 decoded = base64.b64decode(credentials.strip(), validate=True).decode("utf-8")
             except (ValueError, UnicodeDecodeError):
@@ -558,13 +624,11 @@ def _split_authz_params(value: str) -> list[str]:
 
 
 class Cookies(MultiDict):
-    """Multi-value cookie collection parsed from the `Cookie` header.
+    """Cookie collection parsed from the `Cookie` header.
 
-    RFC 6265 lets a single `Cookie` header carry multiple `name=value`
-    pairs separated by `;`, and (technically) the same name can appear
-    more than once. Real-world clients typically send each name once,
-    but we don't collapse duplicates — `cookies.getlist("name")` returns
-    every value, `cookies["name"]` returns the first.
+    Built on `multidict.MultiDict`. Parsing delegates to `parse_cookie`
+    (RFC 6265 section 5.4) so values are percent-decoded. Duplicate names
+    collapse to the first occurrence per the spec.
     """
 
     def getlist(self, key: str) -> list:
@@ -577,19 +641,16 @@ class Cookies(MultiDict):
     def from_cookie_header(cls, header_value: str) -> Cookies:
         """Parse a `Cookie:` header value into a `Cookies` mapping.
 
-        Splits on `;`, then on the first `=`. Whitespace around segments
-        is trimmed. Cookie attributes that don't look like `name=value`
-        are skipped.
+        Delegates to `parse_cookie` for RFC 6265-compliant parsing
+        (percent-decoding, quote-stripping). Duplicate names collapse
+        to the first occurrence per RFC 6265 section 5.4.
         """
+        from veloce.http.cookies import parse_cookie
+
+        parsed = parse_cookie(header_value)
         cookies = cls()
-        if not header_value:
-            return cookies
-        for chunk in header_value.split(";"):
-            chunk = chunk.strip()
-            if "=" not in chunk:
-                continue
-            name, _, value = chunk.partition("=")
-            cookies.add(name.strip(), value.strip())
+        for name, value in parsed.items():
+            cookies.add(name, value)
         return cookies
 
 
@@ -602,6 +663,7 @@ class QueryParams(MultiDict):
     """
 
     def getlist(self, key: str) -> list:
+        """Return all values for the given key as a list."""
         try:
             return self.getall(key)
         except KeyError:
@@ -614,182 +676,15 @@ class QueryParams(MultiDict):
         Keeps blank values (``a=``) and decodes percent-escapes. The
         ordering of repeated keys reflects the order in the URL.
         """
-        from urllib.parse import parse_qsl
-
         if not query_string:
             return cls()
         items = parse_qsl(query_string, keep_blank_values=True)
         return cls(items)
 
 
-# Multipart-parsing safety limits — guard against algorithmic-complexity
-# DoS from a body crafted with pathologically many or oversized parts. A
-# body within MAX_CONTENT_LENGTH can still carry millions of tiny parts;
-# these caps bound the work and memory the parser will commit to.
-DEFAULT_MAX_MULTIPART_PARTS = 1000
-DEFAULT_MAX_MULTIPART_PART_SIZE = 10 * 1024 * 1024  # 10 MiB per part
-# A multipart part is streamed into a `SpooledTemporaryFile`: it stays in
-# memory until it grows past this size, then transparently rolls over to a
-# real temp file on disk — so a large upload never sits fully in RAM.
-MULTIPART_SPOOL_MAX_SIZE = 1024 * 1024  # 1 MiB in memory, then spill to disk
-
-
-def parse_multipart_form(
-    body: bytes,
-    content_type: str,
-    *,
-    max_parts: int = DEFAULT_MAX_MULTIPART_PARTS,
-    max_part_size: int = DEFAULT_MAX_MULTIPART_PART_SIZE,
-) -> FormData:
-    """Parse multipart/form-data into FormData with UploadFile support.
-
-    `max_parts` caps how many parts the form may contain and
-    `max_part_size` caps each part's body size. Exceeding either raises
-    `RequestEntityTooLarge` (413), so a maliciously structured form
-    cannot exhaust memory or CPU even when its total size is within
-    `MAX_CONTENT_LENGTH`.
-    """
-    boundary = ""
-    for seg in content_type.split(";"):
-        seg = seg.strip()
-        if seg.startswith("boundary="):
-            boundary = seg[9:].strip('"')
-            break
-
-    if not boundary:
-        return FormData()
-
-    result = FormData()
-    # Per-part accumulators, driven by the streaming `MultipartParser`
-    # callbacks below. A stateful parser (vs. a naive `body.split`)
-    # correctly handles a boundary token that happens to occur inside
-    # binary file data.
-    state: dict[str, Any] = {
-        "parts_seen": 0,
-        "header_field": bytearray(),
-        "header_value": bytearray(),
-        "headers": {},
-        # Each part's body streams into its own `SpooledTemporaryFile`
-        # (`spool`) rather than a single in-memory bytearray; `part_size`
-        # tracks the running byte count for the per-part size cap.
-        "spool": None,
-        "part_size": 0,
-    }
-
-    from veloce.exceptions import RequestEntityTooLarge
-
-    def _too_large(message: str) -> None:
-        raise RequestEntityTooLarge(message)
-
-    def on_part_begin() -> None:
-        state["parts_seen"] += 1
-        if state["parts_seen"] > max_parts:
-            _too_large(f"multipart form exceeds the {max_parts}-part limit")
-        state["headers"] = {}
-        state["header_field"] = bytearray()
-        state["header_value"] = bytearray()
-        # Deliberately not a context manager: a file part's spool is handed
-        # to an `UploadFile` that outlives this parse, so it stays open.
-        state["spool"] = tempfile.SpooledTemporaryFile(  # noqa: SIM115
-            max_size=MULTIPART_SPOOL_MAX_SIZE
-        )
-        state["part_size"] = 0
-
-    def on_header_field(data: bytes, start: int, end: int) -> None:
-        state["header_field"] += data[start:end]
-
-    def on_header_value(data: bytes, start: int, end: int) -> None:
-        state["header_value"] += data[start:end]
-
-    def on_header_end() -> None:
-        name = bytes(state["header_field"]).decode("utf-8", errors="replace").lower()
-        value = bytes(state["header_value"]).decode("utf-8", errors="replace")
-        state["headers"][name] = value
-        state["header_field"] = bytearray()
-        state["header_value"] = bytearray()
-
-    def on_part_data(data: bytes, start: int, end: int) -> None:
-        chunk = data[start:end]
-        state["part_size"] += len(chunk)
-        if state["part_size"] > max_part_size:
-            _too_large(f"multipart part exceeds the {max_part_size}-byte size limit")
-        state["spool"].write(chunk)
-
-    def on_part_end() -> None:
-        disposition = state["headers"].get("content-disposition", "")
-        name = ""
-        filename = None
-        for token in disposition.split(";"):
-            token = token.strip()
-            if token.startswith("name="):
-                name = token[5:].strip('"')
-            elif token.startswith("filename="):
-                filename = token[9:].strip('"')
-
-        # Take the spool out of `state` — from here it is either handed to
-        # an `UploadFile` or closed, so `state["spool"]` no longer owns it
-        # (and the error-path cleanup below will not double-handle it).
-        spool = state["spool"]
-        state["spool"] = None
-        if not name:
-            spool.close()  # unnamed part — discard its spooled data
-            return
-
-        spool.seek(0)
-        if filename is not None:
-            # File upload — the `UploadFile` takes ownership of the spooled
-            # file (in memory while small, on disk once it rolled over).
-            # `add()` keeps repeated `name` parts (multiple `<input
-            # multiple>` files under one name) distinct.
-            result.add(
-                name,
-                UploadFile(
-                    filename=filename,
-                    content_type=state["headers"].get("content-type", "text/plain"),
-                    file=spool,
-                    size=state["part_size"],
-                ),
-            )
-        else:
-            # Regular field — small; read it back, then release the spool.
-            value = spool.read().decode("utf-8", errors="replace")
-            spool.close()
-            result.add(name, value)
-
-    parser = MultipartParser(
-        boundary.encode("latin-1"),
-        {
-            "on_part_begin": on_part_begin,
-            "on_header_field": on_header_field,
-            "on_header_value": on_header_value,
-            "on_header_end": on_header_end,
-            "on_part_data": on_part_data,
-            "on_part_end": on_part_end,
-        },
-    )
-    # A malformed body raises `FormParserError`; treat it leniently and
-    # return whatever parsed cleanly rather than surfacing a low-level
-    # parser error as a 500. `RequestEntityTooLarge` from the DoS-cap
-    # callbacks is not a `FormParserError`, so it still reaches the caller.
-    try:
-        with contextlib.suppress(FormParserError):
-            parser.write(body)
-            parser.finalize()
-    except BaseException:
-        # A DoS-cap rejection (`RequestEntityTooLarge`) raised out of a
-        # part callback. `result` is discarded unreturned, so close every
-        # spooled file already handed to an `UploadFile` in it — otherwise
-        # each already-completed part leaks a temp file / file descriptor.
-        for value in result.values():
-            if isinstance(value, UploadFile):
-                with contextlib.suppress(Exception):
-                    value.file.close()
-        raise
-    finally:
-        # Close the in-progress part's spool — left open by a DoS-cap
-        # rejection mid-part, or by a suppressed malformed-body error.
-        in_progress = state["spool"]
-        if in_progress is not None:
-            with contextlib.suppress(Exception):
-                in_progress.close()
-    return result
+# Re-export from formparsers for backward compatibility.
+from veloce.http.formparsers import (  # noqa: E402, F401
+    DEFAULT_MAX_MULTIPART_PART_SIZE,
+    DEFAULT_MAX_MULTIPART_PARTS,
+    parse_multipart_form,
+)

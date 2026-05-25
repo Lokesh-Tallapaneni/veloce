@@ -51,9 +51,11 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
+from veloce import status
 from veloce.http.request import Request
-from veloce.http.response import Response
+from veloce.http.response import JSONResponse, Response
 from veloce.middleware.base import Middleware
+from veloce.signing import BadSignature, Signer
 
 
 class CSRFMiddleware(Middleware):
@@ -86,11 +88,10 @@ class CSRFMiddleware(Middleware):
         self._max_age = max_age
         self._signer: Any = None
         if secret:
-            from veloce.signing import Signer
-
             self._signer = Signer(secret, salt="veloce.csrf")
 
     async def process_request(self, request: Request) -> Response | None:
+        """Validate the CSRF token on state-changing requests."""
         # Stash existing cookie value (or None) on request._state for the
         # response phase. New tokens are minted in process_response when
         # the cookie is missing.
@@ -108,8 +109,6 @@ class CSRFMiddleware(Middleware):
         # a valid (and, when `max_age` is set, unexpired) server
         # signature before the double-submit comparison is trusted.
         if self._signer is not None:
-            from veloce.signing import BadSignature
-
             try:
                 self._signer.loads(cookie_val, max_age=self._max_age)
             except BadSignature:
@@ -135,6 +134,7 @@ class CSRFMiddleware(Middleware):
         return self._forbidden("CSRF token mismatch")
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        """Set or rotate the CSRF cookie."""
         existing = request._state.get("_csrf_cookie") if request._state else None
         # `rotate_csrf_token()` sets this sentinel on the request state to
         # force a fresh token regardless of an existing cookie. Without
@@ -157,11 +157,9 @@ class CSRFMiddleware(Middleware):
         return response
 
     def _forbidden(self, detail: str) -> Response:
-        from veloce.http.response import JSONResponse
-
         return JSONResponse(
             {"detail": detail},
-            status_code=403,
+            status_code=status.HTTP_403_FORBIDDEN,
         )
 
 
@@ -186,6 +184,4 @@ def rotate_csrf_token(request: Request) -> None:
 
     No-op when `CSRFMiddleware` is not installed.
     """
-    if request._state is None:
-        return
     request._state["_csrf_rotate"] = True

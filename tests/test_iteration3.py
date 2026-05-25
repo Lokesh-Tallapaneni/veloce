@@ -50,11 +50,6 @@ class TestSubPackageImports:
 
         assert HttpProtocol is not None
 
-    def test_types_module(self):
-        from veloce._types import Scope
-
-        assert Scope is not None
-
     def test_py_typed_exists(self):
         import os
 

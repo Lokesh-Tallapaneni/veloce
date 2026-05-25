@@ -1,8 +1,8 @@
 site_name: Veloce
 site_description: >-
   Ultra-fast async Python web framework — ASGI-native, batteries included.
-site_url: https://veloceframework.com/
-site_author: Veloce maintainers
+site_url: https://veloceframework.com/  # docs/CNAME must match this domain
+site_author: Lokesh Tallapaneni
 copyright: Copyright &copy; 2026 Veloce maintainers
 
 repo_url: https://github.com/Lokesh-Tallapaneni/veloce
@@ -13,6 +13,7 @@ docs_dir: docs
 
 theme:
   name: material
+  custom_dir: overrides
   language: en
   logo: assets/veloce-logo.svg
   favicon: assets/veloce-mark.svg
@@ -95,6 +96,8 @@ markdown_extensions:
 
 plugins:
   - search
+  - social
+  - tags
   - mkdocstrings:
       default_handler: python
       handlers:
@@ -126,5 +129,7 @@ nav:
       - WebSockets: guide/websockets.md
       - Testing: guide/testing.md
       - Deployment: guide/deployment.md
+  - Comparison: comparison.md
+  - Benchmarks: benchmarks.md
   - API Reference: reference.md
   - Changelog: changelog.md

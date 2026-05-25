@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 from re import Pattern
 
+from veloce import status
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -113,6 +114,7 @@ class CORSMiddleware(Middleware):
     # ── Request hooks ────────────────────────────────────────────────
 
     async def process_request(self, request: Request) -> Response | None:
+        """Handle CORS preflight requests and validate origins."""
         origin = request.headers.get("origin", "")
 
         # Preflight: OPTIONS + Origin. Strict spec requires
@@ -125,8 +127,8 @@ class CORSMiddleware(Middleware):
             # rather than a bare 204 — the browser would block it either
             # way, but 400 makes the rejection visible to developers.
             if not self._origin_allowed(origin):
-                return Response(status_code=400, body=b"Disallowed CORS origin")
-            response = Response(status_code=204, body=b"")
+                return Response(status_code=status.HTTP_400_BAD_REQUEST, body=b"Disallowed CORS origin")
+            response = Response(status_code=status.HTTP_204_NO_CONTENT, body=b"")
             self._add_cors_headers(response, origin, preflight=True)
             # Echo the requested headers (filtered) and method.
             requested = request.headers.get("access-control-request-headers", "")
@@ -144,6 +146,7 @@ class CORSMiddleware(Middleware):
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        """Add CORS response headers."""
         origin = request.headers.get("origin", "")
         # Plain (non-preflight) cross-origin responses still need
         # Access-Control-Allow-Origin and Vary: Origin if the value
@@ -161,14 +164,8 @@ class CORSMiddleware(Middleware):
         # `Vary: Origin` is required whenever the response value depends on
         # the request origin (i.e. anything other than literal `*` without
         # credentials). Cache poisoning class is real here.
-        if allow_origin != "*":
-            existing = response.headers.get("Vary") or response.headers.get("vary")
-            if existing:
-                tokens = {t.strip().lower() for t in existing.split(",")}
-                if "origin" not in tokens:
-                    response.headers["Vary"] = existing + ", Origin"
-            else:
-                response.headers["Vary"] = "Origin"
+        if allow_origin is not None and allow_origin != "*":
+            response.add_vary("Origin")
 
         if preflight:
             response.headers["Access-Control-Allow-Methods"] = self._allow_methods_joined

@@ -5,9 +5,18 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import os
+from http import HTTPStatus
 from typing import Any, NoReturn
 
-from veloce.http.response import FileResponse, JSONResponse, Response
+import orjson
+
+from veloce._internal import MIME_HTML, MIME_JSON, MIME_OCTET
+from veloce.exceptions import exception_for_status
+from veloce.http.dates import http_date
+from veloce.http.response import FileResponse, JSONResponse, RedirectResponse, Response
+from veloce.safe import safe_join
+from veloce.signals import message_flashed
 
 # ── current_app proxy ────────────────────────────────────────────────
 
@@ -174,7 +183,38 @@ def has_request_context() -> bool:
     return _current_request_var.get() is not None
 
 
-# ── abort() ──────────────────────────────────────────────────────
+# ── Aborter / abort() ────────────────────────────────────────────
+
+
+class Aborter:
+    """A callable that turns a status code into an HTTPException.
+
+    Used as `app.aborter(404)` or `app.aborter(403, "Forbidden")`.
+    Subclasses can override `mapping` to register custom exception
+    classes for specific status codes; the base class leaves it empty
+    so the default `exception_for_status` lookup applies.
+    """
+
+    mapping: dict[int, type] = {}
+
+    def __init__(self, extra_mapping: dict[int, type] | None = None) -> None:
+        self._mapping: dict[int, type] = {}
+        if extra_mapping:
+            self._mapping.update(extra_mapping)
+
+    def __call__(
+        self,
+        code: int,
+        detail: str = "",
+        headers: dict[str, str] | None = None,
+    ) -> NoReturn:
+        if not detail:
+            try:
+                detail = HTTPStatus(code).phrase
+            except ValueError:
+                detail = "Error"
+        cls = self._mapping.get(code) or self.mapping.get(code) or exception_for_status(code)
+        raise cls(status_code=code, detail=detail, headers=headers)
 
 
 def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = None) -> NoReturn:
@@ -188,11 +228,7 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
         abort(404)              # → raises NotFound
         abort(403, "Forbidden") # → raises Forbidden
     """
-    from veloce.exceptions import exception_for_status
-
     if not detail:
-        from http import HTTPStatus
-
         try:
             detail = HTTPStatus(status_code).phrase
         except ValueError:
@@ -252,41 +288,31 @@ def send_file(
       uses the caller-provided one verbatim (already-quoted).
     - `max_age=` adds `Cache-Control: public, max-age=<n>`.
     """
-    from veloce.http.response import FileResponse
-
     headers: dict[str, str] = {}
     if last_modified is not None:
-        import datetime as _dt
-        from email.utils import formatdate
-
-        if isinstance(last_modified, _dt.datetime):
-            if last_modified.tzinfo is None:
-                last_modified = last_modified.replace(tzinfo=_dt.timezone.utc)
-            headers["Last-Modified"] = formatdate(last_modified.timestamp(), usegmt=True)
-        elif isinstance(last_modified, (int, float)):
-            headers["Last-Modified"] = formatdate(float(last_modified), usegmt=True)
+        if isinstance(last_modified, str):
+            headers["Last-Modified"] = last_modified
         else:
-            headers["Last-Modified"] = str(last_modified)
+            headers["Last-Modified"] = http_date(last_modified)
 
-    if etag is False:
-        # Sentinel — FileResponse won't override an already-set ETag, so
-        # write a placeholder we then pop.
-        headers["ETag"] = "_strip"
-    elif isinstance(etag, str):
+    if isinstance(etag, str):
         headers["ETag"] = etag
 
     if max_age is not None:
         headers["Cache-Control"] = f"public, max-age={max_age}"
 
     path = str(path_or_file)
+    if as_attachment and not download_name:
+        download_name = os.path.basename(path)
     attachment_name = download_name if as_attachment else None
+    _strip_etag = etag is False
     resp = FileResponse(
         path=path,
-        filename=attachment_name or (download_name if as_attachment else None),
+        filename=attachment_name,
         content_type=mimetype,
         headers=headers,
     )
-    if headers.get("ETag") == "_strip":
+    if _strip_etag:
         resp.headers.pop("ETag", None)
         resp._encoded = None
     return resp
@@ -309,8 +335,6 @@ def redirect(
     that matches your semantics — the helper is a thin wrapper, not a
     policy. Accepts extra headers (e.g. `Vary`).
     """
-    from veloce.http.response import RedirectResponse
-
     return RedirectResponse(location, status_code=code, headers=headers)
 
 
@@ -321,7 +345,7 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
     """Create a JSON response — a concise shorthand.
 
     Honours two app-config flags when called inside a request:
-    - `JSON_SORT_KEYS` (default False) — sort dict keys alphabetically.
+    - `JSON_SORT_KEYS` (default True) — sort dict keys alphabetically.
     - `JSONIFY_PRETTYPRINT_REGULAR` (default False) — indent the output
       with 2 spaces for readability. Often enabled under DEBUG.
 
@@ -336,8 +360,6 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
 
     # Try to read flags from the current app's config; fall back to the
     # plain defaults when called outside a request context.
-    import orjson
-
     options = 0
     app = _current_app_var.get()
     if app is not None:
@@ -356,7 +378,7 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
             resp,
             status_code=200,
             body=body,
-            content_type="application/json",
+            content_type=MIME_JSON,
             headers=None,
         )
         return resp
@@ -381,7 +403,7 @@ def make_response(
     if isinstance(body, (dict, list)):
         return JSONResponse(body, status_code=status_code, headers=headers)
     if isinstance(body, str):
-        ct = content_type or "text/html; charset=utf-8"
+        ct = content_type or MIME_HTML
         return Response(
             status_code=status_code,
             body=body.encode("utf-8"),
@@ -389,7 +411,7 @@ def make_response(
             headers=headers,
         )
     if isinstance(body, bytes):
-        ct = content_type or "application/octet-stream"
+        ct = content_type or MIME_OCTET
         return Response(
             status_code=status_code,
             body=body,
@@ -418,16 +440,18 @@ def send_from_directory(
 
     For async, use send_from_directory_async() instead.
     """
-    from veloce.safe import safe_join
+
 
     resolved = safe_join(directory, filename)
     if resolved is None:
         abort(403, "Access denied")
 
+    if as_attachment and not download_name:
+        download_name = os.path.basename(str(resolved))
     attachment_name = download_name if as_attachment else None
     return FileResponse(
         path=resolved,
-        filename=attachment_name or (filename if as_attachment else None),
+        filename=attachment_name,
         content_type=mimetype,
     )
 
@@ -443,17 +467,19 @@ async def send_from_directory_async(
 
     Traversal-safe via `safe_join`.
     """
-    from veloce.safe import safe_join
+
 
     # `safe_join` is pure string arithmetic; the file read happens below.
     resolved = safe_join(directory, filename)  # noqa: ASYNC240
     if resolved is None:
         abort(403, "Access denied")
 
+    if as_attachment and not download_name:
+        download_name = os.path.basename(str(resolved))
     attachment_name = download_name if as_attachment else None
     return await FileResponse.from_path(
         path=resolved,
-        filename=attachment_name or (filename if as_attachment else None),
+        filename=attachment_name,
         content_type=mimetype,
     )
 
@@ -568,8 +594,6 @@ def flash(message: str, category: str = "message") -> None:
     with contextlib.suppress(AttributeError):
         store.modified = True
     # `message_flashed` signal — fires for every flash() call.
-    from veloce.signals import message_flashed
-
     message_flashed.send(_current_app_var.get(), message=message, category=category)
 
 

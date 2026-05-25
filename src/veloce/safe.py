@@ -19,6 +19,18 @@ import os
 import re
 import unicodedata
 
+
+def constant_time_compare(a: str | bytes, b: str | bytes) -> bool:
+    """Compare two secrets without leaking their contents through timing.
+
+    Wraps ``hmac.compare_digest``; ``str`` inputs are UTF-8 encoded first.
+    """
+    if isinstance(a, str) and isinstance(b, str):
+        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    if isinstance(a, (bytes, bytearray)) and isinstance(b, (bytes, bytearray)):
+        return hmac.compare_digest(bytes(a), bytes(b))
+    return False
+
 # Permitted characters in a sanitised filename: ASCII letters, digits,
 # underscore, period, hyphen. Everything else collapses to underscore.
 _VALID_FILENAME_CHAR = re.compile(r"[^A-Za-z0-9_.\-]")
@@ -121,25 +133,3 @@ def safe_join(directory: str, *paths: str) -> str | None:
         return joined
     return None
 
-
-def constant_time_compare(a: str | bytes, b: str | bytes) -> bool:
-    """Compare two secrets without leaking their contents through timing.
-
-    Use this instead of `==` when checking a security-sensitive value an
-    attacker controls one side of — an API key, a token, a signature, a
-    CSRF value — so the comparison cannot be turned into a byte-by-byte
-    oracle via response-timing measurement.
-
-    Wraps `hmac.compare_digest`; `str` inputs are UTF-8 encoded first.
-    Returns `False` (rather than raising) when the two arguments are not
-    both string-like or not both bytes-like, so a type mismatch is a
-    plain non-match.
-
-    References:
-    - CWE-208 (Observable Timing Discrepancy)
-    """
-    if isinstance(a, str) and isinstance(b, str):
-        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
-    if isinstance(a, (bytes, bytearray)) and isinstance(b, (bytes, bytearray)):
-        return hmac.compare_digest(bytes(a), bytes(b))
-    return False

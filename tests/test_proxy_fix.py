@@ -45,19 +45,32 @@ def test_pick_hop_strips_whitespace():
 
 
 def test_parse_forwarded_basic():
-    p = ProxyFix._parse_forwarded("for=client.example.com; proto=https; host=ex.com")
+    pf = ProxyFix(x_for=1, x_proto=1, x_host=1)
+    p = pf._parse_forwarded(
+        "for=client.example.com; proto=https; host=ex.com",
+        x_for=1, x_proto=1, x_host=1, x_prefix=0,
+    )
     assert p == {"for": "client.example.com", "proto": "https", "host": "ex.com"}
 
 
 def test_parse_forwarded_strips_ipv6_brackets():
-    p = ProxyFix._parse_forwarded('for="[2001:db8::1]:8080"')
+    pf = ProxyFix(x_for=1)
+    p = pf._parse_forwarded(
+        'for="[2001:db8::1]:8080"',
+        x_for=1, x_proto=0, x_host=0, x_prefix=0,
+    )
     assert p["for"] == "2001:db8::1"
 
 
-def test_parse_forwarded_takes_first_element_only():
-    """Multiple proxies → only the closest upstream is trusted by default."""
-    p = ProxyFix._parse_forwarded("for=closest; proto=https, for=farther")
-    assert p["for"] == "closest"
+def test_parse_forwarded_selects_from_right():
+    """Multiple proxies -- select by trust depth from the right, not the left."""
+    pf = ProxyFix(x_for=1, x_proto=1)
+    p = pf._parse_forwarded(
+        "for=attacker; proto=http, for=trusted; proto=https",
+        x_for=1, x_proto=1, x_host=0, x_prefix=0,
+    )
+    assert p["for"] == "trusted"
+    assert p["proto"] == "https"
 
 
 # ── Construction validation ────────────────────────────────────────────
@@ -147,7 +160,7 @@ def test_proxy_fix_strips_port_from_client_value():
 
 
 def test_proxy_fix_honors_rfc_7239_forwarded_header():
-    app = _make_app_with_proxy_fix(x_for=0, x_proto=0, x_host=0, trust_forwarded=True)
+    app = _make_app_with_proxy_fix(x_for=1, x_proto=1, x_host=1, trust_forwarded=True)
     client = TestClient(app)
     resp = client.get(
         "/info",

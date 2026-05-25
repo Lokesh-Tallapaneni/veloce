@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from veloce.http.response import _STATUS_PHRASES, Response, _reject_header_crlf
+from veloce._internal import _STATUS_PHRASES, _reject_header_crlf
+from veloce.http.response import Response
 
 
 class ServerSentEvent:
@@ -26,14 +27,17 @@ class ServerSentEvent:
         self.retry = retry
 
     def encode(self) -> bytes:
+        """Encode the event as an SSE-formatted byte string."""
         lines = []
         if self.id is not None:
-            lines.append(f"id: {self.id}")
+            clean_id = str(self.id).replace("\n", "").replace("\r", "")
+            lines.append(f"id: {clean_id}")
         if self.event is not None:
-            lines.append(f"event: {self.event}")
+            clean_event = self.event.replace("\n", "").replace("\r", "")
+            lines.append(f"event: {clean_event}")
         if self.retry is not None:
             lines.append(f"retry: {self.retry}")
-        data = self.data
+        data = self.data.replace("\r\n", "\n").replace("\r", "\n")
         # Single-line payloads — by far the common case — skip the
         # `split("\n")` allocation and emit the field directly.
         if "\n" not in data:
@@ -59,13 +63,15 @@ class EventSourceResponse(Response):
             return EventSourceResponse(generate())
     """
 
+    is_event_source = True
+
     def __init__(
         self,
         content: AsyncIterator[ServerSentEvent | str | bytes],
         status_code: int = 200,
         headers: dict[str, str] | None = None,
     ) -> None:
-        hdrs = headers or {}
+        hdrs = dict(headers) if headers else {}
         hdrs.update(
             {
                 "Cache-Control": "no-cache",
@@ -107,15 +113,23 @@ class EventSourceResponse(Response):
         """Stream SSE events to transport."""
         reason = _STATUS_PHRASES.get(self.status_code, "")
         parts = [f"HTTP/1.1 {self.status_code} {reason}".rstrip() + "\r\n"]
-        for key, value in {
+        final_headers = {
             "Content-Type": self.content_type,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Transfer-Encoding": "chunked",
             **self.headers,
-        }.items():
-            _reject_header_crlf(str(value), f"{key} header value")
-            parts.append(f"{key}: {value}\r\n")
+        }
+        for key, value in final_headers.items():
+            k_lower = key.lower()
+            if k_lower == "set-cookie":
+                for cookie_line in str(value).split("\r\nSet-Cookie: "):
+                    _reject_header_crlf(cookie_line, "Set-Cookie value")
+                    parts.append(f"Set-Cookie: {cookie_line}\r\n")
+            else:
+                _reject_header_crlf(str(key), "header name")
+                _reject_header_crlf(str(value), f"{key} header value")
+                parts.append(f"{key}: {value}\r\n")
         parts.append("\r\n")
         transport.write("".join(parts).encode("latin-1"))
 

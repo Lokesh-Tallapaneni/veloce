@@ -1,3 +1,8 @@
+---
+description: Add CORS, GZip, CSRF, sessions, rate limiting, security headers, and trusted-host middleware to a Veloce app — function-based or class-based, ordered LIFO.
+tags: [middleware, cors, csrf, security]
+---
+
 # Middleware
 
 Middleware wraps the request/response cycle — it runs before a handler
@@ -80,3 +85,9 @@ app.add_middleware(RequestIDMiddleware())
 
 Middleware runs in the order it is added on the way in, and in reverse
 on the way out — the first one added is the outermost layer.
+
+## See also
+
+- [Deployment](deployment.md)
+- [Routing](routing.md)
+- [Dependency injection](dependency-injection.md)

@@ -79,6 +79,7 @@ def test_missing_required_cookie_list_is_422():
 
 
 def test_repeated_cookies_collected():
+    """RFC 6265 section 5.4: duplicate names collapse to first occurrence."""
     app = Veloce(openapi_url=None)
 
     @app.get("/x")
@@ -86,4 +87,4 @@ def test_repeated_cookies_collected():
         return {"tag": tag}
 
     body = _run_http(app, "/x", "tag=a; tag=b; tag=c")
-    assert orjson.loads(body) == {"tag": ["a", "b", "c"]}
+    assert orjson.loads(body) == {"tag": ["a"]}
