@@ -287,3 +287,17 @@ async def test_websocket_stray_continuation_frame_is_ignored():
     ws, _ = _make_ws()
     ws.feed_data(_client_frame(0x0, b"orphan", fin=True))
     assert ws._receive_queue.empty()
+
+
+async def test_websocket_data_frame_clears_abandoned_fragment_state():
+    """A complete data frame arriving mid-fragmentation (a peer protocol
+    error) discards the abandoned partial and clears reassembly state, so
+    a later continuation does not append to a stale buffer."""
+    ws, _ = _make_ws()
+    ws.feed_data(_client_frame(0x1, b"abandoned-", fin=False))  # opens a fragment
+    ws.feed_data(_client_frame(0x1, b"complete", fin=True))  # interrupts it
+    assert ws._receive_queue.get_nowait() == b"complete"
+    # State was cleared — a stray continuation now finds no message in
+    # progress and is dropped, rather than appending to "abandoned-".
+    ws.feed_data(_client_frame(0x0, b"stale", fin=True))
+    assert ws._receive_queue.empty()

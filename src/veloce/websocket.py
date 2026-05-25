@@ -503,11 +503,19 @@ class WebSocket:
 
         # Data frames (text / binary) and continuation frames.
         if opcode in (0x1, 0x2):
+            # A data frame must not arrive mid-fragmentation — RFC 6455
+            # §5.4 allows only continuation frames after the opening
+            # frame. If a peer sends one anyway, discard the abandoned
+            # partial and clear the reassembly state cleanly so a later
+            # continuation cannot append to a stale buffer.
             if fin:
                 # Unfragmented message — deliver immediately.
+                self._frag_opcode = None
+                self._frag_buffer = bytearray()
                 self._receive_queue.put_nowait(bytes(payload))
             else:
-                # First frame of a fragmented message — start buffering.
+                # Opening frame of a fragmented message — start buffering
+                # (supersedes any abandoned partial).
                 self._frag_opcode = opcode
                 self._frag_buffer = bytearray(payload)
         elif opcode == 0x0:  # Continuation frame.
