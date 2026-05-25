@@ -8,9 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Post-v0.1.3 audit batch: verified findings from a per-file framework
 audit (validated by a second-pass agent with cross-file grep proofs;
-false positives discarded). Three correctness fixes, one security
-finding, eight performance / consistency wins, one default flip,
-and a duplication cleanup pass.
+false positives discarded). Four security fixes, four correctness
+fixes, six performance wins, eight duplication consolidations, and
+API surface cleanup.
 
 ### Security
 
