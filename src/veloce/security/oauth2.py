@@ -167,4 +167,12 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
         grant_type = form_data.get("grant_type", "password")
         if grant_type != "password":
             raise HTTPException(422, "grant_type must be 'password'")
-        return await super().from_request(request)
+        base = await super().from_request(request)
+        return cls(
+            username=base.username,
+            password=base.password,
+            grant_type=base.grant_type,
+            scope=base.scope,
+            client_id=base.client_id,
+            client_secret=base.client_secret,
+        )

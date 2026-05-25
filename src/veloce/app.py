@@ -1814,7 +1814,7 @@ class Veloce(Router):
         if max_size is not None:
             declared = request.content_length
             if (declared is not None and declared > max_size) or len(request.body) > max_size:
-                response = JSONResponse(
+                response: Response = JSONResponse(
                     {
                         "detail": "Request body exceeds MAX_CONTENT_LENGTH",
                         "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,

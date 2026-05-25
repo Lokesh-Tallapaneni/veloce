@@ -251,7 +251,7 @@ class HttpProtocol(asyncio.Protocol):
         if self.transport and not self.transport.is_closing():
             try:
                 if getattr(response, "is_event_source", False):
-                    await response.stream_to(self.transport)
+                    await response.stream_to(self.transport)  # type: ignore[attr-defined]
                     self.transport.close()
                 elif isinstance(response, StreamingResponse):
                     await response.stream_to(self.transport)
