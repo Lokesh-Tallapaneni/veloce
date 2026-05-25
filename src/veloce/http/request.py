@@ -299,7 +299,6 @@ class Request:
     async def form(self) -> Any:
         """Parse form data including file uploads."""
         if self._form is None:
-
             mt = self.mimetype
             if mt == "application/x-www-form-urlencoded":
                 items = parse_qsl(self.body.decode("utf-8"), keep_blank_values=True)

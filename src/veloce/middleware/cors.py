@@ -127,7 +127,9 @@ class CORSMiddleware(Middleware):
             # rather than a bare 204 — the browser would block it either
             # way, but 400 makes the rejection visible to developers.
             if not self._origin_allowed(origin):
-                return Response(status_code=status.HTTP_400_BAD_REQUEST, body=b"Disallowed CORS origin")
+                return Response(
+                    status_code=status.HTTP_400_BAD_REQUEST, body=b"Disallowed CORS origin"
+                )
             response = Response(status_code=status.HTTP_204_NO_CONTENT, body=b"")
             self._add_cors_headers(response, origin, preflight=True)
             # Echo the requested headers (filtered) and method.

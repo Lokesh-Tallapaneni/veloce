@@ -222,7 +222,7 @@ class HttpProtocol(asyncio.Protocol):
             transport=self.transport,
         )
 
-        timeout = self.app.config.get('REQUEST_HANDLER_TIMEOUT', 30)
+        timeout = self.app.config.get("REQUEST_HANDLER_TIMEOUT", 30)
         try:
             # `asyncio.shield` lets the handler's finally-block teardowns
             # (yield-dep cleanup, teardown_request hooks) run to completion
@@ -239,7 +239,9 @@ class HttpProtocol(asyncio.Protocol):
                 content_type="text/plain",
             )
         except Exception:
-            logging.getLogger("veloce.serving.protocol").exception("Unhandled exception in request dispatch")
+            logging.getLogger("veloce.serving.protocol").exception(
+                "Unhandled exception in request dispatch"
+            )
             response = Response(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 body=b"Internal Server Error",
@@ -264,7 +266,9 @@ class HttpProtocol(asyncio.Protocol):
                     else:
                         self._reset()
             except Exception:
-                logging.getLogger("veloce.serving.protocol").exception("Error during response emission")
+                logging.getLogger("veloce.serving.protocol").exception(
+                    "Error during response emission"
+                )
                 self.transport.close()
 
     def _reset(self) -> None:

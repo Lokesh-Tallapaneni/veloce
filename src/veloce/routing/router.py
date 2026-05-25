@@ -417,11 +417,10 @@ class Router:
         # the route has no dependencies. Skip DependencyResolver entirely
         # and bind kwargs = {"request": request} directly.
         from veloce._handler_plan import K_REQUEST  # same deferred-import rationale as above
+
         hp = route_info.handler_plan
         route_info.is_request_only_plan = (
-            len(hp.slots) == 1
-            and hp.slots[0].kind == K_REQUEST
-            and not route_info.route_dep_plans
+            len(hp.slots) == 1 and hp.slots[0].kind == K_REQUEST and not route_info.route_dep_plans
         )
 
         for method in methods:
@@ -466,7 +465,11 @@ class Router:
         return RouteMatch(route_info=handler_info, path_params=params)
 
     def _match_node(
-        self, node: RadixNode, segments: tuple[str, ...] | list[str], idx: int, params: dict[str, Any]
+        self,
+        node: RadixNode,
+        segments: tuple[str, ...] | list[str],
+        idx: int,
+        params: dict[str, Any],
     ) -> RadixNode | None:
         """Recursive radix tree traversal with per-converter validation."""
         # Flatten static-only descent — when the current node has no

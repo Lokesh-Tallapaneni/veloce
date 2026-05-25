@@ -107,9 +107,7 @@ def _build_request_headers(
     return merged
 
 
-def _apply_set_cookie_to_jar(
-    jar: dict[str, str], raw_headers: list[tuple[bytes, bytes]]
-) -> None:
+def _apply_set_cookie_to_jar(jar: dict[str, str], raw_headers: list[tuple[bytes, bytes]]) -> None:
     """Update `jar` from `Set-Cookie` response headers. Honours `Max-Age=0`
     as a deletion signal (RFC 6265 §5.2.2). Both test clients share this
     so a fix to the cookie semantics applies to sync + async at once.
@@ -145,7 +143,6 @@ def _guess_content_type(filename: str | None, content: Any) -> str:
     if explicit:
         return str(explicit)
     if filename:
-
         guess = mimetypes.guess_type(filename)[0]
         if guess:
             return guess

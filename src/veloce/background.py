@@ -52,4 +52,7 @@ class BackgroundTasks:
             try:
                 await task.run()
             except Exception:
-                logger.exception("Background task %s raised an exception", getattr(task.func, '__name__', repr(task.func)))
+                logger.exception(
+                    "Background task %s raised an exception",
+                    getattr(task.func, "__name__", repr(task.func)),
+                )

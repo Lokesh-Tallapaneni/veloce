@@ -31,6 +31,7 @@ def constant_time_compare(a: str | bytes, b: str | bytes) -> bool:
         return hmac.compare_digest(bytes(a), bytes(b))
     return False
 
+
 # Permitted characters in a sanitised filename: ASCII letters, digits,
 # underscore, period, hyphen. Everything else collapses to underscore.
 _VALID_FILENAME_CHAR = re.compile(r"[^A-Za-z0-9_.\-]")
@@ -132,4 +133,3 @@ def safe_join(directory: str, *paths: str) -> str | None:
     if joined.startswith(base + os.sep):
         return joined
     return None
-

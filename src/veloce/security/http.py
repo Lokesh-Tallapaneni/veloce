@@ -50,13 +50,9 @@ class HTTPBasic:
             decoded = base64.b64decode(auth[6:], validate=True).decode("utf-8")
         except (binascii.Error, ValueError, UnicodeDecodeError) as err:
             headers = (
-                {"WWW-Authenticate": f'Basic realm="{quote(self.realm)}"'}
-                if self.realm
-                else {}
+                {"WWW-Authenticate": f'Basic realm="{quote(self.realm)}"'} if self.realm else {}
             )
-            raise HTTPException(
-                401, "Invalid authentication credentials", headers=headers
-            ) from err
+            raise HTTPException(401, "Invalid authentication credentials", headers=headers) from err
         username, _, password = decoded.partition(":")
         return HTTPBasicCredentials(username=username, password=password)
 
@@ -219,7 +215,6 @@ def _parse_digest(value: str) -> HTTPDigestCredentials:
         opaque=fields.get("opaque", ""),
         algorithm=fields.get("algorithm", ""),
     )
-
 
 
 class HTTPBearer:

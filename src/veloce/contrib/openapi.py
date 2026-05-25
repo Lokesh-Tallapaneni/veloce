@@ -774,7 +774,9 @@ def setup_openapi_routes(
         return HTMLResponse(html)
 
     async def redoc_ui(request: Any):
-        html = REDOC_HTML.format(title=_html.escape(app.title), openapi_url=_html.escape(openapi_url))
+        html = REDOC_HTML.format(
+            title=_html.escape(app.title), openapi_url=_html.escape(openapi_url)
+        )
         return HTMLResponse(html)
 
     # Register each interactive UI only when its URL is set — a `None`

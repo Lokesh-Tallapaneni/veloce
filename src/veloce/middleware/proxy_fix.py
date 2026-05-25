@@ -124,9 +124,7 @@ class ProxyFix(Middleware):
         """Rewrite request attributes from trusted proxy headers."""
         forwarded = request.headers.get("forwarded") if self.trust_forwarded else None
         fwd = (
-            self._parse_forwarded(
-                forwarded, self.x_for, self.x_proto, self.x_host, self.x_prefix
-            )
+            self._parse_forwarded(forwarded, self.x_for, self.x_proto, self.x_host, self.x_prefix)
             if forwarded
             else {}
         )

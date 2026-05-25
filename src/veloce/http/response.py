@@ -588,7 +588,6 @@ class Response:
         write back — call `add_vary(...)` or reassign for that.
         """
 
-
         return HeaderSet(self.headers.get("Vary", ""))
 
     @vary.setter
@@ -606,7 +605,6 @@ class Response:
         Lists the HTTP methods the resource supports (RFC 9110 §10.2.1).
         Assign a `HeaderSet`, iterable, or comma-separated string.
         """
-
 
         return HeaderSet(self.headers.get("Allow", ""))
 
@@ -729,7 +727,6 @@ class Response:
         or POSIX timestamp to set it; assign `None` to remove it.
         """
 
-
         return parse_date(self.headers.get("Date"))
 
     @date.setter
@@ -783,7 +780,6 @@ class Response:
         raw = raw.strip()
         if raw.isdigit():
             return int(raw)
-
 
         return parse_date(raw)
 
@@ -867,7 +863,6 @@ class Response:
         `resp.cache_control.no_store`, etc.
         """
 
-
         return CacheControl(self.headers.get("Cache-Control", ""))
 
     def iter_encoded(self) -> Any:
@@ -947,8 +942,6 @@ class Response:
         ours_lm = self.headers.get("Last-Modified", "")
         ims = getattr(request, "if_modified_since", None)
         if ims is not None and ours_lm:
-
-
             ours_dt = parse_date(ours_lm)
             if ours_dt is None:
                 return self
@@ -1237,8 +1230,6 @@ class FileResponse(Response):
 
         st = os.stat(path)
         if "Last-Modified" not in hdrs and "last-modified" not in hdrs:
-
-
             hdrs["Last-Modified"] = http_date(st.st_mtime)
         if "ETag" not in hdrs and "etag" not in hdrs:
             hdrs["ETag"] = _file_etag(path, st.st_size, st.st_mtime)
@@ -1307,8 +1298,6 @@ class FileResponse(Response):
                 content_disposition_type, filename
             )
         if "Last-Modified" not in hdrs and "last-modified" not in hdrs:
-
-
             hdrs["Last-Modified"] = http_date(st.st_mtime)
         if "ETag" not in hdrs and "etag" not in hdrs:
             hdrs["ETag"] = _file_etag(path, st.st_size, st.st_mtime)

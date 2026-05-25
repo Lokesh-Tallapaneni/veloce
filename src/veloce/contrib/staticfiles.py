@@ -291,7 +291,6 @@ class StaticFiles:
         # sizes. Range responses always buffer their slice — a range is
         # already bounded by the client.
         if size >= self.STREAM_THRESHOLD:
-
             # Don't emit `Content-Length` alongside chunked transfer —
             # RFC 9112 §6.1 forbids carrying both, and a strict proxy
             # may drop or 502 the response. Clients that need a
@@ -354,6 +353,7 @@ class StaticFiles:
         get a trailing slash. Hidden files (`.foo`) are omitted —
         matches nginx `autoindex on;` default.
         """
+
         def _list_dir() -> list[tuple[str, bool]]:
             """Return `(name, is_dir)` tuples for the directory.
 

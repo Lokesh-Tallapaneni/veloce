@@ -1107,9 +1107,7 @@ class Veloce(Router):
 
                         plan = build_plan(func)
                         info.handler_plan = plan
-                        info.is_trivial_plan = (
-                            plan is not None and len(plan.slots) == 0
-                        )
+                        info.is_trivial_plan = plan is not None and len(plan.slots) == 0
                         info.is_request_only_plan = (
                             plan is not None
                             and len(plan.slots) == 1

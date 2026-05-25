@@ -90,9 +90,7 @@ def jsonable_encoder(
         _seen = set()
     obj_id = id(obj)
     if obj_id in _seen:
-        raise ValueError(
-            f"Circular reference detected while encoding {type(obj).__name__}"
-        )
+        raise ValueError(f"Circular reference detected while encoding {type(obj).__name__}")
     _seen.add(obj_id)
     try:
         if isinstance(obj, BaseModel):
@@ -143,9 +141,7 @@ def jsonable_encoder(
 
         # Fallback: try to convert to dict
         try:
-            return jsonable_encoder(
-                vars(obj), include=include, exclude=exclude, _seen=_seen
-            )
+            return jsonable_encoder(vars(obj), include=include, exclude=exclude, _seen=_seen)
         except TypeError:
             return str(obj)
     finally:

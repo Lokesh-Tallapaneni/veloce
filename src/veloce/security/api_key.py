@@ -24,9 +24,7 @@ class _APIKeyBase:
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         if not cls._source_attr:
-            raise TypeError(
-                f"{cls.__name__} must set _source_attr to a Request attribute name"
-            )
+            raise TypeError(f"{cls.__name__} must set _source_attr to a Request attribute name")
 
     def __init__(self, name: str, auto_error: bool = True) -> None:
         # Keep the user's casing for the OpenAPI spec; header lookup goes

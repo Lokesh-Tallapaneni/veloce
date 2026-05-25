@@ -120,9 +120,7 @@ class GZipMiddleware(Middleware):
         level = self.compresslevel
         body = response.body
         ctx = contextvars.copy_context()
-        compressed = await loop.run_in_executor(
-            None, ctx.run, gzip.compress, body, level
-        )
+        compressed = await loop.run_in_executor(None, ctx.run, gzip.compress, body, level)
 
         if len(compressed) < len(response.body):
             response.body = compressed

@@ -48,7 +48,10 @@ def test_parse_forwarded_basic():
     pf = ProxyFix(x_for=1, x_proto=1, x_host=1)
     p = pf._parse_forwarded(
         "for=client.example.com; proto=https; host=ex.com",
-        x_for=1, x_proto=1, x_host=1, x_prefix=0,
+        x_for=1,
+        x_proto=1,
+        x_host=1,
+        x_prefix=0,
     )
     assert p == {"for": "client.example.com", "proto": "https", "host": "ex.com"}
 
@@ -57,7 +60,10 @@ def test_parse_forwarded_strips_ipv6_brackets():
     pf = ProxyFix(x_for=1)
     p = pf._parse_forwarded(
         'for="[2001:db8::1]:8080"',
-        x_for=1, x_proto=0, x_host=0, x_prefix=0,
+        x_for=1,
+        x_proto=0,
+        x_host=0,
+        x_prefix=0,
     )
     assert p["for"] == "2001:db8::1"
 
@@ -67,7 +73,10 @@ def test_parse_forwarded_selects_from_right():
     pf = ProxyFix(x_for=1, x_proto=1)
     p = pf._parse_forwarded(
         "for=attacker; proto=http, for=trusted; proto=https",
-        x_for=1, x_proto=1, x_host=0, x_prefix=0,
+        x_for=1,
+        x_proto=1,
+        x_host=0,
+        x_prefix=0,
     )
     assert p["for"] == "trusted"
     assert p["proto"] == "https"

@@ -99,9 +99,7 @@ def parse_multipart_form(
                 name = raw_name.decode(charset_fallback, errors="replace").lower()
                 value = raw_value.decode(charset_fallback, errors="replace")
             else:
-                raise BadRequest(
-                    "multipart part header is not valid UTF-8"
-                ) from exc
+                raise BadRequest("multipart part header is not valid UTF-8") from exc
         state["headers"][name] = value
         state["header_field"] = bytearray()
         state["header_value"] = bytearray()
@@ -152,9 +150,7 @@ def parse_multipart_form(
                     value = raw_bytes.decode(charset_fallback, errors="replace")
                 else:
                     spool.close()
-                    raise BadRequest(
-                        f"multipart field {name!r} value is not valid UTF-8"
-                    ) from exc
+                    raise BadRequest(f"multipart field {name!r} value is not valid UTF-8") from exc
             spool.close()
             result.add(name, value)
 
