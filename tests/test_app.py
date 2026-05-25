@@ -411,3 +411,24 @@ async def test_route_with_dependency_is_not_trivial():
 
     assert app.match("GET", "/d").route_info.is_trivial_plan is False
     assert (await app.handle_request(make_request(path="/d"))).status_code == 200
+
+
+async def test_paramless_route_under_app_level_dependency_is_not_trivial():
+    """An app-level `Veloce(dependencies=...)` keeps even a parameter-less
+    handler on the full resolve path, so the dependency still runs."""
+    ran: list[bool] = []
+
+    async def dep():
+        ran.append(True)
+        return "x"
+
+    app = Veloce(debug=True, openapi_url=None, dependencies=[Depends(dep)])
+
+    @app.get("/d")
+    async def d():
+        return {"ok": True}
+
+    assert app.match("GET", "/d").route_info.is_trivial_plan is False
+    resp = await app.handle_request(make_request(path="/d"))
+    assert resp.status_code == 200
+    assert ran == [True]  # the app-level dependency actually executed
