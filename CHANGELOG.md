@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-05-25
+
 Post-v0.1.3 audit batch: verified findings from a per-file framework
 audit (validated by a second-pass agent with cross-file grep proofs;
 false positives discarded). Four security fixes, four correctness

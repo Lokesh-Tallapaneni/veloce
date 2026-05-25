@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veloceframework"
-version = "0.1.3"
+version = "0.1.4"
 description = "Ultra-fast async Python web framework — ASGI-native, batteries included"
 readme = "README.md"
 license = "MIT"
