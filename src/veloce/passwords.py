@@ -26,11 +26,12 @@ Spec anchors:
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import hmac
 import os
 import secrets
+
+from veloce._internal import _b64decode, _b64encode
 
 # Default parameters. Tuned for ~100ms on a 2020-era laptop — enough to
 # meaningfully slow offline attack without making login latency painful.
@@ -47,6 +48,7 @@ _SCRYPT_DKLEN = 64
 _MIN_SCRYPT_N = 2**14
 _MIN_SCRYPT_R = 1
 _MIN_SCRYPT_P = 1
+_MIN_PBKDF2_ITERATIONS = 100_000
 # OpenSSL's scrypt enforces `maxmem >= 128 * N * r * p`. Default is 32 MiB,
 # which is the exact threshold for the parameters above — give a 2x cushion
 # so the call doesn't fail with "memory limit exceeded" on tight builds.
@@ -56,15 +58,6 @@ _PBKDF2_ITERATIONS = 600_000  # OWASP recommendation as of 2023
 _PBKDF2_DKLEN = 32
 
 _SALT_BYTES = 16
-
-
-def _b64encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def _b64decode(data: str) -> bytes:
-    pad = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + pad)
 
 
 def hash_password(
@@ -177,7 +170,7 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
             iterations = int(params)
         except ValueError:
             return False
-        if iterations <= 0:
+        if iterations < _MIN_PBKDF2_ITERATIONS:
             return False
         derived = hashlib.pbkdf2_hmac("sha256", candidate, salt, iterations, dklen=_PBKDF2_DKLEN)
         return hmac.compare_digest(derived, expected)

@@ -187,7 +187,9 @@ class TestGracefulShutdownStructure:
         assert hasattr(app, "_graceful_shutdown")
 
     @pytest.mark.asyncio
-    async def test_teardown_appcontext_called_on_shutdown(self):
+    async def test_teardown_appcontext_not_fired_on_shutdown(self):
+        """teardown_appcontext is per-request only; _graceful_shutdown
+        must not duplicate it."""
         log = []
 
         app = Veloce(openapi_url=None)
@@ -196,10 +198,9 @@ class TestGracefulShutdownStructure:
         def cleanup(exc):
             log.append("appcontext_teardown")
 
-        # Simulate graceful shutdown
         loop = asyncio.get_running_loop()
         await app._graceful_shutdown(loop)
-        assert "appcontext_teardown" in log
+        assert "appcontext_teardown" not in log
 
 
 @pytest.mark.perf

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
+import contextvars
+import functools
 import logging
 from collections.abc import Callable
 from typing import Any
+
+from veloce._internal import _is_async_callable
 
 logger = logging.getLogger("veloce.background")
 
@@ -22,12 +25,15 @@ class BackgroundTask:
         self.kwargs = kwargs
 
     async def run(self) -> None:
-        if inspect.iscoroutinefunction(self.func):
+        """Execute the background task."""
+        if _is_async_callable(self.func):
             await self.func(*self.args, **self.kwargs)
         else:
-            # Offload sync tasks to executor to avoid blocking the event loop
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: self.func(*self.args, **self.kwargs))
+            ctx = contextvars.copy_context()
+            await loop.run_in_executor(
+                None, ctx.run, functools.partial(self.func, *self.args, **self.kwargs)
+            )
 
 
 class BackgroundTasks:
@@ -37,11 +43,13 @@ class BackgroundTasks:
         self._tasks: list[BackgroundTask] = []
 
     def add_task(self, func: Callable, *args: Any, **kwargs: Any) -> None:
+        """Append a task to the queue."""
         self._tasks.append(BackgroundTask(func, *args, **kwargs))
 
     async def run_all(self) -> None:
+        """Execute all queued tasks sequentially."""
         for task in self._tasks:
             try:
                 await task.run()
             except Exception:
-                logger.exception("Background task %s raised an exception", task.func.__name__)
+                logger.exception("Background task %s raised an exception", getattr(task.func, '__name__', repr(task.func)))

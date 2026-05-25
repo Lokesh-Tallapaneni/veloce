@@ -1,4 +1,4 @@
-"""app.ensure_sync / app.async_to_sync."""
+"""app.ensure_sync."""
 
 from __future__ import annotations
 
@@ -47,26 +47,6 @@ def test_ensure_sync_kwargs_passthrough():
 
     wrapped = app.ensure_sync(greet)
     assert wrapped("alice", greeting="hello") == "hello, alice"
-
-
-def test_async_to_sync_wraps_coroutine():
-    app = Veloce()
-
-    async def f(x):
-        return x * 2
-
-    wrapped = app.async_to_sync(f)
-    assert wrapped(5) == 10
-
-
-def test_async_to_sync_passes_through_sync():
-    app = Veloce()
-
-    def f(x):
-        return x * 2
-
-    wrapped = app.async_to_sync(f)
-    assert wrapped is f
 
 
 def test_ensure_sync_propagates_exception():

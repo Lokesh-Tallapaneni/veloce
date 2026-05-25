@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+import re
 from collections.abc import Callable, Coroutine
 from typing import Any
 from urllib.parse import urlencode
@@ -14,9 +16,16 @@ from veloce.routing.converters import (
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 
-# Sentinel returned when a match captures no path params — avoids allocating
-# a fresh dict on every parameter-free request.
-_EMPTY_PARAMS: dict[str, str] = {}
+# Matches `{name}` and `{name:converter}` placeholders in `url_for` template
+# expansion. Compiled once at import (the call site is on the URL-building
+# warm path; CPython's regex cache makes literal `re.sub` cheap but a
+# module-level compile is still faster and more obvious).
+_URL_FOR_PARAM_RE = re.compile(r"\{([^}]+?)(?::[^}]+)?\}")
+
+
+@functools.lru_cache(maxsize=512)
+def _cached_split_path(path: str) -> tuple[str, ...]:
+    return tuple(s for s in path.split("/") if s)
 
 
 class RadixNode:
@@ -93,6 +102,7 @@ class RouteInfo:
         "handler_plan",
         "route_dep_plans",
         "is_trivial_plan",
+        "is_request_only_plan",
         "subdomain",
         "host",
     )
@@ -187,6 +197,7 @@ class RouteInfo:
         # dependency resolver entirely (the "trivial-route" fast path).
         # Set by `add_route` once the plans are built.
         self.is_trivial_plan = False
+        self.is_request_only_plan = False
 
 
 class RouteMatch:
@@ -228,17 +239,13 @@ class Router:
         # 404/403/422 shape every route shares).
         self.router_responses: dict[int, dict[str, Any]] = dict(responses or {})
         self._root = RadixNode()
-        self._sub_routers: list[Router] = []
-        self._middleware: list[Callable] = []
         self._named_routes: dict[
             str, tuple[str, list[str]]
         ] = {}  # name -> (path_template, param_names)
 
-    def _split_path(self, path: str) -> list[str]:
-        """Split path into segments."""
-        # The empty-string filter handles leading, trailing, and consecutive
-        # slashes uniformly; no separate strip() pass needed.
-        return [s for s in path.split("/") if s]
+    def _split_path(self, path: str) -> tuple[str, ...]:
+        """Split path into segments (cached)."""
+        return _cached_split_path(path)
 
     def add_route(
         self,
@@ -389,6 +396,10 @@ class Router:
         # Pre-compute the handler resolution plan once, here at registration.
         # Falls back to None if the handler isn't introspectable; the resolver
         # will rebuild on demand in that case.
+        # Deferred import: _handler_plan depends on routing.params (same
+        # subpackage), and pulling it at module level would create a
+        # routing -> app-layer dependency direction violation. The import
+        # runs once per route registration, not per request.
         from veloce._handler_plan import build_plan, build_route_dep_plans
 
         # A WebSocket route's plan is built in websocket mode so the
@@ -401,6 +412,16 @@ class Router:
         # slots and no route-level dependencies needs nothing resolved.
         route_info.is_trivial_plan = (
             not route_info.handler_plan.slots and not route_info.route_dep_plans
+        )
+        # Request-only fast path: the handler takes only `request` and
+        # the route has no dependencies. Skip DependencyResolver entirely
+        # and bind kwargs = {"request": request} directly.
+        from veloce._handler_plan import K_REQUEST  # same deferred-import rationale as above
+        hp = route_info.handler_plan
+        route_info.is_request_only_plan = (
+            len(hp.slots) == 1
+            and hp.slots[0].kind == K_REQUEST
+            and not route_info.route_dep_plans
         )
 
         for method in methods:
@@ -445,7 +466,7 @@ class Router:
         return RouteMatch(route_info=handler_info, path_params=params)
 
     def _match_node(
-        self, node: RadixNode, segments: list[str], idx: int, params: dict[str, Any]
+        self, node: RadixNode, segments: tuple[str, ...] | list[str], idx: int, params: dict[str, Any]
     ) -> RadixNode | None:
         """Recursive radix tree traversal with per-converter validation."""
         # Flatten static-only descent — when the current node has no
@@ -714,15 +735,16 @@ class Router:
             if pname not in path_params:
                 raise ValueError(f"Missing path parameter {pname!r} for route {name!r}")
             consumed.add(pname)
-            # The stored template may include a converter suffix (e.g.
-            # `{id:int}`); replace the whole `{name…}` segment.
-            placeholder_start = path.find("{" + pname)
-            if placeholder_start == -1:
-                continue
-            placeholder_end = path.find("}", placeholder_start)
-            if placeholder_end == -1:
-                continue
-            path = path[:placeholder_start] + str(path_params[pname]) + path[placeholder_end + 1 :]
+
+        # Single-pass substitution prevents injection: a parameter value
+        # containing `{other_param}` cannot corrupt later placeholders.
+        def _substitute(match: re.Match[str]) -> str:
+            name_part = match.group(1)
+            if name_part in path_params:
+                return str(path_params[name_part])
+            return match.group(0)
+
+        path = _URL_FOR_PARAM_RE.sub(_substitute, path)
 
         # Anything left in path_params is a query-string parameter (the
         # behaviour). Order matches caller's kwarg order via dict insertion.
@@ -788,9 +810,6 @@ class Router:
 
     def include_router(self, router: Router, prefix: str = "") -> None:
         """Include another router (a sub-router with its own prefix, tags, and hooks)."""
-        self._sub_routers.append(router)
-        # Merge named routes
-        self._named_routes.update(router._named_routes)
         # Collect all routes from sub-router and re-add with combined prefix
         extra_prefix = prefix.rstrip("/")
         self._merge_node(router._root, extra_prefix, [])
@@ -841,12 +860,16 @@ class Router:
                             cur.static_children[seg] = child
                         cur = child
 
+                combined_deps = list(self.router_dependencies)
+                if info.dependencies:
+                    combined_deps.extend(info.dependencies)
+
                 route_info = RouteInfo(
                     handler=info.handler,
-                    param_names=info.param_names,
-                    dependencies=info.dependencies,
+                    param_names=param_names,
+                    dependencies=combined_deps if combined_deps else info.dependencies,
                     response_model=info.response_model,
-                    tags=info.tags,
+                    tags=(info.tags or []) + list(self.tags),
                     summary=info.summary,
                     name=info.name,
                     path_template=full_path,
@@ -854,7 +877,7 @@ class Router:
                     deprecated=info.deprecated,
                     response_description=info.response_description,
                     status_code=info.status_code,
-                    response_class=info.response_class,
+                    response_class=info.response_class or self.default_response_class,
                     response_model_include=info.response_model_include,
                     response_model_exclude=info.response_model_exclude,
                     response_model_exclude_unset=info.response_model_exclude_unset,
@@ -862,22 +885,43 @@ class Router:
                     response_model_by_alias=info.response_model_by_alias,
                     response_model_exclude_none=info.response_model_exclude_none,
                     include_in_schema=info.include_in_schema,
-                    responses=info.responses,
+                    responses=(
+                        None
+                        if not self.router_responses and not info.responses
+                        else {**self.router_responses, **(info.responses or {})}
+                    ),
                     operation_id=info.operation_id,
                     # Carry constraints from the source RouteInfo — without
                     # these, sub-routers merged via include_router would
                     # silently lose their subdomain / host / openapi_extra
                     # / defaults / callbacks declarations.
-                    openapi_extra=getattr(info, "openapi_extra", None),
-                    defaults=getattr(info, "defaults", None),
-                    callbacks=getattr(info, "callbacks", None),
-                    subdomain=getattr(info, "subdomain", None),
-                    host=getattr(info, "host", None),
+                    openapi_extra=info.openapi_extra,
+                    defaults=info.defaults,
+                    callbacks=info.callbacks,
+                    subdomain=info.subdomain,
+                    host=info.host,
                 )
-                # Reuse the parent's pre-computed plan — same handler, same plan.
+                # Reuse the parent's pre-computed handler plan.
                 route_info.handler_plan = info.handler_plan
-                route_info.route_dep_plans = info.route_dep_plans
-                route_info.is_trivial_plan = info.is_trivial_plan
+
+                # Rebuild route_dep_plans from the combined dependencies —
+                # the parent's plans are stale when router_dependencies
+                # were prepended above.
+                from veloce._handler_plan import K_REQUEST, build_route_dep_plans
+
+                is_ws = method.upper() == "WEBSOCKET"
+                route_info.route_dep_plans = build_route_dep_plans(
+                    route_info.dependencies, websocket=is_ws
+                )
+                route_info.is_trivial_plan = (
+                    not route_info.handler_plan.slots and not route_info.route_dep_plans
+                )
+                hp = route_info.handler_plan
+                route_info.is_request_only_plan = (
+                    len(hp.slots) == 1
+                    and hp.slots[0].kind == K_REQUEST
+                    and not route_info.route_dep_plans
+                )
                 cur.handlers[method] = route_info
 
                 # Propagate slash-handling flags from the source node so a
@@ -891,7 +935,7 @@ class Router:
                     cur.tolerant_slash = True
 
                 # Update named routes
-                self._named_routes[info.name] = (full_path, info.param_names)
+                self._named_routes[info.name] = (full_path, param_names)
 
         for child in node.static_children.values():
             self._merge_node(child, prefix, path_segments + [child.segment])

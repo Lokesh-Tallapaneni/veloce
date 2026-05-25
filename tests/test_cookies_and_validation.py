@@ -30,11 +30,11 @@ def test_cookies_parses_multiple_distinct_cookies():
     assert c["c"] == "3"
 
 
-def test_cookies_preserves_duplicate_names():
-    """Same name twice — both values retained."""
+def test_cookies_first_wins_on_duplicate_names():
+    """RFC 6265 section 5.4: duplicate names collapse to first occurrence."""
     c = Cookies.from_cookie_header("tag=x; tag=y; other=z")
-    assert c.getlist("tag") == ["x", "y"]
-    assert c["tag"] == "x"  # first wins for single-value access
+    assert c.getlist("tag") == ["x"]
+    assert c["tag"] == "x"
     assert c["other"] == "z"
 
 

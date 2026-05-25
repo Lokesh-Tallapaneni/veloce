@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import gzip
 
 from veloce.http.request import Request
@@ -22,6 +23,42 @@ _DEFAULT_COMPRESSIBLE = (
     "application/x-yaml",
     "image/svg+xml",
 )
+
+
+def _accepts_gzip(accept: str) -> bool:
+    """Parse Accept-Encoding and return True only if gzip is accepted (explicit or wildcard)."""
+    wildcard_ok: bool | None = None
+    for part in accept.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        pieces = part.split(";")
+        encoding = pieces[0].strip().lower()
+        if encoding == "gzip":
+            for param in pieces[1:]:
+                param = param.strip()
+                if param.startswith("q="):
+                    try:
+                        if float(param[2:]) == 0:
+                            return False
+                    except ValueError:
+                        pass
+            return True
+        if encoding == "*":
+            # Wildcard matches everything not explicitly listed.
+            q_zero = False
+            for param in pieces[1:]:
+                param = param.strip()
+                if param.startswith("q="):
+                    try:
+                        if float(param[2:]) == 0:
+                            q_zero = True
+                    except ValueError:
+                        pass
+            wildcard_ok = not q_zero
+    if wildcard_ok is not None:
+        return wildcard_ok
+    return False
 
 
 class GZipMiddleware(Middleware):
@@ -56,8 +93,9 @@ class GZipMiddleware(Middleware):
         return any(ct.startswith(p) for p in self.include_types)
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        """Compress the response body with gzip if the client accepts it."""
         accept = request.headers.get("accept-encoding", "")
-        if "gzip" not in accept or len(response.body) < self.minimum_size:
+        if not _accepts_gzip(accept) or len(response.body) < self.minimum_size:
             return response
 
         if not self._should_compress_type(response.content_type):
@@ -74,27 +112,23 @@ class GZipMiddleware(Middleware):
         if existing_encoding and existing_encoding.strip().lower() not in ("", "identity"):
             return response
 
-        # Offload CPU-bound compression to thread pool
+        # Offload CPU-bound compression to thread pool. Wrap in
+        # `contextvars.copy_context().run(...)` so any ContextVar reads
+        # inside the executor (today none; future-proof for hooks) see
+        # the request-scoped values rather than "unbound".
         loop = asyncio.get_running_loop()
         level = self.compresslevel
         body = response.body
+        ctx = contextvars.copy_context()
         compressed = await loop.run_in_executor(
-            None, lambda: gzip.compress(body, compresslevel=level)
+            None, ctx.run, gzip.compress, body, level
         )
 
         if len(compressed) < len(response.body):
             response.body = compressed
             response.headers["Content-Encoding"] = "gzip"
             response.headers["Content-Length"] = str(len(compressed))
-            # Add `Accept-Encoding` to `Vary` so caches key by the negotiated
-            # encoding (per RFC 9110 §12.5.5 / §15.5.5).
-            existing_vary = response.headers.get("Vary") or response.headers.get("vary")
-            if existing_vary:
-                tokens = {t.strip().lower() for t in existing_vary.split(",")}
-                if "accept-encoding" not in tokens:
-                    response.headers["Vary"] = existing_vary + ", Accept-Encoding"
-            else:
-                response.headers["Vary"] = "Accept-Encoding"
+            response.add_vary("Accept-Encoding")
             response._encoded = None
 
         return response

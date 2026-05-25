@@ -5,11 +5,13 @@ from __future__ import annotations
 import orjson
 import pytest
 
-from veloce.exception_handlers import (
+from veloce.exceptions import (
+    HTTPException,
+    NotFound,
+    RequestValidationError,
     http_exception_handler,
     request_validation_exception_handler,
 )
-from veloce.exceptions import HTTPException, NotFound, RequestValidationError
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,14 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
+from veloce.helpers import _current_app_var, current_app, g
 from veloce.http.response import HTMLResponse
+
+# Sentinel attribute name written onto each Jinja Environment to memoize
+# the result of `_sync_app_jinja_helpers`. Holds a (id(app), filter/global/
+# test counts) tuple — bumps invalidate the cache when the user registers
+# a new filter / global / test after init.
+_HELPER_SYNC_TOKEN_ATTR = "_veloce_helper_sync_token"
 
 
 def _sync_app_jinja_helpers(env: Any) -> None:
@@ -17,25 +24,32 @@ def _sync_app_jinja_helpers(env: Any) -> None:
     by `_gather_context_processors` since it's request-scoped (not
     available outside dispatch).
 
-    Idempotent — overwriting `env.filters[name]` with the same callable
-    is cheap, so we re-sync on every render rather than caching. Safe to
-    call when no app is bound (no-op).
+    Memoized per (env, app) — re-syncing is idempotent but it still
+    runs three loops and several attribute lookups per render, which
+    is wasted work on every request once filters are stable. The
+    token includes the registration-list lengths, so adding a new
+    filter / global / test through `@app.template_filter` etc.
+    invalidates the cache and the next render re-syncs.
     """
-    from veloce.helpers import _current_app_var, current_app, g
-
     app = _current_app_var.get()
     if app is None:
         return
-    # Standard template globals (TP8).
+    filters = getattr(app, "_template_filters", ())
+    globs = getattr(app, "_template_globals", ())
+    tests = getattr(app, "_template_tests", ())
+    token = (id(app), len(filters), len(globs), len(tests))
+    if getattr(env, _HELPER_SYNC_TOKEN_ATTR, None) == token:
+        return
     env.globals["url_for"] = app.url_for
     env.globals["g"] = g
     env.globals["current_app"] = current_app
-    for fname, fn in getattr(app, "_template_filters", ()):
+    for fname, fn in filters:
         env.filters[fname] = fn
-    for gname, fn in getattr(app, "_template_globals", ()):
+    for gname, fn in globs:
         env.globals[gname] = fn
-    for tname, fn in getattr(app, "_template_tests", ()):
+    for tname, fn in tests:
         env.tests[tname] = fn
+    setattr(env, _HELPER_SYNC_TOKEN_ATTR, token)
 
 
 def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -47,8 +61,6 @@ def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str,
     the caller's explicit context (passed to `TemplateResponse`) wins over
     any conflicting key.
     """
-    from veloce.helpers import _current_app_var
-
     app = _current_app_var.get()
     if app is None:
         return dict(extra or {})
@@ -137,8 +149,6 @@ class Jinja2Templates:
         template `stat`. Explicit settings are left untouched."""
         if self._auto_reload is not None:
             return
-        from veloce.helpers import _current_app_var
-
         app = _current_app_var.get()
         if app is not None:
             env.auto_reload = bool(getattr(app, "debug", False))
@@ -187,9 +197,9 @@ class Jinja2Templates:
         blocking the loop. Filters/globals registered on `app` are
         synced onto the async env too.
         """
-        from jinja2 import Environment, FileSystemLoader
-
         if self._async_env is None:
+            from jinja2 import Environment, FileSystemLoader
+
             self._async_env = Environment(
                 loader=FileSystemLoader(self._async_directory),
                 auto_reload=self._async_auto_reload,
@@ -219,8 +229,6 @@ def render_template(template_name: str, **context: Any) -> str:
     Returns the rendered string; callers wrap in a `Response` themselves
     if they need one.
     """
-    from veloce.helpers import _current_app_var
-
     app = _current_app_var.get()
     if app is None:
         raise RuntimeError(
@@ -245,8 +253,6 @@ def render_template_string(source: str, **context: Any) -> str:
     globals / tests and context processors when the env is reachable
     via `app._templates`.
     """
-    from veloce.helpers import _current_app_var
-
     app = _current_app_var.get()
     templates = getattr(app, "_templates", None) if app is not None else None
     if templates is not None:

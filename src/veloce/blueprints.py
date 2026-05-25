@@ -35,6 +35,19 @@ from typing import Any
 from veloce.routing.router import RouteInfo, Router
 
 
+def _endpoint_blueprint(endpoint: str | None) -> str | None:
+    """Return the blueprint name encoded in an endpoint, or `None`.
+
+    Blueprint routes have endpoints of the form `"{bp}.{routename}"`;
+    app-level routes have a bare `"routename"` (no dot). This is the
+    same convention `register_blueprint` and `url_for` already use.
+    """
+    if not endpoint:
+        return None
+    dot = endpoint.find(".")
+    return endpoint[:dot] if dot >= 0 else None
+
+
 class Blueprint(Router):
     """Deferred-registration route collection."""
 
@@ -140,8 +153,11 @@ class Blueprint(Router):
 
         Routes from `child` register under
         `self.url_prefix + (url_prefix or child.url_prefix) + path`;
-        endpoint names become `<self.name>.<child.name>.<handler>` so
-        the dispatcher's prefix-gate finds them under either name.
+        endpoint names stored on this blueprint become
+        `<child.name>.<handler>` and pick up the `<self.name>.` prefix
+        once *this* blueprint is itself registered with an app, yielding
+        a final `<self.name>.<child.name>.<handler>` lookup name so the
+        dispatcher's prefix-gate finds them under either name.
 
         Hooks and error handlers from `child` are merged into this
         blueprint's lists (not the app's — the app gets them when
@@ -168,11 +184,17 @@ class Blueprint(Router):
                 response_model_include=info.response_model_include,
                 response_model_exclude=info.response_model_exclude,
                 response_model_exclude_unset=info.response_model_exclude_unset,
+                response_model_exclude_defaults=info.response_model_exclude_defaults,
                 response_model_by_alias=info.response_model_by_alias,
                 response_model_exclude_none=info.response_model_exclude_none,
                 include_in_schema=info.include_in_schema,
                 responses=info.responses,
                 operation_id=info.operation_id,
+                openapi_extra=info.openapi_extra,
+                defaults=info.defaults,
+                callbacks=info.callbacks,
+                subdomain=info.subdomain,
+                host=info.host,
             )
 
         # Inherit child hooks + error handlers. Child's hooks will be
@@ -186,6 +208,8 @@ class Blueprint(Router):
             self._exception_handlers.setdefault(exc_cls, handler)
         for code, handler in child._status_handlers.items():
             self._status_handlers.setdefault(code, handler)
+        self._url_value_preprocessors.extend(child._url_value_preprocessors)
+        self._url_default_funcs.extend(child._url_default_funcs)
 
     # ── Route collection inspection — used by register_blueprint ─────
 

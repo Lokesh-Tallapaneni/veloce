@@ -1,3 +1,8 @@
+---
+description: FastAPI-style Depends() and Security() in Veloce — typed dependency injection with yield teardown, scopes, security schemes, and per-route or app-level deps.
+tags: [dependency-injection, depends, security]
+---
+
 # Dependency Injection
 
 Dependency injection lets a handler declare what it needs — a database
@@ -30,7 +35,7 @@ async def list_items(db=Depends(get_db)):
 Dependencies may be sync or `async`, and they can themselves request the
 `Request` or other dependencies — Veloce resolves the whole chain.
 
-```python
+```python title="auth.py"
 async def get_current_user(request: Request):
     token = request.headers.get("authorization", "")
     if not token:
@@ -99,3 +104,9 @@ def fake_db() -> dict:
 
 app.dependency_overrides[get_db] = fake_db
 ```
+
+## See also
+
+- [Requests & responses](requests-responses.md)
+- [Middleware](middleware.md)
+- [Testing](testing.md#overriding-dependencies)

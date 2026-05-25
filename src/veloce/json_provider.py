@@ -3,9 +3,7 @@
 The base `JSONProvider` declares three methods: `dumps`/`loads` for the
 bytes <-> object boundary, and `response` for handing a
 JSON-serialisable value to a `Response` ready to send. Veloce ships a
-default `DefaultJSONProvider` backed by orjson for speed, plus a
-`JSONResponseProvider` shim that wraps `JSONResponse` construction so
-callers can override the response class without rewriting the encoder.
+default `DefaultJSONProvider` backed by orjson for speed.
 
 Custom providers subclass `JSONProvider`; the app picks one by setting
 `app.json` to an instance (or pointing `app.json_provider_class` at a
@@ -17,6 +15,8 @@ from __future__ import annotations
 from typing import Any
 
 import orjson
+
+from veloce.http.response import JSONResponse, Response
 
 
 class JSONProvider:
@@ -41,8 +41,6 @@ class JSONProvider:
     def response(self, value: Any, **kwargs: Any) -> Any:
         """Build a `Response` carrying `value` as JSON. Default delegates
         to `dumps` + a `JSONResponse`."""
-        from veloce.http.response import JSONResponse, Response
-
         body = self.dumps(value)
         # `JSONResponse.__new__` skips its default orjson re-encoding so
         # caller-provided options (e.g. sort_keys) survive.
@@ -69,10 +67,14 @@ class DefaultJSONProvider(JSONProvider):
         opts = 0
         cfg = getattr(self._app, "config", None)
         if cfg is not None:
-            if cfg.get("JSON_SORT_KEYS") or kwargs.get("sort_keys"):
+            if cfg.get("JSON_SORT_KEYS"):
                 opts |= orjson.OPT_SORT_KEYS
-            if cfg.get("JSONIFY_PRETTYPRINT_REGULAR") or kwargs.get("indent"):
+            if cfg.get("JSONIFY_PRETTYPRINT_REGULAR"):
                 opts |= orjson.OPT_INDENT_2
+        if kwargs.get("sort_keys"):
+            opts |= orjson.OPT_SORT_KEYS
+        if kwargs.get("indent"):
+            opts |= orjson.OPT_INDENT_2
         return orjson.dumps(obj, option=opts) if opts else orjson.dumps(obj)
 
     def loads(self, data: bytes | str) -> Any:

@@ -13,6 +13,7 @@ still requires recipients to tolerate) and returns a timezone-aware
 
 from __future__ import annotations
 
+import calendar
 from datetime import date, datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
 from time import struct_time
@@ -54,8 +55,6 @@ def http_date(value: datetime | date | struct_time | int | float | None = None) 
             value = value.replace(tzinfo=timezone.utc)
         ts = value.timestamp()
     elif isinstance(value, struct_time):
-        import calendar
-
         ts = calendar.timegm(value)
     elif isinstance(value, date):
         # `date` (not datetime) → midnight UTC.

@@ -1,3 +1,7 @@
+---
+description: Complete Veloce API reference — every public class, function, and decorator, auto-generated from docstrings via mkdocstrings.
+---
+
 # API Reference
 
 This page is generated from the docstrings of the public `veloce`

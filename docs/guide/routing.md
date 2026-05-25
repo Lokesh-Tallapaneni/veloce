@@ -1,3 +1,8 @@
+---
+description: Define HTTP routes in Veloce with a radix-tree router, typed path converters (int, float, uuid, path), query parameters, sub-routers, and reverse URLs.
+tags: [routing, radix, async, asgi]
+---
+
 # Routing
 
 Veloce matches requests with a **radix tree**. Routes are registered at
@@ -8,7 +13,7 @@ tree traversal, not afterwards.
 
 Every HTTP method has a decorator on the application:
 
-```python
+```python title="app.py"
 from veloce import Request, Veloce
 
 app = Veloce()
@@ -82,7 +87,7 @@ A `Router` is a self-contained group of routes with a shared prefix and
 metadata. Mount it onto the app with `include_router`:
 
 ```python
-from veloce import Router, Veloce
+from veloce import Request, Router, Veloce
 
 app = Veloce()
 api = Router(prefix="/api/v2", tags=["v2"])
@@ -112,3 +117,9 @@ async def user_detail(user_id: int):
 
 url = app.url_for("user-detail", user_id=7)   # "/users/7"
 ```
+
+## See also
+
+- [Requests & responses](requests-responses.md)
+- [Dependency injection](dependency-injection.md)
+- [Middleware](middleware.md)

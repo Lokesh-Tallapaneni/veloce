@@ -1,4 +1,5 @@
 ---
+description: Veloce is an ultra-fast async Python web framework — ASGI-native, with radix routing, typed dependency injection, OpenAPI 3.1, WebSockets, and an in-memory test client.
 hide:
   - navigation
   - toc
@@ -8,7 +9,7 @@ hide:
 
 <span class="vl-eyebrow">async · ASGI-native · typed</span>
 
-# Veloce { .vl-hero__title }
+# Veloce — Async Python Web Framework { .vl-hero__title }
 
 <p class="vl-hero__tagline" markdown>
 Fast, ergonomic async Python web framework. Routing, dependency
@@ -20,6 +21,8 @@ test client — all in one tree.
 [API reference](reference.md){ .md-button }
 
 </div>
+
+Veloce is an ASGI-native, async-first Python web framework for building APIs and full-stack applications. It draws Flask-compatible patterns (`g`, `flash`, blueprints, `@app.route`) and FastAPI-style typed dependency injection together into one tree — without depending on either. Requires Python 3.10+.
 
 ## Why Veloce
 

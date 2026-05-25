@@ -9,7 +9,11 @@ Token format: `<base64url(payload)>.<base64url(timestamp)>.<base64url(sig)>`
 
 - The payload is the user's value serialised to JSON (via `orjson`).
 - The timestamp is a big-endian uint64 of seconds since the epoch.
-- The signature is `HMAC-SHA256(secret + salt, payload.timestamp)`.
+- The signature is `HMAC-SHA256(derived_key, payload.timestamp)` where
+  `derived_key = HMAC-SHA256(secret, salt)` (nested HMAC, RFC 2104 §2).
+  The salt is used to derive a per-purpose key, not appended to the
+  secret — sharing one secret across purposes (sessions, CSRF, password
+  reset) yields cryptographically distinct keys.
 
 Tokens are URL-safe (no `/`, `+`, `=` characters). Comparison is
 constant-time. The implementation is derived from RFC 2104 (HMAC) and
@@ -38,7 +42,6 @@ dependency — a considered trade-off, not an oversight:
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import struct
@@ -46,6 +49,8 @@ import time
 from typing import Any
 
 import orjson
+
+from veloce._internal import _b64decode, _b64encode
 
 
 class BadSignature(Exception):
@@ -64,17 +69,6 @@ class BadData(BadSignature):
     """The token's payload could not be decoded (malformed base64 / JSON)."""
 
     pass
-
-
-def _b64encode(data: bytes) -> str:
-    """URL-safe base64 with `=` padding stripped."""
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def _b64decode(data: str) -> bytes:
-    """Inverse of `_b64encode`. Re-adds padding before decoding."""
-    pad = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + pad)
 
 
 class Signer:
@@ -183,6 +177,8 @@ class Signer:
 
         if max_age is not None:
             age = int(time.time()) - signed_at
+            if age < 0:
+                raise BadTimeSignature("Signature age is negative (future-dated)")
             if age > max_age:
                 raise BadTimeSignature(f"token is {age} s old, max_age is {max_age} s")
 

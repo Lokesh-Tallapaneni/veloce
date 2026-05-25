@@ -17,6 +17,14 @@ class LoggingMiddleware(Middleware):
     def __init__(self, logger: logging.Logger | None = None) -> None:
         if logger is None:
             self.logger = logging.getLogger("veloce.access")
+            # Only add our own handler when the `veloce.access` logger
+            # has no handlers of its own. We intentionally check
+            # `self.logger.handlers` (direct list) rather than
+            # `hasHandlers()` (walks parents): a root-level handler
+            # configured at WARNING would silently swallow the INFO
+            # access-log records, leaving the operator with no output.
+            # Attaching our own handler ensures access logs always emit
+            # regardless of the root-logger configuration.
             if not self.logger.handlers:
                 handler = logging.StreamHandler()
                 handler.setFormatter(
@@ -26,7 +34,7 @@ class LoggingMiddleware(Middleware):
                     )
                 )
                 self.logger.addHandler(handler)
-                self.logger.setLevel(logging.INFO)
+            self.logger.setLevel(logging.INFO)
         else:
             self.logger = logger
 
@@ -40,6 +48,7 @@ class LoggingMiddleware(Middleware):
     _START_KEY = "__veloce_logging_start"
 
     async def process_request(self, request: Request) -> Response | None:
+        """Record the request start time for duration logging."""
         # Skip the `time.monotonic()` call entirely when the logger is
         # not actually going to emit anything — the (typically) muted
         # access log is a common production setup, and the clock read
@@ -49,6 +58,7 @@ class LoggingMiddleware(Middleware):
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        """Log the request method, path, status, and timing."""
         if not self.logger.isEnabledFor(logging.INFO):
             return response
         # `pop` rather than `get` so a downstream second-pass through
@@ -74,11 +84,13 @@ class RequestIDMiddleware(Middleware):
         self.header_name = header_name
 
     async def process_request(self, request: Request) -> Response | None:
+        """Attach a unique request ID to each request."""
         request_id = request.headers.get(self.header_name.lower(), str(uuid.uuid4()))
         request._state["request_id"] = request_id
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        """Echo the request ID in the response headers."""
         request_id = request._state.get("request_id")
         if request_id:
             response.headers[self.header_name] = request_id

@@ -1,3 +1,8 @@
+---
+description: Test Veloce apps with the in-memory TestClient — no socket, no uvicorn. Override dependencies, exercise lifespan, drive WebSockets, and session_transaction support.
+tags: [testing, testclient, pytest]
+---
+
 # Testing
 
 Veloce ships an in-memory `TestClient`. It constructs ASGI scopes
@@ -79,3 +84,9 @@ def test_ws_echo():
 Combine the client with `app.dependency_overrides` to swap real
 dependencies (databases, auth, external APIs) for fakes — see
 [Dependency Injection](dependency-injection.md#overriding-dependencies-in-tests).
+
+## See also
+
+- [Dependency injection](dependency-injection.md)
+- [Routing](routing.md)
+- [Deployment](deployment.md)

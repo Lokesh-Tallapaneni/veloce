@@ -7,6 +7,7 @@ from typing import Any
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
 from veloce.routing.params import Form
+from veloce.security._utils import _extract_bearer_token
 
 
 class OAuth2PasswordBearer:
@@ -23,16 +24,7 @@ class OAuth2PasswordBearer:
         self.scopes = scopes or {}
 
     def __call__(self, request: Request) -> str | None:
-        auth = request.headers.get("authorization", "")
-        if not auth.startswith("Bearer "):
-            if self.auto_error:
-                raise HTTPException(
-                    401,
-                    "Not authenticated",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            return None
-        return auth[7:]
+        return _extract_bearer_token(request, "Bearer", self.auto_error)
 
 
 class OAuth2AuthorizationCodeBearer:
@@ -71,16 +63,7 @@ class OAuth2AuthorizationCodeBearer:
         self.auto_error = auto_error
 
     def __call__(self, request: Request) -> str | None:
-        auth = request.headers.get("authorization", "")
-        if not auth.startswith("Bearer "):
-            if self.auto_error:
-                raise HTTPException(
-                    401,
-                    "Not authenticated",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            return None
-        return auth[7:]
+        return _extract_bearer_token(request, "Bearer", self.auto_error)
 
 
 class OpenIdConnect:
@@ -101,16 +84,7 @@ class OpenIdConnect:
         self.auto_error = auto_error
 
     def __call__(self, request: Request) -> str | None:
-        auth = request.headers.get("authorization", "")
-        if not auth.startswith("Bearer "):
-            if self.auto_error:
-                raise HTTPException(
-                    401,
-                    "Not authenticated",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            return None
-        return auth[7:]
+        return _extract_bearer_token(request, "Bearer", self.auto_error)
 
 
 class OAuth2PasswordRequestForm:
@@ -145,6 +119,7 @@ class OAuth2PasswordRequestForm:
 
     @classmethod
     async def from_request(cls, request: Request) -> OAuth2PasswordRequestForm:
+        """Parse an OAuth2 password grant from the request form data."""
         form_data = await request.form()
         return cls(
             username=form_data.get("username", ""),
@@ -184,3 +159,12 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
             client_id=client_id,
             client_secret=client_secret,
         )
+
+    @classmethod
+    async def from_request(cls, request: Request) -> OAuth2PasswordRequestFormStrict:
+        """Parse and validate that grant_type is exactly 'password'."""
+        form_data = await request.form()
+        grant_type = form_data.get("grant_type", "password")
+        if grant_type != "password":
+            raise HTTPException(422, "grant_type must be 'password'")
+        return await super().from_request(request)

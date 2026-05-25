@@ -30,10 +30,10 @@ a `MethodView` subclass raises at class-definition time.
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable
 from typing import Any, ClassVar
 
+from veloce._internal import _is_async_callable
 from veloce.exceptions import MethodNotAllowed
 
 # Standard HTTP method names (RFC 9110 §9.3). Lower-cased because that's
@@ -113,7 +113,7 @@ class MethodView(View):
             attr = getattr(cls, name, None)
             if attr is None:
                 continue
-            if not inspect.iscoroutinefunction(attr):
+            if not _is_async_callable(attr):
                 raise TypeError(
                     f"{cls.__name__}.{name} must be async (Veloce handlers are `async def`-only)"
                 )

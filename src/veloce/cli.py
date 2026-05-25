@@ -56,6 +56,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     except ImportError as err:  # pragma: no cover — only on broken envs
         raise SystemExit("uvicorn is not installed. Install it with: pip install uvicorn") from err
 
+    _load_app(args.app)  # validate the reference before handing to uvicorn
+
     uvicorn.run(
         args.app,
         host=args.host,
@@ -65,6 +67,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
         log_level=args.log_level,
     )
     return 0
+
+
+def _require_app_attr(app: Any, attr: str, hint: str) -> None:
+    """Raise `SystemExit` with a consistent message when `app` lacks `attr`.
+
+    Centralises the four near-identical guards in `_cmd_shell`,
+    `_cmd_custom`, `_cmd_routes`, and `_cmd_check` so a future rename of
+    `make_shell_context` / `cli` / `routes` / `security_audit` only needs
+    one edit, and the error message stays uniform across subcommands.
+    """
+    if not hasattr(app, attr):
+        raise SystemExit(f"target is not a Veloce app (missing {hint})")
 
 
 def _cmd_shell(args: argparse.Namespace) -> int:
@@ -78,8 +92,7 @@ def _cmd_shell(args: argparse.Namespace) -> int:
     import code
 
     app = _load_app(args.app)
-    if not hasattr(app, "make_shell_context"):
-        raise SystemExit(f"{args.app} is not a Veloce app (missing `.make_shell_context`)")
+    _require_app_attr(app, "make_shell_context", "`.make_shell_context`")
 
     with app.app_context():
         ctx = app.make_shell_context()
@@ -102,22 +115,21 @@ def _cmd_custom(args: argparse.Namespace) -> int:
     the Click group. With no extra args the group prints its own help.
     """
     app = _load_app(args.app)
-    if not hasattr(app, "cli"):
-        raise SystemExit(f"{args.app} is not a Veloce app (missing `.cli`)")
+    _require_app_attr(app, "cli", "`.cli`")
     with app.app_context():
         # `app.cli` is a `click.Group`. Call it with the remaining argv
         # and `standalone_mode=False` so we own the exit code path.
         try:
             return int(app.cli.main(args.cli_args, standalone_mode=False) or 0)
         except SystemExit as exc:  # Click raises on --help etc.
-            return int(exc.code or 0)
+            code = exc.code
+            return int(code) if isinstance(code, int) else (1 if code else 0)
 
 
 def _cmd_routes(args: argparse.Namespace) -> int:
     """`veloce routes` — print the route table."""
     app = _load_app(args.app)
-    if not hasattr(app, "routes"):
-        raise SystemExit(f"{args.app} is not a Veloce app (missing `.routes` property)")
+    _require_app_attr(app, "routes", "`.routes` property")
 
     rows = list(app.routes)
     if not rows:
@@ -142,8 +154,7 @@ def _cmd_routes(args: argparse.Namespace) -> int:
 def _cmd_check(args: argparse.Namespace) -> int:
     """`veloce check` — run a pre-deploy security audit of the app."""
     app = _load_app(args.app)
-    if not hasattr(app, "security_audit"):
-        raise SystemExit(f"{args.app} is not a Veloce app (missing `.security_audit()`)")
+    _require_app_attr(app, "security_audit", "`.security_audit()`")
 
     warnings = app.security_audit()
     if not warnings:
@@ -200,6 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Entry point for the veloce CLI."""
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))

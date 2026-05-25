@@ -1,3 +1,7 @@
+---
+description: Install Veloce and build your first async Python web app in 5 minutes — pip install, a minimal app, path params, and interactive API docs.
+---
+
 # Getting started
 
 ## Install
@@ -5,7 +9,7 @@
 Veloce requires **Python 3.10 or newer**.
 
 ```bash
-pip install veloce
+pip install veloceframework
 ```
 
 To run an app you will also want an ASGI server such as

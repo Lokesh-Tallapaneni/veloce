@@ -3,34 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import hashlib
 import mimetypes
 import os
 from collections.abc import AsyncIterator
-from http import HTTPStatus
 from typing import Any
 from urllib.parse import quote
 
 import orjson
 
-# Reason-phrase lookup for `Response.status` — `HTTPStatus(code).phrase`
-# walks the IntEnum on every access, which shows up on the hot
-# status-line path. Build the mapping once at import time.
-_STATUS_PHRASES: dict[int, str] = {s.value: s.phrase for s in HTTPStatus}
-
-
-def _reject_header_crlf(value: str, what: str) -> str:
-    """Reject CR, LF, or NUL in a header field name or value.
-
-    Untrusted data carrying these characters enables HTTP response
-    splitting / header injection. Raising — rather than silently
-    stripping — surfaces the bug at the offending call site.
-    """
-    # Inline three `__contains__` calls — CPython short-circuits on the
-    # first match, and a typical clean header value scans them in C.
-    if "\r" in value or "\n" in value or "\x00" in value:
-        raise ValueError(f"{what} contains an illegal control character (CR, LF, or NUL)")
-    return value
+from veloce._internal import (
+    _STATUS_PHRASES,
+    MIME_HTML,
+    MIME_JSON,
+    MIME_OCTET,
+    MIME_PLAIN,
+    _file_etag,
+    _reject_header_crlf,
+)
+from veloce.http.cache_control import CacheControl
+from veloce.http.dates import http_date, parse_date
+from veloce.http.header_set import HeaderSet
 
 
 def _format_content_disposition(disposition: str, filename: str) -> str:
@@ -48,19 +42,6 @@ def _format_content_disposition(disposition: str, filename: str) -> str:
     if ascii_name != filename:  # the original had non-ASCII characters
         value += f"; filename*=UTF-8''{quote(filename, safe='')}"
     return value
-
-
-def _file_etag(path: str, size: int, mtime: float) -> str:
-    """Strong, opaque-quoted ETag derived from (path, size, mtime).
-
-    RFC 9110 §8.8.3 — the entity-tag is `quoted-string`. Using MD5 of
-    the identity tuple keeps it deterministic across processes and
-    matches the shape `StaticFiles._compute_etag` emits, so a static
-    handler and a `FileResponse` over the same file validate against
-    the same `If-None-Match` value.
-    """
-    key = f"{path}:{size}:{mtime}".encode()
-    return f'"{hashlib.md5(key).hexdigest()}"'
 
 
 class Response:
@@ -106,10 +87,12 @@ class Response:
 
     @property
     def body(self) -> bytes:
+        """Return the response body bytes."""
         return self._body
 
     @body.setter
     def body(self, value: bytes) -> None:
+        """Set the response body."""
         self._body = value
         self._encoded = None
 
@@ -120,10 +103,12 @@ class Response:
 
     @property
     def media_type(self) -> str:
+        """Return the full Content-Type including parameters."""
         return self.content_type
 
     @media_type.setter
     def media_type(self, value: str) -> None:
+        """Set the media type."""
         self.content_type = value
         # Invalidate any cached HTTP/1.1 encode so the new content type
         # takes effect on the next `encode()` call.
@@ -140,7 +125,7 @@ class Response:
         Matches `application/json` and any `application/*+json`
         structured suffix (RFC 6839 §3.1).
         """
-        mt = (self.content_type or "").split(";", 1)[0].strip().lower()
+        mt = self.mimetype
         if mt == "application/json":
             return True
         return mt.startswith("application/") and mt.endswith("+json")
@@ -166,6 +151,7 @@ class Response:
 
     @mimetype.setter
     def mimetype(self, value: str) -> None:
+        """Set the mimetype."""
         # Preserve the current charset parameter, if any.
         cs = self.charset
         ct = self.content_type or ""
@@ -191,6 +177,7 @@ class Response:
 
     @status.setter
     def status(self, value: int | str) -> None:
+        """Set the status code."""
         if isinstance(value, int):
             self.status_code = value
         else:
@@ -208,16 +195,20 @@ class Response:
         parts = [f"HTTP/1.1 {self.status_code} {reason}".rstrip() + "\r\n"]
 
         user_headers = self.headers
-        # User-supplied keys win for Content-Type/Length/Connection.
-        # Detect case-insensitively so a user-passed "content-type"
-        # doesn't get silently shadowed by — or duplicated alongside —
-        # the framework default.
-        user_keys_lc = {k.lower() for k in user_headers}
-        if "content-type" not in user_keys_lc:
+        if user_headers:
+            user_keys_lc = {k.lower() for k in user_headers}
+            has_ct = "content-type" in user_keys_lc
+            has_cl = "content-length" in user_keys_lc
+            has_conn = "connection" in user_keys_lc
+            if not has_ct:
+                parts.append(f"Content-Type: {self.content_type}\r\n")
+            if not has_cl:
+                parts.append(f"Content-Length: {len(self.body)}\r\n")
+            if not has_conn:
+                parts.append("Connection: keep-alive\r\n")
+        else:
             parts.append(f"Content-Type: {self.content_type}\r\n")
-        if "content-length" not in user_keys_lc:
             parts.append(f"Content-Length: {len(self.body)}\r\n")
-        if "connection" not in user_keys_lc:
             parts.append("Connection: keep-alive\r\n")
 
         for key, value in user_headers.items():
@@ -275,45 +266,57 @@ class Response:
         """
         _reject_header_crlf(key, "cookie name")
         _reject_header_crlf(value, "cookie value")
-        cookie = f"{key}={value}; Path={path}"
-        if max_age is not None:
-            # `max_age` may be passed as a `timedelta`; coerce to
-            # whole seconds (the wire format is an integer).
-            import datetime as _dt0
-
-            if isinstance(max_age, _dt0.timedelta):
-                max_age = int(max_age.total_seconds())
-            cookie += f"; Max-Age={max_age}"
-        if expires is not None:
-            import datetime as _dt
-            from email.utils import formatdate
-
-            if isinstance(expires, _dt.datetime):
-                if expires.tzinfo is None:
-                    expires = expires.replace(tzinfo=_dt.timezone.utc)
-                stamp = expires.timestamp()
-                cookie += f"; Expires={formatdate(stamp, usegmt=True)}"
-            elif isinstance(expires, (int, float)):
-                cookie += f"; Expires={formatdate(float(expires), usegmt=True)}"
-            else:
-                cookie += f"; Expires={expires}"
         if domain:
-            cookie += f"; Domain={domain}"
-        if secure:
-            cookie += "; Secure"
-        if httponly:
-            cookie += "; HttpOnly"
+            _reject_header_crlf(domain, "cookie domain")
+        if path:
+            _reject_header_crlf(path, "cookie path")
         if samesite:
-            cookie += f"; SameSite={samesite}"
+            _reject_header_crlf(samesite, "cookie samesite")
+
+        # Normalise empty samesite to None so dump_cookie omits it.
+        if samesite is not None and not samesite.strip():
+            samesite = None
+
+        # dump_cookie accepts datetime and numeric timestamps but not
+        # pre-formatted strings. Handle the string case separately.
+        expires_str: str | None = None
+        dump_expires = expires
+        if isinstance(expires, str):
+            expires_str = expires
+            dump_expires = None
+
+        from veloce.http.cookies import dump_cookie  # breaks http.response -> http.cookies cycle
+
+        cookie = dump_cookie(
+            key,
+            value,
+            max_age=max_age,
+            expires=dump_expires,
+            path=path,
+            domain=domain,
+            secure=secure,
+            httponly=httponly,
+            samesite=samesite,
+        )
+        if expires_str is not None:
+            cookie += f"; Expires={expires_str}"
         # CHIPS `Partitioned` — only valid alongside `Secure`.
         if partitioned and secure:
             cookie += "; Partitioned"
+        self._append_set_cookie_header(cookie)
+        self._encoded = None
+
+    def _append_set_cookie_header(self, raw_value: str) -> None:
+        """Append `raw_value` (already a serialised Set-Cookie line, or
+        a `\\r\\nSet-Cookie: `-joined multi-cookie blob) onto the response's
+        Set-Cookie header without overwriting earlier cookies. Single
+        canonical home for the Q44 multi-cookie join format.
+        """
         existing = self.headers.get("Set-Cookie")
         if existing:
-            self.headers["Set-Cookie"] = existing + "\r\nSet-Cookie: " + cookie
+            self.headers["Set-Cookie"] = existing + "\r\nSet-Cookie: " + raw_value
         else:
-            self.headers["Set-Cookie"] = cookie
-        self._encoded = None
+            self.headers["Set-Cookie"] = raw_value
 
     @property
     def content_length(self) -> int:
@@ -346,6 +349,7 @@ class Response:
 
     @charset.setter
     def charset(self, value: str) -> None:
+        """Set the charset."""
         ct = self.content_type or "text/plain"
         # Keep the bare media type, drop any existing parameters, then
         # re-attach the new charset.
@@ -395,15 +399,11 @@ class Response:
         raw = self.headers.get("Last-Modified") or self.headers.get("last-modified")
         if not raw:
             return None
-        try:
-            from email.utils import parsedate_to_datetime
-
-            return parsedate_to_datetime(raw.strip())
-        except (TypeError, ValueError):
-            return None
+        return parse_date(raw)
 
     @last_modified.setter
     def last_modified(self, value: Any) -> None:
+        """Set the last modified date."""
         self._set_http_date_header("Last-Modified", value)
 
     @property
@@ -412,15 +412,11 @@ class Response:
         raw = self.headers.get("Expires") or self.headers.get("expires")
         if not raw:
             return None
-        try:
-            from email.utils import parsedate_to_datetime
-
-            return parsedate_to_datetime(raw.strip())
-        except (TypeError, ValueError):
-            return None
+        return parse_date(raw)
 
     @expires.setter
     def expires(self, value: Any) -> None:
+        """Set the expires date."""
         self._set_http_date_header("Expires", value)
 
     def _set_http_date_header(self, name: str, value: Any) -> None:
@@ -434,15 +430,10 @@ class Response:
             self.headers.pop(name.lower(), None)
             self._encoded = None
             return
-        import datetime as _dt
-        from email.utils import formatdate
-
-        if isinstance(value, _dt.datetime):
-            if value.tzinfo is None:
-                value = value.replace(tzinfo=_dt.timezone.utc)
-            self.headers[name] = formatdate(value.timestamp(), usegmt=True)
-        elif isinstance(value, (int, float)):
-            self.headers[name] = formatdate(float(value), usegmt=True)
+        if isinstance(value, _dt.datetime) and value.tzinfo is None:
+            value = value.replace(tzinfo=_dt.timezone.utc)
+        if isinstance(value, (_dt.datetime, _dt.date, int, float)):
+            self.headers[name] = http_date(value)
         else:
             self.headers[name] = str(value)
         self._encoded = None
@@ -462,7 +453,7 @@ class Response:
         if not existing:
             return out
         # Q44 emits multi-cookies as `cookie1\r\nSet-Cookie: cookie2…`.
-        for line in existing.split("\r\nSet-Cookie:"):
+        for line in existing.split("\r\nSet-Cookie: "):
             first = line.split(";", 1)[0].strip()
             if "=" in first:
                 name, _, value = first.partition("=")
@@ -480,7 +471,7 @@ class Response:
         result: list[tuple[str, str]] = []
         for k, v in self.headers.items():
             if k.lower() == "set-cookie":
-                for piece in v.split("\r\nSet-Cookie:"):
+                for piece in v.split("\r\nSet-Cookie: "):
                     result.append((k, piece.strip()))
             else:
                 result.append((k, v))
@@ -499,6 +490,7 @@ class Response:
 
     @data.setter
     def data(self, value: bytes | str) -> None:
+        """Set the data."""
         self.set_data(value)
 
     def set_data(self, value: bytes | str) -> None:
@@ -572,14 +564,13 @@ class Response:
         depends on the named request headers" without clobbering
         existing entries.
         """
+        # Delegate dedup + ordering to `HeaderSet` so the same
+        # case-insensitive merge logic doesn't drift between this method
+        # and the `vary` property's own datastructure.
         existing = self.headers.get("Vary", "") or self.headers.get("vary", "")
-        existing_set = {p.strip().lower() for p in existing.split(",") if p.strip()}
-        result: list[str] = [p.strip() for p in existing.split(",") if p.strip()]
-        for name in header_names:
-            if name.lower() not in existing_set:
-                result.append(name)
-                existing_set.add(name.lower())
-        value = ", ".join(result)
+        merged = HeaderSet(existing)
+        merged.update(header_names)
+        value = merged.to_header()
         # Always write under `Vary` (canonical case) and clear any
         # lower-case duplicate.
         self.headers.pop("vary", None)
@@ -596,14 +587,13 @@ class Response:
         string to replace it. Mutating the returned object does *not*
         write back — call `add_vary(...)` or reassign for that.
         """
-        from veloce.http.header_set import HeaderSet
+
 
         return HeaderSet(self.headers.get("Vary", ""))
 
     @vary.setter
     def vary(self, value: Any) -> None:
-        from veloce.http.header_set import HeaderSet
-
+        """Set the vary."""
         hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
         self.headers.pop("vary", None)
         self.headers["Vary"] = hs.to_header()
@@ -616,14 +606,13 @@ class Response:
         Lists the HTTP methods the resource supports (RFC 9110 §10.2.1).
         Assign a `HeaderSet`, iterable, or comma-separated string.
         """
-        from veloce.http.header_set import HeaderSet
+
 
         return HeaderSet(self.headers.get("Allow", ""))
 
     @allow.setter
     def allow(self, value: Any) -> None:
-        from veloce.http.header_set import HeaderSet
-
+        """Set the allow."""
         hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
         self.headers.pop("allow", None)
         self.headers["Allow"] = hs.to_header()
@@ -640,6 +629,7 @@ class Response:
 
     @www_authenticate.setter
     def www_authenticate(self, value: str | None) -> None:
+        """Set the WWW-Authenticate."""
         if value is None:
             self.headers.pop("WWW-Authenticate", None)
         else:
@@ -665,6 +655,7 @@ class Response:
 
     @content_encoding.setter
     def content_encoding(self, value: str | None) -> None:
+        """Set the content encoding."""
         if value is None:
             self.headers.pop("Content-Encoding", None)
         else:
@@ -678,6 +669,7 @@ class Response:
 
     @content_language.setter
     def content_language(self, value: str | None) -> None:
+        """Set the content language."""
         if value is None:
             self.headers.pop("Content-Language", None)
         else:
@@ -695,6 +687,7 @@ class Response:
 
     @accept_ranges.setter
     def accept_ranges(self, value: str | None) -> None:
+        """Set the accept ranges."""
         if value is None:
             self.headers.pop("Accept-Ranges", None)
         else:
@@ -735,17 +728,16 @@ class Response:
         Returns `None` when unset or unparseable. Assign a `datetime`
         or POSIX timestamp to set it; assign `None` to remove it.
         """
-        from veloce.http.dates import parse_date
+
 
         return parse_date(self.headers.get("Date"))
 
     @date.setter
     def date(self, value: Any) -> None:
+        """Set the date."""
         if value is None:
             self.headers.pop("Date", None)
         else:
-            from veloce.http.dates import http_date
-
             self.headers["Date"] = http_date(value)
         self._encoded = None
 
@@ -756,6 +748,7 @@ class Response:
 
     @location.setter
     def location(self, value: str | None) -> None:
+        """Set the location."""
         if value is None:
             self.headers.pop("Location", None)
         else:
@@ -790,22 +783,18 @@ class Response:
         raw = raw.strip()
         if raw.isdigit():
             return int(raw)
-        from veloce.http.dates import parse_date
+
 
         return parse_date(raw)
 
     @retry_after.setter
     def retry_after(self, value: Any) -> None:
-        from datetime import datetime as _dt
-        from datetime import timedelta as _td
-
+        """Set the retry after."""
         if value is None:
             self.headers.pop("Retry-After", None)
-        elif isinstance(value, _td):
+        elif isinstance(value, _dt.timedelta):
             self.headers["Retry-After"] = str(int(value.total_seconds()))
-        elif isinstance(value, _dt):
-            from veloce.http.dates import http_date
-
+        elif isinstance(value, _dt.datetime):
             self.headers["Retry-After"] = http_date(value)
         else:
             self.headers["Retry-After"] = str(int(value))
@@ -877,7 +866,7 @@ class Response:
         introspection: `resp.cache_control.max_age`,
         `resp.cache_control.no_store`, etc.
         """
-        from veloce.http.cache_control import CacheControl
+
 
         return CacheControl(self.headers.get("Cache-Control", ""))
 
@@ -919,8 +908,6 @@ class Response:
         the explicit ETag in `__init__(headers=...)` to skip this.
         Returns the value set.
         """
-        import hashlib
-
         digest = hashlib.md5(self.body).hexdigest()
         etag = f'"{digest}"' if not weak else f'W/"{digest}"'
         self.headers["ETag"] = etag
@@ -960,12 +947,12 @@ class Response:
         ours_lm = self.headers.get("Last-Modified", "")
         ims = getattr(request, "if_modified_since", None)
         if ims is not None and ours_lm:
-            from email.utils import parsedate_to_datetime
 
-            try:
-                ours_ts = parsedate_to_datetime(ours_lm).timestamp()
-            except (TypeError, ValueError):
+
+            ours_dt = parse_date(ours_lm)
+            if ours_dt is None:
                 return self
+            ours_ts = ours_dt.timestamp()
             # HTTP-date second resolution — integer floor.
             if int(ours_ts) <= int(ims):
                 self._downgrade_to_304()
@@ -975,8 +962,7 @@ class Response:
         """Strip body + flip status to 304. Used by `make_conditional`."""
         self.status_code = 304
         self.body = b""
-        # `Content-Length` will be recomputed on encode/emit; explicit
-        # `Content-Type` removal so a 304 doesn't advertise a media type
+        # Content-Length removal so a 304 doesn't carry a length
         # for a body it isn't sending (RFC 9110 §15.4.5).
         self.headers.pop("Content-Length", None)
         self.headers.pop("content-length", None)
@@ -1031,6 +1017,8 @@ class Response:
 class JSONResponse(Response):
     """JSON response using orjson for speed."""
 
+    __slots__ = ()
+
     def __init__(
         self,
         data: Any,
@@ -1041,7 +1029,7 @@ class JSONResponse(Response):
         super().__init__(
             status_code=status_code,
             body=body,
-            content_type="application/json",
+            content_type=MIME_JSON,
             headers=headers,
         )
 
@@ -1054,6 +1042,8 @@ class ORJSONResponse(JSONResponse):
     the encoder choice via `response_class=ORJSONResponse`.
     """
 
+    __slots__ = ()
+
 
 class UJSONResponse(Response):
     """JSON response encoded with `ujson`.
@@ -1062,6 +1052,8 @@ class UJSONResponse(Response):
     clear message when the package is missing rather than at module load,
     so apps that don't use this class don't need ujson installed.
     """
+
+    __slots__ = ()
 
     def __init__(
         self,
@@ -1079,7 +1071,7 @@ class UJSONResponse(Response):
         super().__init__(
             status_code=status_code,
             body=body,
-            content_type="application/json",
+            content_type=MIME_JSON,
             headers=headers,
         )
 
@@ -1087,6 +1079,8 @@ class UJSONResponse(Response):
 class HTMLResponse(Response):
     """HTML response."""
 
+    __slots__ = ()
+
     def __init__(
         self,
         content: str,
@@ -1096,7 +1090,7 @@ class HTMLResponse(Response):
         super().__init__(
             status_code=status_code,
             body=content.encode("utf-8"),
-            content_type="text/html; charset=utf-8",
+            content_type=MIME_HTML,
             headers=headers,
         )
 
@@ -1104,6 +1098,8 @@ class HTMLResponse(Response):
 class PlainTextResponse(Response):
     """Plain text response."""
 
+    __slots__ = ()
+
     def __init__(
         self,
         content: str,
@@ -1113,13 +1109,15 @@ class PlainTextResponse(Response):
         super().__init__(
             status_code=status_code,
             body=content.encode("utf-8"),
-            content_type="text/plain; charset=utf-8",
+            content_type=MIME_PLAIN,
             headers=headers,
         )
 
 
 class RedirectResponse(Response):
     """HTTP redirect."""
+
+    __slots__ = ()
 
     def __init__(
         self,
@@ -1150,11 +1148,13 @@ class StreamingResponse(Response):
     response always exposes an async stream; both forms are accepted.
     """
 
+    __slots__ = ()
+
     def __init__(
         self,
         content: Any,
         status_code: int = 200,
-        content_type: str = "application/octet-stream",
+        content_type: str = MIME_OCTET,
         headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(
@@ -1180,8 +1180,8 @@ class StreamingResponse(Response):
 
     def encode(self) -> bytes:
         """For streaming, encode headers with chunked transfer."""
-        reason = HTTPStatus(self.status_code).phrase
-        parts = [f"HTTP/1.1 {self.status_code} {reason}\r\n"]
+        reason = _STATUS_PHRASES.get(self.status_code, "")
+        parts = [f"HTTP/1.1 {self.status_code} {reason}".rstrip() + "\r\n"]
         final_headers = {
             "Content-Type": self.content_type,
             "Transfer-Encoding": "chunked",
@@ -1224,10 +1224,8 @@ class FileResponse(Response):
         if not os.path.isfile(path):
             raise FileNotFoundError(f"File not found: {path}")
 
-        self._file_path = path
-
         if content_type is None:
-            content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+            content_type = mimetypes.guess_type(path)[0] or MIME_OCTET
 
         hdrs = headers or {}
         if filename:
@@ -1239,9 +1237,9 @@ class FileResponse(Response):
 
         st = os.stat(path)
         if "Last-Modified" not in hdrs and "last-modified" not in hdrs:
-            from email.utils import formatdate
 
-            hdrs["Last-Modified"] = formatdate(st.st_mtime, usegmt=True)
+
+            hdrs["Last-Modified"] = http_date(st.st_mtime)
         if "ETag" not in hdrs and "etag" not in hdrs:
             hdrs["ETag"] = _file_etag(path, st.st_size, st.st_mtime)
 
@@ -1290,17 +1288,18 @@ class FileResponse(Response):
         """Async factory — reads file in executor to avoid blocking event loop."""
         loop = asyncio.get_running_loop()
 
-        def _read_file() -> bytes:
+        def _read_and_stat() -> tuple[bytes, os.stat_result]:
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"File not found: {path}")
             with open(path, "rb") as f:
-                return f.read()
+                body = f.read()
+                st = os.fstat(f.fileno())
+            return body, st
 
-        body = await loop.run_in_executor(None, _read_file)
-        st = await loop.run_in_executor(None, os.stat, path)
+        body, st = await loop.run_in_executor(None, _read_and_stat)
 
         if content_type is None:
-            content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+            content_type = mimetypes.guess_type(path)[0] or MIME_OCTET
 
         hdrs = headers or {}
         if filename:
@@ -1308,13 +1307,12 @@ class FileResponse(Response):
                 content_disposition_type, filename
             )
         if "Last-Modified" not in hdrs and "last-modified" not in hdrs:
-            from email.utils import formatdate
 
-            hdrs["Last-Modified"] = formatdate(st.st_mtime, usegmt=True)
+
+            hdrs["Last-Modified"] = http_date(st.st_mtime)
         if "ETag" not in hdrs and "etag" not in hdrs:
             hdrs["ETag"] = _file_etag(path, st.st_size, st.st_mtime)
 
         resp = Response.__new__(cls)
         Response.__init__(resp, status_code=200, body=body, content_type=content_type, headers=hdrs)
-        resp._file_path = path
         return resp

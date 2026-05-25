@@ -64,12 +64,10 @@ class IntConverter(_Converter):
     def match(self, value: str) -> tuple[bool, Any]:
         if not value:
             return False, None
-        # Accept optional leading '-' for signed ints. Reject leading zeros'
-        # leading zeros are accepted — int("042") parses fine.
-        try:
-            return True, int(value)
-        except ValueError:
+        check = value[1:] if value[0] == "-" else value
+        if not check or not check.isdigit():
             return False, None
+        return True, int(value)
 
 
 class FloatConverter(_Converter):
@@ -82,7 +80,9 @@ class FloatConverter(_Converter):
             return False, None
         # the float converter rejects "nan"/"inf" and scientific
         # notation; require a '.' to make this a clear float vs int.
-        if "." not in value and "e" not in value and "E" not in value:
+        if "." not in value:
+            return False, None
+        if "e" in value or "E" in value:
             return False, None
         try:
             f = float(value)
@@ -99,7 +99,7 @@ class UUIDConverter(_Converter):
     __slots__ = ()
 
     def match(self, value: str) -> tuple[bool, Any]:
-        if not _UUID_RE.match(value):
+        if len(value) != 36 or not _UUID_RE.match(value):
             return False, None
         try:
             return True, uuid.UUID(value)
@@ -126,7 +126,7 @@ class AnyConverter(_Converter):
     __slots__ = ("_choices",)
 
     def __init__(self, choices: tuple[str, ...]) -> None:
-        self._choices = choices
+        self._choices = frozenset(choices)
 
     def match(self, value: str) -> tuple[bool, Any]:
         return (value in self._choices), value

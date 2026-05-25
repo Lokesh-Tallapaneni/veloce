@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 import httptools
+
+from veloce import status
+from veloce.http.request import Request
+from veloce.http.response import Response, StreamingResponse
 
 if TYPE_CHECKING:
     from veloce.app import Veloce
@@ -23,14 +28,13 @@ class HttpProtocol(asyncio.Protocol):
         "headers",
         "body_parts",
         "request_complete",
-        "_header_key",
         "_keep_alive",
-        "_current_task",
         "_keep_alive_handle",
         "_request_timer",
+        "_body_size",
     )
 
-    # Strong reference set to prevent GC of in-flight tasks
+    # Class-level set: prevents GC of in-flight tasks across all connections.
     _active_tasks: set[asyncio.Task] = set()
 
     KEEP_ALIVE_TIMEOUT = 75  # seconds (matches nginx default)
@@ -49,11 +53,10 @@ class HttpProtocol(asyncio.Protocol):
         self.headers: list[tuple[bytes, bytes]] = []
         self.body_parts: list[bytes] = []
         self.request_complete = False
-        self._header_key: bytes = b""
         self._keep_alive = True
-        self._current_task: asyncio.Task | None = None
         self._keep_alive_handle: asyncio.TimerHandle | None = None
         self._request_timer: asyncio.TimerHandle | None = None
+        self._body_size: int = 0
 
     # ── httptools callbacks ──────────────────────────────────────
 
@@ -64,10 +67,27 @@ class HttpProtocol(asyncio.Protocol):
         self.headers.append((name.lower(), value))
 
     def on_body(self, body: bytes) -> None:
+        self._body_size += len(body)
+        max_len = self.app.config.get("MAX_CONTENT_LENGTH")
+        if max_len is not None and self._body_size > max_len:
+            if self.transport and not self.transport.is_closing():
+                self.transport.write(
+                    b"HTTP/1.1 413 Content Too Large\r\n"
+                    b"Content-Length: 17\r\n"
+                    b"Connection: close\r\n\r\n"
+                    b"Content Too Large"
+                )
+                self.transport.close()
+            return
         self.body_parts.append(body)
 
     def on_message_complete(self) -> None:
+        # F2: Don't dispatch if the connection was already closed (e.g. 413 rejection).
+        if self.transport is None or self.transport.is_closing():
+            return
+
         self.request_complete = True
+        self._keep_alive = self.parser.should_keep_alive()
         # Cancel keep-alive timeout while processing
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
@@ -77,9 +97,18 @@ class HttpProtocol(asyncio.Protocol):
         if self._request_timer is not None:
             self._request_timer.cancel()
             self._request_timer = None
+        # Snapshot mutable request state before scheduling so a pipelined
+        # follow-up request cannot overwrite the URL/headers/body that
+        # _dispatch will read.
+        snap_url = self.url
+        snap_headers = self.headers
+        snap_body = self.body_parts
+        self.url = b""
+        self.headers = []
+        self.body_parts = []
+        self._body_size = 0
         # Create task with strong reference to prevent GC and log errors
-        task = self.loop.create_task(self._dispatch())
-        self._current_task = task
+        task = self.loop.create_task(self._dispatch(snap_url, snap_headers, snap_body))
         HttpProtocol._active_tasks.add(task)
         task.add_done_callback(self._task_done)
 
@@ -149,9 +178,7 @@ class HttpProtocol(asyncio.Protocol):
             return
         exc = task.exception()
         if exc is not None:
-            import logging
-
-            logging.getLogger("veloce.protocol").error(
+            logging.getLogger("veloce.serving.protocol").error(
                 "Unhandled error in request dispatch: %s", exc, exc_info=exc
             )
 
@@ -173,19 +200,16 @@ class HttpProtocol(asyncio.Protocol):
 
     # ── request dispatch ─────────────────────────────────────────
 
-    async def _dispatch(self) -> None:
-        from veloce.http.request import Request
-        from veloce.http.response import Response
-
+    async def _dispatch(
+        self,
+        url: bytes,
+        headers: list[tuple[bytes, bytes]],
+        body_parts: list[bytes],
+    ) -> None:
         method = self.parser.get_method().decode("ascii")
-        url_bytes = self.url
-        body = b"".join(self.body_parts) if self.body_parts else b""
-        headers_dict: dict[str, str] = {}
-        for k, v in self.headers:
-            headers_dict[k.decode("latin-1")] = v.decode("latin-1")
+        body = b"".join(body_parts) if body_parts else b""
 
-        # Parse URL
-        parsed = httptools.parse_url(url_bytes)
+        parsed = httptools.parse_url(url)
         path = parsed.path.decode("ascii") if parsed.path else "/"
         query_string = parsed.query.decode("ascii") if parsed.query else ""
 
@@ -193,34 +217,55 @@ class HttpProtocol(asyncio.Protocol):
             method=method,
             path=path,
             query_string=query_string,
-            headers=headers_dict,
+            headers=headers,
             body=body,
             transport=self.transport,
         )
 
+        timeout = self.app.config.get('REQUEST_HANDLER_TIMEOUT', 30)
         try:
-            response = await self.app.handle_request(request)
-        except Exception:
+            # `asyncio.shield` lets the handler's finally-block teardowns
+            # (yield-dep cleanup, teardown_request hooks) run to completion
+            # even when wait_for cancels on timeout. Without it,
+            # CancelledError propagates into async teardowns and can
+            # interrupt resource cleanup (DB connections, file handles).
+            response = await asyncio.wait_for(
+                asyncio.shield(self.app.handle_request(request)), timeout=timeout
+            )
+        except asyncio.TimeoutError:
             response = Response(
-                status_code=500,
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                body=b"Gateway Timeout",
+                content_type="text/plain",
+            )
+        except Exception:
+            logging.getLogger("veloce.serving.protocol").exception("Unhandled exception in request dispatch")
+            response = Response(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 body=b"Internal Server Error",
                 content_type="text/plain",
             )
 
         if self.transport and not self.transport.is_closing():
-            # Handle streaming responses (chunked transfer)
-            from veloce.http.response import StreamingResponse
-            from veloce.sse import EventSourceResponse
-
-            if isinstance(response, (StreamingResponse, EventSourceResponse)):
-                await response.stream_to(self.transport)
-                self.transport.close()  # Streaming responses close after completion
-            else:
-                self.transport.write(response.encode())
-                if not self._keep_alive or headers_dict.get("connection", "").lower() == "close":
+            try:
+                if getattr(response, "is_event_source", False):
+                    await response.stream_to(self.transport)
                     self.transport.close()
+                elif isinstance(response, StreamingResponse):
+                    await response.stream_to(self.transport)
+                    if not self._keep_alive:
+                        self.transport.close()
+                    else:
+                        self._reset()
                 else:
-                    self._reset()
+                    self.transport.write(response.encode())
+                    if not self._keep_alive:
+                        self.transport.close()
+                    else:
+                        self._reset()
+            except Exception:
+                logging.getLogger("veloce.serving.protocol").exception("Error during response emission")
+                self.transport.close()
 
     def _reset(self) -> None:
         """Reset state for keep-alive connection reuse."""
@@ -229,5 +274,5 @@ class HttpProtocol(asyncio.Protocol):
         self.headers = []
         self.body_parts = []
         self.request_complete = False
-        self._current_task = None
+        self._body_size = 0
         self._start_keep_alive_timer()

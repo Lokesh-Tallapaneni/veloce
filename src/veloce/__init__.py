@@ -52,6 +52,8 @@ from veloce.exceptions import (
     WebSocketDisconnect,
     WebSocketException,
     WebSocketRequestValidationError,
+    http_exception_handler,
+    request_validation_exception_handler,
 )
 
 # Helpers
@@ -121,6 +123,7 @@ from veloce.middleware import (
     SessionMiddleware,
     TrustedHostMiddleware,
     WebSocketOriginMiddleware,
+    rotate_csrf_token,
 )
 
 # Password hashing helpers
@@ -131,6 +134,7 @@ from veloce.passwords import (
     verify_password,
     verify_password_async,
 )
+from veloce.routing.converters import Converter, register_converter
 from veloce.routing.params import Body, Cookie, File, Form, Header, Path, Query
 
 # Routing
@@ -227,6 +231,7 @@ __all__ = [
     "SessionMiddleware",
     "ServerSessionMiddleware",
     "ProxyFix",
+    "rotate_csrf_token",
     # Sessions
     "Session",
     "SessionStore",
@@ -245,6 +250,8 @@ __all__ = [
     "ValidationError",
     "RequestValidationError",
     "BuildError",
+    "http_exception_handler",
+    "request_validation_exception_handler",
     # Background
     "BackgroundTask",
     "BackgroundTasks",
@@ -288,6 +295,7 @@ __all__ = [
     "redirect",
     "send_file",
     "send_from_directory",
+    "send_from_directory_async",
     "g",
     "current_app",
     "request",
@@ -326,6 +334,9 @@ __all__ = [
     "is_strong_password",
     # Status
     "status",
+    # Converters
+    "Converter",
+    "register_converter",
     # Parameter classes
     "Query",
     "Path",

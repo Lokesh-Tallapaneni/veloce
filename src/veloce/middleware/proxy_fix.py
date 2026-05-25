@@ -30,16 +30,8 @@ from veloce.middleware.base import Middleware
 class ProxyFix(Middleware):
     """Reverse-proxy header trust middleware.
 
-    Args:
-        x_for:    trust this many hops in `X-Forwarded-For` (right-to-left).
-        x_proto:  same for `X-Forwarded-Proto`.
-        x_host:   same for `X-Forwarded-Host`.
-        x_port:   same for `X-Forwarded-Port`.
-        x_prefix: same for `X-Forwarded-Prefix`.
-        trust_forwarded: if True, parse RFC 7239 `Forwarded:` first; fall
-            back to `X-Forwarded-*` if absent. Default True.
-
-    Setting any field to `0` disables it. Negative values raise at
+    Trusts N hops for each ``X-Forwarded-*`` header (right-to-left).
+    Setting any field to ``0`` disables it. Negative values raise at
     construction.
     """
 
@@ -48,7 +40,6 @@ class ProxyFix(Middleware):
         x_for: int = 1,
         x_proto: int = 1,
         x_host: int = 0,
-        x_port: int = 0,
         x_prefix: int = 0,
         trust_forwarded: bool = True,
     ) -> None:
@@ -56,7 +47,6 @@ class ProxyFix(Middleware):
             ("x_for", x_for),
             ("x_proto", x_proto),
             ("x_host", x_host),
-            ("x_port", x_port),
             ("x_prefix", x_prefix),
         ):
             if val < 0:
@@ -64,7 +54,6 @@ class ProxyFix(Middleware):
         self.x_for = x_for
         self.x_proto = x_proto
         self.x_host = x_host
-        self.x_port = x_port
         self.x_prefix = x_prefix
         self.trust_forwarded = trust_forwarded
 
@@ -84,15 +73,14 @@ class ProxyFix(Middleware):
         return parts[-hops]
 
     @staticmethod
-    def _parse_forwarded(value: str) -> dict[str, str]:
-        """Parse one element of a `Forwarded:` header (RFC 7239 §4).
+    def _parse_forwarded_element(element: str) -> dict[str, str]:
+        """Parse a single element of a `Forwarded:` header (RFC 7239 §4).
 
-        Returns the lowercase key → value mapping for the first forwarded
-        element (the closest upstream). Quotes and IPv6 brackets stripped.
+        Returns the lowercase key -> value mapping. Quotes and IPv6
+        brackets are stripped.
         """
         result: dict[str, str] = {}
-        first = value.split(",", 1)[0]
-        for pair in first.split(";"):
+        for pair in element.split(";"):
             pair = pair.strip()
             if "=" not in pair:
                 continue
@@ -104,9 +92,44 @@ class ProxyFix(Middleware):
             result[k] = v
         return result
 
+    def _parse_forwarded(
+        self, value: str, x_for: int, x_proto: int, x_host: int, x_prefix: int
+    ) -> dict[str, str]:
+        """Select trusted directives from a `Forwarded:` header (RFC 7239 §4).
+
+        Each comma-separated element represents one hop. Attacker-controlled
+        hops are on the LEFT; trusted proxies append on the RIGHT. For each
+        directive (for, proto, host, prefix), select the element at
+        position ``len(elements) - hop_count`` -- the same logic as
+        ``_pick_hop``.
+        """
+        elements = [e.strip() for e in value.split(",") if e.strip()]
+        parsed = [self._parse_forwarded_element(e) for e in elements]
+
+        result: dict[str, str] = {}
+        for directive, hops in (
+            ("for", x_for),
+            ("proto", x_proto),
+            ("host", x_host),
+            ("prefix", x_prefix),
+        ):
+            if hops <= 0 or len(parsed) < hops:
+                continue
+            val = parsed[-hops].get(directive)
+            if val:
+                result[directive] = val
+        return result
+
     async def process_request(self, request: Request) -> Response | None:
+        """Rewrite request attributes from trusted proxy headers."""
         forwarded = request.headers.get("forwarded") if self.trust_forwarded else None
-        fwd = self._parse_forwarded(forwarded) if forwarded else {}
+        fwd = (
+            self._parse_forwarded(
+                forwarded, self.x_for, self.x_proto, self.x_host, self.x_prefix
+            )
+            if forwarded
+            else {}
+        )
 
         # `Forwarded:` wins; else fall back to `X-Forwarded-*`.
         client = fwd.get("for") or self._pick_hop(
@@ -118,12 +141,19 @@ class ProxyFix(Middleware):
         host = fwd.get("host") or self._pick_hop(
             request.headers.get("x-forwarded-host"), self.x_host
         )
-        port_val = self._pick_hop(request.headers.get("x-forwarded-port"), self.x_port)
         prefix = self._pick_hop(request.headers.get("x-forwarded-prefix"), self.x_prefix)
 
         if client:
-            # `X-Forwarded-For` values may include `:port`; keep only the host.
-            host_only = client.split(":", 1)[0] if ":" in client else client
+            # Strip port suffix, but preserve IPv6 addresses.
+            if "[" in client:
+                # Bracketed IPv6, e.g. "[2001:db8::1]:8080" or "[2001:db8::1]"
+                host_only = client.split("]", 1)[0][1:]
+            elif client.count(":") >= 2:
+                # Bare IPv6 (no brackets, no port), e.g. "2001:db8::1"
+                host_only = client
+            else:
+                # IPv4 or hostname, optionally with ":port"
+                host_only = client.split(":", 1)[0]
             request._state["proxy_fix_client"] = host_only
         if host:
             # Rewrite Host so URL.from_request picks up the original host.
@@ -138,8 +168,6 @@ class ProxyFix(Middleware):
             request.headers["x-forwarded-proto"] = proto
             if isinstance(getattr(request, "scope", None), dict):
                 request.scope["scheme"] = proto
-        if port_val:
-            request._state["proxy_fix_port"] = port_val
         if prefix:
             request._state["proxy_fix_prefix"] = prefix
 

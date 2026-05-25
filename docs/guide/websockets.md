@@ -1,3 +1,8 @@
+---
+description: Build WebSocket endpoints in Veloce with subprotocol negotiation, origin validation (CSWSH defense), dependency injection on connect, and an in-memory test client.
+tags: [websocket, asgi, real-time]
+---
+
 # WebSockets
 
 Veloce handles WebSocket connections natively over the ASGI WebSocket
@@ -8,7 +13,7 @@ scope — no separate server or add-on required.
 Use the `@app.websocket(...)` decorator. The handler receives a
 `WebSocket` object:
 
-```python
+```python title="websocket_app.py"
 from veloce import Veloce
 
 app = Veloce()
@@ -105,7 +110,7 @@ register the middleware so the check runs before any handler:
 
 ```python
 from veloce import Veloce
-from veloce.middleware.security import WebSocketOriginMiddleware
+from veloce import WebSocketOriginMiddleware
 
 app = Veloce()
 app.add_middleware(
@@ -166,3 +171,8 @@ with client.websocket_connect("/ws") as ws:
     ws.send_text("hello")
     assert ws.receive_text() == "echo: hello"
 ```
+
+## See also
+
+- [Testing](testing.md#testing-websockets)
+- [Middleware](middleware.md)

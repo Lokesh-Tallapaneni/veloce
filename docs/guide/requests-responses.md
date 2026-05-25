@@ -1,3 +1,8 @@
+---
+description: Read request bodies, headers, cookies, and form data; return JSON, HTML, file, redirect, or streaming responses with Pydantic models and response_model shaping.
+tags: [request, response, json, pydantic]
+---
+
 # Requests & Responses
 
 ## The Request object
@@ -26,19 +31,34 @@ all of them.
 
 ## Returning responses
 
-A handler can return several shapes — Veloce coerces each to a response:
+A handler can return several shapes — Veloce coerces each to a response.
+
+### Dict shortcut (JSON)
+
+Return a `dict` (or any JSON-serialisable value) and Veloce wraps it in a
+JSON response with a `200` status:
 
 ```python
 @app.get("/dict")
 async def as_dict(request: Request):
     return {"json": True}            # -> JSON response
+```
 
+### Tuple shortcut (body, status, headers)
+
+Return a tuple to set an explicit status code — and, optionally, a
+headers mapping — alongside the body:
+
+```python
 @app.get("/tuple")
 async def as_tuple(request: Request):
     return {"created": True}, 201    # -> JSON with an explicit status
 ```
 
-For explicit control, return a response object:
+### Response classes
+
+For explicit control over the content type and status, return a response
+object:
 
 ```python
 from veloce import HTMLResponse, JSONResponse
@@ -55,8 +75,27 @@ async def json(request: Request):
 ```
 
 Other response classes include `PlainTextResponse`, `RedirectResponse`,
-`FileResponse`, `StreamingResponse`, and `ORJSONResponse` /
-`UJSONResponse`.
+`FileResponse`, and `ORJSONResponse` / `UJSONResponse`.
+
+### Streaming responses
+
+For large or open-ended payloads, return a `StreamingResponse` over an
+async iterator — Veloce sends each chunk as soon as it's produced,
+without buffering the whole body in memory:
+
+```python
+from veloce import StreamingResponse
+
+
+async def numbers():
+    for i in range(1000):
+        yield f"{i}\n"
+
+
+@app.get("/stream")
+async def stream(request: Request):
+    return StreamingResponse(numbers(), media_type="text/plain")
+```
 
 ## Request bodies with Pydantic
 
@@ -124,3 +163,9 @@ async def on_http_error(request: Request, exc: HTTPException):
         status_code=exc.status_code,
     )
 ```
+
+## See also
+
+- [Routing](routing.md)
+- [Dependency injection](dependency-injection.md)
+- [Testing](testing.md)

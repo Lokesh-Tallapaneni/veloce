@@ -27,7 +27,7 @@ from decimal import Decimal
 from typing import Any
 
 
-class _ParamBase:
+class ParamBase:
     """Base class for parameter markers."""
 
     __slots__ = (
@@ -126,9 +126,8 @@ class _ParamBase:
             if self.lt is not None and value >= self.lt:
                 raise ValueError(f"{name} must be < {self.lt}")
             if self.multiple_of is not None:
-                # Coerce both operands to `float`: `Decimal` cannot be mixed
-                # with `float` in arithmetic, and either side may be either
-                # type (a `Decimal` value, or a `Decimal` `multiple_of`).
+                if self.multiple_of == 0:
+                    raise ValueError(f"{name}: multiple_of must not be zero")
                 quotient = float(value) / float(self.multiple_of)
                 if abs(quotient - round(quotient)) > 1e-9:
                     raise ValueError(f"{name} must be a multiple of {self.multiple_of}")
@@ -138,49 +137,49 @@ class _ParamBase:
                 raise ValueError(f"{name} must have at least {self.min_length} characters")
             if self.max_length is not None and len(value) > self.max_length:
                 raise ValueError(f"{name} must have at most {self.max_length} characters")
-            if self._regex_compiled is not None and not self._regex_compiled.match(value):
+            if self._regex_compiled is not None and not self._regex_compiled.fullmatch(value):
                 raise ValueError(f"{name} does not match pattern {self.regex}")
 
         return value
 
 
-class Query(_ParamBase):
+class Query(ParamBase):
     """Query parameter declaration."""
 
     pass
 
 
-class Path(_ParamBase):
+class Path(ParamBase):
     """Path parameter declaration."""
 
     pass
 
 
-class Body(_ParamBase):
+class Body(ParamBase):
     """Request body parameter declaration."""
 
     pass
 
 
-class Form(_ParamBase):
+class Form(ParamBase):
     """Form field parameter declaration."""
 
     pass
 
 
-class File(_ParamBase):
+class File(ParamBase):
     """File upload parameter declaration."""
 
     pass
 
 
-class Header(_ParamBase):
+class Header(ParamBase):
     """HTTP header parameter declaration."""
 
     pass
 
 
-class Cookie(_ParamBase):
+class Cookie(ParamBase):
     """Cookie parameter declaration."""
 
     pass

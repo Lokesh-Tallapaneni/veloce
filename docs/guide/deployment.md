@@ -1,3 +1,8 @@
+---
+description: Deploy Veloce in production with uvicorn or gunicorn workers, security hardening checklist, ReDoS protection, and a comparison with the built-in development server.
+tags: [deployment, production, uvicorn]
+---
+
 # Deployment
 
 ## The built-in server is for development
@@ -101,4 +106,10 @@ Guidance for developer-supplied patterns:
 Veloce compiles each pattern once at route registration, so the
 compile cost is paid up front — but the *match* cost is still the
 developer's responsibility to keep linear.
+
+## See also
+
+- [Middleware](middleware.md)
+- [Testing](testing.md)
+- [Comparison](../comparison.md)
 

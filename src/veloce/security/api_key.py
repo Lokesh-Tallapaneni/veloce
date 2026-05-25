@@ -2,12 +2,31 @@
 
 from __future__ import annotations
 
-from veloce.exceptions import HTTPException
+from typing import Any
+
 from veloce.http.request import Request
+from veloce.security._utils import _extract_api_key
 
 
-class APIKeyHeader:
-    """API Key authentication via HTTP header."""
+class _APIKeyBase:
+    """Shared logic for `APIKeyHeader`, `APIKeyQuery`, `APIKeyCookie`.
+
+    Each subclass differs only in which `Request` collection it pulls
+    the key from. The `__init__` (store `name` + `auto_error`) and the
+    delegation to `_extract_api_key` were three copies of the same five
+    lines; centralising prevents the three from drifting apart on a
+    future change to the extraction signature.
+    """
+
+    __slots__ = ("name", "auto_error")
+    _source_attr: str = ""  # subclass overrides — Request attribute name
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if not cls._source_attr:
+            raise TypeError(
+                f"{cls.__name__} must set _source_attr to a Request attribute name"
+            )
 
     def __init__(self, name: str, auto_error: bool = True) -> None:
         # Keep the user's casing for the OpenAPI spec; header lookup goes
@@ -17,41 +36,23 @@ class APIKeyHeader:
         self.auto_error = auto_error
 
     def __call__(self, request: Request) -> str | None:
-        key = request.headers.get(self.name)
-        if key is None:
-            if self.auto_error:
-                raise HTTPException(401, "Not authenticated")
-            return None
-        return key
+        source: Any = getattr(request, self._source_attr)
+        return _extract_api_key(source, self.name, self.auto_error)
 
 
-class APIKeyQuery:
+class APIKeyHeader(_APIKeyBase):
+    """API Key authentication via HTTP header."""
+
+    _source_attr = "headers"
+
+
+class APIKeyQuery(_APIKeyBase):
     """API Key authentication via query parameter."""
 
-    def __init__(self, name: str, auto_error: bool = True) -> None:
-        self.name = name
-        self.auto_error = auto_error
-
-    def __call__(self, request: Request) -> str | None:
-        key = request.query_params.get(self.name)
-        if key is None:
-            if self.auto_error:
-                raise HTTPException(401, "Not authenticated")
-            return None
-        return key
+    _source_attr = "query_params"
 
 
-class APIKeyCookie:
+class APIKeyCookie(_APIKeyBase):
     """API Key authentication via cookie."""
 
-    def __init__(self, name: str, auto_error: bool = True) -> None:
-        self.name = name
-        self.auto_error = auto_error
-
-    def __call__(self, request: Request) -> str | None:
-        key = request.cookies.get(self.name)
-        if key is None:
-            if self.auto_error:
-                raise HTTPException(401, "Not authenticated")
-            return None
-        return key
+    _source_attr = "cookies"

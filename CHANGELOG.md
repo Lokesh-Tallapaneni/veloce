@@ -6,6 +6,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Post-v0.1.3 audit batch: verified findings from a per-file framework
+audit (validated by a second-pass agent with cross-file grep proofs;
+false positives discarded). Four security fixes, four correctness
+fixes, six performance wins, eight duplication consolidations, and
+API surface cleanup.
+
+### Security
+
+- **Multipart UTF-8 decode is now strict.** Header fields and form
+  values whose bytes are not valid UTF-8 raise `BadRequest` (400)
+  instead of silently passing through `errors="replace"` and producing
+  collidable field-name strings. The fuzz suite's
+  `test_fuzz_multipart_corrupted_valid_body_never_crash` allowlist
+  expanded to permit `BadRequest` alongside the existing
+  `RequestEntityTooLarge` DoS-cap rejection — both are controlled
+  rejections, neither is a crash.
+- **`HTTPBasic` realm now URL-encoded in `WWW-Authenticate`.** Matches
+  the existing `HTTPDigest` behaviour. A realm containing `"`, `\r`,
+  `\n`, or `\` no longer produces a malformed challenge header.
+- **`HTTPBasic` catches only the exceptions `b64decode`/`decode` can
+  raise** — `binascii.Error`, `ValueError`, `UnicodeDecodeError` —
+  instead of bare `except Exception` that would have masked unrelated
+  bugs as 401s.
+- **`SecurityHeadersMiddleware` `hsts_include_subdomains` default is
+  now `False`.** Casually enabling HSTS on a multi-subdomain host
+  should not silently pin every subdomain. Explicit opt-in still
+  works (`hsts_include_subdomains=True`).
+
+### Changed
+
+- `jsonable_encoder` no longer recurses infinitely on a self-referential
+  object graph; it raises `ValueError("Circular reference detected...")`
+  instead. Internal `_seen: set[int]` parameter tracks visited container
+  IDs; leaf-only call graphs allocate no extra state.
+- `jsonable_encoder` leaf scalars now dispatch through a `type ->
+  encoder` dict (`str`, `int`, `float`, `bool`, `None`, `UUID`,
+  `Decimal`, `datetime`/`date`/`time`/`timedelta`) instead of a 14-deep
+  `isinstance` cascade. Subclasses fall through to the existing
+  isinstance arms so behaviour is unchanged.
+- `_dispatch_request` merges injected-response Set-Cookie headers via a
+  new private `Response._append_set_cookie_header(raw_value)` helper
+  instead of the inline `+ "\r\nSet-Cookie: " +` concatenation. The
+  same helper is now what `Response.set_cookie()` calls internally,
+  giving the codebase one canonical home for the Q44 multi-cookie
+  join format.
+- `Response.add_vary` delegates dedup to `HeaderSet` instead of
+  re-implementing the case-insensitive ordered-set logic inline.
+- `signing.py` module docstring now correctly describes the nested
+  HMAC algorithm (`HMAC-SHA256(HMAC-SHA256(secret, salt), payload.ts)`)
+  the code has always implemented, rather than the previous misleading
+  `HMAC-SHA256(secret + salt, payload.ts)` text.
+- `Router.url_for` regex compiled once at module top
+  (`_URL_FOR_PARAM_RE`) instead of re-compiled on every call.
+- Conditional request properties — `access_control_request_headers`,
+  `if_modified_since`, `if_unmodified_since`, `if_match`, `if_none_match`,
+  `if_range` — now cache their parsed value on `Request` slots so the
+  five header re-parses per repeated access become one.
+- `contrib/openapi.py` schema generation memoizes per-handler
+  `inspect.signature` + `get_type_hints` via a
+  `WeakKeyDictionary` (`_handler_intro`), so the four call sites that
+  used to each re-introspect every route now share a single per-handler
+  read.
+- `contrib/templating.py::_sync_app_jinja_helpers` memoizes per
+  `(env, app, filter/global/test counts)`; rendering a template no
+  longer redoes the three loops + globals copy on every render.
+- `middleware/compression.py` wraps the gzip executor offload in
+  `contextvars.copy_context().run(...)` so any future ContextVar read
+  inside the compressor sees request-scoped values. Matches the pattern
+  already in `_call_handler` and the per-request executor sites in
+  `app.py`.
+- `middleware/security.py::TrustedHostMiddleware` now delegates its
+  Host-header port stripping to the shared `_extract_host` helper in
+  `_internal.py` instead of the inline IPv6-aware branches that
+  duplicated it.
+- `middleware/sessions.py::ServerSessionMiddleware._clear_session_cookie`
+  centralises the three identical `response.delete_cookie(...)` calls
+  for the revocation paths.
+- `security/api_key.py` extracts `_APIKeyBase`; `APIKeyHeader`,
+  `APIKeyQuery`, `APIKeyCookie` now share `__init__` + `__call__` and
+  differ only in a `_source_attr` class var. Public surface unchanged.
+- `cli.py` introduces `_require_app_attr(app, attr, hint)`; the four
+  `if not hasattr(app, ...)` guards in `_cmd_shell` / `_cmd_custom` /
+  `_cmd_routes` / `_cmd_check` now share one error-message shape.
+- `testclient.py` extracts module-level `_build_request_headers` and
+  `_apply_set_cookie_to_jar`; `TestClient` and `AsyncTestClient` both
+  call them instead of carrying two byte-identical copies of the
+  header-merge and cookie-jar update logic.
+- `contrib/staticfiles.py` directory-index and file paths now share a
+  `_is_under_root(real_path)` method that uses `os.path.commonpath`,
+  replacing the `startswith(root + sep)` vs `commonpath` inconsistency.
+- `middleware/logging.py` falls through to the parent logger hierarchy
+  via `hasHandlers()` so adding `LoggingMiddleware` on top of a
+  `logging.basicConfig`-configured app no longer attaches a duplicate
+  handler. `setLevel(INFO)` is now unconditional so the start-time
+  capture in `process_request` is always armed.
+- `serving/protocol.py` logger name unified to
+  `veloce.serving.protocol` (was a mix of `veloce.protocol` and
+  `veloce.serving`).
+- Six raw `inspect.iscoroutinefunction` call sites (`app.py`,
+  `background.py`, `dependency.py`, `views.py`, two in
+  `_handler_plan.py`) now route through the memoized
+  `_internal._is_async_callable` wrapper.
+- `routing/__init__.py` re-exports `Converter` and `register_converter`
+  (already top-level-exported via `veloce/__init__.py`); the asymmetry
+  is gone.
+- `http/__init__.py` re-exports `Cookies`, `QueryParams`,
+  `parse_multipart_form`, and `HeaderSet`. `HeaderSet` is the return
+  type of `Response.vary` / `Response.allow`, so users receiving one
+  from a property can now construct one through the documented public
+  path.
+
+### Removed
+
+- Dead constants `K_DEFAULT` and `K_NONE` from `_handler_plan.py` —
+  declared but never instantiated.
+
+### Docs
+
+- `Blueprint.register_blueprint` docstring clarifies that nested-route
+  endpoint names are stored as `<child.name>.<handler>` on the parent
+  and only pick up the `<parent.name>.` prefix at app registration
+  (the eventual `<parent>.<child>.<handler>` shape was already
+  produced; the previous wording implied it was applied immediately).
+
 ## [0.1.3] - 2026-05-23
 
 Security + correctness batch. Fifteen issues from the second external

@@ -3,60 +3,36 @@
 from __future__ import annotations
 
 import asyncio
-from email.utils import parsedate_to_datetime
-from typing import Any, NamedTuple
+from typing import Any
+from urllib.parse import parse_qsl
 
 import orjson
+from multidict import MultiDict
 
+from veloce.http.cache_control import CacheControl
 from veloce.http.datastructures import (
+    DEFAULT_MAX_MULTIPART_PART_SIZE,
+    DEFAULT_MAX_MULTIPART_PARTS,
+    URL,
     AcceptHeader,
+    Address,
     Authorization,
     Cookies,
+    FormData,
     Headers,
     QueryParams,
     RangeSpec,
+    State,
+    UploadFile,
+    parse_multipart_form,
 )
+from veloce.http.dates import parse_date
 
-
-class Address(NamedTuple):
-    """Client/server address — ASGI shape.
-
-    A two-field named tuple so `request.client.host` /
-    `request.client.port` work, while `host, port = request.client`
-    unpacking also works (tuple semantics).
-    """
-
-    host: str
-    port: int
-
-
-class State(dict):
-    """Per-request scratch namespace — supports both styles.
-
-    ASGI servers expose `request.state` for attribute-style
-    storage (`request.state.user = ...`). Veloce's dispatcher also
-    stashes framework internals (`session`, `url_rule`, …) here by
-    key. `State` is a `dict` subclass whose attribute access maps to
-    items, so `state.user` and `state["user"]` / `state.get("user")`
-    are interchangeable — neither call site needs to know the other.
-    """
-
-    __slots__ = ()
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        self[name] = value
-
-    def __delattr__(self, name: str) -> None:
-        try:
-            del self[name]
-        except KeyError:
-            raise AttributeError(name) from None
+# Sentinel for "this conditional-header property has not been read yet"
+# on properties whose legitimate parsed value can be `None` (`if_modified_since`,
+# `if_unmodified_since`). Distinct from `None` so we can tell "absent
+# header" apart from "haven't looked yet".
+_UNSET: Any = object()
 
 
 class Request:
@@ -87,6 +63,17 @@ class Request:
         "_url",
         "_background_tasks",
         "_parsed_ct",
+        "_accept_mimetypes",
+        "_accept_languages",
+        "_accept_encodings",
+        "_accept_charsets",
+        "_files",
+        "_access_control_request_headers",
+        "_if_modified_since",
+        "_if_unmodified_since",
+        "_if_match",
+        "_if_none_match",
+        "_if_range",
     )
 
     def __init__(
@@ -143,9 +130,25 @@ class Request:
         # `None` means "not yet parsed"; the parse happens at most once
         # per request, on first read of `mimetype` or `mimetype_params`.
         self._parsed_ct: tuple[str, dict[str, str]] | None = None
+        self._accept_mimetypes: AcceptHeader | None = None
+        self._accept_languages: AcceptHeader | None = None
+        self._accept_encodings: AcceptHeader | None = None
+        self._accept_charsets: AcceptHeader | None = None
+        self._files: FormData | None = None
+        # Conditional-header property caches. `_UNSET` marks "not yet
+        # parsed" for the date-shaped properties whose legitimate
+        # parsed value is `None` (absent or unparseable header). The
+        # tuple-shaped properties use `None` itself as the cache miss.
+        self._access_control_request_headers: list[str] | None = None
+        self._if_modified_since: Any = _UNSET
+        self._if_unmodified_since: Any = _UNSET
+        self._if_match: tuple[str, ...] | None = None
+        self._if_none_match: tuple[str, ...] | None = None
+        self._if_range: tuple[str, float | None] | None = None
 
     @property
     def headers(self) -> Headers:
+        """Return the parsed request headers, materializing from raw ASGI tuples on first access."""
         h = self._headers
         if h is None:
             # Materialise from the raw ASGI tuples on first access. After
@@ -296,24 +299,12 @@ class Request:
     async def form(self) -> Any:
         """Parse form data including file uploads."""
         if self._form is None:
-            from urllib.parse import parse_qsl
 
-            content_type = self.headers.get("content-type", "")
-            if "application/x-www-form-urlencoded" in content_type:
-                from veloce.http.datastructures import FormData
-
-                # `parse_qsl` preserves duplicate keys as separate `(k, v)`
-                # tuples; `MultiDict` ingests them via the iterable
-                # constructor without collapsing.
+            mt = self.mimetype
+            if mt == "application/x-www-form-urlencoded":
                 items = parse_qsl(self.body.decode("utf-8"), keep_blank_values=True)
                 self._form = FormData(items)
-            elif "multipart/form-data" in content_type:
-                from veloce.http.datastructures import (
-                    DEFAULT_MAX_MULTIPART_PART_SIZE,
-                    DEFAULT_MAX_MULTIPART_PARTS,
-                    parse_multipart_form,
-                )
-
+            elif mt == "multipart/form-data":
                 # Per-app multipart caps come from config when an app is
                 # bound; otherwise the module defaults apply.
                 max_parts = DEFAULT_MAX_MULTIPART_PARTS
@@ -324,13 +315,11 @@ class Request:
                     max_part_size = cfg.get("MAX_FORM_PART_SIZE", max_part_size) or max_part_size
                 self._form = parse_multipart_form(
                     self.body,
-                    content_type,
+                    self.content_type,
                     max_parts=max_parts,
                     max_part_size=max_part_size,
                 )
             else:
-                from veloce.http.datastructures import FormData
-
                 self._form = FormData()
         return self._form
 
@@ -340,19 +329,17 @@ class Request:
         Parses the form (via `form()`) and returns a `FormData`
         containing just the entries whose value is an `UploadFile`.
         Non-file form fields are excluded. Empty `FormData` for
-        non-multipart requests.
+        non-multipart requests. Result is cached after first parse.
         """
-        from veloce.http.datastructures import FormData, UploadFile
-
+        if self._files is not None:
+            return self._files
         form = await self.form()
         files = FormData()
-        # `items()` yields every (key, value) pair once — including
-        # repeats of a name. Iterating keys and re-`getlist`-ing each
-        # would re-emit every value once per repeat: O(n²) and duplicated.
         for key, value in form.items():
             if isinstance(value, UploadFile):
                 files.add(key, value)
-        return files
+        self._files = files
+        return self._files
 
     @property
     def cookies(self) -> Cookies:
@@ -370,8 +357,6 @@ class Request:
     def url(self) -> Any:
         """Full URL object — lazy construction."""
         if self._url is None:
-            from veloce.http.datastructures import URL
-
             scope = getattr(self, "scope", None)
             scope_scheme = scope.get("scheme") if isinstance(scope, dict) else None
             self._url = URL.from_request(
@@ -405,6 +390,7 @@ class Request:
 
     @property
     def content_type(self) -> str:
+        """Return the Content-Type header value, or an empty string."""
         return self.headers.get("content-type", "")
 
     def _parse_content_type(self) -> tuple[str, dict[str, str]]:
@@ -457,11 +443,18 @@ class Request:
 
     @property
     def content_length(self) -> int | None:
+        """Return the Content-Length as an integer, or None."""
         cl = self.headers.get("content-length")
-        return int(cl) if cl else None
+        if not cl:
+            return None
+        try:
+            return int(cl)
+        except (ValueError, TypeError):
+            return None
 
     @property
     def client_host(self) -> str | None:
+        """Return the client's IP address from the ASGI scope."""
         # If a ProxyFix-style middleware ran upstream, it stashed the
         # trusted client IP on `_state`. Prefer that over the raw TCP peer.
         proxied = self._state.get("proxy_fix_client")
@@ -475,6 +468,7 @@ class Request:
 
     @property
     def client_port(self) -> int | None:
+        """Return the client's port number from the ASGI scope."""
         if self.transport:
             peername = self.transport.get_extra_info("peername")
             if peername and len(peername) >= 2:
@@ -516,6 +510,7 @@ class Request:
 
     @property
     def is_secure(self) -> bool:
+        """Return True if the request uses HTTPS."""
         return self.url.scheme == "https"
 
     async def values(self) -> Any:
@@ -527,8 +522,6 @@ class Request:
         both sources. Form parsing is async (multipart may need
         executor reads), so this is an awaitable rather than a property.
         """
-        from multidict import MultiDict
-
         merged: MultiDict = MultiDict()
         for k, v in self.query_params.items():
             merged.add(k, v)
@@ -562,6 +555,7 @@ class Request:
 
     @property
     def accept(self) -> str:
+        """Return the raw Accept header value."""
         return self.headers.get("accept", "")
 
     @property
@@ -602,31 +596,44 @@ class Request:
         The headers the real request intends to send, lower-cased and
         whitespace-trimmed. Empty list when the header is absent.
         """
-        raw = self.headers.get("access-control-request-headers", "")
-        return [h.strip().lower() for h in raw.split(",") if h.strip()]
+        cached = self._access_control_request_headers
+        if cached is None:
+            raw = self.headers.get("access-control-request-headers", "")
+            cached = [h.strip().lower() for h in raw.split(",") if h.strip()]
+            self._access_control_request_headers = cached
+        return cached
 
     @property
     def accept_mimetypes(self) -> AcceptHeader:
         """Parsed `Accept` header with MIME wildcard matching."""
-        return AcceptHeader.parse(self.headers.get("accept", ""), mime=True)
+        if self._accept_mimetypes is None:
+            self._accept_mimetypes = AcceptHeader.parse(self.headers.get("accept", ""), mime=True)
+        return self._accept_mimetypes
 
     @property
     def accept_languages(self) -> AcceptHeader:
         """Parsed `Accept-Language` header. q-value ordered."""
-        return AcceptHeader.parse(self.headers.get("accept-language", ""))
+        if self._accept_languages is None:
+            self._accept_languages = AcceptHeader.parse(self.headers.get("accept-language", ""))
+        return self._accept_languages
 
     @property
     def accept_encodings(self) -> AcceptHeader:
         """Parsed `Accept-Encoding` header (e.g. gzip, br)."""
-        return AcceptHeader.parse(self.headers.get("accept-encoding", ""))
+        if self._accept_encodings is None:
+            self._accept_encodings = AcceptHeader.parse(self.headers.get("accept-encoding", ""))
+        return self._accept_encodings
 
     @property
     def accept_charsets(self) -> AcceptHeader:
         """Parsed `Accept-Charset` header."""
-        return AcceptHeader.parse(self.headers.get("accept-charset", ""))
+        if self._accept_charsets is None:
+            self._accept_charsets = AcceptHeader.parse(self.headers.get("accept-charset", ""))
+        return self._accept_charsets
 
     @property
     def authorization(self) -> str | None:
+        """Return the parsed Authorization header."""
         return self.headers.get("authorization")
 
     @property
@@ -636,8 +643,6 @@ class Request:
         RFC 9110 §6.6.1 — the originator's timestamp for the message.
         Returns `None` when the header is missing or unparseable.
         """
-        from veloce.http.dates import parse_date
-
         return parse_date(self.headers.get("date"))
 
     @property
@@ -648,16 +653,16 @@ class Request:
         forms. Returns `None` when the header is missing or unparseable
         — never raises, so callers can use it in a single branch.
         """
-        raw = self.headers.get("if-modified-since", "")
-        if not raw:
-            return None
-        try:
-            dt = parsedate_to_datetime(raw.strip())
-        except (TypeError, ValueError):
-            return None
-        if dt is None:
-            return None
-        return dt.timestamp()
+        cached = self._if_modified_since
+        if cached is _UNSET:
+            raw = self.headers.get("if-modified-since")
+            if not raw:
+                cached = None
+            else:
+                dt = parse_date(raw)
+                cached = dt.timestamp() if dt else None
+            self._if_modified_since = cached
+        return cached
 
     @property
     def range(self) -> RangeSpec | None:
@@ -678,13 +683,19 @@ class Request:
         Failed` when none of the listed ETags matches the resource's
         current ETag. Standard guard against the lost-update problem.
         """
-        raw = self.headers.get("if-match", "")
-        if not raw:
-            return ()
-        stripped = raw.strip()
-        if stripped == "*":
-            return ("*",)
-        return tuple(t.strip() for t in stripped.split(",") if t.strip())
+        cached = self._if_match
+        if cached is None:
+            raw = self.headers.get("if-match", "")
+            if not raw:
+                cached = ()
+            else:
+                stripped = raw.strip()
+                if stripped == "*":
+                    cached = ("*",)
+                else:
+                    cached = tuple(t.strip() for t in stripped.split(",") if t.strip())
+            self._if_match = cached
+        return cached
 
     @property
     def if_range(self) -> tuple[str, float | None]:
@@ -699,21 +710,22 @@ class Request:
         Used by `GET` with `Range:` to convert a partial-content request
         into a full `200` when the cached resource is stale.
         """
-        raw = self.headers.get("if-range", "")
-        if not raw:
-            return ("", None)
-        stripped = raw.strip()
-        # ETag values are quoted (optionally `W/"..."`). Anything else
-        # is interpreted as an HTTP-date.
-        if stripped.startswith('"') or stripped.startswith('W/"'):
-            return (stripped, None)
-        try:
-            dt = parsedate_to_datetime(stripped)
-        except (TypeError, ValueError):
-            return ("", None)
-        if dt is None:
-            return ("", None)
-        return ("", dt.timestamp())
+        cached = self._if_range
+        if cached is None:
+            raw = self.headers.get("if-range", "")
+            if not raw:
+                cached = ("", None)
+            else:
+                stripped = raw.strip()
+                # ETag values are quoted (optionally `W/"..."`). Anything else
+                # is interpreted as an HTTP-date.
+                if stripped.startswith('"') or stripped.startswith('W/"'):
+                    cached = (stripped, None)
+                else:
+                    dt = parse_date(stripped)
+                    cached = ("", None) if dt is None else ("", dt.timestamp())
+            self._if_range = cached
+        return cached
 
     @property
     def if_unmodified_since(self) -> float | None:
@@ -724,16 +736,16 @@ class Request:
         fails with `412` when the resource has been modified since the
         given date.
         """
-        raw = self.headers.get("if-unmodified-since", "")
-        if not raw:
-            return None
-        try:
-            dt = parsedate_to_datetime(raw.strip())
-        except (TypeError, ValueError):
-            return None
-        if dt is None:
-            return None
-        return dt.timestamp()
+        cached = self._if_unmodified_since
+        if cached is _UNSET:
+            raw = self.headers.get("if-unmodified-since")
+            if not raw:
+                cached = None
+            else:
+                dt = parse_date(raw)
+                cached = dt.timestamp() if dt else None
+            self._if_unmodified_since = cached
+        return cached
 
     @property
     def if_none_match(self) -> tuple[str, ...]:
@@ -745,14 +757,20 @@ class Request:
         preserved so callers can compare them verbatim against an ETag
         header on the response).
         """
-        raw = self.headers.get("if-none-match", "")
-        if not raw:
-            return ()
-        stripped = raw.strip()
-        if stripped == "*":
-            return ("*",)
-        # Comma-separated, optionally with weak `W/` prefixes.
-        return tuple(t.strip() for t in stripped.split(",") if t.strip())
+        cached = self._if_none_match
+        if cached is None:
+            raw = self.headers.get("if-none-match", "")
+            if not raw:
+                cached = ()
+            else:
+                stripped = raw.strip()
+                if stripped == "*":
+                    cached = ("*",)
+                else:
+                    # Comma-separated, optionally with weak `W/` prefixes.
+                    cached = tuple(t.strip() for t in stripped.split(",") if t.strip())
+            self._if_none_match = cached
+        return cached
 
     @property
     def auth(self) -> Authorization | None:
@@ -766,6 +784,7 @@ class Request:
 
     @property
     def user_agent(self) -> str:
+        """Return the User-Agent header value."""
         return self.headers.get("user-agent", "")
 
     @property
@@ -1020,8 +1039,6 @@ class Request:
         (bool), `req.cache_control.max_age` (int or None), etc.
         Always returns a fresh parse to reflect any header mutation.
         """
-        from veloce.http.cache_control import CacheControl
-
         return CacheControl(self.headers.get("cache-control", ""))
 
     @property
@@ -1032,7 +1049,7 @@ class Request:
         `application/vnd.api+json`, `application/problem+json`) marks the
         body as JSON-encoded.
         """
-        ct = self.content_type.lower().split(";", 1)[0].strip()
+        ct = self.mimetype
         if ct == "application/json":
             return True
         return ct.startswith("application/") and ct.endswith("+json")

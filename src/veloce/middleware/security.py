@@ -6,8 +6,10 @@ import asyncio
 import time
 from collections import deque
 
+from veloce import status
+from veloce._internal import _extract_host
 from veloce.http.request import Request
-from veloce.http.response import Response
+from veloce.http.response import RedirectResponse, Response
 from veloce.middleware.base import Middleware
 
 
@@ -49,10 +51,13 @@ class TrustedHostMiddleware(Middleware):
         return any(host.endswith("." + suffix) for suffix in self._wildcard_suffixes)
 
     async def process_request(self, request: Request) -> Response | None:
-        # Strip port for matching; Host header may carry `example.com:8080`.
-        host = request.headers.get("host", "").split(":", 1)[0].lower()
+        """Reject requests whose Host header is not in the allow-list."""
+        # Strip port for matching; shared with the request-side host
+        # parser so the IPv6-bracket / bare-IPv6 / IPv4-with-port shapes
+        # stay consistent in both directions.
+        host = _extract_host(request.headers.get("host", ""))
         if not self.is_host_allowed(host):
-            return Response(status_code=400, body=b"Invalid host header")
+            return Response(status_code=status.HTTP_400_BAD_REQUEST, body=b"Invalid host header")
         return None
 
 
@@ -85,6 +90,7 @@ class RateLimitMiddleware(Middleware):
         self._sweep_lock: asyncio.Lock | None = None
 
     async def process_request(self, request: Request) -> Response | None:
+        """Enforce per-client request rate limits."""
         client = request.client_host or "unknown"
         now = time.monotonic()
         cutoff = now - self.window_seconds
@@ -117,7 +123,7 @@ class RateLimitMiddleware(Middleware):
 
         if len(bucket) >= self.max_requests:
             return Response(
-                status_code=429,
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 body=b"Too Many Requests",
                 headers={"Retry-After": str(self.window_seconds)},
             )
@@ -142,6 +148,7 @@ class HTTPSRedirectMiddleware(Middleware):
     """
 
     async def process_request(self, request: Request) -> Response | None:
+        """Redirect HTTP requests to HTTPS with a 308 status."""
         # Trust ASGI scope first — the server set it based on the actual
         # transport, not a header that anyone could spoof.
         scope_scheme = request.scope.get("scheme") if request.scope else None
@@ -153,13 +160,11 @@ class HTTPSRedirectMiddleware(Middleware):
         if fwd_proto == "https":
             return None
 
-        from veloce.http.response import RedirectResponse
-
         host = request.headers.get("host", "localhost")
         url = f"https://{host}{request.path}"
         if request.query_string:
             url += f"?{request.query_string}"
-        return RedirectResponse(url, status_code=308)
+        return RedirectResponse(url, status_code=status.HTTP_308_PERMANENT_REDIRECT)
 
 
 class SecurityHeadersMiddleware(Middleware):
@@ -191,7 +196,7 @@ class SecurityHeadersMiddleware(Middleware):
         frame_options: str | None = "DENY",
         referrer_policy: str | None = "strict-origin-when-cross-origin",
         hsts_max_age: int | None = None,
-        hsts_include_subdomains: bool = True,
+        hsts_include_subdomains: bool = False,
         hsts_preload: bool = False,
         content_security_policy: str | None = None,
         permissions_policy: str | None = None,
@@ -219,6 +224,7 @@ class SecurityHeadersMiddleware(Middleware):
         self._headers = headers
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        """Attach security hardening headers to every response."""
         for name, value in self._headers.items():
             # Defaults only — never clobber a value the handler chose.
             if name not in response.headers:
