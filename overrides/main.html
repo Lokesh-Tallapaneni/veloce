@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {{ super() }}
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "name": "Veloce",
+    "alternateName": "veloceframework",
+    "description": "Ultra-fast async Python web framework — ASGI-native, with radix routing, typed dependency injection, OpenAPI 3.1, WebSockets, and an in-memory test client.",
+    "url": "https://veloceframework.com/",
+    "codeRepository": "https://github.com/Lokesh-Tallapaneni/veloce",
+    "programmingLanguage": "Python",
+    "runtimePlatform": "Python 3.10+",
+    "license": "https://opensource.org/licenses/MIT",
+    "keywords": "python, async, web framework, asgi, fastapi alternative, flask alternative",
+    "author": {
+      "@type": "Person",
+      "name": "Lokesh Tallapaneni",
+      "email": "lokeshtallapaneni@gmail.com"
+    }
+  }
+  </script>
+{% endblock %}
