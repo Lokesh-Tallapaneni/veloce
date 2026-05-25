@@ -11,8 +11,20 @@ import signal
 import time
 import weakref
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
+from pydantic import BaseModel as _PydanticBaseModel
+
+from veloce import status
+from veloce._internal import (
+    MIME_HTML,
+    MIME_JSON,
+    MIME_OCTET,
+    _extract_host,
+    _is_async_callable,
+    _reject_header_crlf,
+)
+from veloce.blueprints import _endpoint_blueprint
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.dependency import DependencyResolver, Depends
 from veloce.exceptions import (
@@ -22,14 +34,17 @@ from veloce.exceptions import (
     WebSocketRequestValidationError,
 )
 from veloce.helpers import _current_app_var, _current_request_var, _RequestGlobals, g
+from veloce.http.datastructures import State
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
+    RedirectResponse,
     Response,
-    _reject_header_crlf,
 )
+from veloce.instrumentation import RequestMetrics
 from veloce.middleware import BaseHTTPMiddleware, Middleware
 from veloce.routing.router import Router
+from veloce.sessions import Session
 from veloce.signals import (
     appcontext_popped,
     appcontext_pushed,
@@ -39,19 +54,11 @@ from veloce.signals import (
     request_started,
     request_tearing_down,
 )
+from veloce.websocket import WebSocket
 
 if TYPE_CHECKING:
     import ssl
 
-
-# Memoised `inspect.iscoroutinefunction` results. A `WeakValueDictionary`
-# would not work — the value here is a bool, but bools are singletons in
-# CPython and weak references to them are not supported. Instead we use a
-# `WeakKeyDictionary` so that when a hook callable is garbage-collected
-# its cache entry disappears with it. This sidesteps the id-reuse hazard
-# of an `id()`-keyed dict and keeps memory bounded if a test harness or
-# hot-reloader churns through registered callables.
-_iscoro_cache: weakref.WeakKeyDictionary[Callable[..., Any], bool] = weakref.WeakKeyDictionary()
 
 # Cache of `(wants_request, wants_exc)` flags per exception handler — the
 # `inspect.signature` walk inside `_call_exc_handler` repeats on every
@@ -74,10 +81,10 @@ _MISSING: Any = object()
 # like `response.content_type = "text/csv"` falls through to the
 # uncached path and is validated as before.
 _CT_BYTES_CACHE: dict[str, bytes] = {
-    "application/json": b"application/json",
-    "text/html; charset=utf-8": b"text/html; charset=utf-8",
+    MIME_JSON: b"application/json",
+    MIME_HTML: b"text/html; charset=utf-8",
     "text/plain; charset=utf-8": b"text/plain; charset=utf-8",
-    "application/octet-stream": b"application/octet-stream",
+    MIME_OCTET: b"application/octet-stream",
 }
 
 # Pre-encoded ASCII bytes for small content-length values. Body sizes
@@ -85,44 +92,6 @@ _CT_BYTES_CACHE: dict[str, bytes] = {
 # vast majority of typical JSON API responses; larger payloads fall
 # through to the per-request `str(n).encode()` allocation.
 _CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(2048))
-
-
-def _endpoint_blueprint(endpoint: str | None) -> str | None:
-    """Return the blueprint name encoded in an endpoint, or `None`.
-
-    Blueprint routes have endpoints of the form `"{bp}.{routename}"`;
-    app-level routes have a bare `"routename"` (no dot). This is the
-    same convention `register_blueprint` and `url_for` already use.
-    """
-    if not endpoint:
-        return None
-    dot = endpoint.find(".")
-    return endpoint[:dot] if dot >= 0 else None
-
-
-def _is_async_callable(fn: Callable[..., Any]) -> bool:
-    """Memoised `inspect.iscoroutinefunction` for hot-path hook dispatch.
-
-    `iscoroutinefunction` walks attributes and CO_COROUTINE flags on every
-    call. Per-request teardown / before-request / after-request hook loops
-    re-probe the same handler object repeatedly; cache the result keyed by
-    the callable itself. The cache is a `WeakKeyDictionary`, so freeing a
-    hook auto-evicts its entry — no unbounded growth, no id-reuse.
-    """
-    try:
-        cached = _iscoro_cache.get(fn)
-    except TypeError:
-        # `fn` is unhashable / not weakly referenceable — fall back to a
-        # plain probe. Built-in functions go down this path.
-        return inspect.iscoroutinefunction(fn)
-    if cached is not None:
-        return cached
-    result = inspect.iscoroutinefunction(fn)
-    with contextlib.suppress(TypeError):
-        # Not weak-referenceable (e.g. some C-level callables). The
-        # cache silently skips them; the next call re-probes.
-        _iscoro_cache[fn] = result
-    return result
 
 
 class Veloce(Router):
@@ -218,10 +187,6 @@ class Veloce(Router):
         self.swagger_ui_init_oauth = swagger_ui_init_oauth
 
         from veloce.config import Config
-
-        # App-wide scratch namespace. `State` is a dict
-        # subclass, so `app.state["db"]` and `app.state.db` both work.
-        from veloce.http.request import State
 
         self.state: State = State()
         # Configuration. `Config` is a dict subclass with
@@ -651,7 +616,7 @@ class Veloce(Router):
         mappings; veloce returns a fresh `Aborter` instance per access
         so users can mutate `_mapping` per-app without affecting others.
         """
-        from veloce.exceptions import Aborter
+        from veloce.helpers import Aborter  # breaks app -> exceptions -> helpers cycle
 
         if self._aborter is None:
             self._aborter = Aborter()
@@ -723,14 +688,14 @@ class Veloce(Router):
     # `full_dispatch_request` runs the full before/after_request chain
     # — which `_dispatch_request` already does inline — so both names
     # point at the same method.
-    def dispatch_request(self, request: Request) -> Any:
+    async def dispatch_request(self, request: Request) -> Any:
         """an alias for `_dispatch_request`."""
-        return self._dispatch_request(request)
+        return await self._dispatch_request(request)
 
-    def full_dispatch_request(self, request: Request) -> Any:
+    async def full_dispatch_request(self, request: Request) -> Any:
         """an alias for `_dispatch_request` (which already runs the
         full before/after-request hook chain inline)."""
-        return self._dispatch_request(request)
+        return await self._dispatch_request(request)
 
     async def preprocess_request(self, request: Request) -> Any:
         """Run all `before_request` hooks for `request`.
@@ -787,7 +752,7 @@ class Veloce(Router):
         Use to bridge async handlers / hooks into sync code (CLI
         commands, background workers, test scaffolding).
         """
-        if not inspect.iscoroutinefunction(func):
+        if not _is_async_callable(func):
             return func
 
         @functools.wraps(func)
@@ -795,23 +760,6 @@ class Veloce(Router):
             return asyncio.run(func(*args, **kwargs))
 
         return _sync_wrapper
-
-    @staticmethod
-    def async_to_sync(func: Callable) -> Callable:
-        """Force-wrap `func` (sync or async) into a synchronous callable.
-
-        Unlike `ensure_sync` this always returns a sync wrapper —
-        useful when the caller needs a uniform `(*a, **kw) -> result`
-        shape regardless of `func`'s coroutinicity.
-        """
-        if inspect.iscoroutinefunction(func):
-
-            @functools.wraps(func)
-            def _wrap(*args: Any, **kwargs: Any) -> Any:
-                return asyncio.run(func(*args, **kwargs))
-
-            return _wrap
-        return func
 
     def make_response(self, value: Any) -> Response:
         """Coerce a handler-return value into a `Response`.
@@ -849,11 +797,11 @@ class Veloce(Router):
         if isinstance(value, (dict, list)):
             return jsonify(value)
         if isinstance(value, bytes):
-            return Response(body=value, content_type="text/html; charset=utf-8")
+            return Response(body=value, content_type=MIME_HTML)
         if isinstance(value, str):
             return Response(
                 body=value.encode("utf-8"),
-                content_type="text/html; charset=utf-8",
+                content_type=MIME_HTML,
             )
         raise TypeError(f"Cannot coerce {type(value).__name__} to Response")
 
@@ -957,7 +905,7 @@ class Veloce(Router):
                     "middleware(middleware_class) is the class form; "
                     "@app.middleware('http') is the decorator form"
                 )
-            self.add_middleware(middleware_class_or_type(**kwargs))
+            self.add_middleware(middleware_class_or_type, **kwargs)
 
     # ── Exception handlers ───────────────────────────────────────
 
@@ -1007,14 +955,7 @@ class Veloce(Router):
         """Register a custom exception handler by exception type or status code."""
 
         def decorator(func: Callable) -> Callable:
-            if isinstance(exc_class_or_status, int):
-                self._status_handlers[exc_class_or_status] = func
-            else:
-                self._exception_handlers[exc_class_or_status] = func
-                # Invalidate the MRO walk cache so a freshly-decorated
-                # handler for a base class doesn't get shadowed by a
-                # stale negative cache populated before its registration.
-                self._exc_handler_cache.clear()
+            self.register_error_handler(exc_class_or_status, func)
             return func
 
         return decorator
@@ -1030,14 +971,7 @@ class Veloce(Router):
         Accepts an exception class (matched by MRO at dispatch time) or
         an int HTTP status code.
         """
-        if isinstance(exc_class_or_status, int):
-            self._status_handlers[exc_class_or_status] = handler
-        else:
-            self._exception_handlers[exc_class_or_status] = handler
-            # Same invalidation as `register_error_handler` /
-            # `@exception_handler` — a late-bound handler for a base
-            # class must take effect for already-cached subclasses.
-            self._exc_handler_cache.clear()
+        self.register_error_handler(exc_class_or_status, handler)
 
     def log_exception(self, exc: BaseException) -> None:
         """Log an exception with traceback.
@@ -1106,27 +1040,6 @@ class Veloce(Router):
             headers={"Allow": ", ".join(advertised)},
         )
 
-    def trap_http_exception(self, exc: BaseException) -> bool:
-        """Decide whether an `HTTPException` should propagate.
-
-        Returns True iff the exception should be re-raised (skipping
-        the configured `errorhandler`) for a debugger to see. Honours:
-
-        - `TRAP_HTTP_EXCEPTIONS = True` — trap every `HTTPException`.
-        - `TRAP_BAD_REQUEST_ERRORS = True` (default in debug mode) —
-          trap only `BadRequest`/`Unauthorized`/`Forbidden`/`NotFound`
-          style 4xx errors so unexpected 404s/400s surface during
-          development. Non-HTTP exceptions are never trapped here.
-        """
-        if not isinstance(exc, HTTPException):
-            return False
-        if self.config.get("TRAP_HTTP_EXCEPTIONS"):
-            return True
-        trap_bad_request = self.config.get("TRAP_BAD_REQUEST_ERRORS")
-        if trap_bad_request is None and self.debug:
-            trap_bad_request = True
-        return bool(trap_bad_request) and 400 <= (exc.status_code or 0) < 500
-
     async def handle_user_exception(
         self, exc: BaseException, request: Request | None = None
     ) -> Response:
@@ -1152,7 +1065,10 @@ class Veloce(Router):
                 return result
             return self._coerce_response(result)
         self.log_exception(exc)
-        return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+        return JSONResponse(
+            {"detail": "Internal Server Error"},
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
     @property
     def view_functions(self) -> dict[str, Callable]:
@@ -1187,11 +1103,22 @@ class Veloce(Router):
                     # Recompute the pre-built handler plan since the
                     # callable changed.
                     try:
-                        from veloce._handler_plan import build_plan
+                        from veloce._handler_plan import K_REQUEST, build_plan
 
-                        info.handler_plan = build_plan(func)
+                        plan = build_plan(func)
+                        info.handler_plan = plan
+                        info.is_trivial_plan = (
+                            plan is not None and len(plan.slots) == 0
+                        )
+                        info.is_request_only_plan = (
+                            plan is not None
+                            and len(plan.slots) == 1
+                            and plan.slots[0].kind == K_REQUEST
+                        )
                     except Exception:
                         info.handler_plan = None
+                        info.is_trivial_plan = False
+                        info.is_request_only_plan = False
             if not replaced:
                 raise ValueError(f"No route registered for endpoint {name!r}")
             return func
@@ -1230,6 +1157,7 @@ class Veloce(Router):
 
     @property
     def after_request_funcs(self) -> dict[Any, list[Callable]]:
+        """Return the per-blueprint after-request hook registry."""
         result: dict[Any, list[Callable]] = {None: list(self._after_request_hooks)}
         for bp, hooks in self._bp_after_hooks.items():
             result[bp] = list(hooks)
@@ -1237,6 +1165,7 @@ class Veloce(Router):
 
     @property
     def teardown_request_funcs(self) -> dict[Any, list[Callable]]:
+        """Return the per-blueprint teardown-request hook registry."""
         result: dict[Any, list[Callable]] = {None: list(self._teardown_request_hooks)}
         for bp, hooks in self._bp_teardown_hooks.items():
             result[bp] = list(hooks)
@@ -1337,6 +1266,21 @@ class Veloce(Router):
         """Register a function to run on app-context teardown."""
         self._teardown_appcontext_hooks.append(func)
         return func
+
+    async def _run_teardown_hooks(
+        self, hooks: list[Callable], exc: BaseException | None, label: str
+    ) -> None:
+        """Run a list of teardown hooks, logging but never raising errors."""
+        for hook in hooks:
+            try:
+                if _is_async_callable(hook):
+                    await hook(exc)
+                else:
+                    loop = asyncio.get_running_loop()
+                    ctx = contextvars.copy_context()
+                    await loop.run_in_executor(None, ctx.run, functools.partial(hook, exc))
+            except Exception:
+                self.logger.exception(f"{label} hook raised an exception")
 
     def context_processor(self, func: Callable) -> Callable:
         """Register a template context processor.
@@ -1467,6 +1411,7 @@ class Veloce(Router):
 
     # Keep `url_path_for` aligned with the override above.
     def url_path_for(self, name: str, **path_params: Any) -> str:
+        """Resolve a URL path by endpoint name and parameters."""
         return self.url_for(name, **path_params)
 
     def url_defaults(self, func: Callable) -> Callable:
@@ -1565,6 +1510,11 @@ class Veloce(Router):
                 include_in_schema=info.include_in_schema,
                 responses=info.responses,
                 operation_id=info.operation_id,
+                openapi_extra=info.openapi_extra,
+                defaults=info.defaults,
+                callbacks=info.callbacks,
+                subdomain=info.subdomain,
+                host=info.host,
             )
 
         # Bucket the blueprint's hooks under its name so dispatch can
@@ -1605,6 +1555,7 @@ class Veloce(Router):
         # Error handlers: app-level wins on conflict (don't overwrite).
         for exc_cls, handler in blueprint._exception_handlers.items():
             self._exception_handlers.setdefault(exc_cls, handler)
+        self._exc_handler_cache.clear()
         for code, handler in blueprint._status_handlers.items():
             self._status_handlers.setdefault(code, handler)
 
@@ -1649,6 +1600,7 @@ class Veloce(Router):
     # ── Dependency overrides (for testing) ────────────────────────
 
     def dependency_overrides_provider(self) -> dict[Callable, Callable]:
+        """Return the dependency override mapping."""
         return self._dependency_overrides
 
     @property
@@ -1756,6 +1708,8 @@ class Veloce(Router):
 
     def on_event(self, event: str) -> Callable:
         """Register startup/shutdown event handlers."""
+        if event not in ("startup", "shutdown"):
+            raise ValueError(f"event must be 'startup' or 'shutdown', got {event!r}")
 
         def decorator(func: Callable) -> Callable:
             if event == "startup":
@@ -1767,10 +1721,12 @@ class Veloce(Router):
         return decorator
 
     def on_startup(self, func: Callable) -> Callable:
+        """Register a startup event handler."""
         self._on_startup.append(func)
         return func
 
     def on_shutdown(self, func: Callable) -> Callable:
+        """Register a shutdown event handler."""
         self._on_shutdown.append(func)
         return func
 
@@ -1832,8 +1788,11 @@ class Veloce(Router):
         _current_request_var.set(request)
         g._reset()
 
-        if request_started.has_receivers_for(self):
-            request_started.send(self, request=request)
+        try:
+            if request_started.has_receivers_for(self):
+                request_started.send(self, request=request)
+        except Exception:
+            self.logger.exception("request_started signal receiver raised")
 
         # Drain `before_first_request` hooks exactly once. The double-check
         # under the lock is the canonical pattern: the unlocked check
@@ -1857,14 +1816,17 @@ class Veloce(Router):
         if max_size is not None:
             declared = request.content_length
             if (declared is not None and declared > max_size) or len(request.body) > max_size:
-                return JSONResponse(
+                response = JSONResponse(
                     {
                         "detail": "Request body exceeds MAX_CONTENT_LENGTH",
-                        "status_code": 413,
+                        "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                         "limit": max_size,
                     },
-                    status_code=413,
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 )
+                if self._middlewares:
+                    response = await self._run_response_middleware(request, response)
+                return response
 
         # Time the dispatch only when instrumentation hooks are registered —
         # an un-instrumented app does not even read the clock.
@@ -1885,7 +1847,9 @@ class Veloce(Router):
             if instrument:
                 with contextlib.suppress(Exception):
                     await self._run_instrumentation(
-                        request, 500, (time.perf_counter() - started) * 1000.0
+                        request,
+                        status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        (time.perf_counter() - started) * 1000.0,
                     )
             raise
 
@@ -1907,21 +1871,28 @@ class Veloce(Router):
 
     async def _run_http_middleware_chain(self, request: Request) -> Response:
         """Run @app.middleware('http') functions with call_next pattern."""
-        idx = 0
         funcs = self._http_middleware_funcs
 
-        async def call_next(req: Request) -> Response:
-            nonlocal idx
-            idx += 1
-            if idx < len(funcs):
-                return await funcs[idx](req, call_next)
-            return await self._dispatch_request(req)
+        def _make_next(level: int) -> Callable:
+            _called = False
 
-        return await funcs[0](request, call_next)
+            async def call_next(req: Request) -> Response:
+                nonlocal _called
+                if _called:
+                    raise RuntimeError("call_next() was called more than once")
+                _called = True
+                if level + 1 < len(funcs):
+                    return await funcs[level + 1](req, _make_next(level + 1))
+                return await self._dispatch_request(req)
+
+            return call_next
+
+        return await funcs[0](request, _make_next(0))
 
     async def _dispatch_request(self, request: Request) -> Response:
         """Core request dispatch — middleware, routing, handler execution."""
         _exc: Exception | None = None
+        _bp_name: str | None = None
         # Resolver allocation is deferred until a non-trivial route demands
         # it. A trivial-plan route (no injected params, no dependencies)
         # never touches the resolver, so allocating one upfront — plus its
@@ -1956,15 +1927,14 @@ class Veloce(Router):
                     return await self._run_response_middleware(
                         request, self._coerce_response(result)
                     )
-            if self._bp_before_hooks:
-                _bp_for_req = _endpoint_blueprint(request.endpoint)
-                if _bp_for_req is not None:
-                    for hook in self._bp_before_hooks.get(_bp_for_req, ()):
-                        result = await self._call_handler(hook, {"request": request})
-                        if result is not None:
-                            return await self._run_response_middleware(
-                                request, self._coerce_response(result)
-                            )
+            _bp_name = _endpoint_blueprint(request.endpoint)
+            if self._bp_before_hooks and _bp_name is not None:
+                for hook in self._bp_before_hooks.get(_bp_name, ()):
+                    result = await self._call_handler(hook, {"request": request})
+                    if result is not None:
+                        return await self._run_response_middleware(
+                            request, self._coerce_response(result)
+                        )
 
             # Check mounted sub-apps
             for prefix, prefix_slash, sub_app in self._mounted_apps:
@@ -2011,8 +1981,8 @@ class Veloce(Router):
             # the route's declared `host` (case-insensitive, port-stripped).
             # Mismatch → 404 (the path is reachable, just not from this host).
             if match is not None and match.route_info.host is not None:
-                req_host = (request.headers.get("host", "") or "").split(":", 1)[0]
-                if req_host.lower() != match.route_info.host.lower():
+                req_host = _extract_host(request.headers.get("host", "") or "")
+                if req_host != match.route_info.host.lower():
                     raise HTTPException(404, "Not Found")
 
             # Redirect slashes (like common web frameworks): /users -> /users/ or vice versa
@@ -2024,10 +1994,11 @@ class Veloce(Router):
                 )
                 alt_match = self.match(request.method, alt)
                 if alt_match is not None:
-                    from veloce.http.response import RedirectResponse
-
                     code = 308 if request.method != "GET" else 307
-                    return RedirectResponse(alt, status_code=code)
+                    response = RedirectResponse(alt, status_code=code)
+                    if self._middlewares:
+                        response = await self._run_response_middleware(request, response)
+                    return response
 
             if match is None:
                 # Check if path exists but method is wrong
@@ -2036,13 +2007,16 @@ class Veloce(Router):
                     # RFC 9110 §9.3.7: OPTIONS auto-responds with `Allow:` and
                     # an empty body even when no handler is registered.
                     if request.method == "OPTIONS":
-                        return self.make_default_options_response(request.path)
+                        response = self.make_default_options_response(request.path)
+                        if self._middlewares:
+                            response = await self._run_response_middleware(request, response)
+                        return response
                     return await self._handle_error(
                         request,
-                        405,
+                        status.HTTP_405_METHOD_NOT_ALLOWED,
                         JSONResponse(
                             {"detail": "Method Not Allowed", "allowed": allowed},
-                            status_code=405,
+                            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
                             headers={"Allow": ", ".join(allowed)},
                         ),
                     )
@@ -2057,6 +2031,7 @@ class Veloce(Router):
                     request.path_params.setdefault(_dk, _dv)
             request.endpoint = match.route_info.name
             request._state["url_rule"] = match.route_info.path_template
+            _bp_name = _endpoint_blueprint(request.endpoint)
 
             # URL value preprocessors: mutate path_params in place
             # before the handler sees them. Endpoint is the route name.
@@ -2071,13 +2046,9 @@ class Veloce(Router):
             route_info = match.route_info
             if route_info.handler_plan is not None:
                 if route_info.is_trivial_plan:
-                    # Trivial-route executor: the handler takes no injected
-                    # parameters and the route declares no dependencies, so
-                    # the dependency subsystem has nothing to produce. Skip
-                    # it entirely instead of awaiting a resolve that would
-                    # return `{}`; the per-request resolver is freshly
-                    # constructed, so there is no stale state to clear.
                     kwargs = {}
+                elif route_info.is_request_only_plan:
+                    kwargs = {route_info.handler_plan.slots[0].name: request}
                 else:
                     resolver = DependencyResolver()
                     resolver._overrides = self._dependency_overrides
@@ -2133,30 +2104,26 @@ class Veloce(Router):
                 if injected.status_code:
                     response.status_code = injected.status_code
                 for hk, hv in injected.headers.items():
-                    if hk.lower() == "set-cookie" and "Set-Cookie" in response.headers:
-                        response.headers["Set-Cookie"] = (
-                            response.headers["Set-Cookie"] + "\r\nSet-Cookie: " + hv
-                        )
+                    if hk.lower() == "set-cookie":
+                        response._append_set_cookie_header(hv)
                     else:
                         response.headers[hk] = hv
                 response._encoded = None
 
             # Run after_request hooks — app-level then matched blueprint.
-            for hook in self._after_request_hooks:
+            for hook in reversed(self._after_request_hooks):
                 hook_result = await self._call_handler(
                     hook, {"request": request, "response": response}
                 )
                 if hook_result is not None and isinstance(hook_result, Response):
                     response = hook_result
-            if self._bp_after_hooks:
-                _bp_after = _endpoint_blueprint(request.endpoint)
-                if _bp_after is not None:
-                    for hook in self._bp_after_hooks.get(_bp_after, ()):
-                        hook_result = await self._call_handler(
-                            hook, {"request": request, "response": response}
-                        )
-                        if hook_result is not None and isinstance(hook_result, Response):
-                            response = hook_result
+            if self._bp_after_hooks and _bp_name is not None:
+                for hook in reversed(self._bp_after_hooks.get(_bp_name, ())):
+                    hook_result = await self._call_handler(
+                        hook, {"request": request, "response": response}
+                    )
+                    if hook_result is not None and isinstance(hook_result, Response):
+                        response = hook_result
 
             # Drain one-shot `after_this_request(fn)` callbacks. These run
             # *after* the global hooks (so per-request adjustments see the
@@ -2213,7 +2180,10 @@ class Veloce(Router):
             )
             if handler:
                 result = await self._call_exc_handler(handler, request, exc)
-                return self._coerce_response(result)
+                response = self._coerce_response(result)
+                if self._middlewares:
+                    response = await self._run_response_middleware(request, response)
+                return response
 
             # `ValidationError` / `RequestValidationError` carry a
             # structured `.errors` list — emit it verbatim (the
@@ -2221,21 +2191,23 @@ class Veloce(Router):
             # the stringified repr stored in `exc.detail`.
             structured = getattr(exc, "errors", None)
             detail_payload: Any = structured if structured is not None else exc.detail
-            return await self._handle_error(
-                request,
-                exc.status_code,
-                JSONResponse(
-                    {"detail": detail_payload, "status_code": exc.status_code},
-                    status_code=exc.status_code,
-                    headers=exc.headers,
-                ),
+            response = JSONResponse(
+                {"detail": detail_payload, "status_code": exc.status_code},
+                status_code=exc.status_code,
+                headers=exc.headers,
             )
+            if self._middlewares:
+                response = await self._run_response_middleware(request, response)
+            return response
         except Exception as exc:
             _exc = exc
             handler = self._find_exception_handler(type(exc))
             if handler:
                 result = await self._call_exc_handler(handler, request, exc)
-                return self._coerce_response(result)
+                response = self._coerce_response(result)
+                if self._middlewares:
+                    response = await self._run_response_middleware(request, response)
+                return response
 
             # PROPAGATE_EXCEPTIONS: when set (or implicitly
             # when both DEBUG and TESTING are on), let the exception
@@ -2248,16 +2220,22 @@ class Veloce(Router):
                 import traceback
 
                 tb = traceback.format_exc()
-                return Response(
-                    status_code=500,
+                response = Response(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     body=tb.encode(),
                     content_type="text/plain",
                 )
+                if self._middlewares:
+                    response = await self._run_response_middleware(request, response)
+                return response
 
             return await self._handle_error(
                 request,
-                500,
-                JSONResponse({"detail": "Internal Server Error"}, status_code=500),
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                JSONResponse(
+                    {"detail": "Internal Server Error"},
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                ),
             )
         finally:
             # Yield-dependency teardowns first — they conceptually wrap the
@@ -2274,34 +2252,29 @@ class Veloce(Router):
                     self.logger.exception("yield-dependency teardown raised")
 
             # Teardown hooks — always run, even on exceptions.
-            _td_hooks: list[Callable] = list(self._teardown_request_hooks)
-            if self._bp_teardown_hooks:
-                _bp_td = _endpoint_blueprint(request.endpoint)
-                if _bp_td is not None:
-                    _td_hooks.extend(self._bp_teardown_hooks.get(_bp_td, ()))
-            for hook in _td_hooks:
-                try:
-                    if _is_async_callable(hook):
-                        await hook(_exc)
-                    else:
-                        loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, hook, _exc)
-                except Exception:
-                    self.logger.exception("teardown_request hook raised an exception")
+            if self._teardown_request_hooks or self._bp_teardown_hooks:
+                if (
+                    self._bp_teardown_hooks
+                    and _bp_name is not None
+                    and _bp_name in self._bp_teardown_hooks
+                ):
+                    _td_hooks: list[Callable] = list(self._teardown_request_hooks)
+                    _td_hooks.extend(self._bp_teardown_hooks[_bp_name])
+                else:
+                    _td_hooks = list(self._teardown_request_hooks)
+            else:
+                _td_hooks = ()  # type: ignore[assignment]
+            if _td_hooks:
+                await self._run_teardown_hooks(_td_hooks, _exc, "teardown_request")
 
             # `teardown_appcontext` fires when the app context pops; in
             # veloce that happens at the end of each request (no separate
             # app/request context split). Hooks receive the exception or
             # None. Errors are logged, never re-raised.
-            for hook in self._teardown_appcontext_hooks:
-                try:
-                    if _is_async_callable(hook):
-                        await hook(_exc)
-                    else:
-                        loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, hook, _exc)
-                except Exception:
-                    self.logger.exception("teardown_appcontext hook raised an exception")
+            if self._teardown_appcontext_hooks:
+                await self._run_teardown_hooks(
+                    self._teardown_appcontext_hooks, _exc, "teardown_appcontext"
+                )
 
             # Signals: fire `got_request_exception` first when an exc bubbled
             # up, then always fire `request_tearing_down`. Receivers may
@@ -2336,7 +2309,7 @@ class Veloce(Router):
         the subdomain literal — useful for tests that drive the app
         without setting `SERVER_NAME`.
         """
-        host = (request.host or "").split(":", 1)[0].lower()
+        host = _extract_host(request.host or "")
         if not host:
             return False
         server_name = (self.config.get("SERVER_NAME") or "").lower()
@@ -2425,8 +2398,6 @@ class Veloce(Router):
         if route_info.response_model_exclude:
             dump_kwargs["exclude"] = route_info.response_model_exclude
 
-        from typing import get_args, get_origin
-
         origin = get_origin(model)
         # Sequence-style response models — `response_model=list[Item]` — dump
         # each element through the inner model.
@@ -2436,9 +2407,7 @@ class Veloce(Router):
                 inner = args[0]
                 if not isinstance(result, (list, tuple)):
                     return result  # let downstream coercion handle the mismatch
-                from pydantic import BaseModel as _BM
-
-                if isinstance(inner, type) and issubclass(inner, _BM):
+                if isinstance(inner, type) and issubclass(inner, _PydanticBaseModel):
                     dumped: list[Any] = []
                     for item in result:
                         # Fast path: an element already of the target model
@@ -2454,9 +2423,7 @@ class Veloce(Router):
             return result
 
         # Scalar Pydantic model.
-        from pydantic import BaseModel as _BM
-
-        if isinstance(model, type) and issubclass(model, _BM):
+        if isinstance(model, type) and issubclass(model, _PydanticBaseModel):
             # If the handler returned an instance of the target model, use
             # it directly — the dump-then-validate roundtrip would erase
             # the `__pydantic_fields_set__` info that drives
@@ -2468,7 +2435,7 @@ class Veloce(Router):
             # coercion (e.g. internal → public view) works as expected;
             # `exclude_unset` semantics necessarily reset because the
             # fields-set markers don't transfer across model types.
-            payload = result.model_dump() if isinstance(result, _BM) else result
+            payload = result.model_dump() if isinstance(result, _PydanticBaseModel) else result
             validated = model.model_validate(payload)
             return validated.model_dump(**dump_kwargs)
 
@@ -2481,10 +2448,27 @@ class Veloce(Router):
             return result
         # Use custom response_class if specified
         if response_class is not None:
-            if response_class is JSONResponse:
+            if isinstance(result, tuple):
+                if len(result) == 3:
+                    body, code, headers = result
+                elif len(result) == 2:
+                    body, second = result
+                    if isinstance(second, int):
+                        body, code, headers = body, second, {}
+                    elif isinstance(second, dict):
+                        body, code, headers = body, 200, second
+                    else:
+                        body, code, headers = body, int(second), {}
+                else:
+                    body, code, headers = result[0], 200, {}
+                resp = self._coerce_response(body, response_class)
+                resp.status_code = code
+                resp.headers.update(headers)
+                return resp
+            if isinstance(response_class, type) and issubclass(response_class, JSONResponse):
                 if hasattr(result, "model_dump"):
-                    return JSONResponse(result.model_dump())
-                return JSONResponse(result)
+                    return response_class(result.model_dump())
+                return response_class(result)
             if isinstance(result, str):
                 return response_class(result)
             if isinstance(result, bytes):
@@ -2496,18 +2480,25 @@ class Veloce(Router):
             # A bare `str` return defaults to text/html — the same default
             # `make_response()` applies, so the media type is consistent
             # whichever path produced the response.
-            return Response(body=result.encode(), content_type="text/html; charset=utf-8")
+            return Response(body=result.encode(), content_type=MIME_HTML)
         if isinstance(result, bytes):
-            return Response(body=result, content_type="application/octet-stream")
+            return Response(body=result, content_type=MIME_HTML)
         # Pydantic model
         if hasattr(result, "model_dump"):
             return JSONResponse(result.model_dump())
         # Tuple response (body, status_code) or (body, status_code, headers)
         if isinstance(result, tuple):
             if len(result) == 2:
-                body, code = result
-                resp = self._coerce_response(body)
-                resp.status_code = code
+                body, second = result
+                if isinstance(second, int):
+                    resp = self._coerce_response(body)
+                    resp.status_code = second
+                elif isinstance(second, dict):
+                    resp = self._coerce_response(body)
+                    resp.headers.update(second)
+                else:
+                    resp = self._coerce_response(body)
+                    resp.status_code = int(second)
                 resp._encoded = None
                 return resp
             if len(result) == 3:
@@ -2533,8 +2524,6 @@ class Veloce(Router):
         A hook may be sync or async; one that raises is logged and skipped
         so observability code can never break the response.
         """
-        from veloce.instrumentation import RequestMetrics
-
         metrics = RequestMetrics(
             method=request.method,
             path=request.path,
@@ -2663,11 +2652,13 @@ class Veloce(Router):
 
     async def _serve(self, host: str, port: int, access_log: bool, ssl_context: Any = None) -> None:
         """Create the server and run forever."""
+        # Deferred: serving.protocol imports `veloce.status`, which triggers
+        # `veloce/__init__` -> back to this app module. Hoisting would
+        # circle at package import time. Both call sites below share the
+        # same break.
         from veloce.serving.protocol import HttpProtocol
 
         loop = asyncio.get_running_loop()
-        self._server_ref = None
-
         # Run startup hooks
         await self._run_lifecycle("startup")
 
@@ -2680,8 +2671,6 @@ class Veloce(Router):
             reuse_port=True,
             ssl=ssl_context,
         )
-        self._server_ref = server
-
         # Handle signals for graceful shutdown
         shutdown_event = asyncio.Event()
 
@@ -2698,6 +2687,9 @@ class Veloce(Router):
 
     async def _graceful_shutdown(self, loop: asyncio.AbstractEventLoop) -> None:
         """Drain in-flight requests and run shutdown lifecycle."""
+        # Deferred: same `veloce.status` -> `veloce/__init__` cycle that
+        # the matching import in `_serve` breaks. These are the only two
+        # call sites; not worth a structural refactor.
         from veloce.serving.protocol import HttpProtocol
 
         # Wait for active dispatch tasks to complete (with timeout)
@@ -2715,16 +2707,6 @@ class Veloce(Router):
         # Run shutdown lifecycle hooks
         await self._run_lifecycle("shutdown")
 
-        # Run teardown_appcontext hooks
-        for hook in self._teardown_appcontext_hooks:
-            try:
-                if inspect.iscoroutinefunction(hook):
-                    await hook(None)
-                else:
-                    hook(None)
-            except Exception:
-                self.logger.exception("teardown_appcontext hook raised an exception")
-
     async def _run_lifecycle(self, event: str) -> None:
         """Run lifecycle event handlers, including lifespan context manager."""
         if event == "startup":
@@ -2734,10 +2716,12 @@ class Veloce(Router):
                 await self._lifespan_cm.__aenter__()
 
             for handler in self._on_startup:
-                if inspect.iscoroutinefunction(handler):
+                if _is_async_callable(handler):
                     await handler()
                 else:
-                    handler()
+                    loop = asyncio.get_running_loop()
+                    ctx = contextvars.copy_context()
+                    await loop.run_in_executor(None, ctx.run, functools.partial(handler))
 
             # Dev-mode event-loop blocking watchdog — opt-in, so an app
             # that does not set the config key never builds one. The key
@@ -2756,10 +2740,12 @@ class Veloce(Router):
                 self._watchdog = None
 
             for handler in self._on_shutdown:
-                if inspect.iscoroutinefunction(handler):
+                if _is_async_callable(handler):
                     await handler()
                 else:
-                    handler()
+                    loop = asyncio.get_running_loop()
+                    ctx = contextvars.copy_context()
+                    await loop.run_in_executor(None, ctx.run, functools.partial(handler))
 
             # Exit lifespan context manager
             if self._lifespan_cm is not None:
@@ -2788,16 +2774,16 @@ class Veloce(Router):
         resp = JSONResponse(
             {
                 "detail": "Request body exceeds MAX_CONTENT_LENGTH",
-                "status_code": 413,
+                "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 "limit": limit,
             },
-            status_code=413,
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
         )
         body = resp.body
         await send(
             {
                 "type": "http.response.start",
-                "status": 413,
+                "status": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 "headers": [
                     (b"content-type", resp.content_type.encode()),
                     (b"content-length", str(len(body)).encode()),
@@ -3048,7 +3034,8 @@ class Veloce(Router):
             # WEBSOCKET-method handler and run it with a WebSocket built
             # from the ASGI receive/send pair. Path params are coerced
             # the same way they are for HTTP.
-            from veloce.websocket import WebSocket
+            _current_app_var.set(self)
+            g._reset()
 
             # Host and Origin validation for WebSocket handshakes — an HTTP
             # middleware such as TrustedHostMiddleware or
@@ -3062,7 +3049,7 @@ class Veloce(Router):
                 # First occurrence of each header wins — a duplicate
                 # `Origin` must not be able to shadow the real one.
                 if _hk == b"host" and not _host_seen:
-                    ws_host = _hv.decode("latin-1").split(":", 1)[0].lower()
+                    ws_host = _extract_host(_hv.decode("latin-1"))
                     _host_seen = True
                 elif _hk == b"origin" and not _origin_seen:
                     ws_origin = _hv.decode("latin-1")
@@ -3153,8 +3140,12 @@ class Veloce(Router):
             while True:
                 message = await receive()
                 if message["type"] == "lifespan.startup":
-                    await self._run_lifecycle("startup")
-                    await send({"type": "lifespan.startup.complete"})
+                    try:
+                        await self._run_lifecycle("startup")
+                        await send({"type": "lifespan.startup.complete"})
+                    except Exception as exc:
+                        await send({"type": "lifespan.startup.failed", "message": str(exc)})
+                        return
                 elif message["type"] == "lifespan.shutdown":
                     await self._run_lifecycle("shutdown")
                     await send({"type": "lifespan.shutdown.complete"})
@@ -3255,9 +3246,6 @@ class _TestRequestContext:
         # Stash the synthetic request on a contextvar so user code can
         # read it via the same `current_request`-style helpers used at
         # dispatch time.
-        from veloce.helpers import _current_request_var
-        from veloce.sessions import Session
-
         # Provide an in-memory `Session` so helpers that read the
         # request's session (`flash`, `get_flashed_messages`,
         # `session` proxy) work inside the block without requiring
@@ -3270,8 +3258,6 @@ class _TestRequestContext:
         return self._request
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        from veloce.helpers import _current_request_var
-
         if self._request_token is not None:
             _current_request_var.reset(self._request_token)
         self._app_ctx.__exit__(exc_type, exc, tb)

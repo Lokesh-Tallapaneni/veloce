@@ -21,11 +21,12 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
+from veloce._internal import _is_async_callable
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
 from veloce.http.request import Request
 from veloce.http.response import Response
-from veloce.routing.params import Body, Cookie, File, Form, Header, Path, _ParamBase
+from veloce.routing.params import Body, Cookie, File, Form, Header, ParamBase, Path
 
 # `Depends` is imported lazily inside builders to break the dependency.py ↔
 # _handler_plan.py cycle: dependency.py imports the plan API at module load,
@@ -42,8 +43,6 @@ K_QUERY = 5
 K_QUERY_LIST = 6
 K_BODY_MODEL = 7
 K_UPLOAD_FILE = 8
-K_DEFAULT = 9
-K_NONE = 10
 K_SECURITY_SCOPES = 11
 K_RESPONSE = 12
 K_WEBSOCKET = 13
@@ -80,7 +79,7 @@ def _unwrap_list(annotation: Any) -> tuple[bool, Any]:
     return False, annotation
 
 
-def _marker_kind(marker: _ParamBase) -> int:
+def _marker_kind(marker: ParamBase) -> int:
     if isinstance(marker, Path):
         return MK_PATH
     if isinstance(marker, Header):
@@ -93,7 +92,7 @@ def _marker_kind(marker: _ParamBase) -> int:
         return MK_FORM
     if isinstance(marker, File):
         return MK_FILE
-    # Query is the default and a bare _ParamBase falls here too.
+    # Query is the default and a bare ParamBase falls here too.
     return MK_QUERY
 
 
@@ -133,7 +132,7 @@ class _Slot:
         self.is_optional = False
         self.list_inner: Any = None
         self.model: Any = None
-        self.marker: _ParamBase | None = None
+        self.marker: ParamBase | None = None
         self.marker_kind = MK_QUERY
         self.lookup_name = ""
         self.sub_plan: HandlerPlan | None = None
@@ -159,7 +158,7 @@ class HandlerPlan:
         route_dep_plans: list[_Slot],
     ) -> None:
         self.handler = handler
-        self.is_coro = inspect.iscoroutinefunction(handler)
+        self.is_coro = _is_async_callable(handler)
         self.slots = slots
         # Each entry is a K_DEPENDS slot; only used for side-effect deps that
         # do not bind to a handler parameter.
@@ -181,7 +180,7 @@ def _build_depends_slot(
     slot.use_cache = dep.use_cache
     callable_ = dep.dependency if dep.dependency is not None else inferred
     slot.dep_callable = callable_
-    slot.dep_is_coro = inspect.iscoroutinefunction(callable_)
+    slot.dep_is_coro = _is_async_callable(callable_)
     slot.dep_is_gen = inspect.isgeneratorfunction(callable_)
     slot.dep_is_async_gen = inspect.isasyncgenfunction(callable_)
     slot.sub_plan = build_plan(callable_, websocket=websocket)
@@ -207,7 +206,7 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
     dependency injection, giving it `yield`-teardown and `Security` parity
     with the HTTP path.
     """
-    from veloce.dependency import Depends  # local import breaks the import cycle
+    from veloce.dependency import Depends, SecurityScopes  # local import breaks the import cycle
 
     ws_type: Any = None
     if websocket:
@@ -242,7 +241,7 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
         hints = get_type_hints(hint_target, include_extras=True)
     except Exception:
         # get_type_hints chokes on forward refs / private modules; degrade
-        # gracefully — slots that need annotations become K_DEFAULT/K_NONE.
+        # gracefully — slots that need annotations fall back to defaults.
         hints = {}
 
     slots: list[_Slot] = []
@@ -250,13 +249,19 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
     for param_name, param in sig.parameters.items():
         if param_name == "self":
             continue
+        # *args / **kwargs are not injectable query parameters.
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            continue
 
         annotation = hints.get(param_name)
         default = param.default
         has_default = default is not inspect.Parameter.empty
 
         # PEP 593: `Annotated[T, Depends(...)]` or `Annotated[T, Query(...)]`.
-        # If the metadata carries a `Depends` (or `_ParamBase` marker) and
+        # If the metadata carries a `Depends` (or `ParamBase` marker) and
         # the user didn't ALSO set it as the default, hoist the marker
         # into `default` and reduce `annotation` to the inner type.
         if get_origin(annotation) is not None and hasattr(annotation, "__metadata__"):
@@ -265,10 +270,10 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
             metadata = getattr(annotation, "__metadata__", ())
             extracted_marker: Any = None
             for m in metadata:
-                if isinstance(m, (Depends, _ParamBase)):
+                if isinstance(m, (Depends, ParamBase)):
                     extracted_marker = m
                     break
-            if extracted_marker is not None and not isinstance(default, (Depends, _ParamBase)):
+            if extracted_marker is not None and not isinstance(default, (Depends, ParamBase)):
                 default = extracted_marker
                 has_default = True
             annotation = base_type
@@ -303,9 +308,6 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
             continue
 
         # SecurityScopes — receives the accumulated Security() chain scopes.
-        # Lazy import avoids the dependency.py ↔ _handler_plan.py cycle.
-        from veloce.dependency import SecurityScopes
-
         if annotation is SecurityScopes:
             slots.append(_Slot(K_SECURITY_SCOPES, param_name))
             continue
@@ -320,7 +322,7 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
             continue
 
         # Explicit parameter markers (Query/Path/Header/Cookie/Body/Form/File).
-        if isinstance(default, _ParamBase):
+        if isinstance(default, ParamBase):
             marker_kind = _marker_kind(default)
             # Body / Form / File markers read the HTTP request body, which
             # a WebSocket handshake does not have — skip them so the

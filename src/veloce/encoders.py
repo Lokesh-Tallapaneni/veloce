@@ -7,10 +7,30 @@ import datetime
 import decimal
 import enum
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
+
+# Exact-type fast-path for leaf scalars. `dict.get(type(obj))` is a
+# single hash lookup; an `isinstance` cascade on the same cases is
+# linear in cascade length. Subclasses (`pathlib.PosixPath`, custom
+# `IntEnum`, third-party `datetime` subclasses) intentionally miss the
+# fast-path and fall through to the isinstance chain below.
+_LEAF_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
+    type(None): lambda _v: None,
+    str: lambda v: v,
+    int: lambda v: v,
+    float: lambda v: v,
+    bool: lambda v: v,
+    uuid.UUID: str,
+    decimal.Decimal: float,
+    datetime.datetime: lambda v: v.isoformat(),
+    datetime.date: lambda v: v.isoformat(),
+    datetime.time: lambda v: v.isoformat(),
+    datetime.timedelta: lambda v: v.total_seconds(),
+}
 
 
 def jsonable_encoder(
@@ -20,86 +40,113 @@ def jsonable_encoder(
     exclude_unset: bool = False,
     exclude_defaults: bool = False,
     exclude_none: bool = False,
+    *,
+    _seen: set[int] | None = None,
 ) -> Any:
     """Convert complex objects to JSON-serializable types.
 
     Handles Pydantic models, dataclasses, datetime, Decimal, UUID, Enum, Path,
-    sets, frozensets, generators, and nested structures.
+    sets, frozensets, and nested structures.
 
     `include` / `exclude` apply to dict keys at **every depth** — passing
     `exclude={"password"}` strips a `password` key wherever it appears
     in the structure, not only at the top level.
 
+    Raises `ValueError` on a self-referential object graph (a container
+    that transitively contains itself) instead of recursing until the
+    stack overflows. Detection is by `id()`; the per-call `_seen` set
+    is internal and should not be passed by callers.
+
     Usage:
         data = jsonable_encoder(my_pydantic_model, exclude={"password"})
     """
-    # Common-case primitives short-circuit — most leaf calls hit these
-    # before any of the heavier isinstance checks below.
-    if obj is None or isinstance(obj, (str, int, float, bool)):
-        return obj
+    # Exact-type leaf encoder (covers None, str, int, float, bool, UUID,
+    # Decimal, datetime/date/time/timedelta in one hash lookup).
+    encoder = _LEAF_TYPE_ENCODERS.get(type(obj))
+    if encoder is not None:
+        return encoder(obj)
 
-    if isinstance(obj, BaseModel):
-        kwargs: dict[str, Any] = {}
-        if include:
-            kwargs["include"] = include
-        if exclude:
-            kwargs["exclude"] = exclude
-        if exclude_unset:
-            kwargs["exclude_unset"] = True
-        if exclude_defaults:
-            kwargs["exclude_defaults"] = True
-        if exclude_none:
-            kwargs["exclude_none"] = True
-        return jsonable_encoder(obj.model_dump(**kwargs))
-
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return jsonable_encoder(dataclasses.asdict(obj), include=include, exclude=exclude)
-
-    if isinstance(obj, dict):
-        result = {}
-        for key, value in obj.items():
-            str_key = str(key)
-            if include and str_key not in include:
-                continue
-            if exclude and str_key in exclude:
-                continue
-            # Forward the filters into the recursion so nested dicts
-            # honour them too — matches the dataclass branch above.
-            result[str_key] = jsonable_encoder(value, include=include, exclude=exclude)
-        return result
-
-    if isinstance(obj, (list, tuple)):
-        return [jsonable_encoder(item, include=include, exclude=exclude) for item in obj]
-
-    if isinstance(obj, (set, frozenset)):
-        return [
-            jsonable_encoder(item, include=include, exclude=exclude)
-            for item in sorted(obj, key=str)
-        ]
-
+    # Subclass-tolerant scalar fallthroughs (Path -> PosixPath/WindowsPath,
+    # subclassed Enum / datetime / Decimal / bytes / bytearray).
     if isinstance(obj, enum.Enum):
         return obj.value
-
+    if isinstance(obj, (bytes, bytearray)):
+        return bytes(obj).decode("utf-8", errors="replace")
+    if isinstance(obj, Path):
+        return str(obj)
     if isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
         return obj.isoformat()
-
     if isinstance(obj, datetime.timedelta):
         return obj.total_seconds()
-
     if isinstance(obj, decimal.Decimal):
         return float(obj)
-
     if isinstance(obj, uuid.UUID):
         return str(obj)
 
-    if isinstance(obj, Path):
-        return str(obj)
-
-    if isinstance(obj, bytes):
-        return obj.decode("utf-8", errors="replace")
-
-    # Fallback: try to convert to dict
+    # Cycle detection — only matters for container types that recurse
+    # back through `jsonable_encoder`. Allocate the seen-set lazily so
+    # leaf-only call graphs pay zero.
+    if _seen is None:
+        _seen = set()
+    obj_id = id(obj)
+    if obj_id in _seen:
+        raise ValueError(
+            f"Circular reference detected while encoding {type(obj).__name__}"
+        )
+    _seen.add(obj_id)
     try:
-        return jsonable_encoder(vars(obj), include=include, exclude=exclude)
-    except TypeError:
-        return str(obj)
+        if isinstance(obj, BaseModel):
+            kwargs: dict[str, Any] = {}
+            if include:
+                kwargs["include"] = include
+            if exclude:
+                kwargs["exclude"] = exclude
+            if exclude_unset:
+                kwargs["exclude_unset"] = True
+            if exclude_defaults:
+                kwargs["exclude_defaults"] = True
+            if exclude_none:
+                kwargs["exclude_none"] = True
+            return jsonable_encoder(obj.model_dump(**kwargs), _seen=_seen)
+
+        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+            return jsonable_encoder(
+                dataclasses.asdict(obj), include=include, exclude=exclude, _seen=_seen
+            )
+
+        if isinstance(obj, dict):
+            result = {}
+            for key, value in obj.items():
+                str_key = str(key)
+                if include and str_key not in include:
+                    continue
+                if exclude and str_key in exclude:
+                    continue
+                # Forward the filters into the recursion so nested dicts
+                # honour them too — matches the dataclass branch above.
+                result[str_key] = jsonable_encoder(
+                    value, include=include, exclude=exclude, _seen=_seen
+                )
+            return result
+
+        if isinstance(obj, (list, tuple)):
+            return [
+                jsonable_encoder(item, include=include, exclude=exclude, _seen=_seen)
+                for item in obj
+            ]
+
+        if isinstance(obj, (set, frozenset)):
+            return [
+                jsonable_encoder(item, include=include, exclude=exclude, _seen=_seen)
+                for item in sorted(obj, key=str)
+            ]
+
+        # Fallback: try to convert to dict
+        try:
+            return jsonable_encoder(
+                vars(obj), include=include, exclude=exclude, _seen=_seen
+            )
+        except TypeError:
+            return str(obj)
+    finally:
+        _seen.discard(obj_id)

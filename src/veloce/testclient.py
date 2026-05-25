@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import mimetypes
+import secrets
 from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlencode
@@ -76,14 +78,58 @@ class TestResponse:
                 self.cookies[cname.strip()] = cval.strip()
 
     def json(self) -> Any:
+        """Parse the response body as JSON and return the result."""
         return orjson.loads(self.body)
 
     @property
     def text(self) -> str:
+        """Decode the response body as UTF-8 text."""
         return self.body.decode("utf-8", errors="replace")
 
     def __repr__(self) -> str:
         return f"<TestResponse [{self.status_code}]>"
+
+
+def _build_request_headers(
+    base: dict[str, str],
+    cookies: dict[str, str],
+    extra: dict[str, str] | None,
+) -> dict[str, str]:
+    """Merge the test client's persistent base headers + cookie jar + the
+    per-call `extra` into one request-ready header dict. Single home for
+    the merge order so the sync and async test clients stay in lockstep.
+    """
+    merged = dict(base)
+    if cookies:
+        merged["cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    if extra:
+        merged.update(extra)
+    return merged
+
+
+def _apply_set_cookie_to_jar(
+    jar: dict[str, str], raw_headers: list[tuple[bytes, bytes]]
+) -> None:
+    """Update `jar` from `Set-Cookie` response headers. Honours `Max-Age=0`
+    as a deletion signal (RFC 6265 §5.2.2). Both test clients share this
+    so a fix to the cookie semantics applies to sync + async at once.
+    """
+    for name_bytes, value_bytes in raw_headers:
+        name = name_bytes.decode("latin-1")
+        if name.lower() != "set-cookie":
+            continue
+        value = value_bytes.decode("latin-1")
+        first = value.split(";", 1)[0].strip()
+        if "=" not in first:
+            continue
+        cname, _, cval = first.partition("=")
+        cname = cname.strip()
+        rest = value.split(";")[1:]
+        is_deletion = any("max-age=0" in seg.strip().lower() for seg in rest)
+        if is_deletion:
+            jar.pop(cname, None)
+        else:
+            jar[cname] = cval.strip()
 
 
 def _guess_content_type(filename: str | None, content: Any) -> str:
@@ -99,7 +145,6 @@ def _guess_content_type(filename: str | None, content: Any) -> str:
     if explicit:
         return str(explicit)
     if filename:
-        import mimetypes
 
         guess = mimetypes.guess_type(filename)[0]
         if guess:
@@ -129,7 +174,6 @@ def _encode_multipart(
     the body in registration order. Returns `(body, content_type)`
     where the content_type carries the random boundary.
     """
-    import secrets
 
     def _q(value: str) -> str:
         # Per RFC 7578 §4.2 / RFC 2616 §2.2 quoted-string: escape `"` and
@@ -333,17 +377,11 @@ class TestClient:
     # ── Header / cookie plumbing ─────────────────────────────────────
 
     def _build_headers(self, extra: dict[str, str] | None) -> dict[str, str]:
-        merged = dict(self._base_headers)
-        if self._cookies:
-            merged["cookie"] = "; ".join(f"{k}={v}" for k, v in self._cookies.items())
-        if extra:
-            merged.update(extra)
-        return merged
+        return _build_request_headers(self._base_headers, self._cookies, extra)
 
     def _update_cookies(self, response: TestResponse) -> None:
         # Cookies the server sent persist on the client across calls.
-        for k, v in response.cookies.items():
-            self._cookies[k] = v
+        _apply_set_cookie_to_jar(self._cookies, response.raw_headers)
 
     # ── ASGI dispatch ────────────────────────────────────────────────
 
@@ -401,9 +439,8 @@ class TestClient:
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         if "?" in path:
-            path_part, qs = path.split("?", 1)
-            query_string = qs
-            path = path_part
+            path, path_qs = path.split("?", 1)
+            query_string = f"{path_qs}&{query_string}" if query_string else path_qs
 
         follow = self.follow_redirects if follow_redirects is None else follow_redirects
         current_method = method
@@ -766,6 +803,8 @@ class _WebSocketSession:
     def receive_text(self) -> str:
         async def _r() -> str:
             msg = await self._from_handler.get()
+            if msg.get("type") == "websocket.close":
+                raise Exception(f"WebSocket closed: {msg.get('code', 1000)}")
             return msg["text"]
 
         return self._client._loop.run_until_complete(_r())
@@ -773,6 +812,8 @@ class _WebSocketSession:
     def receive_bytes(self) -> bytes:
         async def _r() -> bytes:
             msg = await self._from_handler.get()
+            if msg.get("type") == "websocket.close":
+                raise Exception(f"WebSocket closed: {msg.get('code', 1000)}")
             return msg["bytes"]
 
         return self._client._loop.run_until_complete(_r())
@@ -908,16 +949,10 @@ class AsyncTestClient:
     # ── header / cookie plumbing ─────────────────────────────────────
 
     def _build_headers(self, extra: dict[str, str] | None) -> dict[str, str]:
-        merged = dict(self._base_headers)
-        if self._cookies:
-            merged["cookie"] = "; ".join(f"{k}={v}" for k, v in self._cookies.items())
-        if extra:
-            merged.update(extra)
-        return merged
+        return _build_request_headers(self._base_headers, self._cookies, extra)
 
     def _update_cookies(self, response: TestResponse) -> None:
-        for k, v in response.cookies.items():
-            self._cookies[k] = v
+        _apply_set_cookie_to_jar(self._cookies, response.raw_headers)
 
     # ── ASGI dispatch ────────────────────────────────────────────────
 
@@ -936,7 +971,7 @@ class AsyncTestClient:
         async def receive() -> dict[str, Any]:
             nonlocal body_sent
             if body_sent:
-                await asyncio.Event().wait()
+                return {"type": "http.disconnect"}
             body_sent = True
             return {"type": "http.request", "body": body, "more_body": False}
 
@@ -974,7 +1009,8 @@ class AsyncTestClient:
             )
 
         if "?" in path:
-            path, query_string = path.split("?", 1)
+            path, path_qs = path.split("?", 1)
+            query_string = f"{path_qs}&{query_string}" if query_string else path_qs
 
         follow = self.follow_redirects if follow_redirects is None else follow_redirects
         current_method, current_path = method, path

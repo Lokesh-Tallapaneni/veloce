@@ -1,5 +1,6 @@
 """Routing sub-package — radix tree router and parameter declarations."""
 
+from veloce.routing.converters import Converter, register_converter
 from veloce.routing.params import Body, Cookie, File, Form, Header, Path, Query
 from veloce.routing.router import RouteInfo, RouteMatch, Router
 
@@ -14,4 +15,6 @@ __all__ = [
     "File",
     "Header",
     "Cookie",
+    "Converter",
+    "register_converter",
 ]

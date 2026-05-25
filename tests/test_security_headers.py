@@ -33,7 +33,15 @@ def test_hsts_emitted_when_configured():
     resp = TestClient(_app(hsts_max_age=600)).get("/x")
     hsts = resp.headers["strict-transport-security"]
     assert "max-age=600" in hsts
-    assert "includeSubDomains" in hsts
+    # `includeSubDomains` is opt-in (off by default since a casual
+    # `hsts_max_age=...` on a multi-subdomain host shouldn't silently
+    # pin every subdomain). The flag flips back on when explicitly set.
+    assert "includeSubDomains" not in hsts
+
+
+def test_hsts_include_subdomains_when_opted_in():
+    resp = TestClient(_app(hsts_max_age=600, hsts_include_subdomains=True)).get("/x")
+    assert "includeSubDomains" in resp.headers["strict-transport-security"]
 
 
 def test_hsts_preload_flag():

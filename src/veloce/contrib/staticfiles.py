@@ -13,16 +13,20 @@ Spec anchors:
 from __future__ import annotations
 
 import asyncio
+import html as _html
 import mimetypes
 import os
+import stat
 from collections import OrderedDict
 from collections.abc import AsyncIterator
-from email.utils import formatdate, parsedate_to_datetime
 from functools import lru_cache
 from typing import Any
 
+from veloce._internal import _file_etag
+from veloce.http.dates import http_date, parse_date
 from veloce.http.request import Request
-from veloce.http.response import Response, _file_etag
+from veloce.http.response import Response, StreamingResponse
+from veloce.safe import safe_join
 
 
 @lru_cache(maxsize=512)
@@ -35,29 +39,6 @@ def _guess_content_type(path: str) -> str:
     client probing arbitrary paths can't grow the cache without bound.
     """
     return mimetypes.guess_type(path)[0] or "application/octet-stream"
-
-
-def _format_http_date(timestamp: float) -> str:
-    """Format a Unix timestamp as an IMF-fixdate per RFC 9110 §5.6.7."""
-    return formatdate(timestamp, usegmt=True)
-
-
-def _parse_http_date(value: str) -> float | None:
-    """Parse an HTTP-date into a Unix timestamp. Return None on failure.
-
-    Accepts the three syntaxes RFC 9110 §5.6.7 lists: IMF-fixdate,
-    obsolete RFC 850, and ANSI C `asctime()`. `email.utils.parsedate_to_datetime`
-    handles all three.
-    """
-    if not value:
-        return None
-    try:
-        dt = parsedate_to_datetime(value.strip())
-    except (TypeError, ValueError):
-        return None
-    if dt is None:
-        return None
-    return dt.timestamp()
 
 
 class StaticFiles:
@@ -102,6 +83,16 @@ class StaticFiles:
         # so a deployment with many static handlers stays bounded.
         self._etag_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
 
+    def _is_under_root(self, real_path: str) -> bool:
+        """True when `real_path` (already realpath-resolved) is inside the
+        served root. Uses `commonpath` so prefix-collisions (e.g.
+        `/srv/static_evil/...` against root `/srv/static`) are correctly
+        rejected. `ValueError` on Windows drive mismatches counts as out."""
+        try:
+            return os.path.commonpath([real_path, self._real_root]) == self._real_root
+        except ValueError:
+            return False
+
     def _remember_etag(self, key: str, etag: str, mtime: float) -> None:
         """Record an ETag in the LRU, evicting the oldest if at the cap."""
         self._etag_cache[key] = (etag, mtime)
@@ -122,8 +113,6 @@ class StaticFiles:
         # Security: traversal-safe via safe_join (rejects `..`, absolute
         # components, and NUL bytes — returns None on any escape attempt).
         # Pure string arithmetic; actual filesystem I/O is offloaded below.
-        from veloce.safe import safe_join
-
         file_path = safe_join(self.directory, relative)  # noqa: ASYNC240
         if file_path is None:
             return Response(status_code=403, body=b"Forbidden")
@@ -136,8 +125,6 @@ class StaticFiles:
         # `PermissionError` returns a tagged sentinel so we can surface
         # 403 — matching the `safe_join` traversal guard above — rather
         # than letting it bubble to a 500.
-        import stat as _stat
-
         def _try_stat(p: str) -> tuple[os.stat_result | None, bool]:
             """Return (stat_result, permission_denied)."""
             try:
@@ -150,8 +137,8 @@ class StaticFiles:
         stat_result, denied = await loop.run_in_executor(None, _try_stat, file_path)
         if denied:
             return Response(status_code=403, body=b"Forbidden")
-        is_dir = stat_result is not None and _stat.S_ISDIR(stat_result.st_mode)
-        is_file = stat_result is not None and _stat.S_ISREG(stat_result.st_mode)
+        is_dir = stat_result is not None and stat.S_ISDIR(stat_result.st_mode)
+        is_file = stat_result is not None and stat.S_ISREG(stat_result.st_mode)
 
         if not is_file:
             # Try the .html-suffixed variant when `html=True` is set
@@ -161,13 +148,18 @@ class StaticFiles:
                 stat_html, denied_html = await loop.run_in_executor(None, _try_stat, file_path_html)
                 if denied_html:
                     return Response(status_code=403, body=b"Forbidden")
-                if stat_html is not None and _stat.S_ISREG(stat_html.st_mode):
+                if stat_html is not None and stat.S_ISREG(stat_html.st_mode):
                     file_path = file_path_html
                     stat_result = stat_html
                     is_file = True
             if not is_file and self.directory_index and is_dir:
-                # Last-chance fallback: render an HTML directory listing
-                # when the path resolves to a real dir.
+                # Symlink containment: same `commonpath` check as the file
+                # path below — single rule for "real path stays under the
+                # served root after symlink resolution" prevents a planted
+                # symlink in the index path from escaping.
+                real = await loop.run_in_executor(None, os.path.realpath, file_path)
+                if not self._is_under_root(real):
+                    return Response(status_code=403, body=b"Forbidden")
                 return await self._render_directory_index(file_path, request.path, loop)
             if not is_file:
                 return None
@@ -177,12 +169,7 @@ class StaticFiles:
         # still inside the served root — a symlink planted in the served
         # directory must not expose files elsewhere on the filesystem.
         real_path = await loop.run_in_executor(None, os.path.realpath, file_path)
-        real_root = self._real_root
-        try:
-            contained = os.path.commonpath([real_path, real_root]) == real_root
-        except ValueError:
-            contained = False  # different drives / unrelated roots (Windows)
-        if not contained:
+        if not self._is_under_root(real_path):
             return Response(status_code=403, body=b"Forbidden")
 
         # stat_result was populated by the existence check above; reuse it.
@@ -204,13 +191,20 @@ class StaticFiles:
             etag = self._compute_etag(file_path, size, mtime)
             self._remember_etag(cache_key, etag, mtime)
 
-        last_modified = _format_http_date(mtime)
+        last_modified = http_date(mtime)
 
         # Conditional GET. Per RFC 9110 §13.2 precedence: If-None-Match
         # supersedes If-Modified-Since when both are present.
         if_none_match = request.headers.get("if-none-match", "")
         if if_none_match:
-            if if_none_match == etag or if_none_match == "*":
+            if if_none_match.strip() == "*":
+                return Response(
+                    status_code=304,
+                    body=b"",
+                    headers={"ETag": etag, "Last-Modified": last_modified},
+                )
+            client_etags = [t.strip().strip('"') for t in if_none_match.split(",")]
+            if etag.strip('"') in client_etags:
                 return Response(
                     status_code=304,
                     body=b"",
@@ -218,7 +212,8 @@ class StaticFiles:
                 )
         else:
             ims_header = request.headers.get("if-modified-since", "")
-            ims_ts = _parse_http_date(ims_header)
+            ims_dt = parse_date(ims_header)
+            ims_ts = ims_dt.timestamp() if ims_dt is not None else None
             # Floor mtime to whole seconds because HTTP-dates have second
             # resolution; otherwise `mtime=1.5` would always appear
             # "newer" than `IMS=1`.
@@ -230,7 +225,6 @@ class StaticFiles:
                 )
 
         content_type = _guess_content_type(file_path)
-        size = stat_result.st_size
 
         # Range request — RFC 9110 §14.2. Single-range only; multi-range
         # would require multipart/byteranges which we don't ship yet.
@@ -297,7 +291,6 @@ class StaticFiles:
         # sizes. Range responses always buffer their slice — a range is
         # already bounded by the client.
         if size >= self.STREAM_THRESHOLD:
-            from veloce.http.response import StreamingResponse
 
             # Don't emit `Content-Length` alongside chunked transfer —
             # RFC 9112 §6.1 forbids carrying both, and a strict proxy
@@ -356,13 +349,11 @@ class StaticFiles:
     async def _render_directory_index(self, dir_path: str, url_path: str, loop: Any) -> Response:
         """Render an HTML index of `dir_path`'s entries.
 
-        Entries are HTML-escaped via `html.escape` so a filename
+        Entries are HTML-escaped via `_html.escape` so a filename
         containing `<script>` can't poison the page. Subdirectories
         get a trailing slash. Hidden files (`.foo`) are omitted —
         matches nginx `autoindex on;` default.
         """
-        import html
-
         def _list_dir() -> list[tuple[str, bool]]:
             """Return `(name, is_dir)` tuples for the directory.
 
@@ -392,12 +383,12 @@ class StaticFiles:
             rows.append('<li><a href="../">../</a></li>')
 
         for name, is_dir in entries:
-            display = html.escape(name) + ("/" if is_dir else "")
+            display = _html.escape(name) + ("/" if is_dir else "")
             rows.append(
-                f'<li><a href="{html.escape(name)}{("/" if is_dir else "")}">{display}</a></li>'
+                f'<li><a href="{_html.escape(name)}{("/" if is_dir else "")}">{display}</a></li>'
             )
 
-        title = f"Index of {html.escape(base)}"
+        title = f"Index of {_html.escape(base)}"
         body = (
             "<!doctype html><html><head>"
             f"<title>{title}</title>"

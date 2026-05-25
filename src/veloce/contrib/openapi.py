@@ -2,16 +2,71 @@
 
 from __future__ import annotations
 
+import contextlib
+import datetime as _datetime
+import enum as _enum
+import html as _html
 import inspect
 import logging
-from typing import Any, get_type_hints
+import types as _types
+import uuid as _uuid
+import weakref
+from decimal import Decimal
+from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 import orjson
 from pydantic import BaseModel
 
+from veloce.dependency import Depends
 from veloce.http.response import HTMLResponse, JSONResponse
+from veloce.routing.params import Body as BodyParam
+from veloce.routing.params import Cookie as CookieParam
+from veloce.routing.params import File as FileParam
+from veloce.routing.params import Form as FormParam
+from veloce.routing.params import Header as HeaderParam
+from veloce.routing.params import ParamBase
+from veloce.routing.params import Path as PathParam
 
 _logger = logging.getLogger("veloce.openapi")
+
+# Per-handler memoization of `inspect.signature` + `get_type_hints`. The
+# OpenAPI generator visits each handler from four sites (operation
+# parameters, webhook bodies, dependency-graph walk, dependency leaves),
+# so introspecting once and reusing the result eliminates redundant
+# work on every schema rebuild. `WeakKeyDictionary` so test suites and
+# hot-reload sessions don't pin handlers for the process lifetime.
+_HANDLER_INTRO_CACHE: weakref.WeakKeyDictionary[Any, tuple[Any, dict[str, Any]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
+    """Return `(signature, hints)` for `handler`, memoized per callable.
+
+    `signature` is `None` when `inspect.signature` cannot introspect
+    the handler (built-ins, `functools.partial` chains with non-callable
+    `func`). `hints` falls back to `{}` on the same failure modes.
+    """
+    try:
+        cached = _HANDLER_INTRO_CACHE.get(handler)
+    except TypeError:
+        cached = None
+    if cached is not None:
+        return cached
+    try:
+        sig = inspect.signature(handler)
+    except (TypeError, ValueError):
+        sig = None
+    hints: dict[str, Any] = {}
+    if hasattr(handler, "__annotations__"):
+        try:
+            hints = get_type_hints(handler)
+        except Exception:
+            hints = {}
+    result = (sig, hints)
+    with contextlib.suppress(TypeError):
+        _HANDLER_INTRO_CACHE[handler] = result
+    return result
 
 
 def _deep_merge(target: dict, overlay: dict) -> None:
@@ -100,12 +155,7 @@ def get_openapi_schema(app: Any) -> dict:
 
         # Extract parameters and request body from handler signature
         handler = info.handler
-        try:
-            sig = inspect.signature(handler)
-            hints = get_type_hints(handler) if hasattr(handler, "__annotations__") else {}
-        except (ValueError, TypeError):
-            sig = None
-            hints = {}
+        sig, hints = _handler_intro(handler)
 
         parameters: list[dict] = []
         request_body_schema: dict | None = None
@@ -116,24 +166,13 @@ def get_openapi_schema(app: Any) -> dict:
                     continue
 
                 # Skip Depends() / Security() parameters
-                from veloce.dependency import Depends
-
                 if isinstance(param.default, Depends):
                     continue
 
                 annotation = hints.get(pname)
 
-                # Handle parameter marker classes (Query, Path, Header, Cookie, Body, Form, File)
-                from veloce.routing.params import Body as BodyParam
-                from veloce.routing.params import Cookie as CookieParam
-                from veloce.routing.params import File as FileParam
-                from veloce.routing.params import Form as FormParam
-                from veloce.routing.params import Header as HeaderParam
-                from veloce.routing.params import Path as PathParam
-                from veloce.routing.params import _ParamBase
-
                 marker = None
-                if isinstance(param.default, _ParamBase):
+                if isinstance(param.default, ParamBase):
                     marker = param.default
                     # `include_in_schema=False` — resolved at
                     # runtime but omitted from the OpenAPI document.
@@ -342,10 +381,8 @@ def _webhook_request_body(handler: Any, registry: dict[str, dict]) -> dict | Non
     A webhook handler documents the payload an external caller will
     POST; the first BaseModel-typed parameter is treated as that body.
     """
-    try:
-        sig = inspect.signature(handler)
-        hints = get_type_hints(handler) if hasattr(handler, "__annotations__") else {}
-    except (TypeError, ValueError):
+    sig, hints = _handler_intro(handler)
+    if sig is None:
         return None
     for pname in sig.parameters:
         if pname in ("self", "request"):
@@ -381,13 +418,6 @@ def _python_type_to_schema(annotation: Any) -> dict:
     """
     if annotation is None or annotation is inspect.Parameter.empty:
         return {"type": "string"}
-
-    import datetime as _datetime
-    import enum as _enum
-    import types as _types
-    import uuid as _uuid
-    from decimal import Decimal
-    from typing import Literal, Union, get_args, get_origin
 
     origin = get_origin(annotation)
     # Unwrap `Optional[T]` / `T | None` to the inner type so a nullable
@@ -439,9 +469,18 @@ def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
     The name is derived from the scheme class so duplicate registrations
     of the same scheme reuse the same components.securitySchemes entry.
     """
-    cls = type(scheme).__name__
-    if cls == "OAuth2PasswordBearer":
-        return cls, {
+    # Deferred imports to avoid circular dependency with security subpackage.
+    from veloce.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery
+    from veloce.security.http import HTTPBasic, HTTPBearer, HTTPDigest
+    from veloce.security.oauth2 import (
+        OAuth2AuthorizationCodeBearer,
+        OAuth2PasswordBearer,
+        OpenIdConnect,
+    )
+
+    cls_name = type(scheme).__name__
+    if isinstance(scheme, OAuth2PasswordBearer):
+        return cls_name, {
             "type": "oauth2",
             "flows": {
                 "password": {
@@ -450,7 +489,7 @@ def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
                 }
             },
         }
-    if cls == "OAuth2AuthorizationCodeBearer":
+    if isinstance(scheme, OAuth2AuthorizationCodeBearer):
         flow: dict[str, Any] = {
             "authorizationUrl": getattr(scheme, "authorizationUrl", ""),
             "tokenUrl": getattr(scheme, "tokenUrl", ""),
@@ -459,39 +498,44 @@ def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
         refresh = getattr(scheme, "refreshUrl", None)
         if refresh:
             flow["refreshUrl"] = refresh
-        return cls, {
+        return cls_name, {
             "type": "oauth2",
             "flows": {"authorizationCode": flow},
         }
-    if cls == "OpenIdConnect":
-        return cls, {
+    if isinstance(scheme, OpenIdConnect):
+        return cls_name, {
             "type": "openIdConnect",
             "openIdConnectUrl": getattr(scheme, "openIdConnectUrl", ""),
         }
-    if cls == "HTTPBearer":
-        return cls, {
+    if isinstance(scheme, HTTPBearer):
+        return cls_name, {
             "type": "http",
             "scheme": "bearer",
         }
-    if cls == "HTTPBasic":
-        return cls, {
+    if isinstance(scheme, HTTPBasic):
+        return cls_name, {
             "type": "http",
             "scheme": "basic",
         }
-    if cls == "APIKeyHeader":
-        return cls, {
+    if isinstance(scheme, HTTPDigest):
+        return cls_name, {
+            "type": "http",
+            "scheme": "digest",
+        }
+    if isinstance(scheme, APIKeyHeader):
+        return cls_name, {
             "type": "apiKey",
             "in": "header",
             "name": getattr(scheme, "name", ""),
         }
-    if cls == "APIKeyQuery":
-        return cls, {
+    if isinstance(scheme, APIKeyQuery):
+        return cls_name, {
             "type": "apiKey",
             "in": "query",
             "name": getattr(scheme, "name", ""),
         }
-    if cls == "APIKeyCookie":
-        return cls, {
+    if isinstance(scheme, APIKeyCookie):
+        return cls_name, {
             "type": "apiKey",
             "in": "cookie",
             "name": getattr(scheme, "name", ""),
@@ -509,8 +553,6 @@ def _collect_security_requirements(
     Returns the operation-level `security` list — a sequence of
     `{schemeName: [scopes]}` dicts. Empty when no Security() is reachable.
     """
-    from veloce.dependency import Depends
-
     requirements: list[dict[str, list[str]]] = []
     seen: set[int] = set()
 
@@ -539,9 +581,8 @@ def _collect_security_requirements(
             return
         seen.add(id(inner))
 
-        try:
-            sig = inspect.signature(inner)
-        except (TypeError, ValueError):
+        sig, _ = _handler_intro(inner)
+        if sig is None:
             return
         for param in sig.parameters.values():
             default = param.default
@@ -553,19 +594,14 @@ def _collect_security_requirements(
         visit(d)
     # Plus anything in the handler's own parameter defaults.
     handler = info.handler
-    try:
-        sig = inspect.signature(handler)
-    except (TypeError, ValueError):
+    sig, _ = _handler_intro(handler)
+    if sig is None:
         return requirements
     for param in sig.parameters.values():
         default = param.default
         if isinstance(default, Depends):
             visit(default)
-    # The walker emits security requirements alongside Security() instances
-    # specifically — plain `Depends` traversal still picks up Security
-    # nested inside, but a top-level `Depends(some_dep)` without Security
-    # somewhere below should not add a security entry. Filter:
-    return [r for r in requirements if any(isinstance(v, list) for v in r.values())]
+    return requirements
 
 
 def _response_model_to_schema(response_model: Any, registry: dict[str, dict]) -> dict | None:
@@ -576,8 +612,6 @@ def _response_model_to_schema(response_model: Any, registry: dict[str, dict]) ->
     - `list[MyModel]` (or any `Sequence[MyModel]`) → array-of-refs.
     - Anything else → `None` (caller omits the schema).
     """
-    from typing import get_args, get_origin
-
     origin = get_origin(response_model)
     if origin is list:
         args = get_args(response_model)
@@ -732,15 +766,15 @@ def setup_openapi_routes(
         init_oauth = f"ui.initOAuth({orjson.dumps(oauth_init).decode()});" if oauth_init else ""
 
         html = SWAGGER_HTML.format(
-            title=app.title,
-            openapi_url=openapi_url,
+            title=_html.escape(app.title),
+            openapi_url=_html.escape(openapi_url),
             ui_params=ui_params,
             init_oauth=init_oauth,
         )
         return HTMLResponse(html)
 
     async def redoc_ui(request: Any):
-        html = REDOC_HTML.format(title=app.title, openapi_url=openapi_url)
+        html = REDOC_HTML.format(title=_html.escape(app.title), openapi_url=_html.escape(openapi_url))
         return HTMLResponse(html)
 
     # Register each interactive UI only when its URL is set — a `None`

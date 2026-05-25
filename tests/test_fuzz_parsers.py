@@ -13,7 +13,7 @@ import random
 import string
 
 from veloce import Veloce
-from veloce.exceptions import RequestEntityTooLarge
+from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.cookies import parse_cookie
 from veloce.http.datastructures import QueryParams, parse_multipart_form
 
@@ -101,8 +101,9 @@ def test_fuzz_multipart_corrupted_valid_body_never_crash():
         corrupted = bytearray(base)
         for _ in range(rnd.randint(1, 5)):
             corrupted[rnd.randrange(len(corrupted))] = rnd.randint(0, 255)
-        # A controlled DoS-cap rejection is fine; anything else is a bug.
-        with contextlib.suppress(RequestEntityTooLarge):
+        # A controlled rejection (DoS cap or malformed UTF-8) is fine;
+        # anything else (crash, infinite loop, silent corruption) is a bug.
+        with contextlib.suppress(RequestEntityTooLarge, BadRequest):
             parse_multipart_form(bytes(corrupted), content_type)
 
 

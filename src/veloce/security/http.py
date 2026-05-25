@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import base64
+import binascii
+import secrets
+from typing import Any
+from urllib.parse import quote
 
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
+from veloce.security._utils import _extract_bearer_token
 
 
 class HTTPBasicCredentials:
@@ -27,20 +32,33 @@ class HTTPBasic:
 
     def __call__(self, request: Request) -> HTTPBasicCredentials | None:
         auth = request.headers.get("authorization", "")
-        if not auth.startswith("Basic "):
+        if auth[:6].lower() != "basic ":
             if self.auto_error:
                 headers: dict[str, str] = {}
                 if self.realm:
-                    headers["WWW-Authenticate"] = f'Basic realm="{self.realm}"'
+                    headers["WWW-Authenticate"] = f'Basic realm="{quote(self.realm)}"'
                 raise HTTPException(401, "Not authenticated", headers=headers)
             return None
 
+        # Catch only the exceptions that `b64decode(validate=True)` and
+        # the subsequent `decode("utf-8")` can raise — `binascii.Error`
+        # / `ValueError` from base64 and `UnicodeDecodeError` from the
+        # text conversion. A bare `except Exception` would also swallow
+        # genuine bugs (NameError, AttributeError) and convert them to
+        # a 401, masking defects.
         try:
-            decoded = base64.b64decode(auth[6:]).decode("utf-8")
-            username, _, password = decoded.partition(":")
-            return HTTPBasicCredentials(username=username, password=password)
-        except Exception as err:
-            raise HTTPException(401, "Invalid authentication credentials") from err
+            decoded = base64.b64decode(auth[6:], validate=True).decode("utf-8")
+        except (binascii.Error, ValueError, UnicodeDecodeError) as err:
+            headers = (
+                {"WWW-Authenticate": f'Basic realm="{quote(self.realm)}"'}
+                if self.realm
+                else {}
+            )
+            raise HTTPException(
+                401, "Invalid authentication credentials", headers=headers
+            ) from err
+        username, _, password = decoded.partition(":")
+        return HTTPBasicCredentials(username=username, password=password)
 
 
 class HTTPDigestCredentials:
@@ -114,8 +132,6 @@ class HTTPDigest:
         self.nonce_factory = nonce_factory or _default_nonce
 
     def _challenge_headers(self) -> dict[str, str]:
-        from urllib.parse import quote
-
         nonce = self.nonce_factory()
         # RFC 7616 §3.3 — challenge param names case-insensitive but
         # the quoted-string values must be exact. Build the header
@@ -130,7 +146,7 @@ class HTTPDigest:
 
     def __call__(self, request: Request) -> HTTPDigestCredentials | None:
         auth = request.headers.get("authorization", "")
-        if not auth.startswith("Digest "):
+        if auth[:7].lower() != "digest ":
             if self.auto_error:
                 raise HTTPException(
                     401,
@@ -148,8 +164,6 @@ def _default_nonce() -> str:
     RFC 7616 §5.3 recommends. Server-side nonce replay tracking is
     application territory.
     """
-    import secrets
-
     return secrets.token_hex(16)
 
 
@@ -180,7 +194,7 @@ def _parse_digest(value: str) -> HTTPDigestCredentials:
                 if value[end] == '"':
                     break
                 end += 1
-            val = value[j + 1 : end].replace('\\"', '"').replace("\\\\", "\\")
+            val = value[j + 1 : end].replace("\\\\", "\\").replace('\\"', '"')
             i = end + 1
         else:
             end = value.find(",", j)
@@ -207,8 +221,6 @@ def _parse_digest(value: str) -> HTTPDigestCredentials:
     )
 
 
-from typing import Any  # noqa: E402 — placed late to keep public symbols at top
-
 
 class HTTPBearer:
     """HTTP Bearer token authentication."""
@@ -218,13 +230,4 @@ class HTTPBearer:
         self.scheme_name = scheme_name
 
     def __call__(self, request: Request) -> str | None:
-        auth = request.headers.get("authorization", "")
-        if not auth.startswith(f"{self.scheme_name} "):
-            if self.auto_error:
-                raise HTTPException(
-                    401,
-                    "Not authenticated",
-                    headers={"WWW-Authenticate": self.scheme_name},
-                )
-            return None
-        return auth[len(self.scheme_name) + 1 :]
+        return _extract_bearer_token(request, self.scheme_name, self.auto_error)

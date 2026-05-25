@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import functools
 import inspect
+import logging
 import weakref
 from collections.abc import Callable
 from enum import Enum
@@ -33,10 +34,13 @@ from veloce._handler_plan import (
     K_UPLOAD_FILE,
     K_WEBSOCKET,
 )
+from veloce._internal import _is_async_callable
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
 from veloce.http.request import Request
 from veloce.http.response import Response
+
+_logger = logging.getLogger(__name__)
 
 
 class Depends:
@@ -340,9 +344,9 @@ class DependencyResolver:
     async def run_teardowns(self, exc: BaseException | None = None) -> None:
         """Run yield-dependency teardowns in reverse registration order.
 
-        Each generator is advanced one step (or thrown into if `exc` is set)
-        so the code after its `yield` executes. Exceptions inside teardown
-        code are logged but do not interrupt the chain.
+        Each generator is advanced one step (or thrown into if *exc* is set)
+        so the code after its ``yield`` executes.  Exceptions inside teardown
+        code are logged and suppressed so they do not interrupt the chain.
         """
         # Drain in reverse so the most recently set-up dependency tears down
         # first — matches Python's contextlib.ExitStack semantics.
@@ -366,9 +370,7 @@ class DependencyResolver:
                         with contextlib.suppress(StopAsyncIteration):
                             await gen.__anext__()
             except Exception:
-                # Last-resort safety net — never crash the response cycle
-                # because a teardown raised.
-                pass
+                _logger.exception("teardown raised")
 
     async def resolve(
         self,
@@ -501,6 +503,10 @@ class DependencyResolver:
                     kwargs[name] = slot.default
                 elif slot.is_optional:
                     kwargs[name] = None
+                else:
+                    raise RequestValidationError(
+                        [{"loc": ("query", name), "msg": "field required", "type": "missing"}]
+                    )
                 i += 1
                 continue
 
@@ -519,6 +525,10 @@ class DependencyResolver:
                     kwargs[name] = slot.default
                 elif slot.is_optional:
                     kwargs[name] = None
+                else:
+                    raise RequestValidationError(
+                        [{"loc": ("query", name), "msg": "field required", "type": "missing"}]
+                    )
                 i += 1
                 continue
 
@@ -750,7 +760,7 @@ class DependencyResolver:
 
                 entry = (
                     build_plan(actual),
-                    inspect.iscoroutinefunction(actual),
+                    _is_async_callable(actual),
                     inspect.isgeneratorfunction(actual),
                     inspect.isasyncgenfunction(actual),
                 )

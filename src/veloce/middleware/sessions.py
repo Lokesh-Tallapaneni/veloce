@@ -54,6 +54,7 @@ class SessionMiddleware(Middleware):
         self.permanent_lifetime = permanent_lifetime
 
     async def process_request(self, request: Request) -> Response | None:
+        """Load the session from the signed cookie into request state."""
         session_data: dict[str, Any] = {}
         is_new = True
         cookie_val = request.cookies.get(self.cookie_name)
@@ -77,6 +78,7 @@ class SessionMiddleware(Middleware):
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        """Save the modified session back into the signed cookie."""
         session = request._state.get("session")
         # `Session` flips `.modified` on any mutating operation, so we can
         # skip the re-sign + Set-Cookie when the handler never touched it.
@@ -84,18 +86,28 @@ class SessionMiddleware(Middleware):
         if session is None or not getattr(session, "modified", False):
             return response
 
+        if not session:
+            response.delete_cookie(
+                self.cookie_name,
+                path=self.path,
+                secure=self.secure,
+                httponly=self.httponly,
+                samesite=self.samesite,
+            )
+            return response
+
         cookie_value = self._signer.dumps(session)
         # A `permanent` session uses the longer lifetime for `Max-Age`.
         lifetime = self.permanent_lifetime if getattr(session, "permanent", False) else self.max_age
-        parts = [f"{self.cookie_name}={cookie_value}", f"Path={self.path}", f"Max-Age={lifetime}"]
-        if self.httponly:
-            parts.append("HttpOnly")
-        if self.secure:
-            parts.append("Secure")
-        if self.samesite:
-            parts.append(f"SameSite={self.samesite}")
-        response.headers["Set-Cookie"] = "; ".join(parts)
-        response._encoded = None
+        response.set_cookie(
+            self.cookie_name,
+            cookie_value,
+            max_age=lifetime,
+            path=self.path,
+            httponly=self.httponly,
+            secure=self.secure,
+            samesite=self.samesite,
+        )
         return response
 
 
@@ -132,7 +144,20 @@ class ServerSessionMiddleware(Middleware):
         self.secure = secure
         self.samesite = samesite
 
+    def _clear_session_cookie(self, response: Response) -> None:
+        """Tell the client to drop the session cookie. Single place that
+        knows how this middleware's cookie attribute set maps to
+        `delete_cookie` — three callers all share the same kwargs."""
+        response.delete_cookie(
+            self.cookie_name,
+            path=self.path,
+            secure=self.secure,
+            httponly=self.httponly,
+            samesite=self.samesite,
+        )
+
     async def process_request(self, request: Request) -> Response | None:
+        """Load the session from the server-side store by cookie id."""
         data: dict[str, Any] | None = None
         session_id = request.cookies.get(self.cookie_name)
         if session_id:
@@ -149,6 +174,7 @@ class ServerSessionMiddleware(Middleware):
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        """Save the modified session back to the server-side store."""
         session = request._state.get("session")
         if session is None or not getattr(session, "modified", False):
             return response
@@ -159,8 +185,7 @@ class ServerSessionMiddleware(Middleware):
             # tell the client to drop the cookie.
             if session_id is not None:
                 await self.store.delete(session_id)
-                response.headers["Set-Cookie"] = self._cookie("", 0)
-                response._encoded = None
+                self._clear_session_cookie(response)
             return response
 
         if session_id is None or session.regenerate:
@@ -179,19 +204,15 @@ class ServerSessionMiddleware(Middleware):
             # `write` would resurrect it, so use the conditional `replace`.
             if not await self.store.replace(session_id, dict(session), self.max_age):
                 # Revoked under us — honour the revocation and drop the cookie.
-                response.headers["Set-Cookie"] = self._cookie("", 0)
-                response._encoded = None
+                self._clear_session_cookie(response)
                 return response
-        response.headers["Set-Cookie"] = self._cookie(session_id, self.max_age)
-        response._encoded = None
+        response.set_cookie(
+            self.cookie_name,
+            session_id,
+            max_age=self.max_age,
+            path=self.path,
+            httponly=self.httponly,
+            secure=self.secure,
+            samesite=self.samesite,
+        )
         return response
-
-    def _cookie(self, session_id: str, max_age: int) -> str:
-        parts = [f"{self.cookie_name}={session_id}", f"Path={self.path}", f"Max-Age={max_age}"]
-        if self.httponly:
-            parts.append("HttpOnly")
-        if self.secure:
-            parts.append("Secure")
-        if self.samesite:
-            parts.append(f"SameSite={self.samesite}")
-        return "; ".join(parts)
