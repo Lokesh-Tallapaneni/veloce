@@ -229,3 +229,61 @@ async def test_websocket_raw_send_after_close_raises():
     await ws.close(code=1000)
     with pytest.raises(WebSocketDisconnect):
         await ws.send({"type": "websocket.send", "text": "late"})
+
+
+# ── R4: fragmented-message reassembly ──────────────────────────────────
+
+
+def _client_frame(opcode: int, payload: bytes, fin: bool = True) -> bytes:
+    """Build one masked client→server WebSocket frame (RFC 6455 §5)."""
+    mask = b"\x12\x34\x56\x78"
+    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    b0 = (0x80 if fin else 0x00) | opcode
+    n = len(payload)
+    if n < 126:
+        header = bytes([b0, 0x80 | n])
+    elif n < 65536:
+        header = bytes([b0, 0x80 | 126]) + struct.pack("!H", n)
+    else:
+        header = bytes([b0, 0x80 | 127]) + struct.pack("!Q", n)
+    return header + mask + masked
+
+
+async def test_websocket_unfragmented_frame_still_delivered():
+    """A single FIN data frame is delivered as before."""
+    ws, _ = _make_ws()
+    ws.feed_data(_client_frame(0x1, b"single", fin=True))
+    assert ws._receive_queue.get_nowait() == b"single"
+
+
+async def test_websocket_reassembles_fragmented_message():
+    """A message split across a start frame + continuation frames is
+    reassembled into one delivered message."""
+    ws, _ = _make_ws()
+    ws.feed_data(_client_frame(0x1, b"hello ", fin=False))  # start (text)
+    ws.feed_data(_client_frame(0x0, b"wonder", fin=False))  # continuation
+    ws.feed_data(_client_frame(0x0, b"ful", fin=True))  # final fragment
+    assert ws._receive_queue.get_nowait() == b"hello wonderful"
+    assert ws._receive_queue.empty()  # only one message delivered
+
+
+async def test_websocket_control_frame_interleaved_in_fragmented_message():
+    """A ping between fragments is answered with a pong without disturbing
+    the in-progress reassembly buffer (RFC 6455 §5.4)."""
+    ws, transport = _make_ws()
+    ws.feed_data(_client_frame(0x2, b"AAAA", fin=False))  # start (binary)
+    ws.feed_data(_client_frame(0x9, b"pp", fin=True))  # ping mid-stream
+    ws.feed_data(_client_frame(0x0, b"BBBB", fin=True))  # final fragment
+
+    # The ping was answered — a pong frame (FIN + opcode 0xA = 0x8A).
+    assert any(w[0] == 0x8A for w in transport.writes)
+    # The fragmented message reassembled across the interleaved ping.
+    assert ws._receive_queue.get_nowait() == b"AAAABBBB"
+
+
+async def test_websocket_stray_continuation_frame_is_ignored():
+    """A continuation frame with no message in progress is dropped rather
+    than corrupting reassembly state."""
+    ws, _ = _make_ws()
+    ws.feed_data(_client_frame(0x0, b"orphan", fin=True))
+    assert ws._receive_queue.empty()

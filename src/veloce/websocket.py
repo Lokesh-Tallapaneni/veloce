@@ -40,6 +40,11 @@ class WebSocket:
         self._accepted = False
         self._closed = False
         self._receive_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        # Fragmented-message reassembly state (RFC 6455 §5.4). `_frag_opcode`
+        # is the data opcode of the message currently being assembled, or
+        # `None` when no fragmented message is in progress.
+        self._frag_opcode: int | None = None
+        self._frag_buffer: bytearray = bytearray()
         # ASGI mode (W1). When wired through `Veloce.__call__`'s websocket
         # branch, the transport is None and we drive the connection through
         # ASGI receive/send callables instead. Set by `from_asgi`.
@@ -74,6 +79,8 @@ class WebSocket:
         ws._accepted = False
         ws._closed = False
         ws._receive_queue = asyncio.Queue()  # unused in ASGI mode
+        ws._frag_opcode = None  # unused in ASGI mode (no raw frame parsing)
+        ws._frag_buffer = bytearray()
         ws._asgi_receive = receive
         ws._asgi_send = send
         ws.scope = scope
@@ -437,11 +444,22 @@ class WebSocket:
         self.transport.close()
 
     def feed_data(self, data: bytes) -> None:
-        """Feed raw data from the transport (called by protocol)."""
-        # Basic frame parser
+        """Feed one raw WebSocket frame from the transport (called by the
+        protocol).
+
+        Handles fragmented messages (RFC 6455 §5.4): a data frame with
+        `FIN=0` opens a message that subsequent continuation frames
+        (opcode `0x0`) extend, and the `FIN=1` continuation completes it.
+        Control frames (close / ping / pong) are never fragmented and may
+        be interleaved within a fragmented message without disturbing the
+        reassembly buffer.
+        """
+        # One frame is assumed to arrive per call — a frame split across
+        # transport reads is dropped by the length guards below.
         if len(data) < 2:
             return
 
+        fin = bool(data[0] & 0x80)
         opcode = data[0] & 0x0F
         masked = bool(data[1] & 0x80)
         payload_len = data[1] & 0x7F
@@ -472,13 +490,37 @@ class WebSocket:
             for i in range(len(payload)):
                 payload[i] ^= mask[i % 4]
 
+        # Control frames (close / ping / pong) — never fragmented; handled
+        # independently of any fragmented message in progress.
         if opcode == 0x8:  # Close
             self._closed = True
             raise WebSocketDisconnect()
-        elif opcode == 0x9:  # Ping
+        if opcode == 0x9:  # Ping
             self._send_frame(bytes(payload), opcode=0xA)  # Pong
-        elif opcode in (0x1, 0x2):  # Text or Binary
-            self._receive_queue.put_nowait(bytes(payload))
+            return
+        if opcode == 0xA:  # Pong — no application-level action.
+            return
+
+        # Data frames (text / binary) and continuation frames.
+        if opcode in (0x1, 0x2):
+            if fin:
+                # Unfragmented message — deliver immediately.
+                self._receive_queue.put_nowait(bytes(payload))
+            else:
+                # First frame of a fragmented message — start buffering.
+                self._frag_opcode = opcode
+                self._frag_buffer = bytearray(payload)
+        elif opcode == 0x0:  # Continuation frame.
+            if self._frag_opcode is None:
+                # A continuation with no message in progress is a protocol
+                # error — drop the stray frame rather than corrupt state.
+                return
+            self._frag_buffer += payload
+            if fin:
+                # Final fragment — the reassembled message is complete.
+                self._receive_queue.put_nowait(bytes(self._frag_buffer))
+                self._frag_opcode = None
+                self._frag_buffer = bytearray()
 
     def _send_frame(self, data: bytes, opcode: int) -> None:
         """Send a WebSocket frame."""
