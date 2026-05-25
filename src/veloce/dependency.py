@@ -169,6 +169,18 @@ class DependencyResolver:
         # `SecurityScopes` parameter inside the chain reads this stack.
         self._scope_stack: list[str] = []
 
+    def reset(self) -> None:
+        """Clear the per-request resolver state.
+
+        Run at the top of every `resolve_plan`, and also called directly
+        by the dispatcher's trivial-route fast path (a route with no
+        parameters and no dependencies) so the shared resolver never
+        carries a previous request's cached results into the next one.
+        """
+        self._cache.clear()
+        self._teardowns.clear()
+        self._scope_stack.clear()
+
     async def resolve_plan(
         self,
         plan: Any,
@@ -177,9 +189,7 @@ class DependencyResolver:
         route_dep_plans: list[Any] | None = None,
     ) -> dict[str, Any]:
         """Fast path — consume a pre-built `HandlerPlan`."""
-        self._cache.clear()
-        self._teardowns.clear()
-        self._scope_stack.clear()
+        self.reset()
 
         if route_dep_plans:
             for slot in route_dep_plans:
