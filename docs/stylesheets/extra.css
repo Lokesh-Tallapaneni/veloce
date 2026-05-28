@@ -69,7 +69,7 @@
 /* ------------------------------------------------------------------- Hero -- */
 .vl-hero {
   margin: 0 0 3rem;
-  padding: 4rem 1.2rem 3.4rem;
+  padding: clamp(2.25rem, 6vw, 4rem) 1.2rem clamp(1.9rem, 5vw, 3.4rem);
   text-align: center;
   border-radius: 1.1rem;
   border: 1px solid var(--vl-border);
@@ -79,7 +79,7 @@
 }
 .md-typeset .vl-hero h1.vl-hero__title {
   margin: 0;
-  font-size: 3.5rem;
+  font-size: clamp(2.25rem, 9vw, 3.5rem);
   line-height: 1.05;
   font-weight: 800;
   letter-spacing: -0.035em;
@@ -88,7 +88,7 @@
   background-clip: text;
   color: transparent;
 }
-.vl-hero__tagline {
+.md-typeset .vl-hero .vl-hero__tagline {
   max-width: 36rem;
   margin: 0.9rem auto 1.8rem;
   font-size: 1.05rem;
