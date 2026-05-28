@@ -116,6 +116,7 @@ class CORSMiddleware(Middleware):
     async def process_request(self, request: Request) -> Response | None:
         """Handle CORS preflight requests and validate origins."""
         origin = request.headers.get("origin", "")
+        request._state["_cors_origin"] = origin
 
         # Preflight: OPTIONS + Origin. Strict spec requires
         # `Access-Control-Request-Method` too, but older browsers (and many
@@ -149,7 +150,7 @@ class CORSMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Add CORS response headers."""
-        origin = request.headers.get("origin", "")
+        origin = request._state.get("_cors_origin", "")
         # Plain (non-preflight) cross-origin responses still need
         # Access-Control-Allow-Origin and Vary: Origin if the value
         # depends on the request origin.

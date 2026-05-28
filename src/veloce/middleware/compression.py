@@ -106,9 +106,7 @@ class GZipMiddleware(Middleware):
         # Stacking encodings produces a payload no client will decode, and
         # violates RFC 9110 §8.4 (each Content-Encoding identifies one
         # transformation; doubling them silently is a bug).
-        existing_encoding = response.headers.get("Content-Encoding") or response.headers.get(
-            "content-encoding"
-        )
+        existing_encoding = response.headers.get("Content-Encoding")
         if existing_encoding and existing_encoding.strip().lower() not in ("", "identity"):
             return response
 

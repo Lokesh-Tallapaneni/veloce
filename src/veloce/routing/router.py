@@ -9,7 +9,11 @@ from typing import Any
 from urllib.parse import urlencode
 
 from veloce.routing.converters import (
+    FloatConverter,
+    IntConverter,
+    PathConverter,
     StringConverter,
+    UUIDConverter,
     _Converter,
     parse_converter,
 )
@@ -68,6 +72,23 @@ class RadixNode:
         # Converter applied at match time. `None` for static and wildcard nodes;
         # always set on param nodes (defaulting to StringConverter).
         self.converter: _Converter | None = None
+
+
+# Converter specificity — lower = more restrictive = tried first during
+# match. Ensures `/items/{id:int}` beats `/items/{slug:str}` regardless
+# of registration order. The sort runs once per `add_route` call (at app
+# startup), never on the per-request match path.
+_CONVERTER_PRIORITY: dict[type, int] = {
+    UUIDConverter: 0,
+    IntConverter: 1,
+    FloatConverter: 2,
+    StringConverter: 3,
+    PathConverter: 4,
+}
+
+
+def _converter_sort_key(node: RadixNode) -> int:
+    return _CONVERTER_PRIORITY.get(type(node.converter), 3)
 
 
 class RouteInfo:
@@ -319,6 +340,7 @@ class Router:
                     child.param_name = param_name
                     child.converter = converter
                     node.param_children.append(child)
+                    node.param_children.sort(key=_converter_sort_key)
                     node._param_index[key] = child
                 node = child
                 # Greedy converter (path) must terminate the rule — it consumes
@@ -844,6 +866,7 @@ class Router:
                             child.param_name = param_name
                             child.converter = converter
                             cur.param_children.append(child)
+                            cur.param_children.sort(key=_converter_sort_key)
                             cur._param_index[key] = child
                         cur = child
                         if converter.greedy:

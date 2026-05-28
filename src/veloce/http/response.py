@@ -1018,7 +1018,10 @@ class JSONResponse(Response):
         status_code: int = 200,
         headers: dict[str, str] | None = None,
     ) -> None:
-        body = orjson.dumps(data)
+        try:
+            body = orjson.dumps(data)
+        except TypeError as exc:
+            raise ValueError(f"JSONResponse data is not JSON-serializable: {exc}") from exc
         super().__init__(
             status_code=status_code,
             body=body,
