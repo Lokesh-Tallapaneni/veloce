@@ -170,6 +170,11 @@ class HttpProtocol(asyncio.Protocol):
         query_string = parsed.query.decode("ascii") if parsed.query else ""
 
         source = RequestBodySource(max_content_length=max_len)
+        # Wire body backpressure to the transport's flow control: the source
+        # pauses reading when its buffer hits the high-water mark and resumes
+        # once a consumer drains it back down. Bounds the per-connection body
+        # buffer regardless of how fast the kernel delivers bytes.
+        source.set_flow_control(self._pause_reading, self._resume_reading)
         request = Request(
             method=self.parser.get_method().decode("ascii"),
             path=path,
@@ -295,6 +300,23 @@ class HttpProtocol(asyncio.Protocol):
             self._keep_alive_handle.cancel()
             self._keep_alive_handle = None
         self._request_timer = self.loop.call_later(self.REQUEST_TIMEOUT, self._request_timeout)
+
+    def _pause_reading(self) -> None:
+        """Stop pulling bytes off the socket — the body buffer is full.
+
+        Invoked by the in-flight `RequestBodySource` when its buffer reaches
+        the high-water mark. A guard keeps it safe after teardown: a closing or
+        absent transport simply ignores the request.
+        """
+        transport = self.transport
+        if transport is not None and not transport.is_closing():
+            transport.pause_reading()
+
+    def _resume_reading(self) -> None:
+        """Resume pulling bytes once the consumer drains below the low mark."""
+        transport = self.transport
+        if transport is not None and not transport.is_closing():
+            transport.resume_reading()
 
     def _reject_oversized(self, status_code: int, reason: bytes) -> None:
         """Emit a minimal HTTP/1.1 error response and close the connection.
