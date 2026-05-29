@@ -47,6 +47,22 @@ class WebSocket:
     # high-burst peers.
     DEFAULT_RECV_QUEUE_MAXSIZE = 64
 
+    # Upper bound on a single frame's declared payload length. A peer can
+    # declare an 8-byte (64-bit) length in the frame header; without a cap
+    # the parser would wait for — and the reassembly buffer would try to
+    # hold — an arbitrarily large amount of data, an unbounded-allocation
+    # DoS. Frames declaring a payload larger than this close the connection
+    # with `1009 Message Too Big`.
+    MAX_FRAME_SIZE = 16 * 1024 * 1024
+
+    # Upper bound on a reassembled (fragmented) message's total size. The
+    # per-frame cap bounds one frame, but a peer can open a fragmented
+    # message (FIN=0) and stream an unbounded number of continuation
+    # frames — each individually under MAX_FRAME_SIZE — to grow the
+    # reassembly buffer without limit. Crossing this bound closes the
+    # connection with `1009 Message Too Big`.
+    MAX_MESSAGE_SIZE = 16 * 1024 * 1024
+
     def __init__(
         self,
         transport: asyncio.Transport,
@@ -68,6 +84,11 @@ class WebSocket:
         # `None` when no fragmented message is in progress.
         self._frag_opcode: int | None = None
         self._frag_buffer: bytearray = bytearray()
+        # Persistent receive buffer for incremental frame parsing. The
+        # transport hands `feed_data` arbitrary byte runs that do not line up
+        # with frame boundaries — bytes accumulate here until a whole frame
+        # (or several) can be parsed off the front.
+        self._recv_buffer: bytearray = bytearray()
         # ASGI mode (W1). When wired through `Veloce.__call__`'s websocket
         # branch, the transport is None and we drive the connection through
         # ASGI receive/send callables instead. Set by `from_asgi`.
@@ -106,6 +127,7 @@ class WebSocket:
         ws._receive_queue = None  # type: ignore[assignment]
         ws._frag_opcode = None  # unused in ASGI mode (no raw frame parsing)
         ws._frag_buffer = bytearray()
+        ws._recv_buffer = bytearray()  # unused in ASGI mode (no raw frame parsing)
         ws._asgi_receive = receive
         ws._asgi_send = send
         ws.scope = scope
@@ -546,8 +568,13 @@ class WebSocket:
         self.transport.close()
 
     def feed_data(self, data: bytes) -> None:
-        """Feed one raw WebSocket frame from the transport (called by the
-        protocol).
+        """Feed raw bytes from the transport (called by the protocol).
+
+        The transport delivers byte runs that need not align with frame
+        boundaries: a single frame may be split across two reads, and one
+        read may carry several frames. Bytes are appended to a persistent
+        receive buffer and complete frames are parsed off the front in a
+        loop — partial frames are kept for the next call.
 
         Handles fragmented messages (RFC 6455 §5.4): a data frame with
         `FIN=0` opens a message that subsequent continuation frames
@@ -556,45 +583,93 @@ class WebSocket:
         be interleaved within a fragmented message without disturbing the
         reassembly buffer.
         """
-        # One frame is assumed to arrive per call — a frame split across
-        # transport reads is dropped by the length guards below.
-        if len(data) < 2:
+        if not data:
             return
+        self._recv_buffer += data
+        # Parse as many whole frames as the buffer now holds. `_parse_frame`
+        # returns the number of bytes it consumed (0 when the buffer does
+        # not yet hold a complete frame) and may set `_closed` on a close /
+        # backpressure event, after which we stop. A single read can carry
+        # many small frames, so advance a local offset per frame and compact
+        # the buffer once at the end — slicing after every frame would memmove
+        # the remaining tail repeatedly, making a multi-frame read O(k * n).
+        pos = 0
+        try:
+            while not self._closed:
+                consumed = self._parse_frame(pos)
+                if consumed == 0:
+                    break
+                pos += consumed
+        finally:
+            if pos:
+                del self._recv_buffer[:pos]
 
-        fin = bool(data[0] & 0x80)
-        opcode = data[0] & 0x0F
-        masked = bool(data[1] & 0x80)
-        payload_len = data[1] & 0x7F
+    def _parse_frame(self, start: int = 0) -> int:
+        """Parse one whole frame from `_recv_buffer` beginning at `start`.
+
+        Returns the number of buffer bytes (from `start`) the frame
+        occupied, or `0` when the buffer does not yet hold a complete frame
+        (the caller keeps the bytes for the next `feed_data`). Parsing reads
+        relative to `start` so `feed_data` can walk several frames in one
+        read without re-slicing the buffer per frame. A complete frame is
+        unmasked and dispatched per the close / ping / pong / data
+        semantics before returning.
+        """
+        buf = self._recv_buffer
+        n = len(buf) - start
+        if n < 2:
+            return 0
+
+        fin = bool(buf[start] & 0x80)
+        opcode = buf[start] & 0x0F
+        masked = bool(buf[start + 1] & 0x80)
+        payload_len = buf[start + 1] & 0x7F
 
         offset = 2
         if payload_len == 126:
-            if len(data) < 4:
-                return
-            payload_len = struct.unpack("!H", data[2:4])[0]
+            if n < 4:
+                return 0
+            payload_len = struct.unpack("!H", buf[start + 2 : start + 4])[0]
             offset = 4
         elif payload_len == 127:
-            if len(data) < 10:
-                return
-            payload_len = struct.unpack("!Q", data[2:10])[0]
+            if n < 10:
+                return 0
+            payload_len = struct.unpack("!Q", buf[start + 2 : start + 10])[0]
             offset = 10
 
+        # Bound the declared length before waiting for / allocating the
+        # payload — a huge declared length must not park unbounded bytes in
+        # the buffer or blow up the reassembly buffer.
+        if payload_len > self.MAX_FRAME_SIZE:
+            self._close_too_big()
+            return 0
+
+        # Control frames (close / ping / pong) must carry <=125 bytes and
+        # must not be fragmented (RFC 6455 §5.5). The new reliable parser
+        # hits these consistently, so reject violations with a 1002 close
+        # rather than, e.g., echoing an oversized ping as a pong.
+        if opcode in (0x8, 0x9, 0xA) and (payload_len > 125 or not fin):
+            self._close_protocol_error()
+            return 0
+
         if masked:
-            if len(data) < offset + 4:
-                return
-            mask = data[offset : offset + 4]
+            if n < offset + 4:
+                return 0
+            mask = buf[start + offset : start + offset + 4]
             offset += 4
 
-        if len(data) < offset + payload_len:
-            return
+        frame_len = offset + payload_len
+        if n < frame_len:
+            return 0
 
-        payload_bytes = bytes(data[offset : offset + payload_len])
+        payload_bytes = bytes(buf[start + offset : start + offset + payload_len])
         if masked and payload_len:
             # Bulk XOR via Python's bignum int. Tile the 4-byte mask to
             # the payload length and XOR in a single C-level op — far
             # cheaper than a Python-level per-byte loop for any frame
             # past a handful of bytes (and WebSocket frames are usually
             # hundreds to KiB-sized).
-            tiled = (mask * ((payload_len + 3) // 4))[:payload_len]
+            tiled = (bytes(mask) * ((payload_len + 3) // 4))[:payload_len]
             payload_bytes = (
                 int.from_bytes(payload_bytes, "big") ^ int.from_bytes(tiled, "big")
             ).to_bytes(payload_len, "big")
@@ -607,9 +682,9 @@ class WebSocket:
             raise WebSocketDisconnect()
         if opcode == 0x9:  # Ping
             self._send_frame(bytes(payload), opcode=0xA)  # Pong
-            return
+            return frame_len
         if opcode == 0xA:  # Pong — no application-level action.
-            return
+            return frame_len
 
         # Data frames (text / binary) and continuation frames.
         if opcode in (0x1, 0x2):
@@ -628,17 +703,61 @@ class WebSocket:
                 # (supersedes any abandoned partial).
                 self._frag_opcode = opcode
                 self._frag_buffer = bytearray(payload)
+                if len(self._frag_buffer) > self.MAX_MESSAGE_SIZE:
+                    self._close_too_big()
+                    return 0
         elif opcode == 0x0:  # Continuation frame.
             if self._frag_opcode is None:
                 # A continuation with no message in progress is a protocol
                 # error — drop the stray frame rather than corrupt state.
-                return
+                return frame_len
             self._frag_buffer += payload
+            # Cap the cumulative reassembled size: the per-frame cap bounds
+            # one frame, but a stream of continuation frames could otherwise
+            # grow the buffer without limit (unbounded-allocation DoS).
+            if len(self._frag_buffer) > self.MAX_MESSAGE_SIZE:
+                self._close_too_big()
+                return 0
             if fin:
                 # Final fragment — the reassembled message is complete.
                 self._enqueue_or_close(bytes(self._frag_buffer))
                 self._frag_opcode = None
                 self._frag_buffer = bytearray()
+
+        # The frame was fully consumed regardless of opcode-specific
+        # handling — report its length so the caller drops it and looks
+        # for the next frame in the buffer.
+        return frame_len
+
+    def _close_too_big(self) -> None:
+        """Close the connection with `1009 Message Too Big`.
+
+        Used when a peer declares a frame payload past `MAX_FRAME_SIZE`.
+        Mirrors the synchronous close in `_enqueue_or_close` — no `await`
+        is available from inside the Protocol callback that drives
+        `feed_data`.
+        """
+        with contextlib.suppress(Exception):
+            self._send_frame((1009).to_bytes(2, "big"), opcode=0x8)  # Close
+        self._closed = True
+        with contextlib.suppress(Exception):
+            if self.transport is not None:
+                self.transport.close()
+
+    def _close_protocol_error(self) -> None:
+        """Close the connection with `1002 Protocol Error`.
+
+        Used for malformed frames — e.g. an oversized (>125 byte) or
+        fragmented control frame (RFC 6455 §5.5). Like `_close_too_big`,
+        the close is synchronous: no `await` is available from inside the
+        Protocol callback that drives `feed_data`.
+        """
+        with contextlib.suppress(Exception):
+            self._send_frame((1002).to_bytes(2, "big"), opcode=0x8)  # Close
+        self._closed = True
+        with contextlib.suppress(Exception):
+            if self.transport is not None:
+                self.transport.close()
 
     def _enqueue_or_close(self, payload: bytes) -> None:
         """Push a reassembled message onto the receive queue.
@@ -657,15 +776,7 @@ class WebSocket:
             # Close synchronously — no `await` available from inside
             # `feed_data`. The frame writer is synchronous and only
             # needs the transport.
-            with contextlib.suppress(Exception):
-                self._send_frame(
-                    (1009).to_bytes(2, "big"),
-                    opcode=0x8,  # Close
-                )
-            self._closed = True
-            with contextlib.suppress(Exception):
-                if self.transport is not None:
-                    self.transport.close()
+            self._close_too_big()
 
     def _send_frame(self, data: bytes, opcode: int) -> None:
         """Send a WebSocket frame.
