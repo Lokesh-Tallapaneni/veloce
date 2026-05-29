@@ -1866,7 +1866,12 @@ class Veloce(Router):
         max_size = self.config.get("MAX_CONTENT_LENGTH")
         if max_size is not None:
             declared = request.content_length
-            if (declared is not None and declared > max_size) or len(request.body) > max_size:
+            # The body is fully buffered at construction in the current
+            # pipeline, so `await request.body()` resolves immediately — the
+            # await keeps the cap enforced against the actual buffered bytes
+            # (defence-in-depth for chunked bodies that omit Content-Length).
+            buffered = await request.body()
+            if (declared is not None and declared > max_size) or len(buffered) > max_size:
                 response: Response = JSONResponse(
                     {
                         "detail": "Request body exceeds MAX_CONTENT_LENGTH",
@@ -2204,7 +2209,7 @@ class Veloce(Router):
                     path=sub_path,
                     query_string=request.query_string,
                     headers=request.headers,
-                    body=request.body,
+                    body=await request.body(),
                     transport=request.transport,
                     app=sub_app,
                 )
