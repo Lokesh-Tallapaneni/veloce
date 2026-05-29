@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request, Veloce
+from veloce import Request, Response, Veloce
+from veloce.blueprints import Blueprint
 
 
 def _req(path: str = "/") -> Request:
@@ -124,3 +125,65 @@ async def test_teardown_hook_exception_is_logged_not_propagated():
     # Response should succeed despite the teardown error.
     resp = await app.handle_request(_req("/x"))
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_app_before_hook_shortcircuit_skips_blueprint_teardown():
+    """An app-level before_request short-circuit fires the app teardown_request
+    hook but not the matched blueprint's — the dispatcher only records the
+    teardown blueprint after the app-level before hooks complete."""
+    app = Veloce(debug=True, openapi_url=None)
+    bp = Blueprint("bp")
+    events: list[str] = []
+
+    @app.before_request
+    def gate(request):
+        return Response(body=b"blocked", status_code=403)
+
+    @app.teardown_request
+    def app_td(exc):
+        events.append("app")
+
+    @bp.teardown_request
+    def bp_td(exc):
+        events.append("bp")
+
+    @bp.get("/x")
+    async def handler():
+        return {}
+
+    app.register_blueprint(bp)
+
+    resp = await app.handle_request(_req("/x"))
+    assert resp.status_code == 403
+    # App-level teardown fires; blueprint teardown does not (the short-circuit
+    # happened before the blueprint was recorded as the teardown target).
+    assert events == ["app"]
+
+
+@pytest.mark.asyncio
+async def test_blueprint_teardown_fires_on_normal_dispatch():
+    """When dispatch reaches the blueprint's handler, both the app-level and
+    the blueprint teardown_request hooks fire."""
+    app = Veloce(debug=True, openapi_url=None)
+    bp = Blueprint("bp")
+    events: list[str] = []
+
+    @app.teardown_request
+    def app_td(exc):
+        events.append("app")
+
+    @bp.teardown_request
+    def bp_td(exc):
+        events.append("bp")
+
+    @bp.get("/x")
+    async def handler():
+        return {"ok": True}
+
+    app.register_blueprint(bp)
+
+    resp = await app.handle_request(_req("/x"))
+    assert resp.status_code == 200
+    assert "app" in events
+    assert "bp" in events
