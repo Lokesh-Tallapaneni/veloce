@@ -155,9 +155,9 @@ def test_normal_small_request_is_not_rejected():
         emitted = b"".join(transport.writes)
         assert b"414" not in emitted
         assert b"431" not in emitted
-        # The request was accepted and queued for the server loop; the URL was
-        # captured into the snapshot tuple (method, url, headers, body, ka).
-        assert any(snap[1] == b"/hello" for snap in proto._request_queue)
+        # The request was accepted and queued for the server loop at
+        # headers-complete; the queue holds (Request, body_source, keep_alive).
+        assert any(req.path == "/hello" for req, _src, _ka in proto._request_queue)
     finally:
         loop.close()
 
@@ -480,6 +480,301 @@ def test_connection_lost_mid_pipeline_cancels_server_loop():
         with contextlib.suppress(asyncio.CancelledError):
             loop.run_until_complete(server_loop)
         assert server_loop.done()
+    finally:
+        loop.close()
+
+
+def test_streaming_handler_receives_chunks_as_fed():
+    """Dispatch happens at headers-complete; a handler consuming
+    request.stream() observes each body chunk at the cadence the protocol
+    feeds it, not as one buffered blob after the body fully arrives."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        seen: list[bytes] = []
+        first_chunk = asyncio.Event()
+
+        @app.post("/stream")
+        async def stream(request):  # noqa: ANN001, ANN202
+            async for chunk in request.stream():
+                seen.append(chunk)
+                if len(seen) == 1:
+                    first_chunk.set()
+            return {"n": len(seen)}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Headers + declared length arrive first; the body follows in pieces.
+        proto.data_received(b"POST /stream HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\n\r\n")
+        loop.run_until_complete(asyncio.sleep(0))
+        # Handler dispatched at headers-complete and is now awaiting the body.
+        assert proto._server_loop is not None
+        assert seen == []
+
+        # First body chunk arrives — the handler must observe it before the
+        # rest of the body (and before message-complete).
+        proto.data_received(b"abc")
+        loop.run_until_complete(first_chunk.wait())
+        assert seen == [b"abc"], "chunk not delivered incrementally"
+
+        # Remaining body completes the request.
+        proto.data_received(b"def")
+        _drain_loop(loop, proto)
+
+        assert seen == [b"abc", b"def"]
+        emitted = b"".join(transport.writes)
+        assert b'"n":2' in emitted
+    finally:
+        loop.close()
+
+
+def test_body_ignoring_handler_does_not_wedge_next_pipelined_request():
+    """A handler that ignores the request body must not strand unparsed body
+    bytes: the mandatory drain-on-teardown consumes them so the next pipelined
+    request parses cleanly and is served FIFO-ordered."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        @app.post("/ignore")
+        async def ignore(request):  # noqa: ANN001, ANN202
+            # Deliberately never reads the body.
+            return {"r": "A"}
+
+        @app.get("/next")
+        async def nxt(request):  # noqa: ANN001, ANN202
+            return {"r": "B"}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Pipeline: a POST with a body the handler ignores, then a follow-up GET.
+        proto.data_received(
+            b"POST /ignore HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello"
+            b"GET /next HTTP/1.1\r\nHost: x\r\n\r\n"
+        )
+        _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        a_pos = emitted.find(b'"r":"A"')
+        b_pos = emitted.find(b'"r":"B"')
+        assert a_pos != -1, "first response missing"
+        assert b_pos != -1, "follow-up was wedged by unread body bytes"
+        assert a_pos < b_pos, "FIFO ordering violated"
+        # The ignored body did not surface as a parse error on the next request.
+        assert b"400" not in emitted
+        assert b"500" not in emitted
+        assert transport.closed is False
+    finally:
+        loop.close()
+
+
+def test_body_ignoring_handler_blocks_in_drain_until_eof_then_serves_next_fifo():
+    """The production-critical drain path: a body-ignoring handler returns
+    while its body is STILL streaming. The server loop reaches source.drain(),
+    which must BLOCK awaiting EOF (not exit early), so unparsed body bytes can
+    never be misread as the next request. When the remaining body + a pipelined
+    follow-up arrive in a LATER data_received, drain unblocks, the body is
+    discarded, and the follow-up is served FIFO with no corruption."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        @app.post("/ignore")
+        async def ignore(request):  # noqa: ANN001, ANN202
+            # Returns immediately without reading the body — drain must wait.
+            return {"r": "A"}
+
+        @app.get("/next")
+        async def nxt(request):  # noqa: ANN001, ANN202
+            return {"r": "B"}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Headers + a PARTIAL body (5 promised, 2 sent). Crucially the rest of
+        # the body and the follow-up do NOT arrive in this data_received, so
+        # on_message_complete has not fired and EOF is not yet signalled.
+        proto.data_received(b"POST /ignore HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhe")
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.run_until_complete(asyncio.sleep(0))
+
+        server_loop = proto._server_loop
+        assert server_loop is not None
+        # The handler returned, its response was queued for write, and the loop
+        # is now parked inside source.drain() awaiting EOF — NOT done.
+        assert not server_loop.done(), (
+            "drain exited before EOF — unread bytes could corrupt next request"
+        )
+        emitted_so_far = b"".join(transport.writes)
+        assert emitted_so_far.find(b'"r":"B"') == -1, "follow-up served before its bytes arrived"
+
+        # Remaining body bytes complete the first request, then the pipelined
+        # GET arrives — all in a second data_received. EOF now unblocks drain.
+        proto.data_received(b"lloGET /next HTTP/1.1\r\nHost: x\r\n\r\n")
+        _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        a_pos = emitted.find(b'"r":"A"')
+        b_pos = emitted.find(b'"r":"B"')
+        assert a_pos != -1, "first response missing"
+        assert b_pos != -1, "follow-up was wedged by the blocked drain"
+        assert a_pos < b_pos, "FIFO ordering violated"
+        # The ignored body's trailing bytes ("llo") were drained, not misread as
+        # the next request line.
+        assert b"400" not in emitted
+        assert b"500" not in emitted
+        assert transport.closed is False
+    finally:
+        loop.close()
+
+
+def test_connection_lost_unblocks_a_drain_awaiting_eof():
+    """The deadlock backstop: if the client disconnects while the server loop
+    is parked in source.drain() awaiting body bytes that will never arrive,
+    connection_lost(None) must feed EOF so the blocked drain unblocks and the
+    server-loop task ends (cancelled) rather than hanging forever."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        @app.post("/ignore")
+        async def ignore(request):  # noqa: ANN001, ANN202
+            return {"r": "A"}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Headers + partial body; the rest never comes. Handler returns, server
+        # loop parks in drain() awaiting EOF.
+        proto.data_received(b"POST /ignore HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhe")
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.run_until_complete(asyncio.sleep(0))
+
+        server_loop = proto._server_loop
+        assert server_loop is not None
+        assert not server_loop.done(), "expected the loop parked in drain awaiting EOF"
+
+        # Client vanishes mid-drain. connection_lost feeds EOF to the in-flight
+        # source (unblocking drain) and cancels the server loop.
+        proto.connection_lost(None)
+        # Must not hang: the blocked drain wakes on the EOF / cancellation.
+        with contextlib.suppress(asyncio.CancelledError):
+            loop.run_until_complete(server_loop)
+        assert server_loop.done()
+    finally:
+        loop.close()
+
+
+def test_oversized_streamed_body_rejected_413_mid_stream():
+    """An over-limit body is refused 413 once the streamed running total
+    crosses MAX_CONTENT_LENGTH — before the whole body is read — and the
+    connection is closed."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        app.config["MAX_CONTENT_LENGTH"] = 8
+
+        @app.post("/u")
+        async def upload(request):  # noqa: ANN001, ANN202
+            body = await request.body()
+            return {"len": len(body)}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # No declared Content-Length up front (chunked-style) so the cap is
+        # enforced against the streamed running total, not the header.
+        proto.data_received(b"POST /u HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+        loop.run_until_complete(asyncio.sleep(0))
+        # Feed a body chunk that overflows the 8-byte cap.
+        proto.data_received(b"5\r\nhello\r\n4\r\nmore\r\n0\r\n\r\n")
+        with contextlib.suppress(asyncio.CancelledError):
+            _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        assert b"413" in emitted
+        assert b"Content Too Large" in emitted
+        assert transport.closed is True
+    finally:
+        loop.close()
+
+
+def test_declared_content_length_over_limit_rejected_413_before_body():
+    """An honest client announcing an over-limit upload via Content-Length is
+    refused 413 at headers-complete, before any body byte is read."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        app.config["MAX_CONTENT_LENGTH"] = 8
+
+        @app.post("/u")
+        async def upload(request):  # noqa: ANN001, ANN202
+            return {"ok": True}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        proto.data_received(b"POST /u HTTP/1.1\r\nHost: x\r\nContent-Length: 9999\r\n\r\n")
+
+        emitted = b"".join(transport.writes)
+        assert b"413" in emitted
+        assert transport.closed is True
+        # Rejected before dispatch — no request was queued for the server loop.
+        assert not proto._request_queue
+    finally:
+        loop.close()
+
+
+def test_slowloris_timer_arms_across_body_window():
+    """With headers-complete dispatch the body window is now part of the same
+    request, so the slowloris timer must remain armed after headers parse and
+    still fire on a stalled body (verifying the timer spans the longer window)."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        body_started = asyncio.Event()
+
+        @app.post("/u")
+        async def upload(request):  # noqa: ANN001, ANN202
+            body_started.set()
+            # Block reading the body — the client stalls mid-upload.
+            return {"len": len(await request.body())}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Headers arrive and complete; body is promised but never sent.
+        proto.data_received(b"POST /u HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n")
+        # The slowloris guard armed on the first bytes is still live across the
+        # body window (not cancelled at headers-complete), and the idle
+        # keep-alive timer is stood down.
+        assert proto._request_timer is not None
+        assert proto._keep_alive_handle is None
+
+        # Simulate the stalled-body timeout firing.
+        proto._request_timeout()
+        assert transport.closed is True
+        emitted = b"".join(transport.writes)
+        assert b"408" in emitted
+
+        # The transport close drives connection_lost, which cancels the
+        # server loop (the handler was blocked awaiting a body that never
+        # finished) — mirror that here so no task is left pending.
+        proto.connection_lost(None)
+        server_loop = proto._server_loop
+        if server_loop is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                loop.run_until_complete(server_loop)
     finally:
         loop.close()
 

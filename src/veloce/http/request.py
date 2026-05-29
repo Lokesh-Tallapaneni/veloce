@@ -51,6 +51,7 @@ class Request:
         "_headers_raw",
         "_body",
         "_body_drained",
+        "_body_source",
         "transport",
         "app",
         "scope",
@@ -89,6 +90,7 @@ class Request:
         transport: asyncio.Transport | None = None,
         app: Any = None,
         scope: dict | None = None,
+        body_source: Any = None,
     ) -> None:
         # ASGI servers and `Veloce.add_route` already feed an uppercase
         # method; skip the allocation when the caller already complies.
@@ -113,14 +115,22 @@ class Request:
             self._headers = Headers()
         else:
             self._headers = Headers(headers)  # type: ignore[arg-type]
-        # Body access is async (`await request.body()`). The source is
-        # pre-filled here with the complete bytes the caller already
-        # buffered, so the drain resolves immediately with no I/O. `_body`
-        # caches the assembled bytes; `_body_drained` marks "the source has
-        # been pulled to EOF" so sync accessors (`.data`, `get_json`) know
-        # the bytes are available without an await.
-        self._body: bytes = body
-        self._body_drained: bool = True
+        # Body access is async (`await request.body()`). Two shapes:
+        #  - in-memory (TestClient / ASGI): `body` holds the complete bytes
+        #    the caller already buffered, so the first drain resolves
+        #    immediately with no I/O and `_body_drained` starts True.
+        #  - streamed (raw HTTP/1.1): `body_source` is a `RequestBodySource`
+        #    fed by the protocol as bytes arrive; the body is not yet
+        #    buffered, so `_body_drained` starts False and the first drain
+        #    pulls the source to EOF. `_body` caches the assembled bytes once
+        #    drained so sync accessors (`.data`, `get_json`) can serve them.
+        self._body_source: Any = body_source
+        if body_source is None:
+            self._body: bytes = body
+            self._body_drained: bool = True
+        else:
+            self._body = body
+            self._body_drained = False
         self.transport = transport
         self.app = app
         self.scope = scope or {}
@@ -197,11 +207,13 @@ class Request:
         """Pull the body source to EOF once and cache the assembled bytes.
 
         In-memory requests are pre-filled at construction, so the first
-        drain resolves immediately. The result is cached on `_body`; later
-        drains return the cache. The async signature is what lets a future
-        streaming source pull from the socket here without changing callers.
+        drain resolves immediately. Streamed requests (raw HTTP/1.1) pull the
+        `RequestBodySource` to EOF here. The result is cached on `_body`;
+        later drains return the cache.
         """
         if not self._body_drained:
+            if self._body_source is not None:
+                self._body = await self._body_source.read()
             self._body_drained = True
         return self._body
 
@@ -1147,15 +1159,26 @@ class Request:
         return False
 
     async def stream(self) -> Any:
-        """Async-iterate the request body in bounded chunks — ASGI shape.
+        """Async-iterate the request body in chunks — ASGI shape.
 
-        The body is buffered before dispatch, so the chunks are sliced
-        from that buffer rather than pulled from the socket; each yielded
-        slice is capped at 64 KiB so a handler written against the
-        streaming API (`async for chunk in request.stream(): ...`) can
-        process a large body incrementally without materialising a second
-        full copy of it.
+        Streamed requests (raw HTTP/1.1) yield each chunk as the socket
+        delivers it, so `async for chunk in request.stream(): ...` processes
+        a large body incrementally without ever buffering it whole. For
+        in-memory requests (TestClient / ASGI), or once a streamed body has
+        already been drained and cached, the buffered bytes are sliced into
+        64 KiB chunks instead.
         """
+        if self._body_source is not None and not self._body_drained:
+            # Pull live from the source so a streaming handler observes
+            # chunks at the cadence the protocol feeds them. Cache as we go
+            # so a later `.body()` / `.data` still sees the full payload.
+            parts: list[bytes] = []
+            async for chunk in self._body_source:
+                parts.append(chunk)
+                yield chunk
+            self._body = b"".join(parts)
+            self._body_drained = True
+            return
         body = await self._drain_body()
         chunk_size = 65536
         for offset in range(0, len(body), chunk_size):
