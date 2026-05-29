@@ -224,7 +224,15 @@ class Request:
         remains synchronous to match Flask's `Request.get_json`.
         """
         if self._json is None:
-            self._json = orjson.loads(self.body) if self.body else None
+            if not self.body:
+                self._json = None
+            else:
+                try:
+                    self._json = orjson.loads(self.body)
+                except (orjson.JSONDecodeError, ValueError) as exc:
+                    from veloce.exceptions import BadRequest  # noqa: I001 — breaks cycle: exceptions -> app -> request
+
+                    raise BadRequest(f"Failed to decode JSON body: {exc}") from exc
         return self._json
 
     def get_data(self, as_text: bool = False, cache: bool = True) -> bytes | str:

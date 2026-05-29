@@ -47,3 +47,4 @@ CLAUDE.md
 internal/
 *.png
 board-after-upload.png
+.cache/
