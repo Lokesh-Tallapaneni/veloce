@@ -15,6 +15,10 @@ longer scale memory with body size.
 
 ### Added
 
+- The built-in HTTP/1.1 server's keep-alive and slowloris read timeouts are
+  now configurable through `app.config`: `KEEP_ALIVE_TIMEOUT` (idle-connection
+  timeout) and `REQUEST_TIMEOUT` (per-request read budget). Defaults are
+  unchanged at 75 and 30 seconds respectively.
 - The built-in HTTP/1.1 server now honours `Expect: 100-continue`: a request
   carrying that header is answered with an interim `100 Continue` once its
   headers are parsed, clearing the client to send the body. The interim is

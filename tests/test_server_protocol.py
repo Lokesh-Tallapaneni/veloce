@@ -1445,3 +1445,66 @@ def test_expect_100_continue_over_limit_yields_413_not_interim():
         assert not proto._request_queue
     finally:
         loop.close()
+
+
+def test_request_timeout_honours_config_override():
+    """`REQUEST_TIMEOUT` in app.config shortens the slowloris read budget so a
+    half-sent request is dropped with 408 sooner than the 30s default."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        app.config["REQUEST_TIMEOUT"] = 0.02
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Partial request: headers never complete, so the request timer keeps
+        # running until the (overridden, very short) budget elapses.
+        proto.data_received(b"POST /upload HTTP/1.1\r\nContent-Length: 9999\r\n")
+        assert proto._request_timer is not None
+
+        loop.run_until_complete(asyncio.sleep(0.05))
+
+        assert transport.closed is True
+        emitted = b"".join(transport.writes)
+        assert b"408" in emitted
+        assert proto._request_timer is None
+    finally:
+        loop.close()
+
+
+def test_keep_alive_timeout_honours_config_override():
+    """`KEEP_ALIVE_TIMEOUT` in app.config closes an idle keep-alive connection
+    sooner than the 75s default."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        app.config["KEEP_ALIVE_TIMEOUT"] = 0.02
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Idle connection: only the keep-alive timer is armed.
+        assert proto._keep_alive_handle is not None
+        assert proto._request_timer is None
+
+        loop.run_until_complete(asyncio.sleep(0.05))
+
+        assert transport.closed is True
+    finally:
+        loop.close()
+
+
+def test_timeout_defaults_unchanged():
+    """The class-attribute defaults and the seeded config keys both stay at the
+    documented 75s / 30s, so an app that sets neither override is unaffected."""
+    from veloce.config import Config
+
+    assert HttpProtocol.KEEP_ALIVE_TIMEOUT == 75
+    assert HttpProtocol.REQUEST_TIMEOUT == 30
+
+    defaults = Config.default_config()
+    assert defaults["KEEP_ALIVE_TIMEOUT"] == 75
+    assert defaults["REQUEST_TIMEOUT"] == 30

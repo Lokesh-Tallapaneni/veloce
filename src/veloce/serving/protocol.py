@@ -302,7 +302,8 @@ class HttpProtocol(asyncio.Protocol):
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
             self._keep_alive_handle = None
-        self._request_timer = self.loop.call_later(self.REQUEST_TIMEOUT, self._request_timeout)
+        timeout = self.app.config.get("REQUEST_TIMEOUT", self.REQUEST_TIMEOUT)
+        self._request_timer = self.loop.call_later(timeout, self._request_timeout)
 
     def _pause_reading(self) -> None:
         """Stop pulling bytes off the socket — the body buffer is full.
@@ -409,9 +410,8 @@ class HttpProtocol(asyncio.Protocol):
         """Start idle timeout — close connection if no request arrives."""
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
-        self._keep_alive_handle = self.loop.call_later(
-            self.KEEP_ALIVE_TIMEOUT, self._keep_alive_timeout
-        )
+        timeout = self.app.config.get("KEEP_ALIVE_TIMEOUT", self.KEEP_ALIVE_TIMEOUT)
+        self._keep_alive_handle = self.loop.call_later(timeout, self._keep_alive_timeout)
 
     def _keep_alive_timeout(self) -> None:
         """Close idle connection after timeout."""

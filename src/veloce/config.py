@@ -72,6 +72,8 @@ class Config(dict[str, Any]):
             "PROPAGATE_EXCEPTIONS": None,
             "SEND_FILE_MAX_AGE_DEFAULT": None,
             "REQUEST_HANDLER_TIMEOUT": 30,
+            "KEEP_ALIVE_TIMEOUT": 75,
+            "REQUEST_TIMEOUT": 30,
         }
 
     @staticmethod
