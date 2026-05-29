@@ -104,3 +104,10 @@ async def test_child_errorhandler_inherited():
 
     resp = await app.handle_request(_req("/p/c/boom"))
     assert orjson.loads(resp.body) == {"caught": "kaboom"}
+
+
+def test_register_blueprint_rejects_self_registration():
+    bp = Blueprint("self_loop", url_prefix="/x")
+
+    with pytest.raises(ValueError, match="itself"):
+        bp.register_blueprint(bp)

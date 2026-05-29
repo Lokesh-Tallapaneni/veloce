@@ -130,3 +130,16 @@ def test_authorization_in_veloce_exports():
     from veloce import Authorization as AuthClass
 
     assert AuthClass is Authorization
+
+
+# ── Cached identity ───────────────────────────────────────────────────
+
+
+def test_auth_cached_identity():
+    """Repeated reads of `.auth` return the same parsed object."""
+    req = _req("Bearer abc.def.ghi")
+    assert req.auth is req.auth
+    # Missing-header path: cached `None` is still cached (no re-parse).
+    miss = _req()
+    assert miss.auth is None
+    assert miss.auth is miss.auth

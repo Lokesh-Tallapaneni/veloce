@@ -22,7 +22,7 @@ def test_returns_file_response(tmp_path):
 def test_default_emits_last_modified_and_etag(tmp_path):
     resp = send_file(_make_file(tmp_path))
     assert "Last-Modified" in resp.headers
-    assert resp.headers["ETag"].startswith('"')
+    assert resp.headers["ETag"].startswith('W/"')
 
 
 def test_mimetype_override(tmp_path):

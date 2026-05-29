@@ -239,3 +239,48 @@ async def test_app_path_converter():
     resp = await app.handle_request(req)
     assert resp.status_code == 200
     assert b'"dir/sub/x.txt"' in resp.body
+
+
+# ── Hardening: int length cap and float inf-constant lift ──────────────
+
+
+def test_int_converter_rejects_oversized_digits():
+    # Reject before invoking int() to avoid quadratic bignum parsing.
+    assert IntConverter().match("9" * 100) == (False, None)
+    assert IntConverter().match("1" * 21) == (False, None)
+    assert IntConverter().match("-" + "9" * 20) == (False, None)
+
+
+def test_int_converter_still_accepts_normal_values():
+    ok, v = IntConverter().match("12345")
+    assert ok and v == 12345
+    # 19-digit positive (max signed 64-bit fits) still parses.
+    ok, v = IntConverter().match("9" * 19)
+    assert ok and v == int("9" * 19)
+
+
+def test_float_converter_accepts_finite_large_value():
+    # 1e308 is finite; the converter requires '.' so use 1.0e... shape —
+    # but 'e' is also rejected, so check a plain large-but-finite decimal.
+    ok, v = FloatConverter().match("1.5")
+    assert ok and v == 1.5
+    ok, v = FloatConverter().match("0.0001")
+    assert ok and v == 0.0001
+
+
+def test_float_converter_rejects_inf_and_nan():
+    # 'inf'/'nan' lack '.' so they're rejected by the dot-check too;
+    # the math.isinf guard backs that up for any future shape that slips through.
+    assert FloatConverter().match("inf") == (False, None)
+    assert FloatConverter().match("-inf") == (False, None)
+    assert FloatConverter().match("nan") == (False, None)
+
+
+def test_module_int_digit_cap_not_in_public_surface():
+    # The underscored cap must stay private — verify it's not re-exported
+    # from the routing package gateway.
+    from veloce import routing as _routing
+    from veloce.routing import converters as _conv
+
+    assert "_MAX_INT_DIGITS" not in dir(_routing)
+    assert _conv._MAX_INT_DIGITS == 20

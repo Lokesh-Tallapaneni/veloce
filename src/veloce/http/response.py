@@ -19,6 +19,7 @@ from veloce._internal import (
     MIME_JSON,
     MIME_OCTET,
     MIME_PLAIN,
+    _etag_matches_weak,
     _file_etag,
     _reject_header_crlf,
 )
@@ -182,7 +183,10 @@ class Response:
             self.status_code = value
         else:
             # Take the leading integer token of "404 Not Found" / "404".
-            head = value.strip().split(None, 1)[0]
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("Response.status: empty value")
+            head = stripped.split(None, 1)[0]
             self.status_code = int(head)
         self._encoded = None
 
@@ -631,6 +635,10 @@ class Response:
         if value is None:
             self.headers.pop("WWW-Authenticate", None)
         else:
+            # Caller-supplied challenges may interpolate a realm or
+            # token68; reject CRLF here so this low-level setter has the
+            # same header-injection guarantees as set_basic_auth_challenge.
+            _reject_header_crlf(value, "WWW-Authenticate")
             self.headers["WWW-Authenticate"] = value
         self._encoded = None
 
@@ -641,6 +649,7 @@ class Response:
         `WWW-Authenticate: Basic realm="<realm>", charset="UTF-8"`.
         Returns the header value written.
         """
+        _reject_header_crlf(realm, "realm")
         value = f'Basic realm="{realm}", charset="UTF-8"'
         self.headers["WWW-Authenticate"] = value
         self._encoded = None
@@ -868,9 +877,29 @@ class Response:
     def iter_encoded(self) -> Any:
         """Yield the response body.
 
-        Buffered → single-chunk iter over `body`. Streaming → proxy
-        to the underlying async iterator. Lets callers drain a
-        response without going through ASGI emit.
+        Return type is mode-dependent and the two modes are NOT
+        interchangeable:
+
+        - Buffered response (`is_streamed is False`) → returns a
+          synchronous iterator yielding `bytes`. Drain with `for`.
+        - Streaming response (`is_streamed is True`) → returns the
+          underlying async iterator (`AsyncIterator[bytes]`). Drain
+          with `async for`.
+
+        Callers must branch on `response.is_streamed` (or use
+        `inspect.isasyncgen` / `hasattr(it, "__aiter__")`) to pick
+        the right loop, e.g.:
+
+            it = response.iter_encoded()
+            if response.is_streamed:
+                async for chunk in it:
+                    ...
+            else:
+                for chunk in it:
+                    ...
+
+        This dual return shape is preserved for backwards compatibility
+        and will be unified to a single `AsyncIterator[bytes]` in v0.2.0.
         """
         stream = self._stream
         if stream is not None:
@@ -880,10 +909,30 @@ class Response:
     def iter_chunked(self, size: int) -> Any:
         """Yield the response body in fixed-size chunks.
 
-        Buffered responses are split into `size`-byte slices (final
-        slice may be shorter). Streaming responses are returned
-        unchanged — the chunk boundaries are then controlled by the
-        underlying generator, not the caller. `size` must be positive.
+        Return type is mode-dependent and the two modes are NOT
+        interchangeable:
+
+        - Buffered response (`is_streamed is False`) → returns a
+          synchronous generator yielding `bytes` slices of length
+          `size` (the final slice may be shorter). Drain with `for`.
+        - Streaming response (`is_streamed is True`) → returns the
+          underlying async iterator unchanged (`AsyncIterator[bytes]`);
+          `size` is ignored because chunk boundaries are controlled by
+          the source generator, not the caller. Drain with `async for`.
+
+        Pick the loop based on `response.is_streamed`:
+
+            it = response.iter_chunked(4096)
+            if response.is_streamed:
+                async for chunk in it:
+                    ...
+            else:
+                for chunk in it:
+                    ...
+
+        `size` must be positive. This dual return shape is preserved for
+        backwards compatibility and will be unified to a single
+        `AsyncIterator[bytes]` in v0.2.0.
         """
         if size <= 0:
             raise ValueError("iter_chunked size must be positive")
@@ -929,10 +978,9 @@ class Response:
             if "*" in inm:
                 self._downgrade_to_304()
                 return self
-            # Strong comparison: strip `W/` prefixes from both sides.
-            ours_stripped = ours_etag.removeprefix("W/")
+            # Weak comparison per RFC 9110 §8.8.3.2.
             for tag in inm:
-                if tag.removeprefix("W/") == ours_stripped:
+                if _etag_matches_weak(ours_etag, tag):
                     self._downgrade_to_304()
                     return self
             # Explicit non-match — caller's other preconditions don't apply.
@@ -1012,19 +1060,80 @@ class JSONResponse(Response):
 
     __slots__ = ()
 
+    # Class-level default Content-Type. Subclasses (`ORJSONResponse`,
+    # user-defined `class ProblemJSON(JSONResponse)`) override this to
+    # change the content type emitted by both `__init__` and
+    # `from_bytes` without re-implementing either. Named distinctly
+    # from `Response.media_type` (which is an instance property aliasing
+    # `content_type`) to avoid shadowing that property.
+    default_media_type: str = MIME_JSON
+
     def __init__(
         self,
         data: Any,
         status_code: int = 200,
         headers: dict[str, str] | None = None,
     ) -> None:
-        body = orjson.dumps(data)
+        try:
+            body = orjson.dumps(data)
+        except TypeError as exc:
+            raise ValueError(f"JSONResponse data is not JSON-serializable: {exc}") from exc
         super().__init__(
             status_code=status_code,
             body=body,
-            content_type=MIME_JSON,
+            content_type=type(self).default_media_type,
             headers=headers,
         )
+
+    @classmethod
+    def from_bytes(
+        cls,
+        body: bytes,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> JSONResponse:
+        """Build a `JSONResponse` from already-encoded JSON bytes.
+
+        Skips `__init__`'s orjson re-encode — use this when the caller
+        has produced the JSON body itself (e.g. with custom orjson
+        options or via a `JSONProvider.dumps`). The body is sent
+        verbatim with `Content-Type` taken from `cls.default_media_type`
+        (so a subclass like `class ProblemJSON(JSONResponse):
+        default_media_type = "application/problem+json"` gets its
+        declared type without overriding this method).
+
+        The caller is responsible for ensuring `body` is valid UTF-8
+        JSON; no parsing or validation is performed. Passing non-JSON
+        bytes will produce a response whose body does not match its
+        declared content type.
+
+        `body` must be `bytes` or `bytearray`. A `str` raises
+        `TypeError` rather than being silently encoded, so callers do
+        not produce a response with a mismatched charset by accident.
+
+        Header precedence: when `headers` includes a `Content-Type`
+        entry, the caller-supplied value wins and the class default is
+        not emitted. This matches `Response`'s general rule that user
+        headers override framework defaults and lets callers send
+        `application/problem+json` or another JSON suffix type without
+        subclassing.
+        """
+        if not isinstance(body, (bytes, bytearray)):
+            raise TypeError(
+                "JSONResponse.from_bytes() requires bytes or bytearray, "
+                f"got {type(body).__name__}. Encode the value first "
+                "(e.g. body.encode('utf-8')) or use JSONResponse(data)."
+            )
+        resp = cls.__new__(cls)
+        Response.__init__(
+            resp,
+            status_code=status_code,
+            body=body if isinstance(body, bytes) else bytes(body),
+            content_type=cls.default_media_type,
+            headers=headers,
+        )
+        return resp
 
 
 class ORJSONResponse(JSONResponse):

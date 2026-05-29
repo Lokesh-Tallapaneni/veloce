@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Query, Veloce
 from veloce.routing.params import Path
 from veloce.testclient import TestClient
@@ -71,3 +73,20 @@ def test_path_multiple_of():
     with TestClient(app) as client:
         assert client.get("/items/8").status_code == 200
         assert client.get("/items/7").status_code == 422
+
+
+def test_multiple_of_zero_rejected_at_construction():
+    with pytest.raises(ValueError, match="multiple_of must be positive"):
+        Query(multiple_of=0)
+
+
+def test_multiple_of_positive_construction_ok():
+    q = Query(multiple_of=2)
+    assert q.multiple_of == 2
+
+
+def test_multiple_of_negative_construction_allowed():
+    # JSON Schema draft 2020-12 §6.2.1 / OpenAPI 3.1 require multipleOf > 0,
+    # so negatives are now rejected at declaration time.
+    with pytest.raises(ValueError, match="multiple_of must be positive"):
+        Query(multiple_of=-3)

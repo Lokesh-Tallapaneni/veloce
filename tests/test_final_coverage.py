@@ -283,6 +283,30 @@ class TestFlashMessages:
         resp = client.get("/get")
         assert resp.json() == {"errors": ["Error 1", "Error 2"]}
 
+    def test_flash_category_filter_multi(self):
+        """Multiple-category filter — `info` and `warn` pass, `error` is dropped."""
+        from veloce.helpers import flash, get_flashed_messages
+        from veloce.testclient import TestClient
+
+        app = self._make_app()
+
+        @app.post("/set")
+        def set_handler():
+            flash("i1", "info")
+            flash("e1", "error")
+            flash("w1", "warn")
+            flash("i2", "info")
+            return {"ok": True}
+
+        @app.get("/get")
+        def get_handler():
+            return {"m": get_flashed_messages(category_filter=["info", "warn"])}
+
+        client = TestClient(app)
+        client.post("/set")
+        resp = client.get("/get")
+        assert resp.json() == {"m": ["i1", "w1", "i2"]}
+
 
 class TestWebSocketTimeout:
     """Test WebSocket receive with timeout."""

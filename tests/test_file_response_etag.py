@@ -8,7 +8,7 @@ import pytest
 
 from veloce import FileResponse
 
-_ETAG_RE = re.compile(r'^"[0-9a-f]{32}"$')
+_ETAG_RE = re.compile(r'^W/"[0-9a-f]{32}"$')
 
 
 # ── Sync ctor ─────────────────────────────────────────────────────────
@@ -101,3 +101,15 @@ def test_etag_and_last_modified_both_present(tmp_path):
     resp = FileResponse(str(p))
     assert "ETag" in resp.headers
     assert "Last-Modified" in resp.headers
+
+
+# ── Weak validator (RFC 9110 §8.8.3) ─────────────────────────────────
+
+
+def test_file_etag_is_weak(tmp_path):
+    p = tmp_path / "a.txt"
+    p.write_bytes(b"hello")
+    resp = FileResponse(str(p))
+    # mtime-derived tags can collide within the same second across
+    # content-altering writes, so they must be marked weak.
+    assert resp.headers["ETag"].startswith('W/"')

@@ -9,7 +9,11 @@ from typing import Any
 from urllib.parse import urlencode
 
 from veloce.routing.converters import (
+    FloatConverter,
+    IntConverter,
+    PathConverter,
     StringConverter,
+    UUIDConverter,
     _Converter,
     parse_converter,
 )
@@ -68,6 +72,23 @@ class RadixNode:
         # Converter applied at match time. `None` for static and wildcard nodes;
         # always set on param nodes (defaulting to StringConverter).
         self.converter: _Converter | None = None
+
+
+# Converter specificity — lower = more restrictive = tried first during
+# match. Ensures `/items/{id:int}` beats `/items/{slug:str}` regardless
+# of registration order. The sort runs once per `add_route` call (at app
+# startup), never on the per-request match path.
+_CONVERTER_PRIORITY: dict[type, int] = {
+    UUIDConverter: 0,
+    IntConverter: 1,
+    FloatConverter: 2,
+    StringConverter: 3,
+    PathConverter: 4,
+}
+
+
+def _converter_sort_key(node: RadixNode) -> int:
+    return _CONVERTER_PRIORITY.get(type(node.converter), 3)
 
 
 class RouteInfo:
@@ -247,6 +268,73 @@ class Router:
         """Split path into segments (cached)."""
         return _cached_split_path(path)
 
+    def _insert_path_into_tree(
+        self,
+        node: RadixNode,
+        segments: tuple[str, ...],
+        path: str,
+    ) -> tuple[RadixNode, list[str]]:
+        """Walk `segments` from `node`, creating or reusing radix children.
+
+        Returns the leaf node (where route metadata attaches) and the
+        ordered list of path-parameter names encountered along the way.
+        Shared by `add_route` and `_merge_node`; both code paths must
+        accept or reject the same shapes (notably the greedy `:path`
+        converter must be the final segment).
+        """
+        param_names: list[str] = []
+        total = len(segments)
+        for idx, seg in enumerate(segments):
+            if seg.startswith("{") and seg.endswith("}"):
+                spec = seg[1:-1]
+                if ":" in spec:
+                    param_name, _, conv_spec = spec.partition(":")
+                else:
+                    param_name, conv_spec = spec, ""
+                converter = parse_converter(conv_spec) if conv_spec else StringConverter()
+                param_names.append(param_name)
+
+                # Reuse an existing param child with the same name AND matching
+                # converter type; otherwise add a new one. Different converters
+                # for the same name on the same slot would be ambiguous.
+                key = (param_name, type(converter))
+                child = node._param_index.get(key)
+                if child is None:
+                    child = RadixNode(seg)
+                    child.is_param = True
+                    child.param_name = param_name
+                    child.converter = converter
+                    node.param_children.append(child)
+                    node.param_children.sort(key=_converter_sort_key)
+                    node._param_index[key] = child
+                node = child
+                if converter.greedy:
+                    remaining = total - idx - 1
+                    if remaining:
+                        trailing = segments[idx + 1 :]
+                        raise ValueError(
+                            f"Route {path!r}: greedy converter {{...:path}} must be the "
+                            f"final segment; got {remaining} segment(s) after it: {trailing!r}"
+                        )
+                    break
+            elif seg == "*":
+                # Wildcard (legacy `*` syntax). Reuse the slot so two routes
+                # registering `*` at the same node share one node.
+                child = node.wildcard_child
+                if child is None:
+                    child = RadixNode(seg)
+                    child.is_wildcard = True
+                    node.wildcard_child = child
+                node = child
+                break
+            else:
+                child = node.static_children.get(seg)
+                if child is None:
+                    child = RadixNode(seg)
+                    node.static_children[seg] = child
+                node = child
+        return node, param_names
+
     def add_route(
         self,
         path: str,
@@ -293,56 +381,7 @@ class Router:
         full_path = self.prefix + path
         has_trailing_slash = full_path.endswith("/") and full_path != "/"
         segments = self._split_path(full_path)
-        param_names: list[str] = []
-
-        node = self._root
-        for seg in segments:
-            if seg.startswith("{") and seg.endswith("}"):
-                # Path parameter, with optional `:converter` suffix.
-                spec = seg[1:-1]
-                if ":" in spec:
-                    param_name, _, conv_spec = spec.partition(":")
-                else:
-                    param_name, conv_spec = spec, ""
-                converter = parse_converter(conv_spec) if conv_spec else StringConverter()
-                param_names.append(param_name)
-
-                # Reuse an existing param child with the same name AND matching
-                # converter type; otherwise add a new one. Different converters
-                # for the same name on the same segment slot would be ambiguous,
-                # so we treat them as distinct param children.
-                key = (param_name, type(converter))
-                child = node._param_index.get(key)
-                if child is None:
-                    child = RadixNode(seg)
-                    child.is_param = True
-                    child.param_name = param_name
-                    child.converter = converter
-                    node.param_children.append(child)
-                    node._param_index[key] = child
-                node = child
-                # Greedy converter (path) must terminate the rule — it consumes
-                # everything that follows.
-                if converter.greedy:
-                    break
-            elif seg == "*":
-                # Wildcard (legacy `*` syntax). Reuse the slot so two routes
-                # registering `*` at the same node — e.g. a GET and a POST —
-                # share one node and both handlers stay reachable.
-                child = node.wildcard_child
-                if child is None:
-                    child = RadixNode(seg)
-                    child.is_wildcard = True
-                    node.wildcard_child = child
-                node = child
-                break
-            else:
-                # Static segment — O(1) dict lookup-or-create.
-                child = node.static_children.get(seg)
-                if child is None:
-                    child = RadixNode(seg)
-                    node.static_children[seg] = child
-                node = child
+        node, param_names = self._insert_path_into_tree(self._root, segments, full_path)
 
         if has_trailing_slash:
             node.trailing_slash = True
@@ -823,45 +862,8 @@ class Router:
             seg_path = "/".join(path_segments)
             full_path = prefix + "/" + seg_path if seg_path else prefix or "/"
             for method, info in node.handlers.items():
-                # Use a temporary Router with no prefix to avoid double-prefixing
                 segments = self._split_path(full_path)
-                param_names: list[str] = []
-                cur = self._root
-                for seg in segments:
-                    if seg.startswith("{") and seg.endswith("}"):
-                        spec = seg[1:-1]
-                        if ":" in spec:
-                            param_name, _, conv_spec = spec.partition(":")
-                        else:
-                            param_name, conv_spec = spec, ""
-                        converter = parse_converter(conv_spec) if conv_spec else StringConverter()
-                        param_names.append(param_name)
-                        key = (param_name, type(converter))
-                        child = cur._param_index.get(key)
-                        if child is None:
-                            child = RadixNode(seg)
-                            child.is_param = True
-                            child.param_name = param_name
-                            child.converter = converter
-                            cur.param_children.append(child)
-                            cur._param_index[key] = child
-                        cur = child
-                        if converter.greedy:
-                            break
-                    elif seg == "*":
-                        child = cur.wildcard_child
-                        if child is None:
-                            child = RadixNode(seg)
-                            child.is_wildcard = True
-                            cur.wildcard_child = child
-                        cur = child
-                        break
-                    else:
-                        child = cur.static_children.get(seg)
-                        if child is None:
-                            child = RadixNode(seg)
-                            cur.static_children[seg] = child
-                        cur = child
+                cur, param_names = self._insert_path_into_tree(self._root, segments, full_path)
 
                 combined_deps = list(self.router_dependencies)
                 if info.dependencies:

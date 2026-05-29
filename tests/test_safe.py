@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import sys
+
+import pytest
 
 from veloce.safe import constant_time_compare, safe_join, secure_filename
 
@@ -151,3 +154,50 @@ def test_safe_join_does_not_accept_sibling_directory():
     # but the absolute-check guards against absolute inputs that happen to share
     # the prefix string.
     assert safe_join(base, "/srv/abc/file") is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only path semantics")
+def test_safe_join_accepts_mixed_case_drive_on_windows():
+    # On Windows, drive-letter casing in user-supplied base must not cause
+    # a same-directory descendant to be rejected. Normalisation through
+    # `os.path.normcase` makes the comparison case-insensitive.
+    result = safe_join("C:\\Users", "Alice/file.txt")
+    assert result is not None
+    assert result.lower().endswith("alice\\file.txt")
+
+
+def test_safe_join_descendant_check_uses_normcase(monkeypatch):
+    # Force a known case-folding normcase on every platform so the test does
+    # not depend on whether the OS's native normcase is identity (POSIX) or
+    # case-lowering (Windows).
+    monkeypatch.setattr(os.path, "normcase", str.lower)
+
+    base = os.path.abspath("/srv/uploads")
+    result = safe_join("/srv/uploads", "FILE.TXT")
+    assert result == os.path.join(base, "FILE.TXT")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX root semantics")
+def test_safe_join_accepts_descendant_of_posix_root():
+    # When base is the filesystem root "/", the descendant check must not
+    # compose a prefix of "//" — that would never match a legitimate child.
+    result = safe_join("/", "etc")
+    assert result == os.path.abspath("/etc")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows root semantics")
+def test_safe_join_accepts_descendant_of_windows_drive_root():
+    # When base is a Windows drive root "C:\\", the descendant check must
+    # not compose a prefix of "C:\\\\" — that would never match a child.
+    result = safe_join("C:\\", "Users")
+    assert result is not None
+    assert result.lower() == os.path.abspath("C:\\Users").lower()
+
+
+def test_safe_join_equality_branch_with_no_components(monkeypatch):
+    # When no path components are supplied, joined == base — exercise the
+    # equality branch of the descendant check under a forced normcase.
+    monkeypatch.setattr(os.path, "normcase", str.lower)
+
+    base = os.path.abspath("/srv/uploads")
+    assert safe_join("/srv/uploads") == base

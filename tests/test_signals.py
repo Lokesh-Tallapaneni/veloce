@@ -160,3 +160,172 @@ async def test_got_request_exception_fires_on_error():
         assert seen and isinstance(seen[0], RuntimeError)
     finally:
         got_request_exception.disconnect(on_exc)
+
+
+# ── send vs send_robust: per-receiver failure handling ──────────────
+
+
+def test_send_aborts_on_failing_receiver():
+    sig = Signal("strict")
+    fired: list[str] = []
+
+    def good_a(sender, **kwargs):
+        fired.append("a")
+        return "a"
+
+    def bad(sender, **kwargs):
+        fired.append("bad")
+        raise RuntimeError("boom")
+
+    def good_b(sender, **kwargs):
+        fired.append("b")
+        return "b"
+
+    sig.connect(good_a, weak=False)
+    sig.connect(bad, weak=False)
+    sig.connect(good_b, weak=False)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        sig.send("s")
+
+    # Strict semantics: receivers registered after `bad` never ran.
+    assert fired == ["a", "bad"]
+
+
+def test_send_robust_returns_exceptions_and_continues():
+    sig = Signal("robust")
+    fired: list[str] = []
+
+    def good_a(sender, **kwargs):
+        fired.append("a")
+        return "a"
+
+    def bad(sender, **kwargs):
+        fired.append("bad")
+        raise RuntimeError("boom")
+
+    def good_b(sender, **kwargs):
+        fired.append("b")
+        return "b"
+
+    sig.connect(good_a, weak=False)
+    sig.connect(bad, weak=False)
+    sig.connect(good_b, weak=False)
+
+    results = sig.send_robust("s")
+
+    # Every receiver ran, in order.
+    assert fired == ["a", "bad", "b"]
+    assert len(results) == 3
+    assert results[0] == (good_a, "a")
+    assert results[1][0] is bad
+    assert isinstance(results[1][1], RuntimeError)
+    assert str(results[1][1]) == "boom"
+    assert results[2] == (good_b, "b")
+
+
+def test_send_robust_rejects_async_receiver_with_typeerror():
+    """Sync send_robust + async receiver → TypeError entry, no unawaited coroutine."""
+    import warnings
+
+    sig = Signal("sync-only")
+
+    async def async_handler(sender, **kwargs):
+        return "async"
+
+    sig.connect(async_handler, weak=False)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        results = sig.send_robust("s")
+
+    assert len(results) == 1
+    receiver, value = results[0]
+    assert receiver is async_handler
+    assert isinstance(value, TypeError)
+    assert "send_robust_async" in str(value)
+
+
+async def test_send_robust_async_mixed_sync_async_with_failure():
+    """Async send_robust runs every receiver; per-receiver errors are captured."""
+    sig = Signal("mixed")
+    fired: list[str] = []
+
+    def sync_ok(sender, **kwargs):
+        fired.append("sync")
+        return "sync-value"
+
+    async def async_bad(sender, **kwargs):
+        fired.append("async-bad")
+        raise RuntimeError("kaboom")
+
+    async def async_ok(sender, **kwargs):
+        fired.append("async-ok")
+        return "async-value"
+
+    sig.connect(sync_ok, weak=False)
+    sig.connect(async_bad, weak=False)
+    sig.connect(async_ok, weak=False)
+
+    results = await sig.send_robust_async("s")
+
+    assert fired == ["sync", "async-bad", "async-ok"]
+    assert len(results) == 3
+    assert results[0] == (sync_ok, "sync-value")
+    assert results[1][0] is async_bad
+    assert isinstance(results[1][1], RuntimeError)
+    assert str(results[1][1]) == "kaboom"
+    assert results[2] == (async_ok, "async-value")
+
+
+def test_iter_live_targets_prunes_dead_weakref_after_single_send():
+    """Both send and send_robust prune dead weakrefs via _iter_live_targets."""
+    import gc
+
+    class Owner:
+        def handle(self, sender, **kw):
+            return "ok"
+
+    # send() path
+    sig_a = Signal("prune-send")
+    keep = Owner()
+    drop = Owner()
+    sig_a.connect(keep.handle, weak=True)
+    sig_a.connect(drop.handle, weak=True)
+    assert len(sig_a._subs) == 2
+    del drop
+    gc.collect()
+    sig_a.send("x")
+    assert len(sig_a._subs) == 1
+
+    # send_robust() path
+    sig_b = Signal("prune-robust")
+    keep2 = Owner()
+    drop2 = Owner()
+    sig_b.connect(keep2.handle, weak=True)
+    sig_b.connect(drop2.handle, weak=True)
+    assert len(sig_b._subs) == 2
+    del drop2
+    gc.collect()
+    sig_b.send_robust("x")
+    assert len(sig_b._subs) == 1
+
+
+def test_send_robust_logs_failures(caplog):
+    sig = Signal("robust-log")
+
+    def bad(sender, **kwargs):
+        raise ValueError("nope")
+
+    sig.connect(bad, weak=False)
+
+    with caplog.at_level("WARNING", logger="veloce.signals"):
+        results = sig.send_robust("s")
+
+    assert len(results) == 1
+    assert isinstance(results[0][1], ValueError)
+    assert any(
+        rec.name == "veloce.signals" and rec.levelname == "WARNING" for rec in caplog.records
+    )
+    # The traceback (exc_info) must be attached so operators can debug.
+    assert any(rec.exc_info for rec in caplog.records)

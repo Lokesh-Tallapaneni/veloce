@@ -13,14 +13,23 @@ keep validating until they age out.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from typing import Any
 
+from veloce.http.cookies import dump_cookie
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
 from veloce.sessions import InMemorySessionStore, Session, SessionStore
 from veloce.signing import BadSignature, Signer
+
+# RFC 6265 §6.1 only mandates 4096 bytes per cookie (name + value + attrs);
+# browsers and proxies enforce this inconsistently, so 4093 is the de-facto
+# safe ceiling (4096 − 3 bytes of separator overhead some impls reserve).
+_DEFAULT_MAX_COOKIE_SIZE = 4093
+
+_logger = logging.getLogger("veloce.sessions")
 
 
 class SessionMiddleware(Middleware):
@@ -36,6 +45,7 @@ class SessionMiddleware(Middleware):
         secure: bool = False,
         samesite: str = "lax",
         permanent_lifetime: int = 86400 * 31,
+        max_cookie_size: int = _DEFAULT_MAX_COOKIE_SIZE,
     ) -> None:
         keys = [secret_key] if isinstance(secret_key, str) else list(secret_key)
         if not keys:
@@ -52,6 +62,7 @@ class SessionMiddleware(Middleware):
         # `PERMANENT_SESSION_LIFETIME` analog — used for the cookie
         # `Max-Age` when `session.permanent` is set. Defaults to 31 days.
         self.permanent_lifetime = permanent_lifetime
+        self.max_cookie_size = max_cookie_size
 
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the signed cookie into request state."""
@@ -99,6 +110,31 @@ class SessionMiddleware(Middleware):
         cookie_value = self._signer.dumps(session)
         # A `permanent` session uses the longer lifetime for `Max-Age`.
         lifetime = self.permanent_lifetime if getattr(session, "permanent", False) else self.max_age
+        # Browsers silently truncate Set-Cookie above ~4 KB, which corrupts
+        # the session on the next request. Measure the rendered header and
+        # drop the cookie (with a warning) rather than raising — a raise here
+        # re-enters this middleware via the error-response path and would
+        # propagate as an unhandled ASGI exception. RFC 6265 §6.1.
+        rendered = dump_cookie(
+            self.cookie_name,
+            cookie_value,
+            max_age=lifetime,
+            path=self.path,
+            httponly=self.httponly,
+            secure=self.secure,
+            samesite=self.samesite.capitalize() if self.samesite else None,
+        )
+        rendered_size = len(rendered.encode("latin-1"))
+        if rendered_size > self.max_cookie_size:
+            _logger.warning(
+                "Session cookie %r is %d bytes, exceeds max_cookie_size=%d; "
+                "dropping Set-Cookie on this response. Switch to "
+                "ServerSessionMiddleware for payloads of this size.",
+                self.cookie_name,
+                rendered_size,
+                self.max_cookie_size,
+            )
+            return response
         response.set_cookie(
             self.cookie_name,
             cookie_value,

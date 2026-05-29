@@ -8,6 +8,7 @@ import secrets
 from typing import Any
 from urllib.parse import quote
 
+from veloce._header_parsing import parse_header_params
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
 from veloce.security._utils import _extract_bearer_token
@@ -117,10 +118,12 @@ class HTTPDigest:
         self,
         realm: str,
         qop: str = "auth",
-        algorithm: str = "MD5",
+        algorithm: str = "SHA-256",
         auto_error: bool = True,
         nonce_factory: Any = None,
     ) -> None:
+        # RFC 7616 §3.2 prefers SHA-256; MD5 remains accepted for back-compat
+        # with RFC 2617 clients but should not be the default for new servers.
         self.realm = realm
         self.qop = qop
         self.algorithm = algorithm
@@ -169,40 +172,10 @@ def _parse_digest(value: str) -> HTTPDigestCredentials:
     RFC 7616 §3.4 — the field set is open-ended, so we collect every
     pair and assign known names to the credential's slots. Unknown
     fields are ignored (e.g. `userhash=true` extensions). Quoted
-    values are unwrapped; unquoted values pass through verbatim.
+    values are unwrapped per RFC 5322 quoted-pair semantics; unquoted
+    values pass through verbatim.
     """
-    fields: dict[str, str] = {}
-    i = 0
-    while i < len(value):
-        eq = value.find("=", i)
-        if eq == -1:
-            break
-        key = value[i:eq].strip().lower()
-        j = eq + 1
-        if j < len(value) and value[j] == '"':
-            # Quoted string — walk to the matching close quote, honouring
-            # backslash escapes inside (rare but legal per RFC 7616).
-            end = j + 1
-            while end < len(value):
-                if value[end] == "\\" and end + 1 < len(value):
-                    end += 2
-                    continue
-                if value[end] == '"':
-                    break
-                end += 1
-            val = value[j + 1 : end].replace("\\\\", "\\").replace('\\"', '"')
-            i = end + 1
-        else:
-            end = value.find(",", j)
-            if end == -1:
-                end = len(value)
-            val = value[j:end].strip()
-            i = end
-        fields[key] = val
-        # Skip the trailing comma + whitespace.
-        while i < len(value) and value[i] in (",", " ", "\t"):
-            i += 1
-
+    _, fields = parse_header_params(value, delimiter=",", unescape=True)
     return HTTPDigestCredentials(
         username=fields.get("username", ""),
         realm=fields.get("realm", ""),

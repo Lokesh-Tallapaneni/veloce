@@ -6,12 +6,13 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import os
+from collections.abc import Sequence
 from http import HTTPStatus
 from typing import Any, NoReturn
 
 import orjson
 
-from veloce._internal import MIME_HTML, MIME_JSON, MIME_OCTET
+from veloce._internal import MIME_HTML, MIME_OCTET
 from veloce.exceptions import exception_for_status
 from veloce.http.dates import http_date
 from veloce.http.response import FileResponse, JSONResponse, RedirectResponse, Response
@@ -36,7 +37,47 @@ _current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
 )
 
 
-class _CurrentAppProxy:
+class _ContextProxy:
+    """Shared base for ContextVar-backed proxies.
+
+    Subclasses set `_var` (the ContextVar) and `_subject` (a short name
+    used in the unbound error message). The default `_resolve` returns
+    whatever the var carries; override it when the bound value is not
+    the final target (see `_SessionProxy`, which resolves to
+    `request.session`).
+    """
+
+    __slots__ = ()
+
+    _var: contextvars.ContextVar[Any]
+    _subject: str
+    _scope_label: str = "request"
+
+    def _resolve(self) -> Any:
+        value = self._var.get()
+        if value is None:
+            raise RuntimeError(
+                f"Working outside of {self._scope_label} context. "
+                f"`{self._subject}` is only available while a request is being handled."
+            )
+        return value
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            return super().__getattribute__(name)
+        return getattr(self._resolve(), name)
+
+    def __repr__(self) -> str:
+        value = self._var.get()
+        if value is None:
+            return f"<{self._subject}: unbound>"
+        return f"<{self._subject}: {value!r}>"
+
+    def __bool__(self) -> bool:
+        return self._var.get() is not None
+
+
+class _CurrentAppProxy(_ContextProxy):
     """Context-local proxy to the currently-handling Veloce app.
 
     Resolves to the app set by `Veloce.handle_request` for the duration
@@ -45,37 +86,16 @@ class _CurrentAppProxy:
     """
 
     __slots__ = ()
-
-    def _resolve(self) -> Any:
-        app = _current_app_var.get()
-        if app is None:
-            raise RuntimeError(
-                "Working outside of application context. "
-                "`current_app` is only available while a request is being handled."
-            )
-        return app
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
-            # ContextVar / dunder lookups never resolve through the proxy.
-            return super().__getattribute__(name)
-        return getattr(self._resolve(), name)
-
-    def __repr__(self) -> str:
-        app = _current_app_var.get()
-        if app is None:
-            return "<current_app: unbound>"
-        return f"<current_app: {app!r}>"
-
-    def __bool__(self) -> bool:
-        return _current_app_var.get() is not None
+    _var = _current_app_var
+    _subject = "current_app"
+    _scope_label = "application"
 
 
 # Singleton — `from veloce import current_app`.
 current_app = _CurrentAppProxy()
 
 
-class _CurrentRequestProxy:
+class _CurrentRequestProxy(_ContextProxy):
     """Context-local proxy to the request being handled.
 
     Resolves to the `Request` bound by the dispatcher (or by
@@ -84,34 +104,15 @@ class _CurrentRequestProxy:
     """
 
     __slots__ = ()
-
-    def _resolve(self) -> Any:
-        req = _current_request_var.get()
-        if req is None:
-            raise RuntimeError(
-                "Working outside of request context. `request` is only "
-                "available while a request is being handled."
-            )
-        return req
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
-            return super().__getattribute__(name)
-        return getattr(self._resolve(), name)
-
-    def __repr__(self) -> str:
-        req = _current_request_var.get()
-        return "<request: unbound>" if req is None else f"<request: {req!r}>"
-
-    def __bool__(self) -> bool:
-        return _current_request_var.get() is not None
+    _var = _current_request_var
+    _subject = "request"
 
 
 # Singleton — `from veloce import request`.
 request = _CurrentRequestProxy()
 
 
-class _SessionProxy:
+class _SessionProxy(_ContextProxy):
     """Context-local proxy to the current request's session.
 
     Resolves to `request.session` (the dict `SessionMiddleware`
@@ -121,20 +122,17 @@ class _SessionProxy:
     """
 
     __slots__ = ()
+    _var = _current_request_var
+    _subject = "session"
 
     def _resolve(self) -> Any:
-        req = _current_request_var.get()
+        req = self._var.get()
         if req is None:
             raise RuntimeError(
                 "Working outside of request context. `session` is only "
                 "available while a request is being handled."
             )
         return req.session
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
-            return super().__getattribute__(name)
-        return getattr(self._resolve(), name)
 
     def __getitem__(self, key: str) -> Any:
         return self._resolve()[key]
@@ -155,7 +153,7 @@ class _SessionProxy:
         return len(self._resolve())
 
     def __bool__(self) -> bool:
-        req = _current_request_var.get()
+        req = self._var.get()
         return req is not None and "session" in req._state
 
 
@@ -370,18 +368,9 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
             options |= orjson.OPT_INDENT_2
 
     if options:
-        # Use pre-encoded bytes so the orjson options apply. JSONResponse's
-        # default ctor re-serialises through orjson; we sidestep that.
-        body = orjson.dumps(data, option=options)
-        resp = JSONResponse.__new__(JSONResponse)
-        Response.__init__(
-            resp,
-            status_code=200,
-            body=body,
-            content_type=MIME_JSON,
-            headers=None,
-        )
-        return resp
+        # Pre-encode here so the orjson options apply; `from_bytes` skips
+        # JSONResponse's default re-serialise.
+        return JSONResponse.from_bytes(orjson.dumps(data, option=options))
     return JSONResponse(data)
 
 
@@ -596,7 +585,7 @@ def flash(message: str, category: str = "message") -> None:
 
 
 def get_flashed_messages(
-    with_categories: bool = False, category_filter: list[str] | None = None
+    with_categories: bool = False, category_filter: Sequence[str] | None = None
 ) -> list:
     """Get flashed messages — call in templates.
 
@@ -616,7 +605,8 @@ def get_flashed_messages(
     # aren't using the cookie middleware anyway.
     flashes = store.pop("_flashes", [])
     if category_filter:
-        flashes = [(cat, msg) for cat, msg in flashes if cat in category_filter]
+        allowed = set(category_filter)
+        flashes = [(cat, msg) for cat, msg in flashes if cat in allowed]
     if with_categories:
         return flashes
     return [msg for _, msg in flashes]

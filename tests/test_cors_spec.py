@@ -26,6 +26,17 @@ def test_wildcard_headers_with_credentials_rejected():
         )
 
 
+def test_invalid_allow_origin_regex_wrapped_as_value_error():
+    """A bad regex must surface as ValueError mentioning the offending
+    pattern — not a cryptic stdlib `re.error` traceback."""
+    bad = "["
+    with pytest.raises(ValueError, match=r"allow_origin_regex"):
+        CORSMiddleware(allow_origin_regex=bad)
+    with pytest.raises(ValueError) as exc_info:
+        CORSMiddleware(allow_origin_regex=bad)
+    assert repr(bad) in str(exc_info.value)
+
+
 # ── Allow-origin resolution ────────────────────────────────────────────
 
 
@@ -200,3 +211,51 @@ def test_preflight_emits_max_age():
         headers={"origin": "http://any.example", "access-control-request-method": "GET"},
     )
     assert resp.headers.get("access-control-max-age") == "86400"
+
+
+# ── Wildcard regex + credentials ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        ".*",
+        ".+",
+        "^.*$",
+        "^.+$",
+        ".{0,}",
+        ".{1,}",
+        "^.{1,}$",
+        # Bypasses the literal denylist; caught by the probe-test.
+        r"[\s\S]*",
+        r"(?s).*",
+        r"(?:.|\n)*",
+    ],
+)
+def test_cors_rejects_wildcard_regex_with_credentials(pattern):
+    """R1 #58: a trivially-wildcard regex with credentials is the same
+    security mistake as `allow_origins=["*"]` with credentials and must
+    fail at construction with the same diagnostic."""
+    with pytest.raises(ValueError, match=r"allow_credentials=True"):
+        CORSMiddleware(allow_origin_regex=pattern, allow_credentials=True)
+
+
+def test_cors_allows_wildcard_regex_without_credentials():
+    """The same wildcard is fine when credentials are off — no echo-any
+    risk because the response is `*` only without credentials."""
+    mw = CORSMiddleware(allow_origin_regex=".*", allow_credentials=False)
+    assert mw.allow_origin_regex is not None
+
+
+def test_cors_allows_specific_regex_with_credentials():
+    """A bounded regex remains valid with credentials — only trivially
+    universal patterns are rejected. `allow_origins` is set explicitly
+    so the default `["*"]` doesn't trip the separate wildcard-origins
+    guard."""
+    mw = CORSMiddleware(
+        allow_origins=["https://app.example.com"],
+        allow_origin_regex=r"https://[a-z]+\.example\.com",
+        allow_headers=["Content-Type"],
+        allow_credentials=True,
+    )
+    assert mw.allow_origin_regex is not None

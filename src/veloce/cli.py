@@ -17,9 +17,21 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.metadata
 import os
 import sys
 from typing import Any
+
+
+def _resolve_version() -> str:
+    # Avoid `from veloce import __version__` so `veloce --version` does not
+    # drag the entire framework (router, middleware, security, sse, …) into
+    # sys.modules just to print a string. Fallback must mirror the one in
+    # `veloce/__init__.py` for editable installs without resolved metadata.
+    try:
+        return importlib.metadata.version("veloceframework")
+    except importlib.metadata.PackageNotFoundError:
+        return "0.1.4"
 
 
 def _load_app(reference: str) -> Any:
@@ -171,6 +183,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="veloce",
         description="Veloce — ultra-fast async Python web framework.",
+    )
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=f"veloce {_resolve_version()}",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

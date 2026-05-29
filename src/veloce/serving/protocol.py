@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 import httptools
@@ -14,6 +15,18 @@ from veloce.http.response import Response, StreamingResponse
 
 if TYPE_CHECKING:
     from veloce.app import Veloce
+
+
+# Per-field + cumulative caps on the request line and headers. Prevents a
+# malicious client from streaming megabytes of headers and pinning RAM
+# before the body limit (MAX_CONTENT_LENGTH) gets a chance to engage.
+MAX_URL_SIZE = 8192
+MAX_HEADER_SIZE = 8192
+MAX_TOTAL_HEADERS_SIZE = 65536
+
+# Per-process cap on simultaneously-open connections. Without it, a DDoS
+# can exhaust RAM by opening sockets faster than dispatch can drain them.
+DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
 
 
 class HttpProtocol(asyncio.Protocol):
@@ -32,10 +45,19 @@ class HttpProtocol(asyncio.Protocol):
         "_keep_alive_handle",
         "_request_timer",
         "_body_size",
+        "_header_bytes_total",
+        "_oversized",
+        "_counted",
     )
 
     # Class-level set: prevents GC of in-flight tasks across all connections.
     _active_tasks: set[asyncio.Task] = set()
+
+    # Cross-thread connection counter. `+=` on a class-level int is read-
+    # modify-write, not atomic under the GIL, so guard with a Lock. Only
+    # contended on connection setup/teardown — not on the per-request path.
+    _active_connections: int = 0
+    _connections_lock: threading.Lock = threading.Lock()
 
     KEEP_ALIVE_TIMEOUT = 75  # seconds (matches nginx default)
     # Slowloris guard: once a request's bytes start arriving, the whole
@@ -57,13 +79,40 @@ class HttpProtocol(asyncio.Protocol):
         self._keep_alive_handle: asyncio.TimerHandle | None = None
         self._request_timer: asyncio.TimerHandle | None = None
         self._body_size: int = 0
+        self._header_bytes_total: int = 0
+        # Once a header/URL cap trips we reject the connection but httptools
+        # may keep delivering buffered callbacks; this flag short-circuits
+        # them so we don't double-emit an error response.
+        self._oversized: bool = False
+        # Tracks whether this protocol incremented _active_connections so
+        # connection_lost only decrements connections that were counted
+        # (a connection refused at the cap never bumps the counter).
+        self._counted: bool = False
 
     # ── httptools callbacks ──────────────────────────────────────
 
     def on_url(self, url: bytes) -> None:
+        if self._oversized:
+            return
+        if len(url) > MAX_URL_SIZE:
+            self._reject_oversized(status.HTTP_414_REQUEST_URI_TOO_LONG, b"URI Too Long")
+            return
         self.url = url
 
     def on_header(self, name: bytes, value: bytes) -> None:
+        if self._oversized:
+            return
+        field_size = len(name) + len(value)
+        if (
+            field_size > MAX_HEADER_SIZE
+            or self._header_bytes_total + field_size > MAX_TOTAL_HEADERS_SIZE
+        ):
+            self._reject_oversized(
+                status.HTTP_431_REQUEST_HEADER_FIELDS_TOO_LARGE,
+                b"Request Header Fields Too Large",
+            )
+            return
+        self._header_bytes_total += field_size
         self.headers.append((name.lower(), value))
 
     def on_body(self, body: bytes) -> None:
@@ -107,6 +156,7 @@ class HttpProtocol(asyncio.Protocol):
         self.headers = []
         self.body_parts = []
         self._body_size = 0
+        self._header_bytes_total = 0
         # Create task with strong reference to prevent GC and log errors
         task = self.loop.create_task(self._dispatch(snap_url, snap_headers, snap_body))
         HttpProtocol._active_tasks.add(task)
@@ -125,9 +175,35 @@ class HttpProtocol(asyncio.Protocol):
                 f"expected a full-duplex asyncio.Transport, got {type(transport).__name__}"
             )
         self.transport = transport
+
+        # Per-process connection cap (DDoS guard). Admit-or-reject decision
+        # is taken under the lock so a burst of parallel connection_made
+        # calls cannot all observe `count == cap - 1` and over-admit.
+        cap = self.app.config.get("MAX_CONCURRENT_CONNECTIONS", DEFAULT_MAX_CONCURRENT_CONNECTIONS)
+        with HttpProtocol._connections_lock:
+            if HttpProtocol._active_connections >= cap:
+                admitted = False
+            else:
+                HttpProtocol._active_connections += 1
+                admitted = True
+                self._counted = True
+        if not admitted:
+            if not transport.is_closing():
+                transport.write(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Length: 0\r\n"
+                    b"Connection: close\r\n\r\n"
+                )
+                transport.close()
+            return
+
         self._start_keep_alive_timer()
 
     def connection_lost(self, exc: Exception | None) -> None:
+        if self._counted:
+            with HttpProtocol._connections_lock:
+                HttpProtocol._active_connections -= 1
+            self._counted = False
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
             self._keep_alive_handle = None
@@ -144,6 +220,22 @@ class HttpProtocol(asyncio.Protocol):
             self._keep_alive_handle.cancel()
             self._keep_alive_handle = None
         self._request_timer = self.loop.call_later(self.REQUEST_TIMEOUT, self._request_timeout)
+
+    def _reject_oversized(self, status_code: int, reason: bytes) -> None:
+        """Emit a minimal HTTP/1.1 error response and close the connection.
+
+        Used when the request line or headers exceed configured caps; we
+        can't trust the parser to recover, so the connection is terminated.
+        """
+        self._oversized = True
+        if self.transport is None or self.transport.is_closing():
+            return
+        phrase = reason.decode("ascii")
+        head = (
+            f"HTTP/1.1 {status_code} {phrase}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ).encode("ascii")
+        self.transport.write(head)
+        self.transport.close()
 
     def _request_timeout(self) -> None:
         """A client took too long to send a complete request — drop it."""
@@ -183,6 +275,8 @@ class HttpProtocol(asyncio.Protocol):
             )
 
     def data_received(self, data: bytes) -> None:
+        if self._oversized:
+            return
         # First bytes of a fresh request — arm the slowloris read budget.
         if self._request_timer is None and not self.request_complete:
             self._arm_request_timer()
@@ -279,4 +373,6 @@ class HttpProtocol(asyncio.Protocol):
         self.body_parts = []
         self.request_complete = False
         self._body_size = 0
+        self._header_bytes_total = 0
+        self._oversized = False
         self._start_keep_alive_timer()

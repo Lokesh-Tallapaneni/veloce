@@ -17,6 +17,13 @@ from urllib.parse import parse_qsl
 
 from multidict import CIMultiDict, MultiDict
 
+from veloce._header_parsing import parse_header_params
+from veloce.exceptions import RequestURITooLong
+
+# Cap on number of query-string fields parsed per request to bound CPU
+# and memory under hash-collision / parameter-pollution DoS.
+_MAX_QUERY_FIELDS = 1000
+
 
 class Address(NamedTuple):
     """Client/server address — ASGI shape.
@@ -486,7 +493,9 @@ class AcceptHeader:
         if opt == value:
             return True
         if not self._mime:
-            return False
+            # RFC 9110 §12.5.4: bare `*` matches any value in
+            # Accept-Language / Accept-Encoding / Accept-Charset.
+            return opt == "*"
         # MIME wildcards: `*/*`, `text/*`.
         if opt == "*/*":
             return True
@@ -587,12 +596,7 @@ class Authorization:
         # Digest / Negotiate / custom: parse comma-separated key=value pairs
         # if present; otherwise just keep the raw credentials in `token`.
         if "=" in credentials:
-            params: dict[str, str] = {}
-            for chunk in _split_authz_params(credentials):
-                if "=" not in chunk:
-                    continue
-                k, _, v = chunk.partition("=")
-                params[k.strip().lower()] = v.strip().strip('"')
+            _, params = parse_header_params(credentials, delimiter=",", unescape=True)
             return cls(type=scheme_lower, raw=header_value, params=params)
         return cls(type=scheme_lower, raw=header_value, token=credentials.strip())
 
@@ -602,25 +606,6 @@ class Authorization:
         if self.type == "bearer":
             return "Authorization(type='bearer')"
         return f"Authorization(type={self.type!r})"
-
-
-def _split_authz_params(value: str) -> list[str]:
-    """Split `a=1, b="c,d", e=f` on commas not inside double-quotes."""
-    out: list[str] = []
-    in_quote = False
-    buf: list[str] = []
-    for ch in value:
-        if ch == '"':
-            in_quote = not in_quote
-            buf.append(ch)
-        elif ch == "," and not in_quote:
-            out.append("".join(buf).strip())
-            buf = []
-        else:
-            buf.append(ch)
-    if buf:
-        out.append("".join(buf).strip())
-    return out
 
 
 class Cookies(MultiDict):
@@ -678,7 +663,16 @@ class QueryParams(MultiDict):
         """
         if not query_string:
             return cls()
-        items = parse_qsl(query_string, keep_blank_values=True)
+        try:
+            items = parse_qsl(
+                query_string,
+                keep_blank_values=True,
+                max_num_fields=_MAX_QUERY_FIELDS,
+            )
+        except ValueError as exc:
+            # parse_qsl raises when the field count exceeds the cap;
+            # surface as 414 so the framework returns a clean response.
+            raise RequestURITooLong(f"Query string exceeds {_MAX_QUERY_FIELDS} fields") from exc
         return cls(items)
 
 

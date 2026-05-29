@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Response
 
 
@@ -44,3 +46,15 @@ def test_status_unknown_code_has_no_phrase():
     resp = Response(status_code=299)
     # 299 is not a registered code — status line is just the number.
     assert resp.status == "299"
+
+
+def test_status_setter_rejects_empty_string():
+    resp = Response()
+    with pytest.raises(ValueError, match="empty value"):
+        resp.status = ""
+
+
+def test_status_setter_rejects_whitespace_only_string():
+    resp = Response()
+    with pytest.raises(ValueError, match="empty value"):
+        resp.status = "   "

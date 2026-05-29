@@ -16,7 +16,7 @@ from typing import Any
 
 import orjson
 
-from veloce.http.response import JSONResponse, Response
+from veloce.http.response import JSONResponse
 
 
 class JSONProvider:
@@ -41,18 +41,13 @@ class JSONProvider:
     def response(self, value: Any, **kwargs: Any) -> Any:
         """Build a `Response` carrying `value` as JSON. Default delegates
         to `dumps` + a `JSONResponse`."""
-        body = self.dumps(value)
-        # `JSONResponse.__new__` skips its default orjson re-encoding so
-        # caller-provided options (e.g. sort_keys) survive.
-        resp = JSONResponse.__new__(JSONResponse)
-        Response.__init__(
-            resp,
+        # `from_bytes` skips JSONResponse's default re-encode so
+        # caller-provided dumps options (e.g. sort_keys) survive.
+        return JSONResponse.from_bytes(
+            self.dumps(value),
             status_code=int(kwargs.pop("status_code", 200)),
-            body=body,
-            content_type="application/json",
             headers=kwargs.pop("headers", None),
         )
-        return resp
 
 
 class DefaultJSONProvider(JSONProvider):

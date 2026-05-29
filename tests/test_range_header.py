@@ -115,3 +115,13 @@ def test_repr_includes_unit_and_ranges():
     s = repr(r)
     assert "bytes" in s
     assert "0" in s
+
+
+def test_request_range_cached_identity():
+    """Repeated reads of `.range` return the same object — parse runs once."""
+    req = _req("bytes=0-499")
+    assert req.range is req.range
+    # Missing-header path: cached `None` is still cached (no re-parse).
+    miss = _req()
+    assert miss.range is None
+    assert miss.range is miss.range

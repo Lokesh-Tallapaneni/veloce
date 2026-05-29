@@ -9,6 +9,7 @@ import functools
 import inspect
 import signal
 import time
+import warnings
 import weakref
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, get_args, get_origin
@@ -222,6 +223,14 @@ class Veloce(Router):
         self._watchdog: Any = None
         self._exception_handlers: dict[type, Callable] = {}
         self._status_handlers: dict[int, Callable] = {}
+        # Route-introspection caches — rebuilt lazily on next access after
+        # a mutation. Invalidated through `_invalidate_route_caches()`,
+        # which fires from `add_route` / `include_router` (the two
+        # entry-points every higher-level registration ultimately funnels
+        # through, including `register_blueprint` and `add_url_rule`).
+        self._cached_routes: list[dict[str, Any]] | None = None
+        self._cached_view_functions: dict[str, Callable] | None = None
+        self._cached_url_map: _URLMap | None = None
         # Cached `_find_exception_handler` MRO walks; invalidated on
         # any `register_error_handler` call. The cache assumes the
         # exception-type space is bounded — typical applications raise
@@ -356,11 +365,18 @@ class Veloce(Router):
         This is the introspection-friendly view of `Veloce.routes`;
         callers who just want the dict-list keep using `app.routes`.
         """
-        return _URLMap(self)
+        cached = self._cached_url_map
+        if cached is None:
+            cached = _URLMap(self)
+            self._cached_url_map = cached
+        return cached
 
     @property
     def routes(self) -> list[dict[str, Any]]:
         """List all registered routes."""
+        cached = self._cached_routes
+        if cached is not None:
+            return cached
         result = []
         for method, path, info in self._collect_all_routes():
             result.append(
@@ -373,7 +389,43 @@ class Veloce(Router):
                     "deprecated": info.deprecated,
                 }
             )
+        self._cached_routes = result
         return result
+
+    def _invalidate_route_caches(self) -> None:
+        """Drop all cached views of the route table.
+
+        Called from every route-mutation entry-point (`add_route`,
+        `include_router`); `register_blueprint` and `add_url_rule`
+        funnel through `add_route` so they are covered transitively.
+        Also resets the `_URLMap` instance cache so its own built-list
+        cache is rebuilt on next access.
+        """
+        self._cached_routes = None
+        self._cached_view_functions = None
+        self._cached_url_map = None
+
+    def add_route(self, *args: Any, **kwargs: Any) -> None:
+        super().add_route(*args, **kwargs)
+        self._invalidate_route_caches()
+
+    def include_router(self, router: Any, prefix: str = "", url_prefix: str | None = None) -> None:
+        """Mount a sub-router `include_router`.
+
+        Accepts either a `Blueprint` (delegates to `register_blueprint`,
+        honouring its hooks / error handlers / url processors) or a
+        plain `Router` (delegates to `Router.include_router`). The
+        `prefix` and `url_prefix` are interchangeable; both spellings
+        spells it `prefix`, Veloce spells it `url_prefix`.
+        """
+        from veloce.blueprints import Blueprint
+
+        effective = url_prefix if url_prefix is not None else (prefix or None)
+        if isinstance(router, Blueprint):
+            self.register_blueprint(router, url_prefix=effective)
+        else:
+            Router.include_router(self, router, prefix=effective or "")
+            self._invalidate_route_caches()
 
     # ── Middleware ────────────────────────────────────────────────
 
@@ -1079,10 +1131,13 @@ class Veloce(Router):
         routes are prefixed with `<bpname>.`. Returned dict is a fresh
         snapshot — mutation doesn't poison framework state.
         """
-        out: dict[str, Callable] = {}
-        for _method, _path, info in self._collect_all_routes():
-            out[info.name] = info.handler
-        return out
+        cached = self._cached_view_functions
+        if cached is None:
+            cached = {}
+            for _method, _path, info in self._collect_all_routes():
+                cached[info.name] = info.handler
+            self._cached_view_functions = cached
+        return dict(cached)
 
     def endpoint(self, name: str) -> Callable:
         """Decorator attaching a function as the view for `name`
@@ -1427,23 +1482,6 @@ class Veloce(Router):
         self._url_default_funcs.append(func)
         return func
 
-    def include_router(self, router: Any, prefix: str = "", url_prefix: str | None = None) -> None:
-        """Mount a sub-router `include_router`.
-
-        Accepts either a `Blueprint` (delegates to `register_blueprint`,
-        honouring its hooks / error handlers / url processors) or a
-        plain `Router` (delegates to `Router.include_router`). The
-        `prefix` and `url_prefix` are interchangeable; both spellings
-        spells it `prefix`, Veloce spells it `url_prefix`.
-        """
-        from veloce.blueprints import Blueprint
-
-        effective = url_prefix if url_prefix is not None else (prefix or None)
-        if isinstance(router, Blueprint):
-            self.register_blueprint(router, url_prefix=effective)
-        else:
-            super().include_router(router, prefix=effective or "")
-
     def register_blueprint(
         self,
         blueprint: Any,
@@ -1705,9 +1743,19 @@ class Veloce(Router):
     # ── Lifecycle events ─────────────────────────────────────────
 
     def on_event(self, event: str) -> Callable:
-        """Register startup/shutdown event handlers."""
+        """Register startup/shutdown event handlers.
+
+        Deprecated: use `@app.on_startup` / `@app.on_shutdown` instead.
+        Scheduled for removal in v0.2.0.
+        """
         if event not in ("startup", "shutdown"):
             raise ValueError(f"event must be 'startup' or 'shutdown', got {event!r}")
+        warnings.warn(
+            "Veloce.on_event() is deprecated and will be removed in v0.2.0; "
+            "use @app.on_startup / @app.on_shutdown instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         def decorator(func: Callable) -> Callable:
             if event == "startup":
@@ -1731,10 +1779,15 @@ class Veloce(Router):
     def add_event_handler(self, event: str, func: Callable) -> None:
         """Imperative event-handler registration — ASGI shape.
 
-        `app.add_event_handler("startup", fn)` is the non-decorator
-        form of `@app.on_event("startup")`. `event` must be
-        `"startup"` or `"shutdown"`.
+        Deprecated: call `app.on_startup(fn)` / `app.on_shutdown(fn)`
+        directly instead. Scheduled for removal in v0.2.0.
         """
+        warnings.warn(
+            "Veloce.add_event_handler() is deprecated and will be removed "
+            "in v0.2.0; use app.on_startup(fn) / app.on_shutdown(fn) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if event == "startup":
             self._on_startup.append(func)
         elif event == "shutdown":
@@ -2140,7 +2193,7 @@ class Veloce(Router):
                 bg_task = asyncio.get_running_loop().create_task(
                     request._background_tasks.run_all()
                 )
-                bg_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                bg_task.add_done_callback(self._log_background_task_error)
 
             # Response-attached background task (shape:
             # `Response(content=..., background=BackgroundTask(fn))`).
@@ -2159,9 +2212,7 @@ class Veloce(Router):
                     coro = None
                 if coro is not None:
                     bg_task = asyncio.get_running_loop().create_task(coro)
-                    bg_task.add_done_callback(
-                        lambda t: t.exception() if not t.cancelled() else None
-                    )
+                    bg_task.add_done_callback(self._log_background_task_error)
 
             # Inline empty-middleware gate skips the awaited no-op coroutine
             # creation in the common case (no middleware registered).
@@ -2440,6 +2491,21 @@ class Veloce(Router):
         # Non-pydantic model (e.g. plain class) — pass through unchanged.
         return result
 
+    def _log_background_task_error(self, task: asyncio.Task) -> None:
+        """Done-callback for fire-and-forget background tasks.
+
+        Pulls the exception off the future (silencing
+        `Task exception was never retrieved` warnings) and logs it via
+        `self.logger` so failures are observable instead of silently
+        dropped. Never re-raises — the caller has already returned the
+        response and there is nowhere meaningful for the error to go.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self.logger.error("Background task failed", exc_info=exc)
+
     def _coerce_response(self, result: Any, response_class: Any = None) -> Response:
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
@@ -2464,7 +2530,7 @@ class Veloce(Router):
                 resp.headers.update(headers)
                 return resp
             if isinstance(response_class, type) and issubclass(response_class, JSONResponse):
-                if hasattr(result, "model_dump"):
+                if isinstance(result, _PydanticBaseModel):
                     return response_class(result.model_dump())
                 return response_class(result)
             if isinstance(result, str):
@@ -2482,7 +2548,7 @@ class Veloce(Router):
         if isinstance(result, bytes):
             return Response(body=result, content_type=MIME_HTML)
         # Pydantic model
-        if hasattr(result, "model_dump"):
+        if isinstance(result, _PydanticBaseModel):
             return JSONResponse(result.model_dump())
         # Tuple response (body, status_code) or (body, status_code, headers)
         if isinstance(result, tuple):
@@ -2583,11 +2649,12 @@ class Veloce(Router):
 
     def run(
         self,
-        host: str = "0.0.0.0",
+        host: str | None = None,
         port: int = 8000,
         workers: int = 1,
         access_log: bool = True,
         ssl_context: ssl.SSLContext | None = None,
+        bind_all: bool = False,
     ) -> None:
         """Start the built-in **development** server.
 
@@ -2597,12 +2664,28 @@ class Veloce(Router):
         compatible with through its ASGI ``__call__`` interface.
         ``run()`` logs a reminder of this on startup.
 
+        ``host`` resolves to ``"127.0.0.1"`` when unset so the dev server
+        is reachable only from the local machine. Pass ``bind_all=True``
+        to opt in to all-interfaces binding (``"0.0.0.0"``). ``host`` and
+        ``bind_all=True`` are mutually exclusive — passing both raises
+        ``ValueError`` to avoid silent privilege widening. Binding to
+        ``0.0.0.0`` exposes the dev server to every reachable network —
+        including remote attackers if the machine is on a public network
+        — so it should be used only in trusted environments and never
+        with ``debug=True``.
+
         ``ssl_context`` — an ``ssl.SSLContext`` — turns on HTTPS for local
         testing; it is handed straight to ``loop.create_server(ssl=...)``.
         Left ``None`` (the default) the serving path is byte-for-byte the
         same as plain HTTP. Production should still terminate TLS at
         uvicorn or a reverse proxy.
         """
+        if host is not None and bind_all:
+            raise ValueError(
+                "Veloce.run: bind_all=True conflicts with explicit host=...; pass only one"
+            )
+        if host is None:
+            host = "0.0.0.0" if bind_all else "127.0.0.1"
         self._setup_openapi()
 
         # The from-scratch server is dev-grade — make the production
@@ -3293,15 +3376,22 @@ class _URLMap:
     Lookup by endpoint name returns the list of matching rules.
     """
 
-    __slots__ = ("_app",)
+    __slots__ = ("_app", "_cached")
 
     def __init__(self, app: Veloce) -> None:
         self._app = app
+        self._cached: list[URLRule] | None = None
 
     def _build(self) -> list[URLRule]:
         # Collect every (method, path, info) tuple, then group by
         # (path, endpoint-name) so a route registered for both GET and
-        # POST shows up as a single rule.
+        # POST shows up as a single rule. Result is cached on the
+        # `_URLMap` instance; the app drops the whole instance via
+        # `_invalidate_route_caches()` on any route mutation, so the
+        # cache cannot go stale.
+        cached = self._cached
+        if cached is not None:
+            return cached
         groups: dict[tuple[str, str], URLRule] = {}
         for method, path, info in self._app._collect_all_routes():
             key = (path, info.name)
@@ -3310,7 +3400,9 @@ class _URLMap:
                 groups[key] = URLRule(rule=path, methods=[method], endpoint=info.name)
             else:
                 existing.methods.append(method)
-        return list(groups.values())
+        result = list(groups.values())
+        self._cached = result
+        return result
 
     def __iter__(self) -> Any:
         return iter(self._build())

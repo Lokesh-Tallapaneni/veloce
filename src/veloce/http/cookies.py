@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from urllib.parse import quote, unquote
 
+from veloce._internal import _reject_header_crlf
 from veloce.http.dates import http_date
 
 
@@ -59,6 +60,8 @@ def dump_cookie(
       IMF-fixdate via `http_date`.
     - `samesite` must be one of `Strict` / `Lax` / `None` (case-insensitive).
     """
+    _reject_header_crlf(key, "cookie name")
+    _reject_header_crlf(value, "cookie value")
     quoted = quote(value, safe="!#$%&'()*+/:<=>?@[]^`{|}~")
     parts: list[str] = [f"{key}={quoted}"]
 
@@ -70,14 +73,17 @@ def dump_cookie(
         parts.append(f"Expires={http_date(expires)}")
 
     if path:
+        _reject_header_crlf(path, "cookie path")
         parts.append(f"Path={path}")
     if domain:
+        _reject_header_crlf(domain, "cookie domain")
         parts.append(f"Domain={domain}")
     if secure:
         parts.append("Secure")
     if httponly:
         parts.append("HttpOnly")
     if samesite is not None:
+        _reject_header_crlf(samesite, "cookie samesite")
         normalised = samesite.strip().capitalize()
         if normalised not in ("Strict", "Lax", "None"):
             raise ValueError("samesite must be 'Strict', 'Lax', or 'None'")

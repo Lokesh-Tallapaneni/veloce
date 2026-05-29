@@ -82,8 +82,8 @@ def _deep_merge(target: dict, overlay: dict) -> None:
             target[key] = value
 
 
-def get_openapi_schema(app: Any) -> dict:
-    """Generate OpenAPI 3.1 schema from the app's registered routes."""
+def _build_info_object(app: Any) -> dict[str, Any]:
+    """Return the OpenAPI `info` object assembled from app metadata."""
     info_obj: dict[str, Any] = {
         "title": getattr(app, "title", "Veloce API"),
         "version": getattr(app, "version", "0.1.0"),
@@ -98,10 +98,324 @@ def get_openapi_schema(app: Any) -> dict:
         info_obj["contact"] = app.contact
     if getattr(app, "license_info", None):
         info_obj["license"] = app.license_info
+    return info_obj
 
+
+def _apply_marker_constraints(param_schema: dict[str, Any], marker: Any) -> None:
+    """Copy validation / metadata keywords from a `ParamBase` marker onto `param_schema`."""
+    if getattr(marker, "title", None):
+        param_schema["title"] = marker.title
+    if marker.description:
+        param_schema["description"] = marker.description
+    if marker.ge is not None:
+        param_schema["minimum"] = marker.ge
+    if marker.le is not None:
+        param_schema["maximum"] = marker.le
+    # OpenAPI 3.1 / JSON Schema 2020-12: gt/lt map to the
+    # numeric `exclusiveMinimum` / `exclusiveMaximum`.
+    if marker.gt is not None:
+        param_schema["exclusiveMinimum"] = marker.gt
+    if marker.lt is not None:
+        param_schema["exclusiveMaximum"] = marker.lt
+    if marker.min_length is not None:
+        param_schema["minLength"] = marker.min_length
+    if marker.max_length is not None:
+        param_schema["maxLength"] = marker.max_length
+    if getattr(marker, "multiple_of", None) is not None:
+        param_schema["multipleOf"] = marker.multiple_of
+    if marker.regex is not None:
+        param_schema["pattern"] = marker.regex
+    # OpenAPI 3.1 / JSON Schema 2020-12 — `examples` is an array of
+    # sample values on the schema object.
+    if getattr(marker, "examples", None):
+        param_schema["examples"] = list(marker.examples or [])
+
+
+def _extract_parameters(
+    info: Any, schemas_registry: dict[str, dict]
+) -> tuple[list[dict], dict | None, list[tuple[str, dict, bool, bool]]]:
+    """Walk the handler signature and classify every parameter.
+
+    Returns `(parameters, request_body_schema, form_fields)`:
+    - `parameters` — OpenAPI parameter objects for path/query/header/cookie.
+    - `request_body_schema` — schema of the first Pydantic body model (or None).
+    - `form_fields` — `(alias, schema, required, is_file)` tuples for
+      `Form()` / `File()` params, consumed by `_extract_request_body`.
+
+    Depends/Security and `Body()` markers are intentionally dropped here —
+    they belong to other parts of the operation object.
+    """
+    handler = info.handler
+    sig, hints = _handler_intro(handler)
+    parameters: list[dict] = []
+    request_body_schema: dict | None = None
+    form_fields: list[tuple[str, dict, bool, bool]] = []
+
+    if sig is None:
+        return parameters, request_body_schema, form_fields
+
+    for pname, param in sig.parameters.items():
+        if pname in ("self", "request"):
+            continue
+        if isinstance(param.default, Depends):
+            continue
+
+        annotation = hints.get(pname)
+
+        marker = None
+        if isinstance(param.default, ParamBase):
+            marker = param.default
+            # `include_in_schema=False` — resolved at runtime but omitted.
+            if not getattr(marker, "include_in_schema", True):
+                continue
+
+        # First BaseModel-typed param becomes the JSON request body.
+        if annotation and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            request_body_schema = _pydantic_to_schema(annotation, schemas_registry)
+            continue
+
+        # Determine parameter location.
+        if marker and isinstance(marker, HeaderParam):
+            param_location = "header"
+            param_alias = marker.alias or pname
+        elif marker and isinstance(marker, CookieParam):
+            param_location = "cookie"
+            param_alias = marker.alias or pname
+        elif marker and isinstance(marker, (FormParam, FileParam)):
+            is_file = isinstance(marker, FileParam)
+            if is_file:
+                field_schema: dict[str, Any] = {"type": "string", "format": "binary"}
+            else:
+                field_schema = _python_type_to_schema(annotation)
+            if marker.description:
+                field_schema["description"] = marker.description
+            if getattr(marker, "title", None):
+                field_schema["title"] = marker.title
+            field_required = not marker.has_default
+            field_alias = marker.alias or pname
+            form_fields.append((field_alias, field_schema, field_required, is_file))
+            continue
+        elif marker and isinstance(marker, BodyParam):
+            # Body goes into requestBody, not parameters.
+            continue
+        elif pname in info.param_names or (marker and isinstance(marker, PathParam)):
+            param_location = "path"
+            param_alias = pname
+        else:
+            param_location = "query"
+            param_alias = marker.alias if marker and marker.alias else pname
+
+        param_schema = _python_type_to_schema(annotation)
+
+        if marker:
+            _apply_marker_constraints(param_schema, marker)
+
+        if marker:
+            required = not marker.has_default
+            if marker.has_default and marker.default is not ...:
+                default_val = marker.default
+                if isinstance(default_val, (str, int, float, bool, type(None))):
+                    param_schema["default"] = default_val
+        elif param_location == "path":
+            required = True
+        else:
+            required = param.default is inspect.Parameter.empty
+            if not required and param.default is not inspect.Parameter.empty:
+                default_val = param.default
+                if isinstance(default_val, (str, int, float, bool, type(None))):
+                    param_schema["default"] = default_val
+
+        param_info: dict[str, Any] = {
+            "name": param_alias,
+            "in": param_location,
+            "required": required,
+            "schema": param_schema,
+        }
+
+        # OpenAPI 3.1 §4.8.12.1 — array-valued query parameters default
+        # to `style: form`, `explode: true` (one `?k=v1&k=v2` per item).
+        if param_location == "query" and param_schema.get("type") == "array":
+            param_info["style"] = "form"
+            param_info["explode"] = True
+
+        if marker and marker.deprecated:
+            param_info["deprecated"] = True
+
+        parameters.append(param_info)
+
+    return parameters, request_body_schema, form_fields
+
+
+def _extract_request_body(
+    request_body_schema: dict | None,
+    form_fields: list[tuple[str, dict, bool, bool]],
+) -> dict | None:
+    """Build the OpenAPI `requestBody` object, or `None` when no body params exist.
+
+    A JSON Pydantic body takes precedence over form fields, matching the
+    monolithic implementation. When only form fields are present, the
+    media type is `multipart/form-data` if any field is a file upload
+    (OpenAPI 3.1 §4.8.10.4), otherwise `application/x-www-form-urlencoded`.
+    """
+    if request_body_schema:
+        return {
+            "required": True,
+            "content": {"application/json": {"schema": request_body_schema}},
+        }
+    if not form_fields:
+        return None
+    has_file = any(is_file for _, _, _, is_file in form_fields)
+    media_type = "multipart/form-data" if has_file else "application/x-www-form-urlencoded"
+    properties: dict[str, Any] = {}
+    required_fields: list[str] = []
+    for fname, fschema, freq, _ in form_fields:
+        properties[fname] = fschema
+        if freq:
+            required_fields.append(fname)
+    body_schema: dict[str, Any] = {"type": "object", "properties": properties}
+    if required_fields:
+        body_schema["required"] = required_fields
+    return {
+        "required": True,
+        "content": {media_type: {"schema": body_schema}},
+    }
+
+
+def _extract_responses(info: Any, schemas_registry: dict[str, dict]) -> dict[str, dict]:
+    """Build the operation `responses` map.
+
+    Seeds with the success response (re-keyed to `info.status_code` when
+    not 200), attaches `response_model` under the primary status, then
+    merges entries from `info.responses` — each carrying `model`,
+    `description`, or any free-form OpenAPI keys.
+    """
+    responses: dict[str, dict] = {
+        "200": {"description": info.response_description},
+    }
+    primary_status = str(info.status_code if info.status_code else 200)
+    if primary_status != "200":
+        # Re-key the seeded default to the route's chosen status.
+        responses[primary_status] = responses.pop("200")
+
+    if info.response_model is not None:
+        resp_schema = _response_model_to_schema(info.response_model, schemas_registry)
+        if resp_schema is not None:
+            responses[primary_status]["content"] = {"application/json": {"schema": resp_schema}}
+
+    for status_code, spec in (info.responses or {}).items():
+        key = str(status_code)
+        existing = responses.setdefault(key, {})
+        if not isinstance(spec, dict):
+            continue
+        extra_model = spec.get("model")
+        if extra_model is not None:
+            extra_schema = _response_model_to_schema(extra_model, schemas_registry)
+            if extra_schema is not None:
+                existing.setdefault("content", {})["application/json"] = {"schema": extra_schema}
+        if "description" in spec:
+            existing["description"] = spec["description"]
+        elif "description" not in existing:
+            existing["description"] = ""
+        # Allow free-form merging of any other keys (headers, links, etc.).
+        for k, v in spec.items():
+            if k in ("model", "description"):
+                continue
+            existing[k] = v
+
+    return responses
+
+
+def _walk_webhooks(app: Any, schemas_registry: dict[str, dict]) -> dict[str, Any]:
+    """Return the OpenAPI 3.1 `webhooks` map from `app.webhooks`.
+
+    Empty when no webhooks router exists or it has no routes. Each entry
+    is keyed by event name (the path on `@app.webhooks.post`) and carries
+    one operation per HTTP method registered.
+    """
+    webhook_items: dict[str, Any] = {}
+    webhooks_router = getattr(app, "webhooks", None)
+    walker = getattr(webhooks_router, "_walk_routes", None) if webhooks_router else None
+    if walker is None:
+        return webhook_items
+    for wpath, wmethods, winfo in walker():
+        event = wpath.strip("/") or wpath
+        for wmethod in wmethods:
+            op: dict[str, Any] = {
+                "summary": winfo.summary or winfo.name,
+                "operationId": f"{winfo.name}_{wmethod.lower()}",
+                "responses": {"200": {"description": winfo.response_description}},
+            }
+            if winfo.description:
+                op["description"] = winfo.description
+            body = _webhook_request_body(winfo.handler, schemas_registry)
+            if body is not None:
+                op["requestBody"] = {
+                    "required": True,
+                    "content": {"application/json": {"schema": body}},
+                }
+            webhook_items.setdefault(event, {})[wmethod.lower()] = op
+    return webhook_items
+
+
+def _build_operation(
+    info: Any,
+    method_lower: str,
+    schemas_registry: dict[str, dict],
+    security_schemes_registry: dict[str, dict],
+) -> dict[str, Any]:
+    """Assemble one OpenAPI operation object for a single route entry."""
+    # OpenAPI 3.1 §4.8.10 — operationId must be unique across the document.
+    # Explicit override wins; default = `<name>_<method>`.
+    op_id = (
+        info.operation_id if getattr(info, "operation_id", None) else f"{info.name}_{method_lower}"
+    )
+    operation: dict[str, Any] = {
+        "summary": info.summary or info.name,
+        "operationId": op_id,
+        "responses": {"200": {"description": info.response_description}},
+    }
+
+    if info.description:
+        operation["description"] = info.description
+    if info.tags:
+        operation["tags"] = info.tags
+    if info.deprecated:
+        operation["deprecated"] = True
+    # OpenAPI 3.1 §4.8.8 — route-level `callbacks` map emitted verbatim.
+    if getattr(info, "callbacks", None):
+        operation["callbacks"] = info.callbacks
+
+    parameters, request_body_schema, form_fields = _extract_parameters(info, schemas_registry)
+    if parameters:
+        operation["parameters"] = parameters
+
+    request_body = _extract_request_body(request_body_schema, form_fields)
+    if request_body is not None:
+        operation["requestBody"] = request_body
+
+    # Walk this route's Security() chain to register OpenAPI security
+    # schemes and attach the operation-level `security` requirement.
+    security_requirements = _collect_security_requirements(info, security_schemes_registry)
+    if security_requirements:
+        operation["security"] = security_requirements
+
+    operation["responses"] = _extract_responses(info, schemas_registry)
+
+    # `openapi_extra` — deep-merge the user-supplied dict over the
+    # generated operation. Nested dicts merge key-by-key; scalars and
+    # lists in `openapi_extra` overwrite.
+    extra = getattr(info, "openapi_extra", None)
+    if extra:
+        _deep_merge(operation, extra)
+
+    return operation
+
+
+def get_openapi_schema(app: Any) -> dict:
+    """Generate OpenAPI 3.1 schema from the app's registered routes."""
     schema: dict[str, Any] = {
         "openapi": "3.1.0",
-        "info": info_obj,
+        "info": _build_info_object(app),
         "paths": {},
         "components": {"schemas": {}},
     }
@@ -114,258 +428,20 @@ def get_openapi_schema(app: Any) -> dict:
     if getattr(app, "openapi_external_docs", None):
         schema["externalDocs"] = app.openapi_external_docs
 
-    routes = app._collect_all_routes()
     schemas_registry: dict[str, dict] = {}
     security_schemes_registry: dict[str, dict] = {}
 
-    for method, path, info in routes:
+    for method, path, info in app._collect_all_routes():
         method_lower = method.lower()
         if path not in schema["paths"]:
             schema["paths"][path] = {}
-
-        # Per OpenAPI 3.1 §4.8.10 operationId must be unique across the
-        # document. The explicit override wins; default = `<name>_<method>`.
-        op_id = (
-            info.operation_id
-            if getattr(info, "operation_id", None)
-            else f"{info.name}_{method_lower}"
+        schema["paths"][path][method_lower] = _build_operation(
+            info, method_lower, schemas_registry, security_schemes_registry
         )
-        operation: dict[str, Any] = {
-            "summary": info.summary or info.name,
-            "operationId": op_id,
-            "responses": {
-                "200": {
-                    "description": info.response_description,
-                },
-            },
-        }
 
-        if info.description:
-            operation["description"] = info.description
-
-        if info.tags:
-            operation["tags"] = info.tags
-
-        if info.deprecated:
-            operation["deprecated"] = True
-
-        # OpenAPI 3.1 §4.8.8 — route-level `callbacks` map emitted verbatim.
-        if getattr(info, "callbacks", None):
-            operation["callbacks"] = info.callbacks
-
-        # Extract parameters and request body from handler signature
-        handler = info.handler
-        sig, hints = _handler_intro(handler)
-
-        parameters: list[dict] = []
-        request_body_schema: dict | None = None
-
-        if sig:
-            for pname, param in sig.parameters.items():
-                if pname in ("self", "request"):
-                    continue
-
-                # Skip Depends() / Security() parameters
-                if isinstance(param.default, Depends):
-                    continue
-
-                annotation = hints.get(pname)
-
-                marker = None
-                if isinstance(param.default, ParamBase):
-                    marker = param.default
-                    # `include_in_schema=False` — resolved at
-                    # runtime but omitted from the OpenAPI document.
-                    if not getattr(marker, "include_in_schema", True):
-                        continue
-
-                # Check if it's a Pydantic model (request body)
-                if (
-                    annotation
-                    and isinstance(annotation, type)
-                    and issubclass(annotation, BaseModel)
-                ):
-                    model_schema = _pydantic_to_schema(annotation, schemas_registry)
-                    request_body_schema = model_schema
-                    continue
-
-                # Determine parameter location
-                if marker and isinstance(marker, HeaderParam):
-                    param_location = "header"
-                    param_alias = marker.alias or pname
-                elif marker and isinstance(marker, CookieParam):
-                    param_location = "cookie"
-                    param_alias = marker.alias or pname
-                elif marker and isinstance(marker, (BodyParam, FormParam, FileParam)):
-                    # Body/Form/File go into requestBody, not parameters
-                    continue
-                elif pname in info.param_names or (marker and isinstance(marker, PathParam)):
-                    param_location = "path"
-                    param_alias = pname
-                else:
-                    param_location = "query"
-                    param_alias = marker.alias if marker and marker.alias else pname
-
-                param_schema = _python_type_to_schema(annotation)
-
-                # Add constraints from marker
-                if marker:
-                    if getattr(marker, "title", None):
-                        param_schema["title"] = marker.title
-                    if marker.description:
-                        param_schema["description"] = marker.description
-                    if marker.ge is not None:
-                        param_schema["minimum"] = marker.ge
-                    if marker.le is not None:
-                        param_schema["maximum"] = marker.le
-                    # OpenAPI 3.1 / JSON Schema 2020-12: gt/lt map to the
-                    # numeric `exclusiveMinimum` / `exclusiveMaximum`.
-                    if marker.gt is not None:
-                        param_schema["exclusiveMinimum"] = marker.gt
-                    if marker.lt is not None:
-                        param_schema["exclusiveMaximum"] = marker.lt
-                    if marker.min_length is not None:
-                        param_schema["minLength"] = marker.min_length
-                    if marker.max_length is not None:
-                        param_schema["maxLength"] = marker.max_length
-                    if getattr(marker, "multiple_of", None) is not None:
-                        param_schema["multipleOf"] = marker.multiple_of
-                    if marker.regex is not None:
-                        param_schema["pattern"] = marker.regex
-                    # OpenAPI 3.1 / JSON Schema 2020-12 — `examples` is an
-                    # array of sample values on the schema object.
-                    if getattr(marker, "examples", None):
-                        param_schema["examples"] = list(marker.examples or [])
-
-                # Determine required status and default
-                if marker:
-                    required = not marker.has_default
-                    if marker.has_default and marker.default is not ...:
-                        default_val = marker.default
-                        if isinstance(default_val, (str, int, float, bool, type(None))):
-                            param_schema["default"] = default_val
-                elif param_location == "path":
-                    required = True
-                else:
-                    required = param.default is inspect.Parameter.empty
-                    if not required and param.default is not inspect.Parameter.empty:
-                        default_val = param.default
-                        if isinstance(default_val, (str, int, float, bool, type(None))):
-                            param_schema["default"] = default_val
-
-                param_info: dict[str, Any] = {
-                    "name": param_alias,
-                    "in": param_location,
-                    "required": required,
-                    "schema": param_schema,
-                }
-
-                # OpenAPI 3.1 §4.8.12.1 — array-valued query parameters
-                # default to `style: form`, `explode: true` (one
-                # `?key=v1&key=v2` pair per item).
-                if param_location == "query" and param_schema.get("type") == "array":
-                    param_info["style"] = "form"
-                    param_info["explode"] = True
-
-                if marker and marker.deprecated:
-                    param_info["deprecated"] = True
-
-                parameters.append(param_info)
-
-        if parameters:
-            operation["parameters"] = parameters
-
-        if request_body_schema:
-            operation["requestBody"] = {
-                "required": True,
-                "content": {
-                    "application/json": {
-                        "schema": request_body_schema,
-                    }
-                },
-            }
-
-        # Walk this route's Security() chain to register OpenAPI security
-        # schemes and attach the operation-level `security` requirement.
-        security_requirements = _collect_security_requirements(info, security_schemes_registry)
-        if security_requirements:
-            operation["security"] = security_requirements
-
-        # Success response uses the route's status_code (default 200).
-        primary_status = str(info.status_code if info.status_code else 200)
-        if primary_status != "200":
-            # Re-key the default entry built earlier.
-            default_resp = operation["responses"].pop("200")
-            operation["responses"][primary_status] = default_resp
-
-        # `response_model` — render its schema under the success status entry.
-        if info.response_model is not None:
-            resp_schema = _response_model_to_schema(info.response_model, schemas_registry)
-            if resp_schema is not None:
-                operation["responses"][primary_status]["content"] = {
-                    "application/json": {"schema": resp_schema}
-                }
-
-        # `responses={400: {"model": Err, "description": "Bad input"}}`.
-        # Each entry can carry `model`, `description`, or an arbitrary
-        # OpenAPI fragment which we merge into the operation's responses.
-        for status_code, spec in (info.responses or {}).items():
-            key = str(status_code)
-            existing = operation["responses"].setdefault(key, {})
-            if not isinstance(spec, dict):
-                continue
-            extra_model = spec.get("model")
-            if extra_model is not None:
-                extra_schema = _response_model_to_schema(extra_model, schemas_registry)
-                if extra_schema is not None:
-                    existing.setdefault("content", {})["application/json"] = {
-                        "schema": extra_schema
-                    }
-            if "description" in spec:
-                existing["description"] = spec["description"]
-            elif "description" not in existing:
-                existing["description"] = ""
-            # Allow free-form merging of any other keys (headers, links, etc.).
-            for k, v in spec.items():
-                if k in ("model", "description"):
-                    continue
-                existing[k] = v
-
-        # `openapi_extra` — deep-merge the user-supplied dict over
-        # the generated operation. Nested dicts merge key-by-key; scalars
-        # and lists in `openapi_extra` overwrite.
-        extra = getattr(info, "openapi_extra", None)
-        if extra:
-            _deep_merge(operation, extra)
-
-        schema["paths"][path][method_lower] = operation
-
-    # OpenAPI 3.1 §4.8.1 `webhooks` — routes registered on `app.webhooks`
-    # are documentation-only (never dispatched). Each is keyed by its
-    # event name (the path passed to `@app.webhooks.post("name")`).
-    webhooks_router = getattr(app, "webhooks", None)
-    walker = getattr(webhooks_router, "_walk_routes", None) if webhooks_router else None
-    if walker is not None:
-        webhook_items: dict[str, Any] = {}
-        for wpath, wmethods, winfo in walker():
-            event = wpath.strip("/") or wpath
-            for wmethod in wmethods:
-                op: dict[str, Any] = {
-                    "summary": winfo.summary or winfo.name,
-                    "operationId": f"{winfo.name}_{wmethod.lower()}",
-                    "responses": {"200": {"description": winfo.response_description}},
-                }
-                if winfo.description:
-                    op["description"] = winfo.description
-                body = _webhook_request_body(winfo.handler, schemas_registry)
-                if body is not None:
-                    op["requestBody"] = {
-                        "required": True,
-                        "content": {"application/json": {"schema": body}},
-                    }
-                webhook_items.setdefault(event, {})[wmethod.lower()] = op
-        if webhook_items:
-            schema["webhooks"] = webhook_items
+    webhook_items = _walk_webhooks(app, schemas_registry)
+    if webhook_items:
+        schema["webhooks"] = webhook_items
 
     if schemas_registry:
         schema["components"]["schemas"] = schemas_registry
@@ -418,6 +494,11 @@ def _python_type_to_schema(annotation: Any) -> dict:
     """
     if annotation is None or annotation is inspect.Parameter.empty:
         return {"type": "string"}
+    # `Any` means "any value allowed" — JSON Schema convention is an empty
+    # schema, not a string default. Lets `dict[str, Any]` emit
+    # `additionalProperties: {}` rather than forcing string-valued entries.
+    if annotation is Any:
+        return {}
 
     origin = get_origin(annotation)
     # Unwrap `Optional[T]` / `T | None` to the inner type so a nullable
@@ -432,6 +513,16 @@ def _python_type_to_schema(annotation: Any) -> dict:
         args = get_args(annotation)
         item = _python_type_to_schema(args[0]) if args else {}
         return {"type": "array", "items": item}
+    # Parametrised `dict[K, V]` → an object schema with typed additionalProperties.
+    # JSON object keys are strings, so the key type arg is intentionally ignored.
+    if origin is dict:
+        args = get_args(annotation)
+        if len(args) == 2:
+            return {
+                "type": "object",
+                "additionalProperties": _python_type_to_schema(args[1]),
+            }
+        return {"type": "object"}
     # `Literal["a", "b"]` → an enum schema of the literal values.
     if origin is Literal:
         return _literal_enum_schema(list(get_args(annotation)))

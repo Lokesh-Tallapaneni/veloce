@@ -121,6 +121,10 @@ class OAuth2PasswordRequestForm:
     async def from_request(cls, request: Request) -> OAuth2PasswordRequestForm:
         """Parse an OAuth2 password grant from the request form data."""
         form_data = await request.form()
+        return cls._from_form(form_data)
+
+    @classmethod
+    def _from_form(cls, form_data: Any) -> OAuth2PasswordRequestForm:
         return cls(
             username=form_data.get("username", ""),
             password=form_data.get("password", ""),
@@ -162,17 +166,11 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
 
     @classmethod
     async def from_request(cls, request: Request) -> OAuth2PasswordRequestFormStrict:
-        """Parse and validate that grant_type is exactly 'password'."""
+        """Parse and validate that grant_type is present and equals 'password'."""
         form_data = await request.form()
-        grant_type = form_data.get("grant_type", "password")
-        if grant_type != "password":
+        grant_type = form_data.get("grant_type")
+        # Strict: missing OR not exactly "password" both fail; the non-strict
+        # parent defaults a missing value to "password", which masks absence.
+        if grant_type is None or grant_type != "password":
             raise HTTPException(422, "grant_type must be 'password'")
-        base = await super().from_request(request)
-        return cls(
-            username=base.username,
-            password=base.password,
-            grant_type=base.grant_type,
-            scope=base.scope,
-            client_id=base.client_id,
-            client_secret=base.client_secret,
-        )
+        return cls._from_form(form_data)  # type: ignore[return-value]

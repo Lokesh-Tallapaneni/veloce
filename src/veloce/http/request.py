@@ -74,6 +74,8 @@ class Request:
         "_if_match",
         "_if_none_match",
         "_if_range",
+        "_range",
+        "_auth",
     )
 
     def __init__(
@@ -145,6 +147,8 @@ class Request:
         self._if_match: tuple[str, ...] | None = None
         self._if_none_match: tuple[str, ...] | None = None
         self._if_range: tuple[str, float | None] | None = None
+        self._range: Any = _UNSET
+        self._auth: Any = _UNSET
 
     @property
     def headers(self) -> Headers:
@@ -310,8 +314,12 @@ class Request:
                 max_part_size = DEFAULT_MAX_MULTIPART_PART_SIZE
                 cfg = getattr(self.app, "config", None) if self.app is not None else None
                 if cfg is not None:
-                    max_parts = cfg.get("MAX_FORM_PARTS", max_parts) or max_parts
-                    max_part_size = cfg.get("MAX_FORM_PART_SIZE", max_part_size) or max_part_size
+                    cfg_parts = cfg.get("MAX_FORM_PARTS", max_parts)
+                    if cfg_parts is not None:
+                        max_parts = cfg_parts
+                    cfg_part_size = cfg.get("MAX_FORM_PART_SIZE", max_part_size)
+                    if cfg_part_size is not None:
+                        max_part_size = cfg_part_size
                 self._form = parse_multipart_form(
                     self.body,
                     self.content_type,
@@ -667,7 +675,11 @@ class Request:
     def range(self) -> RangeSpec | None:
         """Parse `Range:` header per RFC 9110 §14.2. Returns `None` when
         absent or unparseable."""
-        return RangeSpec.parse(self.headers.get("range", ""))
+        cached = self._range
+        if cached is _UNSET:
+            cached = RangeSpec.parse(self.headers.get("range", ""))
+            self._range = cached
+        return cached
 
     @property
     def if_match(self) -> tuple[str, ...]:
@@ -779,7 +791,11 @@ class Request:
         schemes populate `.username/.password` and `.token` respectively;
         other schemes carry their key=value parameters in `.params`.
         """
-        return Authorization.from_header(self.headers.get("authorization", ""))
+        cached = self._auth
+        if cached is _UNSET:
+            cached = Authorization.from_header(self.headers.get("authorization", ""))
+            self._auth = cached
+        return cached
 
     @property
     def user_agent(self) -> str:

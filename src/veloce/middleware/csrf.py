@@ -115,7 +115,7 @@ class CSRFMiddleware(Middleware):
                 return self._forbidden("CSRF cookie signature invalid or expired")
         # Case-insensitive header lookup (Headers is CIMultiDict).
         header_val = request.headers.get(self.header_name)
-        if header_val and secrets.compare_digest(header_val, cookie_val):
+        if self._matches(header_val, cookie_val):
             return None
         # Fall back to form-field check. Only consult `request.form` when
         # the body looks form-shaped — JSON / multipart-without-form-field
@@ -126,12 +126,18 @@ class CSRFMiddleware(Middleware):
                 form = await request.form()
             except Exception:
                 form = None
-            if form is not None:
-                form_val = form.get(self.form_field)
-                if form_val and secrets.compare_digest(form_val, cookie_val):
-                    return None
+            # Multipart parts can resolve to UploadFile; only a string echoes the cookie.
+            if form is not None and self._matches(form.get(self.form_field), cookie_val):
+                return None
 
         return self._forbidden("CSRF token mismatch")
+
+    @staticmethod
+    def _matches(candidate: object, cookie_val: str) -> bool:
+        # Constant-time equality, gated on the candidate being a string so
+        # multipart UploadFile parts and missing fields don't reach
+        # `compare_digest` (which would raise on non-bytes/str).
+        return isinstance(candidate, str) and secrets.compare_digest(candidate, cookie_val)
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Set or rotate the CSRF cookie."""

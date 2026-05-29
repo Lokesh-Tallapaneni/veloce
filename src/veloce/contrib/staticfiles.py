@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Any
 
-from veloce._internal import _file_etag
+from veloce._internal import _etag_matches_weak, _file_etag
 from veloce.http.dates import http_date, parse_date
 from veloce.http.request import Request
 from veloce.http.response import Response, StreamingResponse
@@ -203,13 +203,13 @@ class StaticFiles:
                     body=b"",
                     headers={"ETag": etag, "Last-Modified": last_modified},
                 )
-            client_etags = [t.strip().strip('"') for t in if_none_match.split(",")]
-            if etag.strip('"') in client_etags:
-                return Response(
-                    status_code=304,
-                    body=b"",
-                    headers={"ETag": etag, "Last-Modified": last_modified},
-                )
+            for token in if_none_match.split(","):
+                if _etag_matches_weak(etag, token):
+                    return Response(
+                        status_code=304,
+                        body=b"",
+                        headers={"ETag": etag, "Last-Modified": last_modified},
+                    )
         else:
             ims_header = request.headers.get("if-modified-since", "")
             ims_dt = parse_date(ims_header)

@@ -10,6 +10,7 @@ from typing import Any
 from python_multipart import MultipartParser
 from python_multipart.exceptions import FormParserError
 
+from veloce._header_parsing import parse_header_params
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.datastructures import FormData, UploadFile
 
@@ -21,6 +22,16 @@ DEFAULT_MAX_MULTIPART_PARTS = 1000
 DEFAULT_MAX_MULTIPART_PART_SIZE = 10 * 1024 * 1024  # 10 MiB per part
 # Spool threshold: in memory until this size, then rolls to a temp file.
 MULTIPART_SPOOL_MAX_SIZE = 1024 * 1024  # 1 MiB
+
+
+def _parse_content_disposition(value: str) -> tuple[str, dict[str, str]]:
+    """Parse a Content-Disposition header per RFC 2183 / RFC 6266.
+
+    Quoted-string aware so a literal `;` inside `name="a;b"` does not
+    terminate the parameter. Backslash escapes `\\"` and `\\\\` inside
+    quoted strings are unescaped per RFC 5322 quoted-pair semantics.
+    """
+    return parse_header_params(value, delimiter=";", unescape=True)
 
 
 def parse_multipart_form(
@@ -113,14 +124,9 @@ def parse_multipart_form(
 
     def on_part_end() -> None:
         disposition = state["headers"].get("content-disposition", "")
-        name = ""
-        filename = None
-        for token in disposition.split(";"):
-            token = token.strip()
-            if token.startswith("name="):
-                name = token[5:].strip('"')
-            elif token.startswith("filename="):
-                filename = token[9:].strip('"')
+        _, params = _parse_content_disposition(disposition)
+        name = params.get("name", "")
+        filename = params.get("filename")
 
         spool = state["spool"]
         state["spool"] = None
