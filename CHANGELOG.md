@@ -13,6 +13,15 @@ body in memory before dispatch. Peak per-connection body memory is now the
 queue bound rather than the full upload, so many concurrent large uploads no
 longer scale memory with body size.
 
+### Added
+
+- The built-in HTTP/1.1 server now honours `Expect: 100-continue`: a request
+  carrying that header is answered with an interim `100 Continue` once its
+  headers are parsed, clearing the client to send the body. The interim is
+  suppressed for HTTP/1.0 clients and when the declared `Content-Length`
+  already exceeds `MAX_CONTENT_LENGTH` (the request is rejected with `413`
+  instead).
+
 ### Changed
 
 - **BREAKING — request body access is now asynchronous.** To stream a body the

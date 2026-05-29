@@ -1325,3 +1325,123 @@ def test_connection_count_is_thread_safe():
                 p.connection_lost(None)
         _reset_connection_counter()
         loop.close()
+
+
+def test_expect_100_continue_emits_interim_before_response():
+    """An HTTP/1.1 client sending `Expect: 100-continue` is cleared with an
+    interim `100 Continue` at headers-complete, before its body arrives, and
+    the final response follows once the body is sent (RFC 9110 section
+    10.1.1)."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        @app.post("/u")
+        async def upload(request):  # noqa: ANN001, ANN202
+            return {"len": len(await request.body())}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Headers complete with the Expect header but no body yet.
+        proto.data_received(
+            b"POST /u HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n"
+        )
+        interim = b"".join(transport.writes)
+        assert b"HTTP/1.1 100 Continue\r\n\r\n" in interim
+        # Only the interim has been written so far — no final response.
+        assert b"200" not in interim
+
+        # The client, now cleared, sends the body; the final response follows.
+        proto.data_received(b"abc")
+        _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        interim_pos = emitted.find(b"HTTP/1.1 100 Continue\r\n\r\n")
+        final_pos = emitted.find(b"200")
+        assert interim_pos != -1
+        assert final_pos != -1
+        assert interim_pos < final_pos, "interim must precede the final response"
+        assert b'"len":3' in emitted
+    finally:
+        loop.close()
+
+
+def test_no_expect_header_does_not_emit_interim():
+    """A request without `Expect: 100-continue` gets no interim response."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        @app.post("/u")
+        async def upload(request):  # noqa: ANN001, ANN202
+            return {"ok": True}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        proto.data_received(b"POST /u HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc")
+        _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        assert b"100 Continue" not in emitted
+        assert b"200" in emitted
+    finally:
+        loop.close()
+
+
+def test_expect_100_continue_not_sent_to_http_10_client():
+    """RFC 9110 section 10.1.1: a server must not send a 100 Continue to an
+    HTTP/1.0 client, even when it carries `Expect: 100-continue`."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        @app.post("/u")
+        async def upload(request):  # noqa: ANN001, ANN202
+            return {"ok": True}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        proto.data_received(
+            b"POST /u HTTP/1.0\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\nabc"
+        )
+        _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        assert b"100 Continue" not in emitted
+    finally:
+        loop.close()
+
+
+def test_expect_100_continue_over_limit_yields_413_not_interim():
+    """An over-limit declared Content-Length is refused 413 before any interim
+    is sent — we never invite a body we are about to reject."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        app.config["MAX_CONTENT_LENGTH"] = 8
+
+        @app.post("/u")
+        async def upload(request):  # noqa: ANN001, ANN202
+            return {"ok": True}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        proto.data_received(
+            b"POST /u HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 9999\r\n\r\n"
+        )
+
+        emitted = b"".join(transport.writes)
+        assert b"413" in emitted
+        assert b"100 Continue" not in emitted
+        assert transport.closed is True
+        assert not proto._request_queue
+    finally:
+        loop.close()

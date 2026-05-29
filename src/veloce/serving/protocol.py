@@ -157,6 +157,14 @@ class HttpProtocol(asyncio.Protocol):
                 self._reject_413()
                 return
 
+        # Clear an `Expect: 100-continue` client to send its body. The early
+        # 413 above already rejected an over-limit declared Content-Length, so
+        # we never invite a body we are about to refuse. RFC 9110 section
+        # 10.1.1 forbids the interim to an HTTP/1.0 client, so it is gated on
+        # the request being HTTP/1.1.
+        if self._wants_continue():
+            self.transport.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+
         keep_alive = self.parser.should_keep_alive()
         # The slowloris guard stays armed: the body may still be arriving, and
         # a stalled body must still time out. It is stood down only at
@@ -344,6 +352,26 @@ class HttpProtocol(asyncio.Protocol):
                 except (ValueError, TypeError):
                     return None
         return None
+
+    def _wants_continue(self) -> bool:
+        """Return whether the just-parsed request asks for a 100 Continue.
+
+        True only for an HTTP/1.1 request carrying `Expect: 100-continue`. RFC
+        9110 section 10.1.1 forbids sending the interim response to an HTTP/1.0
+        client, so the version is checked first. The `Expect` value is a
+        case-insensitive token; headers were already lowercased in `on_header`.
+        Older httptools builds may not expose `get_http_version`; treat its
+        absence as "do not send".
+        """
+        try:
+            if self.parser.get_http_version() != "1.1":
+                return False
+        except (AttributeError, RuntimeError):
+            return False
+        for name, value in self.headers:
+            if name == b"expect" and value.strip().lower() == b"100-continue":
+                return True
+        return False
 
     def _reject_413(self) -> None:
         """Emit a 413 and close — the body exceeds MAX_CONTENT_LENGTH.
