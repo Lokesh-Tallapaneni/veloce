@@ -99,17 +99,30 @@ _iscoro_cache: weakref.WeakKeyDictionary[Callable[..., Any], bool] = weakref.Wea
 
 
 def _is_async_callable(fn: Callable[..., Any]) -> bool:
-    """Memoised `inspect.iscoroutinefunction` for hot-path hook dispatch."""
+    """Memoised `inspect.iscoroutinefunction` for hot-path hook dispatch.
+
+    Also detects class instances whose `__call__` is `async def` —
+    plain `iscoroutinefunction(instance)` returns False for those.
+    """
     try:
         cached = _iscoro_cache.get(fn)
     except TypeError:
-        return inspect.iscoroutinefunction(fn)
+        return _check_async(fn)
     if cached is not None:
         return cached
-    result = inspect.iscoroutinefunction(fn)
+    result = _check_async(fn)
     with contextlib.suppress(TypeError):
         _iscoro_cache[fn] = result
     return result
+
+
+def _check_async(fn: Callable[..., Any]) -> bool:
+    if inspect.iscoroutinefunction(fn):
+        return True
+    # Inspect the bound `__call__` directly — `callable()` would tell us
+    # whether `fn` is callable, not whether its `__call__` is `async def`.
+    call = getattr(fn, "__call__", None)  # noqa: B004
+    return call is not None and inspect.iscoroutinefunction(call)
 
 
 def _extract_host(raw: str) -> str:

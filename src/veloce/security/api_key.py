@@ -41,16 +41,19 @@ class _APIKeyBase:
 class APIKeyHeader(_APIKeyBase):
     """API Key authentication via HTTP header."""
 
+    __slots__ = ()
     _source_attr = "headers"
 
 
 class APIKeyQuery(_APIKeyBase):
     """API Key authentication via query parameter."""
 
+    __slots__ = ()
     _source_attr = "query_params"
 
 
 class APIKeyCookie(_APIKeyBase):
     """API Key authentication via cookie."""
 
+    __slots__ = ()
     _source_attr = "cookies"

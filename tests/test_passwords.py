@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import hash_password, is_strong_password, verify_password
+from veloce._internal import _b64encode
 
 # ── Round-trip ────────────────────────────────────────────────────────
 
@@ -135,3 +136,56 @@ def test_is_strong_password_baseline():
 def test_is_strong_password_custom_min_length():
     assert is_strong_password("a1", min_length=2)
     assert not is_strong_password("a", min_length=2)
+
+
+# ── Verify-time DoS protection: scrypt upper caps ─────────────────────
+
+
+def _fake_scrypt_hash(n: int, r: int, p: int) -> str:
+    """Build a syntactically valid scrypt hash string without running scrypt.
+
+    Salt and hash bytes are arbitrary fixed bytes of the canonical lengths
+    (16-byte salt, 64-byte derived key). The point is that verify_password
+    must reject the tampered cost parameters BEFORE invoking scrypt.
+    """
+    salt = _b64encode(b"\x00" * 16)
+    derived = _b64encode(b"\x00" * 64)
+    return f"scrypt${n}:{r}:{p}${salt}${derived}"
+
+
+def test_verify_rejects_excessive_scrypt_n():
+    """A tampered N=2**30 would request ~2 TiB maxmem — refuse fast."""
+    stored = _fake_scrypt_hash(n=2**30, r=8, p=1)
+    assert verify_password(stored, "anything") is False
+
+
+def test_verify_rejects_excessive_scrypt_r():
+    stored = _fake_scrypt_hash(n=2**15, r=10000, p=1)
+    assert verify_password(stored, "anything") is False
+
+
+def test_verify_rejects_excessive_scrypt_p():
+    stored = _fake_scrypt_hash(n=2**15, r=8, p=10000)
+    assert verify_password(stored, "anything") is False
+
+
+def test_verify_default_params_still_succeeds():
+    """Sanity: hashes produced by hash_password's defaults still verify."""
+    stored = hash_password("hunter2")
+    assert verify_password(stored, "hunter2") is True
+
+
+# ── Verify-time DoS protection: PBKDF2 upper cap ──────────────────────
+
+
+def test_verify_rejects_excessive_pbkdf2_iterations():
+    """A tampered iterations=10**12 would pin a verify thread for hours."""
+    salt = _b64encode(b"\x00" * 16)
+    derived = _b64encode(b"\x00" * 32)
+    stored = f"pbkdf2:sha256$1000000000000${salt}${derived}"
+    assert verify_password(stored, "anything") is False
+
+
+def test_verify_pbkdf2_default_iterations_still_succeeds():
+    stored = hash_password("hunter2", method="pbkdf2:sha256")
+    assert verify_password(stored, "hunter2") is True

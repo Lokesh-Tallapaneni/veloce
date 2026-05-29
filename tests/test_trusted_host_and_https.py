@@ -86,6 +86,14 @@ def test_match_is_case_insensitive():
     assert resp.status_code == 200
 
 
+def test_wildcard_suffixes_dotted_precomputed_with_leading_dot():
+    """The wildcard suffix tuple bakes in the leading dot at construction so
+    the per-request check is one `endswith` call, not a fresh string concat."""
+    mw = TrustedHostMiddleware(allowed_hosts=["*.example.com", "exact.com", "*.OTHER.com"])
+    assert mw._wildcard_suffixes_dotted == (".example.com", ".other.com")
+    assert not hasattr(mw, "_wildcard_suffixes")
+
+
 # ── M7: HTTPSRedirectMiddleware uses scope.scheme + 308 ────────────────
 
 
