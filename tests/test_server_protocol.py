@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from veloce import Veloce
@@ -216,6 +217,24 @@ def _drain_loop(loop: asyncio.AbstractEventLoop, proto: HttpProtocol) -> None:
     task = proto._server_loop
     if task is not None:
         loop.run_until_complete(task)
+
+
+def _run_until(
+    loop: asyncio.AbstractEventLoop,
+    predicate: Callable[[], bool],
+    *,
+    max_turns: int = 100,
+) -> None:
+    """Drive the loop one scheduling turn at a time until `predicate` holds.
+
+    Lets a parked continuation make progress without depending on the exact
+    number of turns a given Python version needs — the loop advances until the
+    observable condition is reached (or `max_turns` is exhausted, which fails
+    the caller's subsequent assertion rather than hanging)."""
+    for _ in range(max_turns):
+        if predicate():
+            return
+        loop.run_until_complete(asyncio.sleep(0))
 
 
 def test_pipelined_responses_preserve_request_order():
@@ -928,8 +947,15 @@ def test_drain_resumes_then_second_burst_repauses_still_reaches_eof():
         app = Veloce(openapi_url=None)
         high = DEFAULT_HIGH_WATER_CHUNKS
 
+        # Gate the body-ignoring handler so it is provably still in-flight (not
+        # yet returned/drained) at the moment we assert the pause. This removes
+        # the dependence on how many sleep(0) turns a given Python version needs
+        # to schedule the handler to completion.
+        gate = asyncio.Event()
+
         @app.post("/ignore")
         async def ignore(request):  # noqa: ANN001, ANN202
+            await gate.wait()
             return {"r": "A"}
 
         @app.get("/next")
@@ -947,16 +973,19 @@ def test_drain_resumes_then_second_burst_repauses_still_reaches_eof():
         source = proto._current_source
         assert source is not None
 
-        # First burst across reads trips the high-water mark and pauses.
+        # First burst across reads trips the high-water mark and pauses. The
+        # handler is parked on the gate, so it cannot have returned and drained:
+        # the pause we observe is the producer-side high-water pause, full stop.
         for _ in range(high):
             proto.data_received(b"1\r\nz\r\n")
         assert transport.reading_paused is True
         pause_calls_after_first = transport.pause_reading_calls
 
-        # Handler returned; the server loop parks in drain(), which resumes the
-        # paused socket so more body can flow.
-        loop.run_until_complete(asyncio.sleep(0))
-        loop.run_until_complete(asyncio.sleep(0))
+        # Release the gate: the handler returns and the server loop parks in
+        # drain(), which resumes the paused socket so more body can flow. Drive
+        # until the resume is observable rather than counting scheduling turns.
+        gate.set()
+        _run_until(loop, lambda: not transport.reading_paused)
         assert transport.reading_paused is False, "drain did not resume the paused socket"
         resume_calls_after_first = transport.resume_reading_calls
         assert resume_calls_after_first >= 1
@@ -1002,8 +1031,15 @@ def test_paused_connection_with_body_ignoring_handler_resumes_and_drains():
         app = Veloce(openapi_url=None)
         high = DEFAULT_HIGH_WATER_CHUNKS
 
+        # Gate the body-ignoring handler so it is provably parked (not yet
+        # returned/drained) when we assert the high-water pause. Otherwise a
+        # faster-scheduling Python (3.12/3.13) lets the handler return and drain
+        # — resuming reading — before the assertion runs.
+        gate = asyncio.Event()
+
         @app.post("/ignore")
         async def ignore(request):  # noqa: ANN001, ANN202
+            await gate.wait()
             return {"r": "A"}
 
         @app.get("/next")
@@ -1025,16 +1061,19 @@ def test_paused_connection_with_body_ignoring_handler_resumes_and_drains():
         source = proto._current_source
         assert source is not None
 
-        # Feed enough one-byte chunk frames to trip the high-water mark.
+        # Feed enough one-byte chunk frames to trip the high-water mark. The
+        # handler is parked on the gate, so it cannot have drained — this is the
+        # producer-side high-water pause.
         for _ in range(high):
             proto.data_received(b"1\r\nz\r\n")
         assert transport.reading_paused is True, "expected reading paused at the bound"
 
-        # The handler has already returned; the server loop is parked in
-        # source.drain() awaiting EOF. drain must have resumed reading so more
-        # body can flow — otherwise a real socket would never deliver EOF.
-        loop.run_until_complete(asyncio.sleep(0))
-        loop.run_until_complete(asyncio.sleep(0))
+        # Release the gate: the handler returns and the server loop parks in
+        # source.drain() awaiting EOF. drain must resume reading so more body can
+        # flow — otherwise a real socket would never deliver EOF. Drive until the
+        # resume is observable rather than counting scheduling turns.
+        gate.set()
+        _run_until(loop, lambda: not transport.reading_paused)
         assert transport.reading_paused is False, "drain did not resume a paused connection"
 
         # The terminating chunk + the pipelined follow-up arrive; drain
@@ -1064,8 +1103,15 @@ def test_connection_lost_while_paused_unblocks_drain():
         app = Veloce(openapi_url=None)
         high = DEFAULT_HIGH_WATER_CHUNKS
 
+        # Park the handler on a gate it never gets to pass: the connection stays
+        # genuinely paused at the high-water mark (the handler has not returned
+        # to drain and resume), so the assertion below holds on every Python
+        # version rather than racing the handler to completion.
+        gate = asyncio.Event()
+
         @app.post("/ignore")
         async def ignore(request):  # noqa: ANN001, ANN202
+            await gate.wait()
             return {"r": "A"}
 
         proto = HttpProtocol(app, loop)
@@ -1082,11 +1128,11 @@ def test_connection_lost_while_paused_unblocks_drain():
             proto.on_body(b"z")
         assert transport.reading_paused is True
 
-        loop.run_until_complete(asyncio.sleep(0))
         server_loop = proto._server_loop
         assert server_loop is not None
 
-        # Client vanishes while the connection is paused mid-drain.
+        # Client vanishes while the connection is paused and the handler is
+        # still in-flight — no more bytes will ever arrive to resume it.
         proto.connection_lost(None)
         with contextlib.suppress(asyncio.CancelledError):
             loop.run_until_complete(server_loop)
