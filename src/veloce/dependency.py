@@ -692,7 +692,7 @@ class DependencyResolver:
         elif mk == 3:  # MK_COOKIE
             raw = request.cookies.get(lookup)
         elif mk == 4:  # MK_BODY
-            body = await request.json() if request.body else None
+            body = await request.json()
             # `Body(embed=True)` — the value lives under the param name
             # inside the JSON object, rather than being the whole body.
             if getattr(marker, "embed", False) and isinstance(body, dict):
