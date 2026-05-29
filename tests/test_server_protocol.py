@@ -7,6 +7,7 @@ import contextlib
 from concurrent.futures import ThreadPoolExecutor
 
 from veloce import Veloce
+from veloce.http._body import DEFAULT_HIGH_WATER_CHUNKS
 from veloce.serving.protocol import (
     MAX_HEADER_SIZE,
     MAX_TOTAL_HEADERS_SIZE,
@@ -22,6 +23,11 @@ class _FakeTransport(asyncio.Transport):
         super().__init__()
         self.writes: list[bytes] = []
         self.closed = False
+        # Flow-control state + call tallies so backpressure tests can assert
+        # pause_reading / resume_reading actually fired.
+        self.reading_paused = False
+        self.pause_reading_calls = 0
+        self.resume_reading_calls = 0
 
     def write(self, data: bytes) -> None:
         self.writes.append(data)
@@ -31,6 +37,14 @@ class _FakeTransport(asyncio.Transport):
 
     def is_closing(self) -> bool:
         return self.closed
+
+    def pause_reading(self) -> None:
+        self.reading_paused = True
+        self.pause_reading_calls += 1
+
+    def resume_reading(self) -> None:
+        self.reading_paused = False
+        self.resume_reading_calls += 1
 
 
 def test_request_timer_arms_on_first_data():
@@ -775,6 +789,308 @@ def test_slowloris_timer_arms_across_body_window():
         if server_loop is not None:
             with contextlib.suppress(asyncio.CancelledError):
                 loop.run_until_complete(server_loop)
+    finally:
+        loop.close()
+
+
+def test_slow_consumer_triggers_pause_then_resume_across_reads():
+    """A producer feeding more chunks than the buffer bound across successive
+    socket reads, ahead of a slow consumer, must trigger transport.pause_reading
+    once the high-water mark is reached, and transport.resume_reading once the
+    consumer drains back below the low-water mark. This models the cross-read
+    bound: a paused socket stops delivering *future* reads."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        high = DEFAULT_HIGH_WATER_CHUNKS
+
+        release = asyncio.Event()
+
+        @app.post("/stream")
+        async def stream(request):  # noqa: ANN001, ANN202
+            # Hold off consuming until the producer has fed past the bound, so
+            # the buffer fills and pause_reading is forced to fire.
+            await release.wait()
+            n = 0
+            async for _chunk in request.stream():
+                n += 1
+            return {"n": n}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Dispatch at headers-complete; the handler parks on `release`.
+        proto.data_received(
+            b"POST /stream HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+        )
+        loop.run_until_complete(asyncio.sleep(0))
+        source = proto._current_source
+        assert source is not None
+
+        # One chunk per read (modelling separate socket reads): a real paused
+        # socket stops delivering, so we stop feeding the instant pause engages.
+        for _ in range(high * 4):
+            proto.on_body(b"z")
+            if transport.reading_paused:
+                break
+
+        assert transport.pause_reading_calls >= 1, "pause_reading never fired"
+        # Modelling a real socket (which stops delivering once paused) we ceased
+        # feeding the instant pause engaged, so the buffer settled at the bound.
+        # This asserts the *cross-read* behaviour: future reads stop piling up
+        # once paused. It does NOT claim a single read is capped — that case is
+        # exercised by test_single_segment_burst_exceeds_chunk_bound below.
+        assert len(source._chunks) <= high
+
+        # Let the consumer drain. It pops chunks, crosses the low-water mark,
+        # and resume_reading fires.
+        release.set()
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.run_until_complete(asyncio.sleep(0))
+        assert transport.resume_reading_calls >= 1, "resume_reading never fired after drain"
+        assert transport.reading_paused is False
+
+        # Finish the request so the loop terminates cleanly.
+        proto.on_message_complete()
+        _drain_loop(loop, proto)
+        emitted = b"".join(transport.writes)
+        assert b"200" in emitted
+    finally:
+        loop.close()
+
+
+def test_single_segment_burst_exceeds_chunk_bound_but_byte_cap_holds():
+    """Pausing does not cap a single read: many chunked frames arriving in one
+    data_received (one TCP segment) are all fed in one parser pass before the
+    handler runs, so the buffered chunk count can exceed the high-water mark.
+    The honest memory bound on a single segment is MAX_CONTENT_LENGTH — once the
+    running byte total passes it the source latches overflow and stops buffering,
+    which is what actually protects RAM."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        high = DEFAULT_HIGH_WATER_CHUNKS
+        # Byte cap below the burst's total so overflow latches mid-segment.
+        app.config["MAX_CONTENT_LENGTH"] = high  # high one-byte chunks fit; the rest overflow
+
+        release = asyncio.Event()
+
+        @app.post("/stream")
+        async def stream(request):  # noqa: ANN001, ANN202
+            await release.wait()
+            async for _chunk in request.stream():
+                pass
+            return {"ok": True}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        proto.data_received(
+            b"POST /stream HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+        )
+        loop.run_until_complete(asyncio.sleep(0))
+        source = proto._current_source
+        assert source is not None
+
+        # Many frames in ONE socket read. pause_reading only stops FUTURE reads,
+        # so every frame in this segment is fed in a single synchronous pass: the
+        # chunk count is free to overshoot the high-water bound (which is exactly
+        # why the chunk count is NOT the memory guarantee). The byte cap is the
+        # real backstop — once the running total passes MAX_CONTENT_LENGTH the
+        # source latches overflow and drops further chunks instead of buffering.
+        for _ in range(high * 4):
+            proto.on_body(b"z")
+
+        # Without the byte cap this single burst would have buffered high*4 chunks
+        # (4x the bound). With it, buffering stopped at the cap: the high allowed
+        # bytes are queued, everything past the cap is dropped, not buffered.
+        assert source._overflow is True, "byte cap should have latched mid-burst"
+        assert len(source._chunks) <= high, "byte cap must bound the buffer within one read"
+
+        release.set()
+        _drain_loop(loop, proto)
+        emitted = b"".join(transport.writes)
+        assert b"413" in emitted
+    finally:
+        loop.close()
+
+
+def test_drain_resumes_then_second_burst_repauses_still_reaches_eof():
+    """Regression for the drain deadlock: a body-ignoring handler returns while
+    the connection is paused; drain() resumes once. If a SECOND >high_water
+    burst then arrives on a later socket read (which under the old one-time
+    resume would re-pause and never resume again), drain must still reach EOF
+    and the next pipelined request must be served — no hang."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        high = DEFAULT_HIGH_WATER_CHUNKS
+
+        @app.post("/ignore")
+        async def ignore(request):  # noqa: ANN001, ANN202
+            return {"r": "A"}
+
+        @app.get("/next")
+        async def nxt(request):  # noqa: ANN001, ANN202
+            return {"r": "B"}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        proto.data_received(
+            b"POST /ignore HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+        )
+        loop.run_until_complete(asyncio.sleep(0))
+        source = proto._current_source
+        assert source is not None
+
+        # First burst across reads trips the high-water mark and pauses.
+        for _ in range(high):
+            proto.data_received(b"1\r\nz\r\n")
+        assert transport.reading_paused is True
+        pause_calls_after_first = transport.pause_reading_calls
+
+        # Handler returned; the server loop parks in drain(), which resumes the
+        # paused socket so more body can flow.
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.run_until_complete(asyncio.sleep(0))
+        assert transport.reading_paused is False, "drain did not resume the paused socket"
+        resume_calls_after_first = transport.resume_reading_calls
+        assert resume_calls_after_first >= 1
+
+        # SECOND burst on a later read. Under the old one-time-resume drain this
+        # would re-pause (pause_reading_calls bumps, reading_paused True) and
+        # never resume again — wedging the connection. With _draining latched,
+        # feed() must NOT re-pause: the socket stays unpaused through the drain.
+        for _ in range(high * 2):
+            proto.data_received(b"1\r\nz\r\n")
+        loop.run_until_complete(asyncio.sleep(0))
+        assert transport.pause_reading_calls == pause_calls_after_first, (
+            "feed() re-paused mid-drain — the connection will never resume and EOF never arrives"
+        )
+        assert transport.reading_paused is False, "connection re-paused during drain (deadlock)"
+        # The byte buffer stays bounded during drain: feed() discards while draining.
+        assert len(source._chunks) == 0
+
+        # Terminating chunk + pipelined follow-up. drain reaches EOF, B is served.
+        proto.data_received(b"0\r\n\r\nGET /next HTTP/1.1\r\nHost: x\r\n\r\n")
+        _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        a_pos = emitted.find(b'"r":"A"')
+        b_pos = emitted.find(b'"r":"B"')
+        assert a_pos != -1, "first response missing"
+        assert b_pos != -1, "follow-up wedged by a paused, never-resumed connection"
+        assert a_pos < b_pos, "FIFO ordering violated"
+        assert b"400" not in emitted
+        assert b"500" not in emitted
+        assert transport.closed is False
+    finally:
+        loop.close()
+
+
+def test_paused_connection_with_body_ignoring_handler_resumes_and_drains():
+    """Backpressure must not deadlock a handler that ignores its body. After
+    the buffer fills and reading pauses, a returning handler reaches
+    source.drain(); drain must resume reading so the remaining body can arrive,
+    reach EOF, and the next pipelined request is served FIFO."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        high = DEFAULT_HIGH_WATER_CHUNKS
+
+        @app.post("/ignore")
+        async def ignore(request):  # noqa: ANN001, ANN202
+            return {"r": "A"}
+
+        @app.get("/next")
+        async def nxt(request):  # noqa: ANN001, ANN202
+            return {"r": "B"}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Chunked body so each frame surfaces as a separate on_body chunk;
+        # feeding more frames than the bound (while the handler ignores the
+        # body) forces a pause. Bytes go through the real parser so it stays in
+        # sync for the pipelined follow-up.
+        proto.data_received(
+            b"POST /ignore HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+        )
+        loop.run_until_complete(asyncio.sleep(0))
+        source = proto._current_source
+        assert source is not None
+
+        # Feed enough one-byte chunk frames to trip the high-water mark.
+        for _ in range(high):
+            proto.data_received(b"1\r\nz\r\n")
+        assert transport.reading_paused is True, "expected reading paused at the bound"
+
+        # The handler has already returned; the server loop is parked in
+        # source.drain() awaiting EOF. drain must have resumed reading so more
+        # body can flow — otherwise a real socket would never deliver EOF.
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.run_until_complete(asyncio.sleep(0))
+        assert transport.reading_paused is False, "drain did not resume a paused connection"
+
+        # The terminating chunk + the pipelined follow-up arrive; drain
+        # discards the body, EOF unblocks it, and B is served FIFO.
+        proto.data_received(b"0\r\n\r\nGET /next HTTP/1.1\r\nHost: x\r\n\r\n")
+        _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        a_pos = emitted.find(b'"r":"A"')
+        b_pos = emitted.find(b'"r":"B"')
+        assert a_pos != -1, "first response missing"
+        assert b_pos != -1, "follow-up wedged by a paused, never-resumed connection"
+        assert a_pos < b_pos, "FIFO ordering violated"
+        assert b"400" not in emitted
+        assert b"500" not in emitted
+        assert transport.closed is False
+    finally:
+        loop.close()
+
+
+def test_connection_lost_while_paused_unblocks_drain():
+    """A paused connection torn down mid-drain must still unblock: connection_lost
+    feeds EOF, the parked drain wakes, and the server loop ends rather than
+    hanging behind a pause that will never be resumed by more bytes."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        high = DEFAULT_HIGH_WATER_CHUNKS
+
+        @app.post("/ignore")
+        async def ignore(request):  # noqa: ANN001, ANN202
+            return {"r": "A"}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        proto.data_received(
+            b"POST /ignore HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+        )
+        loop.run_until_complete(asyncio.sleep(0))
+        source = proto._current_source
+        assert source is not None
+        for _ in range(high):
+            proto.on_body(b"z")
+        assert transport.reading_paused is True
+
+        loop.run_until_complete(asyncio.sleep(0))
+        server_loop = proto._server_loop
+        assert server_loop is not None
+
+        # Client vanishes while the connection is paused mid-drain.
+        proto.connection_lost(None)
+        with contextlib.suppress(asyncio.CancelledError):
+            loop.run_until_complete(server_loop)
+        assert server_loop.done()
     finally:
         loop.close()
 
