@@ -7,6 +7,7 @@ import textwrap
 
 import pytest
 
+from veloce import __version__
 from veloce.cli import _load_app, build_parser, main
 
 
@@ -25,6 +26,16 @@ def test_parser_has_run_and_routes():
     args = parser.parse_args(["routes", "demo:app"])
     assert args.command == "routes"
     assert args.app == "demo:app"
+
+
+def test_version_flag_prints_and_exits(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--version"])
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    output = (captured.out + captured.err).strip()
+    assert output == f"veloce {__version__}"
 
 
 def test_run_accepts_overrides():

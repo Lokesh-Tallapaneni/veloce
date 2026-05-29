@@ -82,8 +82,12 @@ class ParamBase:
         self.lt = lt
         self.min_length = min_length
         self.max_length = max_length
-        # JSON Schema `multipleOf` — the value must be an exact multiple
-        # of this number.
+        # JSON Schema draft 2020-12 §6.2.1 and OpenAPI 3.1 require
+        # `multipleOf` to be strictly greater than zero. Reject non-positive
+        # values at declaration time so the error surfaces at app startup
+        # rather than producing a non-conformant OpenAPI document.
+        if multiple_of is not None and multiple_of <= 0:
+            raise ValueError("multiple_of must be positive")
         self.multiple_of = multiple_of
         # the renamed `regex` → `pattern`; accept either,
         # `pattern` wins when both are supplied.
@@ -126,8 +130,6 @@ class ParamBase:
             if self.lt is not None and value >= self.lt:
                 raise ValueError(f"{name} must be < {self.lt}")
             if self.multiple_of is not None:
-                if self.multiple_of == 0:
-                    raise ValueError(f"{name}: multiple_of must not be zero")
                 quotient = float(value) / float(self.multiple_of)
                 if abs(quotient - round(quotient)) > 1e-9:
                     raise ValueError(f"{name} must be a multiple of {self.multiple_of}")

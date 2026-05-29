@@ -98,6 +98,6 @@ async def test_range_start_past_eof_returns_416(static):
 async def test_partial_response_keeps_etag_and_last_modified(static):
     sf, _ = static
     resp = await sf.handle(_req("/static/blob.bin", {"range": "bytes=0-9"}))
-    assert resp.headers["ETag"].startswith('"')
+    assert resp.headers["ETag"].startswith('W/"')
     assert "Last-Modified" in resp.headers
     assert resp.headers["Accept-Ranges"] == "bytes"

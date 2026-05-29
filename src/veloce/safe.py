@@ -126,10 +126,22 @@ def safe_join(directory: str, *paths: str) -> str | None:
 
     joined = os.path.abspath(os.path.join(base, *paths))
 
-    # `joined` must be exactly `base`, or under it. Adding the separator
-    # avoids `base="/srv/a"` accepting `joined="/srv/abc"` as a child.
-    if joined == base:
+    # Compare via `normcase` so Windows drive-letter casing and separator
+    # variants don't cause a same-directory descendant to be rejected.
+    # On POSIX `normcase` is the identity, so this is a no-op there.
+    base_cmp = os.path.normcase(base)
+    joined_cmp = os.path.normcase(joined)
+
+    # When `base` is the filesystem root ("/" on POSIX, "C:\\" on Windows)
+    # it already ends with `os.sep`; appending another would produce "//"
+    # / "C:\\\\" and never match a legitimate descendant.
+    prefix = base_cmp if base_cmp.endswith(os.sep) else base_cmp + os.sep
+
+    # `joined` must be exactly `base`, or under it. Using `prefix` instead
+    # of a bare string concat avoids `base="/srv/a"` accepting
+    # `joined="/srv/abc"` as a child.
+    if joined_cmp == base_cmp:
         return joined
-    if joined.startswith(base + os.sep):
+    if joined_cmp.startswith(prefix):
         return joined
     return None

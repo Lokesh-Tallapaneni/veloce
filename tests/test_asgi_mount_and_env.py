@@ -177,6 +177,29 @@ def test_from_env_file_keeps_a_bare_hash_without_leading_space(tmp_path):
     assert app.config["COLOR"] == "#ff0000"
 
 
+def test_from_env_file_warns_on_unmatched_quote(tmp_path, caplog):
+    """An unmatched opening quote is salvaged but emits a warning that
+    names the file, the 1-indexed line number, the key, and the quote
+    character so a typo does not silently truncate to a bad value."""
+    env = tmp_path / ".env"
+    env.write_text('FIRST=ok\nDB_URL="postgres://user@host/db\n')
+    app = Veloce(openapi_url=None)
+
+    with caplog.at_level("WARNING", logger="veloce.config"):
+        app.config.from_env_file(str(env))
+
+    assert app.config["FIRST"] == "ok"
+    assert app.config["DB_URL"] == "postgres://user@host/db"
+
+    matching = [r for r in caplog.records if r.name == "veloce.config"]
+    assert len(matching) == 1
+    msg = matching[0].getMessage()
+    assert "line 2" in msg
+    assert "'DB_URL'" in msg
+    assert str(env) in msg
+    assert '"' in msg
+
+
 # ── mount edge cases ──────────────────────────────────────────────────
 
 

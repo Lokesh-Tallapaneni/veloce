@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
+import uuid
 from collections import deque
 
 from veloce import status
@@ -11,6 +13,10 @@ from veloce._internal import _extract_host
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response
 from veloce.middleware.base import Middleware
+
+# Stash key used to thread bucket state from process_request → process_response
+# so the response path can emit X-RateLimit-* without recomputing.
+_RL_STATE_KEY = "rate_limit_state"
 
 
 class TrustedHostMiddleware(Middleware):
@@ -89,9 +95,58 @@ class RateLimitMiddleware(Middleware):
         # the sweep block would otherwise open a check-then-act race.
         self._sweep_lock: asyncio.Lock | None = None
 
+    def _bucket_key(self, request: Request) -> str:
+        """Pick a bucket key for `request`.
+
+        Falls back through several signals when the transport peer is
+        unknown so anonymous traffic does NOT share one global bucket
+        (otherwise a single anonymous source could exhaust the limit for
+        every other anonymous caller — a trivial DoS).
+        """
+        client = request.client_host
+        if client:
+            return f"host:{client}"
+        # Right-most X-Forwarded-For hop — the closest proxy is the only
+        # trustworthy entry in the chain; left-most entries are
+        # attacker-controlled (see development-guardrails.md, Security
+        # Parameter Validation).
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            last = xff.split(",")[-1].strip()
+            if last:
+                return f"xff:{last}"
+        # User-Agent hash — coarse, but partitions anonymous callers by
+        # client software when no IP is available.
+        ua = request.headers.get("user-agent", "")
+        if ua:
+            return "ua:" + hashlib.sha256(ua.encode("utf-8", "replace")).hexdigest()[:16]
+        # Last resort: per-request UUID stashed on _state so a scope-id
+        # reuse after GC can't leak a stale deque into a new request.
+        # Effectively disables limiting for fully anonymous traffic —
+        # the correct failure mode (fail-open per caller, not fail-shared
+        # across all callers).
+        anon_id = request._state.get("_rl_anon_id")
+        if anon_id is None:
+            anon_id = uuid.uuid4().hex
+            request._state["_rl_anon_id"] = anon_id
+        return f"scope:{anon_id}"
+
+    def _reset_after(self, bucket: deque[float], now: float) -> int:
+        """Seconds until the oldest stamp in `bucket` falls out of the window."""
+        if not bucket:
+            return 0
+        remaining = int(bucket[0] + self.window_seconds - now)
+        return remaining if remaining > 0 else 0
+
+    def _apply_headers(self, response: Response, limit: int, remaining: int, reset: int) -> None:
+        """Attach X-RateLimit-* headers to `response` (draft-ietf-httpapi-ratelimit-headers)."""
+        response.headers["X-RateLimit-Limit"] = str(limit)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        response.headers["X-RateLimit-Reset"] = str(reset)
+
     async def process_request(self, request: Request) -> Response | None:
         """Enforce per-client request rate limits."""
-        client = request.client_host or "unknown"
+        client = self._bucket_key(request)
         now = time.monotonic()
         cutoff = now - self.window_seconds
 
@@ -122,14 +177,32 @@ class RateLimitMiddleware(Middleware):
             bucket.popleft()
 
         if len(bucket) >= self.max_requests:
-            return Response(
+            reset = self._reset_after(bucket, now)
+            rejected = Response(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 body=b"Too Many Requests",
-                headers={"Retry-After": str(self.window_seconds)},
+                headers={"Retry-After": str(reset or self.window_seconds)},
             )
+            self._apply_headers(rejected, self.max_requests, 0, reset)
+            return rejected
 
         bucket.append(now)
+        # Stash the bucket so process_response can read the freshest state
+        # without re-resolving the client key or racing with another request.
+        request._state[_RL_STATE_KEY] = bucket
         return None
+
+    async def process_response(self, request: Request, response: Response) -> Response:
+        """Attach X-RateLimit-* headers to successful responses."""
+        bucket = request._state.get(_RL_STATE_KEY)
+        if bucket is None:
+            return response
+        remaining = self.max_requests - len(bucket)
+        if remaining < 0:
+            remaining = 0
+        reset = self._reset_after(bucket, time.monotonic())
+        self._apply_headers(response, self.max_requests, remaining, reset)
+        return response
 
 
 class HTTPSRedirectMiddleware(Middleware):

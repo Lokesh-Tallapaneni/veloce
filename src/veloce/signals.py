@@ -26,14 +26,24 @@ signal plumbing.
 
 from __future__ import annotations
 
+import inspect
+import logging
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
+
+_logger = logging.getLogger("veloce.signals")
 
 # Sentinel for "connect to all senders" — the public API exports it so
 # callers can write `signal.connect(fn, sender=ANY_SENDER)` explicitly.
 # Identity comparison only; never construct another instance.
 ANY_SENDER: Any = object()
+
+# Shared return shape for `send`, `send_robust`, and `send_robust_async`.
+# Each entry is `(receiver, value)` where `value` is the receiver's
+# return value — or, for the `_robust` variants, the `Exception`
+# instance the receiver raised.
+SignalResult = list[tuple[Callable, Any]]
 
 
 def _matches(subscribed: Any, sent: Any) -> bool:
@@ -130,12 +140,14 @@ class Signal:
             except Exception:
                 continue
 
-    def send(self, sender: Any = None, **kwargs: Any) -> list[tuple[Callable, Any]]:
-        """Fire receivers subscribed for `sender` (and for ANY_SENDER).
+    def _iter_live_targets(self, sender: Any) -> Iterator[Callable]:
+        """Yield live receivers that match `sender`; prune dead weakrefs in place.
 
-        Returns `(receiver, value)` pairs in registration order.
+        Walks `self._subs` once, resolves weakrefs, drops dead entries,
+        and yields the resolved target for each entry whose stored
+        sender matches `sender` via `_matches`. After iteration the
+        subscription list contains no dead refs.
         """
-        results: list[tuple[Callable, Any]] = []
         live: list[tuple[Any, Any, bool]] = []
         for sub_sender, ref, is_weak in self._subs:
             target = ref() if is_weak else ref
@@ -143,9 +155,92 @@ class Signal:
                 continue
             live.append((sub_sender, ref, is_weak))
             if _matches(sub_sender, sender):
-                results.append((target, target(sender, **kwargs)))
+                yield target
         if len(live) != len(self._subs):
             self._subs = live
+
+    def send(self, sender: Any = None, **kwargs: Any) -> SignalResult:
+        """Fire receivers subscribed for `sender` (and for ANY_SENDER).
+
+        Returns `(receiver, value)` pairs in registration order.
+        """
+        return [(target, target(sender, **kwargs)) for target in self._iter_live_targets(sender)]
+
+    def send_robust(self, sender: Any = None, **kwargs: Any) -> SignalResult:
+        """Like `send`, but never aborts on a failing receiver.
+
+        Returns `(receiver, value)` pairs in registration order. The
+        second tuple element is the receiver's return value, OR an
+        `Exception` instance if the receiver raised. Per-receiver
+        exceptions are logged at WARNING and substituted into the
+        result list so the caller can inspect failures while subsequent
+        receivers still fire. Mirrors Django/Blinker `send_robust`.
+
+        Sync-only: if a receiver is an async function (or otherwise
+        returns a coroutine), the coroutine is closed and a `TypeError`
+        is recorded in the result list instead. Use `send_robust_async`
+        to await async receivers.
+        """
+        results: SignalResult = []
+        for target in self._iter_live_targets(sender):
+            try:
+                value: Any = target(sender, **kwargs)
+            except Exception as exc:
+                _logger.warning(
+                    "Receiver %r for signal %r raised %s",
+                    getattr(target, "__qualname__", repr(target)),
+                    self.name,
+                    exc.__class__.__name__,
+                    exc_info=True,
+                )
+                value = exc
+            else:
+                if inspect.iscoroutine(value):
+                    # Async receiver with sync send — close coroutine to suppress
+                    # the "coroutine was never awaited" RuntimeWarning and surface
+                    # the misuse as a TypeError result entry.
+                    value.close()
+                    value = TypeError(
+                        "async receiver requires Signal.send_robust_async; "
+                        f"got coroutine from {getattr(target, '__qualname__', repr(target))!r}"
+                    )
+                    _logger.warning(
+                        "Receiver %r for signal %r returned a coroutine; "
+                        "use send_robust_async to await async receivers",
+                        getattr(target, "__qualname__", repr(target)),
+                        self.name,
+                    )
+            results.append((target, value))
+        return results
+
+    async def send_robust_async(self, sender: Any = None, **kwargs: Any) -> SignalResult:
+        """Async variant of `send_robust` — awaits coroutine-returning receivers.
+
+        Returns `(receiver, value)` pairs in registration order. The
+        second tuple element is the receiver's return value, OR an
+        `Exception` instance if the receiver raised. Sync receivers are
+        called directly; async receivers (or any receiver returning a
+        coroutine) are awaited. Per-receiver exceptions, raised either
+        at call time or while awaiting, are logged at WARNING and
+        substituted into the result list so subsequent receivers still
+        fire.
+        """
+        results: SignalResult = []
+        for target in self._iter_live_targets(sender):
+            try:
+                value: Any = target(sender, **kwargs)
+                if inspect.iscoroutine(value):
+                    value = await value
+            except Exception as exc:
+                _logger.warning(
+                    "Receiver %r for signal %r raised %s",
+                    getattr(target, "__qualname__", repr(target)),
+                    self.name,
+                    exc.__class__.__name__,
+                    exc_info=True,
+                )
+                value = exc
+            results.append((target, value))
         return results
 
     def has_receivers_for(self, sender: Any = None) -> bool:

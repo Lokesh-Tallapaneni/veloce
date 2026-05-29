@@ -28,6 +28,40 @@ from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
 
+# Fast-path literals that match every possible origin. Anchors and the
+# equivalent `^$`-bracketed forms collapse to the same set, as do
+# `.*`/`.+`/`.{0,}` quantifiers. Stripping anchors first lets a single
+# tuple cover them all. The probe-test below is the real guard — this is
+# just a cheap pre-check that avoids compiling the regex for the obvious
+# cases.
+_WILDCARD_REGEX_BODIES = frozenset({".*", ".+", ".{0,}", ".{1,}"})
+
+# Impossible-origin probes. A regex that fullmatches every one of these
+# is treated as a wildcard equivalent. The set covers the common bypass
+# shapes the literal denylist misses (`[\s\S]*`, `(?s).*`, `(?:.|\n)*`,
+# `.{1,1000}`, etc.) without us having to enumerate every regex dialect.
+_WILDCARD_PROBES = (
+    "http://x.invalid",
+    "null",
+    "__not_an_origin__",
+    "file:///etc/passwd",
+)
+
+
+def _is_wildcard_regex_literal(pattern: str) -> bool:
+    body = pattern
+    if body.startswith("^"):
+        body = body[1:]
+    if body.endswith("$"):
+        body = body[:-1]
+    return body in _WILDCARD_REGEX_BODIES
+
+
+def _is_wildcard_regex(pattern: str, compiled: Pattern[str]) -> bool:
+    if _is_wildcard_regex_literal(pattern):
+        return True
+    return all(compiled.fullmatch(probe) is not None for probe in _WILDCARD_PROBES)
+
 
 class CORSMiddleware(Middleware):
     """Cross-Origin Resource Sharing middleware."""
@@ -43,9 +77,29 @@ class CORSMiddleware(Middleware):
         expose_headers: list[str] | None = None,
     ) -> None:
         self.allow_origins = list(allow_origins) if allow_origins is not None else ["*"]
-        self.allow_origin_regex: Pattern[str] | None = (
-            re.compile(allow_origin_regex) if allow_origin_regex else None
-        )
+        self.allow_origin_regex: Pattern[str] | None
+        if allow_origin_regex:
+            try:
+                compiled = re.compile(allow_origin_regex)
+            except re.error as exc:
+                raise ValueError(
+                    f"CORSMiddleware: invalid allow_origin_regex {allow_origin_regex!r}: {exc}"
+                ) from exc
+            # Reject trivially wildcard patterns when credentials are on —
+            # mirrors the `allow_origins=["*"]` + credentials guard so the
+            # regex escape hatch can't be used to bypass it. Probes a set
+            # of impossible-origin strings so dialect variants like
+            # `[\s\S]*`, `(?s).*`, and `(?:.|\n)*` are caught even though
+            # they don't appear in the literal denylist.
+            if allow_credentials and _is_wildcard_regex(allow_origin_regex, compiled):
+                raise ValueError(
+                    "CORSMiddleware: allow_credentials=True cannot be combined with a "
+                    f"wildcard allow_origin_regex {allow_origin_regex!r} "
+                    "(Fetch CORS spec §3.2.4)"
+                )
+            self.allow_origin_regex = compiled
+        else:
+            self.allow_origin_regex = None
         self.allow_methods = allow_methods or [
             "GET",
             "POST",

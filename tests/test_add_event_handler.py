@@ -55,6 +55,29 @@ def test_add_event_handler_appends_to_same_list_as_decorator():
     assert imperative in app._on_startup
 
 
+def test_add_event_handler_emits_deprecation_warning():
+    app = Veloce()
+
+    async def handler():
+        pass
+
+    with pytest.warns(DeprecationWarning, match="on_startup"):
+        app.add_event_handler("startup", handler)
+    assert handler in app._on_startup
+
+
+def test_on_event_emits_deprecation_warning():
+    app = Veloce()
+
+    with pytest.warns(DeprecationWarning, match="on_startup"):
+
+        @app.on_event("startup")
+        async def handler():
+            pass
+
+    assert handler in app._on_startup
+
+
 def test_add_event_handler_ordering_preserved():
     app = Veloce()
     order: list[int] = []

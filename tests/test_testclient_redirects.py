@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import RedirectResponse, Veloce
-from veloce.testclient import TestClient
+from veloce.testclient import AsyncTestClient, TestClient
 
 
 def _make_app() -> Veloce:
@@ -120,3 +120,71 @@ def test_max_redirects_loop_raises():
     client = TestClient(_make_app(), follow_redirects=True)
     with pytest.raises(RuntimeError, match="10 redirects"):
         client.get("/loop")
+
+
+# ── Absolute-URL Location handling ───────────────────────────────────
+
+
+def _make_absolute_redirect_app() -> Veloce:
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/abs-same-host")
+    async def abs_same_host():
+        return RedirectResponse("http://testserver/target?x=1", status_code=302)
+
+    @app.get("/abs-other-host")
+    async def abs_other_host():
+        return RedirectResponse("http://other-host/x?y=z", status_code=302)
+
+    @app.get("/relative")
+    async def relative():
+        return RedirectResponse("/target?q=v", status_code=302)
+
+    @app.get("/target")
+    async def target(request):
+        return {"reached": "target", "qs": request.scope["query_string"].decode()}
+
+    return app
+
+
+def test_absolute_same_host_redirect_follows():
+    """Absolute Location pointing at the test client's own host follows correctly."""
+    client = TestClient(_make_absolute_redirect_app(), follow_redirects=True)
+    resp = client.get("/abs-same-host")
+    assert resp.status_code == 200
+    assert resp.json() == {"reached": "target", "qs": "x=1"}
+
+
+def test_absolute_other_host_redirect_raises():
+    """Absolute Location pointing at another host raises with the URL in the message."""
+    client = TestClient(_make_absolute_redirect_app(), follow_redirects=True)
+    with pytest.raises(RuntimeError, match=r"http://other-host/x\?y=z"):
+        client.get("/abs-other-host")
+
+
+def test_relative_redirect_still_works():
+    """Relative Location continues to work — no regression from the absolute-URL fix."""
+    client = TestClient(_make_absolute_redirect_app(), follow_redirects=True)
+    resp = client.get("/relative")
+    assert resp.status_code == 200
+    assert resp.json() == {"reached": "target", "qs": "q=v"}
+
+
+async def test_async_absolute_same_host_redirect_follows():
+    async with AsyncTestClient(_make_absolute_redirect_app(), follow_redirects=True) as client:
+        resp = await client.get("/abs-same-host")
+        assert resp.status_code == 200
+        assert resp.json() == {"reached": "target", "qs": "x=1"}
+
+
+async def test_async_absolute_other_host_redirect_raises():
+    async with AsyncTestClient(_make_absolute_redirect_app(), follow_redirects=True) as client:
+        with pytest.raises(RuntimeError, match=r"http://other-host/x\?y=z"):
+            await client.get("/abs-other-host")
+
+
+async def test_async_relative_redirect_still_works():
+    async with AsyncTestClient(_make_absolute_redirect_app(), follow_redirects=True) as client:
+        resp = await client.get("/relative")
+        assert resp.status_code == 200
+        assert resp.json() == {"reached": "target", "qs": "q=v"}

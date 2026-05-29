@@ -14,12 +14,15 @@ only the observable behaviour is modelled.
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import types
 from collections.abc import Callable, Mapping
 from typing import IO, Any
 
 import orjson
+
+_logger = logging.getLogger("veloce.config")
 
 
 def _orjson_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:
@@ -163,7 +166,7 @@ class Config(dict[str, Any]):
                 return False
             raise
         parsed: dict[str, Any] = {}
-        for raw in lines:
+        for lineno, raw in enumerate(lines, start=1):
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
@@ -180,7 +183,18 @@ class Config(dict[str, Any]):
                 # dropped; a `#` *inside* the quotes stays literal.
                 quote = value[0]
                 close = value.find(quote, 1)
-                value = value[1:close] if close != -1 else value[1:]
+                if close == -1:
+                    _logger.warning(
+                        "env file %s line %d: key %r has unmatched %s quote; "
+                        "treating remainder of line as the value",
+                        filename,
+                        lineno,
+                        key,
+                        quote,
+                    )
+                    value = value[1:]
+                else:
+                    value = value[1:close]
             else:
                 # Unquoted value — a whitespace-delimited `#` starts an
                 # inline comment. A bare `#` (no leading space) is kept,

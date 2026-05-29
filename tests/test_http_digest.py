@@ -19,9 +19,50 @@ def test_no_header_raises_with_digest_challenge():
     wwwa = exc.value.headers["WWW-Authenticate"]
     assert wwwa.startswith("Digest ")
     assert 'realm="testrealm%40example.com"' in wwwa  # URL-encoded
-    assert "algorithm=MD5" in wwwa
+    assert "algorithm=SHA-256" in wwwa
     assert 'qop="auth"' in wwwa
     assert 'nonce="' in wwwa
+
+
+def test_default_algorithm_is_sha256():
+    """RFC 7616 §3.2 — SHA-256 is the preferred default; MD5 is back-compat only."""
+    scheme = HTTPDigest(realm="r")
+    assert scheme.algorithm == "SHA-256"
+
+
+def test_explicit_md5_still_accepted_for_back_compat():
+    scheme = HTTPDigest(realm="r", algorithm="MD5")
+    assert scheme.algorithm == "MD5"
+    with pytest.raises(HTTPException) as exc:
+        scheme(_req())
+    assert "algorithm=MD5" in exc.value.headers["WWW-Authenticate"]
+
+
+def test_parses_backslash_then_quote_literal():
+    """Literal `\\\"` in the wire (backslash, then escaped-quote) decodes to `\\\"`.
+
+    The old chained .replace() would collapse `\\\\\"` to `\\\\` first and then
+    miss the now-unescaped `\\\"`, corrupting the value.
+    """
+    # On the wire the field looks like:  field="a\\\"b"
+    # i.e. a, literal-backslash (escaped as \\), literal-quote (escaped as \"), b
+    header = 'Digest username="a\\\\\\"b", realm="r", response="x"'
+    scheme = HTTPDigest(realm="r", auto_error=False)
+    creds = scheme(_req({"authorization": header}))
+    assert creds.username == 'a\\"b'
+
+
+def test_parses_embedded_escaped_quote_and_backslash_separately():
+    # username="he said \"hi\"" -> he said "hi"
+    header = 'Digest username="he said \\"hi\\"", realm="r", response="x"'
+    scheme = HTTPDigest(realm="r", auto_error=False)
+    creds = scheme(_req({"authorization": header}))
+    assert creds.username == 'he said "hi"'
+
+    # realm="c:\\path" on the wire is realm="c:\\\\path" -> c:\path
+    header2 = 'Digest username="u", realm="c:\\\\path", response="x"'
+    creds2 = scheme(_req({"authorization": header2}))
+    assert creds2.realm == "c:\\path"
 
 
 def test_auto_error_false_returns_none_when_missing():

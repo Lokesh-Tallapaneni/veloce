@@ -124,3 +124,45 @@ class TestDecorators:
 
         for method in ["GET", "POST", "PUT", "PATCH", "DELETE"]:
             assert r.match(method, "/test") is not None
+
+
+class TestGreedyPathConverter:
+    def test_greedy_with_trailing_segments_rejected(self):
+        r = Router()
+
+        async def handler(request): ...
+
+        with pytest.raises(ValueError, match="greedy converter"):
+            r.add_route("/{files:path}/info", handler, ["GET"])
+
+    def test_greedy_as_final_segment_allowed(self):
+        r = Router()
+
+        @r.get("/{files:path}")
+        async def serve(files: str):
+            return files
+
+        match = r.match("GET", "/a/b/c.txt")
+        assert match is not None
+
+    def test_include_router_rejects_greedy_with_trailing_segments(self):
+        sub = Router()
+
+        # Smuggle the invalid shape past add_route by building it manually,
+        # then verify _merge_node refuses to copy it in.
+        async def handler(request): ...
+
+        sub.add_route("/{files:path}", handler, ["GET"])
+        # Tack on a static child after the greedy param to fabricate the
+        # invalid shape that _merge_node must reject when re-walking.
+        from veloce.routing.router import RadixNode
+
+        greedy_node = sub._root.param_children[0]
+        tail = RadixNode("info")
+        greedy_node.static_children["info"] = tail
+        tail.handlers = greedy_node.handlers
+        greedy_node.handlers = {}
+
+        main = Router()
+        with pytest.raises(ValueError, match="greedy converter"):
+            main.include_router(sub)

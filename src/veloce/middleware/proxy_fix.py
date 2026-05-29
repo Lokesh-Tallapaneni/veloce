@@ -22,6 +22,7 @@ two trusted proxies in front you set `x_for=2`.
 
 from __future__ import annotations
 
+from veloce._internal import _reject_header_crlf
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -139,7 +140,22 @@ class ProxyFix(Middleware):
         host = fwd.get("host") or self._pick_hop(
             request.headers.get("x-forwarded-host"), self.x_host
         )
-        prefix = self._pick_hop(request.headers.get("x-forwarded-prefix"), self.x_prefix)
+        prefix = fwd.get("prefix") or self._pick_hop(
+            request.headers.get("x-forwarded-prefix"), self.x_prefix
+        )
+
+        # Reject CR / LF / NUL in any trusted proxy value before it lands on
+        # the request. These values flow into response headers (Location,
+        # Set-Cookie, OpenAPI server URLs) via request.host / scheme /
+        # script_root and would otherwise enable header injection.
+        if client:
+            _reject_header_crlf(client, "X-Forwarded-For")
+        if proto:
+            _reject_header_crlf(proto, "X-Forwarded-Proto")
+        if host:
+            _reject_header_crlf(host, "X-Forwarded-Host")
+        if prefix:
+            _reject_header_crlf(prefix, "X-Forwarded-Prefix")
 
         if client:
             # Strip port suffix, but preserve IPv6 addresses.

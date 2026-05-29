@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Response
 
 
@@ -47,3 +49,48 @@ def test_set_basic_auth_challenge_returns_header_value():
     resp = Response()
     returned = resp.set_basic_auth_challenge("R")
     assert returned == resp.headers["WWW-Authenticate"]
+
+
+def test_set_basic_auth_challenge_rejects_crlf_in_realm():
+    resp = Response()
+    with pytest.raises(ValueError, match="illegal control character"):
+        resp.set_basic_auth_challenge(realm="ok\r\ninjected: x")
+
+
+def test_set_basic_auth_challenge_rejects_lone_lf_in_realm():
+    resp = Response()
+    with pytest.raises(ValueError, match="illegal control character"):
+        resp.set_basic_auth_challenge(realm="ok\ninjected: x")
+
+
+def test_set_basic_auth_challenge_rejects_nul_in_realm():
+    resp = Response()
+    with pytest.raises(ValueError, match="illegal control character"):
+        resp.set_basic_auth_challenge(realm="ok\x00injected")
+
+
+def test_www_authenticate_setter_rejects_crlf():
+    resp = Response()
+    with pytest.raises(ValueError, match="illegal control character"):
+        resp.www_authenticate = "Bearer\r\nInjected: 1"
+
+
+def test_www_authenticate_setter_rejects_lone_lf():
+    resp = Response()
+    with pytest.raises(ValueError, match="illegal control character"):
+        resp.www_authenticate = 'Bearer realm="api"\nInjected: 1'
+
+
+def test_www_authenticate_setter_rejects_lone_cr():
+    resp = Response()
+    with pytest.raises(ValueError, match="illegal control character"):
+        resp.www_authenticate = 'Bearer realm="api"\rInjected: 1'
+
+
+def test_www_authenticate_setter_does_not_partially_apply_on_crlf():
+    resp = Response()
+    resp.www_authenticate = "Basic"
+    with pytest.raises(ValueError):
+        resp.www_authenticate = "Bearer\r\nX-Evil: 1"
+    # The pre-existing value must not be replaced by a rejected one.
+    assert resp.www_authenticate == "Basic"

@@ -1,4 +1,25 @@
-"""Shared internal utilities — not part of the public API."""
+"""Semi-public internal utilities — shared across subpackages, not part of the public API.
+
+The codebase guardrail in ``.claude/rules/development-guardrails.md`` under
+"Cross-Subpackage Imports" forbids importing underscore-prefixed symbols
+across subpackage boundaries. This module is the documented carve-out:
+symbols defined here (``_reject_header_crlf``, ``_file_etag``, ``_b64encode``,
+``_is_async_callable``, ``_extract_host``, and the MIME / status-phrase
+constants) ARE permitted to be imported from any subpackage —
+``http/``, ``middleware/``, ``security/``, ``serving/``, ``contrib/``,
+``routing/`` — because they are explicitly internal-to-the-framework
+helpers with a stable contract.
+
+The leading underscore signals "not for users"; this module's existence
+and docstring signal "stable for internal use across the framework".
+External users must not depend on these symbols — they are not in
+``veloce/__init__.py``'s ``__all__`` and may change in any release.
+
+When adding a new helper here, it must be (a) genuinely needed by two
+or more subpackages, and (b) small enough that promoting it to the
+public API would be premature. Otherwise prefer a public utility or
+keep it inside the owning subpackage.
+"""
 
 from __future__ import annotations
 
@@ -34,13 +55,31 @@ def _reject_header_crlf(value: str, what: str) -> str:
 
 
 def _file_etag(path: str, size: int, mtime: float) -> str:
-    """Strong, opaque-quoted ETag derived from (path, size, mtime).
+    """Weak, opaque-quoted ETag derived from (path, size, mtime).
 
-    RFC 9110 §8.8.3 — the entity-tag is `quoted-string`. Using MD5 of
-    the identity tuple keeps it deterministic across processes.
+    RFC 9110 §8.8.3 — entity-tags must be marked weak (`W/`) when they
+    do not guarantee byte-for-byte identity. mtime-derived tags can
+    collide within the same second across content-altering writes, so
+    a weak validator is the only spec-compliant choice. Weak compare
+    (§8.8.3.2) still lets `If-None-Match` / `If-Range` work for cache
+    revalidation; strict `If-Match` correctly refuses these tags.
     """
     key = f"{path}:{size}:{mtime}".encode()
-    return f'"{hashlib.md5(key).hexdigest()}"'
+    return f'W/"{hashlib.md5(key).hexdigest()}"'
+
+
+def _etag_matches_weak(server_etag: str, client_token: str) -> bool:
+    """Weak comparison of two ETag tokens per RFC 9110 §8.8.3.2.
+
+    Strips surrounding whitespace, an optional `W/` weak marker, and
+    the surrounding double quotes on both sides before comparing the
+    opaque tags. Returns True when the opaque-tags are equal regardless
+    of weak/strong marking — required for `If-None-Match` and `If-Range`
+    against weak server validators.
+    """
+    a = server_etag.strip().removeprefix("W/").strip('"')
+    b = client_token.strip().removeprefix("W/").strip('"')
+    return a == b
 
 
 def _b64encode(data: bytes) -> str:

@@ -22,10 +22,32 @@ import mimetypes
 import secrets
 from collections.abc import Sequence
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import orjson
 from multidict import CIMultiDict
+
+
+def _resolve_redirect_location(location: str, base_url: str) -> tuple[str, str]:
+    """Decompose a `Location` header into `(path, query)` for the next hop.
+
+    The test client has no live network: an absolute URL whose host is not the
+    test client's own host cannot be followed. Same-host absolute URLs are
+    reduced to `path?query#fragment`; relative locations pass through.
+    """
+    parsed = urlparse(location)
+    if parsed.scheme and parsed.netloc:
+        own_host = urlparse(base_url).netloc
+        if parsed.netloc != own_host:
+            raise RuntimeError(
+                f"TestClient cannot follow redirect to absolute URL {location!r} "
+                f"on a different host (test client host is {own_host!r})"
+            )
+        # Fragments are stripped by browsers on redirect — drop them.
+        return parsed.path or "/", parsed.query
+    # Relative location (or odd scheme-only) — use verbatim, splitting any qs.
+    path, _, query = location.partition("?")
+    return path, query
 
 
 class TestResponse:
@@ -469,11 +491,7 @@ class TestClient:
             if resp.status_code in (301, 302, 303):
                 new_method = "GET"
                 new_body = b""
-            # Split off the query string if Location carries one.
-            new_path = location
-            new_query = ""
-            if "?" in new_path:
-                new_path, new_query = new_path.split("?", 1)
+            new_path, new_query = _resolve_redirect_location(location, self.base_url)
             current_method = new_method
             current_path = new_path
             current_query = new_query
@@ -1029,9 +1047,7 @@ class AsyncTestClient:
             # 307/308 preserve method + body.
             if resp.status_code in (301, 302, 303):
                 current_method, current_body = "GET", b""
-            current_path, current_query = location, ""
-            if "?" in current_path:
-                current_path, current_query = current_path.split("?", 1)
+            current_path, current_query = _resolve_redirect_location(location, self.base_url)
             # `current_headers` is intentionally kept across the hop — the
             # caller's headers (Authorization, custom headers) must reach
             # the redirected request, matching the sync TestClient.

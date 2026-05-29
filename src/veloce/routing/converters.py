@@ -18,6 +18,7 @@ candidate (next param or wildcard) — which means a typed mismatch is a
 
 from __future__ import annotations
 
+import math
 import re
 import uuid
 from typing import Any
@@ -30,6 +31,11 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{12}$"
 )
+
+# Cap int-parse input length to bound adversarial parse cost. The converter
+# coerces to Python int (arbitrary precision), so this is a bignum-DoS guard,
+# not a 64-bit range check.
+_MAX_INT_DIGITS = 20
 
 
 class _Converter:
@@ -62,7 +68,7 @@ class IntConverter(_Converter):
     __slots__ = ()
 
     def match(self, value: str) -> tuple[bool, Any]:
-        if not value:
+        if not value or len(value) > _MAX_INT_DIGITS:
             return False, None
         check = value[1:] if value[0] == "-" else value
         if not check or not check.isdigit():
@@ -88,7 +94,7 @@ class FloatConverter(_Converter):
             f = float(value)
         except ValueError:
             return False, None
-        if f != f or f in (float("inf"), float("-inf")):
+        if math.isnan(f) or math.isinf(f):
             return False, None
         return True, f
 

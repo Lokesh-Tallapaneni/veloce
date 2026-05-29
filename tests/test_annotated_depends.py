@@ -171,3 +171,57 @@ async def test_annotated_does_not_break_plain_query_params():
     body = resp.body
     assert b'"count":7' in body
     assert b'"type":"int"' in body
+
+
+# Module-level so the closure default captures real callables. A two-step
+# rebind constructs a true `a -> b -> a` cycle (def-time evaluation of
+# defaults makes a single-pass mutual definition impossible).
+def _cycle_a(x=Depends(lambda: None)):
+    return x
+
+
+def _cycle_b(x=Depends(_cycle_a)):
+    return x
+
+
+_cycle_a.__defaults__ = (Depends(_cycle_b),)
+
+
+def test_circular_dependency_detected_at_registration():
+    app = Veloce(openapi_url=None)
+
+    with pytest.raises(ValueError, match="Circular dependency detected") as exc_info:
+
+        @app.get("/cycle")
+        def handler(x=Depends(_cycle_a)):
+            return {"x": x}
+
+    msg = str(exc_info.value)
+    assert "_cycle_a" in msg
+    assert "_cycle_b" in msg
+    assert " -> " in msg
+
+
+def test_circular_dependency_chain_distinguishes_lambdas_via_qualname():
+    # Two distinct lambdas in a cycle: bare __name__ would render both as
+    # `<lambda>`. __qualname__ carries the enclosing function scope
+    # (`...test_..<locals>.<lambda>`) which lets the chain be read.
+    app = Veloce(openapi_url=None)
+
+    lam_a = lambda x=Depends(lambda: None): x  # noqa: E731
+    lam_b = lambda x=Depends(lam_a): x  # noqa: E731
+    lam_a.__defaults__ = (Depends(lam_b),)
+
+    with pytest.raises(ValueError, match="Circular dependency detected") as exc_info:
+
+        @app.get("/lambda-cycle")
+        def handler(x=Depends(lam_a)):
+            return {"x": x}
+
+    msg = str(exc_info.value)
+    # qualname for nested lambdas includes the enclosing function name and
+    # the `<locals>` marker — both must appear so the two lambdas are
+    # distinguishable in the rendered chain.
+    assert "<locals>" in msg
+    assert "test_circular_dependency_chain_distinguishes_lambdas_via_qualname" in msg
+    assert msg.count("<lambda>") >= 2

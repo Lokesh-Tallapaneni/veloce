@@ -248,3 +248,83 @@ async def test_signed_csrf_respects_max_age():
         _req("POST", headers={"cookie": f"csrf_token={token}", "x-csrf-token": token})
     )
     assert resp.status_code == 403
+
+
+# ── Form-field as uploaded file part ─────────────────────────────────
+
+
+def test_post_with_csrf_form_field_as_uploadfile_is_refused():
+    # If the `csrf_token` multipart part arrives as a file upload, `form.get`
+    # returns an UploadFile; compare_digest would crash on it. Middleware must
+    # treat the non-string value as a missing token and refuse with 403.
+    from veloce.testclient import TestClient
+
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware())
+
+    @app.post("/x")
+    async def x():
+        return {}
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/x",
+            headers={"cookie": "csrf_token=abc123"},
+            files={"csrf_token": ("token.txt", b"abc123", "text/plain")},
+        )
+    assert resp.status_code == 403
+    assert resp.json() == {"detail": "CSRF token mismatch"}
+
+
+@pytest.mark.asyncio
+async def test_csrf_header_and_form_paths_use_same_check():
+    """Header and form branches must accept and reject the same shapes.
+
+    R1 #11: prior to the `_matches` helper, the header branch used
+    `if header_val and ...` while the form branch used
+    `isinstance(form_val, str) and ...`. The two were behaviourally
+    equivalent for strings but the divergence was a copy-paste hazard;
+    pin the equivalence with a single test that runs both branches
+    through identical inputs.
+    """
+    from urllib.parse import urlencode
+
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware())
+
+    @app.post("/x")
+    async def x():
+        return {"ok": True}
+
+    cookie = "csrf_token=tok-XYZ"
+    body = urlencode({"csrf_token": "tok-XYZ"}).encode()
+
+    # Form branch accepts the matching string.
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={"cookie": cookie, "content-type": "application/x-www-form-urlencoded"},
+            body=body,
+        )
+    )
+    assert resp.status_code == 200
+
+    # Header branch accepts the matching string.
+    resp = await app.handle_request(
+        _req("POST", headers={"cookie": cookie, "x-csrf-token": "tok-XYZ"})
+    )
+    assert resp.status_code == 200
+
+    # Both branches reject the wrong string identically.
+    resp = await app.handle_request(
+        _req("POST", headers={"cookie": cookie, "x-csrf-token": "wrong"})
+    )
+    assert resp.status_code == 403
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={"cookie": cookie, "content-type": "application/x-www-form-urlencoded"},
+            body=urlencode({"csrf_token": "wrong"}).encode(),
+        )
+    )
+    assert resp.status_code == 403

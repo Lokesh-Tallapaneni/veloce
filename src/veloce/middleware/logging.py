@@ -17,14 +17,12 @@ class LoggingMiddleware(Middleware):
     def __init__(self, logger: logging.Logger | None = None) -> None:
         if logger is None:
             self.logger = logging.getLogger("veloce.access")
-            # Only add our own handler when the `veloce.access` logger
-            # has no handlers of its own. We intentionally check
+            # Handlers and level are bootstrapped independently. We check
             # `self.logger.handlers` (direct list) rather than
             # `hasHandlers()` (walks parents): a root-level handler
-            # configured at WARNING would silently swallow the INFO
-            # access-log records, leaving the operator with no output.
-            # Attaching our own handler ensures access logs always emit
-            # regardless of the root-logger configuration.
+            # configured at WARNING would silently swallow our INFO
+            # access-log records, so we always want our own handler when
+            # the access logger has none of its own.
             if not self.logger.handlers:
                 handler = logging.StreamHandler()
                 handler.setFormatter(
@@ -34,7 +32,14 @@ class LoggingMiddleware(Middleware):
                     )
                 )
                 self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+            # Level is orthogonal to handlers: a defensive `NullHandler`
+            # pre-installed at import time would suppress the level
+            # bootstrap if it were coupled to the handler check, leaving
+            # the logger at NOTSET (== inherits root, typically WARNING)
+            # and silencing access logs. Only set INFO when the level is
+            # genuinely unconfigured.
+            if self.logger.level == logging.NOTSET:
+                self.logger.setLevel(logging.INFO)
         else:
             self.logger = logger
 

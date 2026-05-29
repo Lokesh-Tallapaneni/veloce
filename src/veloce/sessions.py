@@ -10,8 +10,16 @@ the session cookie's `Max-Age` instead of the default `max_age`.
 
 from __future__ import annotations
 
+import random
 import time
 from typing import Any
+
+# Probabilistic sweep tuning for `InMemorySessionStore`. The threshold keeps
+# small stores cheap; the probability keeps the amortised cost of a write
+# below one full scan per `1/_SWEEP_PROBABILITY` writes. Mirrors Django's
+# `cached_db` session backend.
+_SWEEP_THRESHOLD = 1000
+_SWEEP_PROBABILITY = 1.0 / 32
 
 
 class Session(dict[str, Any]):
@@ -166,11 +174,19 @@ class InMemorySessionStore(SessionStore):
     (e.g. Redis) implementing the `SessionStore` interface.
     """
 
-    __slots__ = ("_entries",)
+    __slots__ = ("_entries", "_sweep_threshold", "_sweep_probability")
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        sweep_threshold: int = _SWEEP_THRESHOLD,
+        sweep_probability: float = _SWEEP_PROBABILITY,
+    ) -> None:
         # session_id -> (payload, unix-timestamp when it expires)
         self._entries: dict[str, tuple[dict[str, Any], float]] = {}
+        # Per-instance sweep tuning; defaults to the module constants so
+        # existing call sites are unaffected.
+        self._sweep_threshold = sweep_threshold
+        self._sweep_probability = sweep_probability
 
     async def read(self, session_id: str) -> dict[str, Any] | None:
         entry = self._entries.get(session_id)
@@ -184,6 +200,7 @@ class InMemorySessionStore(SessionStore):
 
     async def write(self, session_id: str, data: dict[str, Any], max_age: int) -> None:
         self._entries[session_id] = (dict(data), time.time() + max_age)
+        self._maybe_sweep()
 
     async def delete(self, session_id: str) -> None:
         self._entries.pop(session_id, None)
@@ -199,4 +216,33 @@ class InMemorySessionStore(SessionStore):
             self._entries.pop(session_id, None)
             return False
         self._entries[session_id] = (dict(data), time.time() + max_age)
+        self._maybe_sweep()
         return True
+
+    def sweep_expired(self) -> int:
+        """Drop every expired entry and return how many were removed.
+
+        Callers that want deterministic eviction (e.g. a background task
+        on a known cadence) can call this directly rather than relying on
+        the probabilistic sweep that fires from `write` / `replace`.
+        """
+        now = time.time()
+        # Snapshot first — a concurrent write during iteration would otherwise
+        # raise `RuntimeError: dictionary changed size during iteration`. Use
+        # `pop(..., None)` so a concurrent delete of the same id is a no-op.
+        expired = [sid for sid, (_, exp) in list(self._entries.items()) if exp <= now]
+        removed = 0
+        for sid in expired:
+            if self._entries.pop(sid, None) is not None:
+                removed += 1
+        return removed
+
+    def _maybe_sweep(self) -> None:
+        # Amortised eviction: only walk the store when it's grown past
+        # the threshold and the dice come up. Keeps the per-write cost
+        # at one comparison + one `random.random()` in the common case.
+        if (
+            len(self._entries) >= self._sweep_threshold
+            and random.random() < self._sweep_probability
+        ):
+            self.sweep_expired()

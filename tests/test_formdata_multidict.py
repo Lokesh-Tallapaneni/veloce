@@ -238,3 +238,25 @@ def test_multipart_part_count_cap_from_app_config():
         headers={"content-type": f"multipart/form-data; boundary={boundary}"},
     )
     assert resp.status_code == 413
+
+
+def test_multipart_part_count_cap_zero_rejects_any_part():
+    """`MAX_FORM_PARTS=0` is a deliberate value, not a missing config — a
+    single part must trip the cap rather than silently falling back to
+    the default 1000-part limit."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["MAX_FORM_PARTS"] = 0
+
+    @app.post("/u")
+    async def u(request: Request):
+        await request.form()
+        return {"ok": True}
+
+    boundary = "veloceboundary123"
+    body = _multipart_body(boundary, [("a", "1")])
+    resp = TestClient(app).post(
+        "/u",
+        content=body,
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+    )
+    assert resp.status_code == 413

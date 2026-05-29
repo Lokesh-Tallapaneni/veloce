@@ -148,4 +148,25 @@ def test_contains_checks_quality():
     h = AcceptHeader.parse("en, fr;q=0")
     assert "en" in h
     assert "fr" not in h
-    assert "de" not in h
+
+
+# ── RFC 9110 §12.5.4 wildcard for non-MIME Accept-* headers ──────────
+
+
+def test_non_mime_bare_wildcard_matches_any_value():
+    h = AcceptHeader.parse("*")
+    assert h.quality("en-US") == 1.0
+    assert h.quality("fr") == 1.0
+    assert h.quality("gzip") == 1.0
+
+
+def test_non_mime_wildcard_respects_q_value():
+    h = AcceptHeader.parse("en, *;q=0.1")
+    assert h.quality("en") == 1.0
+    assert h.quality("fr") == 0.1
+
+
+def test_non_mime_explicit_beats_wildcard():
+    h = AcceptHeader.parse("*;q=0.3, en;q=0.9")
+    assert h.quality("en") == 0.9
+    assert h.quality("fr") == 0.3

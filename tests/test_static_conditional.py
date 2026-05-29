@@ -109,3 +109,44 @@ def test_if_none_match_matching_etag_returns_304(static_app):
 
     resp = TestClient(app).get("/static/data.txt", headers={"if-none-match": etag})
     assert resp.status_code == 304
+
+
+def test_if_none_match_strong_form_matches_weak_server_etag(static_app):
+    """Client returns the opaque tag without the `W/` prefix.
+
+    RFC 9110 §13.1.2 requires weak comparison for `If-None-Match`:
+    opaque-equal tags must match regardless of the weak flag on either
+    side. Intermediaries occasionally strip the `W/` prefix.
+    """
+    app, _ = static_app
+    first = TestClient(app).get("/static/data.txt")
+    server_etag = first.headers["etag"]
+    # Server ETag is `W/"..."`. Strip the `W/` to produce the strong form.
+    assert server_etag.startswith('W/"')
+    strong_form = server_etag.removeprefix("W/")
+
+    resp = TestClient(app).get("/static/data.txt", headers={"if-none-match": strong_form})
+    assert resp.status_code == 304
+    assert resp.body == b""
+
+
+def test_if_none_match_weak_form_matches_weak_server_etag(static_app):
+    """Client echoes the server's `W/"..."` tag verbatim — must 304."""
+    app, _ = static_app
+    first = TestClient(app).get("/static/data.txt")
+    server_etag = first.headers["etag"]
+    assert server_etag.startswith('W/"')
+
+    resp = TestClient(app).get("/static/data.txt", headers={"if-none-match": server_etag})
+    assert resp.status_code == 304
+    assert resp.body == b""
+
+
+def test_if_none_match_mismatched_tag_returns_200(static_app):
+    """A tag that does not match must serve the body with 200."""
+    app, _ = static_app
+    resp = TestClient(app).get(
+        "/static/data.txt", headers={"if-none-match": '"completely-different"'}
+    )
+    assert resp.status_code == 200
+    assert resp.body == b"hello world\n"

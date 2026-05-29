@@ -163,6 +163,8 @@ class Blueprint(Router):
         blueprint's lists (not the app's — the app gets them when
         *this* blueprint is registered).
         """
+        if child is self:
+            raise ValueError(f"Cannot register blueprint {self.name!r} as a child of itself.")
         nested_prefix = url_prefix if url_prefix is not None else child.url_prefix
         for path, methods, info in child._walk_routes():
             full_path = (nested_prefix or "") + path

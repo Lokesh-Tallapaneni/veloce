@@ -166,7 +166,12 @@ class HandlerPlan:
 
 
 def _build_depends_slot(
-    name: str, dep: Any, inferred: Any = None, *, websocket: bool = False
+    name: str,
+    dep: Any,
+    inferred: Any = None,
+    *,
+    websocket: bool = False,
+    _seen: list | None = None,
 ) -> _Slot:
     """Build a K_DEPENDS slot, recursively planning the sub-callable.
 
@@ -183,7 +188,7 @@ def _build_depends_slot(
     slot.dep_is_coro = _is_async_callable(callable_)
     slot.dep_is_gen = inspect.isgeneratorfunction(callable_)
     slot.dep_is_async_gen = inspect.isasyncgenfunction(callable_)
-    slot.sub_plan = build_plan(callable_, websocket=websocket)
+    slot.sub_plan = build_plan(callable_, websocket=websocket, _seen=_seen)
     # Security() scopes flow down the chain so a `SecurityScopes`
     # parameter anywhere below sees the union. Plain `Depends` has no
     # scopes attribute; we read defensively.
@@ -193,7 +198,9 @@ def _build_depends_slot(
     return slot
 
 
-def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
+def build_plan(
+    handler: Callable, *, websocket: bool = False, _seen: list | None = None
+) -> HandlerPlan:
     """Inspect `handler` and freeze a resolution plan.
 
     Called exactly once per route registration. Safe to call on builtins,
@@ -205,8 +212,30 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
     from the request — the same plan machinery then drives WebSocket
     dependency injection, giving it `yield`-teardown and `Security` parity
     with the HTTP path.
+
+    `_seen` carries the chain of callables currently being planned so a
+    `Depends` cycle (`A -> B -> A`) raises `ValueError` at registration
+    time instead of recursing until the interpreter stack blows.
     """
     from veloce.dependency import Depends, SecurityScopes  # local import breaks the import cycle
+
+    # Cycle guard — entries are the callables themselves so the chain in
+    # the error reads naturally. Created lazily so external callers that
+    # call `build_plan(handler)` keep the original two-arg shape.
+    if _seen is None:
+        _seen = [handler]
+    else:
+        for seen in _seen:
+            if seen is handler:
+                # Prefer __qualname__ so lambdas and nested/method deps carry
+                # scope context (e.g. `test_x.<locals>.<lambda>`) instead of
+                # collapsing to bare `<lambda>` everywhere.
+                chain = [
+                    getattr(c, "__qualname__", None) or getattr(c, "__name__", None) or repr(c)
+                    for c in [*_seen, handler]
+                ]
+                raise ValueError(f"Circular dependency detected: {' -> '.join(chain)}")
+        _seen = [*_seen, handler]
 
     ws_type: Any = None
     if websocket:
@@ -317,7 +346,13 @@ def build_plan(handler: Callable, *, websocket: bool = False) -> HandlerPlan:
         # (`x: SomeClass = Depends()`).
         if isinstance(default, Depends):
             slots.append(
-                _build_depends_slot(param_name, default, inferred=annotation, websocket=websocket)
+                _build_depends_slot(
+                    param_name,
+                    default,
+                    inferred=annotation,
+                    websocket=websocket,
+                    _seen=_seen,
+                )
             )
             continue
 
