@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections import deque
 from typing import TYPE_CHECKING
 
 import httptools
@@ -41,13 +42,15 @@ class HttpProtocol(asyncio.Protocol):
         "headers",
         "body_parts",
         "request_complete",
-        "_keep_alive",
         "_keep_alive_handle",
         "_request_timer",
         "_body_size",
         "_header_bytes_total",
         "_oversized",
         "_counted",
+        "_request_queue",
+        "_server_loop",
+        "_closing",
     )
 
     # Class-level set: prevents GC of in-flight tasks across all connections.
@@ -75,7 +78,6 @@ class HttpProtocol(asyncio.Protocol):
         self.headers: list[tuple[bytes, bytes]] = []
         self.body_parts: list[bytes] = []
         self.request_complete = False
-        self._keep_alive = True
         self._keep_alive_handle: asyncio.TimerHandle | None = None
         self._request_timer: asyncio.TimerHandle | None = None
         self._body_size: int = 0
@@ -88,6 +90,17 @@ class HttpProtocol(asyncio.Protocol):
         # connection_lost only decrements connections that were counted
         # (a connection refused at the cap never bumps the counter).
         self._counted: bool = False
+        # HTTP/1.1 mandates FIFO response ordering on a connection. Parsed
+        # requests are appended here as (method, url, headers, body) snapshots;
+        # a single per-connection server-loop task drains them one at a time so
+        # a pipelined follow-up can never have its response written first.
+        self._request_queue: deque[
+            tuple[str, bytes, list[tuple[bytes, bytes]], list[bytes], bool]
+        ] = deque()
+        self._server_loop: asyncio.Task | None = None
+        # Set on teardown so an in-flight server loop stops pulling more work
+        # and a client that closes mid-pipeline does not wedge the loop.
+        self._closing: bool = False
 
     # ── httptools callbacks ──────────────────────────────────────
 
@@ -136,7 +149,7 @@ class HttpProtocol(asyncio.Protocol):
             return
 
         self.request_complete = True
-        self._keep_alive = self.parser.should_keep_alive()
+        keep_alive = self.parser.should_keep_alive()
         # Cancel keep-alive timeout while processing
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
@@ -148,19 +161,29 @@ class HttpProtocol(asyncio.Protocol):
             self._request_timer = None
         # Snapshot mutable request state before scheduling so a pipelined
         # follow-up request cannot overwrite the URL/headers/body that
-        # _dispatch will read.
-        snap_url = self.url
-        snap_headers = self.headers
-        snap_body = self.body_parts
+        # _dispatch will read. The method is snapshotted too: the parser keeps
+        # advancing through pipelined bytes, so get_method() would no longer
+        # reflect this request by the time the server loop dispatches it.
+        snap = (
+            self.parser.get_method().decode("ascii"),
+            self.url,
+            self.headers,
+            self.body_parts,
+            keep_alive,
+        )
         self.url = b""
         self.headers = []
         self.body_parts = []
         self._body_size = 0
         self._header_bytes_total = 0
-        # Create task with strong reference to prevent GC and log errors
-        task = self.loop.create_task(self._dispatch(snap_url, snap_headers, snap_body))
-        HttpProtocol._active_tasks.add(task)
-        task.add_done_callback(self._task_done)
+        self.request_complete = False
+        self._request_queue.append(snap)
+        # Start the per-connection server loop on the first queued request; it
+        # runs until the queue drains, guaranteeing FIFO response ordering.
+        if self._server_loop is None or self._server_loop.done():
+            self._server_loop = self.loop.create_task(self._serve())
+            HttpProtocol._active_tasks.add(self._server_loop)
+            self._server_loop.add_done_callback(self._task_done)
 
     # ── asyncio.Protocol callbacks ───────────────────────────────
 
@@ -204,6 +227,12 @@ class HttpProtocol(asyncio.Protocol):
             with HttpProtocol._connections_lock:
                 HttpProtocol._active_connections -= 1
             self._counted = False
+        # Stop the server loop from dispatching further queued requests and
+        # drop any not-yet-served pipelined work; the client is gone.
+        self._closing = True
+        self._request_queue.clear()
+        if self._server_loop is not None and not self._server_loop.done():
+            self._server_loop.cancel()
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
             self._keep_alive_handle = None
@@ -294,13 +323,48 @@ class HttpProtocol(asyncio.Protocol):
 
     # ── request dispatch ─────────────────────────────────────────
 
+    async def _serve(self) -> None:
+        """Per-connection server loop: dispatch queued requests one at a time.
+
+        Awaiting each `_dispatch` to completion before pulling the next request
+        enforces HTTP/1.1 FIFO response ordering and bounds in-flight work to a
+        single request per connection. The loop exits when the queue drains or
+        the connection is being torn down.
+        """
+        while self._request_queue and not self._closing:
+            method, url, headers, body_parts, keep_alive = self._request_queue.popleft()
+            should_continue = await self._dispatch(method, url, headers, body_parts, keep_alive)
+            if not should_continue:
+                # Connection: close (or a failed write) — stop serving.
+                return
+        # Queue drained on a keep-alive connection: rearm the idle timer so the
+        # connection is reaped if no further request arrives. Skip the rearm if a
+        # follow-up is mid-receive (_request_timer live) or already queued — the
+        # slowloris timer governs that request, and arming the idle timer too
+        # would break the keep-alive-XOR-request-timer invariant and could close
+        # the transport mid-request.
+        if (
+            not self._closing
+            and self.transport is not None
+            and not self.transport.is_closing()
+            and self._request_timer is None
+            and not self._request_queue
+        ):
+            self._start_keep_alive_timer()
+
     async def _dispatch(
         self,
+        method: str,
         url: bytes,
         headers: list[tuple[bytes, bytes]],
         body_parts: list[bytes],
-    ) -> None:
-        method = self.parser.get_method().decode("ascii")
+        keep_alive: bool,
+    ) -> bool:
+        """Dispatch one request and write its response.
+
+        Returns whether the connection should keep serving subsequent requests
+        (True for keep-alive, False when the connection was or must be closed).
+        """
         body = b"".join(body_parts) if body_parts else b""
 
         parsed = httptools.parse_url(url)
@@ -342,37 +406,43 @@ class HttpProtocol(asyncio.Protocol):
                 content_type="text/plain",
             )
 
-        if self.transport and not self.transport.is_closing():
-            try:
-                if getattr(response, "is_event_source", False):
-                    await response.stream_to(self.transport)  # type: ignore[attr-defined]
-                    self.transport.close()
-                elif isinstance(response, StreamingResponse):
-                    await response.stream_to(self.transport)
-                    if not self._keep_alive:
-                        self.transport.close()
-                    else:
-                        self._reset()
-                else:
-                    self.transport.write(response.encode())
-                    if not self._keep_alive:
-                        self.transport.close()
-                    else:
-                        self._reset()
-            except Exception:
-                logging.getLogger("veloce.serving.protocol").exception(
-                    "Error during response emission"
-                )
+        if self.transport is None or self.transport.is_closing():
+            return False
+
+        try:
+            if getattr(response, "is_event_source", False):
+                await response.stream_to(self.transport)  # type: ignore[attr-defined]
                 self.transport.close()
+                return False
+            if isinstance(response, StreamingResponse):
+                await response.stream_to(self.transport)
+            else:
+                self.transport.write(response.encode())
+        except Exception:
+            logging.getLogger("veloce.serving.protocol").exception("Error during response emission")
+            self.transport.close()
+            return False
+
+        if not keep_alive:
+            self.transport.close()
+            return False
+        # Keep-alive: keep serving. The parser is intentionally NOT recreated —
+        # it still holds buffered bytes for any pipelined follow-up request.
+        self._reset()
+        return True
 
     def _reset(self) -> None:
-        """Reset state for keep-alive connection reuse."""
-        self.parser = httptools.HttpRequestParser(self)
-        self.url = b""
-        self.headers = []
-        self.body_parts = []
-        self.request_complete = False
-        self._body_size = 0
-        self._header_bytes_total = 0
+        """Reset per-request scratch state for keep-alive connection reuse.
+
+        Only state that cannot already belong to a started pipelined follow-up
+        is cleared here. The URL/header/body buffers and their size counters are
+        reset by on_message_complete the moment a request is snapshotted — and a
+        reused httptools parser may have already written a follow-up's on_url /
+        on_header into those same live buffers by the time this runs (after the
+        prior request's dispatch awaits). Clearing them here would destroy that
+        follow-up's parse state and dispatch it with an empty URL, so they are
+        left alone. Only _oversized (a per-connection reject latch that no
+        normal follow-up sets) is cleared. The idle keep-alive timer is rearmed
+        by the server loop once the request queue drains, not per request.
+        """
         self._oversized = False
-        self._start_keep_alive_timer()
