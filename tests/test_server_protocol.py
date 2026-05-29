@@ -1095,6 +1095,84 @@ def test_connection_lost_while_paused_unblocks_drain():
         loop.close()
 
 
+def test_streaming_handler_timeout_does_not_race_drain_with_live_consumer():
+    """F1 regression: a handler parked in `async for chunk in request.stream()`
+    that sleeps past REQUEST_HANDLER_TIMEOUT must time out cleanly with a 504.
+
+    The shielded handler stays alive after wait_for raises, still the sole
+    consumer awaiting the body source. The dispatch path must NOT drain that
+    same source inline (a second waiter racing the live consumer on the source's
+    single-waiter event), so the read is never truncated and the buffer never
+    thrashes. The connection is closed (not reused), and when the detached
+    handler finally unwinds — here via connection_lost feeding EOF, mirroring a
+    real transport close — there is no 'coroutine never awaited' warning, no
+    event-loop error, and no second drain corrupting state."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        app.config["REQUEST_HANDLER_TIMEOUT"] = 0.02
+
+        seen: list[bytes] = []
+        handler_finished = asyncio.Event()
+
+        @app.post("/stream")
+        async def stream(request):  # noqa: ANN001, ANN202
+            try:
+                async for chunk in request.stream():
+                    seen.append(chunk)
+                    # Park well past the handler timeout while still the source's
+                    # sole consumer — this is the window the inline drain raced.
+                    await asyncio.sleep(0.2)
+            finally:
+                handler_finished.set()
+            return {"chunks": len(seen)}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # Headers complete → handler dispatched; one body chunk arrives so the
+        # consumer is parked inside its sleep when the timeout fires.
+        proto.data_received(b"POST /stream HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\n\r\n")
+        loop.run_until_complete(asyncio.sleep(0))
+        proto.on_body(b"abc")
+        loop.run_until_complete(asyncio.sleep(0))
+        assert seen == [b"abc"], "consumer should have observed the first chunk"
+
+        server_loop = proto._server_loop
+        assert server_loop is not None
+
+        # Let the handler timeout elapse; the server loop produces the 504 and
+        # returns (closing the connection) without draining the live source.
+        loop.run_until_complete(server_loop)
+
+        emitted = b"".join(transport.writes)
+        assert b"504" in emitted
+        assert b"Gateway Timeout" in emitted
+        assert transport.closed is True, "timed-out connection must be closed, not reused"
+
+        # The shielded handler is still alive (still parked in its sleep loop);
+        # the inline drain never ran, so its read was not truncated.
+        assert not handler_finished.is_set()
+        # The buffered first chunk was not discarded by a racing drain.
+        assert seen == [b"abc"]
+
+        # Mirror the real transport close: connection_lost feeds EOF, unblocking
+        # the detached handler so it unwinds. The deferred done-callback then
+        # drains the (already-EOF) source. Nothing must hang or error.
+        proto.connection_lost(None)
+        loop.run_until_complete(handler_finished.wait())
+        # Flush the deferred drain task scheduled by the done-callback.
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.run_until_complete(asyncio.sleep(0))
+
+        # No corruption: only the one chunk was ever seen, no extra error written.
+        assert seen == [b"abc"]
+        assert b"500" not in emitted
+    finally:
+        loop.close()
+
+
 def _reset_connection_counter() -> None:
     """Pin the class counter to 0 so test ordering doesn't leak state."""
     with HttpProtocol._connections_lock:

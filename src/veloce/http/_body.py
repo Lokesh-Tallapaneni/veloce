@@ -126,6 +126,16 @@ class RequestBodySource:
         """Whether EOF has been signalled and all chunks consumed."""
         return self._eof and not self._chunks
 
+    @property
+    def overflowed(self) -> bool:
+        """Whether the running byte total has passed max_content_length.
+
+        The single source of truth for the streamed body size cap: `feed`
+        latches this the moment the total crosses the limit, so the protocol
+        does not keep an independent byte counter that could drift from it.
+        """
+        return self._overflow
+
     def feed(self, chunk: bytes) -> None:
         """Append a body chunk; flip the overflow latch if the cap is passed.
 
