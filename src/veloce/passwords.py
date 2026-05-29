@@ -48,7 +48,22 @@ _SCRYPT_DKLEN = 64
 _MIN_SCRYPT_N = 2**14
 _MIN_SCRYPT_R = 1
 _MIN_SCRYPT_P = 1
+# Upper bounds mirror the floors: stored hashes whose work factors exceed
+# these caps are treated as tampering; the maximum legitimate value is
+# bounded by the largest historical Veloce default plus headroom for one
+# major-version increase. Without an upper cap an attacker with write
+# access to the hash store can set `n=2**30, r=8, p=1` and force the
+# verify call to request a multi-terabyte `maxmem` allocation in
+# `hashlib.scrypt` — a guaranteed verify-time DoS even if scrypt itself
+# eventually refuses to allocate.
+_MAX_SCRYPT_N = 2**20  # ~1 GiB at r=8, p=1 — covers OWASP 2030+ projections
+_MAX_SCRYPT_R = 32  # default 8; 32x leaves headroom for a future bump
+_MAX_SCRYPT_P = 16  # default 1; 16x leaves headroom for a future bump
 _MIN_PBKDF2_ITERATIONS = 100_000
+# PBKDF2 has no memory cost, only CPU. The cap prevents a tampered hash
+# from pinning a verify thread for minutes — 100M iterations is already
+# ~100x the current default and well above any realistic OWASP bump path.
+_MAX_PBKDF2_ITERATIONS = 100_000_000
 # OpenSSL's scrypt enforces `maxmem >= 128 * N * r * p`. Default is 32 MiB,
 # which is the exact threshold for the parameters above — give a 2x cushion
 # so the call doesn't fail with "memory limit exceeded" on tight builds.
@@ -152,6 +167,11 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
         # default does not retroactively invalidate legacy hashes.
         if n < _MIN_SCRYPT_N or r < _MIN_SCRYPT_R or p < _MIN_SCRYPT_P:
             return False
+        # Upper cap: refuse before calling scrypt, since `maxmem = 128*n*r*p*2`
+        # would otherwise demand absurd allocations the kernel may grant
+        # partially before failing.
+        if n > _MAX_SCRYPT_N or r > _MAX_SCRYPT_R or p > _MAX_SCRYPT_P:
+            return False
         try:
             # Size maxmem based on the stored parameters so verifying a
             # legacy hash with different N/r/p still works.
@@ -171,6 +191,8 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
         except ValueError:
             return False
         if iterations < _MIN_PBKDF2_ITERATIONS:
+            return False
+        if iterations > _MAX_PBKDF2_ITERATIONS:
             return False
         derived = hashlib.pbkdf2_hmac("sha256", candidate, salt, iterations, dklen=_PBKDF2_DKLEN)
         return hmac.compare_digest(derived, expected)

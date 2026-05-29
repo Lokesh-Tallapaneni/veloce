@@ -355,16 +355,17 @@ class DependencyResolver:
             try:
                 if kind == "sync":
                     if exc is not None:
-                        # Teardown's own exception while handling the outer
-                        # one: swallow to keep draining the stack.
-                        with contextlib.suppress(StopIteration, Exception):
+                        # Only swallow the generator-exhausted signal; real
+                        # teardown bugs propagate to the outer except so they
+                        # get logged instead of silently disappearing.
+                        with contextlib.suppress(StopIteration):
                             gen.throw(exc)
                     else:
                         with contextlib.suppress(StopIteration):
                             next(gen)
                 else:  # async
                     if exc is not None:
-                        with contextlib.suppress(StopAsyncIteration, Exception):
+                        with contextlib.suppress(StopAsyncIteration):
                             await gen.athrow(exc)
                     else:
                         with contextlib.suppress(StopAsyncIteration):

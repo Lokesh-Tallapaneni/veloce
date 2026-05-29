@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
@@ -263,3 +264,55 @@ async def test_concurrent_requests_keep_independent_teardown_stacks():
     # /a's teardown must run only after /a's handler completes. A shared
     # resolver tears it down early during /b's dispatch — this fails there.
     assert events.index("teardown:a") > events.index("handler:a:done")
+
+
+@pytest.mark.asyncio
+async def test_teardown_exception_during_error_unwind_is_logged_and_chain_continues(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When the handler raises and a teardown's own error-cleanup path raises,
+    that bug must surface through the `veloce.dependency` logger instead of
+    being silently swallowed, and the remaining teardowns must still run."""
+    app = Veloce(debug=True, openapi_url=None)
+    events: list[str] = []
+
+    def outer() -> Iterator[str]:
+        events.append("outer-setup")
+        try:
+            yield "outer"
+        finally:
+            events.append("outer-teardown")
+
+    def bad_inner() -> Iterator[str]:
+        events.append("bad-setup")
+        try:
+            yield "bad"
+        except Exception:
+            events.append("bad-teardown-raises")
+            raise RuntimeError("boom") from None
+
+    @app.get("/x")
+    async def handler(o: str = Depends(outer), b: str = Depends(bad_inner)):
+        raise ValueError("handler failed")
+
+    with caplog.at_level(logging.ERROR, logger="veloce.dependency"):
+        resp = await app.handle_request(_req("/x"))
+
+    assert resp.status_code == 500
+    # The bad teardown was reached and raised — the outer teardown still ran
+    # afterwards, proving the chain wasn't broken by the one bad teardown.
+    assert events == [
+        "outer-setup",
+        "bad-setup",
+        "bad-teardown-raises",
+        "outer-teardown",
+    ]
+    # The RuntimeError must have been logged via the dependency module's
+    # logger rather than swallowed by an overly broad contextlib.suppress.
+    matches = [
+        r
+        for r in caplog.records
+        if r.name == "veloce.dependency" and "teardown raised" in r.getMessage()
+    ]
+    assert matches, "expected veloce.dependency to log the teardown failure"
+    assert any(isinstance(r.exc_info[1], RuntimeError) if r.exc_info else False for r in matches)
