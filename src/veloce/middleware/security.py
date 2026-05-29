@@ -35,10 +35,10 @@ class TrustedHostMiddleware(Middleware):
         self._exact: frozenset[str] = frozenset(
             h.lower() for h in allowed_hosts if not h.startswith("*.")
         )
-        # Wildcards stored as bare suffix strings (no leading dot) — match
-        # `host.endswith("." + suffix)`.
-        self._wildcard_suffixes: tuple[str, ...] = tuple(
-            h.lower()[2:] for h in allowed_hosts if h.startswith("*.")
+        # Wildcards stored with leading dot already baked in so the per-request
+        # check is a single `endswith` call — no per-request string concat.
+        self._wildcard_suffixes_dotted: tuple[str, ...] = tuple(
+            "." + h.lower()[2:] for h in allowed_hosts if h.startswith("*.")
         )
         self._allow_all = "*" in self._exact
 
@@ -54,7 +54,7 @@ class TrustedHostMiddleware(Middleware):
         # `*.example.com` matches `a.example.com`, `a.b.example.com`, but
         # NOT the bare `example.com` — the wildcard segment must exist
         # (per common nginx/Caddy conventions).
-        return any(host.endswith("." + suffix) for suffix in self._wildcard_suffixes)
+        return any(host.endswith(suffix) for suffix in self._wildcard_suffixes_dotted)
 
     async def process_request(self, request: Request) -> Response | None:
         """Reject requests whose Host header is not in the allow-list."""
