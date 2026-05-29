@@ -1941,7 +1941,13 @@ class Veloce(Router):
         return await funcs[0](request, _make_next(0))
 
     async def _dispatch_request(self, request: Request) -> Response:
-        """Core request dispatch — middleware, routing, handler execution."""
+        """Core request dispatch — middleware, routing, handler execution.
+
+        Thin orchestrator: the request phase, route resolution, handler
+        invocation, and response hooks each live in a focused helper. The
+        `try/finally` here owns the per-request teardown state (`_exc`,
+        `_bp_name`, `resolver`) that the `finally` block reads.
+        """
         _exc: Exception | None = None
         _bp_name: str | None = None
         # Resolver allocation is deferred until a non-trivial route demands
@@ -1970,159 +1976,32 @@ class Veloce(Router):
                 request.endpoint = match.route_info.name
                 request._state["url_rule"] = match.route_info.path_template
 
-            # Run before_request hooks — app-level first, then the
-            # blueprint's own (matched via the endpoint's `{bp}.` prefix).
-            for hook in self._before_request_hooks:
-                result = await self._call_handler(hook, {"request": request})
-                if result is not None:
-                    return await self._run_response_middleware(
-                        request, self._coerce_response(result)
-                    )
-            _bp_name = _endpoint_blueprint(request.endpoint)
-            if self._bp_before_hooks and _bp_name is not None:
-                for hook in self._bp_before_hooks.get(_bp_name, ()):
-                    result = await self._call_handler(hook, {"request": request})
-                    if result is not None:
-                        return await self._run_response_middleware(
-                            request, self._coerce_response(result)
-                        )
+            # Run before_request hooks (app-level then matched blueprint).
+            # A non-None return short-circuits. `_bp_name` is recorded as the
+            # matched blueprint so the `finally`-block teardown hooks fire for
+            # the right blueprint even when dispatch short-circuits before the
+            # final match is resolved.
+            early, _bp_name = await self._run_before_hooks(request)
+            if early is not None:
+                return early
 
-            # Check mounted sub-apps
-            for prefix, prefix_slash, sub_app in self._mounted_apps:
-                if request.path.startswith(prefix_slash) or request.path == prefix:
-                    sub_path = request.path[len(prefix) :] or "/"
-                    sub_request = Request(
-                        method=request.method,
-                        path=sub_path,
-                        query_string=request.query_string,
-                        headers=request.headers,
-                        body=request.body,
-                        transport=request.transport,
-                        app=sub_app,
-                    )
-                    if hasattr(sub_app, "handle_request"):
-                        response = await sub_app.handle_request(sub_request)
-                        return await self._run_response_middleware(request, response)
-
-            # Check static files
-            for static in self._static_handlers:
-                response = await static.handle(request)
-                if response is not None:
-                    return await self._run_response_middleware(request, response)
-
-            # Route matching — reuse the match taken above unless a
-            # before_request hook rewrote the request path or method, in
-            # which case the routing inputs changed and we must re-match.
-            if request.path != _matched_path or request.method != _matched_method:
-                match = self.match(request.method, request.path)
-
-            # Subdomain constraint check — if the matched route declares a
-            # `subdomain`, the request's host must be `{subdomain}.{SERVER_NAME}`.
-            # Mismatch raises 404 directly (not 405, because
-            # the path is reachable, just not from this host).
-            # `subdomain="*"` accepts any non-empty subdomain.
-            if (
-                match is not None
-                and match.route_info.subdomain is not None
-                and not self._subdomain_matches(request, match.route_info.subdomain)
-            ):
-                raise HTTPException(404, "Not Found")
-
-            # Host constraint check — the full `Host` header must equal
-            # the route's declared `host` (case-insensitive, port-stripped).
-            # Mismatch → 404 (the path is reachable, just not from this host).
-            if match is not None and match.route_info.host is not None:
-                req_host = _extract_host(request.headers.get("host", "") or "")
-                if req_host != match.route_info.host.lower():
-                    raise HTTPException(404, "Not Found")
-
-            # Redirect slashes (like common web frameworks): /users -> /users/ or vice versa
-            if match is None and self.redirect_slashes:
-                alt = (
-                    request.path.rstrip("/")
-                    if request.path.endswith("/") and request.path != "/"
-                    else request.path + "/"
-                )
-                alt_match = self.match(request.method, alt)
-                if alt_match is not None:
-                    code = 308 if request.method != "GET" else 307
-                    response = RedirectResponse(alt, status_code=code)
-                    if self._middlewares:
-                        response = await self._run_response_middleware(request, response)
-                    return response
-
-            if match is None:
-                # Check if path exists but method is wrong
-                allowed = self.get_allowed_methods(request.path)
-                if allowed:
-                    # RFC 9110 §9.3.7: OPTIONS auto-responds with `Allow:` and
-                    # an empty body even when no handler is registered.
-                    if request.method == "OPTIONS":
-                        response = self.make_default_options_response(request.path)
-                        if self._middlewares:
-                            response = await self._run_response_middleware(request, response)
-                        return response
-                    return await self._handle_error(
-                        request,
-                        status.HTTP_405_METHOD_NOT_ALLOWED,
-                        JSONResponse(
-                            {"detail": "Method Not Allowed", "allowed": allowed},
-                            status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-                            headers={"Allow": ", ".join(allowed)},
-                        ),
-                    )
-                raise HTTPException(404, "Not Found")
-
-            # Set path params + endpoint name on request.
-            request.path_params = match.path_params
-            # the routing-rule `defaults` — fill in fixed values for params
-            # not already supplied by the matched URL.
-            if match.route_info.defaults:
-                for _dk, _dv in match.route_info.defaults.items():
-                    request.path_params.setdefault(_dk, _dv)
-            request.endpoint = match.route_info.name
-            request._state["url_rule"] = match.route_info.path_template
+            # Resolve the route — handles mounted sub-apps, static files,
+            # the re-match-after-hook-rewrite case, subdomain/host
+            # constraints, slash redirects, and 404/405. Returns either a
+            # terminal Response (already through response middleware) or the
+            # match to dispatch.
+            resolved = await self._resolve_route(request, match, _matched_path, _matched_method)
+            if isinstance(resolved, Response):
+                return resolved
+            match = resolved
             _bp_name = _endpoint_blueprint(request.endpoint)
 
-            # URL value preprocessors: mutate path_params in place
-            # before the handler sees them. Endpoint is the route name.
-            if self._url_value_preprocessors:
-                endpoint = match.route_info.name
-                for proc in self._url_value_preprocessors:
-                    proc(endpoint, request.path_params)
-
-            # Resolve dependencies (with overrides) and call handler.
-            # Fast path: consume the pre-built handler plan that Router.add_route
-            # cached on RouteInfo at registration time.
+            # Resolve dependencies first and bind the resolver to this frame
+            # *before* calling the handler — if the handler raises, the
+            # `finally` block still sees the resolver and runs its
+            # yield-dependency teardowns.
+            kwargs, resolver = await self._resolve_dependencies(request, match)
             route_info = match.route_info
-            if route_info.handler_plan is not None:
-                if route_info.is_trivial_plan:
-                    kwargs = {}
-                elif route_info.is_request_only_plan:
-                    kwargs = {route_info.handler_plan.slots[0].name: request}
-                else:
-                    resolver = DependencyResolver()
-                    resolver._overrides = self._dependency_overrides
-                    resolver._override_subplans = self._override_subplans
-                    kwargs = await resolver.resolve_plan(
-                        route_info.handler_plan,
-                        request,
-                        match.path_params,
-                        route_info.route_dep_plans,
-                    )
-            else:
-                resolver = DependencyResolver()
-                resolver._overrides = self._dependency_overrides
-                resolver._override_subplans = self._override_subplans
-                kwargs = await resolver.resolve(
-                    route_info.handler,
-                    request,
-                    match.path_params,
-                    route_dependencies=[
-                        d for d in route_info.dependencies if isinstance(d, Depends)
-                    ],
-                )
-
             result = await self._call_handler(
                 route_info.handler,
                 kwargs,
@@ -2131,88 +2010,16 @@ class Veloce(Router):
                 ),
             )
 
-            # Apply response_model validation + dump flags before coercion.
-            # The handler may return a dict/BaseModel/list; if the route
-            # declared a response_model, route the value through it so
-            # extra fields drop, aliases apply, and unset/None filters fire.
-            if match.route_info.response_model is not None and not isinstance(result, Response):
-                result = self._apply_response_model(result, match.route_info)
+            # Apply response_model, coerce, and merge any injected response.
+            response = self._build_response(request, match, result)
 
-            response = self._coerce_response(result, match.route_info.response_class)
+            # Run after_request hooks (app + blueprint) and one-shot
+            # `after_this_request` callbacks.
+            response = await self._run_after_hooks(request, response, _bp_name)
 
-            # Apply route-level status_code override
-            if match.route_info.status_code != 200 and response.status_code == 200:
-                response.status_code = match.route_info.status_code
-                response._encoded = None
-
-            # Response injection — merge a handler-injected
-            # Response's status_code + headers onto the final response.
-            # Skipped when the handler returned a Response itself (its own
-            # status/headers already win). `status_code == 0` means the
-            # handler never touched it, so it is not applied.
-            injected = request._state.get("_injected_response") if request._state else None
-            if injected is not None and not isinstance(result, Response):
-                if injected.status_code:
-                    response.status_code = injected.status_code
-                for hk, hv in injected.headers.items():
-                    if hk.lower() == "set-cookie":
-                        response._append_set_cookie_header(hv)
-                    else:
-                        response.headers[hk] = hv
-                response._encoded = None
-
-            # Run after_request hooks — app-level then matched blueprint.
-            for hook in reversed(self._after_request_hooks):
-                hook_result = await self._call_handler(
-                    hook, {"request": request, "response": response}
-                )
-                if hook_result is not None and isinstance(hook_result, Response):
-                    response = hook_result
-            if self._bp_after_hooks and _bp_name is not None:
-                for hook in reversed(self._bp_after_hooks.get(_bp_name, ())):
-                    hook_result = await self._call_handler(
-                        hook, {"request": request, "response": response}
-                    )
-                    if hook_result is not None and isinstance(hook_result, Response):
-                        response = hook_result
-
-            # Drain one-shot `after_this_request(fn)` callbacks. These run
-            # *after* the global hooks (so per-request adjustments see the
-            # global hooks' mutations) and only for the current request.
-            one_shot = request._state.get("_after_this_request") if request._state else None
-            if one_shot:
-                for fn in one_shot:
-                    fn_result = await self._call_handler(
-                        fn, {"request": request, "response": response}
-                    )
-                    if fn_result is not None and isinstance(fn_result, Response):
-                        response = fn_result
-
-            # Run background tasks if present — hold strong ref to prevent GC
-            if request._background_tasks is not None:
-                bg_task = asyncio.get_running_loop().create_task(
-                    request._background_tasks.run_all()
-                )
-                bg_task.add_done_callback(self._log_background_task_error)
-
-            # Response-attached background task (shape:
-            # `Response(content=..., background=BackgroundTask(fn))`).
-            # Runs in the same fire-and-forget pattern as the
-            # DI-injected BackgroundTasks queue.
-            attached_bg = getattr(response, "background", None)
-            if attached_bg is not None:
-                # `BackgroundTasks` collection → `.run_all()`;
-                # single `BackgroundTask` → `.run()`. Anything else with
-                # a `run()` coroutine method is supported too.
-                if hasattr(attached_bg, "run_all"):
-                    coro = attached_bg.run_all()
-                elif hasattr(attached_bg, "run"):
-                    coro = attached_bg.run()
-                else:
-                    coro = None
-                if coro is not None:
-                    bg_task = asyncio.get_running_loop().create_task(coro)
-                    bg_task.add_done_callback(self._log_background_task_error)
+            # Schedule any background tasks (DI-injected queue + the
+            # response-attached task) in fire-and-forget fashion.
+            self._schedule_background_tasks(request, response)
 
             # Inline empty-middleware gate skips the awaited no-op coroutine
             # creation in the common case (no middleware registered).
@@ -2336,6 +2143,304 @@ class Veloce(Router):
                     request_tearing_down.send(self, exc=_exc)
             except Exception:
                 self.logger.exception("signal receiver raised an exception")
+
+    async def _run_before_hooks(self, request: Request) -> tuple[Response | None, str | None]:
+        """Run before_request hooks; return `(short_circuit_response, bp_name)`.
+
+        App-level hooks fire first, then the matched blueprint's (the
+        blueprint bucket is selected from `request.endpoint` *after* the
+        app-level hooks run, so a hook that rewrites the endpoint is
+        honoured). A hook returning a non-None value short-circuits: it is
+        coerced and passed through response middleware (unconditionally,
+        matching the original early-return path) and returned.
+
+        `bp_name` is the matched blueprint — `None` while the app-level hooks
+        are still running, then the endpoint's blueprint once they complete.
+        The orchestrator records it as the teardown blueprint, so a
+        short-circuit inside an app-level hook leaves it `None` (no blueprint
+        teardown) exactly as the inline version did.
+        """
+        for hook in self._before_request_hooks:
+            result = await self._call_handler(hook, {"request": request})
+            if result is not None:
+                response = await self._run_response_middleware(
+                    request, self._coerce_response(result)
+                )
+                return response, None
+        bp_name = _endpoint_blueprint(request.endpoint)
+        if self._bp_before_hooks and bp_name is not None:
+            for hook in self._bp_before_hooks.get(bp_name, ()):
+                result = await self._call_handler(hook, {"request": request})
+                if result is not None:
+                    response = await self._run_response_middleware(
+                        request, self._coerce_response(result)
+                    )
+                    return response, bp_name
+        return None, bp_name
+
+    async def _resolve_route(
+        self,
+        request: Request,
+        match: Any,
+        matched_path: str,
+        matched_method: str,
+    ) -> Any:
+        """Resolve the route to dispatch, or a terminal Response.
+
+        Checks mounted sub-apps and static handlers first, re-matches when a
+        before_request hook rewrote the path or method, enforces
+        subdomain/host constraints, applies slash redirects, and produces the
+        405/404 responses. Returns either a Response (already through response
+        middleware) or the match to dispatch, having populated `path_params`,
+        defaults, endpoint, and url_rule and run URL value preprocessors.
+        Raises `HTTPException` for the 404 / constraint-mismatch cases.
+        """
+        # Check mounted sub-apps
+        for prefix, prefix_slash, sub_app in self._mounted_apps:
+            if request.path.startswith(prefix_slash) or request.path == prefix:
+                sub_path = request.path[len(prefix) :] or "/"
+                sub_request = Request(
+                    method=request.method,
+                    path=sub_path,
+                    query_string=request.query_string,
+                    headers=request.headers,
+                    body=request.body,
+                    transport=request.transport,
+                    app=sub_app,
+                )
+                if hasattr(sub_app, "handle_request"):
+                    response = await sub_app.handle_request(sub_request)
+                    return await self._run_response_middleware(request, response)
+
+        # Check static files
+        for static in self._static_handlers:
+            response = await static.handle(request)
+            if response is not None:
+                return await self._run_response_middleware(request, response)
+
+        # Route matching — reuse the match taken before the before_request
+        # hooks ran unless a hook rewrote the request path or method, in
+        # which case the routing inputs changed and we must re-match.
+        if request.path != matched_path or request.method != matched_method:
+            match = self.match(request.method, request.path)
+
+        # Subdomain constraint check — if the matched route declares a
+        # `subdomain`, the request's host must be `{subdomain}.{SERVER_NAME}`.
+        # Mismatch raises 404 directly (not 405, because
+        # the path is reachable, just not from this host).
+        # `subdomain="*"` accepts any non-empty subdomain.
+        if (
+            match is not None
+            and match.route_info.subdomain is not None
+            and not self._subdomain_matches(request, match.route_info.subdomain)
+        ):
+            raise HTTPException(404, "Not Found")
+
+        # Host constraint check — the full `Host` header must equal
+        # the route's declared `host` (case-insensitive, port-stripped).
+        # Mismatch → 404 (the path is reachable, just not from this host).
+        if match is not None and match.route_info.host is not None:
+            req_host = _extract_host(request.headers.get("host", "") or "")
+            if req_host != match.route_info.host.lower():
+                raise HTTPException(404, "Not Found")
+
+        # Redirect slashes (like common web frameworks): /users -> /users/ or vice versa
+        if match is None and self.redirect_slashes:
+            alt = (
+                request.path.rstrip("/")
+                if request.path.endswith("/") and request.path != "/"
+                else request.path + "/"
+            )
+            alt_match = self.match(request.method, alt)
+            if alt_match is not None:
+                code = 308 if request.method != "GET" else 307
+                response = RedirectResponse(alt, status_code=code)
+                if self._middlewares:
+                    response = await self._run_response_middleware(request, response)
+                return response
+
+        if match is None:
+            # Check if path exists but method is wrong
+            allowed = self.get_allowed_methods(request.path)
+            if allowed:
+                # RFC 9110 §9.3.7: OPTIONS auto-responds with `Allow:` and
+                # an empty body even when no handler is registered.
+                if request.method == "OPTIONS":
+                    response = self.make_default_options_response(request.path)
+                    if self._middlewares:
+                        response = await self._run_response_middleware(request, response)
+                    return response
+                return await self._handle_error(
+                    request,
+                    status.HTTP_405_METHOD_NOT_ALLOWED,
+                    JSONResponse(
+                        {"detail": "Method Not Allowed", "allowed": allowed},
+                        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+                        headers={"Allow": ", ".join(allowed)},
+                    ),
+                )
+            raise HTTPException(404, "Not Found")
+
+        # Set path params + endpoint name on request.
+        request.path_params = match.path_params
+        # the routing-rule `defaults` — fill in fixed values for params
+        # not already supplied by the matched URL.
+        if match.route_info.defaults:
+            for _dk, _dv in match.route_info.defaults.items():
+                request.path_params.setdefault(_dk, _dv)
+        request.endpoint = match.route_info.name
+        request._state["url_rule"] = match.route_info.path_template
+
+        # URL value preprocessors: mutate path_params in place
+        # before the handler sees them. Endpoint is the route name.
+        if self._url_value_preprocessors:
+            endpoint = match.route_info.name
+            for proc in self._url_value_preprocessors:
+                proc(endpoint, request.path_params)
+
+        return match
+
+    async def _resolve_dependencies(
+        self, request: Request, match: Any
+    ) -> tuple[dict, DependencyResolver | None]:
+        """Build the handler kwargs and the resolver that backs them.
+
+        Returns `(kwargs, resolver)`. The resolver is `None` for trivial /
+        request-only plans (no dependencies to resolve). The caller must
+        hold the returned resolver so the dispatch `finally` can run its
+        yield-dependency teardowns even when the handler raises.
+        """
+        # Fast path: consume the pre-built handler plan that Router.add_route
+        # cached on RouteInfo at registration time.
+        route_info = match.route_info
+        if route_info.handler_plan is not None:
+            if route_info.is_trivial_plan:
+                return {}, None
+            if route_info.is_request_only_plan:
+                return {route_info.handler_plan.slots[0].name: request}, None
+            resolver = DependencyResolver()
+            resolver._overrides = self._dependency_overrides
+            resolver._override_subplans = self._override_subplans
+            kwargs = await resolver.resolve_plan(
+                route_info.handler_plan,
+                request,
+                match.path_params,
+                route_info.route_dep_plans,
+            )
+            return kwargs, resolver
+        resolver = DependencyResolver()
+        resolver._overrides = self._dependency_overrides
+        resolver._override_subplans = self._override_subplans
+        kwargs = await resolver.resolve(
+            route_info.handler,
+            request,
+            match.path_params,
+            route_dependencies=[d for d in route_info.dependencies if isinstance(d, Depends)],
+        )
+        return kwargs, resolver
+
+    def _build_response(self, request: Request, match: Any, result: Any) -> Response:
+        """Turn a handler return value into the final Response.
+
+        Applies the route `response_model`, coerces to a Response, applies the
+        route-level status_code override, and merges any handler-injected
+        Response's status / headers.
+        """
+        route_info = match.route_info
+        # Apply response_model validation + dump flags before coercion.
+        # The handler may return a dict/BaseModel/list; if the route
+        # declared a response_model, route the value through it so
+        # extra fields drop, aliases apply, and unset/None filters fire.
+        if route_info.response_model is not None and not isinstance(result, Response):
+            result = self._apply_response_model(result, route_info)
+
+        response = self._coerce_response(result, route_info.response_class)
+
+        # Apply route-level status_code override
+        if route_info.status_code != 200 and response.status_code == 200:
+            response.status_code = route_info.status_code
+            response._encoded = None
+
+        # Response injection — merge a handler-injected
+        # Response's status_code + headers onto the final response.
+        # Skipped when the handler returned a Response itself (its own
+        # status/headers already win). `status_code == 0` means the
+        # handler never touched it, so it is not applied.
+        injected = request._state.get("_injected_response") if request._state else None
+        if injected is not None and not isinstance(result, Response):
+            if injected.status_code:
+                response.status_code = injected.status_code
+            for hk, hv in injected.headers.items():
+                if hk.lower() == "set-cookie":
+                    response._append_set_cookie_header(hv)
+                else:
+                    response.headers[hk] = hv
+            response._encoded = None
+
+        return response
+
+    async def _run_after_hooks(
+        self, request: Request, response: Response, bp_name: str | None
+    ) -> Response:
+        """Run after_request hooks and one-shot `after_this_request` callbacks.
+
+        App-level hooks fire in reverse registration order, then the matched
+        blueprint's, then the per-request one-shot callbacks. Each may return
+        a replacement Response.
+        """
+        # Run after_request hooks — app-level then matched blueprint.
+        for hook in reversed(self._after_request_hooks):
+            hook_result = await self._call_handler(hook, {"request": request, "response": response})
+            if hook_result is not None and isinstance(hook_result, Response):
+                response = hook_result
+        if self._bp_after_hooks and bp_name is not None:
+            for hook in reversed(self._bp_after_hooks.get(bp_name, ())):
+                hook_result = await self._call_handler(
+                    hook, {"request": request, "response": response}
+                )
+                if hook_result is not None and isinstance(hook_result, Response):
+                    response = hook_result
+
+        # Drain one-shot `after_this_request(fn)` callbacks. These run
+        # *after* the global hooks (so per-request adjustments see the
+        # global hooks' mutations) and only for the current request.
+        one_shot = request._state.get("_after_this_request") if request._state else None
+        if one_shot:
+            for fn in one_shot:
+                fn_result = await self._call_handler(fn, {"request": request, "response": response})
+                if fn_result is not None and isinstance(fn_result, Response):
+                    response = fn_result
+        return response
+
+    def _schedule_background_tasks(self, request: Request, response: Response) -> None:
+        """Schedule the DI-injected queue and response-attached background task.
+
+        Both run fire-and-forget; a strong reference is held via the loop's
+        task set and an error-logging done-callback is attached.
+        """
+        # Run background tasks if present — hold strong ref to prevent GC
+        if request._background_tasks is not None:
+            bg_task = asyncio.get_running_loop().create_task(request._background_tasks.run_all())
+            bg_task.add_done_callback(self._log_background_task_error)
+
+        # Response-attached background task (shape:
+        # `Response(content=..., background=BackgroundTask(fn))`).
+        # Runs in the same fire-and-forget pattern as the
+        # DI-injected BackgroundTasks queue.
+        attached_bg = getattr(response, "background", None)
+        if attached_bg is not None:
+            # `BackgroundTasks` collection → `.run_all()`;
+            # single `BackgroundTask` → `.run()`. Anything else with
+            # a `run()` coroutine method is supported too.
+            if hasattr(attached_bg, "run_all"):
+                coro = attached_bg.run_all()
+            elif hasattr(attached_bg, "run"):
+                coro = attached_bg.run()
+            else:
+                coro = None
+            if coro is not None:
+                bg_task = asyncio.get_running_loop().create_task(coro)
+                bg_task.add_done_callback(self._log_background_task_error)
 
     async def _handle_error(
         self, request: Request, status_code: int, default: Response
