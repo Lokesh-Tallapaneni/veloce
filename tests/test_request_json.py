@@ -111,3 +111,13 @@ async def test_request_json_empty_body_resolves_to_none():
     """Empty body hits the `if self.body` short-circuit and returns
     `None` rather than raising. Pins the branch the inspector flagged."""
     assert await _req(b"").json() is None
+
+
+def test_get_json_raises_when_body_not_yet_buffered():
+    """The sync `get_json()` accessor must refuse to parse until the body
+    has been drained — it points the caller at `await request.json()`.
+    Pins the contract before Pass 2 makes the un-drained branch reachable."""
+    req = _req(b'{"a": 1}')
+    req._body_drained = False
+    with pytest.raises(RuntimeError, match=r"await request\.json\(\)"):
+        req.get_json()

@@ -6,6 +6,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Request bodies now stream. The raw HTTP/1.1 server dispatches a handler as
+soon as the request line and headers are parsed and feeds the body in as it
+arrives over a bounded, backpressured queue, instead of buffering the whole
+body in memory before dispatch. Peak per-connection body memory is now the
+queue bound rather than the full upload, so many concurrent large uploads no
+longer scale memory with body size.
+
+### Changed
+
+- **BREAKING — request body access is now asynchronous.** To stream a body the
+  framework can no longer hand the handler a fully-formed bytes attribute, so
+  the body accessors are now awaitables:
+  - `request.body` (attribute) → `await request.body()` (method).
+  - `request.text` (property) → `await request.text()`.
+  - `request.get_data(...)` is now `await request.get_data(...)`.
+  - `request.json()` and `request.form()` were already `async` — no change for
+    callers that already `await` them.
+  - `request.data` remains a **synchronous** property for the buffered case,
+    but raises `RuntimeError` if accessed while the body is still streaming and
+    has not been drained yet; use `await request.body()` on the async path.
+  - `request.get_json()` remains synchronous and works once the body is
+    buffered; it raises a clear error if the body has not been read yet.
+
+  Migration: add `await` to `request.body`, `request.text`, and
+  `request.get_data(...)` call sites, and make the enclosing handler/util
+  `async`. Code that already used `await request.json()` /
+  `await request.form()` needs no change.
+
+- **`async for chunk in request.stream()` is now true streaming on the raw
+  HTTP/1.1 server.** Chunks are yielded as they arrive off the socket rather
+  than sliced from an already-buffered body, so a handler that only iterates
+  `stream()` (e.g. writing an upload straight to disk) processes an arbitrarily
+  large body with bounded memory. The in-memory ASGI and `TestClient` paths
+  pre-fill the body, so `stream()` there yields the complete body as before.
+
+- **`MAX_CONTENT_LENGTH` is enforced against the streamed running total** (and
+  the declared `Content-Length`) and still returns `413` — now rejecting an
+  over-large upload mid-stream instead of only after the whole body is
+  buffered.
+
+### Internal
+
+- The raw protocol serves pipelined requests through a per-connection FIFO loop
+  (responses preserved in request order), drains-and-discards any body a handler
+  leaves unread so keep-alive connections cannot be corrupted by leftover bytes,
+  and pauses socket reads when the body queue fills, resuming as the handler
+  drains it.
+
 ## [0.1.4] - 2026-05-25
 
 Post-v0.1.3 audit batch: verified findings from a per-file framework

@@ -1866,7 +1866,19 @@ class Veloce(Router):
         max_size = self.config.get("MAX_CONTENT_LENGTH")
         if max_size is not None:
             declared = request.content_length
-            if (declared is not None and declared > max_size) or len(request.body) > max_size:
+            over = declared is not None and declared > max_size
+            # For an in-memory request the body is already buffered, so the
+            # await resolves immediately and we enforce against the actual
+            # bytes (defence-in-depth for bodies that omit Content-Length).
+            # For a streamed request (raw HTTP/1.1) the body has NOT arrived
+            # yet — draining it here would defeat streaming and force the
+            # whole body into memory. The protocol already caps the streamed
+            # running total and the body source raises 413 mid-read, so the
+            # declared-length check above is the only eager enforcement.
+            if not over and request._body_drained:
+                buffered = await request.body()
+                over = len(buffered) > max_size
+            if over:
                 response: Response = JSONResponse(
                     {
                         "detail": "Request body exceeds MAX_CONTENT_LENGTH",
@@ -2204,7 +2216,7 @@ class Veloce(Router):
                     path=sub_path,
                     query_string=request.query_string,
                     headers=request.headers,
-                    body=request.body,
+                    body=await request.body(),
                     transport=request.transport,
                     app=sub_app,
                 )

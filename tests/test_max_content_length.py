@@ -13,7 +13,7 @@ def _app(max_size: int | None) -> Veloce:
 
     @app.post("/echo")
     async def echo(request: Request):
-        return {"received": len(request.body)}
+        return {"received": len(await request.body())}
 
     return app
 

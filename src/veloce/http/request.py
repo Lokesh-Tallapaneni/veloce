@@ -49,7 +49,9 @@ class Request:
         "query_string",
         "_headers",
         "_headers_raw",
-        "body",
+        "_body",
+        "_body_drained",
+        "_body_source",
         "transport",
         "app",
         "scope",
@@ -88,6 +90,7 @@ class Request:
         transport: asyncio.Transport | None = None,
         app: Any = None,
         scope: dict | None = None,
+        body_source: Any = None,
     ) -> None:
         # ASGI servers and `Veloce.add_route` already feed an uppercase
         # method; skip the allocation when the caller already complies.
@@ -112,7 +115,22 @@ class Request:
             self._headers = Headers()
         else:
             self._headers = Headers(headers)  # type: ignore[arg-type]
-        self.body = body
+        # Body access is async (`await request.body()`). Two shapes:
+        #  - in-memory (TestClient / ASGI): `body` holds the complete bytes
+        #    the caller already buffered, so the first drain resolves
+        #    immediately with no I/O and `_body_drained` starts True.
+        #  - streamed (raw HTTP/1.1): `body_source` is a `RequestBodySource`
+        #    fed by the protocol as bytes arrive; the body is not yet
+        #    buffered, so `_body_drained` starts False and the first drain
+        #    pulls the source to EOF. `_body` caches the assembled bytes once
+        #    drained so sync accessors (`.data`, `get_json`) can serve them.
+        self._body_source: Any = body_source
+        if body_source is None:
+            self._body: bytes = body
+            self._body_drained: bool = True
+        else:
+            self._body = body
+            self._body_drained = False
         self.transport = transport
         self.app = app
         self.scope = scope or {}
@@ -185,14 +203,44 @@ class Request:
         """an alias for `query_params` — the parsed URL query string."""
         return self.query_params
 
+    async def _drain_body(self) -> bytes:
+        """Pull the body source to EOF once and cache the assembled bytes.
+
+        In-memory requests are pre-filled at construction, so the first
+        drain resolves immediately. Streamed requests (raw HTTP/1.1) pull the
+        `RequestBodySource` to EOF here. The result is cached on `_body`;
+        later drains return the cache.
+        """
+        if not self._body_drained:
+            if self._body_source is not None:
+                self._body = await self._body_source.read()
+            self._body_drained = True
+        return self._body
+
+    async def body(self) -> bytes:
+        """Return the full request body as bytes, draining the source once.
+
+        Async to match Starlette / FastAPI / Quart. Veloce buffers the
+        body before dispatch, so no I/O happens inside the await — the
+        coroutine resolves immediately with the cached bytes.
+        """
+        return await self._drain_body()
+
     @property
     def data(self) -> bytes:
         """Raw request body bytes — `request.data` shape.
 
-        The sync-property form of `get_data()`. Returns the body
-        exactly as received, with no decoding or form parsing.
+        The sync-property form of `body()`. Returns the body exactly as
+        received, with no decoding or form parsing. Requires the body to
+        already be buffered; raises `RuntimeError` otherwise (use
+        `await request.body()` for the async path).
         """
-        return self.body
+        if not self._body_drained:
+            raise RuntimeError(
+                "Request body is not yet buffered; use `await request.body()` "
+                "instead of the sync `request.data` accessor"
+            )
+        return self._body
 
     @property
     def path_params(self) -> dict[str, str]:
@@ -224,19 +272,22 @@ class Request:
         remains synchronous to match Flask's `Request.get_json`.
         """
         if self._json is None:
-            if not self.body:
+            body = await self._drain_body()
+            if not body:
                 self._json = None
             else:
                 try:
-                    self._json = orjson.loads(self.body)
+                    self._json = orjson.loads(body)
                 except (orjson.JSONDecodeError, ValueError) as exc:
                     from veloce.exceptions import BadRequest  # noqa: I001 — breaks cycle: exceptions -> app -> request
 
                     raise BadRequest(f"Failed to decode JSON body: {exc}") from exc
         return self._json
 
-    def get_data(self, as_text: bool = False, cache: bool = True) -> bytes | str:
-        """Return the raw request body.
+    async def get_data(self, as_text: bool = False, cache: bool = True) -> bytes | str:
+        """Return the raw request body, draining the source once.
+
+        Async to match `body()` / `json()` / `form()`.
 
         - `as_text=True` decodes via the `Content-Type` charset (default
           UTF-8). Falls back to `latin-1` when the declared charset is
@@ -250,13 +301,14 @@ class Request:
         Returns `bytes` (default) or `str` (with `as_text=True`).
         """
         _ = cache  # reserved for streaming-body work; no caching needed yet
+        body = await self._drain_body()
         if not as_text:
-            return self.body
+            return body
         charset = self.mimetype_params.get("charset", "utf-8")
         try:
-            return self.body.decode(charset)
+            return body.decode(charset)
         except (LookupError, UnicodeDecodeError):
-            return self.body.decode("latin-1")
+            return body.decode("latin-1")
 
     def get_json(
         self,
@@ -278,17 +330,28 @@ class Request:
           is the caller's job when `cache=False`.
 
         Returns `None` for empty bodies regardless of `force` / `silent`.
+
+        This is the synchronous, Flask-flavoured accessor: it requires the
+        body to already be buffered (the in-memory path), and raises
+        `RuntimeError` otherwise — reach for `await request.json()` when
+        the body has not yet been drained.
         """
+        if not self._body_drained:
+            raise RuntimeError(
+                "Request body is not yet buffered; use `await request.json()` "
+                "instead of the sync `request.get_json()` accessor"
+            )
         if not force and not self.is_json:
             return None
-        if not self.body:
+        body = self._body
+        if not body:
             return None
 
         if cache and self._json is not None:
             return self._json
 
         try:
-            parsed = orjson.loads(self.body)
+            parsed = orjson.loads(body)
         except orjson.JSONDecodeError as exc:
             if silent:
                 return None
@@ -313,7 +376,8 @@ class Request:
         if self._form is None:
             mt = self.mimetype
             if mt == "application/x-www-form-urlencoded":
-                items = parse_qsl(self.body.decode("utf-8"), keep_blank_values=True)
+                body = await self._drain_body()
+                items = parse_qsl(body.decode("utf-8"), keep_blank_values=True)
                 self._form = FormData(items)
             elif mt == "multipart/form-data":
                 # Per-app multipart caps come from config when an app is
@@ -328,8 +392,9 @@ class Request:
                     cfg_part_size = cfg.get("MAX_FORM_PART_SIZE", max_part_size)
                     if cfg_part_size is not None:
                         max_part_size = cfg_part_size
+                multipart_body = await self._drain_body()
                 self._form = parse_multipart_form(
-                    self.body,
+                    multipart_body,
                     self.content_type,
                     max_parts=max_parts,
                     max_part_size=max_part_size,
@@ -1078,8 +1143,9 @@ class Request:
         return ct.startswith("application/") and ct.endswith("+json")
 
     async def text(self) -> str:
-        """Return body as text."""
-        return self.body.decode("utf-8", errors="replace")
+        """Return body as text, draining the source once."""
+        body = await self._drain_body()
+        return body.decode("utf-8", errors="replace")
 
     async def is_disconnected(self) -> bool:
         """Whether the client has disconnected.
@@ -1093,16 +1159,27 @@ class Request:
         return False
 
     async def stream(self) -> Any:
-        """Async-iterate the request body in bounded chunks — ASGI shape.
+        """Async-iterate the request body in chunks — ASGI shape.
 
-        The body is buffered before dispatch, so the chunks are sliced
-        from that buffer rather than pulled from the socket; each yielded
-        slice is capped at 64 KiB so a handler written against the
-        streaming API (`async for chunk in request.stream(): ...`) can
-        process a large body incrementally without materialising a second
-        full copy of it.
+        Streamed requests (raw HTTP/1.1) yield each chunk as the socket
+        delivers it, so `async for chunk in request.stream(): ...` processes
+        a large body incrementally without ever buffering it whole. For
+        in-memory requests (TestClient / ASGI), or once a streamed body has
+        already been drained and cached, the buffered bytes are sliced into
+        64 KiB chunks instead.
         """
-        body = self.body
+        if self._body_source is not None and not self._body_drained:
+            # Pull live from the source so a streaming handler observes
+            # chunks at the cadence the protocol feeds them. Cache as we go
+            # so a later `.body()` / `.data` still sees the full payload.
+            parts: list[bytes] = []
+            async for chunk in self._body_source:
+                parts.append(chunk)
+                yield chunk
+            self._body = b"".join(parts)
+            self._body_drained = True
+            return
+        body = await self._drain_body()
         chunk_size = 65536
         for offset in range(0, len(body), chunk_size):
             yield body[offset : offset + chunk_size]
