@@ -22,6 +22,12 @@ import os
 import sys
 from typing import Any
 
+from veloce.config import _parse_env_lines
+
+# Default dotenv filename auto-loaded by `run`/`shell`/`custom` when the
+# file exists in the CWD and `--no-env-file` was not passed.
+_DEFAULT_ENV_FILE = ".env"
+
 
 def _resolve_version() -> str:
     # Avoid `from veloce import __version__` so `veloce --version` does not
@@ -61,6 +67,31 @@ def _load_app(reference: str) -> Any:
         raise SystemExit(f"Module {module_name!r} has no attribute {attr!r}") from err
 
 
+def _apply_env_file(args: argparse.Namespace) -> None:
+    """Populate `os.environ` from a dotenv file before the app imports.
+
+    Subcommands that import user code (`run`, `shell`, `custom`) call
+    this first so config read at import time sees the file's values.
+    A real environment variable always wins — keys already present in
+    `os.environ` are never overwritten. With `--no-env-file` nothing is
+    loaded. An explicit `--env-file PATH` that is missing is an error;
+    the auto-discovered default `.env` is loaded only when it exists.
+    """
+    if getattr(args, "no_env_file", False):
+        return
+    path = getattr(args, "env_file", None) or _DEFAULT_ENV_FILE
+    explicit = getattr(args, "env_file", None) is not None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError as err:
+        if explicit:
+            raise SystemExit(f"Could not read env file {path!r}: {err}") from err
+        return  # auto-discovery: a missing default `.env` is fine
+    for key, value in _parse_env_lines(lines, source=path).items():
+        os.environ.setdefault(key, value)
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """`veloce run` — hand the app off to uvicorn."""
     try:
@@ -68,6 +99,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     except ImportError as err:  # pragma: no cover — only on broken envs
         raise SystemExit("uvicorn is not installed. Install it with: pip install uvicorn") from err
 
+    _apply_env_file(args)
     _load_app(args.app)  # validate the reference before handing to uvicorn
 
     uvicorn.run(
@@ -103,6 +135,7 @@ def _cmd_shell(args: argparse.Namespace) -> int:
     """
     import code
 
+    _apply_env_file(args)
     app = _load_app(args.app)
     _require_app_attr(app, "make_shell_context", "`.make_shell_context`")
 
@@ -126,6 +159,7 @@ def _cmd_custom(args: argparse.Namespace) -> int:
     Everything after `--` on the command line is forwarded verbatim to
     the Click group. With no extra args the group prints its own help.
     """
+    _apply_env_file(args)
     app = _load_app(args.app)
     _require_app_attr(app, "cli", "`.cli`")
     with app.app_context():
@@ -178,6 +212,22 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return 1
 
 
+def _add_env_file_args(p: argparse.ArgumentParser) -> None:
+    """Attach the shared `--env-file` / `--no-env-file` options to `p`."""
+    p.add_argument(
+        "--env-file",
+        default=None,
+        metavar="PATH",
+        help="Load environment variables from this dotenv file before importing the app "
+        f"(default: auto-discover {_DEFAULT_ENV_FILE!r} in the current directory).",
+    )
+    p.add_argument(
+        "--no-env-file",
+        action="store_true",
+        help="Skip dotenv loading entirely.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser. Exposed for testing."""
     parser = argparse.ArgumentParser(
@@ -199,6 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--reload", action="store_true", help="Auto-reload on code changes.")
     p_run.add_argument("--workers", type=int, default=1)
     p_run.add_argument("--log-level", default="info")
+    _add_env_file_args(p_run)
     p_run.set_defaults(func=_cmd_run)
 
     p_routes = sub.add_parser("routes", help="Print the route table.")
@@ -211,6 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_shell = sub.add_parser("shell", help="Interactive Python shell with the app loaded.")
     p_shell.add_argument("app", help="App reference in 'module:attribute' form.")
+    _add_env_file_args(p_shell)
     p_shell.set_defaults(func=_cmd_shell)
 
     p_custom = sub.add_parser(
@@ -218,6 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run an app.cli (Click) command defined on the app.",
     )
     p_custom.add_argument("app", help="App reference in 'module:attribute' form.")
+    _add_env_file_args(p_custom)
     p_custom.add_argument(
         "cli_args",
         nargs=argparse.REMAINDER,

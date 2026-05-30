@@ -181,6 +181,21 @@ class Jinja2Templates:
         merged = _gather_context_processors(context or {})
         return template.render(merged)
 
+    def stream(self, name: str, context: dict[str, Any] | None = None) -> Any:
+        """Render a named template incrementally, yielding `str` chunks.
+
+        Mirrors `render` but returns Jinja's `template.generate(...)`
+        iterator instead of a fully-rendered string, so large templates
+        can be streamed to the client without buffering the whole body.
+        The result is a sync iterator of `str` chunks — wrap it in a
+        `StreamingResponse` to return it from a handler.
+        """
+        self._apply_auto_reload(self.env)
+        _sync_app_jinja_helpers(self.env)
+        template = self.env.get_template(name)
+        merged = _gather_context_processors(context or {})
+        return template.generate(merged)
+
     def render_string(self, source: str, context: dict[str, Any]) -> str:
         """Render a template from string."""
         self._apply_auto_reload(self.env)
@@ -242,6 +257,37 @@ def render_template(template_name: str, **context: Any) -> str:
             "`app._templates` — assign one after construction."
         )
     return templates.render(template_name, context)
+
+
+def stream_template(template_name: str, **context: Any) -> Any:
+    """Stream a named template against the current app, chunk by chunk.
+
+    Mirrors `render_template` but returns an iterator of `str` chunks
+    (Jinja's `template.generate(...)`) instead of a single string, so a
+    large response body is produced lazily. Pulls the `Jinja2Templates`
+    instance off `current_app._templates`; raises `RuntimeError` outside
+    a request / app context. Wrap the result in a `StreamingResponse` to
+    return it from a handler::
+
+        from veloce import StreamingResponse, stream_template
+
+        @app.get("/big")
+        async def big(request):
+            return StreamingResponse(stream_template("big.html", rows=rows))
+    """
+    app = _current_app_var.get()
+    if app is None:
+        raise RuntimeError(
+            "stream_template requires an active application context "
+            "(use it inside a request handler or `app.app_context()`)."
+        )
+    templates = getattr(app, "_templates", None)
+    if templates is None:
+        raise RuntimeError(
+            "stream_template requires a Jinja2Templates instance on "
+            "`app._templates` — assign one after construction."
+        )
+    return templates.stream(template_name, context)
 
 
 def render_template_string(source: str, **context: Any) -> str:

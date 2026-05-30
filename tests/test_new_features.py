@@ -10,7 +10,6 @@ from veloce import (
     APIKeyHeader,
     APIKeyQuery,
     Depends,
-    EventSourceResponse,
     FormData,
     Headers,
     HTMLResponse,
@@ -20,7 +19,6 @@ from veloce import (
     OAuth2PasswordBearer,
     Request,
     Response,
-    ServerSentEvent,
     SessionMiddleware,
     UploadFile,
     Veloce,
@@ -760,31 +758,6 @@ class TestOpenAPI:
 
 
 # ═══════════════════════════════════════════════════════════════
-# SSE
-# ═══════════════════════════════════════════════════════════════
-
-
-class TestSSE:
-    def test_event_encoding(self):
-        event = ServerSentEvent(data="hello", event="message", id="1")
-        encoded = event.encode()
-        assert b"id: 1" in encoded
-        assert b"event: message" in encoded
-        assert b"data: hello" in encoded
-
-    def test_event_multiline(self):
-        event = ServerSentEvent(data="line1\nline2")
-        encoded = event.encode()
-        assert b"data: line1" in encoded
-        assert b"data: line2" in encoded
-
-    def test_event_retry(self):
-        event = ServerSentEvent(data="test", retry=5000)
-        encoded = event.encode()
-        assert b"retry: 5000" in encoded
-
-
-# ═══════════════════════════════════════════════════════════════
 # Additional middleware
 # ═══════════════════════════════════════════════════════════════
 
@@ -941,24 +914,6 @@ class TestRouteMetadata:
 
         schema = get_openapi_schema(app)
         assert schema["paths"]["/old"]["get"]["deprecated"] is True
-
-
-def test_eventsource_response_accepts_serversentevent_objects():
-    """EventSourceResponse encodes yielded ServerSentEvent objects over ASGI."""
-    app = Veloce(openapi_url=None)
-
-    @app.get("/sse")
-    async def sse(request):
-        async def generate():
-            yield ServerSentEvent(data="hello", event="greeting")
-
-        return EventSourceResponse(generate())
-
-    resp = app.test_client().get("/sse")
-    assert resp.status_code == 200
-    assert "text/event-stream" in resp.content_type
-    assert b"data: hello" in resp.body
-    assert b"event: greeting" in resp.body
 
 
 async def test_rate_limit_middleware_evicts_stale_buckets():

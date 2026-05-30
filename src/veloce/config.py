@@ -35,6 +35,58 @@ def _orjson_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:
     return orjson.loads(fp.read())
 
 
+def _parse_env_lines(lines: list[str], *, source: str = "<env>") -> dict[str, str]:
+    """Parse dotenv-style ``KEY=VALUE`` lines into a plain string mapping.
+
+    Full-line `#` comments and blank lines are skipped, an optional
+    `export ` prefix is accepted, and a value wrapped in matching single
+    or double quotes is unquoted. An unquoted value may carry a trailing
+    ` #` inline comment, which is stripped; a `#` inside quotes is kept
+    literal. `source` only labels the unmatched-quote warning. Shared by
+    `Config.from_env_file` and the CLI `--env-file` loader so both paths
+    parse identically.
+    """
+    parsed: dict[str, str] = {}
+    for lineno, raw in enumerate(lines, start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if value[:1] in ("'", '"'):
+            # Quoted value — take the span up to the matching close
+            # quote. Anything after it is an inline comment and is
+            # dropped; a `#` *inside* the quotes stays literal.
+            quote = value[0]
+            close = value.find(quote, 1)
+            if close == -1:
+                _logger.warning(
+                    "env file %s line %d: key %r has unmatched %s quote; "
+                    "treating remainder of line as the value",
+                    source,
+                    lineno,
+                    key,
+                    quote,
+                )
+                value = value[1:]
+            else:
+                value = value[1:close]
+        else:
+            # Unquoted value — a whitespace-delimited `#` starts an
+            # inline comment. A bare `#` (no leading space) is kept,
+            # since it may be a legitimate part of the value.
+            comment = value.find(" #")
+            if comment != -1:
+                value = value[:comment].rstrip()
+        parsed[key] = value
+    return parsed
+
+
 class Config(dict[str, Any]):
     """A dict that knows how to load itself from common config sources.
 
@@ -167,45 +219,7 @@ class Config(dict[str, Any]):
             if silent:
                 return False
             raise
-        parsed: dict[str, Any] = {}
-        for lineno, raw in enumerate(lines, start=1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("export "):
-                line = line[len("export ") :].lstrip()
-            key, sep, value = line.partition("=")
-            if not sep:
-                continue
-            key = key.strip()
-            value = value.strip()
-            if value[:1] in ("'", '"'):
-                # Quoted value — take the span up to the matching close
-                # quote. Anything after it is an inline comment and is
-                # dropped; a `#` *inside* the quotes stays literal.
-                quote = value[0]
-                close = value.find(quote, 1)
-                if close == -1:
-                    _logger.warning(
-                        "env file %s line %d: key %r has unmatched %s quote; "
-                        "treating remainder of line as the value",
-                        filename,
-                        lineno,
-                        key,
-                        quote,
-                    )
-                    value = value[1:]
-                else:
-                    value = value[1:close]
-            else:
-                # Unquoted value — a whitespace-delimited `#` starts an
-                # inline comment. A bare `#` (no leading space) is kept,
-                # since it may be a legitimate part of the value.
-                comment = value.find(" #")
-                if comment != -1:
-                    value = value[:comment].rstrip()
-            parsed[key] = value
-        return self.from_mapping(parsed)
+        return self.from_mapping(_parse_env_lines(lines, source=filename))
 
     # ── from_envvar ──────────────────────────────────────────────────
 

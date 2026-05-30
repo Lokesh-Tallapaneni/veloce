@@ -47,6 +47,28 @@ longer scale memory with body size.
   instantiated without gunicorn present. Run with
   `gunicorn your_module:app -k veloce.workers.VeloceWorker`. uvicorn remains the
   recommended production default. See the Deployment guide.
+- **SSE keep-alive heartbeat.** `EventSourceResponse(..., ping=<seconds>)` emits a
+  comment frame (`: ping`) whenever no event is produced within the interval, so
+  idle connections survive proxy and load-balancer read timeouts. The heartbeat
+  applies to both the ASGI streaming path and the raw-socket transport; the
+  in-flight pull is preserved across each idle window rather than being
+  cancelled. Without `ping` the behaviour is unchanged.
+- **Template streaming.** `Jinja2Templates.stream(name, context)` returns Jinja's
+  chunk iterator instead of a fully-rendered string, and the module-level
+  `stream_template(template_name, **context)` mirrors `render_template` against
+  the current app's `Jinja2Templates`. Wrap the result in `StreamingResponse` to
+  return a large body without buffering it in memory. `stream_template` is
+  exported from the top-level package.
+- **`.env` auto-load in the CLI.** `veloce run`, `veloce shell`, and
+  `veloce custom` accept `--env-file PATH` (default: auto-discover `.env` in the
+  current directory) and `--no-env-file`. Matching `KEY=VALUE` pairs are written
+  to the environment before the app module is imported, so import-time config
+  sees them. A real environment variable always wins; an explicit `--env-file`
+  that is missing is an error, while an absent auto-discovered `.env` is silently
+  skipped.
+- **`Namespace` signal factory.** `veloce.signals.Namespace` returns named
+  `Signal` instances, caching one per name so independent parts of an application
+  can share a signal by agreeing on its name.
 
 ### Changed
 

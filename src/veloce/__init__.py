@@ -35,6 +35,7 @@ from veloce.contrib.templating import (
     Jinja2Templates,
     render_template,
     render_template_string,
+    stream_template,
 )
 
 # Dependency injection
@@ -309,6 +310,7 @@ __all__ = [
     "Jinja2Templates",
     "render_template",
     "render_template_string",
+    "stream_template",
     # HTML-safe strings
     "Markup",
     "escape",

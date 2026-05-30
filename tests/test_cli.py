@@ -8,7 +8,7 @@ import textwrap
 import pytest
 
 from veloce import __version__
-from veloce.cli import _load_app, build_parser, main
+from veloce.cli import _apply_env_file, _load_app, build_parser, main
 
 
 def test_parser_has_run_and_routes():
@@ -162,3 +162,78 @@ def test_check_command_clean_app(tmp_path, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "no issues" in out.lower()
+
+
+# ── --env-file dotenv auto-load ───────────────────────────────────────
+
+
+def test_run_parser_has_env_file_flags():
+    parser = build_parser()
+    args = parser.parse_args(["run", "demo:app", "--env-file", ".env.test"])
+    assert args.env_file == ".env.test"
+    assert args.no_env_file is False
+
+    args = parser.parse_args(["run", "demo:app", "--no-env-file"])
+    assert args.no_env_file is True
+    assert args.env_file is None
+
+
+def test_env_file_populates_environ(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text("CLI_ENV_KEY=from_file\nexport CLI_ENV_OTHER='quoted value'\n")
+    monkeypatch.delenv("CLI_ENV_KEY", raising=False)
+    monkeypatch.delenv("CLI_ENV_OTHER", raising=False)
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "demo:app", "--env-file", str(env)])
+    _apply_env_file(args)
+
+    import os
+
+    assert os.environ["CLI_ENV_KEY"] == "from_file"
+    assert os.environ["CLI_ENV_OTHER"] == "quoted value"
+
+
+def test_no_env_file_disables_loading(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text("CLI_ENV_DISABLED=should_not_load\n")
+    monkeypatch.delenv("CLI_ENV_DISABLED", raising=False)
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "demo:app", "--env-file", str(env), "--no-env-file"])
+    _apply_env_file(args)
+
+    import os
+
+    assert "CLI_ENV_DISABLED" not in os.environ
+
+
+def test_env_file_does_not_overwrite_existing_environ(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text("CLI_ENV_PRESET=from_file\n")
+    monkeypatch.setenv("CLI_ENV_PRESET", "already_set")
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "demo:app", "--env-file", str(env)])
+    _apply_env_file(args)
+
+    import os
+
+    # Real environ wins — the file value is ignored.
+    assert os.environ["CLI_ENV_PRESET"] == "already_set"
+
+
+def test_explicit_missing_env_file_errors(tmp_path):
+    missing = tmp_path / "nope.env"
+    parser = build_parser()
+    args = parser.parse_args(["run", "demo:app", "--env-file", str(missing)])
+    with pytest.raises(SystemExit, match="Could not read env file"):
+        _apply_env_file(args)
+
+
+def test_auto_discover_missing_default_is_silent(tmp_path, monkeypatch):
+    # CWD with no .env — auto-discovery must not raise.
+    monkeypatch.chdir(tmp_path)
+    parser = build_parser()
+    args = parser.parse_args(["run", "demo:app"])
+    _apply_env_file(args)  # no exception

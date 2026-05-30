@@ -9,6 +9,7 @@ from veloce.contrib.templating import (
     Jinja2Templates,
     render_template,
     render_template_string,
+    stream_template,
 )
 
 # ── render_template_string ───────────────────────────────────────────
@@ -77,5 +78,65 @@ def test_render_template_renders_named_file(tmp_path):
     token = _current_app_var.set(app)
     try:
         assert render_template("hello.html", name="alice") == "Hi alice!"
+    finally:
+        _current_app_var.reset(token)
+
+
+# ── stream_template ───────────────────────────────────────────────────
+
+
+def test_stream_method_yields_chunks(tmp_path):
+    (tmp_path / "loop.html").write_text("{% for n in nums %}{{ n }}{% endfor %}")
+    templates = Jinja2Templates(directory=str(tmp_path))
+    chunks = list(templates.stream("loop.html", {"nums": [1, 2, 3]}))
+    # Jinja yields multiple chunks; the joined output is the full render.
+    assert "".join(chunks) == "123"
+
+
+def test_stream_template_outside_app_raises():
+    with pytest.raises(RuntimeError, match="active application"):
+        list(stream_template("anything.html"))
+
+
+def test_stream_template_without_templates_attr_raises():
+    from veloce.helpers import _current_app_var
+
+    app = Veloce(openapi_url=None)
+    token = _current_app_var.set(app)
+    try:
+        with pytest.raises(RuntimeError, match="Jinja2Templates"):
+            stream_template("x.html")
+    finally:
+        _current_app_var.reset(token)
+
+
+def test_stream_template_streams_named_file(tmp_path):
+    from veloce.helpers import _current_app_var
+
+    (tmp_path / "items.html").write_text("{% for i in items %}<li>{{ i }}</li>{% endfor %}")
+    app = Veloce(openapi_url=None)
+    app._templates = Jinja2Templates(directory=str(tmp_path))
+
+    token = _current_app_var.set(app)
+    try:
+        out = "".join(stream_template("items.html", items=["a", "b"]))
+        assert out == "<li>a</li><li>b</li>"
+    finally:
+        _current_app_var.reset(token)
+
+
+def test_stream_template_wraps_in_streaming_response(tmp_path):
+    """The generator is consumable by StreamingResponse."""
+    from veloce import StreamingResponse
+    from veloce.helpers import _current_app_var
+
+    (tmp_path / "page.html").write_text("Hello {{ who }}")
+    app = Veloce(openapi_url=None)
+    app._templates = Jinja2Templates(directory=str(tmp_path))
+
+    token = _current_app_var.set(app)
+    try:
+        resp = StreamingResponse(stream_template("page.html", who="world"))
+        assert resp.is_streamed
     finally:
         _current_app_var.reset(token)

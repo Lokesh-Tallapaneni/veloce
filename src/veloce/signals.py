@@ -260,6 +260,51 @@ class Signal:
         return f"<Signal name={self.name!r} receivers={len(self._subs)}>"
 
 
+class Namespace:
+    """A factory that returns named `Signal` instances, one per name.
+
+    Calling `signal(name)` repeatedly with the same name returns the
+    same `Signal` object, so independent parts of an application can
+    obtain a shared signal by agreeing on a name rather than passing the
+    instance around.
+
+    Usage::
+
+        from veloce.signals import Namespace
+
+        signals = Namespace()
+        user_registered = signals.signal("user-registered")
+
+        @user_registered.connect
+        def welcome(sender, **kw):
+            ...
+
+        user_registered.send(app, user=user)
+    """
+
+    __slots__ = ("_signals",)
+
+    def __init__(self) -> None:
+        self._signals: dict[str, Signal] = {}
+
+    def signal(self, name: str, doc: str | None = None) -> Signal:
+        """Return the `Signal` named `name`, creating it on first use.
+
+        Repeated calls with the same `name` return the identical
+        instance. `doc` is accepted for API familiarity; it is ignored
+        because `Signal` is slotted and carries no per-instance docstring.
+        """
+        existing = self._signals.get(name)
+        if existing is not None:
+            return existing
+        sig = Signal(name)
+        self._signals[name] = sig
+        return sig
+
+    def __repr__(self) -> str:
+        return f"<Namespace signals={len(self._signals)}>"
+
+
 # ── Standard signals ────────────────────────────────────────────────
 
 
