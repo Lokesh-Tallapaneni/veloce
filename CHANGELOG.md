@@ -59,6 +59,27 @@ longer scale memory with body size.
   over-large upload mid-stream instead of only after the whole body is
   buffered.
 
+### Fixed
+
+- **gunicorn worker (`veloce.workers.VeloceWorker`) now honours TLS.** When
+  gunicorn is started with `--certfile`/`--keyfile` (`cfg.is_ssl`), the worker
+  builds a server SSL context from gunicorn's config and passes it to
+  `create_server`, instead of handing the bound sockets to asyncio with no TLS
+  and silently serving cleartext. If the certificate chain is missing or cannot
+  be loaded the worker fails fast with a `RuntimeError` rather than downgrading
+  an HTTPS deployment to cleartext.
+- **gunicorn worker stops when the master dies.** The heartbeat loop now also
+  checks arbiter liveness (the worker's parent pid changing after a fork-reparent)
+  and shuts the worker down instead of leaving it orphaned if the gunicorn master
+  goes away.
+- **gunicorn worker honours `--max-requests`.** The worker now counts completed
+  requests and clears `alive` once the count reaches gunicorn's `max_requests`
+  (with any `max_requests_jitter` already folded in by gunicorn), so worker
+  recycling works as documented; previously the counter was never incremented and
+  recycling never fired. Counting is driven by a new optional
+  `HttpProtocol.on_request_complete` hook that is unset (and free) on the
+  uvicorn / `Veloce.run()` path.
+
 ### Internal
 
 - The raw protocol serves pipelined requests through a per-connection FIFO loop

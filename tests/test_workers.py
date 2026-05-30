@@ -14,11 +14,12 @@ from __future__ import annotations
 import asyncio
 import functools
 import importlib
+import ssl
 
 import pytest
 
 from veloce import Veloce
-from veloce.workers import build_protocol_factory
+from veloce.workers import build_protocol_factory, build_ssl_context
 
 
 def test_import_veloce_succeeds_without_gunicorn() -> None:
@@ -94,3 +95,156 @@ def test_worker_subclasses_gunicorn_base_when_available() -> None:
     from veloce.workers import VeloceWorker
 
     assert issubclass(VeloceWorker, Worker)
+
+
+# ── SSL guard (build_ssl_context) ─────────────────────────────────
+#
+# These exercise the TLS guard that prevents a gunicorn TLS deployment from
+# silently serving cleartext. They are pure Python — no gunicorn, no socket,
+# no event loop — driven directly off the ssl_options dict gunicorn would
+# otherwise hand the worker via cfg.ssl_options.
+
+
+def test_build_ssl_context_without_certfile_fails_fast() -> None:
+    # cfg.is_ssl is true when *either* certfile or keyfile is set, but a server
+    # context needs the cert chain. A keyfile-only config must raise rather than
+    # let the worker fall through to a cleartext create_server.
+    with pytest.raises(RuntimeError) as excinfo:
+        build_ssl_context({"keyfile": "/nonexistent/key.pem"})
+
+    message = str(excinfo.value)
+    assert "certfile" in message
+    assert "cleartext" in message
+
+
+def test_build_ssl_context_empty_options_fails_fast() -> None:
+    # Defensive: an empty options dict (no cert at all) must still fail fast.
+    with pytest.raises(RuntimeError):
+        build_ssl_context({})
+
+
+def test_build_ssl_context_unloadable_cert_fails_fast() -> None:
+    # A certfile that does not exist (or is malformed) must surface as a
+    # RuntimeError, not a partially-built context — again, never a silent
+    # cleartext downgrade.
+    with pytest.raises(RuntimeError) as excinfo:
+        build_ssl_context({"certfile": "/nonexistent/cert.pem"})
+
+    assert "TLS cert chain" in str(excinfo.value)
+
+
+def _write_self_signed_cert(tmp_path):
+    # Generate a throwaway self-signed cert/key pair for the success path.
+    from datetime import datetime, timedelta, timezone
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    return str(cert_path), str(key_path)
+
+
+def test_build_ssl_context_loads_valid_cert_chain(tmp_path) -> None:
+    pytest.importorskip("cryptography")
+    certfile, keyfile = _write_self_signed_cert(tmp_path)
+
+    context = build_ssl_context({"certfile": certfile, "keyfile": keyfile})
+
+    assert isinstance(context, ssl.SSLContext)
+    # A server context that does not require client certs (the default).
+    assert context.verify_mode == ssl.CERT_NONE
+
+
+def test_build_ssl_context_honours_explicit_cert_reqs(tmp_path) -> None:
+    pytest.importorskip("cryptography")
+    certfile, keyfile = _write_self_signed_cert(tmp_path)
+
+    context = build_ssl_context(
+        {
+            "certfile": certfile,
+            "keyfile": keyfile,
+            "cert_reqs": ssl.CERT_REQUIRED,
+            "ca_certs": certfile,
+        }
+    )
+
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+# ── max_requests recycling hook ───────────────────────────────────
+
+
+def test_protocol_request_complete_hook_defaults_none() -> None:
+    # The per-request hook the worker uses for max_requests recycling must be
+    # absent by default so the uvicorn / Veloce.run() path pays nothing for it.
+    from veloce.serving.protocol import HttpProtocol
+
+    assert HttpProtocol.on_request_complete is None
+
+
+def test_recycling_counter_logic_trips_at_threshold() -> None:
+    # Model VeloceWorker._count_request without instantiating the worker (which
+    # needs gunicorn): nr increments per request and alive clears at the cap.
+    class _Counter:
+        def __init__(self, max_requests: int) -> None:
+            self.nr = 0
+            self.max_requests = max_requests
+            self.alive = True
+
+        def count(self) -> None:
+            self.nr += 1
+            if self.max_requests and self.nr >= self.max_requests:
+                self.alive = False
+
+    c = _Counter(max_requests=3)
+    c.count()
+    c.count()
+    assert c.alive is True
+    assert c.nr == 2
+    c.count()
+    assert c.alive is False
+    assert c.nr == 3
+
+
+def test_recycling_disabled_when_max_requests_zero() -> None:
+    # max_requests == 0 (or sys.maxsize for the disabled case) must never trip.
+    class _Counter:
+        def __init__(self) -> None:
+            self.nr = 0
+            self.max_requests = 0
+            self.alive = True
+
+        def count(self) -> None:
+            self.nr += 1
+            if self.max_requests and self.nr >= self.max_requests:
+                self.alive = False
+
+    c = _Counter()
+    for _ in range(100):
+        c.count()
+    assert c.alive is True
+    assert c.nr == 100

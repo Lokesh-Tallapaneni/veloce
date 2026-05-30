@@ -19,12 +19,25 @@ Importing this module (or ``import veloce``) never requires gunicorn — the
 gunicorn base class is imported lazily, and the worker class only demands it
 at instantiation, raising a clear :class:`ImportError` with an install hint
 when it is missing.
+
+**TLS:** when gunicorn is started with ``--certfile`` / ``--keyfile``
+(``cfg.is_ssl``), the worker builds a server SSL context from gunicorn's
+config and hands it to ``create_server``; if the certificate chain is missing
+or unloadable it fails fast with :class:`RuntimeError` rather than silently
+serving cleartext over an HTTPS deployment.
+
+**EXPERIMENTAL:** this worker is new and the gunicorn integration cannot be
+exercised on Windows (gunicorn is POSIX-only). Validate it on a POSIX host
+under your real gunicorn configuration before relying on it in production;
+uvicorn remains the recommended default.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import os
+import ssl
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -69,6 +82,56 @@ def build_protocol_factory(app: Veloce, loop: asyncio.AbstractEventLoop) -> func
     return functools.partial(HttpProtocol, app, loop)
 
 
+def build_ssl_context(ssl_options: dict[str, Any]) -> ssl.SSLContext:
+    """Build a server ``ssl.SSLContext`` from gunicorn's ``cfg.ssl_options``.
+
+    gunicorn exposes the resolved TLS settings as a flat dict
+    (``keyfile``, ``certfile``, ``ssl_version``, ``cert_reqs``, ``ca_certs``,
+    ``ciphers``, plus the wrap-time flags). This mirrors gunicorn's own
+    server-side context construction closely enough that handing the result to
+    ``loop.create_server(ssl=...)`` terminates TLS the same way gunicorn's
+    sync/threaded workers do.
+
+    A ``certfile`` is required: ``cfg.is_ssl`` is true when *either* a cert or
+    key is set, but a usable server context needs the certificate chain. If it
+    is missing this raises ``RuntimeError`` so the worker fails fast rather than
+    silently serving cleartext. Factored out to be unit-testable without
+    gunicorn or a running loop.
+    """
+    certfile = ssl_options.get("certfile")
+    keyfile = ssl_options.get("keyfile")
+    if not certfile:
+        raise RuntimeError(
+            "VeloceWorker: gunicorn TLS is configured (is_ssl) but no certfile "
+            "was provided; refusing to start to avoid silently serving cleartext "
+            "over an HTTPS deployment. Pass gunicorn --certfile (and --keyfile)."
+        )
+
+    context = ssl.create_default_context(
+        ssl.Purpose.CLIENT_AUTH, cafile=ssl_options.get("ca_certs")
+    )
+    # `create_default_context(CLIENT_AUTH)` defaults to verify_mode=CERT_NONE,
+    # which is correct for a TLS server that does not require client certs;
+    # honour an explicit gunicorn cert_reqs (e.g. mutual TLS) when set.
+    cert_reqs = ssl_options.get("cert_reqs")
+    if cert_reqs is not None:
+        context.verify_mode = ssl.VerifyMode(cert_reqs)
+
+    try:
+        context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+    except (OSError, ssl.SSLError) as exc:
+        raise RuntimeError(
+            f"VeloceWorker: failed to load TLS cert chain "
+            f"(certfile={certfile!r}, keyfile={keyfile!r}): {exc}"
+        ) from exc
+
+    ciphers = ssl_options.get("ciphers")
+    if ciphers:
+        context.set_ciphers(ciphers)
+
+    return context
+
+
 class VeloceWorker(_GunicornWorker):
     """Gunicorn worker that runs a Veloce app on its own asyncio loop.
 
@@ -95,12 +158,48 @@ class VeloceWorker(_GunicornWorker):
         # Set when gunicorn asks the worker to stop, so the serve loop reacts
         # immediately instead of waiting out its heartbeat sleep.
         self._stop = asyncio.Event()
+        # Snapshot the parent (arbiter) pid at construction. If the master dies
+        # the worker is reparented (getppid() changes, typically to 1/init), and
+        # the heartbeat loop uses this to stop instead of orphaning. gunicorn's
+        # base sets self.ppid in __init__; fall back to os.getppid() defensively.
+        self._initial_ppid: int = getattr(self, "ppid", None) or os.getppid()
 
     def _request_stop(self) -> None:
         """Wake the serve loop from gunicorn's signal handler thread."""
         loop = self._loop
         if loop is not None and not loop.is_closed():
             loop.call_soon_threadsafe(self._stop.set)
+
+    def _parent_alive(self) -> bool:
+        """Best-effort check that the gunicorn master is still our parent.
+
+        When the arbiter dies the kernel reparents this worker (``getppid()``
+        changes, typically to 1/init), so a changed parent pid means the master
+        is gone and the worker should stop rather than orphan. Guarded: any
+        failure reading the pid is treated as "still alive" so a transient error
+        never tears the worker down spuriously.
+        """
+        try:
+            return os.getppid() == self._initial_ppid
+        except OSError:  # pragma: no cover - getppid does not normally fail
+            return True
+
+    def _count_request(self) -> None:
+        """Increment the handled-request counter and trip max_requests recycling.
+
+        Installed as ``HttpProtocol.on_request_complete`` so it fires once per
+        dispatched request. gunicorn's base computes ``self.max_requests`` with
+        any ``max_requests_jitter`` already folded in (and uses ``sys.maxsize``
+        when recycling is disabled), so a plain ``>=`` comparison matches its
+        documented behaviour. Clearing ``self.alive`` lets the master replace
+        the worker after the in-flight request drains; waking ``_stop`` makes the
+        heartbeat loop notice immediately.
+        """
+        self.nr += 1
+        max_requests = getattr(self, "max_requests", 0)
+        if max_requests and self.nr >= max_requests:
+            self.alive = False
+            self._stop.set()
 
     def handle_exit(self, sig: Any, frame: Any) -> None:
         # SIGTERM/SIGINT: gunicorn clears self.alive; wake the loop too so the
@@ -122,6 +221,18 @@ class VeloceWorker(_GunicornWorker):
         """
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        # Refresh the parent-pid baseline post-fork: the arbiter pid passed to
+        # __init__ is the live master, and getppid() in the forked worker should
+        # match it, but recapture so the liveness check compares against the
+        # actual parent of this process.
+        self._initial_ppid = os.getppid()
+        # Drive gunicorn --max-requests recycling: HttpProtocol calls this hook
+        # once per dispatched request. Set on the protocol class (process-wide);
+        # each forked worker installs its own bound method, and only one worker
+        # runs per process so there is no cross-worker contention.
+        from veloce.serving.protocol import HttpProtocol
+
+        HttpProtocol.on_request_complete = self._count_request
         super().init_process()
 
     def run(self) -> None:
@@ -148,6 +259,23 @@ class VeloceWorker(_GunicornWorker):
         """
         return getattr(self, "wsgi", None) or self.app
 
+    def _build_ssl_context(self) -> ssl.SSLContext | None:
+        """Return a server SSL context when gunicorn was started with TLS.
+
+        Reads ``cfg.is_ssl`` / ``cfg.ssl_options`` from gunicorn's config. When
+        TLS is off (the common case) this returns ``None`` and the serving path
+        is plain HTTP, byte-for-byte as before. When TLS is on it builds a
+        context via :func:`build_ssl_context`, which fails fast if the cert
+        chain is missing — never silently downgrading HTTPS to cleartext.
+        """
+        cfg = getattr(self, "cfg", None)
+        if cfg is None:  # pragma: no cover - gunicorn always sets cfg
+            return None
+        if not getattr(cfg, "is_ssl", False):
+            return None
+        ssl_options = dict(getattr(cfg, "ssl_options", None) or {})
+        return build_ssl_context(ssl_options)
+
     async def _serve(self, loop: asyncio.AbstractEventLoop) -> None:
         """Bind the gunicorn sockets to an asyncio server and serve.
 
@@ -171,12 +299,21 @@ class VeloceWorker(_GunicornWorker):
                 "VeloceWorker received no listening sockets from gunicorn; "
                 "ensure a bind address is configured (e.g. gunicorn --bind)."
             )
+        # If gunicorn was started with TLS (--certfile/--keyfile, cfg.is_ssl),
+        # build a server SSL context and pass it to create_server. Without this
+        # the worker would hand the bound sockets to asyncio with no TLS and an
+        # HTTPS deployment would silently serve cleartext. build_ssl_context
+        # raises if the cert chain is missing/unloadable, so the worker fails
+        # fast rather than downgrading the security posture.
+        ssl_context = self._build_ssl_context()
+
         raw_socks = [gsock.sock for gsock in self.sockets]
-        self._server = await loop.create_server(factory, sock=raw_socks[0])
+        self._server = await loop.create_server(factory, sock=raw_socks[0], ssl=ssl_context)
         # A worker may be handed more than one bound socket (multiple binds).
         # create_server takes a single socket, so serve the rest explicitly.
         extra_servers = [
-            await loop.create_server(factory, sock=gsock.sock) for gsock in self.sockets[1:]
+            await loop.create_server(factory, sock=gsock.sock, ssl=ssl_context)
+            for gsock in self.sockets[1:]
         ]
 
         # gunicorn watches a per-worker heartbeat: notify() must be called
@@ -184,14 +321,16 @@ class VeloceWorker(_GunicornWorker):
         # below pings it on a fixed cadence while the worker is alive.
         notify_interval = max(1.0, self.timeout / 2.0) if self.timeout else 1.0
         try:
-            while self.alive:
+            while self.alive and self._parent_alive():
                 self.notify()
                 try:
                     # Wait for a stop signal, but wake at least every
-                    # notify_interval to ping gunicorn's heartbeat. If the
-                    # stop event fires (SIGTERM/SIGQUIT) the wait returns at
-                    # once; if the signal hook is ever missed, the timeout
-                    # still re-checks self.alive — so this never reacts slower
+                    # notify_interval to ping gunicorn's heartbeat AND re-check
+                    # arbiter liveness. If the stop event fires (SIGTERM/SIGQUIT,
+                    # or max_requests recycling) the wait returns at once; if the
+                    # signal hook is ever missed, the timeout still re-checks
+                    # self.alive and the parent pid — so a dead master no longer
+                    # leaves the worker orphaned, and this never reacts slower
                     # than the previous fixed-sleep loop.
                     await asyncio.wait_for(self._stop.wait(), timeout=notify_interval)
                 except asyncio.TimeoutError:
@@ -213,6 +352,12 @@ class VeloceWorker(_GunicornWorker):
         shutdown hooks so resources opened at startup are released.
         """
         from veloce.serving.protocol import HttpProtocol
+
+        # Detach our max_requests counting hook so a stopped worker leaves no
+        # dangling reference on the process-wide protocol class (matters for the
+        # test harness, where many workers may share an interpreter).
+        if HttpProtocol.on_request_complete == self._count_request:
+            HttpProtocol.on_request_complete = None
 
         app = self._veloce_app()
 
