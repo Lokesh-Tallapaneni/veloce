@@ -109,8 +109,12 @@ longer scale memory with body size.
   resolves rather than returning a 422. A model nested inside a
   `list`/`dict`/`set` or a union is **not** JSON-decoded by the resolver, so
   the schema does not advertise the model's fields there: a `list`/`set` of a
-  model documents `items: {"type": "string"}`, a `dict` of a model documents a
-  bare `{"type": "object"}`, and a model member of a union is dropped. A
+  model documents `items: {"type": "string"}`, and a model member of a union is
+  dropped. A `dict[K, V]` parameter documents a bare `{"type": "object"}`
+  regardless of the value type — a non-body dict is not wire-addressable (it
+  422s on a JSON-object string and has no repeated-param form), so typed
+  `additionalProperties` would advertise a shape the resolver rejects. A union
+  whose members are all models likewise documents a bare object. A
   multi-member union is documented by the branch a string value can actually
   reach under Pydantic's smart coercion: a union that includes `str` or
   `bytes` (`int | str`, `Optional[int | str]`) documents `{"type": "string"}`,

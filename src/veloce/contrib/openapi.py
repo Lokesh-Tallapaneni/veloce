@@ -553,7 +553,10 @@ def _python_type_to_schema(annotation: Any) -> dict:
             return {"type": "string"}
         reachable = [m for m in inner if not _is_model_type(m)]
         if not reachable:
-            return {"type": "string"}
+            # Every member is a model; none is reachable from a string in a
+            # union (`A | B` 422s on any string value), so document a bare
+            # object rather than a string the resolver would also reject.
+            return {"type": "object"}
         if len(reachable) == 1:
             return _python_type_to_schema(reachable[0])
         return {"anyOf": [_python_type_to_schema(m) for m in reachable]}
@@ -566,18 +569,14 @@ def _python_type_to_schema(annotation: Any) -> dict:
         args = get_args(annotation)
         item = _python_type_to_schema(args[0]) if args else {}
         return {"type": "array", "items": item}
-    # Parametrised `dict[K, V]` → an object schema with typed additionalProperties.
-    # JSON object keys are strings, so the key type arg is intentionally ignored.
-    # A model-valued dict is documented as a bare object: the resolver does not
-    # JSON-decode model values inside a mapping param (`dict[str, Tag]` 422s on
-    # `?t={"a":{"name":"x"}}`), so advertising the model's fields would lie.
+    # Parametrised `dict[K, V]` → a bare object schema. A non-body dict
+    # parameter is not wire-addressable at all: the resolver only JSON-decodes
+    # a bare model annotation, so `dict[str, int]` (and `dict[str, Tag]`) 422s
+    # on a JSON-object string and there is no repeated-param form for a dict.
+    # Documenting typed `additionalProperties` would therefore advertise a
+    # shape the resolver always rejects, so the value type is intentionally
+    # not emitted.
     if origin is dict:
-        args = get_args(annotation)
-        if len(args) == 2 and not _is_model_type(args[1]):
-            return {
-                "type": "object",
-                "additionalProperties": _python_type_to_schema(args[1]),
-            }
         return {"type": "object"}
     # `Literal["a", "b"]` → an enum schema of the literal values.
     if origin is Literal:

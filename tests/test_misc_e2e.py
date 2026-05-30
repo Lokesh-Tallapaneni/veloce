@@ -121,27 +121,23 @@ def test_cli_version_short_flag(capsys):
     assert output == f"veloce {veloce.__version__}"
 
 
-def test_openapi_dict_schema_emits_additional_properties():
+def test_openapi_dict_schema_emits_bare_object():
+    # `_python_type_to_schema` builds non-body parameter / form schemas only.
+    # A dict parameter is not wire-addressable (the resolver 422s on a JSON
+    # object string and there is no repeated-param form for a dict), so every
+    # `dict[K, V]` documents a bare object rather than typed
+    # `additionalProperties` the resolver would reject.
     from typing import Any
 
     from veloce.contrib.openapi import _python_type_to_schema
 
-    schema_int = _python_type_to_schema(dict[str, int])
-    assert schema_int.get("type") == "object"
-    assert schema_int.get("additionalProperties") == {"type": "integer"}
-
-    schema_str = _python_type_to_schema(dict[str, str])
-    assert schema_str.get("additionalProperties") == {"type": "string"}
+    assert _python_type_to_schema(dict[str, int]) == {"type": "object"}
+    assert _python_type_to_schema(dict[str, str]) == {"type": "object"}
+    assert _python_type_to_schema(dict[str, Any]) == {"type": "object"}
 
     schema_bare = _python_type_to_schema(dict)
-    assert schema_bare.get("type") == "object"
+    assert schema_bare == {"type": "object"}
     assert "additionalProperties" not in schema_bare
-
-    # `dict[str, Any]` is the canonical "object with any-typed values" —
-    # `additionalProperties` must be `{}` (empty schema), not the string
-    # default from the scalar fallback.
-    schema_any = _python_type_to_schema(dict[str, Any])
-    assert schema_any == {"type": "object", "additionalProperties": {}}
 
 
 def test_testclient_absolute_redirect_same_host_follows():

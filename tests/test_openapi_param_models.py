@@ -38,6 +38,10 @@ class _Tag(BaseModel):
     name: str
 
 
+class _Other(BaseModel):
+    value: int
+
+
 def _make_request(path: str, query_string: str = "") -> Request:
     return Request(
         method="GET",
@@ -256,9 +260,7 @@ async def test_model_union_resolves_reachable_branch_and_rejects_model_string() 
 
     ok = await app.handle_request(_make_request("/u", "v=123"))
     assert ok.status_code == 200
-    bad = await app.handle_request(
-        _make_request("/u", "v=" + urllib.parse.quote('{"name":"x"}'))
-    )
+    bad = await app.handle_request(_make_request("/u", "v=" + urllib.parse.quote('{"name":"x"}')))
     assert bad.status_code == 422
 
 
@@ -266,6 +268,24 @@ def test_int_bytes_union_collapses_to_string() -> None:
     # `bytes` accepts a string directly (the resolver resolves `?v=abc` to the
     # bytes branch), so a union containing bytes collapses to a plain string.
     assert _python_type_to_schema(int | bytes) == {"type": "string"}
+
+
+def test_all_model_union_emits_bare_object() -> None:
+    # No member is reachable from a string (`A | B` 422s on any string value),
+    # so the union documents a bare object, not a string the resolver rejects.
+    assert _python_type_to_schema(_Tag | _Other) == {"type": "object"}
+
+
+async def test_all_model_union_rejects_string_input() -> None:
+    # Ground truth for the schema above.
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/u")
+    async def u(v: _Tag | _Other = Query()):
+        return {"ok": True}
+
+    resp = await app.handle_request(_make_request("/u", "v=" + urllib.parse.quote('{"name":"x"}')))
+    assert resp.status_code == 422
 
 
 def test_optional_non_str_union_emits_anyof() -> None:
