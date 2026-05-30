@@ -193,3 +193,78 @@ async def test_group_end_helper_refuses_nested_security():
     # The transitive-safe helper directly returns False, too.
     assert resolver._slot_safe_for_parallel(outer_with_nested_sec, set()) is False
     assert resolver._slot_safe_for_parallel(plain, set()) is True
+
+
+# ── Precomputed parallel grouping (registration-time) ──────────────────
+
+from veloce._handler_plan import compute_parallel_groups  # noqa: E402
+
+
+def test_independent_deps_are_grouped():
+    def a():
+        return 1
+
+    def b():
+        return 2
+
+    async def h(x: int = Depends(a), y: int = Depends(b)):
+        return x + y
+
+    plan = build_plan(h)
+    # Two independent plain deps form one parallel group [0, 2).
+    assert plan.parallel_groups == {0: 2}
+    assert plan.parallel_groups == compute_parallel_groups(plan.slots)
+
+
+def test_three_independent_deps_grouped():
+    def a():
+        return 1
+
+    def b():
+        return 2
+
+    def c():
+        return 3
+
+    async def h(x: int = Depends(a), y: int = Depends(b), z: int = Depends(c)):
+        return x + y + z
+
+    assert build_plan(h).parallel_groups == {0: 3}
+
+
+def test_security_dep_breaks_group():
+    def a():
+        return 1
+
+    def guard():
+        return "ok"
+
+    async def h(x: int = Depends(a), s: str = Security(guard, scopes=["read"])):
+        return x
+
+    # The Security() slot is not parallel-safe, so no multi-slot group forms.
+    assert build_plan(h).parallel_groups == {}
+
+
+def test_yield_dep_breaks_group():
+    def a():
+        return 1
+
+    def res():
+        yield "r"
+
+    async def h(x: int = Depends(a), r: str = Depends(res)):
+        return x
+
+    assert build_plan(h).parallel_groups == {}
+
+
+def test_cache_collision_breaks_group():
+    def a():
+        return 1
+
+    async def h(x: int = Depends(a), y: int = Depends(a)):
+        return x + y
+
+    # Same use_cache=True callable cannot share a parallel run.
+    assert build_plan(h).parallel_groups == {}

@@ -33,6 +33,8 @@ from veloce._handler_plan import (
     K_SECURITY_SCOPES,
     K_UPLOAD_FILE,
     K_WEBSOCKET,
+    _slot_parallel_safe,
+    parallel_group_end,
 )
 from veloce._internal import _is_async_callable
 from veloce._resolver_codegen import compile_param_resolver
@@ -335,7 +337,7 @@ class DependencyResolver:
             for slot in route_dep_plans:
                 await self._exec_depends(slot, request, path_params)
 
-        return await self._resolve_slots(plan.slots, request, path_params)
+        return await self._resolve_slots(plan.slots, request, path_params, plan.parallel_groups)
 
     async def resolve_ws_plan(
         self,
@@ -413,8 +415,11 @@ class DependencyResolver:
         slots: list[Any],
         request: Request,
         path_params: dict[str, str],
+        parallel_groups: dict[int, int] | None = None,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
+        # Precomputed at registration; empty dict means "no parallel runs".
+        groups = parallel_groups if parallel_groups is not None else {}
 
         i = 0
         n = len(slots)
@@ -465,14 +470,12 @@ class DependencyResolver:
                 continue
 
             if kind == K_DEPENDS:
-                # Look ahead for a contiguous run of `K_DEPENDS` siblings
-                # that can safely run in parallel. The constraints
-                # — no Security() scope mutation, no yield-style
-                # dependencies, no two slots sharing a use_cache=True
-                # callable — protect the shared resolver state. When
-                # the run isn't safe (or is just one slot), fall back to
-                # the sequential await. See `_parallel_dep_group_end`.
-                end = self._parallel_dep_group_end(slots, i)
+                # Run a precomputed contiguous group of parallel-safe
+                # `K_DEPENDS` siblings concurrently; otherwise resolve this one
+                # sequentially. The grouping (no Security() scope mutation, no
+                # yield-style deps, no shared use_cache callable) is derived
+                # once at registration — see `compute_parallel_groups`.
+                end = groups.get(i, i + 1)
                 if end > i + 1:
                     group = slots[i:end]
                     results = await asyncio.gather(
@@ -572,70 +575,15 @@ class DependencyResolver:
         return kwargs
 
     def _parallel_dep_group_end(self, slots: list[Any], start: int) -> int:
-        """Return the index past the last K_DEPENDS sibling safely
-        parallelisable with `slots[start]`.
-
-        A run is parallelisable when every slot in it:
-        - is `K_DEPENDS`,
-        - pushes no `SecurityScopes` **transitively** — neither the
-          slot itself nor any K_DEPENDS in its `sub_plan.slots` may
-          carry a scope list. Security() deps mutate the shared
-          `_scope_stack` around their inner resolve, and two parallel
-          siblings whose sub-plans each push different scopes would
-          interleave on that shared list and corrupt the snapshot any
-          `SecurityScopes` parameter sees.
-        - is not a yield-style dependency, transitively — generator-
-          driven teardowns push onto a shared list whose order we
-          would otherwise lose,
-        - and does not share a `use_cache=True` callable with another
-          slot in the run (would race for `self._cache[callable]`).
-
-        Returns `start + 1` when the run cannot be expanded, so the
-        caller falls back to the sequential await.
+        """Compat shim. The grouping is precomputed at registration
+        (`HandlerPlan.parallel_groups`); this delegates to the shared
+        implementation for direct callers and tests.
         """
-        n = len(slots)
-        if start >= n:
-            return start
-        seen_cached: set[Any] = set()
-        end = start
-        while end < n:
-            s = slots[end]
-            if s.kind != K_DEPENDS:
-                break
-            if not self._slot_safe_for_parallel(s, set()):
-                break
-            # Cache collision with an earlier sibling in this same run.
-            if s.use_cache:
-                if s.dep_callable in seen_cached:
-                    break
-                seen_cached.add(s.dep_callable)
-            end += 1
-        return end
+        return parallel_group_end(slots, start)
 
     def _slot_safe_for_parallel(self, slot: Any, seen_plans: set[int]) -> bool:
-        """Transitive safety check: the slot itself and every
-        `K_DEPENDS` reachable through its `sub_plan` chain must avoid
-        the shared-state hazards (Security() scope push, yield-style
-        teardown).
-
-        Cycle-guarded via `seen_plans` so a self-referential plan
-        graph doesn't blow the recursion stack.
-        """
-        if isinstance(slot.target_type, list) and slot.target_type:
-            return False
-        if getattr(slot, "dep_is_gen", False) or getattr(slot, "dep_is_async_gen", False):
-            return False
-        sub_plan = getattr(slot, "sub_plan", None)
-        if sub_plan is None:
-            return True
-        plan_id = id(sub_plan)
-        if plan_id in seen_plans:
-            return True
-        seen_plans.add(plan_id)
-        for sub in getattr(sub_plan, "slots", ()):
-            if sub.kind == K_DEPENDS and not self._slot_safe_for_parallel(sub, seen_plans):
-                return False
-        return True
+        """Compat shim delegating to the shared parallel-safety check."""
+        return _slot_parallel_safe(slot, seen_plans)
 
     async def _resolve_body_model(self, slot: Any, request: Request) -> Any:
         try:
@@ -807,7 +755,9 @@ class DependencyResolver:
         if new_scopes:
             self._scope_stack.extend(new_scopes)
         try:
-            sub_kwargs = await self._resolve_slots(sub_plan.slots, request, path_params)
+            sub_kwargs = await self._resolve_slots(
+                sub_plan.slots, request, path_params, sub_plan.parallel_groups
+            )
         finally:
             if new_scopes:
                 del self._scope_stack[-len(new_scopes) :]

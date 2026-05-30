@@ -146,10 +146,92 @@ class _Slot:
         self.dep_is_async_gen = False
 
 
+def _slot_parallel_safe(slot: _Slot, seen_plans: set[int]) -> bool:
+    """Whether a K_DEPENDS slot and its whole sub-graph are parallel-safe.
+
+    Unsafe when the slot (or any K_DEPENDS below it) pushes Security() scopes
+    or is a yield-style dependency — both touch shared resolver state whose
+    ordering parallel execution would corrupt. A pure function of plan
+    structure, so the grouping it drives is computed once at registration.
+    Cycle-guarded via `seen_plans`.
+    """
+    if isinstance(slot.target_type, list) and slot.target_type:
+        return False
+    if getattr(slot, "dep_is_gen", False) or getattr(slot, "dep_is_async_gen", False):
+        return False
+    sub_plan = getattr(slot, "sub_plan", None)
+    if sub_plan is None:
+        return True
+    plan_id = id(sub_plan)
+    if plan_id in seen_plans:
+        return True
+    seen_plans.add(plan_id)
+    for sub in getattr(sub_plan, "slots", ()):
+        if sub.kind == K_DEPENDS and not _slot_parallel_safe(sub, seen_plans):
+            return False
+    return True
+
+
+def parallel_group_end(slots: list[_Slot], start: int) -> int:
+    """Index past the last K_DEPENDS sibling safely parallelisable with `start`.
+
+    A run extends while each slot is K_DEPENDS, parallel-safe, and does not
+    share a `use_cache=True` callable with an earlier slot in the run (which
+    would race on the shared result cache). Returns `start + 1` when the run
+    cannot grow, so the caller runs that slot sequentially.
+    """
+    n = len(slots)
+    if start >= n:
+        return start
+    seen_cached: set[Any] = set()
+    end = start
+    while end < n:
+        s = slots[end]
+        if s.kind != K_DEPENDS:
+            break
+        if not _slot_parallel_safe(s, set()):
+            break
+        if s.use_cache:
+            if s.dep_callable in seen_cached:
+                break
+            seen_cached.add(s.dep_callable)
+        end += 1
+    return end
+
+
+def compute_parallel_groups(slots: list[_Slot]) -> dict[int, int]:
+    """Precompute the parallel-dependency grouping for a slot list.
+
+    Returns `{start_index: end_index}` for every contiguous K_DEPENDS run of
+    two or more slots that may run concurrently. The resolver consults this
+    map per request instead of re-deriving the grouping each time — the
+    grouping depends only on the plan, never on request data.
+    """
+    groups: dict[int, int] = {}
+    i = 0
+    n = len(slots)
+    while i < n:
+        if slots[i].kind == K_DEPENDS:
+            end = parallel_group_end(slots, i)
+            if end > i + 1:
+                groups[i] = end
+                i = end
+                continue
+        i += 1
+    return groups
+
+
 class HandlerPlan:
     """Frozen resolution plan for one handler, plus its dependency graph."""
 
-    __slots__ = ("handler", "is_coro", "slots", "route_dep_plans", "compiled_resolver")
+    __slots__ = (
+        "handler",
+        "is_coro",
+        "slots",
+        "route_dep_plans",
+        "compiled_resolver",
+        "parallel_groups",
+    )
 
     def __init__(
         self,
@@ -167,6 +249,9 @@ class HandlerPlan:
         # not yet attempted; a callable = compiled fast path; a sentinel =
         # tried and not compilable (see DependencyResolver.resolve_plan).
         self.compiled_resolver: Any = None
+        # Parallel-dependency grouping, derived once here so the resolver does
+        # not re-scan slot safety on every request.
+        self.parallel_groups = compute_parallel_groups(slots)
 
 
 def _build_depends_slot(

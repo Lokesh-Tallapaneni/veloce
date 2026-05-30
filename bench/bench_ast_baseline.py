@@ -36,7 +36,7 @@ def _get_db() -> dict[str, str]:
     return {"conn": "ok"}
 
 
-def build_apps() -> dict[str, tuple[Veloce, "callable"]]:
+def build_apps() -> dict[str, tuple[Veloce, callable]]:
     apps: dict[str, tuple[Veloce, callable]] = {}
 
     # (a) trivial request-only handler
@@ -46,7 +46,12 @@ def build_apps() -> dict[str, tuple[Veloce, "callable"]]:
         return {"ok": True}
 
     a.add_route("/", index, ["GET"])
-    apps["trivial GET /"] = (a, lambda: Request(method="GET", path="/", query_string="", headers=[(b"host", b"x")], body=b""))
+    apps["trivial GET /"] = (
+        a,
+        lambda: Request(
+            method="GET", path="/", query_string="", headers=[(b"host", b"x")], body=b""
+        ),
+    )
 
     # (b) typed path param, no DI, no response_model
     b = Veloce(openapi_url=None)
@@ -55,7 +60,12 @@ def build_apps() -> dict[str, tuple[Veloce, "callable"]]:
         return {"id": user_id}
 
     b.add_route("/users/{user_id:int}", show, ["GET"])
-    apps["path-param /users/{id:int}"] = (b, lambda: Request(method="GET", path="/users/42", query_string="", headers=[(b"host", b"x")], body=b""))
+    apps["path-param /users/{id:int}"] = (
+        b,
+        lambda: Request(
+            method="GET", path="/users/42", query_string="", headers=[(b"host", b"x")], body=b""
+        ),
+    )
 
     # (b2) multi-param (2 path + 2 query) — where param-resolver codegen helps most
     b2 = Veloce(openapi_url=None)
@@ -64,7 +74,16 @@ def build_apps() -> dict[str, tuple[Veloce, "callable"]]:
         return {"x": x, "y": y, "a": a, "b": b}
 
     b2.add_route("/m/{x:int}/{y:int}", multi, ["GET"])
-    apps["multi-param 2path+2query"] = (b2, lambda: Request(method="GET", path="/m/3/4", query_string="a=hi&b=7", headers=[(b"host", b"x")], body=b""))
+    apps["multi-param 2path+2query"] = (
+        b2,
+        lambda: Request(
+            method="GET",
+            path="/m/3/4",
+            query_string="a=hi&b=7",
+            headers=[(b"host", b"x")],
+            body=b"",
+        ),
+    )
 
     # (c) path param + query + Depends + Pydantic response_model (AST #1-#4 maximal)
     c = Veloce(openapi_url=None)
@@ -73,7 +92,16 @@ def build_apps() -> dict[str, tuple[Veloce, "callable"]]:
         return {"id": user_id, "name": q, "score": 1.5}
 
     c.add_route("/items/{user_id:int}", get_item, ["GET"], response_model=Item)
-    apps["DI+resp_model /items/{id:int}"] = (c, lambda: Request(method="GET", path="/items/42", query_string="q=hello", headers=[(b"host", b"x")], body=b""))
+    apps["DI+resp_model /items/{id:int}"] = (
+        c,
+        lambda: Request(
+            method="GET",
+            path="/items/42",
+            query_string="q=hello",
+            headers=[(b"host", b"x")],
+            body=b"",
+        ),
+    )
 
     return apps
 
@@ -104,7 +132,9 @@ def main() -> None:
     p.add_argument("--warmup", type=int, default=5000)
     args = p.parse_args()
 
-    print(f"perf_counter · iters={args.iters} batches={args.batches} warmup={args.warmup} · CPython {sys.version.split()[0]}")
+    print(
+        f"perf_counter · iters={args.iters} batches={args.batches} warmup={args.warmup} · CPython {sys.version.split()[0]}"
+    )
     print(f"{'route shape':36s} {'median ns/op':>14s} {'stdev':>8s}")
     print("-" * 62)
     for name, (app, make_req) in build_apps().items():
