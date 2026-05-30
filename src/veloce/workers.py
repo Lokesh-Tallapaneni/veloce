@@ -404,20 +404,27 @@ class VeloceWorker(_GunicornWorker):
         """
         from veloce.serving.protocol import HttpProtocol
 
-        # Detach our max_requests hooks so a stopped worker leaves no dangling
-        # reference on the process-wide protocol class (matters for the test
-        # harness, where many workers may share an interpreter).
-        if HttpProtocol.on_request_complete == self._count_request:
-            HttpProtocol.on_request_complete = None
-        if HttpProtocol.should_keep_serving == self._keep_serving:
-            HttpProtocol.should_keep_serving = None
-
         app = self._veloce_app()
 
+        # Drain in-flight tasks with the should_keep_serving / request-count
+        # hooks STILL installed. self.alive is already False here, so a
+        # keep-alive connection that finishes its current request consults
+        # should_keep_serving at the boundary and stops — it cannot serve a
+        # queued or newly arrived request past max_requests or during graceful
+        # shutdown. Detaching the hooks before the drain would let it continue.
         if HttpProtocol._active_tasks:
             await asyncio.wait(HttpProtocol._active_tasks, timeout=self.timeout or 30)
         for task in HttpProtocol._active_tasks:
             task.cancel()
         HttpProtocol._active_tasks.clear()
+
+        # Only now detach our hooks, once no in-flight connection can still
+        # consult them, so a stopped worker leaves no dangling reference on the
+        # process-wide protocol class (matters when workers share an interpreter,
+        # e.g. the test harness).
+        if HttpProtocol.on_request_complete == self._count_request:
+            HttpProtocol.on_request_complete = None
+        if HttpProtocol.should_keep_serving == self._keep_serving:
+            HttpProtocol.should_keep_serving = None
 
         await app._run_lifecycle("shutdown")
