@@ -25,6 +25,18 @@ longer scale memory with body size.
   suppressed for HTTP/1.0 clients and when the declared `Content-Length`
   already exceeds `MAX_CONTENT_LENGTH` (the request is rejected with `413`
   instead).
+- **Hybrid routing: radix fast path with a regex fallback.** Routes the radix
+  tree cannot express now match through a compiled-regex fallback consulted only
+  on a tree miss, so patterns such as a parameter sharing a segment with static
+  text (`/v{version:int}/api`), multiple parameters in one segment
+  (`/files/{name}.{ext}`), a raw regex converter (`/items/{id:[0-9]+}`), or a
+  greedy `:path` converter followed by a suffix (`/{p:path}/edit`) are now
+  supported. Classification happens once at registration; the radix fast path is
+  unchanged and pays nothing when no regex route is registered — the tree always
+  wins over the fallback. Regex routes participate in `url_for`, allowed-method
+  reporting (405/OPTIONS), `include_router` merging (with name prefixing), and
+  OpenAPI schema generation (exposed with an OpenAPI-style path, e.g.
+  `/items/{id}`).
 
 ### Changed
 
@@ -75,6 +87,50 @@ longer scale memory with body size.
   the declared `Content-Length`) and still returns `413` — now rejecting an
   over-large upload mid-stream instead of only after the whole body is
   buffered.
+
+### Fixed
+
+- **Hybrid router: unknown converters in regex-routed paths now raise at
+  registration.** A bare-word converter typo in a path that forces regex
+  routing — `/v{version:bogus}/api`, or in a later segment such as
+  `/v{version:int}/{id:bogus}` — previously slipped through as literal regex and
+  matched the text `bogus`. Every bare-word spec across all segments of a regex
+  route is now validated against the converter set and raises `unknown path
+  converter` at registration, the same as whole-segment placeholders.
+- **Hybrid router: registered custom converters in regex-routed segments now
+  raise at registration.** A custom converter — `register_converter("slug", …)`
+  — used in a segment that forces regex routing (`/v{name:slug}/api`) previously
+  miscompiled into a regex matching the literal text `slug`, so `/vslug/api`
+  matched while `/vabc/api` did not. A custom converter's `match()` has no regex
+  representation, so such routes now raise at registration instead of silently
+  misbehaving. Custom converters spanning a whole segment (`/posts/{name:slug}`)
+  remain radix routes and are unaffected.
+- **Hybrid router: regex-route parameters are now coerced like radix-route
+  parameters.** A built-in converter on a regex route (`/v{n:int}/x`,
+  `:float`, `:uuid`, `:any(...)`) now yields the coerced Python value (e.g.
+  `3`, not `"3"`) instead of the raw matched string. Bare `{name}` and raw
+  regex (`{id:[0-9]+}`) groups remain strings.
+- **Hybrid router: regex-route converters now enforce the same rejection
+  semantics as radix routes.** A built-in converter's guards — notably the
+  `:int` digit cap — are now applied to regex-route matches: when the converter
+  rejects its group, the route is treated as a full miss (404) and the next
+  route is tried, instead of leaking the raw string through to the handler.
+  Previously `/v{n:int}/x` matched an over-long value (e.g. a 21-digit number)
+  and passed it as `str`, while the equivalent radix route `/x/{n:int}`
+  correctly rejected it. Allowed-method reporting honors the same rejection, so
+  an over-long `:int` yields a 404 rather than a 405.
+- **Hybrid router: raw regex converter specs may now contain braces.** Patterns
+  with brace quantifiers — `/x/{id:[0-9]{2}}` or `/x/{id:\d{2}}` — are parsed
+  balance-aware and compile correctly instead of raising a group-name error.
+  OpenAPI path reduction and `url_for` handle these specs too.
+- **Hybrid router: `strict_slashes=False` is honored on regex routes.** A regex
+  route registered with `strict_slashes=False` now accepts the missing or extra
+  trailing slash in both `match()` and allowed-method reporting, matching tree
+  routes.
+- **OpenAPI: a tree route shadows an overlapping regex handler in the schema.**
+  When a radix route and a regex route reduce to the same OpenAPI path and
+  method, the schema now describes the tree handler — the dispatch winner —
+  rather than the regex handler that never runs for that path.
 
 ### Internal
 
