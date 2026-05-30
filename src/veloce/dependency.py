@@ -35,12 +35,17 @@ from veloce._handler_plan import (
     K_WEBSOCKET,
 )
 from veloce._internal import _is_async_callable
+from veloce._resolver_codegen import compile_param_resolver
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
 from veloce.http.request import Request
 from veloce.http.response import Response
 
 _logger = logging.getLogger(__name__)
+
+# Marks a plan whose compiled-resolver build was attempted and rejected, so
+# resolve_plan does not retry compilation on every request.
+_NOT_COMPILABLE = object()
 
 
 class Depends:
@@ -310,6 +315,18 @@ class DependencyResolver:
         route_dep_plans: list[Any] | None = None,
     ) -> dict[str, Any]:
         """Fast path — consume a pre-built `HandlerPlan`."""
+        # Param-only plans (request + scalar path/query, no route deps) resolve
+        # through a straight-line function generated once at registration. It
+        # touches no cache, teardown stack, or scope stack, so `reset()` and the
+        # interpreter loop are both skipped.
+        if not route_dep_plans:
+            cr = plan.compiled_resolver
+            if cr is None:
+                compiled = compile_param_resolver(plan, _coerce_value, RequestValidationError)
+                plan.compiled_resolver = cr = compiled if compiled is not None else _NOT_COMPILABLE
+            if cr is not _NOT_COMPILABLE:
+                return cr(request, path_params)
+
         self.reset()
 
         if route_dep_plans:

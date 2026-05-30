@@ -149,7 +149,7 @@ class _Slot:
 class HandlerPlan:
     """Frozen resolution plan for one handler, plus its dependency graph."""
 
-    __slots__ = ("handler", "is_coro", "slots", "route_dep_plans")
+    __slots__ = ("handler", "is_coro", "slots", "route_dep_plans", "compiled_resolver")
 
     def __init__(
         self,
@@ -163,6 +163,10 @@ class HandlerPlan:
         # Each entry is a K_DEPENDS slot; only used for side-effect deps that
         # do not bind to a handler parameter.
         self.route_dep_plans = route_dep_plans
+        # Lazily-built straight-line resolver for param-only plans. `None` =
+        # not yet attempted; a callable = compiled fast path; a sentinel =
+        # tried and not compilable (see DependencyResolver.resolve_plan).
+        self.compiled_resolver: Any = None
 
 
 def _build_depends_slot(
