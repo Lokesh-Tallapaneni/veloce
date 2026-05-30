@@ -15,6 +15,8 @@ from veloce.routing.converters import (
     StringConverter,
     UUIDConverter,
     _Converter,
+    build_route_regex,
+    is_regex_path,
     parse_converter,
 )
 
@@ -231,6 +233,42 @@ class RouteMatch:
         self.path_params = path_params
 
 
+# Strips the `:converter` (or raw `:regex`) portion of every placeholder so a
+# route template like `/users/{id:[0-9]+}` reduces to the OpenAPI-style
+# `/users/{id}`. Used for schema emission and `url_for` of regex routes.
+_REGEX_TEMPLATE_PARAM_RE = re.compile(r"\{([^{}:]+)(?::[^{}]*)?\}")
+
+
+def _openapi_path_from_template(template: str) -> str:
+    """Reduce a brace template to its OpenAPI path form (`{name}` per param)."""
+    return _REGEX_TEMPLATE_PARAM_RE.sub(lambda m: "{" + m.group(1) + "}", template)
+
+
+class RegexRoute:
+    """A route the radix tree cannot express, matched by a compiled regex.
+
+    Registered alongside the radix tree but consulted only on a tree miss
+    (and only when regex routes exist). The fast path never touches these.
+    """
+
+    __slots__ = ("pattern", "template", "param_names", "handlers")
+
+    def __init__(self, template: str, pattern: re.Pattern[str], param_names: list[str]) -> None:
+        # The original brace template (`/users/{id:[0-9]+}`), kept for
+        # `url_for` reverse resolution and OpenAPI path emission.
+        self.template = template
+        self.pattern = pattern
+        self.param_names = param_names
+        # method -> RouteInfo, mirroring RadixNode.handlers so the regex
+        # path returns the same shape as the tree path.
+        self.handlers: dict[str, RouteInfo] = {}
+
+    @property
+    def openapi_path(self) -> str:
+        """OpenAPI-style path string built from the template (`/users/{id}`)."""
+        return _openapi_path_from_template(self.template)
+
+
 class Router:
     """High-performance radix-tree router with a decorator-based route API."""
 
@@ -263,6 +301,13 @@ class Router:
         self._named_routes: dict[
             str, tuple[str, list[str]]
         ] = {}  # name -> (path_template, param_names)
+        # Regex fallback routes, in registration order. Empty for the common
+        # case; `match()` guards on `if self._regex_routes:` so the radix
+        # fast path pays nothing when no regex route is registered.
+        self._regex_routes: list[RegexRoute] = []
+        # template -> RegexRoute, so a second method on the same regex path
+        # reuses one compiled pattern instead of appending a duplicate.
+        self._regex_route_index: dict[str, RegexRoute] = {}
 
     def _split_path(self, path: str) -> tuple[str, ...]:
         """Split path into segments (cached)."""
@@ -380,13 +425,31 @@ class Router:
         """
         full_path = self.prefix + path
         has_trailing_slash = full_path.endswith("/") and full_path != "/"
-        segments = self._split_path(full_path)
-        node, param_names = self._insert_path_into_tree(self._root, segments, full_path)
 
-        if has_trailing_slash:
-            node.trailing_slash = True
-        if strict_slashes is False:
-            node.tolerant_slash = True
+        # Classify once, at registration. A path the radix tree cannot
+        # express (partial-segment params, multi-brace segments, raw regex
+        # converters, greedy `:path` with a suffix) goes onto the regex
+        # fallback; everything else stays on the unchanged tree fast path.
+        regex_route: RegexRoute | None = None
+        if is_regex_path(full_path):
+            regex_route = self._regex_route_index.get(full_path)
+            if regex_route is None:
+                pattern = build_route_regex(full_path)
+                param_names = list(pattern.groupindex)
+                regex_route = RegexRoute(full_path, pattern, param_names)
+                self._regex_routes.append(regex_route)
+                self._regex_route_index[full_path] = regex_route
+            else:
+                param_names = regex_route.param_names
+            node = None
+        else:
+            segments = self._split_path(full_path)
+            node, param_names = self._insert_path_into_tree(self._root, segments, full_path)
+
+            if has_trailing_slash:
+                node.trailing_slash = True
+            if strict_slashes is False:
+                node.tolerant_slash = True
 
         route_name = name or handler.__name__
         # Merge router-level dependencies (registered at Router.__init__)
@@ -462,11 +525,55 @@ class Router:
             len(hp.slots) == 1 and hp.slots[0].kind == K_REQUEST and not route_info.route_dep_plans
         )
 
+        # `node` is the radix leaf for tree routes; `regex_route` is set
+        # instead for regex routes (the two branches above are mutually
+        # exclusive, so exactly one of them holds the handler table).
+        if regex_route is not None:
+            handler_table = regex_route.handlers
+        else:
+            assert node is not None
+            handler_table = node.handlers
         for method in methods:
-            node.handlers[method.upper()] = route_info
+            handler_table[method.upper()] = route_info
+
+    def _match_regex(self, method: str, path: str) -> RouteMatch | None:
+        """Try the regex fallback routes in registration order.
+
+        Called only on a radix miss and only when regex routes exist. The
+        first route whose pattern fully matches and whose handlers include
+        the method (with the same HEAD->GET fallback as the tree) wins.
+        """
+        method_upper = method if method.isupper() else method.upper()
+        for route in self._regex_routes:
+            m = route.pattern.match(path)
+            if m is None:
+                continue
+            info = route.handlers.get(method_upper)
+            if info is None and method_upper == "HEAD":
+                info = route.handlers.get("GET")
+            if info is None:
+                continue
+            return RouteMatch(route_info=info, path_params=m.groupdict())
+        return None
 
     def match(self, method: str, path: str) -> RouteMatch | None:
-        """Match a request path against the radix tree. O(k) where k = path depth."""
+        """Match a request path. Radix tree first, regex fallback on a miss.
+
+        O(k) where k = path depth on the tree fast path. The regex fallback
+        runs only when the tree misses **and** regex routes are registered;
+        the tree always wins over regex when both could match.
+        """
+        match = self._match_tree(method, path)
+        if match is not None:
+            return match
+        # Zero cost when no regex route is registered: the guard short-circuits
+        # before touching the (empty) list.
+        if self._regex_routes:
+            return self._match_regex(method, path)
+        return None
+
+    def _match_tree(self, method: str, path: str) -> RouteMatch | None:
+        """Match against the radix tree alone. O(k) where k = path depth."""
         segments = self._split_path(path)
         request_has_slash = path.endswith("/") and path != "/"
         params: dict[str, str] = {}
@@ -579,24 +686,33 @@ class Router:
         return None
 
     def get_allowed_methods(self, path: str) -> list[str]:
-        """Get allowed methods for a path (for 405 responses)."""
+        """Get allowed methods for a path (for 405 responses).
+
+        Consults the radix tree first; on a tree miss it falls back to the
+        regex routes (when any are registered) so a regex-only path still
+        reports its methods for 405/OPTIONS.
+        """
         segments = self._split_path(path)
         request_has_slash = path.endswith("/") and path != "/"
         params: dict[str, str] = {}
         node = self._match_node(self._root, segments, 0, params)
-        if node is None:
-            return []
-        # Respect trailing slash matching (skipped when tolerant_slash is set).
-        if not node.tolerant_slash and node.trailing_slash and not request_has_slash:
-            return []
-        if (
-            not node.tolerant_slash
-            and not node.trailing_slash
-            and request_has_slash
-            and node.handlers
-        ):
-            return []
-        return list(node.handlers.keys())
+        if node is not None:
+            # Respect trailing slash matching (skipped when tolerant_slash is set).
+            slash_miss = (
+                not node.tolerant_slash and node.trailing_slash and not request_has_slash
+            ) or (
+                not node.tolerant_slash
+                and not node.trailing_slash
+                and request_has_slash
+                and node.handlers
+            )
+            if not slash_miss and node.handlers:
+                return list(node.handlers.keys())
+        if self._regex_routes:
+            for route in self._regex_routes:
+                if route.pattern.match(path):
+                    return list(route.handlers.keys())
+        return []
 
     # ── Decorator API ───────────────────────
 
@@ -828,6 +944,14 @@ class Router:
         """
         routes: list[tuple[str, str, RouteInfo]] = []
         self._walk_tree(self._root, [], routes, include_hidden)
+        # Regex fallback routes are not in the tree; surface them here so
+        # OpenAPI, blueprint re-registration, and url-map building see them.
+        # The exposed path is the OpenAPI-style form built from the template.
+        for route in self._regex_routes:
+            path = route.openapi_path
+            for method, info in route.handlers.items():
+                if include_hidden or (method != "WEBSOCKET" and info.include_in_schema):
+                    routes.append((method, path, info))
         return routes
 
     def _walk_tree(
@@ -855,6 +979,86 @@ class Router:
         # Collect all routes from sub-router and re-add with combined prefix
         extra_prefix = prefix.rstrip("/")
         self._merge_node(router._root, extra_prefix, [])
+        # Tree merge above only walks the radix structure; the child's regex
+        # fallback routes live outside it, so merge them explicitly under the
+        # same prefix (no-op when the child registered none).
+        if router._regex_routes:
+            self._merge_regex_routes(router, extra_prefix)
+
+    def _merge_regex_routes(self, router: Router, prefix: str) -> None:
+        """Merge a child router's regex fallback routes into this router.
+
+        Re-prefixes each template, recompiles the anchored pattern, applies
+        this router's `router_dependencies`, and preserves the route name the
+        same way `_merge_node` does for tree routes.
+        """
+        from veloce._handler_plan import K_REQUEST, build_route_dep_plans
+
+        for src in router._regex_routes:
+            full_path = prefix + src.template if prefix else src.template
+            target = self._regex_route_index.get(full_path)
+            if target is None:
+                pattern = build_route_regex(full_path)
+                param_names = list(pattern.groupindex)
+                target = RegexRoute(full_path, pattern, param_names)
+                self._regex_routes.append(target)
+                self._regex_route_index[full_path] = target
+            else:
+                param_names = target.param_names
+
+            for method, info in src.handlers.items():
+                combined_deps = list(self.router_dependencies)
+                if info.dependencies:
+                    combined_deps.extend(info.dependencies)
+                route_info = RouteInfo(
+                    handler=info.handler,
+                    param_names=param_names,
+                    dependencies=combined_deps if combined_deps else info.dependencies,
+                    response_model=info.response_model,
+                    tags=(info.tags or []) + list(self.tags),
+                    summary=info.summary,
+                    name=info.name,
+                    path_template=full_path,
+                    description=info.description,
+                    deprecated=info.deprecated,
+                    response_description=info.response_description,
+                    status_code=info.status_code,
+                    response_class=info.response_class or self.default_response_class,
+                    response_model_include=info.response_model_include,
+                    response_model_exclude=info.response_model_exclude,
+                    response_model_exclude_unset=info.response_model_exclude_unset,
+                    response_model_exclude_defaults=info.response_model_exclude_defaults,
+                    response_model_by_alias=info.response_model_by_alias,
+                    response_model_exclude_none=info.response_model_exclude_none,
+                    include_in_schema=info.include_in_schema,
+                    responses=(
+                        None
+                        if not self.router_responses and not info.responses
+                        else {**self.router_responses, **(info.responses or {})}
+                    ),
+                    operation_id=info.operation_id,
+                    openapi_extra=info.openapi_extra,
+                    defaults=info.defaults,
+                    callbacks=info.callbacks,
+                    subdomain=info.subdomain,
+                    host=info.host,
+                )
+                route_info.handler_plan = info.handler_plan
+                is_ws = method.upper() == "WEBSOCKET"
+                route_info.route_dep_plans = build_route_dep_plans(
+                    route_info.dependencies, websocket=is_ws
+                )
+                route_info.is_trivial_plan = (
+                    not route_info.handler_plan.slots and not route_info.route_dep_plans
+                )
+                hp = route_info.handler_plan
+                route_info.is_request_only_plan = (
+                    len(hp.slots) == 1
+                    and hp.slots[0].kind == K_REQUEST
+                    and not route_info.route_dep_plans
+                )
+                target.handlers[method] = route_info
+                self._named_routes[info.name] = (full_path, param_names)
 
     def _merge_node(self, node: RadixNode, prefix: str, path_segments: list[str]) -> None:
         """Recursively merge nodes from another router's tree."""

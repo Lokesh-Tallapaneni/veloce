@@ -11,14 +11,17 @@ from veloce.routing.params import Query
 from veloce.testclient import TestClient
 
 
-def test_greedy_converter_with_trailing_segment_rejected_at_registration():
-    """`{p:path}` must be the final segment; anything after raises ValueError."""
+def test_greedy_converter_with_trailing_segment_uses_regex_fallback():
+    """`{p:path}` followed by a suffix routes through the regex fallback."""
     app = Veloce(openapi_url=None)
-    with pytest.raises(ValueError, match="greedy converter"):
 
-        @app.get("/files/{p:path}/info")
-        async def handler():
-            return {"ok": True}
+    @app.get("/files/{p:path}/info")
+    async def handler(p):
+        return {"p": p}
+
+    match = app.match("GET", "/files/a/b/c/info")
+    assert match is not None
+    assert match.path_params == {"p": "a/b/c"}
 
 
 def test_greedy_converter_as_last_segment_matches_remaining_path():

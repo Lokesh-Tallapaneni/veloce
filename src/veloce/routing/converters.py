@@ -32,6 +32,30 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{12}$"
 )
 
+# Body (un-anchored) form of the UUID pattern, reused when translating a
+# `{id:uuid}` placeholder into a named regex group for the hybrid router's
+# regex fallback. Keep in sync with `_UUID_RE`.
+_UUID_PATTERN = (
+    r"[0-9a-fA-F]{8}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{12}"
+)
+
+# Un-anchored regex fragments for the built-in converters. A bare `{name}`
+# (no converter) and the `str`/`string` converters both match one non-slash
+# segment. `path` is greedy and crosses slashes. These feed the regex
+# fallback only — the radix fast path never consults them.
+_BUILTIN_REGEX: dict[str, str] = {
+    "str": r"[^/]+",
+    "string": r"[^/]+",
+    "int": r"-?\d+",
+    "float": r"-?\d+\.\d+",
+    "uuid": _UUID_PATTERN,
+    "path": r".+",
+}
+
 # Cap int-parse input length to bound adversarial parse cost. The converter
 # coerces to Python int (arbitrary precision), so this is a bignum-DoS guard,
 # not a 64-bit range check.
@@ -193,3 +217,92 @@ def parse_converter(spec: str | None) -> _Converter:
     if cls is None:
         raise ValueError(f"unknown path converter: {spec!r}")
     return cls()
+
+
+# Names the radix tree can express natively. A converter spec outside this
+# set (a raw regex like `[0-9]+`) forces the route onto the regex fallback.
+_TREE_EXPRESSIBLE = frozenset(_BUILTIN)
+
+# A whole-segment placeholder: the brace spans the entire segment, e.g.
+# `{id}` or `{id:int}`. `{n}/x` partial segments and multi-brace segments
+# like `{name}.{ext}` are deliberately rejected by `is_regex_path`.
+_WHOLE_SEGMENT_PARAM_RE = re.compile(r"^\{([^{}]*)\}$")
+
+# Matches every `{...}` placeholder in a segment so we can count and inspect
+# them — used to detect multi-brace and partial-segment shapes.
+_BRACE_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def _is_tree_expressible_spec(spec: str) -> bool:
+    """Return True when `spec` (the `:...` of a placeholder) is radix-native."""
+    if not spec:
+        return True
+    if spec.startswith("any(") and spec.endswith(")"):
+        return True
+    return spec in _TREE_EXPRESSIBLE or spec in _CUSTOM
+
+
+def is_regex_path(path: str) -> bool:
+    """Decide whether `path` must use the regex fallback rather than the tree.
+
+    A path is a regex route when any segment carries more than one
+    placeholder, holds a placeholder that does not span the whole segment
+    (`/v{n}/x`, `/files/{name}.{ext}`), or names a converter the radix tree
+    cannot express (a raw regex like `{id:[0-9]+}`). A greedy `:path`
+    placeholder followed by a non-empty suffix is also a regex route, since
+    the tree only accepts `:path` as the final segment.
+    """
+    segments = [s for s in path.split("/") if s]
+    total = len(segments)
+    for idx, seg in enumerate(segments):
+        braces = _BRACE_RE.findall(seg)
+        if not braces:
+            continue
+        if len(braces) > 1:
+            return True
+        whole = _WHOLE_SEGMENT_PARAM_RE.match(seg)
+        if whole is None:
+            # A placeholder shares the segment with static text.
+            return True
+        spec = whole.group(1)
+        _, _, conv = spec.partition(":")
+        has_conv = ":" in spec
+        if has_conv and not _is_tree_expressible_spec(conv):
+            return True
+        if conv == "path" and idx != total - 1:
+            return True
+    return False
+
+
+def build_route_regex(path: str) -> re.Pattern[str]:
+    """Compile `path` into an anchored regex with named groups per parameter.
+
+    Built-in converters map to their `_BUILTIN_REGEX` fragment; a bare
+    `{name}` matches one non-slash segment; a raw `{name:PATTERN}` uses
+    `PATTERN` verbatim. Static text is `re.escape`'d. The result is anchored
+    `^...$` and matched against the full request path.
+    """
+    out: list[str] = ["^"]
+
+    def _emit_placeholder(spec: str) -> str:
+        name, sep, conv = spec.partition(":")
+        if not sep:
+            return f"(?P<{name}>[^/]+)"
+        builtin = _BUILTIN_REGEX.get(conv)
+        if builtin is not None:
+            return f"(?P<{name}>{builtin})"
+        if conv.startswith("any(") and conv.endswith(")"):
+            body = conv[4:-1]
+            choices = "|".join(re.escape(c.strip()) for c in body.split(","))
+            return f"(?P<{name}>{choices})"
+        # Raw regex converter: the spec after the colon is the pattern itself.
+        return f"(?P<{name}>{conv})"
+
+    pos = 0
+    for m in _BRACE_RE.finditer(path):
+        out.append(re.escape(path[pos : m.start()]))
+        out.append(_emit_placeholder(m.group(1)))
+        pos = m.end()
+    out.append(re.escape(path[pos:]))
+    out.append("$")
+    return re.compile("".join(out))

@@ -13,6 +13,21 @@ body in memory before dispatch. Peak per-connection body memory is now the
 queue bound rather than the full upload, so many concurrent large uploads no
 longer scale memory with body size.
 
+### Added
+
+- **Hybrid routing: radix fast path with a regex fallback.** Routes the radix
+  tree cannot express now match through a compiled-regex fallback consulted only
+  on a tree miss, so patterns such as a parameter sharing a segment with static
+  text (`/v{version:int}/api`), multiple parameters in one segment
+  (`/files/{name}.{ext}`), a raw regex converter (`/items/{id:[0-9]+}`), or a
+  greedy `:path` converter followed by a suffix (`/{p:path}/edit`) are now
+  supported. Classification happens once at registration; the radix fast path is
+  unchanged and pays nothing when no regex route is registered — the tree always
+  wins over the fallback. Regex routes participate in `url_for`, allowed-method
+  reporting (405/OPTIONS), `include_router` merging (with name prefixing), and
+  OpenAPI schema generation (exposed with an OpenAPI-style path, e.g.
+  `/items/{id}`).
+
 ### Changed
 
 - **BREAKING — request body access is now asynchronous.** To stream a body the

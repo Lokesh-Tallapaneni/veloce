@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -186,12 +187,28 @@ def test_router_typed_vs_string_routes_coexist():
     assert m.path_params["name"] == "alice"
 
 
-def test_unknown_converter_raises_at_registration():
+def test_non_builtin_converter_is_treated_as_raw_regex():
+    # A converter spec outside the built-in set is taken verbatim as a regex
+    # pattern (the hybrid router's raw-regex form), so `{id:bogus}` becomes a
+    # named group matching the literal text `bogus` rather than raising.
     r = Router()
 
-    with pytest.raises(ValueError):
+    @r.get("/x/{id:bogus}")
+    async def h(id):
+        return id
 
-        @r.get("/x/{id:bogus}")
+    assert r.match("GET", "/x/bogus") is not None
+    assert r.match("GET", "/x/other") is None
+
+
+def test_invalid_raw_regex_pattern_raises_at_registration():
+    # A spec that is not a valid regex still fails loudly at registration,
+    # when the pattern is compiled.
+    r = Router()
+
+    with pytest.raises(re.error):
+
+        @r.get("/x/{id:[}")
         async def h(id):
             return id
 

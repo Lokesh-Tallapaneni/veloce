@@ -145,18 +145,18 @@ def test_cors_wildcard_regex_with_credentials_rejected(pattern: str) -> None:
     assert "allow_credentials" in str(excinfo.value)
 
 
-# ── #8: router error verbosity for greedy-not-final ─────────────────
+# ── #8: greedy-not-final converters route via the regex fallback ────
 
 
-def test_router_greedy_converter_error_names_path_and_trailing() -> None:
+def test_router_greedy_converter_with_trailing_uses_regex_fallback() -> None:
+    # `{p:path}` with a static suffix is no longer rejected at registration;
+    # it is handled by the hybrid router's regex fallback.
     app = Veloce()
 
-    with pytest.raises(ValueError) as excinfo:
+    @app.get("/files/{p:path}/info/x")
+    async def serve(p: str) -> dict:
+        return {"p": p}
 
-        @app.get("/files/{p:path}/info/x")
-        async def bad(p: str) -> dict:
-            return {"p": p}
-
-    msg = str(excinfo.value)
-    assert "/files/{p:path}/info/x" in msg
-    assert "('info', 'x')" in msg or '("info", "x")' in msg
+    match = app.match("GET", "/files/a/b/info/x")
+    assert match is not None
+    assert match.path_params == {"p": "a/b"}

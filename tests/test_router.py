@@ -127,13 +127,19 @@ class TestDecorators:
 
 
 class TestGreedyPathConverter:
-    def test_greedy_with_trailing_segments_rejected(self):
+    def test_greedy_with_trailing_segment_uses_regex_fallback(self):
+        # A greedy `:path` converter followed by a static suffix is not
+        # tree-expressible, so it now routes through the regex fallback
+        # instead of raising at registration.
         r = Router()
 
-        async def handler(request): ...
+        @r.get("/{files:path}/info")
+        async def handler(files):
+            return files
 
-        with pytest.raises(ValueError, match="greedy converter"):
-            r.add_route("/{files:path}/info", handler, ["GET"])
+        match = r.match("GET", "/a/b/c/info")
+        assert match is not None
+        assert match.path_params == {"files": "a/b/c"}
 
     def test_greedy_as_final_segment_allowed(self):
         r = Router()
