@@ -140,3 +140,40 @@ def test_stream_template_wraps_in_streaming_response(tmp_path):
         assert resp.is_streamed
     finally:
         _current_app_var.reset(token)
+
+
+def test_stream_template_resolves_context_when_consumed_after_request(tmp_path):
+    """A streamed template that reads a context-dependent global (`url_for`)
+    must render correctly when its body is consumed AFTER the request context
+    is gone — the built-in server emits the body on a separate task.
+
+    The stream is built inside the app context, the context is then torn down,
+    and only then is the (synchronous) body iterated — it must not raise
+    "working outside of application context".
+    """
+    from veloce.helpers import _current_app_var
+
+    # `url_for` is injected as a Jinja global by _sync_app_jinja_helpers and
+    # resolves lazily during iteration — the exact context-dependent case.
+    (tmp_path / "ctx.html").write_text(
+        "{% for i in items %}{{ url_for('home') }}:{{ i }};{% endfor %}"
+    )
+
+    app = Veloce(openapi_url=None)
+    app._templates = Jinja2Templates(directory=str(tmp_path))
+
+    @app.get("/", name="home")
+    async def home(request):
+        return {"ok": True}
+
+    # Build the stream inside the context, then tear the context down.
+    token = _current_app_var.set(app)
+    try:
+        gen = stream_template("ctx.html", items=["a", "b"])
+    finally:
+        _current_app_var.reset(token)
+
+    # Context is gone now. Consuming the iterator must still resolve url_for
+    # via the snapshot captured when the stream was built.
+    out = "".join(gen)
+    assert out == "/:a;/:b;"
