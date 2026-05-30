@@ -315,12 +315,16 @@ class DependencyResolver:
         route_dep_plans: list[Any] | None = None,
     ) -> dict[str, Any]:
         """Fast path — consume a pre-built `HandlerPlan`."""
+        # Clear per-request state on every call. DependencyResolver is public
+        # and a caller may reuse one instance across resolves, so a prior
+        # resolve's cache / teardown stack / scope stack must never leak into
+        # this one — including into the compiled fast path below.
+        self.reset()
+
         # Param-only plans (request + scalar path/query, no route deps) resolve
-        # through a straight-line function generated once at registration. It
-        # reads no cache, teardown stack, or scope stack, so `reset()` and the
-        # interpreter loop are both skipped. Safe regardless of resolver reuse:
-        # the dispatcher builds a fresh DependencyResolver per request, so there
-        # is no prior-request state to clear here in the first place.
+        # through a straight-line function compiled on first use and cached on
+        # the plan. It reads no resolver state, so after the reset above it
+        # returns directly without entering the interpreter loop.
         if not route_dep_plans:
             cr = plan.compiled_resolver
             if cr is None:
@@ -328,8 +332,6 @@ class DependencyResolver:
                 plan.compiled_resolver = cr = compiled if compiled is not None else _NOT_COMPILABLE
             if cr is not _NOT_COMPILABLE:
                 return cr(request, path_params)
-
-        self.reset()
 
         if route_dep_plans:
             for slot in route_dep_plans:
