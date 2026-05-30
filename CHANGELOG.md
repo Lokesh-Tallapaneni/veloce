@@ -103,20 +103,22 @@ longer scale memory with body size.
 - OpenAPI schemas for non-body parameters (query, path, header, cookie) and
   `Form()` fields now match what the request resolver can actually deliver.
   These values arrive over the wire as raw strings, so a parameter annotated
-  with a Pydantic model — or a `list`/`dict`/`set` of one — documents
-  `{"type": "string"}` rather than a `$ref`/object schema, and the resolver
-  now parses that string as a JSON document into the model
-  (`?tag={"name":"x"}` for `tag: Tag = Query()`, repeated JSON-object values
-  for `tags: list[Tag] = Form()`), so a value matching the documented string
-  schema resolves rather than returning a 422. A multi-member union is
-  documented by the branch a string value can actually reach under Pydantic's
-  smart coercion: a union that includes `str` (`int | str`,
-  `Optional[int | str]`) documents `{"type": "string"}`, since string input
-  always lands on the `str` member; a union with no string-accepting member
-  (`int | float`, `UUID | int`, `date | datetime`) documents an `anyOf` over
-  its members, since the resolver genuinely resolves the string to one of
-  those typed branches. Pydantic models carried as a structured JSON body
-  belong in `requestBody`, where they are still resolved to a `$ref`.
+  with a **bare** Pydantic model documents `{"type": "string"}` rather than a
+  `$ref`, and the resolver parses that string as a JSON document into the
+  model (`?tag={"name":"x"}` for `tag: Tag = Query()`), so a matching value
+  resolves rather than returning a 422. A model nested inside a
+  `list`/`dict`/`set` or a union is **not** JSON-decoded by the resolver, so
+  the schema does not advertise the model's fields there: a `list`/`set` of a
+  model documents `items: {"type": "string"}`, a `dict` of a model documents a
+  bare `{"type": "object"}`, and a model member of a union is dropped. A
+  multi-member union is documented by the branch a string value can actually
+  reach under Pydantic's smart coercion: a union that includes `str` or
+  `bytes` (`int | str`, `Optional[int | str]`) documents `{"type": "string"}`,
+  since string input always lands on that member; a union of non-string,
+  non-model members (`int | float`, `UUID | int`, `date | datetime`) documents
+  an `anyOf` over them, since the resolver genuinely resolves the string to
+  one of those typed branches. Pydantic models carried as a structured JSON
+  body belong in `requestBody`, where they are still resolved to a `$ref`.
 - **Hybrid router: unknown converters in regex-routed paths now raise at
   registration.** A bare-word converter typo in a path that forces regex
   routing — `/v{version:bogus}/api`, or in a later segment such as

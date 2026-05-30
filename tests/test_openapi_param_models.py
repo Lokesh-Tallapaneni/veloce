@@ -6,15 +6,18 @@ through `_coerce_value`. These tests pin `_python_type_to_schema` to the
 shapes that string-origin pipeline can actually deliver, and prove the
 documented schema is honoured at request time:
 
-- Pydantic models — and models nested inside `list` / `dict` / `set` —
-  emit `{"type": "string"}`. The resolver parses that string as a JSON
-  document into the model (`?tag={"name":"x"}`), so the wire shape is a
-  string and a matching value resolves to 200.
-- A union that includes `str` collapses to `{"type": "string"}` because
-  smart-mode coercion keeps the string value as the `str` member.
-- A union with no string-accepting member emits an `anyOf` over its
-  members; the resolver resolves the string to whichever branch matches,
-  so each branch is genuinely reachable.
+- A bare Pydantic model emits `{"type": "string"}`: the resolver parses
+  that string as a JSON document into the model (`?tag={"name":"x"}`), so
+  the wire shape is a string and a matching value resolves to 200.
+- A model nested inside `list` / `dict` / `set`, or inside a union, is NOT
+  JSON-decodable (the resolver only decodes a *bare* model), so the schema
+  never advertises the model's fields there — the container collapses to a
+  bare object / string item, and a model member is dropped from a union.
+- A union that includes `str` (or `bytes`) collapses to `{"type": "string"}`
+  because smart-mode coercion keeps the string value on that member.
+- A union of non-string, non-model members emits an `anyOf` over them; the
+  resolver resolves the string to whichever branch matches, so each branch
+  is genuinely reachable.
 """
 
 from __future__ import annotations
@@ -88,7 +91,11 @@ def test_list_of_model_form_field_emits_array_of_string() -> None:
     assert "_Tag" not in schema["components"]["schemas"]
 
 
-def test_dict_of_model_query_param_emits_string_additional_properties() -> None:
+def test_dict_of_model_query_param_emits_bare_object() -> None:
+    # A model-valued mapping param is not JSON-decodable by the resolver
+    # (see test_dict_of_model_query_param_rejects_json_string below), so the
+    # schema is a bare object — it must NOT advertise the model's fields as
+    # decodable `additionalProperties`.
     app = Veloce()
 
     @app.get("/lookup")
@@ -97,11 +104,22 @@ def test_dict_of_model_query_param_emits_string_additional_properties() -> None:
 
     schema = get_openapi_schema(app)
     param = _operation(app, "/lookup", "get")["parameters"][0]
-    assert param["schema"] == {
-        "type": "object",
-        "additionalProperties": {"type": "string"},
-    }
+    assert param["schema"] == {"type": "object"}
     assert "_Tag" not in schema["components"]["schemas"]
+
+
+async def test_dict_of_model_query_param_rejects_json_string() -> None:
+    # Ground truth for the schema above: the resolver does not JSON-decode a
+    # mapping param's model values, so a JSON-object string is a 422.
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/lookup")
+    async def lookup(table: dict[str, _Tag] = Query()):
+        return {"ok": True}
+
+    qs = "table=" + urllib.parse.quote('{"a":{"name":"x"}}')
+    resp = await app.handle_request(_make_request("/lookup", qs))
+    assert resp.status_code == 422
 
 
 def test_set_of_model_emits_array_of_string() -> None:
@@ -210,6 +228,44 @@ def test_date_datetime_union_emits_anyof() -> None:
             {"type": "string", "format": "date-time"},
         ]
     }
+
+
+def test_model_in_union_is_dropped_leaving_reachable_branch() -> None:
+    # A model member is not reachable from a string in a union (the resolver
+    # only JSON-decodes a bare model), so it is dropped. `_Tag | int` leaves a
+    # single reachable branch — the integer schema — not an anyOf advertising
+    # the unreachable model.
+    assert _python_type_to_schema(_Tag | int) == {"type": "integer"}
+
+
+def test_model_in_multi_branch_union_drops_only_the_model() -> None:
+    assert _python_type_to_schema(_Tag | int | float) == {
+        "anyOf": [{"type": "integer"}, {"type": "number"}]
+    }
+
+
+async def test_model_union_resolves_reachable_branch_and_rejects_model_string() -> None:
+    # Ground truth for the schema above: `_Tag | int` resolves an integer
+    # string to the int branch (200) but rejects a JSON-object string (422) —
+    # so the schema must advertise integer only, never the model branch.
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/u")
+    async def u(v: _Tag | int = Query()):
+        return {"v": str(v)}
+
+    ok = await app.handle_request(_make_request("/u", "v=123"))
+    assert ok.status_code == 200
+    bad = await app.handle_request(
+        _make_request("/u", "v=" + urllib.parse.quote('{"name":"x"}'))
+    )
+    assert bad.status_code == 422
+
+
+def test_int_bytes_union_collapses_to_string() -> None:
+    # `bytes` accepts a string directly (the resolver resolves `?v=abc` to the
+    # bytes branch), so a union containing bytes collapses to a plain string.
+    assert _python_type_to_schema(int | bytes) == {"type": "string"}
 
 
 def test_optional_non_str_union_emits_anyof() -> None:

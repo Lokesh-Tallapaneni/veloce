@@ -483,6 +483,11 @@ def _literal_enum_schema(values: list) -> dict[str, Any]:
     return schema
 
 
+def _is_model_type(annotation: Any) -> bool:
+    """Return True for a Pydantic ``BaseModel`` subclass annotation."""
+    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
+
+
 def _python_type_to_schema(annotation: Any) -> dict:
     """Convert a Python type to its OpenAPI 3.1 / JSON Schema 2020-12 form.
 
@@ -529,12 +534,16 @@ def _python_type_to_schema(annotation: Any) -> dict:
     # rich-typed parameter still emits its `format` / `enum` keywords.
     #
     # For a genuine multi-member union the schema follows which branch a
-    # string wire value can reach under Pydantic's smart coercion. If the
-    # union accepts a string directly (a `str` / `bytes` member), the value
-    # always lands on that branch, so the union collapses to `string`. With
-    # no string-accepting member, Pydantic resolves the string to one of
-    # the typed branches (`int | float`, `UUID | int`, …), so each member's
-    # schema is genuinely reachable and the union emits an `anyOf`.
+    # string wire value can reach under Pydantic's smart coercion (verified
+    # against the resolver, not assumed):
+    #   - a member that accepts a string directly (`str` / `bytes`) always
+    #     wins, so the union collapses to `{"type": "string"}`;
+    #   - a Pydantic-model member is NOT reachable from a string in a union —
+    #     the resolver only JSON-decodes a *bare* model annotation, so
+    #     `Tag | int` rejects `?v={"name":"x"}` with 422. Model members are
+    #     dropped from the union schema so it never advertises a 422 branch;
+    #   - the remaining scalar branches (`int | float`, `UUID | int`, …) are
+    #     each genuinely reachable, so the union emits an `anyOf` over them.
     if origin is Union or origin is _types.UnionType:
         members = get_args(annotation)
         inner = [a for a in members if a is not type(None)]
@@ -542,18 +551,29 @@ def _python_type_to_schema(annotation: Any) -> dict:
             return _python_type_to_schema(inner[0])
         if any(m is str or m is bytes for m in inner):
             return {"type": "string"}
-        return {"anyOf": [_python_type_to_schema(m) for m in inner]}
+        reachable = [m for m in inner if not _is_model_type(m)]
+        if not reachable:
+            return {"type": "string"}
+        if len(reachable) == 1:
+            return _python_type_to_schema(reachable[0])
+        return {"anyOf": [_python_type_to_schema(m) for m in reachable]}
 
     # Parametrised `list[T]` / `set[T]` → an array schema with typed items.
+    # A model item is not reachable: `list[Tag]` 422s on a JSON-array string,
+    # so the item schema falls through to `{"type": "string"}` rather than the
+    # model's fields (the resolver only JSON-decodes a bare model annotation).
     if origin in (list, set, tuple):
         args = get_args(annotation)
         item = _python_type_to_schema(args[0]) if args else {}
         return {"type": "array", "items": item}
     # Parametrised `dict[K, V]` → an object schema with typed additionalProperties.
     # JSON object keys are strings, so the key type arg is intentionally ignored.
+    # A model-valued dict is documented as a bare object: the resolver does not
+    # JSON-decode model values inside a mapping param (`dict[str, Tag]` 422s on
+    # `?t={"a":{"name":"x"}}`), so advertising the model's fields would lie.
     if origin is dict:
         args = get_args(annotation)
-        if len(args) == 2:
+        if len(args) == 2 and not _is_model_type(args[1]):
             return {
                 "type": "object",
                 "additionalProperties": _python_type_to_schema(args[1]),
