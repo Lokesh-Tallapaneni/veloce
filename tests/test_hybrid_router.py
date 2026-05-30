@@ -10,6 +10,10 @@ routes (405/OPTIONS, url_for, include_router, OpenAPI).
 
 from __future__ import annotations
 
+import uuid
+
+import pytest
+
 from veloce import Veloce
 from veloce.contrib.openapi import get_openapi_schema
 from veloce.routing.converters import build_route_regex, is_regex_path
@@ -137,7 +141,8 @@ class TestRegexFallback:
 
         m = r.match("GET", "/v2/api")
         assert m is not None
-        assert m.path_params == {"version": "2"}
+        # The `:int` converter coerces the matched group, same as the tree.
+        assert m.path_params == {"version": 2}
         assert r.match("GET", "/vX/api") is None
 
     def test_raw_regex_converter_matches_and_rejects(self):
@@ -218,7 +223,7 @@ class TestRegexMethods:
 
         m = r.match("HEAD", "/v3/x")
         assert m is not None
-        assert m.path_params == {"n": "3"}
+        assert m.path_params == {"n": 3}
 
 
 # ── url_for reverse resolution ───────────────────────────────────
@@ -284,7 +289,7 @@ class TestRegexInclude:
         main.include_router(sub, prefix="/mount")
         m = main.match("GET", "/mount/v4/x")
         assert m is not None
-        assert m.path_params == {"n": "4"}
+        assert m.path_params == {"n": 4}
 
     def test_include_applies_router_dependencies(self):
         main = Router(dependencies=["dep_a"])
@@ -364,7 +369,7 @@ class TestRegexEndToEnd:
 
             resp2 = client.get("/v3/ping")
             assert resp2.status_code == 200
-            assert resp2.json() == {"version": "3"}
+            assert resp2.json() == {"version": 3}
 
 
 def test_regex_route_router_dependency_runs_exactly_once_after_include():
@@ -395,3 +400,244 @@ def test_regex_route_router_dependency_runs_exactly_once_after_include():
     assert resp.status_code == 200
     assert calls["sub"] == 1, f"sub dep ran {calls['sub']} times, expected exactly 1"
     assert calls["parent"] == 1, f"parent dep ran {calls['parent']} times, expected exactly 1"
+
+
+# ── Unknown bare-word converters in regex-forced segments ────────
+
+
+class TestUnknownConverterInRegexSegment:
+    def test_partial_segment_unknown_converter_raises(self):
+        # `/v{version:bogus}/api` forces regex routing (param shares the
+        # segment with static text) but `bogus` is not a known converter, so
+        # registration must raise rather than match literal "bogus".
+        with pytest.raises(ValueError, match="unknown path converter"):
+            is_regex_path("/v{version:bogus}/api")
+
+    def test_partial_segment_known_converter_is_regex(self):
+        assert is_regex_path("/v{version:int}/api") is True
+
+    def test_multi_brace_unknown_converter_raises(self):
+        with pytest.raises(ValueError, match="unknown path converter"):
+            is_regex_path("/files/{name:bogus}.{ext}")
+
+    def test_unknown_converter_route_registration_raises(self):
+        r = Router()
+
+        with pytest.raises(ValueError, match="unknown path converter"):
+
+            @r.get("/v{version:bogus}/api")
+            async def h(version):
+                return version
+
+    def test_known_converter_route_registers_and_matches(self):
+        r = Router()
+
+        @r.get("/v{version:int}/api")
+        async def h(version):
+            return version
+
+        m = r.match("GET", "/v7/api")
+        assert m is not None
+        assert m.path_params == {"version": 7}
+
+
+# ── Regex routes coerce params like the radix tree ───────────────
+
+
+class TestRegexConverterCoercion:
+    def test_int_param_in_segment_is_coerced(self):
+        r = Router()
+
+        @r.get("/v{n:int}/x")
+        async def h(n):
+            return n
+
+        m = r.match("GET", "/v3/x")
+        assert m is not None
+        assert m.path_params == {"n": 3}
+        assert isinstance(m.path_params["n"], int)
+
+    def test_float_param_is_coerced(self):
+        r = Router()
+
+        @r.get("/p{f:float}/x")
+        async def h(f):
+            return f
+
+        m = r.match("GET", "/p1.5/x")
+        assert m is not None
+        assert m.path_params == {"f": 1.5}
+        assert isinstance(m.path_params["f"], float)
+
+    def test_uuid_param_is_coerced(self):
+        r = Router()
+
+        @r.get("/u{id:uuid}/x")
+        async def h(id):
+            return id
+
+        u = "12345678-1234-1234-1234-123456789abc"
+        m = r.match("GET", f"/u{u}/x")
+        assert m is not None
+        assert m.path_params == {"id": uuid.UUID(u)}
+        assert isinstance(m.path_params["id"], uuid.UUID)
+
+    def test_any_param_stays_string(self):
+        r = Router()
+
+        @r.get("/c{c:any(red,blue)}/x")
+        async def h(c):
+            return c
+
+        m = r.match("GET", "/cred/x")
+        assert m is not None
+        assert m.path_params == {"c": "red"}
+
+    def test_raw_regex_param_stays_string(self):
+        r = Router()
+
+        @r.get("/items/{id:[0-9]+}")
+        async def h(id):
+            return id
+
+        m = r.match("GET", "/items/42")
+        assert m is not None
+        assert m.path_params == {"id": "42"}
+        assert isinstance(m.path_params["id"], str)
+
+
+# ── Raw regex specs containing braces ────────────────────────────
+
+
+class TestRegexWithBraces:
+    def test_is_regex_path_with_inner_braces(self):
+        assert is_regex_path("/x/{id:[0-9]{2}}") is True
+        assert is_regex_path("/x/{id:\\d{2}}") is True
+
+    def test_bracket_quantifier_matches_two_digits(self):
+        pat = build_route_regex("/x/{id:[0-9]{2}}")
+        assert pat.match("/x/42").groupdict() == {"id": "42"}
+        assert pat.match("/x/4") is None
+        assert pat.match("/x/abc") is None
+
+    def test_escaped_digit_quantifier_matches_two_digits(self):
+        pat = build_route_regex("/x/{id:\\d{2}}")
+        assert pat.match("/x/42").groupdict() == {"id": "42"}
+        assert pat.match("/x/4") is None
+
+    def test_route_with_inner_braces_dispatches(self):
+        r = Router()
+
+        @r.get("/x/{id:[0-9]{2}}")
+        async def h(id):
+            return id
+
+        m = r.match("GET", "/x/42")
+        assert m is not None
+        assert m.path_params == {"id": "42"}
+        assert r.match("GET", "/x/4") is None
+        assert r.match("GET", "/x/abc") is None
+
+    def test_inner_brace_route_openapi_path(self):
+        app = Veloce()
+
+        @app.get("/x/{id:[0-9]{2}}")
+        async def h(id):
+            return id
+
+        schema = get_openapi_schema(app)
+        assert "/x/{id}" in schema["paths"]
+
+    def test_inner_brace_route_url_for(self):
+        r = Router()
+
+        @r.get("/x/{id:[0-9]{2}}", name="two_digit")
+        async def h(id):
+            return id
+
+        assert r.url_for("two_digit", id=42) == "/x/42"
+
+
+# ── strict_slashes=False on regex routes ─────────────────────────
+
+
+class TestRegexStrictSlashes:
+    def test_tolerant_accepts_extra_trailing_slash(self):
+        r = Router()
+
+        @r.get("/v{n:int}/x", strict_slashes=False)
+        async def h(n):
+            return n
+
+        assert r.match("GET", "/v3/x") is not None
+        # The extra trailing slash is tolerated.
+        assert r.match("GET", "/v3/x/") is not None
+
+    def test_tolerant_accepts_missing_trailing_slash(self):
+        r = Router()
+
+        @r.get("/v{n:int}/x/", strict_slashes=False)
+        async def h(n):
+            return n
+
+        assert r.match("GET", "/v3/x/") is not None
+        assert r.match("GET", "/v3/x") is not None
+
+    def test_strict_regex_route_rejects_extra_slash(self):
+        r = Router()
+
+        @r.get("/v{n:int}/x")
+        async def h(n):
+            return n
+
+        assert r.match("GET", "/v3/x") is not None
+        # Default (strict) regex route does not tolerate the extra slash.
+        assert r.match("GET", "/v3/x/") is None
+
+    def test_tolerant_allowed_methods_with_extra_slash(self):
+        r = Router()
+
+        @r.post("/v{n:int}/x", strict_slashes=False)
+        async def h(n):
+            return n
+
+        assert "POST" in r.get_allowed_methods("/v3/x/")
+
+
+# ── OpenAPI: tree wins over a shadowing regex handler ────────────
+
+
+class TestRegexOpenAPIShadowing:
+    def test_tree_handler_wins_over_regex_in_schema(self):
+        app = Veloce()
+
+        @app.get("/items/{id}")
+        async def tree_handler(id):
+            return ("tree", id)
+
+        @app.get("/items/{id:[0-9]+}")
+        async def regex_handler(id):
+            return ("regex", id)
+
+        schema = get_openapi_schema(app)
+        # Both reduce to the OpenAPI path `/items/{id}`. The tree handler is
+        # the dispatch winner, so the schema must describe it, not the regex
+        # handler that never runs for this path.
+        op = schema["paths"]["/items/{id}"]["get"]
+        assert op["operationId"].startswith("tree_handler")
+
+    def test_collect_all_routes_drops_shadowed_regex(self):
+        r = Router()
+
+        @r.get("/items/{id}")
+        async def tree_handler(id):
+            return id
+
+        @r.get("/items/{id:[0-9]+}")
+        async def regex_handler(id):
+            return id
+
+        collected = r._collect_all_routes()
+        infos = [info for _m, path, info in collected if path == "/items/{id}"]
+        assert len(infos) == 1
+        assert infos[0].handler is tree_handler

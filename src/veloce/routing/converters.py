@@ -228,9 +228,56 @@ _TREE_EXPRESSIBLE = frozenset(_BUILTIN)
 # like `{name}.{ext}` are deliberately rejected by `is_regex_path`.
 _WHOLE_SEGMENT_PARAM_RE = re.compile(r"^\{([^{}]*)\}$")
 
-# Matches every `{...}` placeholder in a segment so we can count and inspect
-# them — used to detect multi-brace and partial-segment shapes.
-_BRACE_RE = re.compile(r"\{([^{}]*)\}")
+
+class _Placeholder:
+    """One `{...}` placeholder located in a path: its span, name, and spec.
+
+    `spec` is the text after the first `:` (or `None` for a bare `{name}`),
+    and may itself carry regex braces — `{id:[0-9]{2}}` yields spec `[0-9]{2}`.
+    """
+
+    __slots__ = ("start", "end", "name", "spec")
+
+    def __init__(self, start: int, end: int, name: str, spec: str | None) -> None:
+        self.start = start
+        self.end = end
+        self.name = name
+        self.spec = spec
+
+
+def _iter_placeholders(text: str) -> list[_Placeholder]:
+    """Scan `text` for top-level `{...}` placeholders, balance-aware.
+
+    A placeholder opens at an unescaped `{` and closes at the matching `}`,
+    so a converter spec may contain its own balanced braces (`[0-9]{2}`).
+    The first `:` inside the placeholder separates the name from the spec;
+    everything after it (up to the closing brace) is the spec verbatim.
+    """
+    out: list[_Placeholder] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        # Walk to the matching close brace, tracking nesting depth so an
+        # inner `{2}` quantifier does not terminate the placeholder early.
+        depth = 1
+        j = i + 1
+        while j < n and depth:
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+            j += 1
+        if depth:
+            # Unbalanced brace — leave the rest as literal text.
+            break
+        inner = text[i + 1 : j - 1]
+        name, sep, spec = inner.partition(":")
+        out.append(_Placeholder(i, j, name, spec if sep else None))
+        i = j
+    return out
 
 
 def _is_tree_expressible_spec(spec: str) -> bool:
@@ -252,6 +299,22 @@ def _looks_like_regex(conv: str) -> bool:
     return _BARE_IDENT_RE.match(conv) is None
 
 
+def _validate_bare_word_spec(spec: str | None) -> None:
+    """Raise for a bare-word converter name the converter set does not know.
+
+    A regex-forced segment may still carry a bare-identifier converter spec
+    (`/v{version:bogus}/api`). That is an unknown-converter typo, not a raw
+    regex, so it must raise the same `ValueError` at registration the radix
+    path raises via `parse_converter` — never silently become literal regex.
+    """
+    if not spec:
+        return
+    if _looks_like_regex(spec):
+        return
+    if not _is_tree_expressible_spec(spec):
+        raise ValueError(f"unknown path converter: {spec!r}")
+
+
 def is_regex_path(path: str) -> bool:
     """Decide whether `path` must use the regex fallback rather than the tree.
 
@@ -261,30 +324,61 @@ def is_regex_path(path: str) -> bool:
     cannot express (a raw regex like `{id:[0-9]+}`). A greedy `:path`
     placeholder followed by a non-empty suffix is also a regex route, since
     the tree only accepts `:path` as the final segment.
+
+    A segment that forces regex routing still has each of its bare-word
+    converter specs validated: an unknown name like `{version:bogus}` raises
+    `ValueError` here rather than slipping through as literal regex.
     """
     segments = [s for s in path.split("/") if s]
     total = len(segments)
     for idx, seg in enumerate(segments):
-        braces = _BRACE_RE.findall(seg)
-        if not braces:
+        placeholders = _iter_placeholders(seg)
+        if not placeholders:
             continue
-        if len(braces) > 1:
-            return True
-        whole = _WHOLE_SEGMENT_PARAM_RE.match(seg)
-        if whole is None:
+        forced = False
+        if len(placeholders) > 1:
+            forced = True
+        ph = placeholders[0]
+        whole = ph.start == 0 and ph.end == len(seg)
+        if not whole:
             # A placeholder shares the segment with static text.
-            return True
-        spec = whole.group(1)
-        _, _, conv = spec.partition(":")
-        has_conv = ":" in spec
-        if has_conv and not _is_tree_expressible_spec(conv) and _looks_like_regex(conv):
-            # Raw regex converter (`{id:[0-9]+}`). A bare-word unknown spec
-            # (`{id:bogus}`) falls through to the tree, where parse_converter
-            # raises a clear "unknown path converter" at registration.
-            return True
-        if conv == "path" and idx != total - 1:
+            forced = True
+        for cand in placeholders:
+            spec = cand.spec
+            if spec and not _is_tree_expressible_spec(spec) and _looks_like_regex(spec):
+                # Raw regex converter (`{id:[0-9]+}`).
+                forced = True
+            if spec == "path" and idx != total - 1:
+                forced = True
+        if forced:
+            # Validate every bare-word spec so an unknown converter typo in a
+            # regex-routed segment still raises instead of becoming raw regex.
+            for cand in placeholders:
+                _validate_bare_word_spec(cand.spec)
             return True
     return False
+
+
+def extract_regex_converters(path: str) -> dict[str, _Converter]:
+    """Return the built-in converter for each placeholder in a regex route.
+
+    Bare `{name}` and raw-regex placeholders (`{id:[0-9]+}`) have no built-in
+    converter and are omitted — their matched groups stay as strings. Built-in
+    specs (`int`, `float`, `uuid`, `path`, `any(...)`) map to the converter the
+    radix tree would apply, so `_match_regex` can coerce matched groups to the
+    same Python types the tree produces.
+    """
+    converters: dict[str, _Converter] = {}
+    for ph in _iter_placeholders(path):
+        spec = ph.spec
+        if not spec:
+            continue
+        is_named = (
+            spec in _BUILTIN or spec in _CUSTOM or (spec.startswith("any(") and spec.endswith(")"))
+        )
+        if is_named:
+            converters[ph.name] = parse_converter(spec)
+    return converters
 
 
 def build_route_regex(path: str) -> re.Pattern[str]:
@@ -297,9 +391,8 @@ def build_route_regex(path: str) -> re.Pattern[str]:
     """
     out: list[str] = ["^"]
 
-    def _emit_placeholder(spec: str) -> str:
-        name, sep, conv = spec.partition(":")
-        if not sep:
+    def _emit_placeholder(name: str, conv: str | None) -> str:
+        if conv is None:
             return f"(?P<{name}>[^/]+)"
         builtin = _BUILTIN_REGEX.get(conv)
         if builtin is not None:
@@ -312,10 +405,10 @@ def build_route_regex(path: str) -> re.Pattern[str]:
         return f"(?P<{name}>{conv})"
 
     pos = 0
-    for m in _BRACE_RE.finditer(path):
-        out.append(re.escape(path[pos : m.start()]))
-        out.append(_emit_placeholder(m.group(1)))
-        pos = m.end()
+    for ph in _iter_placeholders(path):
+        out.append(re.escape(path[pos : ph.start]))
+        out.append(_emit_placeholder(ph.name, ph.spec))
+        pos = ph.end
     out.append(re.escape(path[pos:]))
     out.append("$")
     return re.compile("".join(out))

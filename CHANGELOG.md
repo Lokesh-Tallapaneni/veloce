@@ -61,6 +61,32 @@ longer scale memory with body size.
   over-large upload mid-stream instead of only after the whole body is
   buffered.
 
+### Fixed
+
+- **Hybrid router: unknown converters in regex-routed segments now raise at
+  registration.** A bare-word converter typo in a segment that forces regex
+  routing — `/v{version:bogus}/api` — previously slipped through as literal
+  regex and matched the text `bogus`. Such specs are now validated against the
+  converter set and raise `unknown path converter` at registration, the same as
+  whole-segment placeholders.
+- **Hybrid router: regex-route parameters are now coerced like radix-route
+  parameters.** A built-in converter on a regex route (`/v{n:int}/x`,
+  `:float`, `:uuid`, `:any(...)`) now yields the coerced Python value (e.g.
+  `3`, not `"3"`) instead of the raw matched string. Bare `{name}` and raw
+  regex (`{id:[0-9]+}`) groups remain strings.
+- **Hybrid router: raw regex converter specs may now contain braces.** Patterns
+  with brace quantifiers — `/x/{id:[0-9]{2}}` or `/x/{id:\d{2}}` — are parsed
+  balance-aware and compile correctly instead of raising a group-name error.
+  OpenAPI path reduction and `url_for` handle these specs too.
+- **Hybrid router: `strict_slashes=False` is honored on regex routes.** A regex
+  route registered with `strict_slashes=False` now accepts the missing or extra
+  trailing slash in both `match()` and allowed-method reporting, matching tree
+  routes.
+- **OpenAPI: a tree route shadows an overlapping regex handler in the schema.**
+  When a radix route and a regex route reduce to the same OpenAPI path and
+  method, the schema now describes the tree handler — the dispatch winner —
+  rather than the regex handler that never runs for that path.
+
 ### Internal
 
 - The raw protocol serves pipelined requests through a per-connection FIFO loop

@@ -15,18 +15,14 @@ from veloce.routing.converters import (
     StringConverter,
     UUIDConverter,
     _Converter,
+    _iter_placeholders,
     build_route_regex,
+    extract_regex_converters,
     is_regex_path,
     parse_converter,
 )
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
-
-# Matches `{name}` and `{name:converter}` placeholders in `url_for` template
-# expansion. Compiled once at import (the call site is on the URL-building
-# warm path; CPython's regex cache makes literal `re.sub` cheap but a
-# module-level compile is still faster and more obvious).
-_URL_FOR_PARAM_RE = re.compile(r"\{([^}]+?)(?::[^}]+)?\}")
 
 
 @functools.lru_cache(maxsize=512)
@@ -228,20 +224,26 @@ class RouteMatch:
 
     __slots__ = ("route_info", "path_params")
 
-    def __init__(self, route_info: RouteInfo, path_params: dict[str, str]) -> None:
+    def __init__(self, route_info: RouteInfo, path_params: dict[str, Any]) -> None:
         self.route_info = route_info
         self.path_params = path_params
 
 
-# Strips the `:converter` (or raw `:regex`) portion of every placeholder so a
-# route template like `/users/{id:[0-9]+}` reduces to the OpenAPI-style
-# `/users/{id}`. Used for schema emission and `url_for` of regex routes.
-_REGEX_TEMPLATE_PARAM_RE = re.compile(r"\{([^{}:]+)(?::[^{}]*)?\}")
-
-
 def _openapi_path_from_template(template: str) -> str:
-    """Reduce a brace template to its OpenAPI path form (`{name}` per param)."""
-    return _REGEX_TEMPLATE_PARAM_RE.sub(lambda m: "{" + m.group(1) + "}", template)
+    """Reduce a brace template to its OpenAPI path form (`{name}` per param).
+
+    Strips the `:converter` (or raw `:regex`) portion of every placeholder so
+    `/users/{id:[0-9]+}` becomes `/users/{id}`. Balance-aware so a spec with
+    its own braces (`{id:[0-9]{2}}`) reduces cleanly to `{id}`.
+    """
+    out: list[str] = []
+    pos = 0
+    for ph in _iter_placeholders(template):
+        out.append(template[pos : ph.start])
+        out.append("{" + ph.name + "}")
+        pos = ph.end
+    out.append(template[pos:])
+    return "".join(out)
 
 
 class RegexRoute:
@@ -251,7 +253,7 @@ class RegexRoute:
     (and only when regex routes exist). The fast path never touches these.
     """
 
-    __slots__ = ("pattern", "template", "param_names", "handlers")
+    __slots__ = ("pattern", "template", "param_names", "handlers", "converters", "tolerant_slash")
 
     def __init__(self, template: str, pattern: re.Pattern[str], param_names: list[str]) -> None:
         # The original brace template (`/users/{id:[0-9]+}`), kept for
@@ -262,6 +264,13 @@ class RegexRoute:
         # method -> RouteInfo, mirroring RadixNode.handlers so the regex
         # path returns the same shape as the tree path.
         self.handlers: dict[str, RouteInfo] = {}
+        # Built-in converter per placeholder name, so matched groups are
+        # coerced to the same Python types the radix tree produces
+        # (`{n:int}` → int, not "3"). Bare and raw-regex groups are absent.
+        self.converters: dict[str, _Converter] = extract_regex_converters(template)
+        # Mirrors `RadixNode.tolerant_slash` — set by `strict_slashes=False`
+        # so a regex route accepts the missing/extra trailing slash too.
+        self.tolerant_slash = False
 
     @property
     def openapi_path(self) -> str:
@@ -441,6 +450,8 @@ class Router:
                 self._regex_route_index[full_path] = regex_route
             else:
                 param_names = regex_route.param_names
+            if strict_slashes is False:
+                regex_route.tolerant_slash = True
             node = None
         else:
             segments = self._split_path(full_path)
@@ -536,16 +547,58 @@ class Router:
         for method in methods:
             handler_table[method.upper()] = route_info
 
+    @staticmethod
+    def _regex_route_match(route: RegexRoute, path: str) -> re.Match[str] | None:
+        """Match `path` against a regex route, honoring `tolerant_slash`.
+
+        When the route was registered with `strict_slashes=False`, the
+        slashed and unslashed forms both match — mirroring the radix tree's
+        `tolerant_slash` behaviour.
+        """
+        m = route.pattern.match(path)
+        if m is not None:
+            return m
+        if route.tolerant_slash:
+            toggled = path[:-1] if path.endswith("/") and path != "/" else path + "/"
+            return route.pattern.match(toggled)
+        return None
+
+    @staticmethod
+    def _coerce_regex_params(route: RegexRoute, m: re.Match[str]) -> dict[str, Any]:
+        """Apply each placeholder's built-in converter to the matched groups.
+
+        Built-in specs (`int`, `float`, `uuid`, `path`, `any(...)`) coerce to
+        the same Python types the radix tree produces; bare and raw-regex
+        groups have no converter and stay as strings. The regex already
+        constrained the group, so a converter rejection here is a tree-level
+        invariant violation rather than a client error — fall back to the raw
+        string in that (unexpected) case.
+        """
+        params = m.groupdict()
+        converters = route.converters
+        if not converters:
+            return params
+        for name, value in params.items():
+            conv = converters.get(name)
+            if conv is None:
+                continue
+            ok, coerced = conv.match(value)
+            if ok:
+                params[name] = coerced
+        return params
+
     def _match_regex(self, method: str, path: str) -> RouteMatch | None:
         """Try the regex fallback routes in registration order.
 
         Called only on a radix miss and only when regex routes exist. The
         first route whose pattern fully matches and whose handlers include
         the method (with the same HEAD->GET fallback as the tree) wins.
+        Matched groups are coerced via each placeholder's built-in converter
+        so regex-route params are typed exactly like radix-route params.
         """
         method_upper = method if method.isupper() else method.upper()
         for route in self._regex_routes:
-            m = route.pattern.match(path)
+            m = self._regex_route_match(route, path)
             if m is None:
                 continue
             info = route.handlers.get(method_upper)
@@ -553,7 +606,7 @@ class Router:
                 info = route.handlers.get("GET")
             if info is None:
                 continue
-            return RouteMatch(route_info=info, path_params=m.groupdict())
+            return RouteMatch(route_info=info, path_params=self._coerce_regex_params(route, m))
         return None
 
     def match(self, method: str, path: str) -> RouteMatch | None:
@@ -710,7 +763,7 @@ class Router:
                 return list(node.handlers.keys())
         if self._regex_routes:
             for route in self._regex_routes:
-                if route.pattern.match(path):
+                if self._regex_route_match(route, path) is not None:
                     return list(route.handlers.keys())
         return []
 
@@ -894,15 +947,21 @@ class Router:
                 raise ValueError(f"Missing path parameter {pname!r} for route {name!r}")
             consumed.add(pname)
 
-        # Single-pass substitution prevents injection: a parameter value
-        # containing `{other_param}` cannot corrupt later placeholders.
-        def _substitute(match: re.Match[str]) -> str:
-            name_part = match.group(1)
-            if name_part in path_params:
-                return str(path_params[name_part])
-            return match.group(0)
-
-        path = _URL_FOR_PARAM_RE.sub(_substitute, path)
+        # Single-pass substitution built from template segments prevents
+        # injection: a parameter value containing `{other_param}` cannot
+        # corrupt later placeholders. Balance-aware so a spec with its own
+        # braces (`{id:[0-9]{2}}`) is replaced whole.
+        out: list[str] = []
+        pos = 0
+        for ph in _iter_placeholders(template):
+            out.append(template[pos : ph.start])
+            if ph.name in path_params:
+                out.append(str(path_params[ph.name]))
+            else:
+                out.append(template[ph.start : ph.end])
+            pos = ph.end
+        out.append(template[pos:])
+        path = "".join(out)
 
         # Anything left in path_params is a query-string parameter (the
         # behaviour). Order matches caller's kwarg order via dict insertion.
@@ -944,6 +1003,14 @@ class Router:
         """
         routes: list[tuple[str, str, RouteInfo]] = []
         self._walk_tree(self._root, [], routes, include_hidden)
+        # Tree routes are the runtime winners (match() consults the tree first).
+        # Track the (method, path) pairs they own so a regex route mapping to the
+        # same effective OpenAPI path+method does not shadow them in the schema.
+        # Skipped under include_hidden, where every route must still be surfaced
+        # for blueprint re-registration regardless of dispatch precedence.
+        tree_owned: set[tuple[str, str]] = (
+            set() if include_hidden else {(method, path) for method, path, _ in routes}
+        )
         # Regex fallback routes are not in the tree; surface them here so
         # OpenAPI, blueprint re-registration, and url-map building see them.
         # The exposed path is the OpenAPI-style form built from the template.
@@ -951,6 +1018,10 @@ class Router:
             path = route.openapi_path
             for method, info in route.handlers.items():
                 if include_hidden or (method != "WEBSOCKET" and info.include_in_schema):
+                    if not include_hidden and (method, path) in tree_owned:
+                        # A tree route already owns this path+method and wins at
+                        # dispatch; do not let the regex handler shadow it.
+                        continue
                     routes.append((method, path, info))
         return routes
 
@@ -1005,6 +1076,10 @@ class Router:
                 self._regex_route_index[full_path] = target
             else:
                 param_names = target.param_names
+            # Carry slash-tolerance from the source so a child route declared
+            # with `strict_slashes=False` keeps it after merge.
+            if src.tolerant_slash:
+                target.tolerant_slash = True
 
             for method, info in src.handlers.items():
                 combined_deps = list(self.router_dependencies)
