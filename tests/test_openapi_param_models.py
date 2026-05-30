@@ -78,6 +78,51 @@ def test_bare_model_emits_string() -> None:
     assert _python_type_to_schema(_Tag) == {"type": "string"}
 
 
+def test_model_query_param_is_a_string_parameter_not_a_request_body() -> None:
+    # A model carried by `Query()` is read from the query string as a JSON
+    # document at runtime, so the route documents it as a string `parameter`,
+    # NOT as a JSON `requestBody` $ref (the model only becomes a request body
+    # when it carries no marker or an explicit `Body()`).
+    app = Veloce()
+
+    @app.get("/q")
+    async def q(request, tag: _Tag = Query()):
+        return {"ok": True}
+
+    op = _operation(app, "/q", "get")
+    assert "requestBody" not in op
+    params = {p["name"]: p for p in op["parameters"]}
+    assert params["tag"]["in"] == "query"
+    assert params["tag"]["schema"] == {"type": "string"}
+
+
+def test_model_form_param_is_a_string_form_field_not_a_request_body() -> None:
+    app = Veloce()
+
+    @app.post("/f")
+    async def f(request, tag: _Tag = Form()):
+        return {"ok": True}
+
+    op = _operation(app, "/f")
+    field = op["requestBody"]["content"]["application/x-www-form-urlencoded"]["schema"][
+        "properties"
+    ]["tag"]
+    assert field == {"type": "string"}
+
+
+def test_bare_model_param_is_still_a_json_request_body() -> None:
+    # No marker → the model is the JSON request body, resolved to a $ref.
+    app = Veloce()
+
+    @app.post("/b")
+    async def b(request, tag: _Tag):
+        return {"ok": True}
+
+    op = _operation(app, "/b")
+    assert "requestBody" in op
+    assert "_Tag" in get_openapi_schema(app)["components"]["schemas"]
+
+
 def test_list_of_model_form_field_emits_array_of_string() -> None:
     app = Veloce()
 

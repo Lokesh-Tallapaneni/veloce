@@ -169,8 +169,18 @@ def _extract_parameters(
             if not getattr(marker, "include_in_schema", True):
                 continue
 
-        # First BaseModel-typed param becomes the JSON request body.
-        if annotation and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        # A BaseModel-typed param becomes the JSON request body only when it is
+        # NOT pinned to a non-body source by a marker. A bare model (no marker)
+        # or one with an explicit `Body()` is a JSON body; a model carried by a
+        # `Query`/`Header`/`Cookie`/`Form`/`File` marker is read from that source
+        # as a JSON-document string at runtime, so it belongs in `parameters` /
+        # form fields (where it emits `{"type": "string"}`), not `requestBody`.
+        if (
+            annotation
+            and isinstance(annotation, type)
+            and issubclass(annotation, BaseModel)
+            and (marker is None or isinstance(marker, BodyParam))
+        ):
             request_body_schema = _pydantic_to_schema(annotation, schemas_registry)
             continue
 
