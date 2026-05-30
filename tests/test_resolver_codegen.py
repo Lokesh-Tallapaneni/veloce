@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from veloce import Depends, Query, TestClient, Veloce
+from veloce import (
+    Body,
+    Cookie,
+    Depends,
+    File,
+    Form,
+    Header,
+    Path,
+    Query,
+    TestClient,
+    Veloce,
+)
 from veloce._handler_plan import build_plan
 from veloce._resolver_codegen import compile_param_resolver
 from veloce.dependency import _coerce_value
@@ -71,18 +82,168 @@ def test_does_not_compile_dependency_handler():
     assert _compile(h) is None
 
 
-def test_does_not_compile_marker_handler():
+def test_compiles_sync_marker_handler():
+    # Query/Header/Cookie/Path markers are synchronous sources, so the
+    # compiler now emits straight-line code for them.
     async def h(q: int = Query(gt=0)):
         return None
 
-    assert _compile(h) is None
+    assert _compile(h) is not None
 
 
-def test_does_not_compile_list_param_handler():
+def test_does_not_compile_unmarked_list_param():
+    # An un-marked list param is a K_QUERY_LIST slot, still interpreter-only.
     async def h(tags: list[str]):
         return None
 
     assert _compile(h) is None
+
+
+def test_does_not_compile_body_marker():
+    async def h(p: str = Body()):
+        return None
+
+    # Body reads `await request.json()`, unreachable from the sync resolver.
+    assert _compile(h) is None
+
+
+def test_does_not_compile_form_marker():
+    async def h(p: str = Form()):
+        return None
+
+    assert _compile(h) is None
+
+
+def test_does_not_compile_file_marker():
+    async def h(p: bytes = File()):
+        return None
+
+    assert _compile(h) is None
+
+
+def test_query_marker_present_default_optional_and_constraint():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/q")
+    async def q_route(
+        q: int = Query(gt=0),
+        page: int = Query(default=1, ge=1),
+        opt: str | None = Query(default=None),
+    ):
+        return {"q": q, "page": page, "opt": opt}
+
+    assert _compile(q_route) is not None
+    client = TestClient(app)
+    # Present value, default fallback, optional -> None.
+    assert client.get("/q?q=5").json() == {"q": 5, "page": 1, "opt": None}
+    assert client.get("/q?q=5&page=3&opt=hi").json() == {"q": 5, "page": 3, "opt": "hi"}
+    # validate() constraint failure (gt=0).
+    r = client.get("/q?q=0")
+    assert r.status_code == 422
+    assert any("q" in (e.get("loc") or []) for e in r.json()["detail"])
+    # Missing required.
+    assert client.get("/q").status_code == 422
+
+
+def test_header_marker_present_default_and_missing():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/h")
+    async def h_route(
+        token: str = Header(alias="x-token"),
+        ua: str = Header(default="none", alias="x-ua"),
+    ):
+        return {"token": token, "ua": ua}
+
+    assert _compile(h_route) is not None
+    client = TestClient(app)
+    assert client.get("/h", headers={"x-token": "abc"}).json() == {"token": "abc", "ua": "none"}
+    assert client.get("/h", headers={"x-token": "abc", "x-ua": "veloce"}).json() == {
+        "token": "abc",
+        "ua": "veloce",
+    }
+    # Missing required header -> 422.
+    assert client.get("/h").status_code == 422
+
+
+def test_cookie_marker_present_and_optional():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/c")
+    async def c_route(sid: str | None = Cookie(default=None)):
+        return {"sid": sid}
+
+    assert _compile(c_route) is not None
+    client = TestClient(app)
+    assert client.get("/c").json() == {"sid": None}
+    assert client.get("/c", headers={"cookie": "sid=xyz"}).json() == {"sid": "xyz"}
+
+
+def test_path_marker_scalar():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/p/{item_id}")
+    async def p_route(item_id: int = Path(gt=0)):
+        return {"item_id": item_id}
+
+    assert _compile(p_route) is not None
+    client = TestClient(app)
+    assert client.get("/p/7").json() == {"item_id": 7}
+    # Constraint failure on the path value.
+    assert client.get("/p/0").status_code == 422
+
+
+def test_list_typed_query_marker():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/tags")
+    async def tags_route(tags: list[str] = Query(default=[])):
+        return {"tags": tags}
+
+    assert _compile(tags_route) is not None
+    client = TestClient(app)
+    assert client.get("/tags?tags=a&tags=b").json() == {"tags": ["a", "b"]}
+    # Empty -> default.
+    assert client.get("/tags").json() == {"tags": []}
+
+
+def test_list_typed_query_marker_int_coercion():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/nums")
+    async def nums_route(nums: list[int] = Query(default=[])):
+        return {"nums": nums}
+
+    assert _compile(nums_route) is not None
+    client = TestClient(app)
+    assert client.get("/nums?nums=1&nums=2&nums=3").json() == {"nums": [1, 2, 3]}
+
+
+def test_marker_parity_compiled_vs_interpreter():
+    # The compiled and interpreter paths must produce identical 422 bodies for
+    # a constraint failure on a Query() marker. A Depends forces the fallback.
+    def _dep():
+        return 1
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/cm")
+    async def compiled(q: int = Query(gt=0)):
+        return {"q": q}
+
+    @app.get("/im")
+    async def interp(q: int = Query(gt=0), _d: int = Depends(_dep)):
+        return {"q": q}
+
+    assert _compile(compiled) is not None
+    assert _compile(interp) is None
+    client = TestClient(app)
+
+    def _detail(resp):
+        return [e for e in resp.json()["detail"] if "q" in (e.get("loc") or [])]
+
+    assert _detail(client.get("/cm?q=0")) == _detail(client.get("/im?q=0"))
+    assert _detail(client.get("/cm")) == _detail(client.get("/im"))
 
 
 def test_coercion_and_defaults_end_to_end():
