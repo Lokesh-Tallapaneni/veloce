@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -84,8 +85,13 @@ class EventSourceResponse(Response):
         headers: dict[str, str] | None = None,
         ping: float | None = None,
     ) -> None:
-        if ping is not None and ping <= 0:
-            raise ValueError(f"ping interval must be a positive number of seconds, got {ping!r}")
+        if ping is not None and not (math.isfinite(ping) and ping > 0):
+            # `not finite` rejects NaN (fails every comparison, so `<= 0` lets
+            # it slip through) and Infinity (passes `> 0` but is meaningless as
+            # an `asyncio.wait` timeout — the heartbeat would never fire).
+            raise ValueError(
+                f"ping interval must be a finite positive number of seconds, got {ping!r}"
+            )
         hdrs = dict(headers) if headers else {}
         hdrs.update(
             {

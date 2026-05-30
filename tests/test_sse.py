@@ -130,6 +130,19 @@ def test_ping_rejects_non_positive(bad):
         EventSourceResponse(gen(), ping=bad)
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_ping_rejects_non_finite(bad):
+    """NaN slips past a bare `<= 0` check (it fails every comparison) and
+    Infinity passes `> 0` yet is meaningless as an `asyncio.wait` timeout —
+    both must be rejected at construction."""
+
+    async def gen():
+        yield ServerSentEvent(data="x")
+
+    with pytest.raises(ValueError, match="finite positive"):
+        EventSourceResponse(gen(), ping=bad)
+
+
 def test_ping_none_and_positive_are_accepted():
     async def gen():
         yield ServerSentEvent(data="x")

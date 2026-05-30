@@ -289,3 +289,30 @@ def test_custom_forwards_args_when_no_env_flags():
     args = parser.parse_args(["custom", "demo:app", "--", "hello", "world"])
     assert args.env_file is None
     assert args.cli_args == ["hello", "world"]
+
+
+def test_custom_parses_space_env_file_before_app():
+    # `--env-file PATH` (space-separated) placed before the app reference must
+    # consume its value rather than mistaking PATH for the app — the documented
+    # `--env-file PATH` form has to work in either position, like the `=` form.
+    parser = build_parser()
+    args = parser.parse_args(["custom", "--env-file", "x.env", "demo:app", "--", "hello"])
+    assert args.app == "demo:app"
+    assert args.env_file == "x.env"
+    assert args.cli_args == ["hello"]
+
+
+def test_custom_equals_env_file_before_app():
+    parser = build_parser()
+    args = parser.parse_args(["custom", "--env-file=x.env", "demo:app", "--", "hello"])
+    assert args.app == "demo:app"
+    assert args.env_file == "x.env"
+    assert args.cli_args == ["hello"]
+
+
+def test_custom_no_env_file_before_app():
+    parser = build_parser()
+    args = parser.parse_args(["custom", "--no-env-file", "demo:app", "--", "run"])
+    assert args.app == "demo:app"
+    assert args.no_env_file is True
+    assert args.cli_args == ["run"]

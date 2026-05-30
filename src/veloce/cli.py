@@ -235,17 +235,17 @@ def _add_env_file_args(p: argparse.ArgumentParser) -> None:
 def _split_custom_argv(argv: list[str]) -> tuple[list[str], list[str] | None]:
     """Split a `custom` argv into the argparse head and the Click tail.
 
-    `veloce custom app:app [--env-file PATH | --no-env-file]... [--] ...args`
+    `veloce custom [--env-file PATH | --no-env-file]... app:app [...same flags...] [--] ...args`
 
-    The CLI's own `--env-file` / `--no-env-file` flags are parsed when they
-    sit between `app` and the forwarded command, then everything else is
-    handed to the app's Click group verbatim. `argparse.REMAINDER` cannot
-    express this: it begins capturing at the first token after `app`, so a
-    leading `--env-file` would be swallowed into the forwarded args and the
-    dotenv file would never load. We therefore peel the tail off ourselves
-    — greedily consuming only the env-file flags after `app` — and let
-    argparse parse just the head. An explicit `--` ends the flag region and
-    is dropped from the forwarded args (POSIX convention).
+    The CLI's own `--env-file` / `--no-env-file` flags are parsed on either
+    side of `app`, then everything else is handed to the app's Click group
+    verbatim. `argparse.REMAINDER` cannot express this: it begins capturing
+    at the first token after `app`, so a trailing `--env-file` would be
+    swallowed into the forwarded args and the dotenv file would never load.
+    We therefore peel the tail off ourselves — greedily consuming only the
+    env-file flags after `app` — and let argparse parse just the head. An
+    explicit `--` ends the flag region and is dropped from the forwarded
+    args (POSIX convention).
 
     Returns `(head, tail)` where `tail is None` means "no forwarded args
     region was found" (e.g. the argv is malformed and argparse should emit
@@ -254,9 +254,15 @@ def _split_custom_argv(argv: list[str]) -> tuple[list[str], list[str] | None]:
     if not argv or argv[0] != "custom":
         return argv, None
     # Locate the `app` positional: the first non-flag token after `custom`.
+    # A space-separated `--env-file PATH` placed before `app` consumes its
+    # value token, so skip that value too — otherwise PATH is mistaken for
+    # the app reference and the real reference is pushed into the tail.
     idx = 1
     while idx < len(argv) and argv[idx].startswith("-") and argv[idx] != "--":
-        idx += 1
+        if argv[idx] == "--env-file":
+            idx += 2  # skip the flag and its value
+        else:
+            idx += 1
     if idx >= len(argv):
         return argv, None  # no `app` — let argparse report the error
     head = argv[: idx + 1]  # ["custom", ..., "app"]
