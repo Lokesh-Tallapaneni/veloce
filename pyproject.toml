@@ -57,8 +57,13 @@ dependencies = [
 # `pip install veloceframework[ws]`. Kept optional so REST-only deploys
 # do not download the WS implementation.
 ws = ["websockets>=12"]
+# gunicorn process supervision for the optional `veloce.workers.VeloceWorker`
+# worker class. POSIX-only — gunicorn does not run on Windows — so this extra
+# is opt-in and never pulled in by a plain install. uvicorn (a core dep)
+# remains the recommended production server.
+gunicorn = ["gunicorn>=21.0; sys_platform != 'win32'"]
 # Everything optional in one shot.
-all = ["websockets>=12"]
+all = ["websockets>=12", "gunicorn>=21.0; sys_platform != 'win32'"]
 
 [project.scripts]
 veloce = "veloce.cli:main"
@@ -151,5 +156,5 @@ check_untyped_defs = true
 exclude = ["build", "dist", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["uvloop", "httptools", "multipart.*"]
+module = ["uvloop", "httptools", "multipart.*", "gunicorn.*"]
 ignore_missing_imports = true

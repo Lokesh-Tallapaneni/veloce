@@ -37,6 +37,16 @@ longer scale memory with body size.
   reporting (405/OPTIONS), `include_router` merging (with name prefixing), and
   OpenAPI schema generation (exposed with an OpenAPI-style path, e.g.
   `/items/{id}`).
+- **Optional gunicorn worker (`veloce.workers.VeloceWorker`).** An advanced,
+  POSIX-only alternative to running under uvicorn: gunicorn manages the process
+  pool while each worker drives Veloce's own `HttpProtocol` directly on an
+  asyncio event loop, with no uvicorn or ASGI shim in the request path. gunicorn
+  is an optional dependency installed via the new `gunicorn` extra
+  (`pip install veloceframework[gunicorn]`); importing Veloce never requires it,
+  and the worker raises a clear `ImportError` with an install hint if
+  instantiated without gunicorn present. Run with
+  `gunicorn your_module:app -k veloce.workers.VeloceWorker`. uvicorn remains the
+  recommended production default. See the Deployment guide.
 
 ### Changed
 
@@ -131,6 +141,37 @@ longer scale memory with body size.
   When a radix route and a regex route reduce to the same OpenAPI path and
   method, the schema now describes the tree handler — the dispatch winner —
   rather than the regex handler that never runs for that path.
+- **gunicorn worker (`veloce.workers.VeloceWorker`) now honours TLS.** When
+  gunicorn is started with `--certfile`/`--keyfile` (`cfg.is_ssl`), the worker
+  builds a server SSL context from gunicorn's config and passes it to
+  `create_server`, instead of handing the bound sockets to asyncio with no TLS
+  and silently serving cleartext. If the certificate chain is missing or cannot
+  be loaded the worker fails fast with a `RuntimeError` rather than downgrading
+  an HTTPS deployment to cleartext. The default context is routed through
+  gunicorn's documented `ssl_context(config, default_ssl_context_factory)` hook,
+  so a configured TLS customization (minimum TLS version, mTLS tweaks, ciphers)
+  is honoured instead of ignored.
+- **gunicorn worker stops when the master dies.** The heartbeat loop now also
+  checks arbiter liveness (the worker's parent pid changing after a fork-reparent)
+  and shuts the worker down instead of leaving it orphaned if the gunicorn master
+  goes away.
+- **gunicorn worker honours `--max-requests`.** The worker now counts completed
+  requests and clears `alive` once the count reaches gunicorn's `max_requests`
+  (with any `max_requests_jitter` already folded in by gunicorn), so worker
+  recycling works as documented; previously the counter was never incremented and
+  recycling never fired. Counting is driven by a new optional
+  `HttpProtocol.on_request_complete` hook that is unset (and free) on the
+  uvicorn / `Veloce.run()` path. The per-connection serve loop now also consults
+  an optional `HttpProtocol.should_keep_serving` predicate at each request
+  boundary, so once `max_requests` clears `alive` a connection with queued or
+  pipelined requests stops at the boundary and closes instead of draining the
+  rest of its queue past the limit before the worker restarts.
+- **gunicorn worker no longer leaks a listener on a partial multi-bind failure.**
+  When gunicorn hands the worker more than one bound socket, the worker creates
+  one asyncio server per socket. If a later bind failed, an already-created
+  listener stayed live while the worker proceeded into shutdown. The worker now
+  closes every listener created so far before re-raising, so a failed startup
+  leaves no live listener behind.
 
 ### Internal
 

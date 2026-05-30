@@ -1292,6 +1292,88 @@ def test_connection_limit_releases_on_disconnect():
         loop.close()
 
 
+def test_serve_loop_stops_at_boundary_when_keep_serving_false():
+    """When should_keep_serving returns False (worker recycling tripped), the
+    serve loop dispatches the in-flight request, then stops at the boundary and
+    closes the connection — a queued/pipelined follow-up is NOT dispatched past
+    the max_requests limit."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+        served: list[str] = []
+
+        @app.get("/a")
+        async def a(request):  # noqa: ANN001, ANN202
+            served.append("a")
+            return {"r": "a"}
+
+        @app.get("/b")
+        async def b(request):  # noqa: ANN001, ANN202
+            served.append("b")
+            return {"r": "b"}
+
+        # Recycling tripped before serving: stop after the current request.
+        HttpProtocol.should_keep_serving = lambda: False
+        try:
+            proto = HttpProtocol(app, loop)
+            transport = _FakeTransport()
+            proto.connection_made(transport)
+
+            # Two pipelined requests arrive together.
+            proto.data_received(
+                b"GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n"
+            )
+            _drain_loop(loop, proto)
+
+            emitted = b"".join(transport.writes)
+            # The first request was served; the second must NOT have been.
+            assert served == ["a"]
+            assert b'"r":"a"' in emitted
+            assert b'"r":"b"' not in emitted
+            # The connection is closed so the client reconnects to a fresh worker.
+            assert transport.closed is True
+        finally:
+            HttpProtocol.should_keep_serving = None
+    finally:
+        loop.close()
+
+
+def test_serve_loop_continues_when_keep_serving_true():
+    """A should_keep_serving predicate returning True does not change keep-alive
+    behaviour: both pipelined requests are served on one connection."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        @app.get("/a")
+        async def a(request):  # noqa: ANN001, ANN202
+            return {"r": "a"}
+
+        @app.get("/b")
+        async def b(request):  # noqa: ANN001, ANN202
+            return {"r": "b"}
+
+        HttpProtocol.should_keep_serving = lambda: True
+        try:
+            proto = HttpProtocol(app, loop)
+            transport = _FakeTransport()
+            proto.connection_made(transport)
+
+            proto.data_received(
+                b"GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n"
+            )
+            _drain_loop(loop, proto)
+
+            emitted = b"".join(transport.writes)
+            assert b'"r":"a"' in emitted
+            assert b'"r":"b"' in emitted
+            assert transport.closed is False
+        finally:
+            HttpProtocol.should_keep_serving = None
+    finally:
+        loop.close()
+
+
 def test_connection_count_is_thread_safe():
     """Parallel connection_made calls under the lock never over-admit."""
     _reset_connection_counter()

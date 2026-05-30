@@ -57,6 +57,23 @@ class HttpProtocol(asyncio.Protocol):
     # Class-level set: prevents GC of in-flight tasks across all connections.
     _active_tasks: set[asyncio.Task] = set()
 
+    # Optional class-level hook invoked once per dispatched request, after the
+    # response has been written. `None` by default so the per-request path pays
+    # only a single `is not None` check. The gunicorn worker installs a callback
+    # here to drive `max_requests` recycling; nothing else uses it. Set on the
+    # class (process-wide) rather than per instance to avoid bloating every
+    # connection object with a slot that is unused under uvicorn / Veloce.run().
+    on_request_complete: Callable[[], None] | None = None
+
+    # Optional class-level predicate consulted after each dispatched request to
+    # decide whether the connection may serve the next queued/pipelined request.
+    # `None` by default (always keep serving) so the uvicorn / Veloce.run() path
+    # pays only an `is not None` check. The gunicorn worker installs a callback
+    # returning `self.alive`, so once `max_requests` recycling clears `alive`
+    # the per-connection loop stops at the request boundary instead of draining
+    # the whole pipelined queue past the limit.
+    should_keep_serving: Callable[[], bool] | None = None
+
     # Cross-thread connection counter. `+=` on a class-level int is read-
     # modify-write, not atomic under the GIL, so guard with a Lock. Only
     # contended on connection setup/teardown — not on the per-request path.
@@ -466,9 +483,41 @@ class HttpProtocol(asyncio.Protocol):
         while self._request_queue and not self._closing:
             request, source, keep_alive = self._request_queue.popleft()
             should_continue = await self._dispatch(request, source, keep_alive)
+            # Notify the optional per-request hook (gunicorn max_requests
+            # recycling) once the request has been fully dispatched, regardless
+            # of whether the connection is kept alive or closed. Cheap None
+            # check on the common (hook-unset) path; failures in the hook must
+            # never break serving.
+            hook = HttpProtocol.on_request_complete
+            if hook is not None:
+                try:
+                    hook()
+                except Exception:
+                    logging.getLogger("veloce.serving.protocol").exception(
+                        "on_request_complete hook raised"
+                    )
             if not should_continue:
                 # Connection: close (or a failed write) — stop serving.
                 return
+            # Honour worker recycling at the request boundary. When the gunicorn
+            # worker has tripped max_requests (clearing its `alive` flag) the
+            # predicate returns False, so the connection stops here rather than
+            # draining further queued/pipelined requests past the limit. The
+            # transport is closed so the client opens a fresh connection against
+            # the replacement worker; failures in the predicate keep serving.
+            keep = HttpProtocol.should_keep_serving
+            if keep is not None:
+                try:
+                    serve_next = keep()
+                except Exception:
+                    serve_next = True
+                    logging.getLogger("veloce.serving.protocol").exception(
+                        "should_keep_serving hook raised"
+                    )
+                if not serve_next:
+                    if self.transport is not None and not self.transport.is_closing():
+                        self.transport.close()
+                    return
         # Queue drained on a keep-alive connection: rearm the idle timer so the
         # connection is reaped if no further request arrives. Skip the rearm if a
         # follow-up is mid-receive (_request_timer live) or already queued — the
