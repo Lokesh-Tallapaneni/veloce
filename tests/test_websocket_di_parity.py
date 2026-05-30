@@ -232,3 +232,39 @@ def test_websocket_body_model_param_is_inert():
     client = app.test_client()
     with client.websocket_connect("/ws") as conn:
         assert conn.receive_text() == "inert"
+
+
+def test_websocket_independent_async_deps_run_in_parallel():
+    """Two sibling Depends() on a WebSocket handler begin concurrently, like
+    the HTTP path — confirms resolve_ws_plan passes the precomputed
+    parallel-dependency grouping into the resolver."""
+    import asyncio
+    import time
+
+    app = Veloce(debug=True, openapi_url=None)
+    starts: list[float] = []
+
+    async def slow_a():
+        starts.append(time.monotonic())
+        await asyncio.sleep(0.05)
+        return "a"
+
+    async def slow_b():
+        starts.append(time.monotonic())
+        await asyncio.sleep(0.05)
+        return "b"
+
+    @app.websocket("/ws-par")
+    async def handler(ws, a=Depends(slow_a), b=Depends(slow_b)):
+        await ws.accept()
+        await ws.send_text(f"{a}{b}")
+        await ws.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws-par") as conn:
+        assert conn.receive_text() == "ab"
+    assert len(starts) == 2
+    # Sequential resolution would put the second start ~50ms after the first.
+    assert abs(starts[1] - starts[0]) < 0.010, (
+        f"WS siblings did not start concurrently: delta={starts[1] - starts[0]:.4f}s"
+    )

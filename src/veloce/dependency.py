@@ -362,7 +362,9 @@ class DependencyResolver:
             for slot in route_dep_plans:
                 await self._exec_depends(slot, websocket, path_params)
 
-        return await self._resolve_slots(plan.slots, websocket, path_params)
+        return await self._resolve_slots(
+            plan.slots, websocket, path_params, plan.parallel_groups
+        )
 
     async def run_teardowns(self, exc: BaseException | None = None) -> None:
         """Run yield-dependency teardowns in reverse registration order.
