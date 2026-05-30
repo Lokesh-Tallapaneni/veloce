@@ -284,6 +284,76 @@ def test_keep_serving_reports_alive_flag() -> None:
 # binding the unbound method to a config stub.
 
 
+# ── multi-bind partial-failure listener cleanup ───────────────────
+#
+# _serve creates one asyncio server per bound socket. If a later bind fails,
+# the servers already created must be closed before the error propagates —
+# otherwise a live listener survives into _shutdown() (run() proceeds straight
+# to _shutdown on failure) and leaks. Driven without gunicorn by binding the
+# unbound _serve to a stub and feeding a loop whose create_server fails midway.
+
+
+class _FakeServer:
+    def __init__(self) -> None:
+        self.closed = False
+        self.waited = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        self.waited = True
+
+
+class _FakeGSock:
+    def __init__(self, sock) -> None:
+        self.sock = sock
+
+
+class _ServeStub:
+    """Minimal stand-in exposing only what _serve touches."""
+
+    def __init__(self, sockets, fail_after: int) -> None:
+        self.sockets = sockets
+        self._server = None
+        self.timeout = 30
+        self.alive = True
+        self.created: list[_FakeServer] = []
+        self._fail_after = fail_after
+        self._app = Veloce()
+
+    def _veloce_app(self) -> Veloce:
+        return self._app
+
+    def _build_ssl_context(self):
+        return None
+
+
+async def test_serve_closes_partial_listeners_when_a_later_bind_fails() -> None:
+    from veloce.workers import VeloceWorker
+
+    sockets = [_FakeGSock(object()), _FakeGSock(object()), _FakeGSock(object())]
+    stub = _ServeStub(sockets, fail_after=1)
+
+    class _Loop:
+        async def create_server(self, factory, sock, ssl):
+            if len(stub.created) >= stub._fail_after:
+                raise OSError("address already in use")
+            server = _FakeServer()
+            stub.created.append(server)
+            return server
+
+    with pytest.raises(OSError):
+        await VeloceWorker._serve(stub, _Loop())
+
+    # The one listener that bound before the failure must be closed and awaited,
+    # and never published as self._server (which would survive into _shutdown).
+    assert len(stub.created) == 1
+    assert stub.created[0].closed is True
+    assert stub.created[0].waited is True
+    assert stub._server is None
+
+
 class _CfgStub:
     def __init__(self, *, is_ssl, ssl_options, ssl_context=None) -> None:
         self.is_ssl = is_ssl

@@ -86,6 +86,12 @@ longer scale memory with body size.
   boundary, so once `max_requests` clears `alive` a connection with queued or
   pipelined requests stops at the boundary and closes instead of draining the
   rest of its queue past the limit before the worker restarts.
+- **gunicorn worker no longer leaks a listener on a partial multi-bind failure.**
+  When gunicorn hands the worker more than one bound socket, the worker creates
+  one asyncio server per socket. If a later bind failed, an already-created
+  listener stayed live while the worker proceeded into shutdown. The worker now
+  closes every listener created so far before re-raising, so a failed startup
+  leaves no live listener behind.
 
 ### Internal
 

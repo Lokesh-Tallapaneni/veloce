@@ -348,14 +348,24 @@ class VeloceWorker(_GunicornWorker):
         # fast rather than downgrading the security posture.
         ssl_context = self._build_ssl_context()
 
-        raw_socks = [gsock.sock for gsock in self.sockets]
-        self._server = await loop.create_server(factory, sock=raw_socks[0], ssl=ssl_context)
         # A worker may be handed more than one bound socket (multiple binds).
-        # create_server takes a single socket, so serve the rest explicitly.
-        extra_servers = [
-            await loop.create_server(factory, sock=gsock.sock, ssl=ssl_context)
-            for gsock in self.sockets[1:]
-        ]
+        # create_server takes a single socket, so bind each explicitly. If any
+        # bind fails partway through, close the listeners already created before
+        # re-raising — otherwise a live listener would survive into _shutdown()
+        # (run() proceeds straight to _shutdown on failure) and leak.
+        servers: list[asyncio.AbstractServer] = []
+        try:
+            for gsock in self.sockets:
+                servers.append(await loop.create_server(factory, sock=gsock.sock, ssl=ssl_context))
+        except BaseException:
+            for server in servers:
+                server.close()
+            for server in servers:
+                await server.wait_closed()
+            raise
+
+        self._server = servers[0]
+        extra_servers = servers[1:]
 
         # gunicorn watches a per-worker heartbeat: notify() must be called
         # within `timeout` or the master kills the worker as hung. The loop
