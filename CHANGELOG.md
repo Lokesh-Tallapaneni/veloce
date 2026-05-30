@@ -13,6 +13,19 @@ body in memory before dispatch. Peak per-connection body memory is now the
 queue bound rather than the full upload, so many concurrent large uploads no
 longer scale memory with body size.
 
+### Added
+
+- **Optional gunicorn worker (`veloce.workers.VeloceWorker`).** An advanced,
+  POSIX-only alternative to running under uvicorn: gunicorn manages the process
+  pool while each worker drives Veloce's own `HttpProtocol` directly on an
+  asyncio event loop, with no uvicorn or ASGI shim in the request path. gunicorn
+  is an optional dependency installed via the new `gunicorn` extra
+  (`pip install veloceframework[gunicorn]`); importing Veloce never requires it,
+  and the worker raises a clear `ImportError` with an install hint if
+  instantiated without gunicorn present. Run with
+  `gunicorn your_module:app -k veloce.workers.VeloceWorker`. uvicorn remains the
+  recommended production default. See the Deployment guide.
+
 ### Changed
 
 - **BREAKING — request body access is now asynchronous.** To stream a body the

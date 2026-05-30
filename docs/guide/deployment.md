@@ -70,6 +70,46 @@ Guidance:
 A single-worker deployment behind a reverse proxy sidesteps all of the
 above; scale out with more workers only once shared state is externalised.
 
+## Advanced: serving under gunicorn with VeloceWorker
+
+!!! note "POSIX / gunicorn only"
+    `VeloceWorker` is an **optional, advanced** alternative for stacks that
+    already use gunicorn for process supervision. gunicorn is POSIX-only and
+    is not a Veloce dependency. **uvicorn remains the recommended default** —
+    reach for this worker only when gunicorn is already part of your
+    deployment.
+
+Veloce ships an optional gunicorn worker class,
+`veloce.workers.VeloceWorker`, that lets gunicorn manage the process pool
+(forking, restarts, signal handling) while each worker drives Veloce's own
+`HttpProtocol` directly on an asyncio event loop — no uvicorn and no ASGI
+shim in the request path.
+
+Install gunicorn via the optional extra (POSIX only):
+
+```bash
+pip install veloceframework[gunicorn]
+```
+
+Then point gunicorn at the worker class by its import path:
+
+```bash
+gunicorn your_module:app -k veloce.workers.VeloceWorker --workers 4
+```
+
+gunicorn binds the listening socket in the master and hands it to each
+forked worker, so all workers share one kernel accept queue — the standard
+pre-fork model. The worker runs the app's startup hooks when it boots and
+its shutdown hooks when gunicorn stops it, draining in-flight requests
+within the configured `--timeout` before cancelling stragglers.
+
+The per-worker state caveats in the table above apply unchanged: each
+gunicorn worker is a separate process with its own memory, so in-memory
+rate-limit buckets, caches, and `app.state` mutations are per-worker.
+
+This path serves **HTTP/1.1 only**, exactly like the built-in development
+server — WebSocket and HTTP/2 workloads still belong under uvicorn.
+
 ## Security considerations
 
 ### Hardening checklist
