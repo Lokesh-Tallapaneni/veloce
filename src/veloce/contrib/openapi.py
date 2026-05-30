@@ -186,7 +186,7 @@ def _extract_parameters(
             if is_file:
                 field_schema: dict[str, Any] = {"type": "string", "format": "binary"}
             else:
-                field_schema = _python_type_to_schema(annotation)
+                field_schema = _python_type_to_schema(annotation, schemas_registry)
             if marker.description:
                 field_schema["description"] = marker.description
             if getattr(marker, "title", None):
@@ -205,7 +205,7 @@ def _extract_parameters(
             param_location = "query"
             param_alias = marker.alias if marker and marker.alias else pname
 
-        param_schema = _python_type_to_schema(annotation)
+        param_schema = _python_type_to_schema(annotation, schemas_registry)
 
         if marker:
             _apply_marker_constraints(param_schema, marker)
@@ -483,7 +483,7 @@ def _literal_enum_schema(values: list) -> dict[str, Any]:
     return schema
 
 
-def _python_type_to_schema(annotation: Any) -> dict:
+def _python_type_to_schema(annotation: Any, registry: dict[str, dict] | None = None) -> dict:
     """Convert a Python type to its OpenAPI 3.1 / JSON Schema 2020-12 form.
 
     Beyond the primitive scalars this resolves the richer annotations a
@@ -491,6 +491,12 @@ def _python_type_to_schema(annotation: Any) -> dict:
     `date`, `time`, `UUID`, `Decimal`, `Enum` subclasses and
     `Literal[...]` — so the emitted parameter schema is complete rather
     than collapsing every non-primitive to a bare string.
+
+    When `registry` is supplied, nested Pydantic models resolve to a
+    `$ref` (registering their `$defs`) even inside `list`/`set`/`dict`,
+    and multi-member unions emit `anyOf`. Without a registry a model
+    degrades to a bare `{"type": "object"}` so direct callers that pass
+    only an annotation still get an object-shaped schema.
     """
     if annotation is None or annotation is inspect.Parameter.empty:
         return {"type": "string"}
@@ -503,15 +509,23 @@ def _python_type_to_schema(annotation: Any) -> dict:
     origin = get_origin(annotation)
     # Unwrap `Optional[T]` / `T | None` to the inner type so a nullable
     # rich-typed parameter still emits its `format` / `enum` keywords.
+    # Genuine multi-member unions emit `anyOf`; a sole `None` member adds
+    # `{"type": "null"}` per JSON Schema 2020-12 nullability.
     if origin is Union or origin is _types.UnionType:
-        inner = [a for a in get_args(annotation) if a is not type(None)]
+        members = get_args(annotation)
+        inner = [a for a in members if a is not type(None)]
+        has_none = len(inner) != len(members)
         if len(inner) == 1:
-            return _python_type_to_schema(inner[0])
+            return _python_type_to_schema(inner[0], registry)
+        any_of = [_python_type_to_schema(m, registry) for m in inner]
+        if has_none:
+            any_of.append({"type": "null"})
+        return {"anyOf": any_of}
 
     # Parametrised `list[T]` / `set[T]` → an array schema with typed items.
     if origin in (list, set, tuple):
         args = get_args(annotation)
-        item = _python_type_to_schema(args[0]) if args else {}
+        item = _python_type_to_schema(args[0], registry) if args else {}
         return {"type": "array", "items": item}
     # Parametrised `dict[K, V]` → an object schema with typed additionalProperties.
     # JSON object keys are strings, so the key type arg is intentionally ignored.
@@ -520,7 +534,7 @@ def _python_type_to_schema(annotation: Any) -> dict:
         if len(args) == 2:
             return {
                 "type": "object",
-                "additionalProperties": _python_type_to_schema(args[1]),
+                "additionalProperties": _python_type_to_schema(args[1], registry),
             }
         return {"type": "object"}
     # `Literal["a", "b"]` → an enum schema of the literal values.
@@ -549,6 +563,14 @@ def _python_type_to_schema(annotation: Any) -> dict:
     # `Enum` subclass → an enum schema carrying the member values.
     if isinstance(annotation, type) and issubclass(annotation, _enum.Enum):
         return _literal_enum_schema([member.value for member in annotation])
+
+    # Pydantic model → a `$ref` when a registry is available to hold its
+    # `$defs`; otherwise an object-shaped fallback so a registry-less
+    # caller still gets `{"type": "object"}` rather than a bare string.
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        if registry is not None:
+            return _pydantic_to_schema(annotation, registry)
+        return {"type": "object"}
 
     return {"type": "string"}
 

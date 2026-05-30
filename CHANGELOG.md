@@ -100,6 +100,13 @@ longer scale memory with body size.
 
 ### Fixed
 
+- OpenAPI parameter and form schemas now emit `$ref` for nested Pydantic models
+  inside `list`/`dict`/`set` and `anyOf` for multi-member unions instead of
+  collapsing to `string`. A query, path, header, cookie, or `Form()` parameter
+  annotated `list[Model]`, `dict[str, Model]`, or `set[Model]` registers the
+  model under `components.schemas` and references it; a `T | U` (or
+  `Optional[T | U]`) parameter emits `anyOf`, appending `{"type": "null"}` when
+  the union is nullable.
 - **Hybrid router: unknown converters in regex-routed paths now raise at
   registration.** A bare-word converter typo in a path that forces regex
   routing — `/v{version:bogus}/api`, or in a later segment such as
