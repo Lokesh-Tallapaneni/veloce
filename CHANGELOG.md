@@ -23,12 +23,15 @@ longer scale memory with body size.
   websocket/background/response injection are unchanged — they use the existing
   resolver.
 - The compiled resolver now also handles synchronous parameter markers —
-  `Query()`, `Path()`, `Header()`, and `Cookie()`, including their list-typed
-  forms — inlining the source lookup, coercion, and `validate()` constraint
-  check that the per-request interpreter performed. Measured ~16–22% faster
-  dispatch on routes whose parameters are these markers. `Body()`, `Form()`,
-  and `File()` markers continue to use the interpreter, since their source is
-  read asynchronously and cannot be reached from the compiled function.
+  `Query()`, `Path()`, `Header()`, and `Cookie()` (including their list-typed
+  forms) — inlining the source lookup and coercion the per-request interpreter
+  performed, plus the `validate()` constraint check for scalar markers.
+  Behaviour matches the interpreter exactly, including that list-typed markers
+  collect their values without running per-item `validate()`. Measured ~16–22%
+  faster dispatch on routes whose parameters are these markers. `Body()`,
+  `Form()`, and `File()` markers continue to use the interpreter, since their
+  source is read asynchronously and cannot be reached from the compiled
+  function.
 - **BREAKING — request body access is now asynchronous.** To stream a body the
   framework can no longer hand the handler a fully-formed bytes attribute, so
   the body accessors are now awaitables:
