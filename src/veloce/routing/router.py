@@ -24,6 +24,16 @@ from veloce.routing.converters import (
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 
+# Normalize an OpenAPI-style path to its parameter-name-agnostic shape:
+# `/items/{slug}` and `/items/{id}` both become `/items/{}`. Used to detect
+# when a tree route and a regex fallback route map to the same effective path.
+_PARAM_SHAPE_RE = re.compile(r"\{[^{}]*\}")
+
+
+def _path_shape(path: str) -> str:
+    """Return `path` with every `{param}` collapsed to `{}` for shape compare."""
+    return _PARAM_SHAPE_RE.sub("{}", path)
+
 
 @functools.lru_cache(maxsize=512)
 def _cached_split_path(path: str) -> tuple[str, ...]:
@@ -749,13 +759,16 @@ class Router:
     def get_allowed_methods(self, path: str) -> list[str]:
         """Get allowed methods for a path (for 405 responses).
 
-        Consults the radix tree first; on a tree miss it falls back to the
-        regex routes (when any are registered) so a regex-only path still
-        reports its methods for 405/OPTIONS.
+        Unions the methods reachable through the radix tree AND any regex
+        routes that match the same path, so a path served by a tree handler on
+        one method and a regex handler on another reports both for 405/OPTIONS.
+        Tree methods are listed first (dispatch precedence); duplicates removed.
         """
         segments = self._split_path(path)
         request_has_slash = path.endswith("/") and path != "/"
         params: dict[str, str] = {}
+        # Ordered set: tree methods first, then regex, deduped.
+        methods: dict[str, None] = {}
         node = self._match_node(self._root, segments, 0, params)
         if node is not None:
             # Respect trailing slash matching (skipped when tolerant_slash is set).
@@ -768,7 +781,7 @@ class Router:
                 and node.handlers
             )
             if not slash_miss and node.handlers:
-                return list(node.handlers.keys())
+                methods.update(dict.fromkeys(node.handlers))
         if self._regex_routes:
             for route in self._regex_routes:
                 m = self._regex_route_match(route, path)
@@ -778,8 +791,8 @@ class Router:
                 # miss, not a method mismatch — keep it a 404, never a 405.
                 if self._coerce_regex_params(route, m) is None:
                     continue
-                return list(route.handlers.keys())
-        return []
+                methods.update(dict.fromkeys(route.handlers))
+        return list(methods)
 
     # ── Decorator API ───────────────────────
 
@@ -1018,12 +1031,20 @@ class Router:
         routes: list[tuple[str, str, RouteInfo]] = []
         self._walk_tree(self._root, [], routes, include_hidden)
         # Tree routes are the runtime winners (match() consults the tree first).
-        # Track the (method, path) pairs they own so a regex route mapping to the
-        # same effective OpenAPI path+method does not shadow them in the schema.
-        # Skipped under include_hidden, where every route must still be surfaced
-        # for blueprint re-registration regardless of dispatch precedence.
+        # Track the (method, path-shape) pairs they own so a regex route mapping
+        # to the same effective path+method does not shadow them in the schema —
+        # compared by SHAPE (each `{param}` normalized to `{}`) so a tree
+        # `/items/{slug}` still shadows a regex `/items/{id}` despite the
+        # different parameter name. Skipped under include_hidden, where every
+        # route must still be surfaced for blueprint re-registration.
+        # Limitation: shape comparison treats any same-shape tree route as a
+        # shadow; a tree route with a constraining converter (e.g. `{id:int}`)
+        # does not in fact match every input, so a complementary regex route
+        # (e.g. letters-only) is dropped from the schema here even though it is
+        # reachable. Acceptable: schema omission of a rare overlapping route,
+        # never a dispatch change.
         tree_owned: set[tuple[str, str]] = (
-            set() if include_hidden else {(method, path) for method, path, _ in routes}
+            set() if include_hidden else {(method, _path_shape(path)) for method, path, _ in routes}
         )
         # Regex fallback routes are not in the tree; surface them here so
         # OpenAPI, blueprint re-registration, and url-map building see them.
@@ -1032,9 +1053,10 @@ class Router:
             path = route.openapi_path
             for method, info in route.handlers.items():
                 if include_hidden or (method != "WEBSOCKET" and info.include_in_schema):
-                    if not include_hidden and (method, path) in tree_owned:
-                        # A tree route already owns this path+method and wins at
-                        # dispatch; do not let the regex handler shadow it.
+                    if not include_hidden and (method, _path_shape(path)) in tree_owned:
+                        # A tree route already owns this path-shape+method and
+                        # wins at dispatch; do not let the regex handler shadow
+                        # it in the schema.
                         continue
                     routes.append((method, path, info))
         return routes

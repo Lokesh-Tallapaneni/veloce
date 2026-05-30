@@ -727,3 +727,42 @@ class TestRegexOpenAPIShadowing:
         infos = [info for _m, path, info in collected if path == "/items/{id}"]
         assert len(infos) == 1
         assert infos[0].handler is tree_handler
+
+
+def test_overlapping_tree_and_regex_methods_are_unioned():
+    """A path served by a tree handler on one method and a regex handler on
+    another reports both methods for 405/OPTIONS (get_allowed_methods unions
+    tree + regex instead of returning early on the tree hit)."""
+    from veloce.routing.router import Router
+
+    r = Router()
+
+    @r.get("/items/{slug}")
+    async def by_slug(slug):
+        return slug
+
+    @r.post("/items/{id:[0-9]+}")
+    async def by_id(id):
+        return id
+
+    allowed = set(r.get_allowed_methods("/items/5"))
+    assert "GET" in allowed, allowed
+    assert "POST" in allowed, allowed
+
+
+def test_openapi_omits_shadowed_regex_route():
+    """A regex route shadowed by a same-shape tree route (the runtime winner)
+    must not appear in the OpenAPI schema."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/items/{slug}")
+    async def by_slug(slug):
+        return {"slug": slug}
+
+    @app.get("/items/{id:[0-9]+}")
+    async def by_id(id):
+        return {"id": id}
+
+    paths = get_openapi_schema(app)["paths"]
+    assert "/items/{slug}" in paths  # tree route (dispatch winner) is present
+    assert "/items/{id}" not in paths  # shadowed regex route is not advertised
