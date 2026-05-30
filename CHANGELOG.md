@@ -17,11 +17,11 @@ longer scale memory with body size.
 
 - Parameter-only handlers (the request plus scalar path/query parameters, with
   no dependencies) now resolve through a straight-line resolver generated and
-  compiled once at route registration, replacing the per-request slot-dispatch
-  loop. Measured ~10–12% faster dispatch on param-heavy routes without
-  dependency injection; routes using `Depends`, body models, or
-  websocket/background/response injection are unchanged — they use the existing
-  resolver.
+  compiled once on first dispatch and cached on the route's plan, replacing the
+  per-request slot-dispatch loop. Measured ~10–12% faster dispatch on param-heavy
+  routes without dependency injection; routes using `Depends`, body models, list
+  params, or websocket/background/response injection are unchanged — they use the
+  existing resolver.
 - The compiled resolver now also handles synchronous parameter markers —
   `Query()`, `Path()`, `Header()`, and `Cookie()` (including their list-typed
   forms) — inlining the source lookup and coercion the per-request interpreter

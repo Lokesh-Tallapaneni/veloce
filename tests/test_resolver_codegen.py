@@ -319,3 +319,35 @@ def test_compiled_resolver_is_cached_on_plan():
     assert kwargs == {"x": 5}
     # After first use the compiled function is cached on the plan.
     assert callable(plan.compiled_resolver)
+
+
+def test_reused_resolver_clears_state_before_compiled_path():
+    # DependencyResolver is public and may be reused across resolves. A prior
+    # resolve that registered a yield-style teardown must NOT leak into a later
+    # compiled param-only resolve — the compiled fast path must still reset().
+    import asyncio
+
+    from veloce.dependency import DependencyResolver
+    from veloce.http.request import Request
+
+    def yielder():
+        yield "x"  # yield dep → registers a teardown on the resolver
+
+    async def with_dep(d: str = Depends(yielder)):
+        return d
+
+    async def params_only(q: int):
+        return q
+
+    resolver = DependencyResolver()
+    req = Request(method="GET", path="/", query_string="q=5", headers=[], body=b"")
+
+    async def run():
+        await resolver.resolve_plan(build_plan(with_dep), req, {})
+        assert resolver._teardowns, "yield dep should have registered a teardown"
+        kwargs = await resolver.resolve_plan(build_plan(params_only), req, {})
+        assert kwargs == {"q": 5}
+        # The compiled fast path must have reset() first, clearing A's teardown.
+        assert resolver._teardowns == [], "stale teardown leaked into the compiled path"
+
+    asyncio.new_event_loop().run_until_complete(run())
