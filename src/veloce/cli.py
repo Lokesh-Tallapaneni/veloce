@@ -84,10 +84,14 @@ def _apply_env_file(args: argparse.Namespace) -> None:
     try:
         with open(path, encoding="utf-8") as handle:
             lines = handle.readlines()
-    except OSError as err:
+    except FileNotFoundError as err:
         if explicit:
             raise SystemExit(f"Could not read env file {path!r}: {err}") from err
-        return  # auto-discovery: a missing default `.env` is fine
+        return  # auto-discovery: an absent default `.env` is fine
+    except OSError as err:
+        # Permission denied, "is a directory", etc. are real failures even
+        # for the auto-discovered default — never boot with silent loss.
+        raise SystemExit(f"Could not read env file {path!r}: {err}") from err
     for key, value in _parse_env_lines(lines, source=path).items():
         os.environ.setdefault(key, value)
 
@@ -228,9 +232,79 @@ def _add_env_file_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _split_custom_argv(argv: list[str]) -> tuple[list[str], list[str] | None]:
+    """Split a `custom` argv into the argparse head and the Click tail.
+
+    `veloce custom app:app [--env-file PATH | --no-env-file]... [--] ...args`
+
+    The CLI's own `--env-file` / `--no-env-file` flags are parsed when they
+    sit between `app` and the forwarded command, then everything else is
+    handed to the app's Click group verbatim. `argparse.REMAINDER` cannot
+    express this: it begins capturing at the first token after `app`, so a
+    leading `--env-file` would be swallowed into the forwarded args and the
+    dotenv file would never load. We therefore peel the tail off ourselves
+    — greedily consuming only the env-file flags after `app` — and let
+    argparse parse just the head. An explicit `--` ends the flag region and
+    is dropped from the forwarded args (POSIX convention).
+
+    Returns `(head, tail)` where `tail is None` means "no forwarded args
+    region was found" (e.g. the argv is malformed and argparse should emit
+    its own usage error against the whole thing).
+    """
+    if not argv or argv[0] != "custom":
+        return argv, None
+    # Locate the `app` positional: the first non-flag token after `custom`.
+    idx = 1
+    while idx < len(argv) and argv[idx].startswith("-") and argv[idx] != "--":
+        idx += 1
+    if idx >= len(argv):
+        return argv, None  # no `app` — let argparse report the error
+    head = argv[: idx + 1]  # ["custom", ..., "app"]
+    rest = argv[idx + 1 :]
+    # Consume env-file flags that precede the forwarded command.
+    cursor = 0
+    while cursor < len(rest):
+        token = rest[cursor]
+        if token == "--no-env-file":
+            head.append(token)
+            cursor += 1
+        elif token == "--env-file":
+            head.extend(rest[cursor : cursor + 2])
+            cursor += 2
+        elif token.startswith("--env-file="):
+            head.append(token)
+            cursor += 1
+        else:
+            break
+    tail = rest[cursor:]
+    if tail and tail[0] == "--":
+        tail = tail[1:]
+    return head, tail
+
+
+class _VeloceArgumentParser(argparse.ArgumentParser):
+    """Top-level parser that special-cases `veloce custom` argv.
+
+    See `_split_custom_argv` for why the forwarded Click args cannot use
+    `argparse.REMAINDER` without breaking `--env-file` placed before them.
+    """
+
+    def parse_known_args(  # type: ignore[override]
+        self,
+        args: list[str] | None = None,
+        namespace: argparse.Namespace | None = None,
+    ) -> tuple[argparse.Namespace, list[str]]:
+        argv = list(sys.argv[1:] if args is None else args)
+        head, tail = _split_custom_argv(argv)
+        parsed, extras = super().parse_known_args(head, namespace)
+        if tail is not None:
+            parsed.cli_args = tail
+        return parsed, extras
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser. Exposed for testing."""
-    parser = argparse.ArgumentParser(
+    parser = _VeloceArgumentParser(
         prog="veloce",
         description="Veloce — ultra-fast async Python web framework.",
     )
@@ -271,12 +345,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_custom.add_argument("app", help="App reference in 'module:attribute' form.")
     _add_env_file_args(p_custom)
-    p_custom.add_argument(
-        "cli_args",
-        nargs=argparse.REMAINDER,
-        help="Arguments forwarded to the app's Click group.",
-    )
-    p_custom.set_defaults(func=_cmd_custom)
+    # The forwarded Click argv is peeled off after a literal `--` by
+    # `_VeloceArgumentParser.parse_known_args`; argparse only ever sees the
+    # head. Default to no extra args when `--` is absent.
+    p_custom.set_defaults(func=_cmd_custom, cli_args=[])
 
     return parser
 

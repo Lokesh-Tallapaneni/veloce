@@ -52,7 +52,9 @@ longer scale memory with body size.
   idle connections survive proxy and load-balancer read timeouts. The heartbeat
   applies to both the ASGI streaming path and the raw-socket transport; the
   in-flight pull is preserved across each idle window rather than being
-  cancelled. Without `ping` the behaviour is unchanged.
+  cancelled. `ping` must be a positive number of seconds — a zero or negative
+  interval is rejected with `ValueError` at construction. Without `ping` the
+  behaviour is unchanged.
 - **Template streaming.** `Jinja2Templates.stream(name, context)` returns Jinja's
   chunk iterator instead of a fully-rendered string, and the module-level
   `stream_template(template_name, **context)` mirrors `render_template` against
@@ -65,7 +67,11 @@ longer scale memory with body size.
   to the environment before the app module is imported, so import-time config
   sees them. A real environment variable always wins; an explicit `--env-file`
   that is missing is an error, while an absent auto-discovered `.env` is silently
-  skipped.
+  skipped. An auto-discovered `.env` that exists but cannot be read (permission
+  denied, a directory in its place, and similar) is reported as an error rather
+  than skipped. For `veloce custom`, `--env-file` / `--no-env-file` are parsed
+  when placed after the app reference and before the `--` separator that
+  forwards the remaining arguments to the app's Click group.
 - **`Namespace` signal factory.** `veloce.signals.Namespace` returns named
   `Signal` instances, caching one per name so independent parts of an application
   can share a signal by agreeing on its name.

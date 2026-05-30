@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from veloce import EventSourceResponse, ServerSentEvent, Veloce
 
 # ── ServerSentEvent.encode ───────────────────────────────────────────
@@ -114,3 +116,24 @@ async def test_events_flow_without_idle_with_ping_set():
     chunks = await _drain(resp)
     assert not any(c.startswith(b":") for c in chunks)
     assert b"".join(chunks).count(b"data: ") == 2
+
+
+@pytest.mark.parametrize("bad", [0, 0.0, -1, -0.5])
+def test_ping_rejects_non_positive(bad):
+    """A zero or negative ping would time out instantly and flood the
+    socket with heartbeat frames — reject it at construction."""
+
+    async def gen():
+        yield ServerSentEvent(data="x")
+
+    with pytest.raises(ValueError, match="positive"):
+        EventSourceResponse(gen(), ping=bad)
+
+
+def test_ping_none_and_positive_are_accepted():
+    async def gen():
+        yield ServerSentEvent(data="x")
+
+    EventSourceResponse(gen(), ping=None)
+    EventSourceResponse(gen(), ping=0.01)
+    EventSourceResponse(gen(), ping=5)

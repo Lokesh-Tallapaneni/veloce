@@ -82,8 +82,10 @@ class EventSourceResponse(Response):
         content: AsyncIterator[ServerSentEvent | str | bytes],
         status_code: int = 200,
         headers: dict[str, str] | None = None,
-        ping: int | None = None,
+        ping: float | None = None,
     ) -> None:
+        if ping is not None and ping <= 0:
+            raise ValueError(f"ping interval must be a positive number of seconds, got {ping!r}")
         hdrs = dict(headers) if headers else {}
         hdrs.update(
             {
@@ -144,7 +146,7 @@ class EventSourceResponse(Response):
     async def _encode_with_ping(
         cls,
         content: AsyncIterator[ServerSentEvent | str | bytes],
-        ping: int,
+        ping: float,
     ) -> AsyncIterator[bytes]:
         # A single task wraps each `__anext__` so a ping-window timeout
         # does NOT cancel the in-flight pull — cancelling would throw

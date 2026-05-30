@@ -237,3 +237,55 @@ def test_auto_discover_missing_default_is_silent(tmp_path, monkeypatch):
     parser = build_parser()
     args = parser.parse_args(["run", "demo:app"])
     _apply_env_file(args)  # no exception
+
+
+def test_auto_discover_unreadable_default_errors(tmp_path, monkeypatch):
+    # An auto-discovered `.env` that exists but cannot be read (here: a
+    # directory in its place) is a real failure, not a silent skip — booting
+    # with missing config would mask broken environments.
+    (tmp_path / ".env").mkdir()
+    monkeypatch.chdir(tmp_path)
+    parser = build_parser()
+    args = parser.parse_args(["run", "demo:app"])
+    with pytest.raises(SystemExit, match="Could not read env file"):
+        _apply_env_file(args)
+
+
+# ── `veloce custom` argv parsing (env-file before `--`) ───────────────
+
+
+def test_custom_parses_env_file_before_double_dash():
+    # `--env-file` placed after `app` and before `--` must be parsed as the
+    # CLI flag, not swallowed into the forwarded Click argv.
+    parser = build_parser()
+    args = parser.parse_args(["custom", "demo:app", "--env-file", "x.env", "--", "hello"])
+    assert args.command == "custom"
+    assert args.app == "demo:app"
+    assert args.env_file == "x.env"
+    assert args.no_env_file is False
+    assert args.cli_args == ["hello"]
+
+
+def test_custom_parses_no_env_file_before_double_dash():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["custom", "demo:app", "--no-env-file", "--", "cmd", "--flag", "value"]
+    )
+    assert args.no_env_file is True
+    assert args.env_file is None
+    # Dashes after `--` are forwarded verbatim, not interpreted by argparse.
+    assert args.cli_args == ["cmd", "--flag", "value"]
+
+
+def test_custom_without_double_dash_has_empty_cli_args():
+    parser = build_parser()
+    args = parser.parse_args(["custom", "demo:app", "--env-file", "y.env"])
+    assert args.env_file == "y.env"
+    assert args.cli_args == []
+
+
+def test_custom_forwards_args_when_no_env_flags():
+    parser = build_parser()
+    args = parser.parse_args(["custom", "demo:app", "--", "hello", "world"])
+    assert args.env_file is None
+    assert args.cli_args == ["hello", "world"]
