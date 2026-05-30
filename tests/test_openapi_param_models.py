@@ -123,6 +123,41 @@ def test_bare_model_param_is_still_a_json_request_body() -> None:
     assert "_Tag" in get_openapi_schema(app)["components"]["schemas"]
 
 
+def test_explicit_body_model_is_a_json_request_body() -> None:
+    # An explicit `Body()`-marked model is still a JSON request body $ref.
+    from veloce.routing.params import Body
+
+    app = Veloce()
+
+    @app.post("/b2")
+    async def b2(request, tag: _Tag = Body()):
+        return {"ok": True}
+
+    op = _operation(app, "/b2")
+    assert "requestBody" in op
+    assert "_Tag" in get_openapi_schema(app)["components"]["schemas"]
+
+
+def test_header_and_cookie_model_markers_are_string_parameters() -> None:
+    # A model carried by Header()/Cookie() is read from that source as a
+    # JSON-document string, so it is a string `parameter`, not a requestBody.
+    from veloce.routing.params import Cookie, Header
+
+    app = Veloce()
+
+    @app.get("/hc")
+    async def hc(request, h: _Tag = Header(), c: _Tag = Cookie()):
+        return {"ok": True}
+
+    op = _operation(app, "/hc", "get")
+    assert "requestBody" not in op
+    params = {p["name"]: p for p in op["parameters"]}
+    assert params["h"]["in"] == "header"
+    assert params["h"]["schema"] == {"type": "string"}
+    assert params["c"]["in"] == "cookie"
+    assert params["c"]["schema"] == {"type": "string"}
+
+
 def test_list_of_model_form_field_emits_array_of_string() -> None:
     app = Veloce()
 
