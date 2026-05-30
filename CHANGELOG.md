@@ -100,13 +100,18 @@ longer scale memory with body size.
 
 ### Fixed
 
-- OpenAPI parameter and form schemas now emit `$ref` for nested Pydantic models
-  inside `list`/`dict`/`set` and `anyOf` for multi-member unions instead of
-  collapsing to `string`. A query, path, header, cookie, or `Form()` parameter
-  annotated `list[Model]`, `dict[str, Model]`, or `set[Model]` registers the
-  model under `components.schemas` and references it; a `T | U` (or
-  `Optional[T | U]`) parameter emits `anyOf`, appending `{"type": "null"}` when
-  the union is nullable.
+- OpenAPI schemas for non-body parameters (query, path, header, cookie) and
+  `Form()` fields now match what the request resolver can actually deliver.
+  These values arrive over the wire as raw strings, so a parameter annotated
+  with a Pydantic model — or a `list`/`dict`/`set` of one — documents
+  `{"type": "string"}` for the model rather than a `$ref`/object schema, and a
+  multi-member union (`int | str`, `Optional[int | str]`) documents
+  `{"type": "string"}` rather than `anyOf`. Emitting the richer schemas
+  advertised contracts the framework could not honour: a value matching the
+  documented `$ref` or non-string `anyOf` branch was rejected with a 422,
+  because no wire-format parsing exists to populate a model or hit a non-string
+  union branch from string input. Pydantic models belong in `requestBody`,
+  where they are still resolved to a `$ref` against the JSON body.
 - **Hybrid router: unknown converters in regex-routed paths now raise at
   registration.** A bare-word converter typo in a path that forces regex
   routing — `/v{version:bogus}/api`, or in a later segment such as
