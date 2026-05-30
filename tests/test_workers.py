@@ -248,3 +248,137 @@ def test_recycling_disabled_when_max_requests_zero() -> None:
         c.count()
     assert c.alive is True
     assert c.nr == 100
+
+
+def test_protocol_keep_serving_hook_defaults_none() -> None:
+    # The serve-loop predicate the worker uses to honour max_requests at the
+    # request boundary must be absent by default so non-gunicorn paths pay
+    # nothing for it.
+    from veloce.serving.protocol import HttpProtocol
+
+    assert HttpProtocol.should_keep_serving is None
+
+
+def test_keep_serving_reports_alive_flag() -> None:
+    # VeloceWorker._keep_serving returns self.alive so the per-connection serve
+    # loop stops draining queued/pipelined requests once recycling clears alive.
+    # Exercised without gunicorn by binding the unbound method to a stub.
+    from veloce.workers import VeloceWorker
+
+    class _Stub:
+        alive = True
+
+    stub = _Stub()
+    assert VeloceWorker._keep_serving(stub) is True
+    stub.alive = False
+    assert VeloceWorker._keep_serving(stub) is False
+
+
+# ── TLS customization hook (cfg.ssl_context) ──────────────────────
+#
+# gunicorn's documented TLS customization point is the ssl_context(config,
+# default_ssl_context_factory) hook; its own socket layer calls
+# conf.ssl_context(conf, default_ssl_context_factory). _build_ssl_context must
+# route the default context through that hook so configured customizations
+# (minimum TLS version, mTLS tweaks) are honoured. Driven without gunicorn by
+# binding the unbound method to a config stub.
+
+
+class _CfgStub:
+    def __init__(self, *, is_ssl, ssl_options, ssl_context=None) -> None:
+        self.is_ssl = is_ssl
+        self.ssl_options = ssl_options
+        self.ssl_context = ssl_context
+
+
+class _WorkerStub:
+    def __init__(self, cfg) -> None:
+        self.cfg = cfg
+
+
+def test_build_ssl_context_returns_none_when_tls_off() -> None:
+    from veloce.workers import VeloceWorker
+
+    worker = _WorkerStub(_CfgStub(is_ssl=False, ssl_options={}))
+    assert VeloceWorker._build_ssl_context(worker) is None
+
+
+def test_build_ssl_context_uses_default_factory_without_hook(tmp_path) -> None:
+    pytest.importorskip("cryptography")
+    from veloce.workers import VeloceWorker
+
+    certfile, keyfile = _write_self_signed_cert(tmp_path)
+    cfg = _CfgStub(
+        is_ssl=True,
+        ssl_options={"certfile": certfile, "keyfile": keyfile},
+        ssl_context=None,
+    )
+    worker = _WorkerStub(cfg)
+
+    context = VeloceWorker._build_ssl_context(worker)
+    assert isinstance(context, ssl.SSLContext)
+
+
+def test_build_ssl_context_invokes_customization_hook(tmp_path) -> None:
+    pytest.importorskip("cryptography")
+    from veloce.workers import VeloceWorker
+
+    certfile, keyfile = _write_self_signed_cert(tmp_path)
+    seen = {}
+
+    def hook(config, default_ssl_context_factory):
+        seen["config"] = config
+        context = default_ssl_context_factory()
+        context.minimum_version = ssl.TLSVersion.TLSv1_3
+        return context
+
+    cfg = _CfgStub(
+        is_ssl=True,
+        ssl_options={"certfile": certfile, "keyfile": keyfile},
+        ssl_context=hook,
+    )
+    worker = _WorkerStub(cfg)
+
+    context = VeloceWorker._build_ssl_context(worker)
+    assert isinstance(context, ssl.SSLContext)
+    # The configured customization must be honoured, not discarded.
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_3
+    # gunicorn passes the config object through as the hook's first argument.
+    assert seen["config"] is cfg
+
+
+def test_build_ssl_context_rejects_non_context_from_hook(tmp_path) -> None:
+    pytest.importorskip("cryptography")
+    from veloce.workers import VeloceWorker
+
+    certfile, keyfile = _write_self_signed_cert(tmp_path)
+
+    def bad_hook(config, default_ssl_context_factory):
+        return "not a context"
+
+    cfg = _CfgStub(
+        is_ssl=True,
+        ssl_options={"certfile": certfile, "keyfile": keyfile},
+        ssl_context=bad_hook,
+    )
+    worker = _WorkerStub(cfg)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        VeloceWorker._build_ssl_context(worker)
+    assert "ssl_context hook" in str(excinfo.value)
+
+
+def test_build_ssl_context_hook_still_fails_fast_on_missing_cert() -> None:
+    # The hook receives a factory; if it calls it with no certfile configured,
+    # the fail-fast guard inside build_ssl_context still fires (no cleartext).
+    from veloce.workers import VeloceWorker
+
+    def hook(config, default_ssl_context_factory):
+        return default_ssl_context_factory()
+
+    cfg = _CfgStub(is_ssl=True, ssl_options={"keyfile": "/nonexistent/key.pem"}, ssl_context=hook)
+    worker = _WorkerStub(cfg)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        VeloceWorker._build_ssl_context(worker)
+    assert "certfile" in str(excinfo.value)

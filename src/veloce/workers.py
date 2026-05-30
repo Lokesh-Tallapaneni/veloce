@@ -24,7 +24,10 @@ when it is missing.
 (``cfg.is_ssl``), the worker builds a server SSL context from gunicorn's
 config and hands it to ``create_server``; if the certificate chain is missing
 or unloadable it fails fast with :class:`RuntimeError` rather than silently
-serving cleartext over an HTTPS deployment.
+serving cleartext over an HTTPS deployment. The default context is passed
+through gunicorn's ``ssl_context(config, default_ssl_context_factory)`` hook,
+so a deployment that customises TLS there (minimum TLS version, mTLS tweaks)
+has those customisations honoured.
 
 **EXPERIMENTAL:** this worker is new and the gunicorn integration cannot be
 exercised on Windows (gunicorn is POSIX-only). Validate it on a POSIX host
@@ -201,6 +204,20 @@ class VeloceWorker(_GunicornWorker):
             self.alive = False
             self._stop.set()
 
+    def _keep_serving(self) -> bool:
+        """Report whether a connection may serve its next queued request.
+
+        Installed as ``HttpProtocol.should_keep_serving`` and consulted by the
+        per-connection serve loop after each dispatched request. Returning
+        ``self.alive`` makes the loop stop at the request boundary once
+        ``max_requests`` recycling has cleared ``alive`` — otherwise a single
+        connection with queued/pipelined requests would keep draining them past
+        the limit before the worker restarts. gunicorn's own workers flip
+        ``alive`` and break inside the request-handling path for the same
+        reason.
+        """
+        return self.alive
+
     def handle_exit(self, sig: Any, frame: Any) -> None:
         # SIGTERM/SIGINT: gunicorn clears self.alive; wake the loop too so the
         # worker stops within a scheduler tick rather than up to a heartbeat.
@@ -233,6 +250,7 @@ class VeloceWorker(_GunicornWorker):
         from veloce.serving.protocol import HttpProtocol
 
         HttpProtocol.on_request_complete = self._count_request
+        HttpProtocol.should_keep_serving = self._keep_serving
         super().init_process()
 
     def run(self) -> None:
@@ -264,9 +282,17 @@ class VeloceWorker(_GunicornWorker):
 
         Reads ``cfg.is_ssl`` / ``cfg.ssl_options`` from gunicorn's config. When
         TLS is off (the common case) this returns ``None`` and the serving path
-        is plain HTTP, byte-for-byte as before. When TLS is on it builds a
-        context via :func:`build_ssl_context`, which fails fast if the cert
-        chain is missing — never silently downgrading HTTPS to cleartext.
+        is plain HTTP, byte-for-byte as before.
+
+        When TLS is on, the default context is built from ``cfg.ssl_options``
+        via :func:`build_ssl_context` (which fails fast if the cert chain is
+        missing — never silently downgrading HTTPS to cleartext). That default
+        is then run through gunicorn's documented ``ssl_context(config,
+        default_ssl_context_factory)`` hook, mirroring how gunicorn's own socket
+        layer calls ``conf.ssl_context(conf, default_ssl_context_factory)``. A
+        deployment that customises TLS in this hook (minimum TLS version, mTLS
+        tweaks, ciphers) sees those customisations honoured here; the stock hook
+        just returns ``default_ssl_context_factory()`` unchanged.
         """
         cfg = getattr(self, "cfg", None)
         if cfg is None:  # pragma: no cover - gunicorn always sets cfg
@@ -274,7 +300,22 @@ class VeloceWorker(_GunicornWorker):
         if not getattr(cfg, "is_ssl", False):
             return None
         ssl_options = dict(getattr(cfg, "ssl_options", None) or {})
-        return build_ssl_context(ssl_options)
+
+        def default_ssl_context_factory() -> ssl.SSLContext:
+            return build_ssl_context(ssl_options)
+
+        hook = getattr(cfg, "ssl_context", None)
+        if not callable(hook):
+            return default_ssl_context_factory()
+
+        context = hook(cfg, default_ssl_context_factory)
+        if not isinstance(context, ssl.SSLContext):
+            raise RuntimeError(
+                "VeloceWorker: the configured gunicorn ssl_context hook returned "
+                f"{type(context).__name__}, not an ssl.SSLContext; it must return "
+                "the (optionally customised) context from default_ssl_context_factory()."
+            )
+        return context
 
     async def _serve(self, loop: asyncio.AbstractEventLoop) -> None:
         """Bind the gunicorn sockets to an asyncio server and serve.
@@ -353,11 +394,13 @@ class VeloceWorker(_GunicornWorker):
         """
         from veloce.serving.protocol import HttpProtocol
 
-        # Detach our max_requests counting hook so a stopped worker leaves no
-        # dangling reference on the process-wide protocol class (matters for the
-        # test harness, where many workers may share an interpreter).
+        # Detach our max_requests hooks so a stopped worker leaves no dangling
+        # reference on the process-wide protocol class (matters for the test
+        # harness, where many workers may share an interpreter).
         if HttpProtocol.on_request_complete == self._count_request:
             HttpProtocol.on_request_complete = None
+        if HttpProtocol.should_keep_serving == self._keep_serving:
+            HttpProtocol.should_keep_serving = None
 
         app = self._veloce_app()
 

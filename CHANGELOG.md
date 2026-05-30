@@ -67,7 +67,10 @@ longer scale memory with body size.
   `create_server`, instead of handing the bound sockets to asyncio with no TLS
   and silently serving cleartext. If the certificate chain is missing or cannot
   be loaded the worker fails fast with a `RuntimeError` rather than downgrading
-  an HTTPS deployment to cleartext.
+  an HTTPS deployment to cleartext. The default context is routed through
+  gunicorn's documented `ssl_context(config, default_ssl_context_factory)` hook,
+  so a configured TLS customization (minimum TLS version, mTLS tweaks, ciphers)
+  is honoured instead of ignored.
 - **gunicorn worker stops when the master dies.** The heartbeat loop now also
   checks arbiter liveness (the worker's parent pid changing after a fork-reparent)
   and shuts the worker down instead of leaving it orphaned if the gunicorn master
@@ -78,7 +81,11 @@ longer scale memory with body size.
   recycling works as documented; previously the counter was never incremented and
   recycling never fired. Counting is driven by a new optional
   `HttpProtocol.on_request_complete` hook that is unset (and free) on the
-  uvicorn / `Veloce.run()` path.
+  uvicorn / `Veloce.run()` path. The per-connection serve loop now also consults
+  an optional `HttpProtocol.should_keep_serving` predicate at each request
+  boundary, so once `max_requests` clears `alive` a connection with queued or
+  pipelined requests stops at the boundary and closes instead of draining the
+  rest of its queue past the limit before the worker restarts.
 
 ### Internal
 

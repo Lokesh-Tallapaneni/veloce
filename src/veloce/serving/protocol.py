@@ -65,6 +65,15 @@ class HttpProtocol(asyncio.Protocol):
     # connection object with a slot that is unused under uvicorn / Veloce.run().
     on_request_complete: Callable[[], None] | None = None
 
+    # Optional class-level predicate consulted after each dispatched request to
+    # decide whether the connection may serve the next queued/pipelined request.
+    # `None` by default (always keep serving) so the uvicorn / Veloce.run() path
+    # pays only an `is not None` check. The gunicorn worker installs a callback
+    # returning `self.alive`, so once `max_requests` recycling clears `alive`
+    # the per-connection loop stops at the request boundary instead of draining
+    # the whole pipelined queue past the limit.
+    should_keep_serving: Callable[[], bool] | None = None
+
     # Cross-thread connection counter. `+=` on a class-level int is read-
     # modify-write, not atomic under the GIL, so guard with a Lock. Only
     # contended on connection setup/teardown — not on the per-request path.
@@ -459,6 +468,25 @@ class HttpProtocol(asyncio.Protocol):
             if not should_continue:
                 # Connection: close (or a failed write) — stop serving.
                 return
+            # Honour worker recycling at the request boundary. When the gunicorn
+            # worker has tripped max_requests (clearing its `alive` flag) the
+            # predicate returns False, so the connection stops here rather than
+            # draining further queued/pipelined requests past the limit. The
+            # transport is closed so the client opens a fresh connection against
+            # the replacement worker; failures in the predicate keep serving.
+            keep = HttpProtocol.should_keep_serving
+            if keep is not None:
+                try:
+                    serve_next = keep()
+                except Exception:
+                    serve_next = True
+                    logging.getLogger("veloce.serving.protocol").exception(
+                        "should_keep_serving hook raised"
+                    )
+                if not serve_next:
+                    if self.transport is not None and not self.transport.is_closing():
+                        self.transport.close()
+                    return
         # Queue drained on a keep-alive connection: rearm the idle timer so the
         # connection is reaped if no further request arrives. Skip the rearm if a
         # follow-up is mid-receive (_request_timer live) or already queued — the
