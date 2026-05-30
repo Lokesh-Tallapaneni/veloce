@@ -63,12 +63,13 @@ longer scale memory with body size.
 
 ### Fixed
 
-- **Hybrid router: unknown converters in regex-routed segments now raise at
-  registration.** A bare-word converter typo in a segment that forces regex
-  routing — `/v{version:bogus}/api` — previously slipped through as literal
-  regex and matched the text `bogus`. Such specs are now validated against the
-  converter set and raise `unknown path converter` at registration, the same as
-  whole-segment placeholders.
+- **Hybrid router: unknown converters in regex-routed paths now raise at
+  registration.** A bare-word converter typo in a path that forces regex
+  routing — `/v{version:bogus}/api`, or in a later segment such as
+  `/v{version:int}/{id:bogus}` — previously slipped through as literal regex and
+  matched the text `bogus`. Every bare-word spec across all segments of a regex
+  route is now validated against the converter set and raises `unknown path
+  converter` at registration, the same as whole-segment placeholders.
 - **Hybrid router: registered custom converters in regex-routed segments now
   raise at registration.** A custom converter — `register_converter("slug", …)`
   — used in a segment that forces regex routing (`/v{name:slug}/api`) previously
@@ -82,6 +83,15 @@ longer scale memory with body size.
   `:float`, `:uuid`, `:any(...)`) now yields the coerced Python value (e.g.
   `3`, not `"3"`) instead of the raw matched string. Bare `{name}` and raw
   regex (`{id:[0-9]+}`) groups remain strings.
+- **Hybrid router: regex-route converters now enforce the same rejection
+  semantics as radix routes.** A built-in converter's guards — notably the
+  `:int` digit cap — are now applied to regex-route matches: when the converter
+  rejects its group, the route is treated as a full miss (404) and the next
+  route is tried, instead of leaking the raw string through to the handler.
+  Previously `/v{n:int}/x` matched an over-long value (e.g. a 21-digit number)
+  and passed it as `str`, while the equivalent radix route `/x/{n:int}`
+  correctly rejected it. Allowed-method reporting honors the same rejection, so
+  an over-long `:int` yields a 404 rather than a 405.
 - **Hybrid router: raw regex converter specs may now contain braces.** Patterns
   with brace quantifiers — `/x/{id:[0-9]{2}}` or `/x/{id:\d{2}}` — are parsed
   balance-aware and compile correctly instead of raising a group-name error.

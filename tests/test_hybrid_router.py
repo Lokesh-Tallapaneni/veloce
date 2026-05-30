@@ -440,6 +440,43 @@ class TestUnknownConverterInRegexSegment:
         assert m is not None
         assert m.path_params == {"version": 7}
 
+    def test_unknown_converter_in_later_whole_segment_raises(self):
+        # The first segment forces regex routing (param shares the segment with
+        # static text); a bare-word typo in a *later* whole segment must still
+        # raise rather than miscompile into a group matching literal "bogus".
+        with pytest.raises(ValueError, match="unknown path converter"):
+            is_regex_path("/v{version:int}/{id:bogus}")
+
+    def test_unknown_converter_in_later_segment_route_registration_raises(self):
+        r = Router()
+
+        with pytest.raises(ValueError, match="unknown path converter"):
+
+            @r.get("/v{version:int}/{id:bogus}")
+            async def h(version, id):
+                return (version, id)
+
+    def test_unknown_converter_in_partial_later_segment_raises(self):
+        # Both segments share static text; the typo lives in the second one.
+        with pytest.raises(ValueError, match="unknown path converter"):
+            is_regex_path("/posts/{name:slug_review_2}/v{version:int}")
+
+    def test_custom_converter_in_later_segment_raises(self):
+        from veloce.routing.converters import _CUSTOM, Converter
+
+        class _SlugConverter(Converter):
+            __slots__ = ()
+
+            def match(self, value):
+                return True, value
+
+        _CUSTOM["slug_review_demo"] = _SlugConverter
+        try:
+            with pytest.raises(ValueError, match="no regex representation"):
+                is_regex_path("/v{version:int}/{name:slug_review_demo}")
+        finally:
+            _CUSTOM.pop("slug_review_demo", None)
+
 
 # ── Regex routes coerce params like the radix tree ───────────────
 
@@ -504,6 +541,55 @@ class TestRegexConverterCoercion:
         assert m is not None
         assert m.path_params == {"id": "42"}
         assert isinstance(m.path_params["id"], str)
+
+    def test_regex_int_honors_digit_cap_like_radix(self):
+        # `-?\d+` matches an over-long int, but the IntConverter's digit cap
+        # must still reject it so a regex route enforces the same size guard as
+        # the equivalent radix route — and never leaks the value through as a
+        # string.
+        r = Router()
+
+        @r.get("/v{n:int}/x")
+        async def h(n):
+            return n
+
+        big = "9" * 21
+        assert r.match("GET", f"/v{big}/x") is None
+        # A radix route rejects the same input identically.
+        r2 = Router()
+
+        @r2.get("/x/{n:int}")
+        async def h2(n):
+            return n
+
+        assert r2.match("GET", f"/x/{big}") is None
+
+    def test_regex_int_overlong_is_404_not_405(self):
+        # An over-long `:int` on a regex route is a full miss, not a method
+        # mismatch, so get_allowed_methods must report nothing for it.
+        r = Router()
+
+        @r.post("/v{n:int}/x")
+        async def h(n):
+            return n
+
+        big = "9" * 21
+        assert r.match("POST", f"/v{big}/x") is None
+        assert r.get_allowed_methods(f"/v{big}/x") == []
+
+    def test_regex_int_at_cap_still_matches(self):
+        # A 20-digit int is at the cap and must still match and coerce.
+        r = Router()
+
+        @r.get("/v{n:int}/x")
+        async def h(n):
+            return n
+
+        twenty = "9" * 20
+        m = r.match("GET", f"/v{twenty}/x")
+        assert m is not None
+        assert m.path_params == {"n": int(twenty)}
+        assert isinstance(m.path_params["n"], int)
 
 
 # ── Raw regex specs containing braces ────────────────────────────

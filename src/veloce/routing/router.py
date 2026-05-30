@@ -564,15 +564,17 @@ class Router:
         return None
 
     @staticmethod
-    def _coerce_regex_params(route: RegexRoute, m: re.Match[str]) -> dict[str, Any]:
+    def _coerce_regex_params(route: RegexRoute, m: re.Match[str]) -> dict[str, Any] | None:
         """Apply each placeholder's built-in converter to the matched groups.
 
         Built-in specs (`int`, `float`, `uuid`, `path`, `any(...)`) coerce to
         the same Python types the radix tree produces; bare and raw-regex
-        groups have no converter and stay as strings. The regex already
-        constrained the group, so a converter rejection here is a tree-level
-        invariant violation rather than a client error — fall back to the raw
-        string in that (unexpected) case.
+        groups have no converter and stay as strings. A built-in converter
+        enforces guards the regex fragment alone does not — `int`'s digit cap,
+        for instance, rejects a 21-digit value that `-?\\d+` happily matches.
+        When a converter rejects its group, the regex route is treated as a
+        miss (return `None`) so the same input is rejected on a regex route as
+        on the equivalent radix route, instead of leaking through as a string.
         """
         params = m.groupdict()
         converters = route.converters
@@ -583,8 +585,9 @@ class Router:
             if conv is None:
                 continue
             ok, coerced = conv.match(value)
-            if ok:
-                params[name] = coerced
+            if not ok:
+                return None
+            params[name] = coerced
         return params
 
     def _match_regex(self, method: str, path: str) -> RouteMatch | None:
@@ -606,7 +609,12 @@ class Router:
                 info = route.handlers.get("GET")
             if info is None:
                 continue
-            return RouteMatch(route_info=info, path_params=self._coerce_regex_params(route, m))
+            params = self._coerce_regex_params(route, m)
+            if params is None:
+                # A built-in converter rejected its matched group (e.g. an
+                # over-long `:int`). Treat it as a miss and try the next route.
+                continue
+            return RouteMatch(route_info=info, path_params=params)
         return None
 
     def match(self, method: str, path: str) -> RouteMatch | None:
@@ -763,8 +771,14 @@ class Router:
                 return list(node.handlers.keys())
         if self._regex_routes:
             for route in self._regex_routes:
-                if self._regex_route_match(route, path) is not None:
-                    return list(route.handlers.keys())
+                m = self._regex_route_match(route, path)
+                if m is None:
+                    continue
+                # A converter rejection (e.g. an over-long `:int`) is a full
+                # miss, not a method mismatch — keep it a 404, never a 405.
+                if self._coerce_regex_params(route, m) is None:
+                    continue
+                return list(route.handlers.keys())
         return []
 
     # ── Decorator API ───────────────────────

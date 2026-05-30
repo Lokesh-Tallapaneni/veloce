@@ -337,20 +337,25 @@ def is_regex_path(path: str) -> bool:
     placeholder followed by a non-empty suffix is also a regex route, since
     the tree only accepts `:path` as the final segment.
 
-    A segment that forces regex routing still has each of its bare-word
-    converter specs validated: an unknown name like `{version:bogus}` or a
-    registered custom converter like `{name:slug}` raises `ValueError` here
-    rather than slipping through as literal regex. Custom converters have no
-    regex representation, so they are rejected in regex-forced segments rather
-    than miscompiled.
+    Once a path is classified as a regex route, every bare-word converter
+    spec across all of its segments is validated: an unknown name like
+    `{version:bogus}` or a registered custom converter like `{name:slug}`
+    raises `ValueError` here rather than slipping through as literal regex.
+    Validating every segment (not just the one that forced regex routing)
+    catches typos in later segments such as `/v{version:int}/{id:bogus}`,
+    which would otherwise miscompile into a group matching the literal text.
+    Custom converters have no regex representation, so they are rejected in
+    regex routes rather than miscompiled.
     """
     segments = [s for s in path.split("/") if s]
     total = len(segments)
+    all_placeholders: list[list[_Placeholder]] = []
+    forced = False
     for idx, seg in enumerate(segments):
         placeholders = _iter_placeholders(seg)
+        all_placeholders.append(placeholders)
         if not placeholders:
             continue
-        forced = False
         if len(placeholders) > 1:
             forced = True
         ph = placeholders[0]
@@ -365,12 +370,14 @@ def is_regex_path(path: str) -> bool:
                 forced = True
             if spec == "path" and idx != total - 1:
                 forced = True
-        if forced:
-            # Validate every bare-word spec so an unknown converter typo in a
-            # regex-routed segment still raises instead of becoming raw regex.
+    if forced:
+        # Validate every bare-word spec across all segments so an unknown
+        # converter typo anywhere in a regex-routed path still raises instead
+        # of becoming a group that matches the literal converter name.
+        for placeholders in all_placeholders:
             for cand in placeholders:
                 _validate_bare_word_spec(cand.spec)
-            return True
+        return True
     return False
 
 
