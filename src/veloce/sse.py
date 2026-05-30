@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
 from collections.abc import AsyncIterator
 from typing import Any
 
 from veloce._internal import _STATUS_PHRASES, _reject_header_crlf
 from veloce.http.response import Response
+
+# SSE keep-alive frame: a comment line (colon-prefixed) the spec requires
+# clients to ignore. Sent when no event arrives within the `ping` window
+# so idle connections survive proxy/load-balancer read timeouts.
+_PING_FRAME = b": ping\r\n\r\n"
 
 
 class ServerSentEvent:
@@ -61,16 +68,30 @@ class EventSourceResponse(Response):
                     yield ServerSentEvent(data=f"Event {i}")
                     await asyncio.sleep(1)
             return EventSourceResponse(generate())
+
+    Pass `ping=<seconds>` to emit a keep-alive comment frame whenever no
+    event is produced within that interval — useful for holding idle
+    connections open through proxies that close silent sockets.
     """
 
     is_event_source = True
+
+    __slots__ = ("ping",)
 
     def __init__(
         self,
         content: AsyncIterator[ServerSentEvent | str | bytes],
         status_code: int = 200,
         headers: dict[str, str] | None = None,
+        ping: float | None = None,
     ) -> None:
+        if ping is not None and not (math.isfinite(ping) and ping > 0):
+            # `not finite` rejects NaN (fails every comparison, so `<= 0` lets
+            # it slip through) and Infinity (passes `> 0` but is meaningless as
+            # an `asyncio.wait` timeout — the heartbeat would never fire).
+            raise ValueError(
+                f"ping interval must be a finite positive number of seconds, got {ping!r}"
+            )
         hdrs = dict(headers) if headers else {}
         hdrs.update(
             {
@@ -85,13 +106,14 @@ class EventSourceResponse(Response):
             content_type="text/event-stream",
             headers=hdrs,
         )
+        self.ping = ping
         # Normalise every yielded item to bytes up front, so the ASGI
         # transport and the raw-socket transport consume an identical
         # `bytes` stream — see `_encode_stream`.
         self._stream = self._encode_stream(content)
 
-    @staticmethod
-    async def _encode_stream(
+    def _encode_stream(
+        self,
         content: AsyncIterator[ServerSentEvent | str | bytes],
     ) -> AsyncIterator[bytes]:
         """Encode each yielded item to `bytes`.
@@ -100,14 +122,63 @@ class EventSourceResponse(Response):
         `str` (UTF-8 encoded), or already-encoded `bytes`. This keeps both
         transports consistent: the ASGI streaming branch and `stream_to`
         each receive `bytes` regardless of what the handler yields.
+
+        When `ping` is set, the wait for the next event is bounded by
+        `ping` seconds; on timeout a keep-alive comment frame is emitted
+        and the wait restarts, so both transports inherit heartbeats
+        without any per-transport code.
         """
+        if self.ping is None:
+            return self._encode_plain(content)
+        return self._encode_with_ping(content, self.ping)
+
+    @staticmethod
+    def _encode_event(item: ServerSentEvent | str | bytes) -> bytes:
+        if isinstance(item, ServerSentEvent):
+            return item.encode()
+        if isinstance(item, str):
+            return item.encode("utf-8")
+        return item
+
+    @classmethod
+    async def _encode_plain(
+        cls,
+        content: AsyncIterator[ServerSentEvent | str | bytes],
+    ) -> AsyncIterator[bytes]:
         async for item in content:
-            if isinstance(item, ServerSentEvent):
-                yield item.encode()
-            elif isinstance(item, str):
-                yield item.encode("utf-8")
-            else:
-                yield item
+            yield cls._encode_event(item)
+
+    @classmethod
+    async def _encode_with_ping(
+        cls,
+        content: AsyncIterator[ServerSentEvent | str | bytes],
+        ping: float,
+    ) -> AsyncIterator[bytes]:
+        # A single task wraps each `__anext__` so a ping-window timeout
+        # does NOT cancel the in-flight pull — cancelling would throw
+        # into the generator and kill it. We await the SAME task again
+        # on the next loop; it resolves once the source finally yields.
+        it = content.__aiter__()
+        pending: Any = None
+        try:
+            while True:
+                if pending is None:
+                    pending = asyncio.ensure_future(it.__anext__())
+                done, _ = await asyncio.wait((pending,), timeout=ping)
+                if not done:
+                    # No event within the window — keep the connection warm.
+                    yield _PING_FRAME
+                    continue
+                task = pending
+                pending = None
+                try:
+                    item = task.result()
+                except StopAsyncIteration:
+                    return
+                yield cls._encode_event(item)
+        finally:
+            if pending is not None:
+                pending.cancel()
 
     async def stream_to(self, transport: Any) -> None:
         """Stream SSE events to transport."""

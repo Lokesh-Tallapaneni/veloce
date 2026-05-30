@@ -6,6 +6,7 @@ import pytest
 
 from veloce import Request, Veloce
 from veloce.signals import (
+    Namespace,
     Signal,
     got_request_exception,
     request_finished,
@@ -71,6 +72,44 @@ def test_weak_ref_dies_when_owner_collected():
     # After GC, the weakref's target is gone; send sees zero receivers.
     sig.send("x")
     assert not sig.has_receivers_for(None)
+
+
+# ── Namespace factory ────────────────────────────────────────────────
+
+
+def test_namespace_same_name_returns_same_signal():
+    ns = Namespace()
+    a = ns.signal("user-registered")
+    b = ns.signal("user-registered")
+    assert a is b
+    assert isinstance(a, Signal)
+    assert a.name == "user-registered"
+
+
+def test_namespace_different_names_are_distinct():
+    ns = Namespace()
+    a = ns.signal("created")
+    b = ns.signal("deleted")
+    assert a is not b
+    assert a.name == "created"
+    assert b.name == "deleted"
+
+
+def test_namespace_signal_send_and_connect():
+    ns = Namespace()
+    sig = ns.signal("ping")
+    received = []
+
+    sig.connect(lambda sender, **kw: received.append((sender, kw)), weak=False)
+    sig.send("origin", n=3)
+    assert received == [("origin", {"n": 3})]
+
+
+def test_namespace_doc_arg_is_accepted():
+    ns = Namespace()
+    sig = ns.signal("with-doc", doc="a documented signal")
+    # doc is accepted for API parity; the cached signal is returned as-is.
+    assert ns.signal("with-doc") is sig
 
 
 # ── Framework integration ────────────────────────────────────────────

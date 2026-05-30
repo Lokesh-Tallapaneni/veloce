@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 from typing import Any
 
@@ -84,6 +85,31 @@ def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str,
         # Caller's explicit context wins over context-processor defaults.
         merged.update(extra)
     return merged
+
+
+def _context_preserving_iter(iterator: Any) -> Any:
+    """Wrap a lazy sync iterator so each step runs in the caller's context.
+
+    A streamed template body is consumed by the response-emit layer after the
+    handler returns — on the built-in server, from a separate task whose
+    context lacks the request-scoped `current_app` / `g` / `request`. Jinja
+    resolves globals like `url_for` during iteration, so without this the
+    stream would raise "working outside of application context". A snapshot of
+    the context is captured now and each `next()` is driven through it via
+    `ctx.run`, keeping the iterator synchronous (it stays a `str` generator,
+    consumable by `list(...)` / `"".join(...)` and by `StreamingResponse`).
+    """
+    ctx = contextvars.copy_context()
+    _sentinel = object()
+
+    def _step() -> Any:
+        return next(iterator, _sentinel)
+
+    while True:
+        chunk = ctx.run(_step)
+        if chunk is _sentinel:
+            return
+        yield chunk
 
 
 class Jinja2Templates:
@@ -181,6 +207,28 @@ class Jinja2Templates:
         merged = _gather_context_processors(context or {})
         return template.render(merged)
 
+    def stream(self, name: str, context: dict[str, Any] | None = None) -> Any:
+        """Render a named template incrementally, yielding `str` chunks.
+
+        Mirrors `render` but returns a synchronous iterator of `str` chunks
+        instead of a fully-rendered string, so large templates can be
+        streamed to the client without buffering the whole body. Wrap it in
+        a `StreamingResponse` to return it from a handler.
+
+        Jinja's generator is lazy — chunks render as the response body is
+        consumed, which on the built-in server happens on a separate task
+        after the handler returns. Each chunk is therefore produced inside a
+        snapshot of the current context (`current_app`, `g`, `request`), so a
+        template that reads them or calls `url_for` resolves correctly during
+        emission instead of raising "working outside of application context".
+        The returned iterator is still synchronous, preserving the contract.
+        """
+        self._apply_auto_reload(self.env)
+        _sync_app_jinja_helpers(self.env)
+        template = self.env.get_template(name)
+        merged = _gather_context_processors(context or {})
+        return _context_preserving_iter(template.generate(merged))
+
     def render_string(self, source: str, context: dict[str, Any]) -> str:
         """Render a template from string."""
         self._apply_auto_reload(self.env)
@@ -242,6 +290,37 @@ def render_template(template_name: str, **context: Any) -> str:
             "`app._templates` — assign one after construction."
         )
     return templates.render(template_name, context)
+
+
+def stream_template(template_name: str, **context: Any) -> Any:
+    """Stream a named template against the current app, chunk by chunk.
+
+    Mirrors `render_template` but returns an iterator of `str` chunks
+    (Jinja's `template.generate(...)`) instead of a single string, so a
+    large response body is produced lazily. Pulls the `Jinja2Templates`
+    instance off `current_app._templates`; raises `RuntimeError` outside
+    a request / app context. Wrap the result in a `StreamingResponse` to
+    return it from a handler::
+
+        from veloce import StreamingResponse, stream_template
+
+        @app.get("/big")
+        async def big(request):
+            return StreamingResponse(stream_template("big.html", rows=rows))
+    """
+    app = _current_app_var.get()
+    if app is None:
+        raise RuntimeError(
+            "stream_template requires an active application context "
+            "(use it inside a request handler or `app.app_context()`)."
+        )
+    templates = getattr(app, "_templates", None)
+    if templates is None:
+        raise RuntimeError(
+            "stream_template requires a Jinja2Templates instance on "
+            "`app._templates` — assign one after construction."
+        )
+    return templates.stream(template_name, context)
 
 
 def render_template_string(source: str, **context: Any) -> str:
