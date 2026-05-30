@@ -36,7 +36,7 @@ def _get_db() -> dict[str, str]:
     return {"conn": "ok"}
 
 
-def build_apps() -> dict[str, tuple[Veloce, "callable"]]:
+def build_apps() -> dict[str, tuple[Veloce, callable]]:
     apps: dict[str, tuple[Veloce, callable]] = {}
 
     # (a) trivial request-only handler
