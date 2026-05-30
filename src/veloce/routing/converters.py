@@ -300,17 +300,29 @@ def _looks_like_regex(conv: str) -> bool:
 
 
 def _validate_bare_word_spec(spec: str | None) -> None:
-    """Raise for a bare-word converter name the converter set does not know.
+    """Raise for a bare-word converter spec a regex-forced segment cannot honour.
 
     A regex-forced segment may still carry a bare-identifier converter spec
-    (`/v{version:bogus}/api`). That is an unknown-converter typo, not a raw
-    regex, so it must raise the same `ValueError` at registration the radix
-    path raises via `parse_converter` — never silently become literal regex.
+    (`/v{version:bogus}/api`). Two cases must raise at registration rather than
+    silently miscompile into literal regex:
+
+    - an unknown-converter typo (`{version:bogus}`) — the same `ValueError`
+      the radix path raises via `parse_converter`.
+    - a registered custom converter (`{name:slug}`) — its `match()` has no
+      regex representation, so `build_route_regex` cannot express it. Emitting
+      `(?P<name>slug)` would match the literal text "slug" instead of the
+      converter's semantics. Built-in converters and `any(...)` are exempt:
+      `build_route_regex` translates those to real patterns.
     """
     if not spec:
         return
     if _looks_like_regex(spec):
         return
+    if spec in _CUSTOM:
+        raise ValueError(
+            f"custom converter {spec!r} cannot be used in a regex-routed path "
+            "segment; it has no regex representation"
+        )
     if not _is_tree_expressible_spec(spec):
         raise ValueError(f"unknown path converter: {spec!r}")
 
@@ -326,8 +338,11 @@ def is_regex_path(path: str) -> bool:
     the tree only accepts `:path` as the final segment.
 
     A segment that forces regex routing still has each of its bare-word
-    converter specs validated: an unknown name like `{version:bogus}` raises
-    `ValueError` here rather than slipping through as literal regex.
+    converter specs validated: an unknown name like `{version:bogus}` or a
+    registered custom converter like `{name:slug}` raises `ValueError` here
+    rather than slipping through as literal regex. Custom converters have no
+    regex representation, so they are rejected in regex-forced segments rather
+    than miscompiled.
     """
     segments = [s for s in path.split("/") if s]
     total = len(segments)
@@ -366,16 +381,16 @@ def extract_regex_converters(path: str) -> dict[str, _Converter]:
     converter and are omitted — their matched groups stay as strings. Built-in
     specs (`int`, `float`, `uuid`, `path`, `any(...)`) map to the converter the
     radix tree would apply, so `_match_regex` can coerce matched groups to the
-    same Python types the tree produces.
+    same Python types the tree produces. Custom converters never reach here:
+    `is_regex_path` rejects them in regex-forced segments because they have no
+    regex representation.
     """
     converters: dict[str, _Converter] = {}
     for ph in _iter_placeholders(path):
         spec = ph.spec
         if not spec:
             continue
-        is_named = (
-            spec in _BUILTIN or spec in _CUSTOM or (spec.startswith("any(") and spec.endswith(")"))
-        )
+        is_named = spec in _BUILTIN or (spec.startswith("any(") and spec.endswith(")"))
         if is_named:
             converters[ph.name] = parse_converter(spec)
     return converters

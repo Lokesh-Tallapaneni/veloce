@@ -69,6 +69,14 @@ longer scale memory with body size.
   regex and matched the text `bogus`. Such specs are now validated against the
   converter set and raise `unknown path converter` at registration, the same as
   whole-segment placeholders.
+- **Hybrid router: registered custom converters in regex-routed segments now
+  raise at registration.** A custom converter — `register_converter("slug", …)`
+  — used in a segment that forces regex routing (`/v{name:slug}/api`) previously
+  miscompiled into a regex matching the literal text `slug`, so `/vslug/api`
+  matched while `/vabc/api` did not. A custom converter's `match()` has no regex
+  representation, so such routes now raise at registration instead of silently
+  misbehaving. Custom converters spanning a whole segment (`/posts/{name:slug}`)
+  remain radix routes and are unaffected.
 - **Hybrid router: regex-route parameters are now coerced like radix-route
   parameters.** A built-in converter on a regex route (`/v{n:int}/x`,
   `:float`, `:uuid`, `:any(...)`) now yields the coerced Python value (e.g.
