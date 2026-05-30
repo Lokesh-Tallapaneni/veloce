@@ -187,18 +187,30 @@ def test_router_typed_vs_string_routes_coexist():
     assert m.path_params["name"] == "alice"
 
 
-def test_non_builtin_converter_is_treated_as_raw_regex():
-    # A converter spec outside the built-in set is taken verbatim as a regex
-    # pattern (the hybrid router's raw-regex form), so `{id:bogus}` becomes a
-    # named group matching the literal text `bogus` rather than raising.
+def test_unknown_bareword_converter_raises_at_registration():
+    # A bare-word converter spec outside the built-in set (a likely typo, e.g.
+    # `{id:bogus}`) still fails loudly at registration rather than silently
+    # becoming a literal-match route. Only a spec that looks like a regex
+    # (`{id:[0-9]+}`) is taken as a raw-regex converter.
     r = Router()
 
-    @r.get("/x/{id:bogus}")
+    with pytest.raises(ValueError):
+
+        @r.get("/x/{id:bogus}")
+        async def h(id):
+            return id
+
+
+def test_raw_regex_converter_is_supported():
+    # A spec carrying regex metacharacters is taken verbatim as the pattern.
+    r = Router()
+
+    @r.get("/x/{id:[0-9]+}")
     async def h(id):
         return id
 
-    assert r.match("GET", "/x/bogus") is not None
-    assert r.match("GET", "/x/other") is None
+    assert r.match("GET", "/x/42") is not None
+    assert r.match("GET", "/x/abc") is None
 
 
 def test_invalid_raw_regex_pattern_raises_at_registration():

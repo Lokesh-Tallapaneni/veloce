@@ -242,6 +242,16 @@ def _is_tree_expressible_spec(spec: str) -> bool:
     return spec in _TREE_EXPRESSIBLE or spec in _CUSTOM
 
 
+# A bare-identifier spec (`{id:bogus}`) is an unknown-converter typo, not a raw
+# regex; only a spec carrying regex metacharacters is treated as a regex route.
+_BARE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _looks_like_regex(conv: str) -> bool:
+    """Return True when `conv` is a raw regex rather than a converter name."""
+    return _BARE_IDENT_RE.match(conv) is None
+
+
 def is_regex_path(path: str) -> bool:
     """Decide whether `path` must use the regex fallback rather than the tree.
 
@@ -267,7 +277,10 @@ def is_regex_path(path: str) -> bool:
         spec = whole.group(1)
         _, _, conv = spec.partition(":")
         has_conv = ":" in spec
-        if has_conv and not _is_tree_expressible_spec(conv):
+        if has_conv and not _is_tree_expressible_spec(conv) and _looks_like_regex(conv):
+            # Raw regex converter (`{id:[0-9]+}`). A bare-word unknown spec
+            # (`{id:bogus}`) falls through to the tree, where parse_converter
+            # raises a clear "unknown path converter" at registration.
             return True
         if conv == "path" and idx != total - 1:
             return True
