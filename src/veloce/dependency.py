@@ -317,8 +317,10 @@ class DependencyResolver:
         """Fast path — consume a pre-built `HandlerPlan`."""
         # Param-only plans (request + scalar path/query, no route deps) resolve
         # through a straight-line function generated once at registration. It
-        # touches no cache, teardown stack, or scope stack, so `reset()` and the
-        # interpreter loop are both skipped.
+        # reads no cache, teardown stack, or scope stack, so `reset()` and the
+        # interpreter loop are both skipped. Safe regardless of resolver reuse:
+        # the dispatcher builds a fresh DependencyResolver per request, so there
+        # is no prior-request state to clear here in the first place.
         if not route_dep_plans:
             cr = plan.compiled_resolver
             if cr is None:

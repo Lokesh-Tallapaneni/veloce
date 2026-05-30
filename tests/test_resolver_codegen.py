@@ -13,6 +13,40 @@ def _compile(handler):
     return compile_param_resolver(build_plan(handler), _coerce_value, RequestValidationError)
 
 
+def _q_errors(resp):
+    # The validation-error detail entries that concern the `q` parameter.
+    return [e for e in resp.json()["detail"] if "q" in (e.get("loc") or [])]
+
+
+def test_422_payload_parity_compiled_vs_interpreter():
+    # Same missing/invalid `q` semantics on a compiled handler (params only)
+    # and an interpreter handler (a Depends forces the fallback). The 422
+    # bodies for `q` must be identical so error shapes do not drift between
+    # the two code paths on the same app.
+    def _dep():
+        return 1
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/compiled")
+    async def compiled(q: int):
+        return {"q": q}
+
+    @app.get("/interp")
+    async def interp(q: int, _d: int = Depends(_dep)):
+        return {"q": q}
+
+    client = TestClient(app)
+    # Both paths must actually be what we think they are.
+    assert _compile(compiled) is not None  # compiled path
+    assert _compile(interp) is None  # falls back to interpreter
+
+    # Missing required.
+    assert _q_errors(client.get("/compiled")) == _q_errors(client.get("/interp"))
+    # Invalid coercion.
+    assert _q_errors(client.get("/compiled?q=x")) == _q_errors(client.get("/interp?q=x"))
+
+
 def test_compiles_request_only_handler():
     async def h(request):
         return None
