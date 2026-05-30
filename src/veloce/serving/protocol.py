@@ -162,7 +162,10 @@ class HttpProtocol(asyncio.Protocol):
         # we never invite a body we are about to refuse. RFC 9110 section
         # 10.1.1 forbids the interim to an HTTP/1.0 client, so it is gated on
         # the request being HTTP/1.1.
-        if self._wants_continue():
+        # `transport` is already non-None here (guarded at method entry, and
+        # this is a synchronous callback with no await in between), but the
+        # explicit check keeps every transport.write site uniformly guarded.
+        if self._wants_continue() and self.transport is not None:
             self.transport.write(b"HTTP/1.1 100 Continue\r\n\r\n")
 
         keep_alive = self.parser.should_keep_alive()
