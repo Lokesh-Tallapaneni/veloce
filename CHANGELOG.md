@@ -104,14 +104,19 @@ longer scale memory with body size.
   `Form()` fields now match what the request resolver can actually deliver.
   These values arrive over the wire as raw strings, so a parameter annotated
   with a Pydantic model — or a `list`/`dict`/`set` of one — documents
-  `{"type": "string"}` for the model rather than a `$ref`/object schema, and a
-  multi-member union (`int | str`, `Optional[int | str]`) documents
-  `{"type": "string"}` rather than `anyOf`. Emitting the richer schemas
-  advertised contracts the framework could not honour: a value matching the
-  documented `$ref` or non-string `anyOf` branch was rejected with a 422,
-  because no wire-format parsing exists to populate a model or hit a non-string
-  union branch from string input. Pydantic models belong in `requestBody`,
-  where they are still resolved to a `$ref` against the JSON body.
+  `{"type": "string"}` rather than a `$ref`/object schema, and the resolver
+  now parses that string as a JSON document into the model
+  (`?tag={"name":"x"}` for `tag: Tag = Query()`, repeated JSON-object values
+  for `tags: list[Tag] = Form()`), so a value matching the documented string
+  schema resolves rather than returning a 422. A multi-member union is
+  documented by the branch a string value can actually reach under Pydantic's
+  smart coercion: a union that includes `str` (`int | str`,
+  `Optional[int | str]`) documents `{"type": "string"}`, since string input
+  always lands on the `str` member; a union with no string-accepting member
+  (`int | float`, `UUID | int`, `date | datetime`) documents an `anyOf` over
+  its members, since the resolver genuinely resolves the string to one of
+  those typed branches. Pydantic models carried as a structured JSON body
+  belong in `requestBody`, where they are still resolved to a `$ref`.
 - **Hybrid router: unknown converters in regex-routed paths now raise at
   registration.** A bare-word converter typo in a path that forces regex
   routing — `/v{version:bogus}/api`, or in a later segment such as

@@ -498,18 +498,23 @@ def _python_type_to_schema(annotation: Any) -> dict:
     keep their `format` / `enum` keywords. A nullable scalar
     (`Optional[T]`) unwraps to the inner schema.
 
-    Two cases intentionally collapse to `{"type": "string"}` because no
-    wire-format parsing exists to populate them from a raw string:
+    Pydantic models — and models nested inside `list` / `set` / `dict` —
+    keep `{"type": "string"}`: the value arrives as a raw string and the
+    resolver parses that string as a JSON document into the model
+    (`?tag={"name":"x"}`), so the wire shape is genuinely a string.
 
-    - Pydantic models (and models nested inside `list` / `set` / `dict`):
-      the resolver hands the model adapter a string, which 422s. Emitting
-      a `$ref`/object schema would document a contract the framework
-      cannot honour.
-    - Multi-member unions (`int | str`, `int | str | None`): every wire
-      value is a string, so the resolver's union adapter resolves to the
-      `str` member (or the single reachable branch). Documenting an
-      `anyOf` over `integer`/`string` advertises branches HTTP input
-      cannot reach.
+    Multi-member unions are schema'd by which branches a *string* input
+    can actually reach under Pydantic's smart coercion:
+
+    - A union that includes `str` (`int | str`, `int | str | None`)
+      collapses to `{"type": "string"}`: smart-mode coercion keeps a
+      string value as the `str` member, so that is the only reachable
+      branch.
+    - A union with no string-accepting member (`int | float`,
+      `UUID | int`, `date | datetime`) emits an `anyOf` over the members'
+      schemas: the resolver feeds the string to Pydantic, which resolves
+      it to whichever non-string branch matches, so several branches are
+      genuinely reachable.
     """
     if annotation is None or annotation is inspect.Parameter.empty:
         return {"type": "string"}
@@ -521,16 +526,23 @@ def _python_type_to_schema(annotation: Any) -> dict:
 
     origin = get_origin(annotation)
     # Unwrap `Optional[T]` / `T | None` to the inner type so a nullable
-    # rich-typed parameter still emits its `format` / `enum` keywords. A
-    # genuine multi-member union collapses to `string`: every wire value
-    # is a string and the resolver's union coercion lands on the `str`
-    # member, so an `anyOf` would document unreachable branches.
+    # rich-typed parameter still emits its `format` / `enum` keywords.
+    #
+    # For a genuine multi-member union the schema follows which branch a
+    # string wire value can reach under Pydantic's smart coercion. If the
+    # union accepts a string directly (a `str` / `bytes` member), the value
+    # always lands on that branch, so the union collapses to `string`. With
+    # no string-accepting member, Pydantic resolves the string to one of
+    # the typed branches (`int | float`, `UUID | int`, …), so each member's
+    # schema is genuinely reachable and the union emits an `anyOf`.
     if origin is Union or origin is _types.UnionType:
         members = get_args(annotation)
         inner = [a for a in members if a is not type(None)]
         if len(inner) == 1:
             return _python_type_to_schema(inner[0])
-        return {"type": "string"}
+        if any(m is str or m is bytes for m in inner):
+            return {"type": "string"}
+        return {"anyOf": [_python_type_to_schema(m) for m in inner]}
 
     # Parametrised `list[T]` / `set[T]` → an array schema with typed items.
     if origin in (list, set, tuple):
@@ -574,11 +586,11 @@ def _python_type_to_schema(annotation: Any) -> dict:
     if isinstance(annotation, type) and issubclass(annotation, _enum.Enum):
         return _literal_enum_schema([member.value for member in annotation])
 
-    # Pydantic model → `string`. A non-body parameter / form field is
-    # resolved from a raw string; the resolver cannot build the model
-    # from it, so a `$ref`/object schema would document an unreachable
-    # contract. Models belong in `requestBody`, handled by
-    # `_pydantic_to_schema` against the JSON body.
+    # Pydantic model → `string`. A non-body parameter / form field arrives
+    # as a raw string; the resolver parses that string as a JSON document
+    # and validates it into the model (`?tag={"name":"x"}`), so the wire
+    # shape is a string. A model carried as a structured JSON body belongs
+    # in `requestBody`, handled by `_pydantic_to_schema`.
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return {"type": "string"}
 

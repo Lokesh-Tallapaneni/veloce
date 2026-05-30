@@ -17,7 +17,7 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Any, Literal, get_args, get_origin
 
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from veloce._handler_plan import (
@@ -155,6 +155,11 @@ def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> 
     )
 
 
+def _is_model_typed(target_type: Any) -> bool:
+    """Return True for a Pydantic ``BaseModel`` subclass annotation."""
+    return isinstance(target_type, type) and issubclass(target_type, BaseModel)
+
+
 def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
     """Validate and coerce a request value through Pydantic.
 
@@ -176,6 +181,13 @@ def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str
     if adapter is None:
         return value
     try:
+        # A model-typed non-body / form param arrives as a raw string that
+        # the caller has serialised as a JSON document (`?tag={"name":"x"}`).
+        # `validate_python` would reject the string with a `model_type`
+        # error, so parse the JSON form into the model instead. Scalars and
+        # already-structured values keep `validate_python`.
+        if isinstance(value, str) and _is_model_typed(target_type):
+            return adapter.validate_json(value)
         return adapter.validate_python(value)
     except PydanticValidationError as err:
         raise RequestValidationError(
@@ -362,9 +374,7 @@ class DependencyResolver:
             for slot in route_dep_plans:
                 await self._exec_depends(slot, websocket, path_params)
 
-        return await self._resolve_slots(
-            plan.slots, websocket, path_params, plan.parallel_groups
-        )
+        return await self._resolve_slots(plan.slots, websocket, path_params, plan.parallel_groups)
 
     async def run_teardowns(self, exc: BaseException | None = None) -> None:
         """Run yield-dependency teardowns in reverse registration order.
