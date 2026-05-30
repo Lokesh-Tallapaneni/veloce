@@ -19,7 +19,8 @@ import time
 
 import pytest
 
-from veloce import Depends, Veloce
+from veloce import Depends, Security, Veloce
+from veloce._handler_plan import build_plan, compute_parallel_groups
 from veloce.testclient import TestClient
 
 
@@ -196,8 +197,6 @@ async def test_group_end_helper_refuses_nested_security():
 
 
 # ── Precomputed parallel grouping (registration-time) ──────────────────
-
-from veloce._handler_plan import compute_parallel_groups  # noqa: E402
 
 
 def test_independent_deps_are_grouped():
