@@ -29,8 +29,21 @@ depend on it.
 
 The development server **does** apply a slowloris guard — once a
 request's bytes start arriving, the whole request must complete within
-`HttpProtocol.REQUEST_TIMEOUT` seconds (default 30) or the connection is
-dropped with `408` — and an idle keep-alive timeout.
+`REQUEST_TIMEOUT` seconds (default 30) or the connection is dropped with
+`408` — and an idle keep-alive timeout that closes a connection after
+`KEEP_ALIVE_TIMEOUT` seconds (default 75) with no request.
+
+Both timeouts are tunable through `app.config`; the values above are the
+defaults (the same numbers are exposed as the `HttpProtocol.REQUEST_TIMEOUT`
+and `HttpProtocol.KEEP_ALIVE_TIMEOUT` class attributes):
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+app.config["REQUEST_TIMEOUT"] = 15     # drop a half-sent request after 15s
+app.config["KEEP_ALIVE_TIMEOUT"] = 30  # close an idle connection after 30s
+```
 
 It serves **HTTP/1.1 only** — it performs no WebSocket upgrade
 handshake and does not implement HTTP/2. Run WebSocket routes and

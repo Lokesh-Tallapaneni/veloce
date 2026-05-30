@@ -13,6 +13,19 @@ body in memory before dispatch. Peak per-connection body memory is now the
 queue bound rather than the full upload, so many concurrent large uploads no
 longer scale memory with body size.
 
+### Added
+
+- The built-in HTTP/1.1 server's keep-alive and slowloris read timeouts are
+  now configurable through `app.config`: `KEEP_ALIVE_TIMEOUT` (idle-connection
+  timeout) and `REQUEST_TIMEOUT` (per-request read budget). Defaults are
+  unchanged at 75 and 30 seconds respectively.
+- The built-in HTTP/1.1 server now honours `Expect: 100-continue`: a request
+  carrying that header is answered with an interim `100 Continue` once its
+  headers are parsed, clearing the client to send the body. The interim is
+  suppressed for HTTP/1.0 clients and when the declared `Content-Length`
+  already exceeds `MAX_CONTENT_LENGTH` (the request is rejected with `413`
+  instead).
+
 ### Changed
 
 - Parameter-only handlers (the request plus scalar path/query parameters, with
