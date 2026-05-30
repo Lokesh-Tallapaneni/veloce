@@ -64,8 +64,8 @@ all = ["websockets>=12"]
 veloce = "veloce.cli:main"
 
 [project.urls]
-Homepage = "https://veloceframework.com"
-Documentation = "https://veloceframework.com"
+Homepage = "https://github.com/Lokesh-Tallapaneni/veloce"
+Documentation = "https://github.com/Lokesh-Tallapaneni/veloce"
 Source = "https://github.com/Lokesh-Tallapaneni/veloce"
 Issues = "https://github.com/Lokesh-Tallapaneni/veloce/issues"
 Changelog = "https://github.com/Lokesh-Tallapaneni/veloce/blob/main/CHANGELOG.md"
