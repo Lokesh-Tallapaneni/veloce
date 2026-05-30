@@ -365,3 +365,33 @@ class TestRegexEndToEnd:
             resp2 = client.get("/v3/ping")
             assert resp2.status_code == 200
             assert resp2.json() == {"version": "3"}
+
+
+def test_regex_route_router_dependency_runs_exactly_once_after_include():
+    """A regex route's router-level dependency must run once per request, not
+    twice, after the sub-router is included into a parent — confirming
+    `_merge_regex_routes` does not double-apply dependencies."""
+    from veloce import Depends, TestClient
+    from veloce.routing.router import Router
+
+    calls = {"sub": 0, "parent": 0}
+
+    def sub_dep():
+        calls["sub"] += 1
+
+    def parent_dep():
+        calls["parent"] += 1
+
+    sub = Router(dependencies=[Depends(sub_dep)])
+
+    @sub.get("/items/{id:[0-9]+}")
+    async def get_item(id):
+        return {"id": id}
+
+    app = Veloce(openapi_url=None, dependencies=[Depends(parent_dep)])
+    app.include_router(sub)
+
+    resp = TestClient(app).get("/items/5")
+    assert resp.status_code == 200
+    assert calls["sub"] == 1, f"sub dep ran {calls['sub']} times, expected exactly 1"
+    assert calls["parent"] == 1, f"parent dep ran {calls['parent']} times, expected exactly 1"
