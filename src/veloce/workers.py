@@ -92,6 +92,25 @@ class VeloceWorker(_GunicornWorker):
         super().__init__(*args, **kwargs)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: asyncio.AbstractServer | None = None
+        # Set when gunicorn asks the worker to stop, so the serve loop reacts
+        # immediately instead of waiting out its heartbeat sleep.
+        self._stop = asyncio.Event()
+
+    def _request_stop(self) -> None:
+        """Wake the serve loop from gunicorn's signal handler thread."""
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._stop.set)
+
+    def handle_exit(self, sig: Any, frame: Any) -> None:
+        # SIGTERM/SIGINT: gunicorn clears self.alive; wake the loop too so the
+        # worker stops within a scheduler tick rather than up to a heartbeat.
+        self._request_stop()
+        super().handle_exit(sig, frame)
+
+    def handle_quit(self, sig: Any, frame: Any) -> None:
+        self._request_stop()
+        super().handle_quit(sig, frame)
 
     def init_process(self) -> None:
         """Set up a fresh event loop, then hand control to the base class.
@@ -147,6 +166,11 @@ class VeloceWorker(_GunicornWorker):
         # gunicorn already created and bound the sockets in the master; reuse
         # them rather than binding fresh ones so all workers share one accept
         # queue. `sock=` takes the existing socket(s) directly.
+        if not self.sockets:
+            raise RuntimeError(
+                "VeloceWorker received no listening sockets from gunicorn; "
+                "ensure a bind address is configured (e.g. gunicorn --bind)."
+            )
         raw_socks = [gsock.sock for gsock in self.sockets]
         self._server = await loop.create_server(factory, sock=raw_socks[0])
         # A worker may be handed more than one bound socket (multiple binds).
@@ -162,7 +186,17 @@ class VeloceWorker(_GunicornWorker):
         try:
             while self.alive:
                 self.notify()
-                await asyncio.sleep(notify_interval)
+                try:
+                    # Wait for a stop signal, but wake at least every
+                    # notify_interval to ping gunicorn's heartbeat. If the
+                    # stop event fires (SIGTERM/SIGQUIT) the wait returns at
+                    # once; if the signal hook is ever missed, the timeout
+                    # still re-checks self.alive — so this never reacts slower
+                    # than the previous fixed-sleep loop.
+                    await asyncio.wait_for(self._stop.wait(), timeout=notify_interval)
+                except asyncio.TimeoutError:
+                    continue
+                break
         finally:
             self._server.close()
             for server in extra_servers:

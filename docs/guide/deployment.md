@@ -110,6 +110,16 @@ rate-limit buckets, caches, and `app.state` mutations are per-worker.
 This path serves **HTTP/1.1 only**, exactly like the built-in development
 server — WebSocket and HTTP/2 workloads still belong under uvicorn.
 
+!!! warning "Experimental — validate before production use"
+    `VeloceWorker` is shipped as an opt-in scaffold. It is developed and
+    unit-tested on a non-POSIX box where gunicorn cannot run, so the
+    gunicorn integration has **not yet been exercised end-to-end**. Before
+    relying on it in production, validate on a POSIX host with gunicorn
+    installed: worker boot (`init_process` → `run`), socket binding and
+    request serving under load, heartbeat (`notify`) cadence within
+    `--timeout`, and prompt graceful shutdown on `SIGTERM`. Until then,
+    **uvicorn is the only path recommended for production.**
+
 ## Security considerations
 
 ### Hardening checklist
