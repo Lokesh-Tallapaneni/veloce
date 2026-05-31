@@ -23,12 +23,6 @@ class _APIKeyBase:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        # A slotted base silently grows a per-instance __dict__ if a subclass
-        # omits __slots__, undoing the memory win — fail loudly instead.
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(
-                f"{cls.__name__} must define __slots__ (use __slots__ = () if no new fields needed)"
-            )
         if not cls._source_attr:
             raise TypeError(f"{cls.__name__} must set _source_attr to a Request attribute name")
 

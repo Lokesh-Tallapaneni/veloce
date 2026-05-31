@@ -51,15 +51,6 @@ class ParamBase:
         "include_in_schema",
     )
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        # Markers are slotless semantic tags; without `__slots__ = ()` each
-        # instance silently gains a `__dict__`, negating the base's layout.
-        super().__init_subclass__(**kwargs)
-        if "__slots__" not in cls.__dict__:
-            raise TypeError(
-                f"{cls.__name__} must define __slots__ (use __slots__ = () if no new fields needed)"
-            )
-
     def __init__(
         self,
         default: Any = ...,
