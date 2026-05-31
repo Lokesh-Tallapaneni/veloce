@@ -39,13 +39,22 @@ longer scale memory with body size.
   wall-clock instant captured the moment dispatch returned (before any other
   instrumentation hook or `request_finished` receiver runs, so a slow earlier
   hook cannot shift it) and its `start_time` is that end minus the measured
-  duration, so the exported span covers the real request window. It is created in
-  a fresh, empty context — never the ambient OpenTelemetry context active when
-  the hook fires — so it is always a clean server root span.
+  duration, so the exported span covers the real request window. It continues an
+  inbound **W3C distributed trace**: a `before_request` hook extracts
+  `traceparent` / `tracestate` from the request headers, so a request arriving
+  with an upstream trace joins it (same `trace_id`, parented under the caller's
+  span); absent those headers the span is a clean root. It is never parented
+  under the ambient OpenTelemetry context active when the hook fires. This is a
+  *server-span* bridge — it continues inbound traces and emits one span per
+  request, but does not inject context into outbound calls or wrap handler
+  execution for child spans, and (as above) does not trace streamed response
+  bodies.
 - `RequestMetrics` now carries a `streamed` flag (set when the response body is a
-  streaming iterator) and an `end_time_ns` field (the wall-clock end captured
-  before any hook runs). Instrumentation hooks that need accurate end-of-request
-  timing can skip streamed records and anchor timing to `end_time_ns`.
+  streaming iterator), an `end_time_ns` field (the wall-clock end captured
+  before any hook runs), and an opaque `parent_context` (an inbound trace
+  context a tracing bridge may stash; the core never interprets it).
+  Instrumentation hooks that need accurate end-of-request timing can skip
+  streamed records and anchor timing to `end_time_ns`.
 - The built-in HTTP/1.1 server's keep-alive and slowloris read timeouts are
   now configurable through `app.config`: `KEEP_ALIVE_TIMEOUT` (idle-connection
   timeout) and `REQUEST_TIMEOUT` (per-request read budget). Defaults are

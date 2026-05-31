@@ -36,10 +36,23 @@ than the instant this bridge's own hook executes. Because the span is created
 after the fact, it is rooted
 in a fresh, empty context — never the ambient OpenTelemetry context active at
 emission time — so it is always a clean server-root span and never accidentally
-parents itself under unrelated work running on the same task. For live,
-nested per-request causal context propagation you would integrate at the ASGI
-layer instead; this bridge is for backend-agnostic request spans driven off the
-same low-cardinality dimensions a metrics exporter consumes.
+parents itself under unrelated work running on the same task.
+
+**Distributed-trace continuation.** The bridge registers a ``before_request``
+hook that extracts any inbound W3C trace context (``traceparent`` /
+``tracestate``) from the request headers via
+``TraceContextTextMapPropagator`` and stashes it on the request; the emitted
+span is then parented under that context, so a request arriving with an
+upstream trace joins it (same ``trace_id``, parented under the caller's span)
+rather than starting a disconnected root. A request with no trace headers
+yields an empty context and the span is a clean root, as before.
+
+**Scope.** This is a *server-span* bridge: it continues an inbound trace and
+emits one server span per request, but it does not inject context into
+*outbound* calls your handler makes, nor does it open a live span that wraps
+handler execution for fine-grained child spans — for that you would instrument
+at the call site / ASGI layer. The span is driven off the same low-cardinality
+dimensions a metrics exporter consumes.
 
 **Streamed response bodies are not traced.** For a streaming body
 (:class:`~veloce.http.response.StreamingResponse`,
@@ -71,7 +84,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from veloce.app import Veloce
@@ -86,12 +99,19 @@ if TYPE_CHECKING:
 try:
     from opentelemetry import trace as _otel_trace
     from opentelemetry.context import Context as _OtelContext
+    from opentelemetry.trace.propagation.tracecontext import (
+        TraceContextTextMapPropagator as _W3CPropagator,
+    )
 
     _OTEL_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover - exercised only without opentelemetry
     _otel_trace = None  # type: ignore[assignment]
     _OtelContext = None  # type: ignore[assignment,misc]
+    _W3CPropagator = None  # type: ignore[assignment,misc]
     _OTEL_IMPORT_ERROR = exc
+
+# Per-request stash key for the extracted inbound trace context.
+_OTEL_PARENT_CONTEXT_KEY = "_otel_parent_context"
 
 
 _INSTALL_HINT = (
@@ -132,12 +152,17 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
     :meth:`Veloce.add_instrumentation` returns), so callers can hold a reference
     to it for tests or introspection.
 
+    Also registers a ``before_request`` hook that extracts an inbound W3C trace
+    context (``traceparent`` / ``tracestate``) from the request headers, so the
+    emitted span continues an upstream distributed trace when one is present;
+    absent those headers the span is a clean root.
+
     The span is recorded retroactively from the request's metrics record, not
     as a live wrap of handler execution, but it is backdated: ``start_time`` and
     ``end_time`` are set from the measured duration so the exported span covers
-    the real request window. It is created in a fresh, empty context so it is
-    always a clean server root, never parented under the ambient OpenTelemetry
-    context that happens to be active when the hook fires.
+    the real request window. It is parented under the extracted inbound context
+    (or a fresh empty one), never the ambient OpenTelemetry context active when
+    the hook fires.
     """
     if _OTEL_IMPORT_ERROR is not None:
         raise ImportError(_INSTALL_HINT) from _OTEL_IMPORT_ERROR
@@ -146,6 +171,19 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
     SpanKind = _otel_trace.SpanKind
     StatusCode = _otel_trace.StatusCode
     Status = _otel_trace.Status
+    propagator = _W3CPropagator()
+
+    def _extract_parent_context(request: Any) -> None:
+        # Extract any inbound W3C trace context (`traceparent` / `tracestate`)
+        # from the request headers and stash it on the request, so the span
+        # emitted after dispatch can parent under the upstream trace instead
+        # of starting a fresh root. Runs as a before_request hook (registered
+        # below). A request with no trace headers yields an empty context, so
+        # the span falls back to a clean root exactly as before.
+        carrier = {k.lower(): v for k, v in request.headers.items()}
+        request._state[_OTEL_PARENT_CONTEXT_KEY] = propagator.extract(carrier)
+
+    app.before_request(_extract_parent_context)
 
     def _emit_span(metrics: RequestMetrics) -> None:
         # Streamed bodies are sent after this hook fires, so the metrics record
@@ -173,11 +211,15 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
         # OpenTelemetry timestamps are integer nanoseconds.
         end_time = metrics.end_time_ns if metrics.end_time_ns is not None else time.time_ns()
         start_time = end_time - int(metrics.duration_ms * 1_000_000)
-        # Root the span in an empty context, not the ambient one: a retroactive
-        # request span must never inherit an unrelated active span as parent.
+        # Parent the span under the inbound W3C trace context extracted from
+        # the request headers (so a distributed trace is continued), if any;
+        # otherwise root it in a fresh empty context. Either way, never the
+        # ambient context active when this retroactive hook fires — that would
+        # parent the request span under unrelated work on the same task.
+        parent = metrics.parent_context if metrics.parent_context is not None else _OtelContext()
         span = tracer.start_span(
             span_name,
-            context=_OtelContext(),
+            context=cast("_OtelContext", parent),
             kind=SpanKind.SERVER,
             start_time=start_time,
         )

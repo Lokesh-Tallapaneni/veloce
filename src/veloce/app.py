@@ -2741,6 +2741,10 @@ class Veloce(Router):
             duration_ms=duration_ms,
             streamed=streamed,
             end_time_ns=end_time_ns,
+            # A tracing bridge may stash an extracted inbound trace context on
+            # the request (e.g. veloce.otel's before_request hook); pass it
+            # through so the bridge can parent its span. `None` otherwise.
+            parent_context=request._state.get("_otel_parent_context"),
         )
         for hook in self._instrumentation:
             try:

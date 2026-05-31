@@ -519,3 +519,42 @@ def test_streaming_get_is_not_traced() -> None:
     instrument_with_otel(app, tracer_provider=provider)
     app.test_client().get("/stream2")
     assert exporter.get_finished_spans() == ()
+
+
+def test_inbound_traceparent_continues_the_distributed_trace() -> None:
+    # W3C context propagation: a request carrying a `traceparent` header must
+    # produce a span that joins that trace — same trace_id, parented under the
+    # inbound span id — rather than starting a fresh root.
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, app = _exporter_and_app()
+
+    # A well-formed W3C traceparent: version-traceid-spanid-flags.
+    trace_id_hex = "0af7651916cd43dd8448eb211c80319c"
+    span_id_hex = "b7ad6b7169203331"
+    traceparent = f"00-{trace_id_hex}-{span_id_hex}-01"
+
+    app.test_client().get("/items/7", headers={"traceparent": traceparent})
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    # Same trace as the caller, and parented under the caller's span id.
+    assert format(span.context.trace_id, "032x") == trace_id_hex
+    assert span.parent is not None
+    assert format(span.parent.span_id, "016x") == span_id_hex
+
+
+def test_no_traceparent_starts_a_fresh_root_span() -> None:
+    # Without inbound trace headers the span is a clean root (no parent),
+    # exactly as before propagation was added.
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, app = _exporter_and_app()
+    app.test_client().get("/items/7")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].parent is None

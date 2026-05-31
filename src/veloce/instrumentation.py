@@ -45,6 +45,7 @@ class RequestMetrics:
         "duration_ms",
         "streamed",
         "end_time_ns",
+        "parent_context",
     )
 
     def __init__(
@@ -56,6 +57,7 @@ class RequestMetrics:
         duration_ms: float,
         streamed: bool = False,
         end_time_ns: int | None = None,
+        parent_context: object | None = None,
     ) -> None:
         self.method = method
         self.path = path
@@ -64,6 +66,11 @@ class RequestMetrics:
         self.duration_ms = duration_ms
         self.streamed = streamed
         self.end_time_ns = end_time_ns
+        # Opaque tracing context extracted from inbound headers by a tracing
+        # bridge (e.g. veloce.otel) so a span can parent under the upstream
+        # trace. `None` when no bridge populated it. The core never interprets
+        # this value — it is framework-agnostic.
+        self.parent_context = parent_context
 
     def __repr__(self) -> str:
         return (
