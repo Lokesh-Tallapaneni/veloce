@@ -8,6 +8,7 @@ import textwrap
 import pytest
 
 from veloce import __version__
+from veloce import cli as cli_module
 from veloce.cli import _apply_env_file, _load_app, build_parser, main
 
 
@@ -316,3 +317,151 @@ def test_custom_no_env_file_before_app():
     assert args.app == "demo:app"
     assert args.no_env_file is True
     assert args.cli_args == ["run"]
+
+
+# ── Entry-point plugin command discovery ──────────────────────────────
+
+
+class _FakeEntryPoint:
+    """Minimal stand-in for `importlib.metadata.EntryPoint`.
+
+    Only `name`, `value`, and `load()` are exercised by the discovery code.
+    """
+
+    def __init__(self, name, value, target):
+        self.name = name
+        self.value = value
+        self._target = target
+
+    def load(self):
+        if isinstance(self._target, Exception):
+            raise self._target
+        return self._target
+
+
+def _patch_entry_points(monkeypatch, entry_points):
+    """Make `_iter_command_entry_points` return `entry_points`."""
+    monkeypatch.setattr(
+        cli_module, "_iter_command_entry_points", lambda: list(entry_points)
+    )
+
+
+def test_plugin_command_is_registered(monkeypatch):
+    def register(sub):
+        p = sub.add_parser("deploy", help="Deploy the app.")
+        p.add_argument("target")
+        p.set_defaults(func=lambda args: 0)
+
+    _patch_entry_points(
+        monkeypatch, [_FakeEntryPoint("deploy", "mypkg.cli:register", register)]
+    )
+    parser = build_parser()
+    args = parser.parse_args(["deploy", "prod"])
+    assert args.command == "deploy"
+    assert args.target == "prod"
+    assert args.func(args) == 0
+
+
+def test_plugin_command_dispatches_through_main(monkeypatch):
+    calls = {}
+
+    def register(sub):
+        p = sub.add_parser("greet")
+        p.add_argument("who")
+        p.set_defaults(func=lambda args: calls.setdefault("who", args.who) and 0 or 7)
+
+    _patch_entry_points(
+        monkeypatch, [_FakeEntryPoint("greet", "mypkg.cli:register", register)]
+    )
+    rc = main(["greet", "world"])
+    assert rc == 7
+    assert calls["who"] == "world"
+
+
+def test_plugin_name_collision_with_builtin_is_skipped(monkeypatch):
+    def register(sub):
+        sub.add_parser("run")  # would clash with the built-in `run`
+
+    _patch_entry_points(
+        monkeypatch, [_FakeEntryPoint("run", "evil.cli:register", register)]
+    )
+    with pytest.warns(UserWarning, match="collides with an existing command"):
+        parser = build_parser()
+    # The built-in `run` survives intact — its own options are still present.
+    args = parser.parse_args(["run", "demo:app", "--port", "9001"])
+    assert args.command == "run"
+    assert args.port == 9001
+
+
+def test_plugin_load_failure_is_warned_and_skipped(monkeypatch):
+    _patch_entry_points(
+        monkeypatch,
+        [_FakeEntryPoint("broken", "missing.mod:reg", ImportError("no module named missing"))],
+    )
+    with pytest.warns(UserWarning, match="failed to load"):
+        parser = build_parser()
+    # Built-ins remain usable despite the broken plugin.
+    args = parser.parse_args(["routes", "demo:app"])
+    assert args.command == "routes"
+
+
+def test_plugin_non_callable_is_warned_and_skipped(monkeypatch):
+    _patch_entry_points(
+        monkeypatch, [_FakeEntryPoint("notfunc", "mypkg.cli:thing", object())]
+    )
+    with pytest.warns(UserWarning, match="is not callable"):
+        parser = build_parser()
+    args = parser.parse_args(["check", "demo:app"])
+    assert args.command == "check"
+
+
+def test_plugin_registration_error_is_warned_and_skipped(monkeypatch):
+    def register(sub):
+        raise RuntimeError("boom")
+
+    _patch_entry_points(
+        monkeypatch, [_FakeEntryPoint("bad", "mypkg.cli:register", register)]
+    )
+    with pytest.warns(UserWarning, match="raised while registering"):
+        parser = build_parser()
+    args = parser.parse_args(["shell", "demo:app"])
+    assert args.command == "shell"
+
+
+def test_two_plugins_with_same_name_keeps_first(monkeypatch):
+    def register_a(sub):
+        p = sub.add_parser("dup")
+        p.set_defaults(func=lambda args: "a")
+
+    def register_b(sub):
+        # Adding the same parser name twice would raise inside argparse; the
+        # discovery code must skip the duplicate before that happens.
+        p = sub.add_parser("dup")
+        p.set_defaults(func=lambda args: "b")
+
+    _patch_entry_points(
+        monkeypatch,
+        [
+            _FakeEntryPoint("dup", "pkg_a.cli:register", register_a),
+            _FakeEntryPoint("dup", "pkg_b.cli:register", register_b),
+        ],
+    )
+    with pytest.warns(UserWarning, match="collides with an existing command"):
+        parser = build_parser()
+    args = parser.parse_args(["dup"])
+    assert args.func(args) == "a"
+
+
+def test_no_plugins_installed_is_clean(monkeypatch):
+    _patch_entry_points(monkeypatch, [])
+    parser = build_parser()  # no warnings, no extra commands
+    args = parser.parse_args(["run", "demo:app"])
+    assert args.command == "run"
+
+
+def test_iter_command_entry_points_returns_list():
+    # Smoke test against the real importlib.metadata machinery — no veloce
+    # plugins are installed in the test env, so an empty list is expected,
+    # but the call must not raise and must return a list.
+    result = cli_module._iter_command_entry_points()
+    assert isinstance(result, list)

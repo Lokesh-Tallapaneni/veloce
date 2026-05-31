@@ -15,6 +15,20 @@ longer scale memory with body size.
 
 ### Added
 
+- **CLI plugin commands via entry points.** The `veloce` command now discovers
+  third-party subcommands advertised under the `veloce.commands` entry-point
+  group. A distribution exposes one with, in its `pyproject.toml`:
+
+  ```toml
+  [project.entry-points."veloce.commands"]
+  deploy = "mypkg.cli:register"
+  ```
+
+  where the target is a callable handed the argparse subparsers action to add
+  one subcommand. Plugins are isolated from the core: a plugin that fails to
+  import, does not resolve to a callable, raises while registering, or whose
+  name collides with a built-in (or another plugin) is reported with a warning
+  and skipped, so the built-in commands always remain usable.
 - The built-in HTTP/1.1 server's keep-alive and slowloris read timeouts are
   now configurable through `app.config`: `KEEP_ALIVE_TIMEOUT` (idle-connection
   timeout) and `REQUEST_TIMEOUT` (per-request read budget). Defaults are

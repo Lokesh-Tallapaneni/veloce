@@ -11,6 +11,9 @@ Two subcommands today:
 Built on `argparse` (stdlib) — keeps the dep surface small. The
 "module:attribute" reference syntax is the same one ASGI servers use,
 so the same string passed to `--app` works with `uvicorn` directly.
+
+Third-party packages can add their own subcommands by advertising a
+`veloce.commands` entry point; see `_load_plugin_commands`.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import importlib
 import importlib.metadata
 import os
 import sys
+import warnings
 from typing import Any
 
 from veloce.config import _parse_env_lines
@@ -27,6 +31,16 @@ from veloce.config import _parse_env_lines
 # Default dotenv filename auto-loaded by `run`/`shell`/`custom` when the
 # file exists in the CWD and `--no-env-file` was not passed.
 _DEFAULT_ENV_FILE = ".env"
+
+# Entry-point group third-party packages advertise CLI subcommands under.
+# A distribution exposes a plugin via, e.g. in its pyproject.toml::
+#
+#     [project.entry-points."veloce.commands"]
+#     deploy = "mypkg.cli:register"
+#
+# where `mypkg.cli:register` is a callable taking the argparse subparsers
+# action and adding one parser (with a `func` default) to it.
+_COMMAND_ENTRY_POINT_GROUP = "veloce.commands"
 
 
 def _resolve_version() -> str:
@@ -288,6 +302,70 @@ def _split_custom_argv(argv: list[str]) -> tuple[list[str], list[str] | None]:
     return head, tail
 
 
+def _iter_command_entry_points() -> list[importlib.metadata.EntryPoint]:
+    """Return the installed `veloce.commands` entry points (best effort).
+
+    `EntryPoints.select(group=...)` is the stable selection API on Python
+    3.10+. A broken metadata cache should not take the whole CLI down, so
+    any failure to enumerate is swallowed and reported as "no plugins".
+    """
+    try:
+        return list(importlib.metadata.entry_points().select(group=_COMMAND_ENTRY_POINT_GROUP))
+    except Exception:  # pragma: no cover — corrupt distribution metadata
+        return []
+
+
+def _load_plugin_commands(
+    sub: argparse._SubParsersAction[Any],
+    *,
+    reserved: frozenset[str],
+) -> None:
+    """Register third-party subcommands advertised via entry points.
+
+    Each `veloce.commands` entry point loads to a callable that is handed
+    the subparsers action and adds exactly one parser to it. Plugins are
+    isolated from the core: a plugin that fails to import, does not load to
+    a callable, raises while registering, or whose name collides with a
+    built-in (or an already-registered plugin) is warned about and skipped
+    so the built-in commands always remain usable.
+    """
+    seen: set[str] = set()
+    for ep in _iter_command_entry_points():
+        name = ep.name
+        if name in reserved or name in seen:
+            warnings.warn(
+                f"veloce CLI plugin {name!r} (from {ep.value!r}) collides with an existing "
+                "command; skipping.",
+                stacklevel=2,
+            )
+            continue
+        try:
+            register = ep.load()
+        except Exception as err:  # noqa: BLE001 — a bad plugin must not break the CLI
+            warnings.warn(
+                f"veloce CLI plugin {name!r} (from {ep.value!r}) failed to load: {err!r}; "
+                "skipping.",
+                stacklevel=2,
+            )
+            continue
+        if not callable(register):
+            warnings.warn(
+                f"veloce CLI plugin {name!r} (from {ep.value!r}) is not callable; skipping.",
+                stacklevel=2,
+            )
+            continue
+        try:
+            register(sub)
+        except Exception as err:  # noqa: BLE001 — a bad plugin must not break the CLI
+            warnings.warn(
+                f"veloce CLI plugin {name!r} (from {ep.value!r}) raised while registering: "
+                f"{err!r}; skipping.",
+                stacklevel=2,
+            )
+            continue
+        seen.add(name)
+
+
 class _VeloceArgumentParser(argparse.ArgumentParser):
     """Top-level parser that special-cases `veloce custom` argv.
 
@@ -355,6 +433,11 @@ def build_parser() -> argparse.ArgumentParser:
     # `_VeloceArgumentParser.parse_known_args`; argparse only ever sees the
     # head. Default to no extra args when `--` is absent.
     p_custom.set_defaults(func=_cmd_custom, cli_args=[])
+
+    # Built-in names are reserved; a plugin may not shadow them. `sub.choices`
+    # holds every subparser registered above, so it stays correct as commands
+    # are added or removed without a hand-maintained list.
+    _load_plugin_commands(sub, reserved=frozenset(sub.choices))
 
     return parser
 

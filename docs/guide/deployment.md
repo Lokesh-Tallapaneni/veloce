@@ -135,6 +135,46 @@ server — WebSocket and HTTP/2 workloads still belong under uvicorn.
     your workload before relying on it, and note uvicorn remains the
     recommended default for most deployments.
 
+## Extending the CLI with plugins
+
+The `veloce` command ships with `run`, `routes`, `check`, `shell`, and
+`custom`. A distribution can add its own subcommands by advertising a
+callable under the `veloce.commands` entry-point group — useful for
+deployment helpers, database migrations, or any operational task you want
+alongside the built-in commands.
+
+In your package's `pyproject.toml`:
+
+```toml
+[project.entry-points."veloce.commands"]
+deploy = "mypkg.cli:register"
+```
+
+The target is handed the argparse subparsers action and adds exactly one
+subcommand, setting a `func` default that receives the parsed arguments and
+returns an exit code:
+
+```python
+# mypkg/cli.py
+def register(subparsers):
+    parser = subparsers.add_parser("deploy", help="Deploy the app.")
+    parser.add_argument("target")
+    parser.set_defaults(func=_deploy)
+
+
+def _deploy(args):
+    print(f"Deploying to {args.target}")
+    return 0
+```
+
+Once the package is installed, `veloce deploy prod` runs your command.
+
+!!! note "Plugins cannot break the core"
+    A plugin that fails to import, does not resolve to a callable, raises
+    while registering, or whose name collides with a built-in (or another
+    plugin) is reported with a warning and skipped. The built-in commands
+    always remain usable.
+
 ## Security considerations
 
 ### Hardening checklist
