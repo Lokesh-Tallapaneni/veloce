@@ -84,12 +84,16 @@ longer scale memory with body size.
   exception type and message, each frame's file path, line number and function
   name, and a short source-context window read from `linecache`; every
   interpolated value is HTML-escaped. Chained exceptions (`raise ... from`,
-  implicit context) and per-exception `__notes__` are preserved, matching the
-  plain-text traceback the response previously produced, and an exception whose
-  `__str__` raises is rendered with a safe placeholder rather than crashing the
-  renderer. It is strictly read-only — there is no evaluating console, no
-  frame-local inspection over the wire, and no code-eval endpoint — and remains
-  gated behind `debug=True` only. The production error response is unchanged.
+  implicit context), per-exception `__notes__`, PEP 654 exception groups
+  (`ExceptionGroup` / `BaseExceptionGroup`, including those raised by
+  `asyncio.TaskGroup`), and the offending source line and caret for
+  `SyntaxError`/`IndentationError`/`TabError` are all preserved, matching the
+  detail of the plain-text traceback the response previously produced; an
+  exception whose `__str__` raises is rendered with a safe placeholder rather
+  than crashing the renderer. The page is a read-only traceback viewer — there
+  is no evaluating console, no frame-local inspection over the wire, and no
+  code-eval endpoint — and remains gated behind `debug=True` only. The
+  production error response is unchanged.
 - Parameter-only handlers (the request plus scalar path/query parameters, with
   no dependencies) now resolve through a straight-line resolver generated and
   compiled once on first dispatch and cached on the route's plan, replacing the

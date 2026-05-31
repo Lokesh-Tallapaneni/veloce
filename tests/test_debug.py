@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import builtins
+import sys
+
+import pytest
+
 from veloce import Veloce
 from veloce.debug import render_traceback_html
 from veloce.testclient import TestClient
+
+# ExceptionGroup is a builtin from Python 3.11; reference it via ``builtins`` so
+# the test module still imports cleanly under the project's 3.10 lint target.
+_ExceptionGroup = getattr(builtins, "ExceptionGroup", None)
 
 
 def _boom_app(message: str = "kaboom") -> Veloce:
@@ -174,3 +183,88 @@ def test_render_traceback_html_escapes_notes():
 
     assert "<i>note-markup</i>" not in page
     assert "&lt;i&gt;note-markup&lt;/i&gt;" in page
+
+
+def test_render_traceback_html_includes_syntax_error_text_and_caret():
+    # SyntaxError carries the failing source on exc.text/exc.offset, which the
+    # frame-only walk never surfaces. The renderer must reproduce the offending
+    # line and a caret under the failing column, like the stdlib traceback.
+    try:
+        compile("x =\n", "bad.py", "exec")
+    except SyntaxError as exc:
+        page = render_traceback_html(exc)
+
+    assert "SyntaxError" in page
+    # The offending source line is shown verbatim.
+    assert "x =" in page
+    # A caret marker points at the failing column.
+    assert "^" in page
+    assert 'class="syntax"' in page
+
+
+def test_render_traceback_html_handles_indentation_error():
+    try:
+        compile("def f():\npass\n", "bad.py", "exec")
+    except (IndentationError, SyntaxError) as exc:
+        page = render_traceback_html(exc)
+
+    # IndentationError is a SyntaxError subclass; its source/caret render too.
+    assert "Error" in page
+    assert "^" in page
+
+
+def test_render_traceback_html_escapes_syntax_error_source():
+    # The offending source line is user-controlled and must be HTML-escaped.
+    try:
+        compile("<tag> = 1\n", "bad.py", "exec")
+    except SyntaxError as exc:
+        page = render_traceback_html(exc)
+
+    assert "<tag>" not in page.replace("&lt;tag&gt;", "")
+    assert "&lt;tag&gt;" in page
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="ExceptionGroup requires Python 3.11+")
+def test_render_traceback_html_descends_into_exception_group():
+    # PEP 654 groups (e.g. asyncio.TaskGroup failures) carry child exceptions on
+    # .exceptions, not on __cause__/__context__. The renderer must descend into
+    # them so nested failures are not silently dropped.
+    eg = _ExceptionGroup(
+        "group-wrapper",
+        [ValueError("first-child-error"), KeyError("second-child-error")],
+    )
+    page = render_traceback_html(eg)
+
+    assert "group-wrapper" in page
+    assert "first-child-error" in page
+    assert "second-child-error" in page
+    assert 'class="group"' in page
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="ExceptionGroup requires Python 3.11+")
+def test_render_traceback_html_descends_into_nested_exception_groups():
+    inner = _ExceptionGroup("inner-group", [RuntimeError("deep-error")])
+    outer = _ExceptionGroup("outer-group", [inner, TypeError("shallow-error")])
+    page = render_traceback_html(outer)
+
+    assert "outer-group" in page
+    assert "inner-group" in page
+    assert "deep-error" in page
+    assert "shallow-error" in page
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="ExceptionGroup requires Python 3.11+")
+def test_render_traceback_html_renders_chained_cause_within_group_child():
+    try:
+        try:
+            raise ValueError("root-cause")
+        except ValueError as inner:
+            raise RuntimeError("wrapped-error") from inner
+    except RuntimeError as exc:
+        eg = _ExceptionGroup("grouped", [exc])
+        page = render_traceback_html(eg)
+
+    assert "grouped" in page
+    assert "root-cause" in page
+    assert "wrapped-error" in page
+    assert "The above exception was the direct cause" in page
