@@ -419,6 +419,24 @@ def test_invalid_global_option_does_not_load_plugin(monkeypatch):
     assert loaded["count"] == 0
 
 
+@pytest.mark.parametrize(
+    "argv, expect_in",
+    [
+        (["--version"], "veloce "),
+        (["--bogus", "deploy"], "usage:"),
+    ],
+)
+def test_argv_validation_output_is_not_duplicated(argv, expect_in, capsys):
+    # The plugin-free probe pass must be silent: argparse prints usage/help/
+    # version before exiting, and the real parse prints the canonical message,
+    # so the message must appear exactly once — not doubled by the two passes.
+    with pytest.raises(SystemExit):
+        cli_module.main(argv)
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert combined.count(expect_in) == 1, combined
+
+
 def test_plugin_entry_point_not_loaded_for_builtin_command(monkeypatch):
     # Selecting a built-in command must not load or execute any plugin entry
     # point, even one whose name does not collide with a built-in.

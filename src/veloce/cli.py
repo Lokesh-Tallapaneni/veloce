@@ -22,9 +22,11 @@ executed only when its command is the one selected on the command line, so
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import importlib
 import importlib.metadata
+import io
 import os
 import sys
 import warnings
@@ -537,10 +539,15 @@ def _candidate_plugin_command(argv: list[str] | None) -> str | None:
     argparse has already rejected the argv, so a malformed argv never reaches
     discovery; and the name is confirmed to be a real positional (every token
     before it is a recognised global option), never an option's value.
+
+    This probe is SILENT: argparse prints usage/help/version before raising
+    `SystemExit`, and the real parse in `main` prints the canonical message —
+    so the probe's own output is suppressed to avoid emitting it twice.
     """
     strict = build_parser(plugin_command=None)
     try:
-        strict.parse_args(argv)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            strict.parse_args(argv)
     except SystemExit as exit_err:
         if exit_err.code != 2:
             return None  # help / version — not an error, not a plugin
