@@ -384,17 +384,11 @@ def test_plugin_not_loaded_without_plugin_command(monkeypatch):
         ["--version", "deploy"],
     ],
 )
-def test_global_flag_before_plugin_name_does_not_select_it(argv):
+def test_global_flag_before_plugin_name_does_not_load_plugin(argv, monkeypatch):
     # `veloce -h deploy` / `veloce --version deploy`: argparse acts on the
-    # global flag and exits before any subcommand. The pre-scan must not treat
-    # the trailing `deploy` as the selected command, or plugin discovery would
-    # run while building the parser for `-h` / `--version`.
-    assert cli_module._selected_command(argv) is None
-
-
-def test_plugin_not_loaded_when_named_after_global_flag(monkeypatch):
-    # The plugin entry point must not load when its name only appears after a
-    # global flag (`veloce -h deploy`), since the flag short-circuits dispatch.
+    # global flag and exits 0 before any subcommand. Plugin discovery must not
+    # run, so the entry point's loader is never called even though `deploy`
+    # appears in argv.
     loaded = {"count": 0}
 
     def register(sub):  # pragma: no cover — must never run here
@@ -402,8 +396,26 @@ def test_plugin_not_loaded_when_named_after_global_flag(monkeypatch):
         sub.add_parser("deploy").set_defaults(func=lambda args: 0)
 
     _patch_entry_points(monkeypatch, [_FakeEntryPoint("deploy", "mypkg.cli:register", register)])
-    parser = build_parser(cli_module._selected_command(["-h", "deploy"]))
-    assert "deploy" not in parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
+    # The global flag makes `main` exit 0 (help/version), never loading deploy.
+    with pytest.raises(SystemExit) as exc:
+        cli_module.main(argv)
+    assert exc.value.code == 0
+    assert loaded["count"] == 0
+
+
+def test_invalid_global_option_does_not_load_plugin(monkeypatch):
+    # `veloce --bogus deploy`: the unknown option is an argparse usage error;
+    # plugin discovery must NOT run before argv is rejected.
+    loaded = {"count": 0}
+
+    def register(sub):  # pragma: no cover — must never run here
+        loaded["count"] += 1
+        sub.add_parser("deploy").set_defaults(func=lambda args: 0)
+
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("deploy", "mypkg.cli:register", register)])
+    with pytest.raises(SystemExit) as exc:
+        cli_module.main(["--bogus", "deploy"])
+    assert exc.value.code == 2  # argparse usage error, not a plugin dispatch
     assert loaded["count"] == 0
 
 
@@ -478,6 +490,35 @@ def test_plugin_registration_error_is_warned_and_skipped(monkeypatch):
     assert args.command == "shell"
 
 
+def test_plugin_non_callable_func_is_warned_and_skipped(monkeypatch):
+    # A plugin that registers a parser whose `func` default is not callable
+    # (e.g. `set_defaults(func=123)`) must be rolled back and skipped, not
+    # accepted and later crashed in main().
+    def register(sub):
+        sub.add_parser("noncallable").set_defaults(func=123)
+
+    _patch_entry_points(
+        monkeypatch, [_FakeEntryPoint("noncallable", "mypkg.cli:register", register)]
+    )
+    with pytest.warns(UserWarning, match="did not register a runnable"):
+        parser = build_parser("noncallable")
+    choices = parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
+    assert "noncallable" not in choices
+
+
+def test_plugin_raising_systemexit_does_not_kill_the_cli(monkeypatch):
+    # A plugin that calls sys.exit() / raises SystemExit during load or
+    # registration must be isolated and skipped — never abort the whole CLI.
+    def register(sub):  # pragma: no cover — raises before adding anything
+        raise SystemExit("plugin kill switch")
+
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("evil", "mypkg.cli:register", register)])
+    with pytest.warns(UserWarning, match="raised while registering"):
+        parser = build_parser("evil")
+    choices = parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
+    assert "evil" not in choices
+
+
 def test_plugin_partial_registration_is_rolled_back(monkeypatch):
     # A plugin that adds its parser and then raises must leave the parser in
     # the exact pre-registration state — no half-registered `half` command.
@@ -524,26 +565,27 @@ def test_plugin_without_func_does_not_crash_main(monkeypatch):
         main(["nofunc"])
 
 
-def test_two_plugins_with_same_name_keeps_first(monkeypatch):
+def test_duplicate_plugin_name_resolves_deterministically_and_warns(monkeypatch):
+    # Two entry points share the name `dup`. Resolution is deterministic — the
+    # candidate with the lexicographically-smaller (name, value) wins
+    # regardless of registration/iteration order — and the loser is warned
+    # about and skipped, never silently dropped.
     def register_a(sub):
-        p = sub.add_parser("dup")
-        p.set_defaults(func=lambda args: "a")
+        sub.add_parser("dup").set_defaults(func=lambda args: "a")
 
-    def register_b(sub):  # pragma: no cover — never reached once `a` wins
-        # Adding the same parser name twice would raise inside argparse; once
-        # the first matching plugin registers the command, discovery stops.
-        p = sub.add_parser("dup")
-        p.set_defaults(func=lambda args: "b")
+    def register_b(sub):  # pragma: no cover — the lower-sorting `a` wins
+        sub.add_parser("dup").set_defaults(func=lambda args: "b")
 
+    # Register b BEFORE a to prove order-independence: a (pkg_a) still wins.
     _patch_entry_points(
         monkeypatch,
         [
-            _FakeEntryPoint("dup", "pkg_a.cli:register", register_a),
             _FakeEntryPoint("dup", "pkg_b.cli:register", register_b),
+            _FakeEntryPoint("dup", "pkg_a.cli:register", register_a),
         ],
     )
-    # The first valid plugin wins; the second is never loaded or executed.
-    parser = build_parser("dup")
+    with pytest.warns(UserWarning, match="multiple entry points"):
+        parser = build_parser("dup")
     args = parser.parse_args(["dup"])
     assert args.func(args) == "a"
 

@@ -22,6 +22,7 @@ executed only when its command is the one selected on the command line, so
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib
 import importlib.metadata
 import os
@@ -369,12 +370,31 @@ def _load_plugin_command(
                     stacklevel=2,
                 )
         return
-    for ep in _iter_command_entry_points():
-        if ep.name != name:
-            continue
+    # Entry points are sorted (see `_iter_command_entry_points`), so the
+    # candidates for this name are enumerated in a stable order. The first
+    # one that registers a runnable command wins; any further entry point
+    # sharing the name is a collision — warn and skip it deterministically
+    # so behaviour never depends on install order.
+    # Sort candidates by (name, value) so precedence and the collision warning
+    # are deterministic regardless of entry-point iteration / install order.
+    matches = sorted(
+        (ep for ep in _iter_command_entry_points() if ep.name == name),
+        key=lambda ep: (ep.name, ep.value),
+    )
+    if len(matches) > 1:
+        losers = ", ".join(repr(ep.value) for ep in matches[1:])
+        warnings.warn(
+            f"veloce CLI plugin name {name!r} is provided by multiple entry points; using "
+            f"{matches[0].value!r} and skipping: {losers}.",
+            stacklevel=2,
+        )
+    for ep in matches[:1]:
+        # `BaseException` (not just `Exception`): a plugin must not be able to
+        # kill the CLI by raising `SystemExit` / `KeyboardInterrupt` from its
+        # import or registration. The boundary swallows everything and skips.
         try:
             register = ep.load()
-        except Exception as err:  # noqa: BLE001 — a bad plugin must not break the CLI
+        except BaseException as err:  # noqa: BLE001 — a bad plugin must not break the CLI
             warnings.warn(
                 f"veloce CLI plugin {name!r} (from {ep.value!r}) failed to load: {err!r}; "
                 "skipping.",
@@ -390,7 +410,7 @@ def _load_plugin_command(
         existing = frozenset(sub.choices)
         try:
             register(sub)
-        except Exception as err:  # noqa: BLE001 — a bad plugin must not break the CLI
+        except BaseException as err:  # noqa: BLE001 — a bad plugin must not break the CLI
             _rollback_subparsers(sub, keep=existing)
             warnings.warn(
                 f"veloce CLI plugin {name!r} (from {ep.value!r}) raised while registering: "
@@ -399,10 +419,12 @@ def _load_plugin_command(
             )
             continue
         added = sub.choices.get(name)
-        if added is None or "func" not in getattr(added, "_defaults", {}):
-            # A well-behaved plugin adds a parser named `name` with a `func`
-            # default. Without it, `main()` would crash with AttributeError;
-            # roll the registration back and skip instead.
+        registered_func = getattr(added, "_defaults", {}).get("func") if added else None
+        if added is None or not callable(registered_func):
+            # A well-behaved plugin adds a parser named `name` with a CALLABLE
+            # `func` default. Without it, `main()` would crash; roll the
+            # registration back and skip instead (a non-callable `func=123`
+            # is treated the same as a missing one).
             _rollback_subparsers(sub, keep=existing)
             warnings.warn(
                 f"veloce CLI plugin {name!r} (from {ep.value!r}) did not register a runnable "
@@ -498,35 +520,71 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     return parser
 
 
-_GLOBAL_OPTIONS = frozenset({"-h", "--help", "-V", "--version"})
+def _candidate_plugin_command(argv: list[str] | None) -> str | None:
+    """Return the chosen subcommand name iff it is an UNKNOWN (plugin) command.
 
+    Plugin discovery must never run before argv is validated. A PLUGIN-FREE
+    parser vets the whole argv first:
 
-def _selected_command(argv: list[str] | None) -> str | None:
-    """Return the chosen subcommand name from `argv` without parsing.
+    - parse succeeds → a built-in was selected; no plugin needed → `None`.
+    - argparse exits for `-h`/`--help`/`-V`/`--version` (exit 0), a bad
+      option, or a bad value → those must not load plugins → `None` (the real
+      parse in `main` reproduces the identical exit/usage).
+    - argparse exits with a usage error (code 2) AND the first positional
+      token is an unknown command name → that name is a plugin candidate.
 
-    A lightweight pre-scan used to decide whether plugin discovery is
-    needed: the first token that is not an option (does not start with `-`)
-    is the subcommand. Returns `None` when no candidate is present (e.g.
-    `veloce`, `veloce --version`, `veloce --help`), so those paths build the
-    parser without loading any plugin.
-
-    Scanning stops at a global option (`-h`/`--help`, `-V`/`--version`):
-    argparse acts on these immediately and exits before any subcommand runs,
-    so a name following one (e.g. `veloce -h deploy`) is never the selected
-    command and must not trigger plugin discovery.
+    The first-positional check runs only inside the code-2 branch, after
+    argparse has already rejected the argv, so a malformed argv never reaches
+    discovery; and the name is confirmed to be a real positional (every token
+    before it is a recognised global option), never an option's value.
     """
-    tokens = sys.argv[1:] if argv is None else argv
-    for token in tokens:
-        if token in _GLOBAL_OPTIONS:
-            return None
-        if not token.startswith("-"):
-            return token
+    strict = build_parser(plugin_command=None)
+    try:
+        strict.parse_args(argv)
+    except SystemExit as exit_err:
+        if exit_err.code != 2:
+            return None  # help / version — not an error, not a plugin
+        tokens = sys.argv[1:] if argv is None else list(argv)
+        candidate = _first_positional(tokens)
+        if candidate is not None and candidate not in _builtin_command_names():
+            return candidate
+        return None
     return None
+
+
+def _first_positional(tokens: list[str]) -> str | None:
+    """First bare token, provided every preceding token is a global option.
+
+    Returns `None` if a non-global option appears first (so an unknown global
+    flag like `--bogus` is never mistaken for — nor allowed to mask — a
+    command name).
+    """
+    for token in tokens:
+        if token in ("-h", "--help", "-V", "--version"):
+            return None  # argparse would have acted on these already
+        if token.startswith("-"):
+            return None  # an unknown/option token: not a clean command select
+        return token
+    return None
+
+
+@functools.cache
+def _builtin_command_names() -> frozenset[str]:
+    """The built-in subcommand names, read once from the plugin-free parser."""
+    parser = build_parser(plugin_command=None)
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return frozenset(action.choices)
+    return frozenset()
 
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the veloce CLI."""
-    parser = build_parser(plugin_command=_selected_command(argv))
+    # First pass (plugin-free) validates argv; only a clean, unknown subcommand
+    # becomes a plugin candidate. `-h`, `--version`, and invalid argv never
+    # load a plugin — they fall straight through to the real parse below.
+    plugin_command = _candidate_plugin_command(argv)
+    parser = build_parser(plugin_command=plugin_command)
     args = parser.parse_args(argv)
     return int(args.func(args))
 
