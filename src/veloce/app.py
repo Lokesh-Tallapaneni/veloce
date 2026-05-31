@@ -3272,10 +3272,26 @@ class Veloce(Router):
                 if 0 <= content_length < 2048
                 else str(content_length).encode("ascii")
             )
-            asgi_headers: list[tuple[bytes, bytes]] = [
-                (b"content-type", _ct_bytes),
-                (b"content-length", _cl_bytes),
-            ]
+            # Emit the framework default content-type/content-length only when
+            # the response does not already carry that header (case-insensitive),
+            # mirroring `Response.encode()`. A user/middleware value — e.g. the
+            # compressed length set by `GZipMiddleware` — is emitted once below
+            # via the header loop and wins; prepending the default too would put
+            # a duplicate header on the wire, which strict HTTP clients reject.
+            has_ct = False
+            has_cl = False
+            if response.headers:
+                for k in response.headers:
+                    k_lower = k.lower()
+                    if k_lower == "content-type":
+                        has_ct = True
+                    elif k_lower == "content-length":
+                        has_cl = True
+            asgi_headers: list[tuple[bytes, bytes]] = []
+            if not has_ct:
+                asgi_headers.append((b"content-type", _ct_bytes))
+            if not has_cl:
+                asgi_headers.append((b"content-length", _cl_bytes))
             if response.headers:
                 for k, v in response.headers.items():
                     k_lower = k.lower()
