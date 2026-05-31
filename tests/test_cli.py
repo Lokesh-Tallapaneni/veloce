@@ -621,3 +621,17 @@ def test_iter_command_entry_points_returns_list():
     # but the call must not raise and must return a list.
     result = cli_module._iter_command_entry_points()
     assert isinstance(result, list)
+
+
+def test_builtin_command_names_introspection():
+    # Guard the private-argparse-API reliance in `_builtin_command_names`
+    # (`parser._actions` / `argparse._SubParsersAction`): if a future CPython
+    # refactor breaks the introspection it returns an empty set, which would
+    # misclassify every built-in as an unknown plugin command. Assert the real
+    # built-in set instead so the breakage fails loudly here.
+    names = cli_module._builtin_command_names()
+    assert {"run", "routes", "check", "shell", "custom"} <= names
+    # And it matches what the parser actually exposes as subcommand choices.
+    parser = build_parser(plugin_command=None)
+    sub_choices = set(parser._subparsers._group_actions[0].choices)  # type: ignore[union-attr]
+    assert names == frozenset(sub_choices)
