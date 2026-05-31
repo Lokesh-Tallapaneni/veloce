@@ -19,6 +19,7 @@ from veloce._internal import (
     MIME_JSON,
     MIME_OCTET,
     MIME_PLAIN,
+    _encode_response_head,
     _etag_matches_weak,
     _file_etag,
     _reject_header_crlf,
@@ -195,38 +196,12 @@ class Response:
         if self._encoded is not None:
             return self._encoded
 
-        reason = _STATUS_PHRASES.get(self.status_code, "")
-        parts = [f"HTTP/1.1 {self.status_code} {reason}".rstrip() + "\r\n"]
-
-        user_headers = self.headers
-        if user_headers:
-            user_keys_lc = {k.lower() for k in user_headers}
-            has_ct = "content-type" in user_keys_lc
-            has_cl = "content-length" in user_keys_lc
-            has_conn = "connection" in user_keys_lc
-            if not has_ct:
-                parts.append(f"Content-Type: {self.content_type}\r\n")
-            if not has_cl:
-                parts.append(f"Content-Length: {len(self.body)}\r\n")
-            if not has_conn:
-                parts.append("Connection: keep-alive\r\n")
-        else:
-            parts.append(f"Content-Type: {self.content_type}\r\n")
-            parts.append(f"Content-Length: {len(self.body)}\r\n")
-            parts.append("Connection: keep-alive\r\n")
-
-        for key, value in user_headers.items():
-            if key.lower() == "set-cookie":
-                # One `Set-Cookie` dict entry may carry several cookies
-                # joined by the internal separator; emit and CRLF-validate
-                # each as its own header line.
-                for line in str(value).split("\r\nSet-Cookie: "):
-                    _reject_header_crlf(line, "Set-Cookie value")
-                    parts.append(f"Set-Cookie: {line}\r\n")
-            else:
-                _reject_header_crlf(str(key), "header name")
-                _reject_header_crlf(str(value), f"{key} header value")
-                parts.append(f"{key}: {value}\r\n")
+        default_headers = {
+            "Content-Type": self.content_type,
+            "Content-Length": str(len(self.body)),
+            "Connection": "keep-alive",
+        }
+        parts = _encode_response_head(self.status_code, default_headers, self.headers)
         parts.append("\r\n")
 
         self._encoded = "".join(parts).encode("latin-1") + self.body
@@ -1282,23 +1257,12 @@ class StreamingResponse(Response):
 
     def encode(self) -> bytes:
         """For streaming, encode headers with chunked transfer."""
-        reason = _STATUS_PHRASES.get(self.status_code, "")
-        parts = [f"HTTP/1.1 {self.status_code} {reason}".rstrip() + "\r\n"]
-        final_headers = {
+        default_headers = {
             "Content-Type": self.content_type,
             "Transfer-Encoding": "chunked",
             "Connection": "keep-alive",
         }
-        final_headers.update(self.headers)
-        for key, value in final_headers.items():
-            if key.lower() == "set-cookie":
-                for line in str(value).split("\r\nSet-Cookie: "):
-                    _reject_header_crlf(line, "Set-Cookie value")
-                    parts.append(f"Set-Cookie: {line}\r\n")
-            else:
-                _reject_header_crlf(str(key), "header name")
-                _reject_header_crlf(str(value), f"{key} header value")
-                parts.append(f"{key}: {value}\r\n")
+        parts = _encode_response_head(self.status_code, default_headers, self.headers)
         parts.append("\r\n")
         return "".join(parts).encode("latin-1")
 

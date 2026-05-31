@@ -141,6 +141,16 @@ longer scale memory with body size.
 
 ### Changed
 
+- The raw HTTP/1.1 response-head construction shared by `Response.encode()`,
+  `StreamingResponse.encode()`, and `EventSourceResponse.stream_to()` now flows
+  through a single internal helper, `veloce._internal._encode_response_head`. The
+  helper builds the status line, applies framework default headers only when the
+  caller has not supplied a same-named header (case-insensitive), and performs
+  CR/LF/NUL validation on both default and caller-supplied header values plus the
+  `Set-Cookie` split. Subclasses that override these encode paths and previously
+  copied the header-building loop should route through the helper to inherit the
+  case-insensitive default suppression.
+
 - In debug mode, an unhandled exception now renders a styled, read-only HTML
   traceback page **for clients that prefer HTML** (a browser, via the `Accept`
   header); curl / CLI / programmatic clients (`*/*`, no `Accept`, or an explicit
@@ -207,6 +217,15 @@ longer scale memory with body size.
   buffered.
 
 ### Fixed
+
+- `StreamingResponse` and `EventSourceResponse` no longer emit a duplicate
+  `Content-Type` (or `Connection`) header on the raw HTTP/1.1 transport when the
+  caller supplies that header name in non-title case. The default headers were
+  merged with a case-sensitive `dict` update, so a `headers={"content-type":
+  "text/csv"}` override left the framework default in place alongside the
+  caller's value. The default is now suppressed by a case-insensitive name
+  comparison, matching the base `Response.encode()` behaviour. The common case
+  (no override, or a title-case override) is unchanged.
 
 - OpenAPI schemas for non-body parameters (query, path, header, cookie) and
   `Form()` fields now match what the request resolver can actually deliver.
@@ -311,6 +330,16 @@ longer scale memory with body size.
   leaves unread so keep-alive connections cannot be corrupted by leftover bytes,
   and pauses socket reads when the body queue fills, resuming as the handler
   drains it.
+
+### Security
+
+- `StreamingResponse(content_type=...)` with a CR/LF or NUL in the value is
+  rejected on the raw HTTP/1.1 encode again. `content_type` is a public
+  constructor argument that flows into the default response headers; the shared
+  `_encode_response_head` helper now CR/LF/NUL-validates default header values,
+  closing a response-splitting / header-injection path (e.g.
+  `content_type="text/csv\r\nEvil: 1"`) that briefly emitted the injected line
+  when the encode paths were consolidated.
 
 ## [0.1.4] - 2026-05-25
 

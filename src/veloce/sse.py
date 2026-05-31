@@ -7,7 +7,7 @@ import math
 from collections.abc import AsyncIterator
 from typing import Any
 
-from veloce._internal import _STATUS_PHRASES, _reject_header_crlf
+from veloce._internal import _encode_response_head
 from veloce.http.response import Response
 
 # SSE keep-alive frame: a comment line (colon-prefixed) the spec requires
@@ -182,25 +182,13 @@ class EventSourceResponse(Response):
 
     async def stream_to(self, transport: Any) -> None:
         """Stream SSE events to transport."""
-        reason = _STATUS_PHRASES.get(self.status_code, "")
-        parts = [f"HTTP/1.1 {self.status_code} {reason}".rstrip() + "\r\n"]
-        final_headers = {
+        default_headers = {
             "Content-Type": self.content_type,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Transfer-Encoding": "chunked",
-            **self.headers,
         }
-        for key, value in final_headers.items():
-            k_lower = key.lower()
-            if k_lower == "set-cookie":
-                for cookie_line in str(value).split("\r\nSet-Cookie: "):
-                    _reject_header_crlf(cookie_line, "Set-Cookie value")
-                    parts.append(f"Set-Cookie: {cookie_line}\r\n")
-            else:
-                _reject_header_crlf(str(key), "header name")
-                _reject_header_crlf(str(value), f"{key} header value")
-                parts.append(f"{key}: {value}\r\n")
+        parts = _encode_response_head(self.status_code, default_headers, self.headers)
         parts.append("\r\n")
         transport.write("".join(parts).encode("latin-1"))
 

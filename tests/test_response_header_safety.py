@@ -74,3 +74,101 @@ async def test_eventsource_stream_to_rejects_crlf_header():
 
     with pytest.raises(ValueError):
         await resp.stream_to(_Transport())
+
+
+def _count_ci_header(head: bytes, name: str) -> int:
+    """Count header lines whose name equals `name` case-insensitively."""
+    target = name.lower()
+    count = 0
+    for raw in head.split(b"\r\n"):
+        if b":" not in raw:
+            continue
+        key = raw.split(b":", 1)[0].decode("latin-1").strip().lower()
+        if key == target:
+            count += 1
+    return count
+
+
+def test_streaming_response_lowercase_content_type_not_duplicated():
+    """A lowercase `content-type` override must not produce two
+    Content-Type header lines on the raw-transport encode."""
+    from veloce import StreamingResponse
+
+    async def _gen():
+        yield b"row\n"
+
+    resp = StreamingResponse(_gen(), headers={"content-type": "text/csv"})
+    head = resp.encode()
+    assert _count_ci_header(head, "content-type") == 1
+    assert b"content-type: text/csv\r\n" in head
+    assert b"Content-Type: application/octet-stream\r\n" not in head
+
+
+def test_streaming_response_lowercase_connection_not_duplicated():
+    """A lowercase `connection` override suppresses the default."""
+    from veloce import StreamingResponse
+
+    async def _gen():
+        yield b"row\n"
+
+    resp = StreamingResponse(_gen(), headers={"connection": "close"})
+    head = resp.encode()
+    assert _count_ci_header(head, "connection") == 1
+    assert b"connection: close\r\n" in head
+
+
+def test_streaming_response_rejects_crlf_in_content_type():
+    """A CRLF-laced `content_type` must not inject an extra header line.
+
+    `content_type` is a public constructor argument that flows into the
+    default headers; the raw-transport encode must reject it rather than
+    emit `Content-Type: text/csv\\r\\nEvil: 1` (HTTP response splitting)."""
+    from veloce import StreamingResponse
+
+    async def _gen():
+        yield b"row\n"
+
+    resp = StreamingResponse(_gen(), content_type="text/csv\r\nEvil: 1")
+    with pytest.raises(ValueError):
+        resp.encode()
+
+
+def test_streaming_response_rejects_nul_in_content_type():
+    """A NUL in `content_type` is rejected on the raw-transport encode."""
+    from veloce import StreamingResponse
+
+    async def _gen():
+        yield b"row\n"
+
+    resp = StreamingResponse(_gen(), content_type="text/csv\x00")
+    with pytest.raises(ValueError):
+        resp.encode()
+
+
+async def test_eventsource_stream_to_lowercase_content_type_not_duplicated():
+    """EventSourceResponse must emit one Content-Type even when the
+    caller supplies a lowercase `content-type`."""
+    from veloce import EventSourceResponse
+
+    async def _empty():
+        return
+        yield b""  # pragma: no cover - makes this an async generator
+
+    resp = EventSourceResponse(_empty(), headers={"content-type": "text/plain"})
+
+    class _Transport:
+        def __init__(self) -> None:
+            self.chunks: list[bytes] = []
+
+        def write(self, data: bytes) -> None:
+            self.chunks.append(data)
+
+        def writelines(self, data) -> None:
+            self.chunks.extend(data)
+
+    transport = _Transport()
+    await resp.stream_to(transport)
+    head = transport.chunks[0]
+    assert _count_ci_header(head, "content-type") == 1
+    assert b"content-type: text/plain\r\n" in head
+    assert b"Content-Type: text/event-stream\r\n" not in head
