@@ -42,6 +42,32 @@ def test_max_form_parts_five_allows_five_rejects_six():
         assert resp.status_code == 413
 
 
+def test_urlencoded_form_field_cap_rejects_overflow():
+    app = Veloce(openapi_url=None)
+    app.config["MAX_FORM_PARTS"] = 3
+
+    @app.post("/form")
+    async def handle(request: Request):
+        form = await request.form()
+        return {"count": len(form)}
+
+    with TestClient(app) as client:
+        ok = client.post(
+            "/form",
+            content=b"a=1&b=2&c=3",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert ok.status_code == 200
+        assert ok.json()["count"] == 3
+
+        over = client.post(
+            "/form",
+            content=b"a=1&b=2&c=3&d=4",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert over.status_code == 413
+
+
 def test_auth_property_cached_across_repeat_access():
     app = Veloce(openapi_url=None)
     observed = {}

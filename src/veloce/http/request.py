@@ -9,6 +9,7 @@ from urllib.parse import parse_qsl
 import orjson
 from multidict import MultiDict
 
+from veloce.exceptions import RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
 from veloce.http.datastructures import (
     DEFAULT_MAX_MULTIPART_PART_SIZE,
@@ -377,7 +378,24 @@ class Request:
             mt = self.mimetype
             if mt == "application/x-www-form-urlencoded":
                 body = await self._drain_body()
-                items = parse_qsl(body.decode("utf-8"), keep_blank_values=True)
+                # Cap the field count so a pathological body cannot exhaust
+                # memory/CPU even when its total size is within
+                # MAX_CONTENT_LENGTH. Shares the MAX_FORM_PARTS knob with the
+                # multipart branch; `None` disables the cap.
+                max_fields = DEFAULT_MAX_MULTIPART_PARTS
+                cfg = getattr(self.app, "config", None) if self.app is not None else None
+                if cfg is not None:
+                    max_fields = cfg.get("MAX_FORM_PARTS", max_fields)
+                try:
+                    items = parse_qsl(
+                        body.decode("utf-8"),
+                        keep_blank_values=True,
+                        max_num_fields=max_fields,
+                    )
+                except ValueError as exc:
+                    raise RequestEntityTooLarge(
+                        f"form exceeds the {max_fields}-field limit"
+                    ) from exc
                 self._form = FormData(items)
             elif mt == "multipart/form-data":
                 # Per-app multipart caps come from config when an app is

@@ -349,6 +349,12 @@ longer scale memory with body size.
   closing a response-splitting / header-injection path (e.g.
   `content_type="text/csv\r\nEvil: 1"`) that briefly emitted the injected line
   when the encode paths were consolidated.
+- `application/x-www-form-urlencoded` bodies are now capped at the same
+  `MAX_FORM_PARTS` field limit (default `1000`) already enforced for multipart
+  forms. A body exceeding the cap raises `413 Request Entity Too Large` instead
+  of being parsed in full, closing a memory/CPU exhaustion vector for bodies
+  whose total size is within `MAX_CONTENT_LENGTH`. Forms under the cap parse
+  unchanged; set `MAX_FORM_PARTS = None` to disable the limit.
 
 ## [0.1.4] - 2026-05-25
 
