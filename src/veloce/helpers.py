@@ -1,4 +1,4 @@
-"""Helpers — abort, jsonify, make_response, flash, g, current_app, send_from_directory."""
+"""Helpers - abort, jsonify, make_response, flash, g, current_app, send_from_directory."""
 
 from __future__ import annotations
 
@@ -25,17 +25,17 @@ from veloce.safe import safe_join
 from veloce.signals import message_flashed
 from veloce.status import HTTP_200_OK, HTTP_302_FOUND, HTTP_403_FORBIDDEN
 
-# ── Context vars ──────────────────────────────────────────
+# -- Context vars ------------------------------------------
 
 # The active app is stashed on this ContextVar by `Veloce.handle_request`.
 # `current_app` is a proxy that resolves to the active app on every
-# attribute access — so `current_app.config["DEBUG"]` works from any
+# attribute access - so `current_app.config["DEBUG"]` works from any
 # coroutine/task spawned during request handling.
 _current_app_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "veloce_current_app", default=None
 )
 
-# Outside-request stash for `app.test_request_context()` — the dispatch
+# Outside-request stash for `app.test_request_context()` - the dispatch
 # pipeline passes the live request through arguments, so this is only
 # consulted by code that explicitly enters a test_request_context block.
 _current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
@@ -43,7 +43,7 @@ _current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
 )
 
 
-# ── Proxy classes ─────────────────────────────────────────
+# -- Proxy classes -----------------------------------------
 
 
 class _ContextProxy:
@@ -118,7 +118,7 @@ class _SessionProxy(_ContextProxy):
 
     Resolves to `request.session` (the dict `SessionMiddleware`
     maintains). Accessing it outside a request context, or without
-    `SessionMiddleware` installed, raises `RuntimeError` — the same
+    `SessionMiddleware` installed, raises `RuntimeError` - the same
     failure modes as `request` and `Request.session`.
     """
 
@@ -159,7 +159,7 @@ class _SessionProxy(_ContextProxy):
 
 
 class _RequestGlobals:
-    """Request-scoped global object — the `g` namespace.
+    """Request-scoped global object - the `g` namespace.
 
     Uses contextvars so it works in async without thread-local hacks.
     """
@@ -212,14 +212,14 @@ class _RequestGlobals:
     def _reset(self) -> None:
         """Reset g for a new request.
 
-        Clears the var to `None` rather than binding a fresh dict —
+        Clears the var to `None` rather than binding a fresh dict -
         `_get_store` allocates lazily on first access, so a request whose
         handler never touches `g` pays no allocation.
         """
         self._ctx_var.set(None)
 
 
-# ── Aborter ───────────────────────────────────────────────
+# -- Aborter -----------------------------------------------
 
 
 class Aborter:
@@ -253,7 +253,7 @@ class Aborter:
         raise cls(status_code=code, detail=detail, headers=headers)
 
 
-# ── Singletons ────────────────────────────────────────────
+# -- Singletons --------------------------------------------
 
 # `from veloce import current_app`.
 current_app = _CurrentAppProxy()
@@ -268,7 +268,7 @@ session = _SessionProxy()
 g = _RequestGlobals()
 
 
-# ── Context introspection ─────────────────────────────────
+# -- Context introspection ---------------------------------
 
 
 def has_app_context() -> bool:
@@ -291,19 +291,19 @@ def has_request_context() -> bool:
     return _current_request_var.get() is not None
 
 
-# ── abort() ───────────────────────────────────────────────
+# -- abort() -----------------------------------------------
 
 
 def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = None) -> NoReturn:
-    """Raise an HTTPException — a concise shorthand.
+    """Raise an HTTPException - a concise shorthand.
 
     Raises the typed subclass for known status codes (e.g. `NotFound` for 404,
     `Forbidden` for 403) so error handlers registered against a specific
     subclass match. Unknown codes fall back to the bare `HTTPException`.
 
     Usage:
-        abort(404)              # → raises NotFound
-        abort(403, "Forbidden") # → raises Forbidden
+        abort(404)              # -> raises NotFound
+        abort(403, "Forbidden") # -> raises Forbidden
     """
     if not detail:
         try:
@@ -314,14 +314,14 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
     raise cls(status_code=status_code, detail=detail, headers=headers)
 
 
-# ── after_this_request() ──────────────────────────────────
+# -- after_this_request() ----------------------------------
 
 
 def after_this_request(func: Any) -> Any:
     """Register a one-shot after-request callback.
 
     Fires after the global `@app.after_request` hooks have run for the
-    current request only — future requests are unaffected. Useful for
+    current request only - future requests are unaffected. Useful for
     work that depends on data computed inside the handler (e.g. setting
     a cookie whose value the handler decided).
 
@@ -331,13 +331,13 @@ def after_this_request(func: Any) -> Any:
     request = _current_request_var.get()
     if request is None:
         raise RuntimeError("after_this_request() requires an active request context.")
-    # List, not set: order matters — dispatcher drains in registration order.
+    # List, not set: order matters - dispatcher drains in registration order.
     cbs = request._state.setdefault("_after_this_request", [])
     cbs.append(func)
     return func
 
 
-# ── send_file() ───────────────────────────────────────────
+# -- send_file() -------------------------------------------
 
 
 def send_file(
@@ -352,7 +352,7 @@ def send_file(
     """Serve a file top-level helper.
 
     Accepts a filesystem path (str / PathLike) and returns a `FileResponse`
-    with conditional-GET headers already set (Last-Modified, ETag — both
+    with conditional-GET headers already set (Last-Modified, ETag - both
     were added by Q40/Q42). Optional knobs:
 
     - `mimetype=` overrides the auto-guessed content type.
@@ -395,7 +395,7 @@ def send_file(
     return resp
 
 
-# ── redirect() ────────────────────────────────────────────
+# -- redirect() --------------------------------------------
 
 
 def redirect(
@@ -405,25 +405,25 @@ def redirect(
 ) -> Response:
     """Build a redirect response helper.
 
-    Default `code=302` matches the long-standing convention. RFC 9110 §15.4
+    Default `code=302` matches the long-standing convention. RFC 9110 Sec. 15.4
     catalogue: 301 (permanent, method may change), 302 (found, method
     may change), 303 (see other, method becomes GET), 307 (temporary,
     method preserved), 308 (permanent, method preserved). Pick the one
-    that matches your semantics — the helper is a thin wrapper, not a
+    that matches your semantics - the helper is a thin wrapper, not a
     policy. Accepts extra headers (e.g. `Vary`).
     """
     return RedirectResponse(location, status_code=code, headers=headers)
 
 
-# ── jsonify() ─────────────────────────────────────────────
+# -- jsonify() ---------------------------------------------
 
 
 def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
-    """Create a JSON response — a concise shorthand.
+    """Create a JSON response - a concise shorthand.
 
     Honours two app-config flags when called inside a request:
-    - `JSON_SORT_KEYS` (default True) — sort dict keys alphabetically.
-    - `JSONIFY_PRETTYPRINT_REGULAR` (default False) — indent the output
+    - `JSON_SORT_KEYS` (default True) - sort dict keys alphabetically.
+    - `JSONIFY_PRETTYPRINT_REGULAR` (default False) - indent the output
       with 2 spaces for readability. Often enabled under DEBUG.
 
     Usage:
@@ -453,7 +453,7 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
     return JSONResponse(data)
 
 
-# ── make_response() ───────────────────────────────────────
+# -- make_response() ---------------------------------------
 
 
 def make_response(
@@ -462,7 +462,7 @@ def make_response(
     headers: dict[str, str] | None = None,
     content_type: str | None = None,
 ) -> Response:
-    """Create a Response — a convenience wrapper.
+    """Create a Response - a convenience wrapper.
 
     Usage:
         resp = make_response("Hello", 200)
@@ -492,7 +492,7 @@ def make_response(
     return JSONResponse(body, status_code=status_code, headers=headers)
 
 
-# ── send_from_directory() ─────────────────────────────────
+# -- send_from_directory() ---------------------------------
 
 
 def send_from_directory(
@@ -530,7 +530,7 @@ async def send_from_directory_async(
     as_attachment: bool = False,
     download_name: str | None = None,
 ) -> FileResponse:
-    """Send a file from a directory — async version, reads file in executor.
+    """Send a file from a directory - async version, reads file in executor.
 
     Traversal-safe via `safe_join`.
     """
@@ -550,7 +550,7 @@ async def send_from_directory_async(
     )
 
 
-# ── flash() / get_flashed_messages() ──────────────────────
+# -- flash() / get_flashed_messages() ----------------------
 
 
 def _flash_store() -> Any:
@@ -558,7 +558,7 @@ def _flash_store() -> Any:
 
     A previous implementation wrote to `g` (a per-request `contextvars`
     namespace), which made `flash()` silently lose the message across
-    the POST/redirect/GET round-trip that flashes are designed for —
+    the POST/redirect/GET round-trip that flashes are designed for -
     the redirected GET sees a fresh `g` with no `_flashes` key. Now
     we route through the active session so the signed-cookie /
     server-side session carries the queue across requests, matching
@@ -568,14 +568,14 @@ def _flash_store() -> Any:
     if req is None or "session" not in req._state:
         raise RuntimeError(
             "flash() requires an active request with SessionMiddleware "
-            "(or ServerSessionMiddleware) installed — the flashes are "
+            "(or ServerSessionMiddleware) installed - the flashes are "
             "carried across requests via the session, not the per-request `g`."
         )
     return req._state["session"]
 
 
 def flash(message: str, category: str = "message") -> None:
-    """Flash a message for the next request — requires SessionMiddleware.
+    """Flash a message for the next request - requires SessionMiddleware.
 
     Usage:
         flash("Item created successfully")
@@ -585,32 +585,32 @@ def flash(message: str, category: str = "message") -> None:
     flashes = store.setdefault("_flashes", [])
     flashes.append((category, message))
     # `Session.setdefault` of an unseen key flips `.modified`, but the
-    # subsequent `flashes.append(...)` mutates an existing list — that
+    # subsequent `flashes.append(...)` mutates an existing list - that
     # mutation is invisible to the Session container, so the cookie
     # would not be re-signed if `setdefault` short-circuited (key
     # already present). Mark explicitly to cover both paths.
     with contextlib.suppress(AttributeError):
         store.modified = True
-    # `message_flashed` signal — fires for every flash() call.
+    # `message_flashed` signal - fires for every flash() call.
     message_flashed.send(_current_app_var.get(), message=message, category=category)
 
 
 def get_flashed_messages(
     with_categories: bool = False, category_filter: Sequence[str] | None = None
 ) -> list:
-    """Get flashed messages — call in templates.
+    """Get flashed messages - call in templates.
 
     Usage:
         messages = get_flashed_messages()
         messages = get_flashed_messages(with_categories=True)
     """
     req = _current_request_var.get()
-    # Reading without an active request returns an empty list — calling
+    # Reading without an active request returns an empty list - calling
     # this from a template render outside a request shouldn't crash.
     if req is None or "session" not in req._state:
         return []
     store = req._state["session"]
-    # `Session.pop` already flips `.modified` when the key existed —
+    # `Session.pop` already flips `.modified` when the key existed -
     # no need to set it again here. Non-Session dict subclasses that
     # don't override `pop` won't carry the flag, but their callers
     # aren't using the cookie middleware anyway.
@@ -623,7 +623,7 @@ def get_flashed_messages(
     return [msg for _, msg in flashes]
 
 
-# ── stream_with_context() ─────────────────────────────────
+# -- stream_with_context() ---------------------------------
 
 
 def stream_with_context(generator: Any) -> Any:
@@ -631,7 +631,7 @@ def stream_with_context(generator: Any) -> Any:
 
     A streaming response body is consumed by the ASGI
     emit layer *after* the handler has returned, by which point the
-    request context has been torn down — so a generator that touches
+    request context has been torn down - so a generator that touches
     `request`, `g`, or `current_app` would fail. Wrap it::
 
         return StreamingResponse(stream_with_context(generate()))

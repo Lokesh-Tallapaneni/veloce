@@ -1,4 +1,4 @@
-"""WebSocket support — basic implementation over raw asyncio."""
+"""WebSocket support - basic implementation over raw asyncio."""
 
 from __future__ import annotations
 
@@ -12,17 +12,35 @@ from typing import TYPE_CHECKING, Any
 
 import orjson
 
+from veloce._constants import (
+    HEADER_COOKIE,
+    HEADER_ORIGIN,
+    HEADER_SEC_WEBSOCKET_KEY,
+    HEADER_SEC_WEBSOCKET_PROTOCOL,
+)
 from veloce._internal import _reject_header_crlf
+from veloce._protocol_constants import (
+    ASGI_EVENT_WS_ACCEPT,
+    ASGI_EVENT_WS_CLOSE,
+    ASGI_EVENT_WS_CONNECT,
+    ASGI_EVENT_WS_DISCONNECT,
+    ASGI_EVENT_WS_SEND,
+)
 from veloce.exceptions import WebSocketDisconnect
 from veloce.http.cookies import parse_cookie
 from veloce.http.datastructures import Address, QueryParams, State
+from veloce.status import (
+    WS_1000_NORMAL_CLOSURE,
+    WS_1002_PROTOCOL_ERROR,
+    WS_1009_MESSAGE_TOO_BIG,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable
 
 
 class WebSocketState(enum.IntEnum):
-    """Connection-state enum — ASGI shape.
+    """Connection-state enum - ASGI shape.
 
     `CONNECTING` is the initial state before `accept()` has been sent
     (client side) or received (application side). `CONNECTED` once the
@@ -41,7 +59,7 @@ class WebSocket:
     GUID = "258EAFA5-E914-47DA-95CA-5AB5DC525D63"
 
     # Cap inbound frame backlog. An unbounded `asyncio.Queue` lets a peer
-    # that sends faster than the handler reads grow it without limit —
+    # that sends faster than the handler reads grow it without limit -
     # a DoS / backpressure vector. With a cap, the protocol's `put` (the
     # producer) `await`s once the cap is hit, which is the backpressure
     # signal: the application either reads faster or closes the
@@ -51,8 +69,8 @@ class WebSocket:
 
     # Upper bound on a single frame's declared payload length. A peer can
     # declare an 8-byte (64-bit) length in the frame header; without a cap
-    # the parser would wait for — and the reassembly buffer would try to
-    # hold — an arbitrarily large amount of data, an unbounded-allocation
+    # the parser would wait for - and the reassembly buffer would try to
+    # hold - an arbitrarily large amount of data, an unbounded-allocation
     # DoS. Frames declaring a payload larger than this close the connection
     # with `1009 Message Too Big`.
     MAX_FRAME_SIZE = 16 * 1024 * 1024
@@ -60,7 +78,7 @@ class WebSocket:
     # Upper bound on a reassembled (fragmented) message's total size. The
     # per-frame cap bounds one frame, but a peer can open a fragmented
     # message (FIN=0) and stream an unbounded number of continuation
-    # frames — each individually under MAX_FRAME_SIZE — to grow the
+    # frames - each individually under MAX_FRAME_SIZE - to grow the
     # reassembly buffer without limit. Crossing this bound closes the
     # connection with `1009 Message Too Big`.
     MAX_MESSAGE_SIZE = 16 * 1024 * 1024
@@ -81,14 +99,14 @@ class WebSocket:
             else self.DEFAULT_RECV_QUEUE_MAXSIZE
         )
         self._receive_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=maxsize)
-        # Fragmented-message reassembly state (RFC 6455 §5.4). `_frag_opcode`
+        # Fragmented-message reassembly state (RFC 6455 Sec. 5.4). `_frag_opcode`
         # is the data opcode of the message currently being assembled, or
         # `None` when no fragmented message is in progress.
         self._frag_opcode: int | None = None
         self._frag_buffer: bytearray = bytearray()
         # Persistent receive buffer for incremental frame parsing. The
         # transport hands `feed_data` arbitrary byte runs that do not line up
-        # with frame boundaries — bytes accumulate here until a whole frame
+        # with frame boundaries - bytes accumulate here until a whole frame
         # (or several) can be parsed off the front.
         self._recv_buffer: bytearray = bytearray()
         # ASGI mode (W1). When wired through `Veloce.__call__`'s websocket
@@ -162,7 +180,7 @@ class WebSocket:
 
     @property
     def url(self) -> str:
-        """The WebSocket handshake URL path — ASGI-style shape.
+        """The WebSocket handshake URL path - ASGI-style shape.
 
         Returns `path` plus `?query` when a query string is present.
         """
@@ -206,7 +224,7 @@ class WebSocket:
         """
         if self._cookies is not None:
             return self._cookies
-        self._cookies = parse_cookie(self.headers.get("cookie", ""))
+        self._cookies = parse_cookie(self.headers.get(HEADER_COOKIE.lower(), ""))
         return self._cookies
 
     @property
@@ -239,14 +257,14 @@ class WebSocket:
     def origin(self) -> str | None:
         """The client-supplied `Origin` header, or `None` if absent.
 
-        WebSocket handshakes carry `Origin` per RFC 6455 §10.2 / §4.1.
+        WebSocket handshakes carry `Origin` per RFC 6455 Sec. 10.2 / Sec. 4.1.
         Browsers always send it; non-browser clients may omit it. The
         header is the application's primary defence against Cross-Site
-        WebSocket Hijacking — CSWSH bypasses CORS because the handshake
+        WebSocket Hijacking - CSWSH bypasses CORS because the handshake
         is plain HTTP/1.1 and Same-Origin Policy does not apply to it.
         Pair this accessor with `check_origin(allowed)` before `accept()`.
         """
-        return self.headers.get("origin")
+        return self.headers.get(HEADER_ORIGIN.lower())
 
     def check_origin(self, allowed: str | Iterable[str]) -> bool:
         """Return `True` when the handshake's `Origin` is in `allowed`.
@@ -258,13 +276,13 @@ class WebSocket:
         written for one API are interchangeable with the other.
 
         - **Wildcard.** `"*"` in `allowed` accepts any origin and is the
-          opt-in "I have my own check elsewhere" escape hatch — the
+          opt-in "I have my own check elsewhere" escape hatch - the
           symmetric behaviour to `WebSocketOriginMiddleware`'s
           `allowed_origins=["*"]`.
         - **Missing `Origin`** (no header at all, or a literal
           `Origin: null` from a sandboxed iframe / `file://` page) is
           a non-match and returns `False`. Non-browser clients
-          legitimately omit the header — if you want to allow them,
+          legitimately omit the header - if you want to allow them,
           branch on `ws.origin is None` explicitly. The
           `WebSocketOriginMiddleware` middleware path also offers an
           `allow_missing=True` switch; this in-handler helper is
@@ -274,7 +292,7 @@ class WebSocket:
             @app.websocket("/ws")
             async def chat(ws: WebSocket):
                 if not ws.check_origin("https://app.example.com"):
-                    await ws.close(code=1008)  # policy violation
+                    await ws.close(code=WS_1008_POLICY_VIOLATION)  # policy violation
                     return
                 await ws.accept()
                 ...
@@ -284,7 +302,7 @@ class WebSocket:
         sibling `WebSocketOriginMiddleware`.
         """
         allowed_set = frozenset((allowed,)) if isinstance(allowed, str) else frozenset(allowed)
-        # Wildcard short-circuit — accept anything, including a missing
+        # Wildcard short-circuit - accept anything, including a missing
         # `Origin`. Matches the middleware's `_allow_all` branch.
         if "*" in allowed_set:
             return True
@@ -298,12 +316,12 @@ class WebSocket:
     def requested_subprotocols(self) -> list[str]:
         """Subprotocols the client offered in `Sec-WebSocket-Protocol`.
 
-        Returns them in client preference order (RFC 6455 §1.9). Empty
+        Returns them in client preference order (RFC 6455 Sec. 1.9). Empty
         list when the header is absent. Whitespace around each token is
         stripped; the comparison the negotiator performs is case-sensitive
         per the spec.
         """
-        raw = self.headers.get("sec-websocket-protocol", "")
+        raw = self.headers.get(HEADER_SEC_WEBSOCKET_PROTOCOL.lower(), "")
         if not raw:
             return []
         return [p.strip() for p in raw.split(",") if p.strip()]
@@ -311,7 +329,7 @@ class WebSocket:
     def negotiate_subprotocol(self, supported: list[str]) -> str | None:
         """Pick the first client-offered subprotocol that the server supports.
 
-        Per RFC 6455 §4.1, the server picks ONE protocol from the client's
+        Per RFC 6455 Sec. 4.1, the server picks ONE protocol from the client's
         list. Most servers prefer to honour the client's preference order
         (first match wins), which is what we do.
         """
@@ -331,14 +349,14 @@ class WebSocket:
     ) -> None:
         """Complete the WebSocket handshake."""
         # Enforce the handshake state machine: accepting an already-accepted
-        # or already-closed connection is a programming error — surface it
+        # or already-closed connection is a programming error - surface it
         # as a clear exception rather than re-running the handshake.
         if self._accepted:
             raise RuntimeError("WebSocket.accept(): connection is already accepted")
         if self._closed:
             raise RuntimeError("WebSocket.accept(): connection is already closed")
         # Reject CR/LF in the negotiated subprotocol and any custom
-        # handshake headers — they are written into the 101 response.
+        # handshake headers - they are written into the 101 response.
         if subprotocol:
             _reject_header_crlf(subprotocol, "WebSocket subprotocol")
         if headers:
@@ -349,9 +367,9 @@ class WebSocket:
         if self._is_asgi:
             # ASGI: consume the connect message, then emit accept.
             msg = await self._asgi_receive()
-            if msg["type"] != "websocket.connect":
-                raise RuntimeError(f"expected websocket.connect, got {msg['type']!r}")
-            accept_msg: dict[str, Any] = {"type": "websocket.accept"}
+            if msg["type"] != ASGI_EVENT_WS_CONNECT:
+                raise RuntimeError(f"expected {ASGI_EVENT_WS_CONNECT}, got {msg['type']!r}")
+            accept_msg: dict[str, Any] = {"type": ASGI_EVENT_WS_ACCEPT}
             if subprotocol:
                 accept_msg["subprotocol"] = subprotocol
             if headers:
@@ -363,7 +381,7 @@ class WebSocket:
             return
 
         # Raw-transport mode (HTTP/1.1 101 handshake).
-        key = self.headers.get("sec-websocket-key", "")
+        key = self.headers.get(HEADER_SEC_WEBSOCKET_KEY.lower(), "")
         accept_key = base64.b64encode(
             hashlib.sha1((key + self.GUID).encode()).digest()  # noqa: S324
         ).decode()
@@ -390,7 +408,7 @@ class WebSocket:
         if self._closed:
             raise WebSocketDisconnect()
         if self._is_asgi:
-            await self._asgi_send({"type": "websocket.send", "text": data})
+            await self._asgi_send({"type": ASGI_EVENT_WS_SEND, "text": data})
             return
         self._send_frame(data.encode("utf-8"), opcode=0x1)
 
@@ -415,13 +433,13 @@ class WebSocket:
         if self._closed:
             raise WebSocketDisconnect()
         if self._is_asgi:
-            await self._asgi_send({"type": "websocket.send", "bytes": data})
+            await self._asgi_send({"type": ASGI_EVENT_WS_SEND, "bytes": data})
             return
         self._send_frame(data, opcode=0x2)
 
     async def _asgi_recv_msg(self) -> dict:
         msg = await self._asgi_receive()
-        if msg["type"] == "websocket.disconnect":
+        if msg["type"] == ASGI_EVENT_WS_DISCONNECT:
             self._closed = True
             raise WebSocketDisconnect()
         return msg
@@ -432,7 +450,7 @@ class WebSocket:
         Returns the message dict as the ASGI server delivered it
         (`{"type": "websocket.receive", "text"/"bytes": ...}`). A
         `websocket.disconnect` message raises `WebSocketDisconnect`.
-        ASGI-mode only — raw asyncio-transport connections don't carry
+        ASGI-mode only - raw asyncio-transport connections don't carry
         ASGI message envelopes.
 
         The same handshake state machine the typed `receive_*` helpers
@@ -472,7 +490,7 @@ class WebSocket:
     def _check_can_receive(self, method: str) -> None:
         """Enforce the handshake state machine for receive operations.
 
-        Mirrors the `send_text`/`send_bytes` guards — a handler that
+        Mirrors the `send_text`/`send_bytes` guards - a handler that
         calls a receive method before `accept()` would otherwise hang on
         an empty queue (raw transport) or on the ASGI receive callable
         (ASGI mode), with no clear failure mode. A receive on a
@@ -539,10 +557,10 @@ class WebSocket:
         except WebSocketDisconnect:
             return
 
-    async def close(self, code: int = 1000, reason: str = "") -> None:
+    async def close(self, code: int = WS_1000_NORMAL_CLOSURE, reason: str = "") -> None:
         """Send a close frame.
 
-        Per RFC 6455 §5.5.1 the close-frame payload is a 2-byte big-endian
+        Per RFC 6455 Sec. 5.5.1 the close-frame payload is a 2-byte big-endian
         status code optionally followed by a UTF-8 reason of at most
         123 bytes (so the whole payload fits in the 125-byte
         control-frame budget). Reasons longer than 123 bytes are
@@ -552,13 +570,15 @@ class WebSocket:
             return
         self._closed = True
         if self._is_asgi:
-            await self._asgi_send({"type": "websocket.close", "code": code, "reason": reason or ""})
+            await self._asgi_send(
+                {"type": ASGI_EVENT_WS_CLOSE, "code": code, "reason": reason or ""}
+            )
             return
         payload = struct.pack("!H", code)
         if reason:
             reason_bytes = reason.encode("utf-8")[:123]
             # Walk back from a 123-byte truncation if the byte boundary
-            # landed mid-codepoint — keeps the close-frame valid UTF-8.
+            # landed mid-codepoint - keeps the close-frame valid UTF-8.
             while reason_bytes:
                 try:
                     reason_bytes.decode("utf-8")
@@ -576,9 +596,9 @@ class WebSocket:
         boundaries: a single frame may be split across two reads, and one
         read may carry several frames. Bytes are appended to a persistent
         receive buffer and complete frames are parsed off the front in a
-        loop — partial frames are kept for the next call.
+        loop - partial frames are kept for the next call.
 
-        Handles fragmented messages (RFC 6455 §5.4): a data frame with
+        Handles fragmented messages (RFC 6455 Sec. 5.4): a data frame with
         `FIN=0` opens a message that subsequent continuation frames
         (opcode `0x0`) extend, and the `FIN=1` continuation completes it.
         Control frames (close / ping / pong) are never fragmented and may
@@ -593,7 +613,7 @@ class WebSocket:
         # not yet hold a complete frame) and may set `_closed` on a close /
         # backpressure event, after which we stop. A single read can carry
         # many small frames, so advance a local offset per frame and compact
-        # the buffer once at the end — slicing after every frame would memmove
+        # the buffer once at the end - slicing after every frame would memmove
         # the remaining tail repeatedly, making a multi-frame read O(k * n).
         pos = 0
         try:
@@ -640,14 +660,14 @@ class WebSocket:
             offset = 10
 
         # Bound the declared length before waiting for / allocating the
-        # payload — a huge declared length must not park unbounded bytes in
+        # payload - a huge declared length must not park unbounded bytes in
         # the buffer or blow up the reassembly buffer.
         if payload_len > self.MAX_FRAME_SIZE:
             self._close_too_big()
             return 0
 
         # Control frames (close / ping / pong) must carry <=125 bytes and
-        # must not be fragmented (RFC 6455 §5.5). The new reliable parser
+        # must not be fragmented (RFC 6455 Sec. 5.5). The new reliable parser
         # hits these consistently, so reject violations with a 1002 close
         # rather than, e.g., echoing an oversized ping as a pong.
         if opcode in (0x8, 0x9, 0xA) and (payload_len > 125 or not fin):
@@ -667,7 +687,7 @@ class WebSocket:
         payload_bytes = bytes(buf[start + offset : start + offset + payload_len])
         if masked and payload_len:
             # Bulk XOR via Python's bignum int. Tile the 4-byte mask to
-            # the payload length and XOR in a single C-level op — far
+            # the payload length and XOR in a single C-level op - far
             # cheaper than a Python-level per-byte loop for any frame
             # past a handful of bytes (and WebSocket frames are usually
             # hundreds to KiB-sized).
@@ -677,7 +697,7 @@ class WebSocket:
             ).to_bytes(payload_len, "big")
         payload = bytearray(payload_bytes)
 
-        # Control frames (close / ping / pong) — never fragmented; handled
+        # Control frames (close / ping / pong) - never fragmented; handled
         # independently of any fragmented message in progress.
         if opcode == 0x8:  # Close
             self._closed = True
@@ -685,23 +705,23 @@ class WebSocket:
         if opcode == 0x9:  # Ping
             self._send_frame(bytes(payload), opcode=0xA)  # Pong
             return frame_len
-        if opcode == 0xA:  # Pong — no application-level action.
+        if opcode == 0xA:  # Pong - no application-level action.
             return frame_len
 
         # Data frames (text / binary) and continuation frames.
         if opcode in (0x1, 0x2):
-            # A data frame must not arrive mid-fragmentation — RFC 6455
-            # §5.4 allows only continuation frames after the opening
+            # A data frame must not arrive mid-fragmentation - RFC 6455
+            # Sec. 5.4 allows only continuation frames after the opening
             # frame. If a peer sends one anyway, discard the abandoned
             # partial and clear the reassembly state cleanly so a later
             # continuation cannot append to a stale buffer.
             if fin:
-                # Unfragmented message — deliver immediately.
+                # Unfragmented message - deliver immediately.
                 self._frag_opcode = None
                 self._frag_buffer = bytearray()
                 self._enqueue_or_close(bytes(payload))
             else:
-                # Opening frame of a fragmented message — start buffering
+                # Opening frame of a fragmented message - start buffering
                 # (supersedes any abandoned partial).
                 self._frag_opcode = opcode
                 self._frag_buffer = bytearray(payload)
@@ -711,7 +731,7 @@ class WebSocket:
         elif opcode == 0x0:  # Continuation frame.
             if self._frag_opcode is None:
                 # A continuation with no message in progress is a protocol
-                # error — drop the stray frame rather than corrupt state.
+                # error - drop the stray frame rather than corrupt state.
                 return frame_len
             self._frag_buffer += payload
             # Cap the cumulative reassembled size: the per-frame cap bounds
@@ -721,13 +741,13 @@ class WebSocket:
                 self._close_too_big()
                 return 0
             if fin:
-                # Final fragment — the reassembled message is complete.
+                # Final fragment - the reassembled message is complete.
                 self._enqueue_or_close(bytes(self._frag_buffer))
                 self._frag_opcode = None
                 self._frag_buffer = bytearray()
 
         # The frame was fully consumed regardless of opcode-specific
-        # handling — report its length so the caller drops it and looks
+        # handling - report its length so the caller drops it and looks
         # for the next frame in the buffer.
         return frame_len
 
@@ -735,12 +755,12 @@ class WebSocket:
         """Close the connection with `1009 Message Too Big`.
 
         Used when a peer declares a frame payload past `MAX_FRAME_SIZE`.
-        Mirrors the synchronous close in `_enqueue_or_close` — no `await`
+        Mirrors the synchronous close in `_enqueue_or_close` - no `await`
         is available from inside the Protocol callback that drives
         `feed_data`.
         """
         with contextlib.suppress(Exception):
-            self._send_frame((1009).to_bytes(2, "big"), opcode=0x8)  # Close
+            self._send_frame((WS_1009_MESSAGE_TOO_BIG).to_bytes(2, "big"), opcode=0x8)  # Close
         self._closed = True
         with contextlib.suppress(Exception):
             if self.transport is not None:
@@ -749,13 +769,13 @@ class WebSocket:
     def _close_protocol_error(self) -> None:
         """Close the connection with `1002 Protocol Error`.
 
-        Used for malformed frames — e.g. an oversized (>125 byte) or
-        fragmented control frame (RFC 6455 §5.5). Like `_close_too_big`,
+        Used for malformed frames - e.g. an oversized (>125 byte) or
+        fragmented control frame (RFC 6455 Sec. 5.5). Like `_close_too_big`,
         the close is synchronous: no `await` is available from inside the
         Protocol callback that drives `feed_data`.
         """
         with contextlib.suppress(Exception):
-            self._send_frame((1002).to_bytes(2, "big"), opcode=0x8)  # Close
+            self._send_frame((WS_1002_PROTOCOL_ERROR).to_bytes(2, "big"), opcode=0x8)  # Close
         self._closed = True
         with contextlib.suppress(Exception):
             if self.transport is not None:
@@ -766,7 +786,7 @@ class WebSocket:
 
         The queue has a finite `maxsize`; if a peer outpaces the
         application reader it fills up. `put_nowait` raising
-        `QueueFull` is the backpressure signal at this layer — we
+        `QueueFull` is the backpressure signal at this layer - we
         close the connection with `1009 Message Too Big` rather than
         let the exception unwind into the asyncio Protocol callback,
         and rather than grow the queue without bound (the DoS the
@@ -775,7 +795,7 @@ class WebSocket:
         try:
             self._receive_queue.put_nowait(payload)
         except asyncio.QueueFull:
-            # Close synchronously — no `await` available from inside
+            # Close synchronously - no `await` available from inside
             # `feed_data`. The frame writer is synchronous and only
             # needs the transport.
             self._close_too_big()
@@ -784,7 +804,7 @@ class WebSocket:
         """Send a WebSocket frame.
 
         The header is built into a small bytearray and the payload is
-        handed to the transport via `writelines` — that avoids a
+        handed to the transport via `writelines` - that avoids a
         bytearray.extend copy of the (potentially KiB-sized) payload
         followed by a `bytes(frame)` copy on the way out the door.
         """

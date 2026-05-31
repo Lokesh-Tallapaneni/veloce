@@ -1,4 +1,4 @@
-"""Logging middleware — request/response access logging and request IDs."""
+"""Logging middleware - request/response access logging and request IDs."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ class LoggingMiddleware(Middleware):
     # middleware-owned dict keyed by id(request). A handler exception
     # used to leave the entry in the dict forever (memory leak), and
     # CPython can recycle id()s of GC'd requests for unrelated objects
-    # — a future request could read a stale timestamp and log
+    # - a future request could read a stale timestamp and log
     # nonsensical durations. Tying the start time to the request's
     # lifetime sidesteps both problems.
     _START_KEY = "__veloce_logging_start"
@@ -59,7 +59,7 @@ class LoggingMiddleware(Middleware):
     async def process_request(self, request: Request) -> Response | None:
         """Record the request start time for duration logging."""
         # Skip the `time.monotonic()` call entirely when the logger is
-        # not actually going to emit anything — the (typically) muted
+        # not actually going to emit anything - the (typically) muted
         # access log is a common production setup, and the clock read
         # is cheap but non-zero.
         if self.logger.isEnabledFor(logging.INFO):

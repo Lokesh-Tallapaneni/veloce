@@ -1,4 +1,4 @@
-"""HTTP and validation exceptions — plus default exception handlers.
+"""HTTP and validation exceptions - plus default exception handlers.
 
 Each named HTTP exception below corresponds to a status code from RFC 9110
 (HTTP Semantics) and RFC 6585 (Additional HTTP Status Codes). The subclass
@@ -42,6 +42,7 @@ from veloce.status import (
     HTTP_502_BAD_GATEWAY,
     HTTP_503_SERVICE_UNAVAILABLE,
     HTTP_504_GATEWAY_TIMEOUT,
+    WS_1000_NORMAL_CLOSURE,
 )
 
 if TYPE_CHECKING:
@@ -73,7 +74,7 @@ class HTTPException(Exception):
         if isinstance(status_code, str):
             if detail:
                 raise TypeError(
-                    "HTTPException: passed `detail` twice — either as the "
+                    "HTTPException: passed `detail` twice - either as the "
                     "first positional argument or as `detail=`, not both"
                 )
             detail = status_code
@@ -94,7 +95,7 @@ class HTTPException(Exception):
         super().__init__(self.detail)
 
 
-# ── 4xx — Client errors (RFC 9110 §15.5) ─────────────────────────────
+# -- 4xx - Client errors (RFC 9110 Sec. 15.5) -----------------------------
 
 
 class BadRequest(HTTPException):
@@ -188,24 +189,24 @@ class ExpectationFailed(HTTPException):
 
 
 class ImATeapot(HTTPException):
-    # RFC 2324 — not technically RFC 9110 but ubiquitous in test suites.
+    # RFC 2324 - not technically RFC 9110 but ubiquitous in test suites.
     code = HTTP_418_IM_A_TEAPOT
     description = "I'm a teapot"
 
 
 class UnprocessableEntity(HTTPException):
-    # Reused by RFC 9110 §15.5.21 (formerly WebDAV-only); also the typed-DI 422.
+    # Reused by RFC 9110 Sec. 15.5.21 (formerly WebDAV-only); also the typed-DI 422.
     code = HTTP_422_UNPROCESSABLE_ENTITY
     description = "Unprocessable Content"
 
 
 class TooManyRequests(HTTPException):
-    # RFC 6585 §4.
+    # RFC 6585 Sec. 4.
     code = HTTP_429_TOO_MANY_REQUESTS
     description = "Too Many Requests"
 
 
-# ── 5xx — Server errors (RFC 9110 §15.6) ─────────────────────────────
+# -- 5xx - Server errors (RFC 9110 Sec. 15.6) -----------------------------
 
 
 class InternalServerError(HTTPException):
@@ -214,7 +215,7 @@ class InternalServerError(HTTPException):
 
 
 class NotImplemented_(HTTPException):
-    # Trailing underscore — `NotImplemented` is a builtin singleton.
+    # Trailing underscore - `NotImplemented` is a builtin singleton.
     code = HTTP_501_NOT_IMPLEMENTED
     description = "Not Implemented"
 
@@ -234,7 +235,7 @@ class GatewayTimeout(HTTPException):
     description = "Gateway Timeout"
 
 
-# ── Validation ───────────────────────────────────────────────────────
+# -- Validation -------------------------------------------------------
 
 
 class ValidationError(UnprocessableEntity):
@@ -259,7 +260,10 @@ class RequestValidationError(ValidationError):
 
         @app.exception_handler(RequestValidationError)
         async def on_req_invalid(request, exc):
-            return JSONResponse({"errors": exc.errors}, status_code=422)
+            return JSONResponse(
+                {"errors": exc.errors},
+                status_code=HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
     Subclasses `ValidationError` so existing `except ValidationError`
     handlers continue to catch it via the MRO walk.
@@ -268,13 +272,13 @@ class RequestValidationError(ValidationError):
     pass
 
 
-# ── WebSocket exceptions ─────────────────────────────────────────────
+# -- WebSocket exceptions ---------------------------------------------
 
 
 class WebSocketDisconnect(Exception):
     """WebSocket connection closed."""
 
-    def __init__(self, code: int = 1000) -> None:
+    def __init__(self, code: int = WS_1000_NORMAL_CLOSURE) -> None:
         self.code = code
 
 
@@ -282,8 +286,8 @@ class WebSocketException(Exception):
     """Raised inside a WebSocket handler to close the connection cleanly.
 
     ASGI shape. The dispatch layer catches it and sends a
-    close frame carrying `code` (RFC 6455 §7.4.1) and the optional
-    `reason` — no traceback is propagated, since this is an
+    close frame carrying `code` (RFC 6455 Sec. 7.4.1) and the optional
+    `reason` - no traceback is propagated, since this is an
     application-driven close rather than an internal error.
     """
 
@@ -306,7 +310,7 @@ class WebSocketRequestValidationError(RequestValidationError):
     pass
 
 
-# ── Other exception families ─────────────────────────────────────────
+# -- Other exception families -----------------------------------------
 
 
 class BuildError(LookupError):
@@ -325,35 +329,35 @@ class BuildError(LookupError):
         super().__init__(f"Could not build URL for endpoint {endpoint!r}")
 
 
-# ── Lookup table — status code → subclass ────────────────────────────
+# -- Lookup table - status code -> subclass ----------------------------
 
 _BY_CODE: dict[int, type[HTTPException]] = {
-    400: BadRequest,
-    401: Unauthorized,
-    402: PaymentRequired,
-    403: Forbidden,
-    404: NotFound,
-    405: MethodNotAllowed,
-    406: NotAcceptable,
-    407: ProxyAuthenticationRequired,
-    408: RequestTimeout,
-    409: Conflict,
-    410: Gone,
-    411: LengthRequired,
-    412: PreconditionFailed,
-    413: RequestEntityTooLarge,
-    414: RequestURITooLong,
-    415: UnsupportedMediaType,
-    416: RangeNotSatisfiable,
-    417: ExpectationFailed,
-    418: ImATeapot,
-    422: UnprocessableEntity,
-    429: TooManyRequests,
-    500: InternalServerError,
-    501: NotImplemented_,
-    502: BadGateway,
-    503: ServiceUnavailable,
-    504: GatewayTimeout,
+    HTTP_400_BAD_REQUEST: BadRequest,
+    HTTP_401_UNAUTHORIZED: Unauthorized,
+    HTTP_402_PAYMENT_REQUIRED: PaymentRequired,
+    HTTP_403_FORBIDDEN: Forbidden,
+    HTTP_404_NOT_FOUND: NotFound,
+    HTTP_405_METHOD_NOT_ALLOWED: MethodNotAllowed,
+    HTTP_406_NOT_ACCEPTABLE: NotAcceptable,
+    HTTP_407_PROXY_AUTHENTICATION_REQUIRED: ProxyAuthenticationRequired,
+    HTTP_408_REQUEST_TIMEOUT: RequestTimeout,
+    HTTP_409_CONFLICT: Conflict,
+    HTTP_410_GONE: Gone,
+    HTTP_411_LENGTH_REQUIRED: LengthRequired,
+    HTTP_412_PRECONDITION_FAILED: PreconditionFailed,
+    HTTP_413_REQUEST_ENTITY_TOO_LARGE: RequestEntityTooLarge,
+    HTTP_414_REQUEST_URI_TOO_LONG: RequestURITooLong,
+    HTTP_415_UNSUPPORTED_MEDIA_TYPE: UnsupportedMediaType,
+    HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE: RangeNotSatisfiable,
+    HTTP_417_EXPECTATION_FAILED: ExpectationFailed,
+    HTTP_418_IM_A_TEAPOT: ImATeapot,
+    HTTP_422_UNPROCESSABLE_ENTITY: UnprocessableEntity,
+    HTTP_429_TOO_MANY_REQUESTS: TooManyRequests,
+    HTTP_500_INTERNAL_SERVER_ERROR: InternalServerError,
+    HTTP_501_NOT_IMPLEMENTED: NotImplemented_,
+    HTTP_502_BAD_GATEWAY: BadGateway,
+    HTTP_503_SERVICE_UNAVAILABLE: ServiceUnavailable,
+    HTTP_504_GATEWAY_TIMEOUT: GatewayTimeout,
 }
 
 
@@ -366,7 +370,7 @@ def exception_for_status(status_code: int) -> type[HTTPException]:
     return _BY_CODE.get(status_code, HTTPException)
 
 
-# ── Default exception handlers ──────────────────────────────────────
+# -- Default exception handlers --------------------------------------
 
 
 async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
@@ -375,7 +379,7 @@ async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
     Honours ``exc.status_code``, ``exc.detail`` (falling back to the
     subclass description), and ``exc.headers``.
     """
-    status = exc.status_code or 500
+    status = exc.status_code or HTTP_500_INTERNAL_SERVER_ERROR
     detail = exc.detail or getattr(exc, "description", "") or "Error"
     return JSONResponse(
         {"detail": detail},
@@ -394,7 +398,7 @@ async def request_validation_exception_handler(
     return JSONResponse({"detail": exc.errors or []}, status_code=HTTP_422_UNPROCESSABLE_ENTITY)
 
 
-# Backward-compat re-export — Aborter moved to veloce.helpers.
+# Backward-compat re-export - Aborter moved to veloce.helpers.
 def __getattr__(name: str) -> Any:
     if name == "Aborter":
         from veloce.helpers import Aborter

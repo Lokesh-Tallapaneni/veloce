@@ -1,4 +1,4 @@
-"""Resolver codegen — registration-time codegen for parameter-only handlers.
+"""Resolver codegen - registration-time codegen for parameter-only handlers.
 
 Runs at registration time only: the generated resolver is built once when a
 route is registered and never recompiled on the request path.
@@ -15,8 +15,8 @@ kind branching, and no slot attribute lookups.
 injection, security scopes). The caller then uses the interpreter, so behaviour
 is identical and only the supported subset is accelerated.
 
-Synchronous `K_PARAM_MARKER` slots — `Query()`, `Path()`, `Header()`,
-`Cookie()` — are inlined too: their request source is read directly with no
+Synchronous `K_PARAM_MARKER` slots - `Query()`, `Path()`, `Header()`,
+`Cookie()` - are inlined too: their request source is read directly with no
 `await`. Body / form / file markers stay on the interpreter because their
 source (`await request.json()` / `await request.form()`) cannot be reached from
 the synchronously-invoked compiled function.
@@ -27,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, get_args, get_origin
 
+from veloce._constants import MSG_FIELD_REQUIRED
 from veloce._handler_plan import (
     K_PARAM_MARKER,
     K_PATH,
@@ -72,7 +73,7 @@ def compile_param_resolver(
     """Generate a `(request, path_params) -> kwargs` resolver for `plan`.
 
     Returns `None` unless every slot is request / scalar-path / scalar-query /
-    a synchronous parameter marker — the cases the generated code reproduces
+    a synchronous parameter marker - the cases the generated code reproduces
     exactly. `coerce_value` and `validation_error` are injected (rather than
     imported) to avoid a `dependency` <-> codegen import cycle.
     """
@@ -119,9 +120,9 @@ def compile_param_resolver(
             lines.append("        else:")
             lines.append(
                 f"            raise _RVE([{{'loc': ('query', {name!r}), "
-                f"'msg': 'field required', 'type': 'missing'}}])"
+                f"'msg': {MSG_FIELD_REQUIRED!r}, 'type': 'missing'}}])"
             )
-        else:  # K_PATH — no query fallback, no missing-required error
+        else:  # K_PATH - no query fallback, no missing-required error
             lines.append(f"    elif _hd{j}:")
             lines.append(f"        k[{name!r}] = _d{j}")
             lines.append(f"    elif _io{j}:")
@@ -159,7 +160,7 @@ def _emit_marker(lines: list[str], ns: dict[str, Any], j: int, slot: Any) -> Non
     # plain local invocation rather than an attribute lookup on the marker.
     ns[f"_val{j}"] = marker.validate
 
-    # List-typed query / header / cookie marker — collect every repeated value.
+    # List-typed query / header / cookie marker - collect every repeated value.
     if mk in _LIST_MARKERS and get_origin(slot.target_type) in (list, set, tuple):
         inner_args = get_args(slot.target_type)
         inner = inner_args[0] if inner_args else str
@@ -212,7 +213,7 @@ def _emit_marker(lines: list[str], ns: dict[str, Any], j: int, slot: Any) -> Non
             f"'type': 'value_error.missing'}}])"
         )
     lines.append("    else:")
-    # target_type coercion guard — skip for str / None target and for raw
+    # target_type coercion guard - skip for str / None target and for raw
     # dict/list values (a JSON body cannot reach this sync path, but the guard
     # is kept identical to the interpreter).
     if slot.target_type is not None and slot.target_type is not str:

@@ -1,8 +1,8 @@
-"""Middleware base classes — the two first-class middleware shapes.
+"""Middleware base classes - the two first-class middleware shapes.
 
 - `Middleware`: split request/response hooks. Veloce-native shape, lightweight.
 - `BaseHTTPMiddleware`: a single `dispatch(request, call_next)` coroutine that
-  wraps the inner handler — a common ASGI pattern. Useful when the
+  wraps the inner handler - a common ASGI pattern. Useful when the
   middleware needs to inspect the response after computing the request.
 """
 

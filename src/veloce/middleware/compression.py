@@ -1,4 +1,4 @@
-"""Response compression middleware — CPU-bound work offloaded to executor."""
+"""Response compression middleware - CPU-bound work offloaded to executor."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
 
-# Default compressible content types — text formats and JSON/XML/JS.
+# Default compressible content types - text formats and JSON/XML/JS.
 # Image/video/audio/zip are intentionally absent: those formats already
 # carry their own compression, and re-gzipping just burns CPU for no
 # wire savings.
@@ -97,7 +97,7 @@ class GZipMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Compress the response body with gzip if the client accepts it."""
-        accept = request.headers.get("accept-encoding", "")
+        accept = request.headers.get(HEADER_ACCEPT_ENCODING, "")
         if not _accepts_gzip(accept) or len(response.body) < self.minimum_size:
             return response
 
@@ -107,7 +107,7 @@ class GZipMiddleware(Middleware):
         # Don't re-encode a response that already declares a Content-Encoding
         # (e.g. it was returned pre-gzipped, or an upstream layer encoded it).
         # Stacking encodings produces a payload no client will decode, and
-        # violates RFC 9110 §8.4 (each Content-Encoding identifies one
+        # violates RFC 9110 Sec. 8.4 (each Content-Encoding identifies one
         # transformation; doubling them silently is a bug).
         existing_encoding = response.headers.get(HEADER_CONTENT_ENCODING)
         if existing_encoding and existing_encoding.strip().lower() not in ("", "identity"):

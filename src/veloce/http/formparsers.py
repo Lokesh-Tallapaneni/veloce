@@ -1,4 +1,4 @@
-"""Multipart form-data parser — RFC 2046 boundary-delimited bodies."""
+"""Multipart form-data parser - RFC 2046 boundary-delimited bodies."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from veloce.http.datastructures import FormData, UploadFile
 
 _logger = logging.getLogger(__name__)
 
-# Multipart-parsing safety limits — guard against algorithmic-complexity
+# Multipart-parsing safety limits - guard against algorithmic-complexity
 # DoS from a body crafted with pathologically many or oversized parts.
 DEFAULT_MAX_MULTIPART_PARTS = 1000
 DEFAULT_MAX_MULTIPART_PART_SIZE = 10 * 1024 * 1024  # 10 MiB per part

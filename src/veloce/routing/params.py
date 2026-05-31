@@ -1,4 +1,4 @@
-"""Parameter markers — declarative bindings for query, path, body, and header values.
+"""Parameter markers - declarative bindings for query, path, body, and header values.
 
 Usage:
     @app.get("/items")
@@ -82,14 +82,14 @@ class ParamBase:
         self.lt = lt
         self.min_length = min_length
         self.max_length = max_length
-        # JSON Schema draft 2020-12 §6.2.1 and OpenAPI 3.1 require
+        # JSON Schema draft 2020-12 Sec. 6.2.1 and OpenAPI 3.1 require
         # `multipleOf` to be strictly greater than zero. Reject non-positive
         # values at declaration time so the error surfaces at app startup
         # rather than producing a non-conformant OpenAPI document.
         if multiple_of is not None and multiple_of <= 0:
             raise ValueError("multiple_of must be positive")
         self.multiple_of = multiple_of
-        # the renamed `regex` → `pattern`; accept either,
+        # the renamed `regex` -> `pattern`; accept either,
         # `pattern` wins when both are supplied.
         self.regex = pattern if pattern is not None else regex
         # Compile the pattern once here, at declaration time, so per-request
@@ -98,15 +98,15 @@ class ParamBase:
         self._regex_compiled = re.compile(self.regex) if self.regex is not None else None
         self.deprecated = deprecated
         self.examples = examples
-        # `Body(embed=True)` — nest the value under the param
+        # `Body(embed=True)` - nest the value under the param
         # name inside the JSON body instead of treating the whole body
         # as the value. Only meaningful for `Body` markers.
         self.embed = embed
-        # `Header(convert_underscores=...)` — when True (default)
+        # `Header(convert_underscores=...)` - when True (default)
         # an un-aliased `Header` param's name has `_` rewritten to `-`
-        # (`x_token` → `x-token`). Only meaningful for `Header` markers.
+        # (`x_token` -> `x-token`). Only meaningful for `Header` markers.
         self.convert_underscores = convert_underscores
-        # `include_in_schema` — when False the parameter is
+        # `include_in_schema` - when False the parameter is
         # still resolved at runtime but omitted from the OpenAPI
         # `parameters` list.
         self.include_in_schema = include_in_schema

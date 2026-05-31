@@ -1,4 +1,4 @@
-"""Veloce application — the main entry point."""
+"""Veloce application - the main entry point."""
 
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ from pydantic import BaseModel as _PydanticBaseModel
 
 from veloce import status
 from veloce._constants import (
+    HEADER_ACCEPT,
     HEADER_ALLOW,
+    HEADER_HOST,
     MIME_TEXT_HTML,
     MIME_TEXT_HTML_UTF8,
     MIME_TEXT_PLAIN,
@@ -38,6 +40,33 @@ from veloce._internal import (
     _extract_host,
     _is_async_callable,
     _reject_header_crlf,
+)
+from veloce._protocol_constants import (
+    ASGI_EVENT_HTTP_RESPONSE_BODY,
+    ASGI_EVENT_HTTP_RESPONSE_START,
+    ASGI_EVENT_LIFESPAN_SHUTDOWN,
+    ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE,
+    ASGI_EVENT_LIFESPAN_STARTUP,
+    ASGI_EVENT_LIFESPAN_STARTUP_COMPLETE,
+    ASGI_EVENT_LIFESPAN_STARTUP_FAILED,
+    ASGI_EVENT_WS_CLOSE,
+    ASGI_EVENT_WS_CONNECT,
+    ASGI_SCOPE_HTTP,
+    ASGI_SCOPE_LIFESPAN,
+    ASGI_SCOPE_WEBSOCKET,
+    HTTP_METHOD_GET,
+    HTTP_METHOD_HEAD,
+    HTTP_METHOD_OPTIONS,
+    LIFECYCLE_SHUTDOWN,
+    LIFECYCLE_STARTUP,
+    RAW_HEADER_CONTENT_LENGTH,
+    RAW_HEADER_CONTENT_TYPE,
+    RAW_HEADER_SET_COOKIE,
+    ROUTE_METHOD_WEBSOCKET,
+    TRACE_HEADER_TRACEPARENT,
+    TRACE_HEADER_TRACESTATE,
+    URL_SCHEME_HTTP,
+    URL_SCHEME_HTTPS,
 )
 from veloce.blueprints import _endpoint_blueprint
 from veloce.contrib.staticfiles import StaticFiles
@@ -76,7 +105,7 @@ if TYPE_CHECKING:  # pragma: no cover
     import ssl
 
 
-# Cache of `(wants_request, wants_exc)` flags per exception handler — the
+# Cache of `(wants_request, wants_exc)` flags per exception handler - the
 # `inspect.signature` walk inside `_call_exc_handler` repeats on every
 # raised exception otherwise. WeakKey so handler GC reclaims the entry.
 _exc_handler_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool, bool]] = (
@@ -93,14 +122,14 @@ _MISSING: Any = object()
 # `_reject_header_crlf(...).encode()` round-trip; values here are
 # trusted (they originate from response.py class definitions) so the
 # CRLF/NUL check is skipped on cache hit. Mutation of the cached
-# strings is impossible — str is immutable — so a handler-side write
+# strings is impossible - str is immutable - so a handler-side write
 # like `response.content_type = "text/csv"` falls through to the
 # uncached path and is validated as before.
 _CT_BYTES_CACHE: dict[str, bytes] = {
-    MIME_JSON: b"application/json",
-    MIME_HTML: b"text/html; charset=utf-8",
-    MIME_TEXT_PLAIN_UTF8: b"text/plain; charset=utf-8",
-    MIME_OCTET: b"application/octet-stream",
+    MIME_JSON: MIME_JSON.encode("ascii"),
+    MIME_HTML: MIME_HTML.encode("ascii"),
+    MIME_TEXT_PLAIN_UTF8: MIME_TEXT_PLAIN_UTF8.encode("ascii"),
+    MIME_OCTET: MIME_OCTET.encode("ascii"),
 }
 
 # Pre-encoded ASCII bytes for small content-length values. Body sizes
@@ -116,10 +145,10 @@ def _prefers_html(request: Request) -> bool:
     Used by the debug traceback page: a browser (`Accept: text/html`) gets the
     rich HTML view, while curl / CLI / programmatic clients (`*/*`, no Accept,
     or an explicit text/plain preference) keep the plain-text traceback. A
-    missing Accept header is treated as "no HTML preference" → plain text,
+    missing Accept header is treated as "no HTML preference" -> plain text,
     preserving the pre-existing debug Content-Type for non-browser clients.
     """
-    accept = request.headers.get("accept")
+    accept = request.headers.get(HEADER_ACCEPT)
     if not accept:
         return False
     return request.accept_mimetypes.best_match([MIME_TEXT_PLAIN, MIME_TEXT_HTML]) == MIME_TEXT_HTML
@@ -128,18 +157,18 @@ def _prefers_html(request: Request) -> bool:
 def _trace_carrier(request: Request) -> dict[str, str] | None:
     """Inbound W3C trace headers as a carrier dict, or `None` if absent.
 
-    Only `traceparent` / `tracestate` are copied — the dimensions a tracing
-    bridge needs to continue a distributed trace — keeping the framework core
+    Only `traceparent` / `tracestate` are copied - the dimensions a tracing
+    bridge needs to continue a distributed trace - keeping the framework core
     free of any OpenTelemetry dependency. Returns `None` (not an empty dict)
     when no `traceparent` is present so the bridge can cheaply skip extraction.
     """
-    traceparent = request.headers.get("traceparent")
+    traceparent = request.headers.get(TRACE_HEADER_TRACEPARENT)
     if traceparent is None:
         return None
-    carrier = {"traceparent": traceparent}
-    tracestate = request.headers.get("tracestate")
+    carrier = {TRACE_HEADER_TRACEPARENT: traceparent}
+    tracestate = request.headers.get(TRACE_HEADER_TRACESTATE)
     if tracestate is not None:
-        carrier["tracestate"] = tracestate
+        carrier[TRACE_HEADER_TRACESTATE] = tracestate
     return carrier
 
 
@@ -161,11 +190,11 @@ class _LifespanManager:
         if self._entered:
             raise RuntimeError("lifespan_context already entered")
         self._entered = True
-        await self._app._run_lifecycle("startup")
+        await self._app._run_lifecycle(LIFECYCLE_STARTUP)
         return self._app
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        await self._app._run_lifecycle("shutdown")
+        await self._app._run_lifecycle(LIFECYCLE_SHUTDOWN)
         self._entered = False
 
 
@@ -187,7 +216,7 @@ class _AppContext:
 
     def __enter__(self) -> Veloce:
         self._app_token = _current_app_var.set(self._app)
-        # Fresh `g` store — each app_context block gets its own.
+        # Fresh `g` store - each app_context block gets its own.
         self._g_token = _RequestGlobals._ctx_var.set({})
         appcontext_pushed.send(self._app)
         return self._app
@@ -206,7 +235,7 @@ class _TestRequestContext:
 
     Inside the block: `current_app`, `g`, and `request._state` resolve.
     Outside: the bindings are unwound. No middleware, no DI, no handler
-    — that's what `TestClient` is for. This is for unit tests that just
+    - that's what `TestClient` is for. This is for unit tests that just
     need `current_app.config[...]` or `g.foo = ...` to work in isolation.
     """
 
@@ -373,7 +402,7 @@ class Veloce(Router):
         instance_path: str | None = None,
         **extra: Any,
     ) -> None:
-        # App-level `dependencies` / `responses` — applied
+        # App-level `dependencies` / `responses` - applied
         # to every route registered on the app (per-route entries are
         # appended / overlaid on top).
         super().__init__(
@@ -385,10 +414,10 @@ class Veloce(Router):
         # arbitrary `**extra` ctor kwargs are stashed on
         # `app.extra` for extensions / OpenAPI customisation to read.
         self.extra: dict[str, Any] = dict(extra)
-        # instance folder — explicit override, else computed from
+        # instance folder - explicit override, else computed from
         # `package_root` on first `instance_path` access.
         self._instance_path = instance_path
-        # `import_name` — defaults to the caller's module so
+        # `import_name` - defaults to the caller's module so
         # `Veloce(__name__)` works. Used to compute `root_path` (the
         # package directory) for template / static-file resolution.
         if import_name is None:
@@ -400,7 +429,7 @@ class Veloce(Router):
         self.title = title
         self.version = version
         self.description = description
-        # OpenAPI 3.1 §4.8.2 `info.summary` — a short one-line summary
+        # OpenAPI 3.1 Sec. 4.8.2 `info.summary` - a short one-line summary
         # of the API, distinct from the longer `description`.
         self.summary = summary
         self.debug = debug
@@ -424,7 +453,7 @@ class Veloce(Router):
 
         self.state: State = State()
         # Configuration. `Config` is a dict subclass with
-        # loader methods (from_object, from_pyfile, from_mapping, …).
+        # loader methods (from_object, from_pyfile, from_mapping, ...).
         # Seeded with the documented default keys so `app.config[k]`
         # returns a value rather than raising `KeyError`.
         self.config: Config = Config(Config.default_config())
@@ -441,22 +470,22 @@ class Veloce(Router):
         self.logger = logging.getLogger(self.import_name)
 
         self._middlewares: list[Middleware] = []
-        # Standard ASGI middleware — `(class, options)` pairs. Each wraps the
+        # Standard ASGI middleware - `(class, options)` pairs. Each wraps the
         # whole ASGI application (instantiated as `cls(app, **options)`) and
         # is assembled lazily into `_asgi_stack` on the first request.
         self._asgi_middleware: list[tuple[Any, dict[str, Any]]] = []
         self._asgi_stack: Callable | None = None
-        # Observability instrumentation hooks — each is invoked once per
+        # Observability instrumentation hooks - each is invoked once per
         # finished HTTP request with a `RequestMetrics` record. Empty by
         # default, so an un-instrumented app pays nothing.
         self._instrumentation: list[Callable] = []
-        # Dev-mode event-loop blocking watchdog — armed during startup only
+        # Dev-mode event-loop blocking watchdog - armed during startup only
         # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
         # (and free) for every other app.
         self._watchdog: Any = None
         self._exception_handlers: dict[type, Callable] = {}
         self._status_handlers: dict[int, Callable] = {}
-        # Route-introspection caches — rebuilt lazily on next access after
+        # Route-introspection caches - rebuilt lazily on next access after
         # a mutation. Invalidated through `_invalidate_route_caches()`,
         # which fires from `add_route` / `include_router` (the two
         # entry-points every higher-level registration ultimately funnels
@@ -466,17 +495,17 @@ class Veloce(Router):
         self._cached_url_map: _URLMap | None = None
         # Cached `_find_exception_handler` MRO walks; invalidated on
         # any `register_error_handler` call. The cache assumes the
-        # exception-type space is bounded — typical applications raise
+        # exception-type space is bounded - typical applications raise
         # a fixed set of exception classes, so it never grows beyond a
         # few dozen entries. An app that synthesises new exception
         # classes per request would grow this unboundedly; not a target
         # workload.
         self._exc_handler_cache: dict[type, Callable | None] = {}
-        # `exception_handlers=` ctor mapping — keys are
+        # `exception_handlers=` ctor mapping - keys are
         # exception classes or integer status codes.
         for _key, _handler in (exception_handlers or {}).items():
             self.add_exception_handler(_key, _handler)
-        # ASGI shape `middleware=` ctor list — each entry is
+        # ASGI shape `middleware=` ctor list - each entry is
         # a middleware instance applied in the given order.
         for _mw in middleware or []:
             self.add_middleware(_mw)
@@ -489,7 +518,7 @@ class Veloce(Router):
         # fresh DependencyResolver doesn't pay the build + triple-probe cost.
         # WeakKeyDictionary so a transient override target (a per-test
         # lambda, a hot-reloaded factory) does not pin its plan for the
-        # process lifetime — strong-keyed callable caches become leaks
+        # process lifetime - strong-keyed callable caches become leaks
         # under test-suite churn.
         self._override_subplans: weakref.WeakKeyDictionary[Callable, Any] = (
             weakref.WeakKeyDictionary()
@@ -509,21 +538,21 @@ class Veloce(Router):
         self._teardown_request_hooks: list[Callable] = []
         # Blueprint hooks bucketed by blueprint name. Dispatch only walks
         # the bucket whose name matches the matched route's `endpoint`
-        # prefix, avoiding the O(B·H) per-request no-op gate iteration
+        # prefix, avoiding the O(B*H) per-request no-op gate iteration
         # the flattened-with-startswith-gate approach used to incur.
         self._bp_before_hooks: dict[str, list[Callable]] = {}
         self._bp_after_hooks: dict[str, list[Callable]] = {}
         self._bp_teardown_hooks: dict[str, list[Callable]] = {}
         self._teardown_appcontext_hooks: list[Callable] = []
         self._context_processors: list[Callable] = []
-        # `(prefix, prefix + "/", sub_app)` — the second slot is the
+        # `(prefix, prefix + "/", sub_app)` - the second slot is the
         # boundary string the dispatcher compares against the request path,
         # precomputed once so the per-request loop avoids re-allocating it.
         self._mounted_apps: list[tuple[str, str, Any]] = []
         # Same shape for ASGI-layer mounts dispatched with the raw scope.
         self._asgi_mounts: list[tuple[str, str, Any]] = []
         self._http_middleware_funcs: list[Callable] = []  # @app.middleware("http") funcs
-        # Jinja2 helper registrations — applied to the env on each render.
+        # Jinja2 helper registrations - applied to the env on each render.
         self._template_filters: list[tuple[str, Callable]] = []
         self._template_globals: list[tuple[str, Callable]] = []
         self._template_tests: list[tuple[str, Callable]] = []
@@ -532,25 +561,25 @@ class Veloce(Router):
         # runs inside url_for/url_path_for and can inject default kwargs.
         self._url_value_preprocessors: list[Callable] = []
         self._url_default_funcs: list[Callable] = []
-        # `url_build_error_handlers` — list of `(error, endpoint, values)`
+        # `url_build_error_handlers` - list of `(error, endpoint, values)`
         # callbacks consulted when `url_for` can't build a URL.
         self.url_build_error_handlers: list[Callable] = []
-        # `app.blueprints` view + `iter_blueprints()` iterator —
-        # name → Blueprint of every successfully registered blueprint.
+        # `app.blueprints` view + `iter_blueprints()` iterator -
+        # name -> Blueprint of every successfully registered blueprint.
         self._blueprints_map: dict[str, Any] = {}
-        # `@app.shell_context_processor` registry — each function
+        # `@app.shell_context_processor` registry - each function
         # returns a dict that's merged into `veloce shell`'s namespace.
         self._shell_context_processors: list[Callable] = []
         # Lazily-built `click.Group` for app-defined CLI commands. Built
         # on first `app.cli` access so `click` isn't a hard import.
         self._cli_group: Any = None
-        # `app.webhooks` — an APIRouter whose routes are pure
+        # `app.webhooks` - an APIRouter whose routes are pure
         # documentation: registered for the OpenAPI 3.1 `webhooks`
         # section, never dispatched.
         from veloce.blueprints import Blueprint
 
         self.webhooks = Blueprint("webhooks")
-        # JSON provider — the. Class attribute is overridable;
+        # JSON provider - the. Class attribute is overridable;
         # instance is built lazily on first `app.json` access.
         from veloce.json_provider import DefaultJSONProvider
 
@@ -560,7 +589,7 @@ class Veloce(Router):
         # access so subclasses can override before use without paying
         # construction cost for apps that don't touch it.
         self._aborter: Any = None
-        # Static-folder attributes — `static_folder` is
+        # Static-folder attributes - `static_folder` is
         # resolved relative to `package_root` if not absolute. Mounting
         # a `StaticFiles` handler at `static_url_path` is opt-in via
         # `app.static(prefix=app.static_url_path, directory=app.static_folder)`.
@@ -582,9 +611,9 @@ class Veloce(Router):
                 tdir = os.path.join(self.package_root, tdir)
             self._templates = Jinja2Templates(directory=tdir)
 
-    # ── Middleware ────────────────────────────────────────────────
+    # -- Middleware ------------------------------------------------
 
-    # ── Properties ─────────────────────────────────────────────
+    # -- Properties ---------------------------------------------
 
     @property
     def url_map(self) -> _URLMap:
@@ -660,19 +689,19 @@ class Veloce(Router):
             Router.include_router(self, router, prefix=effective or "")
             self._invalidate_route_caches()
 
-    # ── Middleware ────────────────────────────────────────────────
+    # -- Middleware ------------------------------------------------
 
     def add_middleware(self, middleware: Any, **options: Any) -> None:
         """Add middleware to the pipeline.
 
         Call forms:
 
-        - `add_middleware(VeloceMiddlewareClass, **options)` — a class
+        - `add_middleware(VeloceMiddlewareClass, **options)` - a class
           subclassing `Middleware` is instantiated with `**options` and
           appended to the request/response pipeline.
-        - `add_middleware(instance)` — append an already-built `Middleware`
+        - `add_middleware(instance)` - append an already-built `Middleware`
           instance directly.
-        - `add_middleware(ASGIMiddlewareClass, **options)` — a class that
+        - `add_middleware(ASGIMiddlewareClass, **options)` - a class that
           is *not* a `Middleware` subclass is treated as a standard ASGI
           middleware: it wraps the whole application and is instantiated
           as `ASGIMiddlewareClass(app, **options)` when the ASGI stack is
@@ -685,22 +714,22 @@ class Veloce(Router):
                 self._middlewares.append(middleware(**options))
             elif issubclass(middleware, BaseHTTPMiddleware):
                 # `BaseHTTPMiddleware` is a dispatch-shape middleware, not
-                # an ASGI app — registering it as ASGI would wire the app
+                # an ASGI app - registering it as ASGI would wire the app
                 # in as its `dispatch` and fail at request time.
                 raise TypeError(
                     f"{middleware.__name__} is a BaseHTTPMiddleware "
-                    "(dispatch-shape) — register it with add_http_middleware(), "
+                    "(dispatch-shape) - register it with add_http_middleware(), "
                     "not add_middleware()."
                 )
             else:
-                # A standard ASGI middleware class — it needs the app it
+                # A standard ASGI middleware class - it needs the app it
                 # wraps, so defer construction until the stack is built.
                 self._asgi_middleware.append((middleware, options))
                 self._asgi_stack = None
         elif isinstance(middleware, Middleware):
             self._middlewares.append(middleware)
         else:
-            # A bare ASGI middleware instance cannot be wired up — veloce
+            # A bare ASGI middleware instance cannot be wired up - veloce
             # has to supply the wrapped app, which only the class form
             # allows.
             raise TypeError(
@@ -714,7 +743,7 @@ class Veloce(Router):
         """Register an observability instrumentation hook.
 
         `hook` is called once per finished HTTP request with a
-        `RequestMetrics` record — the request method, the concrete path,
+        `RequestMetrics` record - the request method, the concrete path,
         the matched route *template* (a low-cardinality metric label), the
         status code, and the wall-clock duration in milliseconds. It may be
         a plain function or a coroutine function. A hook that raises is
@@ -727,7 +756,7 @@ class Veloce(Router):
                 statsd.timing(metrics.route or "unmatched", metrics.duration_ms)
 
         With no hook registered the request path carries no instrumentation
-        cost — not even a clock read.
+        cost - not even a clock read.
         """
         self._instrumentation.append(hook)
         return hook
@@ -737,8 +766,8 @@ class Veloce(Router):
 
         - Marks the session cookie `Secure`, `HttpOnly`, and (unless
           already configured) `SameSite=Lax`.
-        - Registers `SecurityHeadersMiddleware` — `nosniff`, frame-deny,
-          a referrer policy, and a one-year HSTS max-age — unless one is
+        - Registers `SecurityHeadersMiddleware` - `nosniff`, frame-deny,
+          a referrer policy, and a one-year HSTS max-age - unless one is
           already present.
 
         Call once after construction, before serving. Production-oriented:
@@ -766,17 +795,17 @@ class Veloce(Router):
 
         warnings: list[str] = []
         if self.debug or self.config.get("DEBUG"):
-            warnings.append("DEBUG is enabled — disable it before deploying to production.")
+            warnings.append("DEBUG is enabled - disable it before deploying to production.")
         if not self.config.get("SECRET_KEY"):
-            warnings.append("SECRET_KEY is not set — session signing falls back to weak defaults.")
+            warnings.append("SECRET_KEY is not set - session signing falls back to weak defaults.")
         has_session = any(isinstance(m, SessionMiddleware) for m in self._middlewares)
         if has_session and not self.config.get("SESSION_COOKIE_SECURE"):
             warnings.append(
-                "SESSION_COOKIE_SECURE is off — the session cookie can be sent over plain HTTP."
+                "SESSION_COOKIE_SECURE is off - the session cookie can be sent over plain HTTP."
             )
         if not any(isinstance(m, SecurityHeadersMiddleware) for m in self._middlewares):
             warnings.append(
-                "No SecurityHeadersMiddleware registered — responses ship without hardening "
+                "No SecurityHeadersMiddleware registered - responses ship without hardening "
                 "headers (call app.use_secure_defaults())."
             )
         return warnings
@@ -845,7 +874,7 @@ class Veloce(Router):
         """
         if self._templates is None:
             raise RuntimeError(
-                "no Jinja environment — pass `template_folder=` to Veloce(...) "
+                "no Jinja environment - pass `template_folder=` to Veloce(...) "
                 "or bind a Jinja2Templates instance first"
             )
         return self._templates.env
@@ -856,7 +885,7 @@ class Veloce(Router):
 
         The `FileSystemLoader` (or whatever loader the bound
         `Jinja2Templates` env uses). `None` when no templating is
-        configured — Veloce returns `None` for an app with no template
+        configured - Veloce returns `None` for an app with no template
         folder rather than raising.
         """
         if self._templates is None:
@@ -870,7 +899,7 @@ class Veloce(Router):
         Veloce resolves `<package_root>/instance` as a per-deployment
         writable directory for config, SQLite files, uploads, etc.
         An explicit `instance_path=` constructor argument overrides
-        this computed default. The directory is *not* auto-created —
+        this computed default. The directory is *not* auto-created -
         the caller decides whether to `mkdir` it.
         """
         import os
@@ -884,7 +913,7 @@ class Veloce(Router):
         """Accessor that returns the `veloce.signals` module.
 
         Veloce ships its signals as module-level singletons, so this
-        attribute returns the module — `app.signal_namespace.request_started`
+        attribute returns the module - `app.signal_namespace.request_started`
         is the same `Signal` instance as `veloce.signals.request_started`.
         """
         from veloce import signals
@@ -915,7 +944,7 @@ class Veloce(Router):
     def got_first_request(self) -> bool:
         """`True` after the first request has been fully handled.
 
-        compatibility — read-only. Useful when conditional setup
+        compatibility - read-only. Useful when conditional setup
         depends on whether the app has bootstrapped yet, e.g. a
         `before_first_request` hook firing exactly once is reflected
         here as `True`.
@@ -936,7 +965,7 @@ class Veloce(Router):
         The `veloce` console script automatically discovers and mounts
         the group as a `custom` subcommand when launched with an app
         reference. `click` is required at access time but not at import
-        time — the `ImportError` is deferred and produces a useful
+        time - the `ImportError` is deferred and produces a useful
         message instead of a hard-import crash on environments that
         don't need the CLI.
         """
@@ -945,7 +974,7 @@ class Veloce(Router):
                 import click
             except ImportError as err:  # pragma: no cover
                 raise RuntimeError(
-                    "app.cli requires `click` — install with: pip install click"
+                    "app.cli requires `click` - install with: pip install click"
                 ) from err
             self._cli_group = click.Group(
                 name=getattr(self, "title", "app").lower().replace(" ", "-"),
@@ -971,7 +1000,7 @@ class Veloce(Router):
     # Veloce exposes the internal dispatcher under two names downstream
     # extension code reaches for. Both alias `_dispatch_request`.
     # `full_dispatch_request` runs the full before/after_request chain
-    # — which `_dispatch_request` already does inline — so both names
+    # - which `_dispatch_request` already does inline - so both names
     # point at the same method.
     async def dispatch_request(self, request: Request) -> Any:
         """an alias for `_dispatch_request`."""
@@ -987,9 +1016,9 @@ class Veloce(Router):
 
         Walks the registered hooks in order; if any hook returns a
         non-None value it short-circuits the chain and that value is
-        returned (the contract — a non-None return becomes the
+        returned (the contract - a non-None return becomes the
         response). Both sync and async hooks are supported. App-level
-        hooks fire first, then the matched-blueprint bucket — the
+        hooks fire first, then the matched-blueprint bucket - the
         same shape `_dispatch_request` uses.
         """
         for hook in self._before_request_hooks:
@@ -1010,7 +1039,7 @@ class Veloce(Router):
         Hooks fire in **reverse** registration order; each hook may
         return a replacement response (the contract: a None return
         keeps the existing response). App-level hooks reverse-iterate
-        first, then the matched-blueprint bucket — mirrors
+        first, then the matched-blueprint bucket - mirrors
         `_dispatch_request`'s ordering.
         """
         for hook in reversed(self._after_request_hooks):
@@ -1050,11 +1079,11 @@ class Veloce(Router):
         """Coerce a handler-return value into a `Response`.
 
         Accepts (with this coercion table):
-        - `Response` → returned as-is
-        - `str` / `bytes` → wrapped as a text/HTML response
-        - `dict` / `list` → wrapped as a JSON response via `jsonify`
+        - `Response` -> returned as-is
+        - `str` / `bytes` -> wrapped as a text/HTML response
+        - `dict` / `list` -> wrapped as a JSON response via `jsonify`
         - `tuple` of `(body,)`, `(body, status)`, `(body, status, headers)`,
-          or `(body, headers)` → unpacked and re-coerced
+          or `(body, headers)` -> unpacked and re-coerced
         """
         from veloce.helpers import jsonify
 
@@ -1105,7 +1134,7 @@ class Veloce(Router):
     def async_test_client(self, **kwargs: Any) -> Any:
         """Return an `AsyncTestClient` for this app.
 
-        The async counterpart of `test_client()` — used as
+        The async counterpart of `test_client()` - used as
         `async with app.async_test_client() as client:` inside an async
         test, so requests are awaited on the test's own running loop
         rather than driven through a private loop. Kwargs are forwarded
@@ -1128,7 +1157,7 @@ class Veloce(Router):
     def test_request_context(
         self,
         path: str = "/",
-        method: str = "GET",
+        method: str = HTTP_METHOD_GET,
         headers: dict[str, str] | None = None,
         query_string: str = "",
         body: bytes = b"",
@@ -1137,7 +1166,7 @@ class Veloce(Router):
 
         Inside `with app.test_request_context(): ...`, `current_app`, `g`,
         and the request-scoped contextvars resolve as if Veloce
-        had just received that request — without spinning up the full
+        had just received that request - without spinning up the full
         dispatch pipeline. Strict subset of what `handle_request` does:
         no middleware, no DI, no handler.
         """
@@ -1156,7 +1185,7 @@ class Veloce(Router):
         bare callable, or a class (which is instantiated with no args).
         Returns the registered object so it can be used as a decorator.
         """
-        # Class → instance.
+        # Class -> instance.
         if isinstance(middleware, type):
             middleware = middleware()
         if not callable(middleware):
@@ -1167,7 +1196,7 @@ class Veloce(Router):
         return middleware
 
     def middleware(self, middleware_class_or_type: type | str, **kwargs) -> Any:
-        """Add middleware — supports both a class form and a decorator form.
+        """Add middleware - supports both a class form and a decorator form.
 
         Class form: app.middleware(CORSMiddleware, allow_origins=["*"])
         Decorator form:
@@ -1192,7 +1221,7 @@ class Veloce(Router):
                 )
             self.add_middleware(middleware_class_or_type, **kwargs)
 
-    # ── Exception handlers ───────────────────────────────────────
+    # -- Exception handlers ---------------------------------------
 
     def register_error_handler(self, code_or_exception: int | type, func: Callable) -> None:
         """Register an error handler without a decorator."""
@@ -1219,7 +1248,7 @@ class Veloce(Router):
     def _find_exception_handler(self, exc_type: type) -> Callable | None:
         """Walk `exc_type`'s MRO looking for a registered handler.
 
-        Handlers registered against a base class catch every subclass —
+        Handlers registered against a base class catch every subclass -
         e.g. `@app.exception_handler(HTTPException)` catches every
         `NotFound`, `Forbidden`, etc. raised through `abort()`. The
         lookup result is cached per exception type; the cache is cleared
@@ -1250,7 +1279,7 @@ class Veloce(Router):
     errorhandler = exception_handler
 
     def add_exception_handler(self, exc_class_or_status: type | int, handler: Callable) -> None:
-        """Imperative exception-handler registration — ASGI shape.
+        """Imperative exception-handler registration - ASGI shape.
 
         The non-decorator form of `@app.exception_handler(...)`.
         Accepts an exception class (matched by MRO at dispatch time) or
@@ -1291,7 +1320,9 @@ class Veloce(Router):
             if request is None:
                 from veloce.http.request import Request as _Req
 
-                request = _Req(method="GET", path="/", query_string="", headers={}, body=b"")
+                request = _Req(
+                    method=HTTP_METHOD_GET, path="/", query_string="", headers={}, body=b""
+                )
             result = await self._call_exc_handler(handler, request, exc)
             if isinstance(result, Response):
                 return result
@@ -1309,15 +1340,15 @@ class Veloce(Router):
         Returns a 200 response with an empty body and an `Allow` header
         listing every method registered for `path`, augmented with
         `HEAD` (whenever `GET` is supported) and `OPTIONS` itself per
-        RFC 9110 §9.3.7. Callers that register an explicit OPTIONS
+        RFC 9110 Sec. 9.3.7. Callers that register an explicit OPTIONS
         handler can use this to compose the default `Allow` set.
         """
         allowed = self.get_allowed_methods(path)
         advertised = list(allowed)
-        if "GET" in advertised and "HEAD" not in advertised:
-            advertised.append("HEAD")
-        if "OPTIONS" not in advertised:
-            advertised.append("OPTIONS")
+        if HTTP_METHOD_GET in advertised and HTTP_METHOD_HEAD not in advertised:
+            advertised.append(HTTP_METHOD_HEAD)
+        if HTTP_METHOD_OPTIONS not in advertised:
+            advertised.append(HTTP_METHOD_OPTIONS)
         return Response(
             status_code=status.HTTP_200_OK,
             body=b"",
@@ -1330,7 +1361,7 @@ class Veloce(Router):
     ) -> Response:
         """Dispatch an arbitrary exception.
 
-        `HTTPException` → `handle_http_exception`. Otherwise walks
+        `HTTPException` -> `handle_http_exception`. Otherwise walks
         registered class handlers (MRO); on no match, logs via
         `log_exception` and returns 500. Pass `request=` to propagate
         the real failing request to the registered handler; omit to
@@ -1344,7 +1375,9 @@ class Veloce(Router):
             if request is None:
                 from veloce.http.request import Request as _Req
 
-                request = _Req(method="GET", path="/", query_string="", headers={}, body=b"")
+                request = _Req(
+                    method=HTTP_METHOD_GET, path="/", query_string="", headers={}, body=b""
+                )
             result = await self._call_exc_handler(handler, request, exc)
             if isinstance(result, Response):
                 return result
@@ -1359,10 +1392,10 @@ class Veloce(Router):
     def view_functions(self) -> dict[str, Callable]:
         """A `{endpoint_name: handler}` view of registered routes.
 
-        Endpoint names follow a simple rule — the route's `name=`
+        Endpoint names follow a simple rule - the route's `name=`
         kwarg, or the handler's `__name__` when no name is set; blueprint
         routes are prefixed with `<bpname>.`. Returned dict is a fresh
-        snapshot — mutation doesn't poison framework state.
+        snapshot - mutation doesn't poison framework state.
         """
         cached = self._cached_view_functions
         if cached is None:
@@ -1416,7 +1449,7 @@ class Veloce(Router):
         """Inspection view of registered error handlers.
 
         Returns a `{blueprint_name_or_None: {key: handler}}` mapping.
-        veloce keeps a flat registry (no per-blueprint sub-tables —
+        veloce keeps a flat registry (no per-blueprint sub-tables -
         blueprint handlers are merged into the app's dicts at
         `register_blueprint` time), so this view always carries a
         single `None` key whose value contains every registered
@@ -1490,7 +1523,7 @@ class Veloce(Router):
         """View of registered URL-default callbacks."""
         return {None: list(self._url_default_funcs)}
 
-    # ── Before/After request hooks ───────────────────────────────
+    # -- Before/After request hooks -------------------------------
 
     def before_request(self, func: Callable) -> Callable:
         """Register a function to run before each request."""
@@ -1514,7 +1547,7 @@ class Veloce(Router):
 
         Always includes `app` (this Veloce instance) and `g`. Each
         registered shell-context-processor's return dict overlays on
-        top, in registration order — later processors win on conflicts.
+        top, in registration order - later processors win on conflicts.
         """
         from veloce.helpers import g
 
@@ -1528,7 +1561,7 @@ class Veloce(Router):
     def before_first_request(self, func: Callable) -> Callable:
         """Register a function to run exactly once on the first request.
 
-        A legacy hook style — lifespan startup handlers are preferred,
+        A legacy hook style - lifespan startup handlers are preferred,
         but first-request hooks are still a common pattern,
         so both are supported. Hooks fire serially in registration
         order; single-fire is guarded with an `asyncio.Lock` so
@@ -1574,7 +1607,7 @@ class Veloce(Router):
         self._context_processors.append(func)
         return func
 
-    # ── Jinja2 helper registration ───────────────────────────────
+    # -- Jinja2 helper registration -------------------------------
 
     def template_filter(self, name: str | None = None) -> Callable:
         """Register a function as a Jinja filter.
@@ -1596,7 +1629,7 @@ class Veloce(Router):
         return decorator
 
     def template_global(self, name: str | None = None) -> Callable:
-        """Register a callable as a Jinja global — accessible from any
+        """Register a callable as a Jinja global - accessible from any
         template by name. Same shape as `template_filter`."""
 
         def decorator(func: Callable) -> Callable:
@@ -1611,7 +1644,7 @@ class Veloce(Router):
         self._template_globals.append((name or func.__name__, func))
 
     def template_test(self, name: str | None = None) -> Callable:
-        """Register a Jinja test — used in `{% if x is name %}` constructs."""
+        """Register a Jinja test - used in `{% if x is name %}` constructs."""
 
         def decorator(func: Callable) -> Callable:
             test_name = name or func.__name__
@@ -1633,7 +1666,7 @@ class Veloce(Router):
 
         Runs every `@app.context_processor` callback and folds the
         returned dicts into `context` **in place**, without overriding
-        keys the caller already set (the documented semantics — explicit context
+        keys the caller already set (the documented semantics - explicit context
         wins). Returns the same dict for chaining.
         """
         for processor in self._context_processors:
@@ -1643,7 +1676,7 @@ class Veloce(Router):
                     context.setdefault(k, v)
         return context
 
-    # ── URL processors (URL hooks) ─────────────────────────────
+    # -- URL processors (URL hooks) -----------------------------
 
     def url_value_preprocessor(self, func: Callable) -> Callable:
         """Register a function `fn(endpoint, values)` that can mutate the
@@ -1734,7 +1767,7 @@ class Veloce(Router):
           they're already registered.
 
         Mountable multiple times on different apps with different
-        prefixes — the blueprint itself stays unmodified.
+        prefixes - the blueprint itself stays unmodified.
         """
         from veloce.blueprints import Blueprint
 
@@ -1791,7 +1824,7 @@ class Veloce(Router):
         # walking every blueprint's gated wrapper on every request.
         # Previously: a `_gate` closure per hook in the flat
         # `_before_request_hooks` list did a `req.endpoint.startswith(...)`
-        # check on every hook for every request — O(B·H) no-op work for
+        # check on every hook for every request - O(B*H) no-op work for
         # apps with many blueprints. Now the dispatcher reads
         # `_bp_before_hooks[bp_name]` directly.
         if blueprint._before_request_hooks:
@@ -1803,7 +1836,7 @@ class Veloce(Router):
                 blueprint._teardown_request_hooks
             )
 
-        # URL processors (L7) — wrapped so they only fire for endpoints
+        # URL processors (L7) - wrapped so they only fire for endpoints
         # belonging to the blueprint. The endpoint string is the first
         # arg of the `(endpoint, values)` callable.
         url_gate_prefix = f"{bp_name}."
@@ -1852,7 +1885,7 @@ class Veloce(Router):
 
             async def _stub_view(request: Request, **path_params: Any) -> Any:
                 raise RuntimeError(
-                    f"endpoint {endpoint!r} has no view function yet — "
+                    f"endpoint {endpoint!r} has no view function yet - "
                     f"attach one with @app.endpoint({endpoint!r})"
                 )
 
@@ -1861,12 +1894,12 @@ class Veloce(Router):
         self.add_route(
             path=rule,
             handler=view_func,
-            methods=methods or ["GET"],
+            methods=methods or [HTTP_METHOD_GET],
             name=endpoint,
             **kwargs,
         )
 
-    # ── Dependency overrides (for testing) ────────────────────────
+    # -- Dependency overrides (for testing) ------------------------
 
     def dependency_overrides_provider(self) -> dict[Callable, Callable]:
         """Return the dependency override mapping."""
@@ -1894,14 +1927,14 @@ class Veloce(Router):
         # long-lived test suite that swaps in hundreds of fakes doesn't leak.
         self._override_subplans.clear()
 
-    # ── Mount sub-applications ────────────────────────────────────
+    # -- Mount sub-applications ------------------------------------
 
     def mount(self, prefix: str, app: Any) -> None:
         """Mount a sub-application at a path prefix.
 
         A veloce sub-app is dispatched through the parent's request
-        pipeline. Any other ASGI application — an ASGI micro-app, an
-        instrumentation shim — is dispatched at the ASGI layer instead:
+        pipeline. Any other ASGI application - an ASGI micro-app, an
+        instrumentation shim - is dispatched at the ASGI layer instead:
         the matched prefix is stripped from the scope's `path` and moved
         onto `root_path`, so the mounted app sees a normal root-relative
         request.
@@ -1909,7 +1942,7 @@ class Veloce(Router):
         Scope: a mounted ASGI app receives `http` and `websocket` scopes
         only. The parent app owns the `lifespan` cycle and does not fan it
         out, so a mounted app must not depend on ASGI `lifespan` events
-        for its setup. A mounted ASGI app owns its entire prefix subtree —
+        for its setup. A mounted ASGI app owns its entire prefix subtree -
         a native route registered under the same prefix is unreachable.
 
         Prefixes must not overlap: registering a prefix equal to, nested
@@ -1924,7 +1957,7 @@ class Veloce(Router):
             prefix = "/" + prefix
         # Reject an overlapping registration. Two prefixes overlap when
         # one is a path-segment ancestor of the other (or they are
-        # equal) — mounts are matched in registration order, so an
+        # equal) - mounts are matched in registration order, so an
         # overlap means one mount silently shadows the other.
         for existing, _existing_slash, _ in (*self._mounted_apps, *self._asgi_mounts):
             if (
@@ -1959,7 +1992,7 @@ class Veloce(Router):
             raise TypeError(
                 f"mount({prefix or '/'!r}, ...) expected an ASGI application "
                 f"(callable taking `(scope, receive, send)`), a `Veloce` sub-app, "
-                f"or a `StaticFiles` instance — got "
+                f"or a `StaticFiles` instance - got "
                 f"{type(app).__name__} which is none of those. "
                 f"For Veloce's own static-file handler, prefer "
                 f"`app.mount_static(prefix=..., directory=...)`."
@@ -1973,7 +2006,7 @@ class Veloce(Router):
                 return prefix, mounted
         return None
 
-    # ── Lifecycle events ─────────────────────────────────────────
+    # -- Lifecycle events -----------------------------------------
 
     def on_event(self, event: str) -> Callable:
         """Register startup/shutdown event handlers.
@@ -1981,8 +2014,10 @@ class Veloce(Router):
         Deprecated: use `@app.on_startup` / `@app.on_shutdown` instead.
         Scheduled for removal in v0.2.0.
         """
-        if event not in ("startup", "shutdown"):
-            raise ValueError(f"event must be 'startup' or 'shutdown', got {event!r}")
+        if event not in (LIFECYCLE_STARTUP, LIFECYCLE_SHUTDOWN):
+            raise ValueError(
+                f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
+            )
         warnings.warn(
             "Veloce.on_event() is deprecated and will be removed in v0.2.0; "
             "use @app.on_startup / @app.on_shutdown instead.",
@@ -1991,9 +2026,9 @@ class Veloce(Router):
         )
 
         def decorator(func: Callable) -> Callable:
-            if event == "startup":
+            if event == LIFECYCLE_STARTUP:
                 self._on_startup.append(func)
-            elif event == "shutdown":
+            elif event == LIFECYCLE_SHUTDOWN:
                 self._on_shutdown.append(func)
             return func
 
@@ -2010,7 +2045,7 @@ class Veloce(Router):
         return func
 
     def add_event_handler(self, event: str, func: Callable) -> None:
-        """Imperative event-handler registration — ASGI shape.
+        """Imperative event-handler registration - ASGI shape.
 
         Deprecated: call `app.on_startup(fn)` / `app.on_shutdown(fn)`
         directly instead. Scheduled for removal in v0.2.0.
@@ -2021,12 +2056,14 @@ class Veloce(Router):
             DeprecationWarning,
             stacklevel=2,
         )
-        if event == "startup":
+        if event == LIFECYCLE_STARTUP:
             self._on_startup.append(func)
-        elif event == "shutdown":
+        elif event == LIFECYCLE_SHUTDOWN:
             self._on_shutdown.append(func)
         else:
-            raise ValueError(f"event must be 'startup' or 'shutdown', got {event!r}")
+            raise ValueError(
+                f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
+            )
 
     # Lifespan-event aliases. `before_serving` fires once at app startup
     # (lifespan event); `after_serving` fires once at shutdown. They are
@@ -2042,7 +2079,7 @@ class Veloce(Router):
         self._on_shutdown.append(func)
         return func
 
-    # ── Static files ─────────────────────────────────────────────
+    # -- Static files ---------------------------------------------
 
     def mount_static(
         self,
@@ -2053,10 +2090,10 @@ class Veloce(Router):
         """Mount a static file directory."""
         self._static_handlers.append(StaticFiles(directory=directory, prefix=prefix, html=html))
 
-    # ── Request handling ─────────────────────────────────────────
+    # -- Request handling -----------------------------------------
 
     async def handle_request(self, request: Request) -> Response:
-        """Main request handler — runs middleware chain + route dispatch."""
+        """Main request handler - runs middleware chain + route dispatch."""
         # Lazy OpenAPI setup (ensures routes exist on first request regardless of entry point)
         if not self._openapi_setup:
             self._setup_openapi()
@@ -2066,7 +2103,7 @@ class Veloce(Router):
 
         # `current_app` / `request` contextvars + per-request g reset.
         # Letting the contextvar fall through naturally when the request
-        # task ends is intentional — async dispatch may span tasks that
+        # task ends is intentional - async dispatch may span tasks that
         # diverge from a `set/reset` token.
         _current_app_var.set(self)
         _current_request_var.set(request)
@@ -2095,7 +2132,7 @@ class Veloce(Router):
         # Enforce MAX_CONTENT_LENGTH. Check both the declared
         # Content-Length (cheap reject) and the actually-buffered body size
         # (defence-in-depth when no Content-Length was sent). Per
-        # RFC 9110 §15.5.14, the status is 413 Content Too Large.
+        # RFC 9110 Sec. 15.5.14, the status is 413 Content Too Large.
         max_size = self.config.get("MAX_CONTENT_LENGTH")
         if max_size is not None:
             declared = request.content_length
@@ -2104,7 +2141,7 @@ class Veloce(Router):
             # await resolves immediately and we enforce against the actual
             # bytes (defence-in-depth for bodies that omit Content-Length).
             # For a streamed request (raw HTTP/1.1) the body has NOT arrived
-            # yet — draining it here would defeat streaming and force the
+            # yet - draining it here would defeat streaming and force the
             # whole body into memory. The protocol already caps the streamed
             # running total and the body source raises 413 mid-read, so the
             # declared-length check above is the only eager enforcement.
@@ -2124,7 +2161,7 @@ class Veloce(Router):
                     response = await self._run_response_middleware(request, response)
                 return response
 
-        # Time the dispatch only when instrumentation hooks are registered —
+        # Time the dispatch only when instrumentation hooks are registered -
         # an un-instrumented app does not even read the clock.
         instrument = self._instrumentation
         started = time.perf_counter() if instrument else 0.0
@@ -2150,8 +2187,8 @@ class Veloce(Router):
                     )
             raise
 
-        # Capture the wall-clock end the instant dispatch returned — before
-        # the request_finished receivers and instrumentation hooks run — so a
+        # Capture the wall-clock end the instant dispatch returned - before
+        # the request_finished receivers and instrumentation hooks run - so a
         # tracing bridge can anchor an accurate span window regardless of how
         # long a slow earlier hook/receiver takes.
         if instrument:
@@ -2170,9 +2207,9 @@ class Veloce(Router):
         if instrument:
             # A HEAD response never iterates its body (the ASGI path sends
             # headers + an empty terminal frame), so its timing/status are
-            # already final at this point — it is NOT a live stream even when
+            # already final at this point - it is NOT a live stream even when
             # the underlying response object is a streaming type.
-            is_streamed = response.is_streamed and request.method != "HEAD"
+            is_streamed = response.is_streamed and request.method != HTTP_METHOD_HEAD
             await self._run_instrumentation(
                 request,
                 response.status_code,
@@ -2204,7 +2241,7 @@ class Veloce(Router):
         return await funcs[0](request, _make_next(0))
 
     async def _dispatch_request(self, request: Request) -> Response:
-        """Core request dispatch — middleware, routing, handler execution.
+        """Core request dispatch - middleware, routing, handler execution.
 
         Thin orchestrator: the request phase, route resolution, handler
         invocation, and response hooks each live in a focused helper. The
@@ -2215,8 +2252,8 @@ class Veloce(Router):
         _bp_name: str | None = None
         # Resolver allocation is deferred until a non-trivial route demands
         # it. A trivial-plan route (no injected params, no dependencies)
-        # never touches the resolver, so allocating one upfront — plus its
-        # internal dict / WeakKeyDictionary / list members — would be pure
+        # never touches the resolver, so allocating one upfront - plus its
+        # internal dict / WeakKeyDictionary / list members - would be pure
         # waste for the static-GET hot path. Per-request fresh allocation
         # is still preserved: a single shared resolver would let one
         # request's `reset()` clobber another's `yield`-teardown stack
@@ -2248,7 +2285,7 @@ class Veloce(Router):
             if early is not None:
                 return early
 
-            # Resolve the route — handles mounted sub-apps, static files,
+            # Resolve the route - handles mounted sub-apps, static files,
             # the re-match-after-hook-rewrite case, subdomain/host
             # constraints, slash redirects, and 404/405. Returns either a
             # terminal Response (already through response middleware) or the
@@ -2260,7 +2297,7 @@ class Veloce(Router):
             _bp_name = _endpoint_blueprint(request.endpoint)
 
             # Resolve dependencies first and bind the resolver to this frame
-            # *before* calling the handler — if the handler raises, the
+            # *before* calling the handler - if the handler raises, the
             # `finally` block still sees the resolver and runs its
             # yield-dependency teardowns.
             kwargs, resolver = await self._resolve_dependencies(request, match)
@@ -2305,8 +2342,8 @@ class Veloce(Router):
                 return response
 
             # `ValidationError` / `RequestValidationError` carry a
-            # structured `.errors` list — emit it verbatim (the
-            # shape `{"detail": [ {loc, msg, type}, … ]}`) rather than
+            # structured `.errors` list - emit it verbatim (the
+            # shape `{"detail": [ {loc, msg, type}, ... ]}`) rather than
             # the stringified repr stored in `exc.detail`.
             structured = getattr(exc, "errors", None)
             detail_payload: Any = structured if structured is not None else exc.detail
@@ -2366,7 +2403,7 @@ class Veloce(Router):
                 ),
             )
         finally:
-            # Yield-dependency teardowns first — they conceptually wrap the
+            # Yield-dependency teardowns first - they conceptually wrap the
             # request (the resource was acquired before the handler ran and
             # must be released regardless of outcome). Errors here are
             # swallowed inside `run_teardowns` so the response cycle stays
@@ -2379,7 +2416,7 @@ class Veloce(Router):
                 except Exception:
                     self.logger.exception("yield-dependency teardown raised")
 
-            # Teardown hooks — always run, even on exceptions.
+            # Teardown hooks - always run, even on exceptions.
             if self._teardown_request_hooks or self._bp_teardown_hooks:
                 if (
                     self._bp_teardown_hooks
@@ -2406,7 +2443,7 @@ class Veloce(Router):
 
             # Signals: fire `got_request_exception` first when an exc bubbled
             # up, then always fire `request_tearing_down`. Receivers may
-            # raise — log + continue so a buggy listener doesn't poison
+            # raise - log + continue so a buggy listener doesn't poison
             # the dispatch path. Names hoisted to module top.
             try:
                 if _exc is not None and got_request_exception.has_receivers_for(self):
@@ -2426,7 +2463,7 @@ class Veloce(Router):
         coerced and passed through response middleware (unconditionally,
         matching the original early-return path) and returned.
 
-        `bp_name` is the matched blueprint — `None` while the app-level hooks
+        `bp_name` is the matched blueprint - `None` while the app-level hooks
         are still running, then the endpoint's blueprint once they complete.
         The orchestrator records it as the teardown blueprint, so a
         short-circuit inside an app-level hook leaves it `None` (no blueprint
@@ -2490,13 +2527,13 @@ class Veloce(Router):
             if response is not None:
                 return await self._run_response_middleware(request, response)
 
-        # Route matching — reuse the match taken before the before_request
+        # Route matching - reuse the match taken before the before_request
         # hooks ran unless a hook rewrote the request path or method, in
         # which case the routing inputs changed and we must re-match.
         if request.path != matched_path or request.method != matched_method:
             match = self.match(request.method, request.path)
 
-        # Subdomain constraint check — if the matched route declares a
+        # Subdomain constraint check - if the matched route declares a
         # `subdomain`, the request's host must be `{subdomain}.{SERVER_NAME}`.
         # Mismatch raises 404 directly (not 405, because
         # the path is reachable, just not from this host).
@@ -2506,15 +2543,15 @@ class Veloce(Router):
             and match.route_info.subdomain is not None
             and not self._subdomain_matches(request, match.route_info.subdomain)
         ):
-            raise HTTPException(404, MSG_NOT_FOUND)
+            raise HTTPException(status.HTTP_404_NOT_FOUND, MSG_NOT_FOUND)
 
-        # Host constraint check — the full `Host` header must equal
+        # Host constraint check - the full `Host` header must equal
         # the route's declared `host` (case-insensitive, port-stripped).
-        # Mismatch → 404 (the path is reachable, just not from this host).
+        # Mismatch -> 404 (the path is reachable, just not from this host).
         if match is not None and match.route_info.host is not None:
-            req_host = _extract_host(request.headers.get("host", "") or "")
+            req_host = _extract_host(request.headers.get(HEADER_HOST, "") or "")
             if req_host != match.route_info.host.lower():
-                raise HTTPException(404, MSG_NOT_FOUND)
+                raise HTTPException(status.HTTP_404_NOT_FOUND, MSG_NOT_FOUND)
 
         # Redirect slashes (like common web frameworks): /users -> /users/ or vice versa
         if match is None and self.redirect_slashes:
@@ -2527,7 +2564,7 @@ class Veloce(Router):
             if alt_match is not None:
                 code = (
                     status.HTTP_308_PERMANENT_REDIRECT
-                    if request.method != "GET"
+                    if request.method != HTTP_METHOD_GET
                     else status.HTTP_307_TEMPORARY_REDIRECT
                 )
                 response = RedirectResponse(alt, status_code=code)
@@ -2539,9 +2576,9 @@ class Veloce(Router):
             # Check if path exists but method is wrong
             allowed = self.get_allowed_methods(request.path)
             if allowed:
-                # RFC 9110 §9.3.7: OPTIONS auto-responds with `Allow:` and
+                # RFC 9110 Sec. 9.3.7: OPTIONS auto-responds with `Allow:` and
                 # an empty body even when no handler is registered.
-                if request.method == "OPTIONS":
+                if request.method == HTTP_METHOD_OPTIONS:
                     response = self.make_default_options_response(request.path)
                     if self._middlewares:
                         response = await self._run_response_middleware(request, response)
@@ -2555,11 +2592,11 @@ class Veloce(Router):
                         headers={HEADER_ALLOW: ", ".join(allowed)},
                     ),
                 )
-            raise HTTPException(404, MSG_NOT_FOUND)
+            raise HTTPException(status.HTTP_404_NOT_FOUND, MSG_NOT_FOUND)
 
         # Set path params + endpoint name on request.
         request.path_params = match.path_params
-        # the routing-rule `defaults` — fill in fixed values for params
+        # the routing-rule `defaults` - fill in fixed values for params
         # not already supplied by the matched URL.
         if match.route_info.defaults:
             for _dk, _dv in match.route_info.defaults.items():
@@ -2640,7 +2677,7 @@ class Veloce(Router):
             response.status_code = route_info.status_code
             response._encoded = None
 
-        # Response injection — merge a handler-injected
+        # Response injection - merge a handler-injected
         # Response's status_code + headers onto the final response.
         # Skipped when the handler returned a Response itself (its own
         # status/headers already win). `status_code == 0` means the
@@ -2667,7 +2704,7 @@ class Veloce(Router):
         blueprint's, then the per-request one-shot callbacks. Each may return
         a replacement Response.
         """
-        # Run after_request hooks — app-level then matched blueprint.
+        # Run after_request hooks - app-level then matched blueprint.
         for hook in reversed(self._after_request_hooks):
             hook_result = await self._call_handler(hook, {"request": request, "response": response})
             if hook_result is not None and isinstance(hook_result, Response):
@@ -2697,7 +2734,7 @@ class Veloce(Router):
         Both run fire-and-forget; a strong reference is held via the loop's
         task set and an error-logging done-callback is attached.
         """
-        # Run background tasks if present — hold strong ref to prevent GC
+        # Run background tasks if present - hold strong ref to prevent GC
         if request._background_tasks is not None:
             bg_task = asyncio.get_running_loop().create_task(request._background_tasks.run_all())
             bg_task.add_done_callback(self._log_background_task_error)
@@ -2708,8 +2745,8 @@ class Veloce(Router):
         # DI-injected BackgroundTasks queue.
         attached_bg = getattr(response, "background", None)
         if attached_bg is not None:
-            # `BackgroundTasks` collection → `.run_all()`;
-            # single `BackgroundTask` → `.run()`. Anything else with
+            # `BackgroundTasks` collection -> `.run_all()`;
+            # single `BackgroundTask` -> `.run()`. Anything else with
             # a `run()` coroutine method is supported too.
             if hasattr(attached_bg, "run_all"):
                 coro = attached_bg.run_all()
@@ -2735,11 +2772,11 @@ class Veloce(Router):
         """Check whether `request`'s host carries the expected subdomain.
 
         `subdomain` is the literal subdomain string (`"api"`,
-        `"admin"`) — the request's `Host` header must be
+        `"admin"`) - the request's `Host` header must be
         `{subdomain}.{SERVER_NAME}`. `"*"` matches any non-empty
         subdomain of `SERVER_NAME`. When no `SERVER_NAME` is configured
         we degrade to comparing the leftmost label of the host with
-        the subdomain literal — useful for tests that drive the app
+        the subdomain literal - useful for tests that drive the app
         without setting `SERVER_NAME`.
         """
         host = _extract_host(request.host or "")
@@ -2753,7 +2790,7 @@ class Veloce(Router):
             if subdomain == "*":
                 return bool(prefix)
             return prefix == subdomain
-        # No SERVER_NAME — compare the leftmost label.
+        # No SERVER_NAME - compare the leftmost label.
         leftmost = host.split(".", 1)[0]
         if subdomain == "*":
             return "." in host
@@ -2766,8 +2803,8 @@ class Veloce(Router):
 
         Sync handlers are offloaded to the default thread pool executor
         to prevent blocking the event loop. When the caller already knows
-        whether the handler is a coroutine — the handler plan precomputes
-        it at registration — it passes `is_coro` to skip the per-request
+        whether the handler is a coroutine - the handler plan precomputes
+        it at registration - it passes `is_coro` to skip the per-request
         `inspect.iscoroutinefunction` probe.
         """
         if is_coro is None:
@@ -2777,7 +2814,7 @@ class Veloce(Router):
         # Run sync handlers in executor to avoid blocking the event loop.
         # Snapshot the current context so request-scoped `ContextVar`s
         # (`_current_request_var`, `_current_app_var`, `g`'s store)
-        # remain readable in the worker thread — without `ctx.run`,
+        # remain readable in the worker thread - without `ctx.run`,
         # `loop.run_in_executor` runs the call in the executor's bare
         # context and helpers like `flash()`, `current_app.config[...]`,
         # and the `request` / `session` proxies all see "unbound". The
@@ -2832,7 +2869,7 @@ class Veloce(Router):
             dump_kwargs["exclude"] = route_info.response_model_exclude
 
         origin = get_origin(model)
-        # Sequence-style response models — `response_model=list[Item]` — dump
+        # Sequence-style response models - `response_model=list[Item]` - dump
         # each element through the inner model.
         if origin is list:
             args = get_args(model)
@@ -2844,7 +2881,7 @@ class Veloce(Router):
                     dumped: list[Any] = []
                     for item in result:
                         # Fast path: an element already of the target model
-                        # is dumped directly — skipping a re-validation
+                        # is dumped directly - skipping a re-validation
                         # round-trip and preserving the fields-set markers
                         # that `exclude_unset` reads (matching the scalar
                         # branch below).
@@ -2858,21 +2895,21 @@ class Veloce(Router):
         # Scalar Pydantic model.
         if isinstance(model, type) and issubclass(model, _PydanticBaseModel):
             # If the handler returned an instance of the target model, use
-            # it directly — the dump-then-validate roundtrip would erase
+            # it directly - the dump-then-validate roundtrip would erase
             # the `__pydantic_fields_set__` info that drives
             # `exclude_unset`.
             if isinstance(result, model):
                 return result.model_dump(**dump_kwargs)
             # Cross-model or dict input: dump any incoming BaseModel to a
             # dict first so model_validate can re-shape it. Cross-model
-            # coercion (e.g. internal → public view) works as expected;
+            # coercion (e.g. internal -> public view) works as expected;
             # `exclude_unset` semantics necessarily reset because the
             # fields-set markers don't transfer across model types.
             payload = result.model_dump() if isinstance(result, _PydanticBaseModel) else result
             validated = model.model_validate(payload)
             return validated.model_dump(**dump_kwargs)
 
-        # Non-pydantic model (e.g. plain class) — pass through unchanged.
+        # Non-pydantic model (e.g. plain class) - pass through unchanged.
         return result
 
     def _log_background_task_error(self, task: asyncio.Task) -> None:
@@ -2881,7 +2918,7 @@ class Veloce(Router):
         Pulls the exception off the future (silencing
         `Task exception was never retrieved` warnings) and logs it via
         `self.logger` so failures are observable instead of silently
-        dropped. Never re-raises — the caller has already returned the
+        dropped. Never re-raises - the caller has already returned the
         response and there is nowhere meaningful for the error to go.
         """
         if task.cancelled():
@@ -2904,11 +2941,11 @@ class Veloce(Router):
                     if isinstance(second, int):
                         body, code, headers = body, second, {}
                     elif isinstance(second, dict):
-                        body, code, headers = body, 200, second
+                        body, code, headers = body, status.HTTP_200_OK, second
                     else:
                         body, code, headers = body, int(second), {}
                 else:
-                    body, code, headers = result[0], 200, {}
+                    body, code, headers = result[0], status.HTTP_200_OK, {}
                 resp = self._coerce_response(body, response_class)
                 resp.status_code = code
                 resp.headers.update(headers)
@@ -2925,7 +2962,7 @@ class Veloce(Router):
         if isinstance(result, (dict, list)):
             return JSONResponse(result)
         if isinstance(result, str):
-            # A bare `str` return defaults to text/html — the same default
+            # A bare `str` return defaults to text/html - the same default
             # `make_response()` applies, so the media type is consistent
             # whichever path produced the response.
             return Response(body=result.encode(), content_type=MIME_HTML)
@@ -2992,7 +3029,7 @@ class Veloce(Router):
             end_time_ns=end_time_ns,
             # Inbound distributed-trace headers, carried verbatim so a tracing
             # bridge (e.g. veloce.otel) can extract a parent context and
-            # continue the trace. Built on every dispatch path here — never via
+            # continue the trace. Built on every dispatch path here - never via
             # a before_request hook, which a short-circuiting hook could skip.
             # `None` when the request carries no trace headers.
             parent_context=_trace_carrier(request),
@@ -3005,7 +3042,7 @@ class Veloce(Router):
             except Exception:
                 self.logger.exception("instrumentation hook raised an exception")
 
-    # ── Server ───────────────────────────────────────────────────
+    # -- Server ---------------------------------------------------
 
     def _setup_openapi(self) -> None:
         """Register OpenAPI/Swagger routes if enabled."""
@@ -3015,7 +3052,7 @@ class Veloce(Router):
         if self._openapi_url:
             from veloce.contrib.openapi import setup_openapi_routes
 
-            # Pass the configured URLs through unchanged — `None` means
+            # Pass the configured URLs through unchanged - `None` means
             # "do not register that UI", and must not be replaced by a
             # default path.
             setup_openapi_routes(
@@ -3062,21 +3099,21 @@ class Veloce(Router):
 
         Veloce's from-scratch HTTP server is intended for local
         development only. For production, run the app under a hardened
-        ASGI server — ``uvicorn your_module:app`` — which veloce is fully
+        ASGI server - ``uvicorn your_module:app`` - which veloce is fully
         compatible with through its ASGI ``__call__`` interface.
         ``run()`` logs a reminder of this on startup.
 
         ``host`` resolves to ``"127.0.0.1"`` when unset so the dev server
         is reachable only from the local machine. Pass ``bind_all=True``
         to opt in to all-interfaces binding (``"0.0.0.0"``). ``host`` and
-        ``bind_all=True`` are mutually exclusive — passing both raises
+        ``bind_all=True`` are mutually exclusive - passing both raises
         ``ValueError`` to avoid silent privilege widening. Binding to
-        ``0.0.0.0`` exposes the dev server to every reachable network —
+        ``0.0.0.0`` exposes the dev server to every reachable network -
         including remote attackers if the machine is on a public network
-        — so it should be used only in trusted environments and never
+        - so it should be used only in trusted environments and never
         with ``debug=True``.
 
-        ``ssl_context`` — an ``ssl.SSLContext`` — turns on HTTPS for local
+        ``ssl_context`` - an ``ssl.SSLContext`` - turns on HTTPS for local
         testing; it is handed straight to ``loop.create_server(ssl=...)``.
         Left ``None`` (the default) the serving path is byte-for-byte the
         same as plain HTTP. Production should still terminate TLS at
@@ -3090,19 +3127,19 @@ class Veloce(Router):
             host = "0.0.0.0" if bind_all else "127.0.0.1"
         self._setup_openapi()
 
-        # The from-scratch server is dev-grade — make the production
+        # The from-scratch server is dev-grade - make the production
         # recommendation impossible to miss.
         self.logger.warning(
-            "veloce's built-in server (app.run()) is for local development only — "
+            "veloce's built-in server (app.run()) is for local development only - "
             "run under uvicorn (or another hardened ASGI server) in production."
         )
 
-        # Debug tracebacks leak source and internals — binding a non-local
+        # Debug tracebacks leak source and internals - binding a non-local
         # host with debug=True exposes them to the network.
         if self.debug and host not in ("127.0.0.1", "::1", "localhost"):
             self.logger.warning(
                 "debug=True with a non-local bind (host=%r) exposes debug "
-                "tracebacks to the network — set debug=False for any deployment "
+                "tracebacks to the network - set debug=False for any deployment "
                 "reachable beyond localhost.",
                 host,
             )
@@ -3116,7 +3153,7 @@ class Veloce(Router):
             pass
 
         if access_log:
-            scheme = "https" if ssl_context is not None else "http"
+            scheme = URL_SCHEME_HTTPS if ssl_context is not None else URL_SCHEME_HTTP
             print(f"\n  Veloce v{self.version}")
             print(f"  Listening on {scheme}://{host}:{port}")
             print("  Press Ctrl+C to stop\n")
@@ -3143,7 +3180,7 @@ class Veloce(Router):
 
         loop = asyncio.get_running_loop()
         # Run startup hooks
-        await self._run_lifecycle("startup")
+        await self._run_lifecycle(LIFECYCLE_STARTUP)
 
         # `ssl=None` (the default) makes `create_server` behave exactly as
         # the plain-HTTP path; TLS cost is paid only when a context is set.
@@ -3188,11 +3225,11 @@ class Veloce(Router):
         HttpProtocol._active_tasks.clear()
 
         # Run shutdown lifecycle hooks
-        await self._run_lifecycle("shutdown")
+        await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
 
     async def _run_lifecycle(self, event: str) -> None:
         """Run lifecycle event handlers, including lifespan context manager."""
-        if event == "startup":
+        if event == LIFECYCLE_STARTUP:
             # Lifespan context manager
             if self._lifespan is not None:
                 self._lifespan_cm = self._lifespan(self)
@@ -3206,7 +3243,7 @@ class Veloce(Router):
                     ctx = contextvars.copy_context()
                     await loop.run_in_executor(None, ctx.run, functools.partial(handler))
 
-            # Dev-mode event-loop blocking watchdog — opt-in, so an app
+            # Dev-mode event-loop blocking watchdog - opt-in, so an app
             # that does not set the config key never builds one. The key
             # may be a plain truthy value, or a mapping of watchdog kwargs
             # (`interval`, `stall_threshold`) for tuning.
@@ -3240,13 +3277,13 @@ class Veloce(Router):
 
         `async with app.lifespan_context(): ...` runs the full startup
         sequence (lifespan CM enter + `on_startup` handlers) on entry
-        and the shutdown sequence on exit — independent of any request.
+        and the shutdown sequence on exit - independent of any request.
         Useful for tests and for embedding the app where you want
         startup/shutdown without an ASGI server in the loop.
         """
         return _LifespanManager(self)
 
-    # ── ASGI compatibility layer ─────────────────────────────────
+    # -- ASGI compatibility layer ---------------------------------
 
     async def _emit_413(self, send: Callable, limit: int) -> None:
         """Emit a 413 response directly over ASGI.
@@ -3265,15 +3302,15 @@ class Veloce(Router):
         body = resp.body
         await send(
             {
-                "type": "http.response.start",
+                "type": ASGI_EVENT_HTTP_RESPONSE_START,
                 "status": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 "headers": [
-                    (b"content-type", resp.content_type.encode()),
-                    (b"content-length", str(len(body)).encode()),
+                    (RAW_HEADER_CONTENT_TYPE, resp.content_type.encode()),
+                    (RAW_HEADER_CONTENT_LENGTH, str(len(body)).encode()),
                 ],
             }
         )
-        await send({"type": "http.response.body", "body": body})
+        await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": body})
 
     def _build_asgi_stack(self) -> Callable:
         """Wrap the core ASGI app with each registered ASGI middleware.
@@ -3287,7 +3324,7 @@ class Veloce(Router):
         return app
 
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
-        """ASGI interface — allows running under uvicorn/hypercorn if desired.
+        """ASGI interface - allows running under uvicorn/hypercorn if desired.
 
         Any third-party ASGI middleware registered via `add_middleware` wraps
         the core application here; with none registered this is a direct call
@@ -3303,13 +3340,13 @@ class Veloce(Router):
             await self._asgi_app(scope, receive, send)
 
     async def _asgi_app(self, scope: dict, receive: Callable, send: Callable) -> None:
-        """The core ASGI application — HTTP / WebSocket / lifespan handling."""
+        """The core ASGI application - HTTP / WebSocket / lifespan handling."""
         if not self._openapi_setup:
             self._setup_openapi()
 
         # Mounted arbitrary ASGI apps are dispatched here with the raw
-        # scope — the matched prefix is moved from `path` to `root_path`.
-        if self._asgi_mounts and scope["type"] in ("http", "websocket"):
+        # scope - the matched prefix is moved from `path` to `root_path`.
+        if self._asgi_mounts and scope["type"] in (ASGI_SCOPE_HTTP, ASGI_SCOPE_WEBSOCKET):
             mount = self._match_asgi_mount(scope.get("path", ""))
             if mount is not None:
                 prefix, mounted = mount
@@ -3322,7 +3359,7 @@ class Veloce(Router):
                 await mounted(sub_scope, receive, send)
                 return
 
-        if scope["type"] == "http":
+        if scope["type"] == ASGI_SCOPE_HTTP:
             # Hand the raw ASGI `(bytes, bytes)` header list to `Request`
             # untouched; the CIMultiDict + per-tuple latin-1 decode is
             # deferred until the handler reads `request.headers`. The
@@ -3340,7 +3377,7 @@ class Veloce(Router):
                 # the declared length. The loop only runs when
                 # `MAX_CONTENT_LENGTH` is configured (cold on the hot path).
                 for _hk, _hv in raw_headers:
-                    if _hk.lower() == b"content-length":
+                    if _hk.lower() == RAW_HEADER_CONTENT_LENGTH:
                         declared_b = _hv
                         break
                 if declared_b is not None:
@@ -3352,7 +3389,7 @@ class Veloce(Router):
                         await self._emit_413(send, max_size)
                         return
 
-            # Common case — one body chunk, no `more_body`. Skip the
+            # Common case - one body chunk, no `more_body`. Skip the
             # body_parts list + join.
             message = await receive()
             body = message.get("body", b"") or b""
@@ -3375,7 +3412,7 @@ class Veloce(Router):
                 await self._emit_413(send, max_size)
                 return
 
-            # ASGI HTTP scope mandates `path` and `query_string` keys —
+            # ASGI HTTP scope mandates `path` and `query_string` keys -
             # direct subscript skips the `.get(default)` default-arg pop.
             path = scope["path"]
             query = scope["query_string"].decode("ascii")
@@ -3391,11 +3428,11 @@ class Veloce(Router):
 
             response = await self.handle_request(request)
 
-            # Streaming response — emit the body as a sequence of ASGI
+            # Streaming response - emit the body as a sequence of ASGI
             # `http.response.body` chunks instead of one buffered
             # payload. No `content-length`: the ASGI server frames it.
             if response.is_streamed:
-                # CRLF-validate every header value — the ASGI emit path
+                # CRLF-validate every header value - the ASGI emit path
                 # bypasses `Response.encode()`, so the splitting guard must
                 # be applied here too. Built-in content types hit the cache.
                 _ct = response.content_type
@@ -3403,7 +3440,7 @@ class Veloce(Router):
                 if _ct_bytes is None:
                     _ct_bytes = _reject_header_crlf(_ct, "content-type").encode()
                 stream_headers: list[tuple[bytes, bytes]] = [
-                    (b"content-type", _ct_bytes),
+                    (RAW_HEADER_CONTENT_TYPE, _ct_bytes),
                 ]
                 for sk, sv in response.headers.items():
                     sk_lower = sk.lower()
@@ -3413,31 +3450,31 @@ class Veloce(Router):
                         for piece in sv.split("\r\nSet-Cookie:"):
                             cookie = piece.strip()
                             _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
-                            stream_headers.append((b"set-cookie", cookie.encode()))
+                            stream_headers.append((RAW_HEADER_SET_COOKIE, cookie.encode()))
                     else:
                         _reject_header_crlf(sk, MSG_LABEL_HEADER_NAME)
                         _reject_header_crlf(sv, f"{sk} header value")
                         stream_headers.append((sk_lower.encode(), sv.encode()))
                 await send(
                     {
-                        "type": "http.response.start",
+                        "type": ASGI_EVENT_HTTP_RESPONSE_START,
                         "status": response.status_code,
                         "headers": stream_headers,
                     }
                 )
-                if scope["method"] != "HEAD":
+                if scope["method"] != HTTP_METHOD_HEAD:
                     async for chunk in getattr(response, "_stream"):  # noqa: B009
                         await send(
                             {
-                                "type": "http.response.body",
+                                "type": ASGI_EVENT_HTTP_RESPONSE_BODY,
                                 "body": chunk.encode("utf-8") if isinstance(chunk, str) else chunk,
                                 "more_body": True,
                             }
                         )
-                await send({"type": "http.response.body", "body": b"", "more_body": False})
+                await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": b"", "more_body": False})
                 return
 
-            # RFC 9110 §15.3.5 (204), §15.4.5 (304), §15.3.6 (205 — must
+            # RFC 9110 Sec. 15.3.5 (204), Sec. 15.4.5 (304), Sec. 15.3.6 (205 - must
             # contain no body either): responses with these status codes
             # MUST NOT include a payload. Strip the body before sending so
             # buggy handlers can't violate the spec.
@@ -3449,13 +3486,13 @@ class Veloce(Router):
             ):
                 body_out = b""
 
-            # RFC 9110 §9.3.2: HEAD responses must not include a payload
+            # RFC 9110 Sec. 9.3.2: HEAD responses must not include a payload
             # body, but `Content-Length` (and other content-related
             # headers) should still reflect the size the equivalent GET
             # would have produced. Capture the real length first, then
-            # blank the body — preserves HEAD's "probe for size" use case.
+            # blank the body - preserves HEAD's "probe for size" use case.
             head_content_length: int | None = None
-            if scope["method"] == "HEAD":
+            if scope["method"] == HTTP_METHOD_HEAD:
                 head_content_length = len(body_out)
                 body_out = b""
 
@@ -3468,7 +3505,7 @@ class Veloce(Router):
             content_length = (
                 head_content_length if head_content_length is not None else len(body_out)
             )
-            # CRLF-validate every header value — the ASGI emit path
+            # CRLF-validate every header value - the ASGI emit path
             # bypasses `Response.encode()`, so the response-splitting
             # guard must be applied here too. Built-in content types and
             # small content-length values hit the precomputed caches.
@@ -3483,8 +3520,8 @@ class Veloce(Router):
             )
             # Emit the framework default content-type/content-length only when
             # the response does not already carry that header (case-insensitive),
-            # mirroring `Response.encode()`. A user/middleware value — e.g. the
-            # compressed length set by `GZipMiddleware` — is emitted once below
+            # mirroring `Response.encode()`. A user/middleware value - e.g. the
+            # compressed length set by `GZipMiddleware` - is emitted once below
             # via the header loop and wins; prepending the default too would put
             # a duplicate header on the wire, which strict HTTP clients reject.
             has_ct = False
@@ -3498,9 +3535,9 @@ class Veloce(Router):
                         has_cl = True
             asgi_headers: list[tuple[bytes, bytes]] = []
             if not has_ct:
-                asgi_headers.append((b"content-type", _ct_bytes))
+                asgi_headers.append((RAW_HEADER_CONTENT_TYPE, _ct_bytes))
             if not has_cl:
-                asgi_headers.append((b"content-length", _cl_bytes))
+                asgi_headers.append((RAW_HEADER_CONTENT_LENGTH, _cl_bytes))
             if response.headers:
                 for k, v in response.headers.items():
                     k_lower = k.lower()
@@ -3512,7 +3549,7 @@ class Veloce(Router):
                         for piece in v.split("\r\nSet-Cookie:"):
                             cookie = piece.strip()
                             _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
-                            asgi_headers.append((b"set-cookie", cookie.encode()))
+                            asgi_headers.append((RAW_HEADER_SET_COOKIE, cookie.encode()))
                     else:
                         _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
                         _reject_header_crlf(v, f"{k} header value")
@@ -3520,19 +3557,19 @@ class Veloce(Router):
 
             await send(
                 {
-                    "type": "http.response.start",
+                    "type": ASGI_EVENT_HTTP_RESPONSE_START,
                     "status": response.status_code,
                     "headers": asgi_headers,
                 }
             )
             await send(
                 {
-                    "type": "http.response.body",
+                    "type": ASGI_EVENT_HTTP_RESPONSE_BODY,
                     "body": body_out,
                 }
             )
 
-        elif scope["type"] == "websocket":
+        elif scope["type"] == ASGI_SCOPE_WEBSOCKET:
             # ASGI WS dispatch (W1). Match the route table for a
             # WEBSOCKET-method handler and run it with a WebSocket built
             # from the ASGI receive/send pair. Path params are coerced
@@ -3540,7 +3577,7 @@ class Veloce(Router):
             _current_app_var.set(self)
             g._reset()
 
-            # Host and Origin validation for WebSocket handshakes — an HTTP
+            # Host and Origin validation for WebSocket handshakes - an HTTP
             # middleware such as TrustedHostMiddleware or
             # WebSocketOriginMiddleware never sees a `websocket` scope, so
             # apply any host allow-list and Origin allow-list directly here.
@@ -3549,7 +3586,7 @@ class Veloce(Router):
             _host_seen = False
             _origin_seen = False
             for _hk, _hv in scope.get("headers", []):
-                # First occurrence of each header wins — a duplicate
+                # First occurrence of each header wins - a duplicate
                 # `Origin` must not be able to shadow the real one.
                 if _hk == b"host" and not _host_seen:
                     ws_host = _extract_host(_hv.decode("latin-1"))
@@ -3561,22 +3598,28 @@ class Veloce(Router):
                 _host_check = getattr(_mw, "is_host_allowed", None)
                 if _host_check is not None and not _host_check(ws_host):
                     msg = await receive()
-                    if msg["type"] == "websocket.connect":
-                        await send({"type": "websocket.close", "code": 1008})
+                    if msg["type"] == ASGI_EVENT_WS_CONNECT:
+                        await send(
+                            {"type": ASGI_EVENT_WS_CLOSE, "code": status.WS_1008_POLICY_VIOLATION}
+                        )
                     return
                 _origin_check = getattr(_mw, "is_websocket_origin_allowed", None)
                 if _origin_check is not None and not _origin_check(ws_origin):
                     msg = await receive()
-                    if msg["type"] == "websocket.connect":
-                        await send({"type": "websocket.close", "code": 1008})
+                    if msg["type"] == ASGI_EVENT_WS_CONNECT:
+                        await send(
+                            {"type": ASGI_EVENT_WS_CLOSE, "code": status.WS_1008_POLICY_VIOLATION}
+                        )
                     return
 
-            ws_match = self.match("WEBSOCKET", scope.get("path", "/"))
+            ws_match = self.match(ROUTE_METHOD_WEBSOCKET, scope.get("path", "/"))
             if ws_match is None:
-                # No handler — refuse the connection per ASGI WS spec.
+                # No handler - refuse the connection per ASGI WS spec.
                 msg = await receive()
-                if msg["type"] == "websocket.connect":
-                    await send({"type": "websocket.close", "code": 1008})
+                if msg["type"] == ASGI_EVENT_WS_CONNECT:
+                    await send(
+                        {"type": ASGI_EVENT_WS_CLOSE, "code": status.WS_1008_POLICY_VIOLATION}
+                    )
                 return
 
             ws = WebSocket.from_asgi(scope, receive, send)
@@ -3592,7 +3635,7 @@ class Veloce(Router):
             try:
                 handler = route_info.handler
                 # WebSocket DI runs through the shared HandlerPlan /
-                # DependencyResolver — the same path as HTTP dispatch — so
+                # DependencyResolver - the same path as HTTP dispatch - so
                 # WebSocket dependencies get `yield`-style teardown and
                 # `Security` / `SecurityScopes` support (F8).
                 if route_info.handler_plan is not None:
@@ -3604,7 +3647,7 @@ class Veloce(Router):
                             route_info.route_dep_plans,
                         )
                     except RequestValidationError as exc:
-                        # A WebSocket dependency failed validation —
+                        # A WebSocket dependency failed validation -
                         # surface it as the WS-specific error (V9).
                         raise WebSocketRequestValidationError(
                             getattr(exc, "errors", []) or []
@@ -3613,13 +3656,13 @@ class Veloce(Router):
                     kwargs = {}
                 await handler(**kwargs)
             except WebSocketRequestValidationError:
-                # Dependency validation failure — close with 1008
+                # Dependency validation failure - close with 1008
                 # (policy violation), not 1011, and swallow.
                 if not ws._closed:
                     with contextlib.suppress(Exception):
-                        await ws.close(code=1008)
+                        await ws.close(code=status.WS_1008_POLICY_VIOLATION)
             except WebSocketException as exc:
-                # Application-driven close — send the requested code +
+                # Application-driven close - send the requested code +
                 # reason and swallow the exception (not an error).
                 if not ws._closed:
                     with contextlib.suppress(Exception):
@@ -3628,7 +3671,7 @@ class Veloce(Router):
                 ws_exc = exc
                 if not ws._closed:
                     with contextlib.suppress(Exception):
-                        await ws.close(code=1011)  # internal error
+                        await ws.close(code=status.WS_1011_INTERNAL_ERROR)  # internal error
                 raise
             else:
                 if not ws._closed:
@@ -3639,17 +3682,19 @@ class Veloce(Router):
                 # handshake set up, exception-aware.
                 await ws_resolver.run_teardowns(ws_exc)
 
-        elif scope["type"] == "lifespan":
+        elif scope["type"] == ASGI_SCOPE_LIFESPAN:
             while True:
                 message = await receive()
-                if message["type"] == "lifespan.startup":
+                if message["type"] == ASGI_EVENT_LIFESPAN_STARTUP:
                     try:
-                        await self._run_lifecycle("startup")
-                        await send({"type": "lifespan.startup.complete"})
+                        await self._run_lifecycle(LIFECYCLE_STARTUP)
+                        await send({"type": ASGI_EVENT_LIFESPAN_STARTUP_COMPLETE})
                     except Exception as exc:
-                        await send({"type": "lifespan.startup.failed", "message": str(exc)})
+                        await send(
+                            {"type": ASGI_EVENT_LIFESPAN_STARTUP_FAILED, "message": str(exc)}
+                        )
                         return
-                elif message["type"] == "lifespan.shutdown":
-                    await self._run_lifecycle("shutdown")
-                    await send({"type": "lifespan.shutdown.complete"})
+                elif message["type"] == ASGI_EVENT_LIFESPAN_SHUTDOWN:
+                    await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
+                    await send({"type": ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE})
                     return

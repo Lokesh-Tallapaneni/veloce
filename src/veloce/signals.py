@@ -1,4 +1,4 @@
-"""Signals — minimal pub/sub.
+"""Signals - minimal pub/sub.
 
 Provides a lightweight `Signal` class that exposing a
 `signal.connect(receiver)` / `signal.send(sender, **kwargs)` API, so
@@ -32,21 +32,23 @@ import weakref
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from veloce._constants import MSG_RECEIVER_RAISED
+
 _logger = logging.getLogger(__name__)
 
-# Sentinel for "connect to all senders" — the public API exports it so
+# Sentinel for "connect to all senders" - the public API exports it so
 # callers can write `signal.connect(fn, sender=ANY_SENDER)` explicitly.
 # Identity comparison only; never construct another instance.
 ANY_SENDER: Any = object()
 
 # Shared return shape for `send`, `send_robust`, and `send_robust_async`.
 # Each entry is `(receiver, value)` where `value` is the receiver's
-# return value — or, for the `_robust` variants, the `Exception`
+# return value - or, for the `_robust` variants, the `Exception`
 # instance the receiver raised.
 SignalResult = list[tuple[Callable, Any]]
 
 
-# ── Matching helpers ────────────────────────────────────────────────
+# -- Matching helpers ------------------------------------------------
 
 
 def _matches(subscribed: Any, sent: Any) -> bool:
@@ -63,11 +65,11 @@ def _matches(subscribed: Any, sent: Any) -> bool:
         return False
 
 
-# ── Signal ──────────────────────────────────────────────────────────
+# -- Signal ----------------------------------------------------------
 
 
 class Signal:
-    """A named pub/sub signal — standard shape.
+    """A named pub/sub signal - standard shape.
 
     Receivers connect via `connect(receiver, sender=ANY_SENDER)` and
     detach via `disconnect(receiver, sender=ANY_SENDER)`.
@@ -84,7 +86,7 @@ class Signal:
         self.name = name
         # Each subscription: (sender, ref_or_callable, is_weak). `sender`
         # is `ANY_SENDER` for unfiltered receivers, else the sender
-        # itself (strong reference — typical senders are app singletons
+        # itself (strong reference - typical senders are app singletons
         # that already outlive the signal anyway).
         self._subs: list[tuple[Any, Any, bool]] = []
 
@@ -98,7 +100,7 @@ class Signal:
         """Register `receiver` to fire when `send(sender)` runs.
 
         `sender=ANY_SENDER` (the default) subscribes to every send.
-        Pass a specific sender to filter — the receiver then only fires
+        Pass a specific sender to filter - the receiver then only fires
         when `send` is called with that exact sender. Returns the
         receiver unchanged so it can be used as a decorator.
         """
@@ -115,13 +117,13 @@ class Signal:
     def disconnect(self, receiver: Callable, *, sender: Any = ANY_SENDER) -> None:
         """Remove the subscription for `(receiver, sender)`.
 
-        Mirrors `connect` — to detach a per-sender subscription pass the
+        Mirrors `connect` - to detach a per-sender subscription pass the
         same `sender`. With the default `sender=ANY_SENDER` it removes
         any subscription matching `receiver`, regardless of which sender
         it was bound to (back-compat with the previous unfiltered API).
 
         Targeted detach matches the **stored** `sender` directly, not via
-        `_matches` — `_matches` is the `send`-time rule ("does this
+        `_matches` - `_matches` is the `send`-time rule ("does this
         subscription fire for that sender?"), where a stored
         `ANY_SENDER` deliberately matches every send. Reusing that rule
         in `disconnect` would silently delete an `ANY_SENDER`
@@ -157,7 +159,7 @@ class Signal:
         live: list[tuple[Any, Any, bool]] = []
         for sub_sender, ref, is_weak in self._subs:
             target = ref() if is_weak else ref
-            if target is None:  # dead weakref — drop on the next pass
+            if target is None:  # dead weakref - drop on the next pass
                 continue
             live.append((sub_sender, ref, is_weak))
             if _matches(sub_sender, sender):
@@ -193,7 +195,7 @@ class Signal:
                 value: Any = target(sender, **kwargs)
             except Exception as exc:
                 _logger.warning(
-                    "Receiver %r for signal %r raised %s",
+                    MSG_RECEIVER_RAISED,
                     getattr(target, "__qualname__", repr(target)),
                     self.name,
                     exc.__class__.__name__,
@@ -202,7 +204,7 @@ class Signal:
                 value = exc
             else:
                 if inspect.iscoroutine(value):
-                    # Async receiver with sync send — close coroutine to suppress
+                    # Async receiver with sync send - close coroutine to suppress
                     # the "coroutine was never awaited" RuntimeWarning and surface
                     # the misuse as a TypeError result entry.
                     value.close()
@@ -220,7 +222,7 @@ class Signal:
         return results
 
     async def send_robust_async(self, sender: Any = None, **kwargs: Any) -> SignalResult:
-        """Async variant of `send_robust` — awaits coroutine-returning receivers.
+        """Async variant of `send_robust` - awaits coroutine-returning receivers.
 
         Returns `(receiver, value)` pairs in registration order. The
         second tuple element is the receiver's return value, OR an
@@ -239,7 +241,7 @@ class Signal:
                     value = await value
             except Exception as exc:
                 _logger.warning(
-                    "Receiver %r for signal %r raised %s",
+                    MSG_RECEIVER_RAISED,
                     getattr(target, "__qualname__", repr(target)),
                     self.name,
                     exc.__class__.__name__,
@@ -266,7 +268,7 @@ class Signal:
         return f"<Signal name={self.name!r} receivers={len(self._subs)}>"
 
 
-# ── Namespace ───────────────────────────────────────────────────────
+# -- Namespace -------------------------------------------------------
 
 
 class Namespace:
@@ -314,17 +316,17 @@ class Namespace:
         return f"<Namespace signals={len(self._signals)}>"
 
 
-# ── Standard signals ────────────────────────────────────────────────
+# -- Standard signals ------------------------------------------------
 
 
-# Module-level singletons — apps subscribe via `request_started.connect(fn)`.
+# Module-level singletons - apps subscribe via `request_started.connect(fn)`.
 request_started = Signal("request-started")
 request_finished = Signal("request-finished")
 request_tearing_down = Signal("request-tearing-down")
 got_request_exception = Signal("got-request-exception")
-# Fires for every `flash()` call — `flash(sender=app, message=..., category=...)`.
+# Fires for every `flash()` call - `flash(sender=app, message=..., category=...)`.
 message_flashed = Signal("message-flashed")
-# App-context lifecycle — fire on `app.app_context()` enter/exit.
+# App-context lifecycle - fire on `app.app_context()` enter/exit.
 appcontext_pushed = Signal("appcontext-pushed")
 appcontext_popped = Signal("appcontext-popped")
 appcontext_tearing_down = Signal("appcontext-tearing-down")

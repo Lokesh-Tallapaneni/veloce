@@ -1,4 +1,4 @@
-"""HTTP sub-package — request, response, and data structures."""
+"""HTTP sub-package - request, response, and data structures."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""HTTP status codes — convenient named constants.
+"""HTTP status codes - convenient named constants.
 
 Usage::
 
@@ -80,7 +80,7 @@ HTTP_508_LOOP_DETECTED = 508
 HTTP_510_NOT_EXTENDED = 510
 HTTP_511_NETWORK_AUTHENTICATION_REQUIRED = 511
 
-# WebSocket close codes — RFC 6455 §7.4.1.
+# WebSocket close codes - RFC 6455 Sec. 7.4.1.
 WS_1000_NORMAL_CLOSURE = 1000
 WS_1001_GOING_AWAY = 1001
 WS_1002_PROTOCOL_ERROR = 1002

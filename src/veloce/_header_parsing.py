@@ -1,4 +1,4 @@
-r"""Header parsing — quoted-string-aware walker for HTTP header parameter lists.
+r"""Header parsing - quoted-string-aware walker for HTTP header parameter lists.
 
 Three different headers in the codebase used to ship near-identical
 ad-hoc tokenizers: `Content-Disposition` (`;`-separated, unescape on),
@@ -15,7 +15,7 @@ share. Semantics:
 * Splits `value` on `delimiter` (`;` for Content-Disposition,
   `,` for Authorization / Digest) *outside* of double-quoted strings.
 * If `unescape=True`, a backslash inside a quoted string consumes the
-  next character verbatim — `\"` becomes `"`, `\\` becomes `\`. This
+  next character verbatim - `\"` becomes `"`, `\\` becomes `\`. This
   is RFC 5322 / RFC 7616 quoted-pair behaviour.
 * If `unescape=False`, the walker still advances past `\<char>` so the
   escape does not falsely terminate the quoted string, but the `\`
@@ -23,12 +23,12 @@ share. Semantics:
   `Authorization.from_header` path uses this for back-compat with
   callers that already `.strip('"')` the result themselves.
 * The surrounding double-quote characters are *always* stripped from
-  values — both walkers we replaced did this either explicitly
+  values - both walkers we replaced did this either explicitly
   (Digest's `value[j + 1 : end]` slice) or implicitly (by skipping the
   `"` in the buf-append step).
 * Returns `(prefix, params)` where `prefix` is the first token if it
   has no `=` (e.g. the disposition type `"form-data"`). When every
-  token is `key=value` — the Digest and Authorization cases — `prefix`
+  token is `key=value` - the Digest and Authorization cases - `prefix`
   is `""`. Tokens without `=` *after* the first are dropped, matching
   the prior `if not token or "=" not in token: continue` behaviour.
 * Parameter keys are lowercased and stripped. Empty keys are dropped.

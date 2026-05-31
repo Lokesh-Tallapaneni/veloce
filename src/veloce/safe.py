@@ -1,4 +1,4 @@
-"""Safety helpers — constant-time comparison, filename sanitisation, path joining.
+"""Safety helpers - constant-time comparison, filename sanitisation, path joining.
 
 `constant_time_compare(a, b)` compares two secrets without timing leaks.
 `secure_filename(name)` returns a safe basename for a user-supplied filename.
@@ -23,11 +23,11 @@ import unicodedata
 # Permitted characters in a sanitised filename: ASCII letters, digits,
 # underscore, period, hyphen. Everything else collapses to underscore.
 _VALID_FILENAME_CHAR = re.compile(r"[^A-Za-z0-9_.\-]")
-# Run-of-underscores collapser — kept module-level so the compile cost
+# Run-of-underscores collapser - kept module-level so the compile cost
 # is paid once instead of every `re.sub` cache lookup.
 _UNDERSCORE_RUN = re.compile(r"_+")
 
-# Windows reserved device names — case-insensitive. Even on POSIX, blocking
+# Windows reserved device names - case-insensitive. Even on POSIX, blocking
 # these prevents subtle cross-platform breakage in mounted Windows shares.
 _WIN_RESERVED = frozenset(
     {
@@ -59,11 +59,11 @@ def secure_filename(name: str) -> str:
     - Strips directory separators (`/`, `\\`) and any non-ASCII characters.
     - Replaces unsafe characters with underscores; collapses repeats.
     - Strips leading/trailing dots/spaces/underscores (blocks `.` and `..`).
-    - Prefixes Windows reserved names (`CON`, `PRN`, …) with `_`.
+    - Prefixes Windows reserved names (`CON`, `PRN`, ...) with `_`.
     - Returns `""` when nothing survives sanitisation.
 
     Empty or whitespace-only input returns `""`. The caller is responsible
-    for treating that as a rejection — `secure_filename` will not raise.
+    for treating that as a rejection - `secure_filename` will not raise.
     """
     if not name:
         return ""
@@ -106,7 +106,7 @@ def safe_join(directory: str, *paths: str) -> str | None:
     - the resolved path is outside `directory`.
 
     The check is performed via `os.path.abspath`, which collapses `..`
-    segments before comparison. Symlinks are **not** resolved — callers
+    segments before comparison. Symlinks are **not** resolved - callers
     that distrust symlinks must use `os.path.realpath` themselves.
     """
     if not directory:
@@ -119,7 +119,7 @@ def safe_join(directory: str, *paths: str) -> str | None:
             return None
         if "\x00" in component:
             return None
-        # Reject absolute path components — `os.path.join` would otherwise
+        # Reject absolute path components - `os.path.join` would otherwise
         # silently discard `base` if a later argument is absolute.
         if os.path.isabs(component):
             return None

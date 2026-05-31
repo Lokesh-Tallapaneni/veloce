@@ -1,4 +1,4 @@
-"""Server-Sent Events (SSE) — streaming event responses."""
+"""Server-Sent Events (SSE) - streaming event responses."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ class ServerSentEvent:
         if self.retry is not None:
             lines.append(f"retry: {self.retry}")
         data = self.data.replace("\r\n", "\n").replace("\r", "\n")
-        # Single-line payloads — by far the common case — skip the
+        # Single-line payloads - by far the common case - skip the
         # `split("\n")` allocation and emit the field directly.
         if "\n" not in data:
             lines.append(f"data: {data}")
@@ -70,7 +70,7 @@ class ServerSentEvent:
 
 
 class EventSourceResponse(Response):
-    """SSE streaming response — sends events over a long-lived connection.
+    """SSE streaming response - sends events over a long-lived connection.
 
     Usage:
         @app.get("/events")
@@ -82,7 +82,7 @@ class EventSourceResponse(Response):
             return EventSourceResponse(generate())
 
     Pass `ping=<seconds>` to emit a keep-alive comment frame whenever no
-    event is produced within that interval — useful for holding idle
+    event is produced within that interval - useful for holding idle
     connections open through proxies that close silent sockets.
     """
 
@@ -100,7 +100,7 @@ class EventSourceResponse(Response):
         if ping is not None and not (math.isfinite(ping) and ping > 0):
             # `not finite` rejects NaN (fails every comparison, so `<= 0` lets
             # it slip through) and Infinity (passes `> 0` but is meaningless as
-            # an `asyncio.wait` timeout — the heartbeat would never fire).
+            # an `asyncio.wait` timeout - the heartbeat would never fire).
             raise ValueError(
                 f"ping interval must be a finite positive number of seconds, got {ping!r}"
             )
@@ -121,7 +121,7 @@ class EventSourceResponse(Response):
         self.ping = ping
         # Normalise every yielded item to bytes up front, so the ASGI
         # transport and the raw-socket transport consume an identical
-        # `bytes` stream — see `_encode_stream`.
+        # `bytes` stream - see `_encode_stream`.
         self._stream = self._encode_stream(content)
 
     async def stream_to(self, transport: Any) -> None:
@@ -189,7 +189,7 @@ class EventSourceResponse(Response):
         ping: float,
     ) -> AsyncIterator[bytes]:
         # A single task wraps each `__anext__` so a ping-window timeout
-        # does NOT cancel the in-flight pull — cancelling would throw
+        # does NOT cancel the in-flight pull - cancelling would throw
         # into the generator and kill it. We await the SAME task again
         # on the next loop; it resolves once the source finally yields.
         it = content.__aiter__()
@@ -200,7 +200,7 @@ class EventSourceResponse(Response):
                     pending = asyncio.ensure_future(it.__anext__())
                 done, _ = await asyncio.wait((pending,), timeout=ping)
                 if not done:
-                    # No event within the window — keep the connection warm.
+                    # No event within the window - keep the connection warm.
                     yield _PING_FRAME
                     continue
                 task = pending

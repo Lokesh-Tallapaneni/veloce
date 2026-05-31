@@ -1,4 +1,4 @@
-"""Dependency injection — pre-planned at registration, executed per request.
+"""Dependency injection - pre-planned at registration, executed per request.
 
 Public API: `Depends`, `Security`, `DependencyResolver`. The resolver walks a
 pre-built `HandlerPlan` (see `veloce._handler_plan`) rather than reflecting on
@@ -20,6 +20,7 @@ from typing import Any, Literal, get_args, get_origin
 from pydantic import BaseModel, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
+from veloce._constants import MSG_FIELD_REQUIRED
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
@@ -50,7 +51,7 @@ _logger = logging.getLogger(__name__)
 _NOT_COMPILABLE = object()
 
 _MARKER_LOC = {
-    # Map MK_* → openapi-style location string. Resolved lazily to avoid import
+    # Map MK_* -> openapi-style location string. Resolved lazily to avoid import
     # ordering issues.
     0: "query",
     1: "path",
@@ -74,7 +75,7 @@ _EMPTY_OVERRIDES: dict[Callable, Callable] = {}
 _EMPTY_OVERRIDE_SUBPLANS: weakref.WeakKeyDictionary[Callable, Any] = weakref.WeakKeyDictionary()
 
 
-# ── Helpers ───────────────────────────────────────────────
+# -- Helpers -----------------------------------------------
 
 
 @functools.lru_cache(maxsize=512)
@@ -83,8 +84,8 @@ def _type_adapter(target_type: Any) -> TypeAdapter | None:
 
     Adapters are keyed on the annotation object, so a route that declares
     `created: datetime = Query(...)` pays the adapter-construction cost once
-    at first request, never again. ``None`` — the result for an annotation
-    Pydantic cannot build an adapter for — is cached too, so an un-adaptable
+    at first request, never again. ``None`` - the result for an annotation
+    Pydantic cannot build an adapter for - is cached too, so an un-adaptable
     type is not re-attempted (and re-failed) on every subsequent request.
     """
     try:
@@ -98,7 +99,7 @@ def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> 
 
     Request values arrive as strings, so Pydantic's strict literal check
     rejects an `int` / `bool` literal outright. Each plausible coercion of
-    the value — the raw string, a bool, an int, a float — is compared
+    the value - the raw string, a bool, an int, a float - is compared
     against the literal members by *exact* runtime type, sidestepping
     Python's loose `1 == True` equivalence.
     """
@@ -138,8 +139,8 @@ def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str
     """Validate and coerce a request value through Pydantic.
 
     The fast scalar branches of `_coerce_value` cover `str` / `int` / `float`
-    / `bool` / `Enum`; every other annotation — `datetime`, `date`, `time`,
-    `UUID`, `Decimal`, `Path`, constrained generics — is handled here so
+    / `bool` / `Enum`; every other annotation - `datetime`, `date`, `time`,
+    `UUID`, `Decimal`, `Path`, constrained generics - is handled here so
     query / path / header / cookie parameters get the same full validation a
     request-body model already enjoys.
 
@@ -149,7 +150,7 @@ def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str
     try:
         adapter = _type_adapter(target_type)
     except TypeError:
-        # Unhashable annotation — `lru_cache` cannot key it. Fall back to
+        # Unhashable annotation - `lru_cache` cannot key it. Fall back to
         # the raw value, the behaviour before Pydantic coercion existed.
         return value
     if adapter is None:
@@ -222,14 +223,14 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
     return _coerce_via_pydantic(value, target_type, param_name, loc)
 
 
-# ── Markers ───────────────────────────────────────────────
+# -- Markers -----------------------------------------------
 
 
 class Depends:
-    """Dependency marker — use in function signature defaults.
+    """Dependency marker - use in function signature defaults.
 
     `dependency` may be omitted (`Depends()`); the resolver then infers
-    it from the parameter's type annotation — the shorthand for
+    it from the parameter's type annotation - the shorthand for
     `x: SomeClass = Depends()`.
     """
 
@@ -265,7 +266,7 @@ class SecurityScopes:
     the scopes the bearer token actually carries and builds a
     `WWW-Authenticate: Bearer scope="<...>"` header when denying.
 
-    Per RFC 6749 §3.3 the scope-string serialisation is space-separated.
+    Per RFC 6749 Sec. 3.3 the scope-string serialisation is space-separated.
     """
 
     __slots__ = ("scopes", "scope_str")
@@ -278,7 +279,7 @@ class SecurityScopes:
         return f"SecurityScopes({self.scopes!r})"
 
 
-# ── Resolver ──────────────────────────────────────────────
+# -- Resolver ----------------------------------------------
 
 
 class DependencyResolver:
@@ -335,11 +336,11 @@ class DependencyResolver:
         path_params: dict[str, str],
         route_dep_plans: list[Any] | None = None,
     ) -> dict[str, Any]:
-        """Fast path — consume a pre-built `HandlerPlan`."""
+        """Fast path - consume a pre-built `HandlerPlan`."""
         # Clear per-request state on every call. DependencyResolver is public
         # and a caller may reuse one instance across resolves, so a prior
         # resolve's cache / teardown stack / scope stack must never leak into
-        # this one — including into the compiled fast path below.
+        # this one - including into the compiled fast path below.
         self.reset()
 
         # Param-only plans (request + scalar path/query, no route deps) resolve
@@ -369,7 +370,7 @@ class DependencyResolver:
     ) -> dict[str, Any]:
         """Resolve a WebSocket handler's plan.
 
-        The shared slot machinery is reused — the `WebSocket` is passed
+        The shared slot machinery is reused - the `WebSocket` is passed
         where an HTTP resolve passes the `Request`, so `K_WEBSOCKET` slots,
         the `Depends` graph (with `yield`-teardown and `Security` scope
         accumulation), and `path` parameters all resolve through one code
@@ -391,7 +392,7 @@ class DependencyResolver:
         code are logged and suppressed so they do not interrupt the chain.
         """
         # Drain in reverse so the most recently set-up dependency tears down
-        # first — matches Python's contextlib.ExitStack semantics.
+        # first - matches Python's contextlib.ExitStack semantics.
         while self._teardowns:
             kind, gen = self._teardowns.pop()
             try:
@@ -422,7 +423,7 @@ class DependencyResolver:
         path_params: dict[str, str],
         route_dependencies: list[Depends] | None = None,
     ) -> dict[str, Any]:
-        """Back-compat path — build a plan on demand. Tests and direct
+        """Back-compat path - build a plan on demand. Tests and direct
         callers that did not pre-plan land here.
         """
         from veloce._handler_plan import build_plan, build_route_dep_plans
@@ -484,7 +485,7 @@ class DependencyResolver:
                 continue
 
             if kind == K_SECURITY_SCOPES:
-                # Snapshot the accumulated scopes — copy so later
+                # Snapshot the accumulated scopes - copy so later
                 # mutations of `_scope_stack` don't affect this instance.
                 kwargs[name] = SecurityScopes(list(self._scope_stack))
                 i += 1
@@ -495,7 +496,7 @@ class DependencyResolver:
                 # `K_DEPENDS` siblings concurrently; otherwise resolve this one
                 # sequentially. The grouping (no Security() scope mutation, no
                 # yield-style deps, no shared use_cache callable) is derived
-                # once at registration — see `compute_parallel_groups`.
+                # once at registration - see `compute_parallel_groups`.
                 end = groups.get(i, i + 1)
                 if end > i + 1:
                     group = slots[i:end]
@@ -538,7 +539,7 @@ class DependencyResolver:
                     kwargs[name] = [_coerce_value(raw, slot.list_inner, name, "path")]
                 elif name in request.query_params:
                     # MultiDict.getall returns every value the URL carried
-                    # for this key. `?tag=a&tag=b` → ["a", "b"].
+                    # for this key. `?tag=a&tag=b` -> ["a", "b"].
                     values = request.query_params.getall(name)
                     kwargs[name] = [
                         _coerce_value(v, slot.list_inner, name, "query") for v in values
@@ -549,7 +550,7 @@ class DependencyResolver:
                     kwargs[name] = None
                 else:
                     raise RequestValidationError(
-                        [{"loc": ("query", name), "msg": "field required", "type": "missing"}]
+                        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
                     )
                 i += 1
                 continue
@@ -571,7 +572,7 @@ class DependencyResolver:
                     kwargs[name] = None
                 else:
                     raise RequestValidationError(
-                        [{"loc": ("query", name), "msg": "field required", "type": "missing"}]
+                        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
                     )
                 i += 1
                 continue
@@ -643,7 +644,7 @@ class DependencyResolver:
 
         # List-typed query / header / cookie / form marker
         # (`tags: list[str] = Query(...)` / `Header(...)` / `Cookie(...)`
-        # / `Form(...)`) — collect every repeated value, not just the
+        # / `Form(...)`) - collect every repeated value, not just the
         # first.
         if mk in (0, 2, 3, 5) and get_origin(slot.target_type) in (list, set, tuple):
             inner_args = get_args(slot.target_type)
@@ -681,7 +682,7 @@ class DependencyResolver:
             raw = request.cookies.get(lookup)
         elif mk == 4:  # MK_BODY
             body = await request.json()
-            # `Body(embed=True)` — the value lives under the param name
+            # `Body(embed=True)` - the value lives under the param name
             # inside the JSON object, rather than being the whole body.
             if getattr(marker, "embed", False) and isinstance(body, dict):
                 raw = body.get(lookup)
@@ -754,12 +755,12 @@ class DependencyResolver:
                     inspect.isasyncgenfunction(actual),
                 )
                 # Override targets that aren't weak-referenceable (some
-                # C-level callables) silently skip caching — re-probing
+                # C-level callables) silently skip caching - re-probing
                 # is fine, leaking the entry is not.
                 # Before the first write, replace the shared module-level
                 # sentinel with a per-resolver `WeakKeyDictionary`. Without
                 # this swap, a resolver constructed outside the dispatcher
-                # (tests, direct callers — see `__init__` docstring) would
+                # (tests, direct callers - see `__init__` docstring) would
                 # mutate the sentinel and silently accumulate plans
                 # process-globally across unrelated callers.
                 if self._override_subplans is _EMPTY_OVERRIDE_SUBPLANS:

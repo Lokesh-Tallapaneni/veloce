@@ -1,4 +1,4 @@
-"""JSON provider — pluggable serialisation boundary for response bodies.
+"""JSON provider - pluggable serialisation boundary for response bodies.
 
 The base `JSONProvider` declares three methods: `dumps`/`loads` for the
 bytes <-> object boundary, and `response` for handing a
@@ -17,6 +17,7 @@ from typing import Any
 import orjson
 
 from veloce.http.response import JSONResponse
+from veloce.status import HTTP_200_OK
 
 
 class JSONProvider:
@@ -45,13 +46,13 @@ class JSONProvider:
         # caller-provided dumps options (e.g. sort_keys) survive.
         return JSONResponse.from_bytes(
             self.dumps(value),
-            status_code=int(kwargs.pop("status_code", 200)),
+            status_code=int(kwargs.pop("status_code", HTTP_200_OK)),
             headers=kwargs.pop("headers", None),
         )
 
 
 class DefaultJSONProvider(JSONProvider):
-    """orjson-backed provider — Veloce's default.
+    """orjson-backed provider - Veloce's default.
 
     Honours two `app.config` flags so the existing `JSON_SORT_KEYS` /
     `JSONIFY_PRETTYPRINT_REGULAR` toggles keep working without callers

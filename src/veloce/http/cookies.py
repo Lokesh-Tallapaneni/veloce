@@ -1,4 +1,4 @@
-"""Cookie string helpers — `parse_cookie` / `dump_cookie` (RFC 6265).
+"""Cookie string helpers - `parse_cookie` / `dump_cookie` (RFC 6265).
 
 `parse_cookie` reads a `Cookie:` request-header value into a dict.
 `dump_cookie` builds a `Set-Cookie:` response-header value from a
@@ -15,7 +15,7 @@ from veloce.http.dates import http_date
 
 
 def parse_cookie(header: str | None) -> dict[str, str]:
-    """Parse a `Cookie:` header into `{name: value}` — RFC 6265 §5.4.
+    """Parse a `Cookie:` header into `{name: value}` - RFC 6265 Sec. 5.4.
 
     Values are percent-decoded (the inverse of `dump_cookie`'s quoting).
     Segments without an `=` are skipped. When a name repeats, the first
@@ -49,7 +49,7 @@ def dump_cookie(
     httponly: bool = False,
     samesite: str | None = None,
 ) -> str:
-    """Build a `Set-Cookie:` header value — RFC 6265 §4.1.
+    """Build a `Set-Cookie:` header value - RFC 6265 Sec. 4.1.
 
     The cookie value is percent-quoted so control characters and the
     delimiters `;`, `,`, and whitespace can't break out of the

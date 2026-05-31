@@ -1,15 +1,15 @@
-"""Debug — development-mode HTML traceback page.
+"""Debug - development-mode HTML traceback page.
 
 When an unhandled exception escapes a handler and the application is running
 in debug mode, Veloce renders the traceback as a styled HTML page instead of
 the plain "Internal Server Error" body. The page shows the exception type and
 message, each frame's file path, line number and function name, a short
-source-context window read from ``linecache``, and — for syntax errors — the
+source-context window read from ``linecache``, and - for syntax errors - the
 offending source line with a caret marking the failing column. Chained
 exceptions, PEP 678 notes, and PEP 654 exception groups are all rendered.
 
 Scope note: this is a *read-only* traceback viewer, not an interactive
-in-browser console. It deliberately stops short of Werkzeug-style behaviour —
+in-browser console. It deliberately stops short of Werkzeug-style behaviour -
 no evaluating shell, no frame-local inspection over the wire, no PIN
 authentication, no endpoint that executes user-supplied code. Those features
 turn a debug page into a remote-code-execution surface, so they are out of
@@ -18,8 +18,8 @@ scope until they can ship behind an explicit security review. The page emits no
 calls. The "interactive debugger" feature is therefore delivered as a navigable
 HTML traceback; live evaluation remains intentionally unimplemented.
 
-Every value interpolated into the markup — file paths, source lines, the
-exception message — is escaped with ``html.escape`` so exception content cannot
+Every value interpolated into the markup - file paths, source lines, the
+exception message - is escaped with ``html.escape`` so exception content cannot
 inject markup (reflected XSS).
 """
 
@@ -47,7 +47,7 @@ _CONTEXT_MESSAGE = "During handling of the above exception, another exception oc
 _BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
 
 
-# ── String safety ──────────────────────────────────────────
+# -- String safety ------------------------------------------
 
 
 def _safe_str(value: object) -> str:
@@ -65,7 +65,7 @@ def _safe_str(value: object) -> str:
     return result
 
 
-# ── HTML rendering ──────────────────────────────────────────
+# -- HTML rendering ------------------------------------------
 
 
 _STYLE = """\
@@ -192,7 +192,7 @@ def _render_notes(exc: BaseException) -> str:
     return '<div class="exc-notes">' + html.escape(text) + "</div>"
 
 
-# ── Exception chain ─────────────────────────────────────────
+# -- Exception chain -----------------------------------------
 
 
 def _exc_chain(exc: BaseException) -> list[tuple[BaseException, str]]:
@@ -270,7 +270,7 @@ def _render_chain(exc: BaseException, seen: set[int]) -> str:
     return "".join(sections)
 
 
-# ── Public entry point ──────────────────────────────────────
+# -- Public entry point --------------------------------------
 
 
 def render_traceback_html(exc: BaseException) -> str:

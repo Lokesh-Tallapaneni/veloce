@@ -1,4 +1,4 @@
-"""Security sub-package — authentication schemes for dependency injection."""
+"""Security sub-package - authentication schemes for dependency injection."""
 
 from __future__ import annotations
 

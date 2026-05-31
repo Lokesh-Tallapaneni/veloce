@@ -1,4 +1,4 @@
-"""Core data structures — UploadFile, Header, URL, FormData.
+"""Core data structures - UploadFile, Header, URL, FormData.
 
 `Headers` and `QueryParams` subclass `multidict.CIMultiDict` and
 `multidict.MultiDict` respectively. They preserve duplicate keys and add
@@ -17,8 +17,9 @@ from urllib.parse import parse_qsl
 
 from multidict import CIMultiDict, MultiDict
 
-from veloce._constants import MIME_OCTET_STREAM
+from veloce._constants import HEADER_HOST, HEADER_X_FORWARDED_PROTO, MIME_OCTET_STREAM
 from veloce._header_parsing import parse_header_params
+from veloce._protocol_constants import URL_SCHEME_HTTP, URL_SCHEME_HTTPS
 from veloce.exceptions import RequestURITooLong
 
 # Cap on number of query-string fields parsed per request to bound CPU
@@ -26,9 +27,9 @@ from veloce.exceptions import RequestURITooLong
 _MAX_QUERY_FIELDS = 1000
 
 
-# ── Request scope primitives ────────────────────────────────────────
+# -- Request scope primitives ----------------------------------------
 class Address(NamedTuple):
-    """Client/server address — ASGI shape.
+    """Client/server address - ASGI shape.
 
     A two-field named tuple so `request.client.host` /
     `request.client.port` work, while `host, port = request.client`
@@ -40,14 +41,14 @@ class Address(NamedTuple):
 
 
 class State(dict):
-    """Per-request scratch namespace — supports both styles.
+    """Per-request scratch namespace - supports both styles.
 
     ASGI servers expose `request.state` for attribute-style
     storage (`request.state.user = ...`). Veloce's dispatcher also
-    stashes framework internals (`session`, `url_rule`, …) here by
+    stashes framework internals (`session`, `url_rule`, ...) here by
     key. `State` is a `dict` subclass whose attribute access maps to
     items, so `state.user` and `state["user"]` / `state.get("user")`
-    are interchangeable — neither call site needs to know the other.
+    are interchangeable - neither call site needs to know the other.
     """
 
     __slots__ = ()
@@ -68,7 +69,7 @@ class State(dict):
             raise AttributeError(name) from None
 
 
-# ── Uploaded files ──────────────────────────────────────────────────
+# -- Uploaded files --------------------------------------------------
 class UploadFile:
     """Uploaded file with an async read/write interface."""
 
@@ -110,7 +111,7 @@ class UploadFile:
           binary file object. With a path, the file is opened in `"wb"` mode
           and closed afterwards; with a file object, the caller stays
           responsible for closing it.
-        - `buffer_size` controls the chunk size used while streaming —
+        - `buffer_size` controls the chunk size used while streaming -
           keeps memory bounded for large uploads without loading them
           fully into RAM.
 
@@ -128,7 +129,7 @@ class UploadFile:
                 self._stream_into(destination, buffer_size)
         finally:
             # If the underlying stream rejects re-seeking (closed,
-            # one-shot stream, …) just swallow — we're done with it.
+            # one-shot stream, ...) just swallow - we're done with it.
             with contextlib.suppress(ValueError, OSError):
                 self.file.seek(pos)
 
@@ -165,7 +166,7 @@ class UploadFile:
 
         Both a `BytesIO` (the constructor default) *and* a
         `SpooledTemporaryFile` that has not rolled over to disk fall
-        into this category — the multipart parser hands us the
+        into this category - the multipart parser hands us the
         latter, and that's the production hot path. Once the spool
         rolls over to a real file, every op becomes a syscall and
         must go to a thread.
@@ -194,9 +195,9 @@ class UploadFile:
         return f"UploadFile(filename={self.filename!r}, content_type={self.content_type!r}, size={self.size})"
 
 
-# ── URL ─────────────────────────────────────────────────────────────
+# -- URL -------------------------------------------------------------
 class URL:
-    """Parsed URL with component access — lazily constructed."""
+    """Parsed URL with component access - lazily constructed."""
 
     __slots__ = (
         "scheme",
@@ -210,7 +211,7 @@ class URL:
 
     def __init__(
         self,
-        scheme: str = "http",
+        scheme: str = URL_SCHEME_HTTP,
         host: str = "localhost",
         port: int | None = None,
         path: str = "/",
@@ -234,18 +235,18 @@ class URL:
         scope_scheme: str | None = None,
     ) -> URL:
         """Construct a URL from request headers and path components."""
-        host_header = headers.get("host", "localhost")
-        # Precedence (ASGI §HTTP scope): the scope's `scheme` is the
-        # authoritative answer when one was supplied — that's
+        host_header = headers.get(HEADER_HOST, "localhost")
+        # Precedence (ASGI Sec. HTTP scope): the scope's `scheme` is the
+        # authoritative answer when one was supplied - that's
         # what uvicorn sets under TLS. `X-Forwarded-Proto` is a hint set
         # by reverse proxies and only meaningful when ProxyFix or similar
         # has trusted it. Plain `http` is the final fallback.
         if scope_scheme:
             scheme = scope_scheme
-        elif headers.get("x-forwarded-proto") == "https":
-            scheme = "https"
+        elif headers.get(HEADER_X_FORWARDED_PROTO) == URL_SCHEME_HTTPS:
+            scheme = URL_SCHEME_HTTPS
         else:
-            scheme = "http"
+            scheme = URL_SCHEME_HTTP
         if "[" in host_header:
             # Bracketed IPv6: [::1]:8080
             bracket_end = host_header.index("]")
@@ -280,7 +281,7 @@ class URL:
     @property
     def netloc(self) -> str:
         """Return the network location (host:port)."""
-        default_ports = {"http": 80, "https": 443}
+        default_ports = {URL_SCHEME_HTTP: 80, URL_SCHEME_HTTPS: 443}
         host_str = f"[{self.host}]" if ":" in self.host else self.host
         if self.port and self.port != default_ports.get(self.scheme):
             return f"{host_str}:{self.port}"
@@ -305,7 +306,7 @@ class URL:
         return self._full
 
 
-# ── Multidict-backed collections ────────────────────────────────────
+# -- Multidict-backed collections ------------------------------------
 class FormData(MultiDict):
     """Multi-value form-field collection (text fields + file uploads).
 
@@ -334,7 +335,7 @@ class Headers(CIMultiDict):
     Backed by `multidict.CIMultiDict`. Existing single-value access via
     `headers["X"]` returns the first value (multidict semantics); use `headers.getlist("X")` to get all
     values. Construction from a plain dict, a list of tuples, or another
-    multidict all work — the underlying constructor handles each shape.
+    multidict all work - the underlying constructor handles each shape.
     """
 
     def getlist(self, key: str) -> list:
@@ -353,7 +354,7 @@ class Headers(CIMultiDict):
         return [(k, v) for k, v in self.items()]
 
     def copy(self) -> Headers:
-        """Return a shallow copy — a fresh `Headers` with the same entries."""
+        """Return a shallow copy - a fresh `Headers` with the same entries."""
         return Headers(self.to_wsgi_list())
 
     def add(self, key: str, value: str, **params: str) -> None:
@@ -375,16 +376,16 @@ class Headers(CIMultiDict):
         super().add(key, value)
 
 
-# ── Parsed header values ────────────────────────────────────────────
+# -- Parsed header values --------------------------------------------
 class RangeSpec:
-    """Parsed `Range:` header (RFC 9110 §14.2).
+    """Parsed `Range:` header (RFC 9110 Sec. 14.2).
 
     - `unit` is the range unit, e.g. `"bytes"` (the only commonly-used one).
     - `ranges` is a list of `(start, end)` tuples, with `None` standing in
       for an open endpoint:
-        - `0-499`   → `(0, 499)`
-        - `1000-`   → `(1000, None)` (open at the right)
-        - `-500`    → `(None, 500)`  (suffix-range — last 500 bytes)
+        - `0-499`   -> `(0, 499)`
+        - `1000-`   -> `(1000, None)` (open at the right)
+        - `-500`    -> `(None, 500)`  (suffix-range - last 500 bytes)
     """
 
     __slots__ = ("unit", "ranges")
@@ -428,7 +429,7 @@ class RangeSpec:
 
 
 class AcceptHeader:
-    """Parsed `Accept-*` header with RFC 9110 §12.5 q-value semantics.
+    """Parsed `Accept-*` header with RFC 9110 Sec. 12.5 q-value semantics.
 
     Construction is via `AcceptHeader.parse(raw, mime=False)`. `mime=True`
     enables MIME-style wildcard matching (`text/*`, `*/*`) used by
@@ -449,8 +450,8 @@ class AcceptHeader:
     def parse(cls, raw: str, mime: bool = False) -> AcceptHeader:
         """Parse a comma-separated header into (value, q) tuples.
 
-        Q-values missing or unparseable default to 1.0 (RFC 9110 §12.4.2).
-        Entries with `q=0` are kept — `best_match` treats them as
+        Q-values missing or unparseable default to 1.0 (RFC 9110 Sec. 12.4.2).
+        Entries with `q=0` are kept - `best_match` treats them as
         explicit rejections of that option.
         """
         if not raw:
@@ -500,7 +501,7 @@ class AcceptHeader:
 
         Ties go to the order in `options` (caller's preference). Returns
         `default` when no option has q>0. When the header is empty (no
-        preference expressed), returns `options[0]` — RFC 9110 §12.5.1
+        preference expressed), returns `options[0]` - RFC 9110 Sec. 12.5.1
         treats a missing Accept as "accept anything".
         """
         if not self._options:
@@ -518,7 +519,7 @@ class AcceptHeader:
         if opt == value:
             return True
         if not self._mime:
-            # RFC 9110 §12.5.4: bare `*` matches any value in
+            # RFC 9110 Sec. 12.5.4: bare `*` matches any value in
             # Accept-Language / Accept-Encoding / Accept-Charset.
             return opt == "*"
         # MIME wildcards: `*/*`, `text/*`.
@@ -614,7 +615,7 @@ class Authorization:
         return f"Authorization(type={self.type!r})"
 
 
-# ── Cookies & query parameters ──────────────────────────────────────
+# -- Cookies & query parameters --------------------------------------
 class Cookies(MultiDict):
     """Cookie collection parsed from the `Cookie` header.
 
@@ -683,7 +684,7 @@ class QueryParams(MultiDict):
         return cls(items)
 
 
-# ── Backward-compatible re-exports ──────────────────────────────────
+# -- Backward-compatible re-exports ----------------------------------
 # Re-export from formparsers for backward compatibility.
 from veloce.http.formparsers import (  # noqa: E402, F401
     DEFAULT_MAX_MULTIPART_PART_SIZE,

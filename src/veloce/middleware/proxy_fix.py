@@ -1,7 +1,7 @@
 """Trust reverse-proxy `X-Forwarded-*` / `Forwarded` headers.
 
 When veloce sits behind a reverse proxy (nginx, Caddy, ALB, Cloudflare,
-…), the immediate TCP peer is the proxy — not the original client. The
+...), the immediate TCP peer is the proxy - not the original client. The
 proxy injects headers describing the original request:
 
 - `X-Forwarded-For: client, proxy1, proxy2`  (chain of upstream IPs)
@@ -75,16 +75,16 @@ class ProxyFix(Middleware):
 
         # `Forwarded:` wins; else fall back to `X-Forwarded-*`.
         client = fwd.get("for") or self._pick_hop(
-            request.headers.get("x-forwarded-for"), self.x_for
+            request.headers.get(HEADER_X_FORWARDED_FOR), self.x_for
         )
         proto = fwd.get("proto") or self._pick_hop(
-            request.headers.get("x-forwarded-proto"), self.x_proto
+            request.headers.get(HEADER_X_FORWARDED_PROTO), self.x_proto
         )
         host = fwd.get("host") or self._pick_hop(
-            request.headers.get("x-forwarded-host"), self.x_host
+            request.headers.get(HEADER_X_FORWARDED_HOST), self.x_host
         )
         prefix = fwd.get("prefix") or self._pick_hop(
-            request.headers.get("x-forwarded-prefix"), self.x_prefix
+            request.headers.get(HEADER_X_FORWARDED_PREFIX), self.x_prefix
         )
 
         # Reject CR / LF / NUL in any trusted proxy value before it lands on
@@ -116,13 +116,13 @@ class ProxyFix(Middleware):
             # Rewrite Host so URL.from_request picks up the original host.
             request.headers["host"] = host
         if proto:
-            # Override scheme — `URL.from_request` now prefers `scope.scheme`
+            # Override scheme - `URL.from_request` now prefers `scope.scheme`
             # over `X-Forwarded-Proto`, so mutate both: the header for
             # downstream code that introspects it, and the scope so the
             # URL accessor agrees. This is the whole point of ProxyFix:
             # ASGI scope says "http" (TLS terminated upstream) but the
             # trusted hop tells us the original scheme was "https".
-            request.headers["x-forwarded-proto"] = proto
+            request.headers[HEADER_X_FORWARDED_PROTO] = proto
             if isinstance(getattr(request, "scope", None), dict):
                 request.scope["scheme"] = proto
         if prefix:
@@ -136,7 +136,7 @@ class ProxyFix(Middleware):
     def _parse_forwarded(
         self, value: str, x_for: int, x_proto: int, x_host: int, x_prefix: int
     ) -> dict[str, str]:
-        """Select trusted directives from a `Forwarded:` header (RFC 7239 §4).
+        """Select trusted directives from a `Forwarded:` header (RFC 7239 Sec. 4).
 
         Each comma-separated element represents one hop. Attacker-controlled
         hops are on the LEFT; trusted proxies append on the RIGHT. For each
@@ -163,7 +163,7 @@ class ProxyFix(Middleware):
 
     @staticmethod
     def _parse_forwarded_element(element: str) -> dict[str, str]:
-        """Parse a single element of a `Forwarded:` header (RFC 7239 §4).
+        """Parse a single element of a `Forwarded:` header (RFC 7239 Sec. 4).
 
         Returns the lowercase key -> value mapping. Quotes and IPv6
         brackets are stripped.

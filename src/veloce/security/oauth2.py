@@ -1,4 +1,4 @@
-"""OAuth2 — authentication schemes.
+"""OAuth2 - authentication schemes.
 
 Some constructor parameters use camelCase (`authorizationUrl`, `tokenUrl`,
 `refreshUrl`, `openIdConnectUrl`) rather than the project's snake_case
@@ -12,14 +12,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from veloce._protocol_constants import AUTH_SCHEME_BEARER, OAUTH2_GRANT_TYPE_PASSWORD
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
 from veloce.routing.params import Form
 from veloce.security._utils import _extract_bearer_token
+from veloce.status import HTTP_422_UNPROCESSABLE_ENTITY
 
 
 class OAuth2PasswordBearer:
-    """OAuth2 Password Bearer flow — extracts token from Authorization header."""
+    """OAuth2 Password Bearer flow - extracts token from Authorization header."""
 
     def __init__(
         self,
@@ -32,7 +34,7 @@ class OAuth2PasswordBearer:
         self.scopes = scopes or {}
 
     def __call__(self, request: Request) -> str | None:
-        return _extract_bearer_token(request, "Bearer", self.auto_error)
+        return _extract_bearer_token(request, AUTH_SCHEME_BEARER, self.auto_error)
 
 
 class OAuth2AuthorizationCodeBearer:
@@ -71,7 +73,7 @@ class OAuth2AuthorizationCodeBearer:
         self.auto_error = auto_error
 
     def __call__(self, request: Request) -> str | None:
-        return _extract_bearer_token(request, "Bearer", self.auto_error)
+        return _extract_bearer_token(request, AUTH_SCHEME_BEARER, self.auto_error)
 
 
 class OpenIdConnect:
@@ -92,7 +94,7 @@ class OpenIdConnect:
         self.auto_error = auto_error
 
     def __call__(self, request: Request) -> str | None:
-        return _extract_bearer_token(request, "Bearer", self.auto_error)
+        return _extract_bearer_token(request, AUTH_SCHEME_BEARER, self.auto_error)
 
 
 class OAuth2PasswordRequestForm:
@@ -104,7 +106,7 @@ class OAuth2PasswordRequestForm:
         self,
         # Annotated `Any`: the default is a `Form` marker, but the
         # resolver passes a real `str` value at call time.
-        grant_type: Any = Form(default="password"),
+        grant_type: Any = Form(default=OAUTH2_GRANT_TYPE_PASSWORD),
         username: Any = Form(default=""),
         password: Any = Form(default=""),
         scope: Any = Form(default=""),
@@ -114,7 +116,7 @@ class OAuth2PasswordRequestForm:
         # Used as a `Depends()` class dependency: the resolver reads each
         # field from the request form body via the `Form()` markers and
         # passes resolved values here. When constructed directly the
-        # params are still `Form` markers — fall back to their defaults.
+        # params are still `Form` markers - fall back to their defaults.
         def _value(v: Any) -> Any:
             return v.default if isinstance(v, Form) else v
 
@@ -139,7 +141,7 @@ class OAuth2PasswordRequestForm:
             scope=form_data.get("scope", ""),
             client_id=form_data.get("client_id"),
             client_secret=form_data.get("client_secret"),
-            grant_type=form_data.get("grant_type", "password"),
+            grant_type=form_data.get("grant_type", OAUTH2_GRANT_TYPE_PASSWORD),
         )
 
 
@@ -148,7 +150,7 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
 
     the non-strict form leaves `grant_type` optional;
     the strict form *requires* it and constrains the value to the
-    literal `password` (RFC 6749 §4.3.2). Missing or mismatched values
+    literal `password` (RFC 6749 Sec. 4.3.2). Missing or mismatched values
     fail validation with 422.
     """
 
@@ -156,7 +158,7 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
 
     def __init__(
         self,
-        grant_type: Any = Form(regex="^password$"),
+        grant_type: Any = Form(regex=f"^{OAUTH2_GRANT_TYPE_PASSWORD}$"),
         username: Any = Form(default=""),
         password: Any = Form(default=""),
         scope: Any = Form(default=""),
@@ -179,6 +181,9 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
         grant_type = form_data.get("grant_type")
         # Strict: missing OR not exactly "password" both fail; the non-strict
         # parent defaults a missing value to "password", which masks absence.
-        if grant_type is None or grant_type != "password":
-            raise HTTPException(422, "grant_type must be 'password'")
+        if grant_type is None or grant_type != OAUTH2_GRANT_TYPE_PASSWORD:
+            raise HTTPException(
+                HTTP_422_UNPROCESSABLE_ENTITY,
+                f"grant_type must be {OAUTH2_GRANT_TYPE_PASSWORD!r}",
+            )
         return cls._from_form(form_data)  # type: ignore[return-value]
