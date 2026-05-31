@@ -208,10 +208,7 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
         # parent is never the ambient context active when this retroactive
         # hook fires (which would parent under unrelated same-task work).
         carrier = metrics.parent_context
-        if carrier:
-            parent = propagator.extract(cast("dict[str, str]", carrier))
-        else:
-            parent = _OtelContext()
+        parent = propagator.extract(cast("dict[str, str]", carrier)) if carrier else _OtelContext()
         span = tracer.start_span(
             span_name,
             context=parent,
