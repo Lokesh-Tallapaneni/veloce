@@ -558,3 +558,37 @@ def test_no_traceparent_starts_a_fresh_root_span() -> None:
     spans = exporter.get_finished_spans()
     assert len(spans) == 1
     assert spans[0].parent is None
+
+
+def test_traceparent_continued_even_when_a_before_hook_short_circuits() -> None:
+    # Regression: trace continuation must not depend on hook ordering. A
+    # request rejected by an earlier `before_request` hook (auth/guard) still
+    # emits a span, and that span must still join the inbound trace — the
+    # bridge extracts the parent in its emit hook (which runs on every dispatch
+    # path), not a skippable before_request hook.
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from veloce import Response
+
+    exporter, app = _exporter_and_app()
+
+    @app.before_request
+    def _gate(request):
+        # Short-circuit before the route handler ever runs.
+        return Response(body=b"denied", status_code=403)
+
+    trace_id_hex = "0af7651916cd43dd8448eb211c80319c"
+    span_id_hex = "b7ad6b7169203331"
+    app.test_client().get(
+        "/items/7", headers={"traceparent": f"00-{trace_id_hex}-{span_id_hex}-01"}
+    )
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.attributes["http.response.status_code"] == 403
+    # The span still joins the inbound trace despite the short-circuit.
+    assert format(span.context.trace_id, "032x") == trace_id_hex
+    assert span.parent is not None
+    assert format(span.parent.span_id, "016x") == span_id_hex

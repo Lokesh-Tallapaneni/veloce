@@ -95,6 +95,24 @@ _CT_BYTES_CACHE: dict[str, bytes] = {
 _CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(2048))
 
 
+def _trace_carrier(request: Request) -> dict[str, str] | None:
+    """Inbound W3C trace headers as a carrier dict, or `None` if absent.
+
+    Only `traceparent` / `tracestate` are copied — the dimensions a tracing
+    bridge needs to continue a distributed trace — keeping the framework core
+    free of any OpenTelemetry dependency. Returns `None` (not an empty dict)
+    when no `traceparent` is present so the bridge can cheaply skip extraction.
+    """
+    traceparent = request.headers.get("traceparent")
+    if traceparent is None:
+        return None
+    carrier = {"traceparent": traceparent}
+    tracestate = request.headers.get("tracestate")
+    if tracestate is not None:
+        carrier["tracestate"] = tracestate
+    return carrier
+
+
 class Veloce(Router):
     """Ultra-fast async web framework.
 
@@ -2741,10 +2759,12 @@ class Veloce(Router):
             duration_ms=duration_ms,
             streamed=streamed,
             end_time_ns=end_time_ns,
-            # A tracing bridge may stash an extracted inbound trace context on
-            # the request (e.g. veloce.otel's before_request hook); pass it
-            # through so the bridge can parent its span. `None` otherwise.
-            parent_context=request._state.get("_otel_parent_context"),
+            # Inbound distributed-trace headers, carried verbatim so a tracing
+            # bridge (e.g. veloce.otel) can extract a parent context and
+            # continue the trace. Built on every dispatch path here — never via
+            # a before_request hook, which a short-circuiting hook could skip.
+            # `None` when the request carries no trace headers.
+            parent_context=_trace_carrier(request),
         )
         for hook in self._instrumentation:
             try:

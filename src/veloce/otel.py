@@ -38,14 +38,15 @@ in a fresh, empty context — never the ambient OpenTelemetry context active at
 emission time — so it is always a clean server-root span and never accidentally
 parents itself under unrelated work running on the same task.
 
-**Distributed-trace continuation.** The bridge registers a ``before_request``
-hook that extracts any inbound W3C trace context (``traceparent`` /
-``tracestate``) from the request headers via
-``TraceContextTextMapPropagator`` and stashes it on the request; the emitted
-span is then parented under that context, so a request arriving with an
-upstream trace joins it (same ``trace_id``, parented under the caller's span)
-rather than starting a disconnected root. A request with no trace headers
-yields an empty context and the span is a clean root, as before.
+**Distributed-trace continuation.** The framework carries the inbound
+``traceparent`` / ``tracestate`` headers on the metrics record, and this bridge
+extracts a parent context from them via ``TraceContextTextMapPropagator`` when
+it emits the span — so a request arriving with an upstream trace joins it (same
+``trace_id``, parented under the caller's span) rather than starting a
+disconnected root. A request with no trace headers yields an empty context and
+the span is a clean root. Extraction happens on the span-emit path, which runs
+on every dispatch outcome (success, an earlier ``before_request`` short-circuit,
+or an error), so continuation never depends on hook ordering.
 
 **Scope.** This is a *server-span* bridge: it continues an inbound trace and
 emits one server span per request, but it does not inject context into
@@ -110,9 +111,6 @@ except ImportError as exc:  # pragma: no cover - exercised only without opentele
     _W3CPropagator = None  # type: ignore[assignment,misc]
     _OTEL_IMPORT_ERROR = exc
 
-# Per-request stash key for the extracted inbound trace context.
-_OTEL_PARENT_CONTEXT_KEY = "_otel_parent_context"
-
 
 _INSTALL_HINT = (
     "instrument_with_otel requires OpenTelemetry, which is an optional "
@@ -152,10 +150,12 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
     :meth:`Veloce.add_instrumentation` returns), so callers can hold a reference
     to it for tests or introspection.
 
-    Also registers a ``before_request`` hook that extracts an inbound W3C trace
-    context (``traceparent`` / ``tracestate``) from the request headers, so the
-    emitted span continues an upstream distributed trace when one is present;
-    absent those headers the span is a clean root.
+    Continues an inbound W3C distributed trace: the request's ``traceparent`` /
+    ``tracestate`` headers are carried on the metrics record and this bridge
+    extracts a parent context from them when emitting the span, so an upstream
+    trace is joined when present; absent those headers the span is a clean root.
+    Extraction is on the emit path (not a skippable ``before_request`` hook), so
+    it works even for a request short-circuited by an earlier hook.
 
     The span is recorded retroactively from the request's metrics record, not
     as a live wrap of handler execution, but it is backdated: ``start_time`` and
@@ -172,18 +172,6 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
     StatusCode = _otel_trace.StatusCode
     Status = _otel_trace.Status
     propagator = _W3CPropagator()
-
-    def _extract_parent_context(request: Any) -> None:
-        # Extract any inbound W3C trace context (`traceparent` / `tracestate`)
-        # from the request headers and stash it on the request, so the span
-        # emitted after dispatch can parent under the upstream trace instead
-        # of starting a fresh root. Runs as a before_request hook (registered
-        # below). A request with no trace headers yields an empty context, so
-        # the span falls back to a clean root exactly as before.
-        carrier = {k.lower(): v for k, v in request.headers.items()}
-        request._state[_OTEL_PARENT_CONTEXT_KEY] = propagator.extract(carrier)
-
-    app.before_request(_extract_parent_context)
 
     def _emit_span(metrics: RequestMetrics) -> None:
         # Streamed bodies are sent after this hook fires, so the metrics record
@@ -212,14 +200,21 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
         end_time = metrics.end_time_ns if metrics.end_time_ns is not None else time.time_ns()
         start_time = end_time - int(metrics.duration_ms * 1_000_000)
         # Parent the span under the inbound W3C trace context extracted from
-        # the request headers (so a distributed trace is continued), if any;
-        # otherwise root it in a fresh empty context. Either way, never the
-        # ambient context active when this retroactive hook fires — that would
-        # parent the request span under unrelated work on the same task.
-        parent = metrics.parent_context if metrics.parent_context is not None else _OtelContext()
+        # the request's trace headers (so a distributed trace is continued),
+        # if any; otherwise root it in a fresh empty context. Extraction
+        # happens here — in the emit hook that runs on every dispatch path
+        # (success, short-circuit, error) — rather than a before_request hook,
+        # which an earlier short-circuiting hook could skip. Either way the
+        # parent is never the ambient context active when this retroactive
+        # hook fires (which would parent under unrelated same-task work).
+        carrier = metrics.parent_context
+        if carrier:
+            parent = propagator.extract(cast("dict[str, str]", carrier))
+        else:
+            parent = _OtelContext()
         span = tracer.start_span(
             span_name,
-            context=cast("_OtelContext", parent),
+            context=parent,
             kind=SpanKind.SERVER,
             start_time=start_time,
         )

@@ -66,10 +66,11 @@ class RequestMetrics:
         self.duration_ms = duration_ms
         self.streamed = streamed
         self.end_time_ns = end_time_ns
-        # Opaque tracing context extracted from inbound headers by a tracing
-        # bridge (e.g. veloce.otel) so a span can parent under the upstream
-        # trace. `None` when no bridge populated it. The core never interprets
-        # this value — it is framework-agnostic.
+        # Inbound distributed-trace headers (a `{"traceparent": ..., maybe
+        # "tracestate": ...}` carrier dict) so a tracing bridge (e.g.
+        # veloce.otel) can extract a parent context and continue the trace.
+        # `None` when the request carried no trace headers. The core never
+        # interprets this value — it stays framework-agnostic.
         self.parent_context = parent_context
 
     def __repr__(self) -> str:

@@ -40,10 +40,13 @@ longer scale memory with body size.
   instrumentation hook or `request_finished` receiver runs, so a slow earlier
   hook cannot shift it) and its `start_time` is that end minus the measured
   duration, so the exported span covers the real request window. It continues an
-  inbound **W3C distributed trace**: a `before_request` hook extracts
-  `traceparent` / `tracestate` from the request headers, so a request arriving
-  with an upstream trace joins it (same `trace_id`, parented under the caller's
-  span); absent those headers the span is a clean root. It is never parented
+  inbound **W3C distributed trace**: the inbound `traceparent` / `tracestate`
+  headers are carried on the metrics record and the bridge extracts a parent
+  context from them, so a request arriving with an upstream trace joins it (same
+  `trace_id`, parented under the caller's span); absent those headers the span is
+  a clean root. Extraction happens in the span-emit path, which runs on every
+  dispatch outcome — including a request short-circuited by an earlier
+  `before_request` hook — so trace continuation never depends on hook ordering. It is never parented
   under the ambient OpenTelemetry context active when the hook fires. This is a
   *server-span* bridge — it continues inbound traces and emits one span per
   request, but does not inject context into outbound calls or wrap handler
