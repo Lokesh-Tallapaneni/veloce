@@ -88,6 +88,29 @@ def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str,
     return merged
 
 
+async def _gather_context_processors_async(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Async variant of `_gather_context_processors` for the async render path.
+
+    Awaits `async def` context processors instead of discarding them, so they
+    contribute values during `render_async`. Sync processors are called
+    directly; the caller's explicit context still wins over their defaults.
+    """
+    app = _current_app_var.get()
+    if app is None:
+        return dict(extra or {})
+
+    merged: dict[str, Any] = {}
+    for processor in getattr(app, "_context_processors", ()):
+        result = processor()
+        if inspect.iscoroutine(result):
+            result = await result
+        if isinstance(result, dict):
+            merged.update(result)
+    if extra:
+        merged.update(extra)
+    return merged
+
+
 def _context_preserving_iter(iterator: Any) -> Any:
     """Wrap a lazy sync iterator so each step runs in the caller's context.
 
@@ -258,7 +281,7 @@ class Jinja2Templates:
         self._apply_auto_reload(self._async_env)
         _sync_app_jinja_helpers(self._async_env)
         template = self._async_env.get_template(name)
-        merged = _gather_context_processors(context or {})
+        merged = await _gather_context_processors_async(context or {})
         return await template.render_async(merged)
 
     def get_template(self, name: str):
