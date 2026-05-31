@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `StaticFiles` `If-Range` evaluation now follows RFC 9110 Sec. 13.1.5: an
+  entity-tag validator must match under the **strong** comparison function and
+  an HTTP-date validator must match **exactly** (not the "earlier-than-or-equal"
+  test). Previously a weak ETag or an older-than-mtime date could still
+  authorize a `206` range resume; those validators now correctly fall through
+  to a full `200`. Veloce emits weak file ETags, so a safe range resume is via
+  the exact `Last-Modified` date.
+
 ## [0.2.0] - 2026-05-31
 
 Request bodies now stream. The raw HTTP/1.1 server dispatches a handler as
