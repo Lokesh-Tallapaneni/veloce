@@ -1,6 +1,6 @@
-"""Parsed `Cache-Control` header `CacheControl` view.
+"""CacheControl - parsed view of a `Cache-Control` header.
 
-RFC 9111 §5.2 defines the `Cache-Control` directives. Each directive
+RFC 9111 Sec. 5.2 defines the `Cache-Control` directives. Each directive
 is either a bare token (`no-cache`, `must-revalidate`) or a
 `key=value` pair (`max-age=3600`). Values may be quoted strings or
 bare tokens; numeric directives are integer seconds.
@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from veloce._constants import HEADER_VALUE_PUBLIC
+
 _BOOL_DIRECTIVES = frozenset(
     {
         "no_cache",
@@ -22,7 +24,7 @@ _BOOL_DIRECTIVES = frozenset(
         "no_transform",
         "must_revalidate",
         "proxy_revalidate",
-        "public",
+        HEADER_VALUE_PUBLIC,
         "private",
         "immutable",
         "only_if_cached",
@@ -57,7 +59,7 @@ class CacheControl:
     __slots__ = ("_directives",)
 
     def __init__(self, header: str | None = "") -> None:
-        # Insertion-ordered dict: attr_name → value (True for bare flags,
+        # Insertion-ordered dict: attr_name -> value (True for bare flags,
         # int for numeric directives, str for unknown directives).
         self._directives: dict[str, Any] = {}
         if not header:

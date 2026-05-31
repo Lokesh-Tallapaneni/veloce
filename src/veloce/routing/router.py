@@ -1,4 +1,4 @@
-"""Radix-tree router with path parameters, method dispatch, and route groups."""
+"""Router - radix-tree routing with path parameters, method dispatch, and route groups."""
 
 from __future__ import annotations
 
@@ -8,6 +8,19 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 from urllib.parse import urlencode
 
+from veloce._constants import MSG_SUCCESSFUL_RESPONSE
+from veloce._protocol_constants import (
+    HTTP_METHOD_DELETE,
+    HTTP_METHOD_GET,
+    HTTP_METHOD_HEAD,
+    HTTP_METHOD_OPTIONS,
+    HTTP_METHOD_PATCH,
+    HTTP_METHOD_POST,
+    HTTP_METHOD_PUT,
+    HTTP_METHOD_TRACE,
+    ROUTE_METHOD_WEBSOCKET,
+    URL_SCHEME_HTTP,
+)
 from veloce.routing.converters import (
     FloatConverter,
     IntConverter,
@@ -21,6 +34,7 @@ from veloce.routing.converters import (
     is_regex_path,
     parse_converter,
 )
+from veloce.status import HTTP_200_OK
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 
@@ -69,20 +83,21 @@ class RadixNode:
         # The ordered list above is still the source of truth at match time.
         self._param_index: dict[tuple[str, type], RadixNode] = {}
         self.wildcard_child: RadixNode | None = None
-        self.handlers: dict[str, RouteInfo] = {}  # method -> RouteInfo
+        # Method name (uppercase) -> RouteInfo.
+        self.handlers: dict[str, RouteInfo] = {}
         self.param_name: str | None = None
         self.is_param = False
         self.is_wildcard = False
         self.trailing_slash = False
         # When True, the slashed and unslashed forms both match without
-        # redirect — set by `strict_slashes=False` on `add_route`.
+        # redirect - set by `strict_slashes=False` on `add_route`.
         self.tolerant_slash = False
         # Converter applied at match time. `None` for static and wildcard nodes;
         # always set on param nodes (defaulting to StringConverter).
         self.converter: _Converter | None = None
 
 
-# Converter specificity — lower = more restrictive = tried first during
+# Converter specificity - lower = more restrictive = tried first during
 # match. Ensures `/items/{id:int}` beats `/items/{slug:str}` regardless
 # of registration order. The sort runs once per `add_route` call (at app
 # startup), never on the per-request match path.
@@ -148,8 +163,8 @@ class RouteInfo:
         path_template: str = "",
         description: str | None = None,
         deprecated: bool = False,
-        response_description: str = "Successful Response",
-        status_code: int = 200,
+        response_description: str = MSG_SUCCESSFUL_RESPONSE,
+        status_code: int = HTTP_200_OK,
         response_class: Any = None,
         response_model_include: set[str] | None = None,
         response_model_exclude: set[str] | None = None,
@@ -194,35 +209,35 @@ class RouteInfo:
         # Explicit OpenAPI `operationId` override; falls back to the route
         # name during schema emission.
         self.operation_id = operation_id
-        # `openapi_extra` — an arbitrary dict deep-merged into
+        # `openapi_extra` - an arbitrary dict deep-merged into
         # this route's OpenAPI operation object (lets users inject
         # vendor extensions, custom requestBody examples, etc.).
         self.openapi_extra = openapi_extra
-        # the routing-rule `defaults` — fixed values merged into
+        # the routing-rule `defaults` - fixed values merged into
         # `path_params` at dispatch (without overriding URL-matched
         # params), so two rules can share one handler with one rule
         # supplying a default for a segment the other carries in the URL.
         self.defaults = defaults or {}
-        # OpenAPI `callbacks` — a dict of named Callback objects emitted
+        # OpenAPI `callbacks` - a dict of named Callback objects emitted
         # verbatim into the operation's `callbacks` field (OpenAPI 3.1
-        # §4.8.8 — out-of-band requests the API issues back to a caller).
+        # Sec. 4.8.8 - out-of-band requests the API issues back to a caller).
         self.callbacks = callbacks
-        # Subdomain constraint — matched against the request's host at
+        # Subdomain constraint - matched against the request's host at
         # dispatch time. `None` means "any host"; `"*"` means "any
         # subdomain of SERVER_NAME but not the apex".
         self.subdomain = subdomain
-        # Host constraint — the full `Host` header must equal this value
+        # Host constraint - the full `Host` header must equal this value
         # exactly (case-insensitive). `None` means "any host". Broader
         # than `subdomain`, which only constrains the leftmost label.
         self.host = host
-        # Pre-computed reflection plan — filled in by Router.add_route once
+        # Pre-computed reflection plan - filled in by Router.add_route once
         # this RouteInfo has been constructed. Tests that build RouteInfo
         # directly will see `None` here and the resolver will fall back to
         # the build-plan-on-demand path.
         self.handler_plan: Any = None
         self.route_dep_plans: list[Any] = []
         # True when the handler takes no injected parameters and the route
-        # carries no dependencies — the dispatcher then skips the
+        # carries no dependencies - the dispatcher then skips the
         # dependency resolver entirely (the "trivial-route" fast path).
         # Set by `add_route` once the plans are built.
         self.is_trivial_plan = False
@@ -276,9 +291,9 @@ class RegexRoute:
         self.handlers: dict[str, RouteInfo] = {}
         # Built-in converter per placeholder name, so matched groups are
         # coerced to the same Python types the radix tree produces
-        # (`{n:int}` → int, not "3"). Bare and raw-regex groups are absent.
+        # (`{n:int}` -> int, not "3"). Bare and raw-regex groups are absent.
         self.converters: dict[str, _Converter] = extract_regex_converters(template)
-        # Mirrors `RadixNode.tolerant_slash` — set by `strict_slashes=False`
+        # Mirrors `RadixNode.tolerant_slash` - set by `strict_slashes=False`
         # so a regex route accepts the missing/extra trailing slash too.
         self.tolerant_slash = False
 
@@ -306,20 +321,19 @@ class Router:
         # per-call; this is just the fallback before the built-in default
         # (`JSONResponse` for dict/list returns) kicks in.
         self.default_response_class = default_response_class
-        # Router-level dependencies — applied to every route
+        # Router-level dependencies - applied to every route
         # registered on this router. Per-route `dependencies=` is
         # *appended* to (not replaced by) the router-level list, so
         # both fire and the route-specific ones run last.
         self.router_dependencies = list(dependencies or [])
         # Router-level `responses=` dict. Each route's
-        # `responses=` overlays on top — per-route status codes win on
+        # `responses=` overlays on top - per-route status codes win on
         # collision; router-level supplies the rest (typically the
         # 404/403/422 shape every route shares).
         self.router_responses: dict[int, dict[str, Any]] = dict(responses or {})
         self._root = RadixNode()
-        self._named_routes: dict[
-            str, tuple[str, list[str]]
-        ] = {}  # name -> (path_template, param_names)
+        # Route name -> (path_template, param_names), for url_for reverse lookup.
+        self._named_routes: dict[str, tuple[str, list[str]]] = {}
         # Regex fallback routes, in registration order. Empty for the common
         # case; `match()` guards on `if self._regex_routes:` so the radix
         # fast path pays nothing when no regex route is registered.
@@ -327,6 +341,8 @@ class Router:
         # template -> RegexRoute, so a second method on the same regex path
         # reuses one compiled pattern instead of appending a duplicate.
         self._regex_route_index: dict[str, RegexRoute] = {}
+
+    # -- Route registration ---------------------------------------
 
     def _split_path(self, path: str) -> tuple[str, ...]:
         """Split path into segments (cached)."""
@@ -411,8 +427,8 @@ class Router:
         name: str | None = None,
         description: str | None = None,
         deprecated: bool = False,
-        response_description: str = "Successful Response",
-        status_code: int = 200,
+        response_description: str = MSG_SUCCESSFUL_RESPONSE,
+        status_code: int = HTTP_200_OK,
         response_class: Any = None,
         response_model_include: set[str] | None = None,
         response_model_exclude: set[str] | None = None,
@@ -475,7 +491,7 @@ class Router:
         route_name = name or handler.__name__
         # Merge router-level dependencies (registered at Router.__init__)
         # with the route-specific list. Router-level dependencies run
-        # first (matches the documented semantics — outer scope before inner).
+        # first (matches the documented semantics - outer scope before inner).
         combined_deps = list(self.router_dependencies)
         if dependencies:
             combined_deps.extend(dependencies)
@@ -528,7 +544,7 @@ class Router:
         # A WebSocket route's plan is built in websocket mode so the
         # `WebSocket` connection is bound by annotation / name and its
         # dependency graph runs through the shared resolver.
-        is_ws = any(m.upper() == "WEBSOCKET" for m in methods)
+        is_ws = any(m.upper() == ROUTE_METHOD_WEBSOCKET for m in methods)
         route_info.handler_plan = build_plan(handler, websocket=is_ws)
         route_info.route_dep_plans = build_route_dep_plans(route_info.dependencies, websocket=is_ws)
         # Classify the route for dispatch: a handler with no parameter
@@ -557,12 +573,14 @@ class Router:
         for method in methods:
             handler_table[method.upper()] = route_info
 
+    # -- Matching -------------------------------------------------
+
     @staticmethod
     def _regex_route_match(route: RegexRoute, path: str) -> re.Match[str] | None:
         """Match `path` against a regex route, honoring `tolerant_slash`.
 
         When the route was registered with `strict_slashes=False`, the
-        slashed and unslashed forms both match — mirroring the radix tree's
+        slashed and unslashed forms both match - mirroring the radix tree's
         `tolerant_slash` behaviour.
         """
         m = route.pattern.match(path)
@@ -580,7 +598,7 @@ class Router:
         Built-in specs (`int`, `float`, `uuid`, `path`, `any(...)`) coerce to
         the same Python types the radix tree produces; bare and raw-regex
         groups have no converter and stay as strings. A built-in converter
-        enforces guards the regex fragment alone does not — `int`'s digit cap,
+        enforces guards the regex fragment alone does not - `int`'s digit cap,
         for instance, rejects a 21-digit value that `-?\\d+` happily matches.
         When a converter rejects its group, the regex route is treated as a
         miss (return `None`) so the same input is rejected on a regex route as
@@ -615,8 +633,8 @@ class Router:
             if m is None:
                 continue
             info = route.handlers.get(method_upper)
-            if info is None and method_upper == "HEAD":
-                info = route.handlers.get("GET")
+            if info is None and method_upper == HTTP_METHOD_HEAD:
+                info = route.handlers.get(HTTP_METHOD_GET)
             if info is None:
                 continue
             params = self._coerce_regex_params(route, m)
@@ -660,7 +678,7 @@ class Router:
             if not result.trailing_slash and request_has_slash and result.handlers:
                 return None
 
-        # Handlers are stored uppercase — RFC-conforming clients send the
+        # Handlers are stored uppercase - RFC-conforming clients send the
         # method already uppercased, so try the raw form first and only
         # uppercase on miss. `.isupper()` is the right guard: CPython does
         # not promise identity for `str.upper()` even when the input is
@@ -672,10 +690,10 @@ class Router:
             else:
                 method_upper = method.upper()
                 handler_info = result.handlers.get(method_upper)
-            # RFC 9110 §9.3.2: HEAD falls back to GET; the dispatcher
+            # RFC 9110 Sec. 9.3.2: HEAD falls back to GET; the dispatcher
             # strips the body on the way out.
-            if handler_info is None and method_upper == "HEAD":
-                handler_info = result.handlers.get("GET")
+            if handler_info is None and method_upper == HTTP_METHOD_HEAD:
+                handler_info = result.handlers.get(HTTP_METHOD_GET)
             if handler_info is None:
                 return None
 
@@ -689,7 +707,7 @@ class Router:
         params: dict[str, Any],
     ) -> RadixNode | None:
         """Recursive radix tree traversal with per-converter validation."""
-        # Flatten static-only descent — when the current node has no
+        # Flatten static-only descent - when the current node has no
         # alternative branches to backtrack into, recursing per static
         # segment burns one Python frame per hop for no gain.
         seg_count = len(segments)
@@ -705,7 +723,7 @@ class Router:
 
         seg = segments[idx]
 
-        # Try static match first (fastest path) — O(1) dict lookup. We can
+        # Try static match first (fastest path) - O(1) dict lookup. We can
         # still get here when alternative param/wildcard branches exist on
         # this node, so the recursion preserves backtracking semantics.
         static_child = node.static_children.get(seg)
@@ -714,7 +732,7 @@ class Router:
             if result is not None:
                 return result
 
-        # Try param match — each candidate validates the segment via its
+        # Try param match - each candidate validates the segment via its
         # converter. Greedy converters (path) consume the remainder in one go.
         # When this node has exactly one param child, a failed inner match
         # has no alternative to back off to, so the rollback `del` is moot.
@@ -749,7 +767,7 @@ class Router:
             if not single_param:
                 del params[child.param_name]  # type: ignore[arg-type]
 
-        # Try wildcard (legacy `*` syntax — kept for back-compat).
+        # Try wildcard (legacy `*` syntax - kept for back-compat).
         if node.wildcard_child is not None:
             params["_wildcard"] = "/".join(segments[idx:])
             return node.wildcard_child
@@ -788,13 +806,13 @@ class Router:
                 if m is None:
                     continue
                 # A converter rejection (e.g. an over-long `:int`) is a full
-                # miss, not a method mismatch — keep it a 404, never a 405.
+                # miss, not a method mismatch - keep it a 404, never a 405.
                 if self._coerce_regex_params(route, m) is None:
                     continue
                 methods.update(dict.fromkeys(route.handlers))
         return list(methods)
 
-    # ── Decorator API ───────────────────────
+    # -- Decorator API --------------------------------------------
 
     def route(
         self,
@@ -807,8 +825,8 @@ class Router:
         name: str | None = None,
         description: str | None = None,
         deprecated: bool = False,
-        response_description: str = "Successful Response",
-        status_code: int = 200,
+        response_description: str = MSG_SUCCESSFUL_RESPONSE,
+        status_code: int = HTTP_200_OK,
         response_class: Any = None,
         response_model_include: set[str] | None = None,
         response_model_exclude: set[str] | None = None,
@@ -832,7 +850,7 @@ class Router:
             self.add_route(
                 path=path,
                 handler=func,
-                methods=methods or ["GET"],
+                methods=methods or [HTTP_METHOD_GET],
                 dependencies=dependencies,
                 response_model=response_model,
                 tags=tags,
@@ -864,35 +882,35 @@ class Router:
         return decorator
 
     def get(self, path: str, **kwargs) -> Callable:
-        return self.route(path, methods=["GET"], **kwargs)
+        return self.route(path, methods=[HTTP_METHOD_GET], **kwargs)
 
     def post(self, path: str, **kwargs) -> Callable:
-        return self.route(path, methods=["POST"], **kwargs)
+        return self.route(path, methods=[HTTP_METHOD_POST], **kwargs)
 
     def put(self, path: str, **kwargs) -> Callable:
-        return self.route(path, methods=["PUT"], **kwargs)
+        return self.route(path, methods=[HTTP_METHOD_PUT], **kwargs)
 
     def patch(self, path: str, **kwargs) -> Callable:
-        return self.route(path, methods=["PATCH"], **kwargs)
+        return self.route(path, methods=[HTTP_METHOD_PATCH], **kwargs)
 
     def delete(self, path: str, **kwargs) -> Callable:
-        return self.route(path, methods=["DELETE"], **kwargs)
+        return self.route(path, methods=[HTTP_METHOD_DELETE], **kwargs)
 
     def head(self, path: str, **kwargs) -> Callable:
-        return self.route(path, methods=["HEAD"], **kwargs)
+        return self.route(path, methods=[HTTP_METHOD_HEAD], **kwargs)
 
     def options(self, path: str, **kwargs) -> Callable:
-        return self.route(path, methods=["OPTIONS"], **kwargs)
+        return self.route(path, methods=[HTTP_METHOD_OPTIONS], **kwargs)
 
     def trace(self, path: str, **kwargs) -> Callable:
-        """`TRACE` route decorator — RFC 9110 §9.3.8."""
-        return self.route(path, methods=["TRACE"], **kwargs)
+        """`TRACE` route decorator - RFC 9110 Sec. 9.3.8."""
+        return self.route(path, methods=[HTTP_METHOD_TRACE], **kwargs)
 
     def websocket(self, path: str) -> Callable:
         """WebSocket route decorator."""
 
         def decorator(func: RouteHandler) -> RouteHandler:
-            self.add_route(path=path, handler=func, methods=["WEBSOCKET"])
+            self.add_route(path=path, handler=func, methods=[ROUTE_METHOD_WEBSOCKET])
             return func
 
         return decorator
@@ -901,22 +919,22 @@ class Router:
     websocket_route = websocket
 
     def add_websocket_route(self, path: str, handler: RouteHandler) -> None:
-        """Imperative WebSocket route registration — ASGI shape.
+        """Imperative WebSocket route registration - ASGI shape.
 
         The non-decorator form of `@app.websocket(path)`.
         """
-        self.add_route(path=path, handler=handler, methods=["WEBSOCKET"])
+        self.add_route(path=path, handler=handler, methods=[ROUTE_METHOD_WEBSOCKET])
 
     def add_api_websocket_route(
         self, path: str, endpoint: RouteHandler, name: str | None = None
     ) -> None:
         """the imperative imperative WebSocket route registration.
 
-        Mirrors `add_api_route` for WebSocket endpoints — the
+        Mirrors `add_api_route` for WebSocket endpoints - the
         non-decorator form of `@app.websocket(path)`. `name` is
         accepted but currently unused.
         """
-        self.add_route(path=path, handler=endpoint, methods=["WEBSOCKET"], name=name)
+        self.add_route(path=path, handler=endpoint, methods=[ROUTE_METHOD_WEBSOCKET], name=name)
 
     def add_api_route(
         self,
@@ -930,16 +948,18 @@ class Router:
 
         The non-decorator form: the handler argument is named `endpoint`
         here and forwarded to `add_route` (where it is `handler`). All
-        route kwargs — `response_model`, `tags`, `dependencies`,
-        `status_code`, `openapi_extra`, … — pass straight through.
+        route kwargs - `response_model`, `tags`, `dependencies`,
+        `status_code`, `openapi_extra`, ... - pass straight through.
         Defaults to `["GET"]` when `methods` is omitted.
         """
         self.add_route(
             path=path,
             handler=endpoint,
-            methods=methods or ["GET"],
+            methods=methods or [HTTP_METHOD_GET],
             **kwargs,
         )
+
+    # -- Reverse URL lookup ---------------------------------------
 
     def url_for(self, name: str, **path_params: Any) -> str:
         """Reverse URL lookup by route name (`url_for`).
@@ -948,13 +968,13 @@ class Router:
         with the matching `path_params` kwarg. Underscore-prefixed kwargs
         are control parameters (convention):
 
-        - `_external=True` — return an absolute URL. Uses
+        - `_external=True` - return an absolute URL. Uses
           `app.config["SERVER_NAME"]` when set, otherwise falls back to
           `localhost`. Caller should override `_scheme`/`_host` for
           anything more specific.
-        - `_scheme="https"` — override scheme on the absolute URL.
-        - `_host="example.com"` — override host on the absolute URL.
-        - `_anchor="section"` — append `#section`.
+        - `_scheme="https"` - override scheme on the absolute URL.
+        - `_host="example.com"` - override host on the absolute URL.
+        - `_anchor="section"` - append `#section`.
         - Any other unmatched kwarg becomes a query-string parameter.
         """
         if name not in self._named_routes:
@@ -1001,13 +1021,13 @@ class Router:
 
         if external or scheme or host:
             # SERVER_NAME is "host[:port]"; without it, default to
-            # localhost — the absolute-URL request was made outside a request
+            # localhost - the absolute-URL request was made outside a request
             # context where we'd otherwise know the host.
             cfg_host = None
-            cfg_scheme = "http"
+            cfg_scheme = URL_SCHEME_HTTP
             if hasattr(self, "config"):
                 cfg_host = self.config.get("SERVER_NAME")
-                cfg_scheme = self.config.get("PREFERRED_URL_SCHEME", "http")
+                cfg_scheme = self.config.get("PREFERRED_URL_SCHEME", URL_SCHEME_HTTP)
             netloc = host or cfg_host or "localhost"
             url_scheme = scheme or cfg_scheme
             return f"{url_scheme}://{netloc}{path}"
@@ -1019,20 +1039,22 @@ class Router:
     # alias so calling code reads cleanly.
     url_path_for = url_for
 
+    # -- Introspection and merge ----------------------------------
+
     def _collect_all_routes(self, include_hidden: bool = False) -> list[tuple[str, str, RouteInfo]]:
         """Collect routes as (method, path, info) tuples.
 
         By default only schema-visible HTTP routes are returned (the set
         OpenAPI generation needs). Pass ``include_hidden=True`` to also get
         WebSocket routes and routes registered with ``include_in_schema=False``
-        — required when re-registering a blueprint's routes onto an app, where
+        - required when re-registering a blueprint's routes onto an app, where
         every route must enter the radix tree regardless of schema visibility.
         """
         routes: list[tuple[str, str, RouteInfo]] = []
         self._walk_tree(self._root, [], routes, include_hidden)
         # Tree routes are the runtime winners (match() consults the tree first).
         # Track the (method, path-shape) pairs they own so a regex route mapping
-        # to the same effective path+method does not shadow them in the schema —
+        # to the same effective path+method does not shadow them in the schema -
         # compared by SHAPE (each `{param}` normalized to `{}`) so a tree
         # `/items/{slug}` still shadows a regex `/items/{id}` despite the
         # different parameter name. Skipped under include_hidden, where every
@@ -1052,7 +1074,7 @@ class Router:
         for route in self._regex_routes:
             path = route.openapi_path
             for method, info in route.handlers.items():
-                if include_hidden or (method != "WEBSOCKET" and info.include_in_schema):
+                if include_hidden or (method != ROUTE_METHOD_WEBSOCKET and info.include_in_schema):
                     if not include_hidden and (method, _path_shape(path)) in tree_owned:
                         # A tree route already owns this path-shape+method and
                         # wins at dispatch; do not let the regex handler shadow
@@ -1071,7 +1093,7 @@ class Router:
         if node.handlers:
             path = "/" + "/".join(path_parts) if path_parts else "/"
             for method, info in node.handlers.items():
-                if include_hidden or (method != "WEBSOCKET" and info.include_in_schema):
+                if include_hidden or (method != ROUTE_METHOD_WEBSOCKET and info.include_in_schema):
                     out.append((method, path, info))
         for child in node.static_children.values():
             self._walk_tree(child, path_parts + [child.segment], out, include_hidden)
@@ -1155,7 +1177,7 @@ class Router:
                     host=info.host,
                 )
                 route_info.handler_plan = info.handler_plan
-                is_ws = method.upper() == "WEBSOCKET"
+                is_ws = method.upper() == ROUTE_METHOD_WEBSOCKET
                 route_info.route_dep_plans = build_route_dep_plans(
                     route_info.dependencies, websocket=is_ws
                 )
@@ -1211,7 +1233,7 @@ class Router:
                         else {**self.router_responses, **(info.responses or {})}
                     ),
                     operation_id=info.operation_id,
-                    # Carry constraints from the source RouteInfo — without
+                    # Carry constraints from the source RouteInfo - without
                     # these, sub-routers merged via include_router would
                     # silently lose their subdomain / host / openapi_extra
                     # / defaults / callbacks declarations.
@@ -1224,12 +1246,12 @@ class Router:
                 # Reuse the parent's pre-computed handler plan.
                 route_info.handler_plan = info.handler_plan
 
-                # Rebuild route_dep_plans from the combined dependencies —
+                # Rebuild route_dep_plans from the combined dependencies -
                 # the parent's plans are stale when router_dependencies
                 # were prepended above.
                 from veloce._handler_plan import K_REQUEST, build_route_dep_plans
 
-                is_ws = method.upper() == "WEBSOCKET"
+                is_ws = method.upper() == ROUTE_METHOD_WEBSOCKET
                 route_info.route_dep_plans = build_route_dep_plans(
                     route_info.dependencies, websocket=is_ws
                 )

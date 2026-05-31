@@ -1,9 +1,9 @@
-"""Gunicorn worker class that serves a Veloce app via the raw HTTP protocol.
+"""Gunicorn worker - serves a Veloce app via the raw HTTP protocol.
 
 This is an **advanced, optional** alternative to running Veloce under
 uvicorn. It lets gunicorn manage process supervision (forking, restarts,
 signals) while each worker drives Veloce's own ``HttpProtocol`` directly on
-an asyncio event loop — no uvicorn, no ASGI shim. uvicorn remains the
+an asyncio event loop - no uvicorn, no ASGI shim. uvicorn remains the
 recommended production default; reach for this only when you already run a
 gunicorn-based stack and want Veloce to slot into it.
 
@@ -15,7 +15,7 @@ Then point gunicorn at the worker class by import path::
 
     gunicorn your_module:app -k veloce.workers.VeloceWorker
 
-Importing this module (or ``import veloce``) never requires gunicorn — the
+Importing this module (or ``import veloce``) never requires gunicorn - the
 gunicorn base class is imported lazily, and the worker class only demands it
 at instantiation, raising a clear :class:`ImportError` with an install hint
 when it is missing.
@@ -43,7 +43,9 @@ import os
 import ssl
 from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
+from veloce._protocol_constants import LIFECYCLE_SHUTDOWN, LIFECYCLE_STARTUP
+
+if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
 
 # gunicorn is optional and POSIX-only. Import its worker base at module load
@@ -140,7 +142,7 @@ class VeloceWorker(_GunicornWorker):
 
     Subclasses gunicorn's worker base and bridges the master-bound listening
     socket(s) to an asyncio server whose protocol factory yields Veloce's
-    ``HttpProtocol`` — the same raw HTTP/1.1 protocol ``Veloce.run()`` uses,
+    ``HttpProtocol`` - the same raw HTTP/1.1 protocol ``Veloce.run()`` uses,
     bypassing ASGI entirely. gunicorn owns process supervision; this worker
     owns the event loop and the request pipeline.
 
@@ -210,7 +212,7 @@ class VeloceWorker(_GunicornWorker):
         Installed as ``HttpProtocol.should_keep_serving`` and consulted by the
         per-connection serve loop after each dispatched request. Returning
         ``self.alive`` makes the loop stop at the request boundary once
-        ``max_requests`` recycling has cleared ``alive`` — otherwise a single
+        ``max_requests`` recycling has cleared ``alive`` - otherwise a single
         connection with queued/pipelined requests would keep draining them past
         the limit before the worker restarts. gunicorn's own workers flip
         ``alive`` and break inside the request-handling path for the same
@@ -286,7 +288,7 @@ class VeloceWorker(_GunicornWorker):
 
         When TLS is on, the default context is built from ``cfg.ssl_options``
         via :func:`build_ssl_context` (which fails fast if the cert chain is
-        missing — never silently downgrading HTTPS to cleartext). That default
+        missing - never silently downgrading HTTPS to cleartext). That default
         is then run through gunicorn's documented ``ssl_context(config,
         default_ssl_context_factory)`` hook, mirroring how gunicorn's own socket
         layer calls ``conf.ssl_context(conf, default_ssl_context_factory)``. A
@@ -329,7 +331,7 @@ class VeloceWorker(_GunicornWorker):
         """
         app = self._veloce_app()
 
-        await app._run_lifecycle("startup")
+        await app._run_lifecycle(LIFECYCLE_STARTUP)
 
         factory = build_protocol_factory(app, loop)
         # gunicorn already created and bound the sockets in the master; reuse
@@ -351,7 +353,7 @@ class VeloceWorker(_GunicornWorker):
         # A worker may be handed more than one bound socket (multiple binds).
         # create_server takes a single socket, so bind each explicitly. If any
         # bind fails partway through, close the listeners already created before
-        # re-raising — otherwise a live listener would survive into _shutdown()
+        # re-raising - otherwise a live listener would survive into _shutdown()
         # (run() proceeds straight to _shutdown on failure) and leak.
         servers: list[asyncio.AbstractServer] = []
         try:
@@ -380,7 +382,7 @@ class VeloceWorker(_GunicornWorker):
                     # arbiter liveness. If the stop event fires (SIGTERM/SIGQUIT,
                     # or max_requests recycling) the wait returns at once; if the
                     # signal hook is ever missed, the timeout still re-checks
-                    # self.alive and the parent pid — so a dead master no longer
+                    # self.alive and the parent pid - so a dead master no longer
                     # leaves the worker orphaned, and this never reacts slower
                     # than the previous fixed-sleep loop.
                     await asyncio.wait_for(self._stop.wait(), timeout=notify_interval)
@@ -409,7 +411,7 @@ class VeloceWorker(_GunicornWorker):
         # Drain in-flight tasks with the should_keep_serving / request-count
         # hooks STILL installed. self.alive is already False here, so a
         # keep-alive connection that finishes its current request consults
-        # should_keep_serving at the boundary and stops — it cannot serve a
+        # should_keep_serving at the boundary and stops - it cannot serve a
         # queued or newly arrived request past max_requests or during graceful
         # shutdown. Detaching the hooks before the drain would let it continue.
         if HttpProtocol._active_tasks:
@@ -427,4 +429,4 @@ class VeloceWorker(_GunicornWorker):
         if HttpProtocol.should_keep_serving == self._keep_serving:
             HttpProtocol.should_keep_serving = None
 
-        await app._run_lifecycle("shutdown")
+        await app._run_lifecycle(LIFECYCLE_SHUTDOWN)

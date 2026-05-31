@@ -1,18 +1,54 @@
-"""Response types — optimized serialization with orjson."""
+"""Response types - optimized serialization with orjson."""
 
 from __future__ import annotations
 
 import asyncio
-import datetime as _dt
 import hashlib
 import mimetypes
 import os
 from collections.abc import AsyncIterator
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
 import orjson
 
+from veloce._constants import (
+    HEADER_ACCEPT_RANGES,
+    HEADER_AGE,
+    HEADER_ALLOW,
+    HEADER_CACHE_CONTROL,
+    HEADER_CONNECTION,
+    HEADER_CONTENT_DISPOSITION,
+    HEADER_CONTENT_ENCODING,
+    HEADER_CONTENT_LANGUAGE,
+    HEADER_CONTENT_LENGTH,
+    HEADER_CONTENT_LOCATION,
+    HEADER_CONTENT_RANGE,
+    HEADER_CONTENT_TYPE,
+    HEADER_DATE,
+    HEADER_ETAG,
+    HEADER_EXPIRES,
+    HEADER_LAST_MODIFIED,
+    HEADER_LOCATION,
+    HEADER_RETRY_AFTER,
+    HEADER_SET_COOKIE,
+    HEADER_TRANSFER_ENCODING,
+    HEADER_VALUE_ATTACHMENT,
+    HEADER_VALUE_BYTES,
+    HEADER_VALUE_CHUNKED,
+    HEADER_VALUE_KEEP_ALIVE,
+    HEADER_VALUE_NO_CACHE,
+    HEADER_VALUE_PUBLIC,
+    HEADER_VARY,
+    HEADER_WWW_AUTHENTICATE,
+    MIME_TEXT_PLAIN,
+    MSG_LABEL_COOKIE_DOMAIN,
+    MSG_LABEL_COOKIE_NAME,
+    MSG_LABEL_COOKIE_PATH,
+    MSG_LABEL_COOKIE_SAMESITE,
+    MSG_LABEL_COOKIE_VALUE,
+)
 from veloce._internal import (
     _STATUS_PHRASES,
     MIME_HTML,
@@ -24,26 +60,15 @@ from veloce._internal import (
     _file_etag,
     _reject_header_crlf,
 )
+from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
 from veloce.http.cache_control import CacheControl
 from veloce.http.dates import http_date, parse_date
 from veloce.http.header_set import HeaderSet
-
-
-def _format_content_disposition(disposition: str, filename: str) -> str:
-    """Build a safe RFC 6266 ``Content-Disposition`` header value.
-
-    The filename is reduced to a quoted ASCII ``filename="..."`` form with
-    backslashes, double-quotes, and control characters neutralised, so a
-    crafted filename cannot break out of the header. When the original
-    name had non-ASCII characters, an RFC 5987 ``filename*=UTF-8''...``
-    parameter is appended for modern browsers.
-    """
-    ascii_name = filename.encode("ascii", "replace").decode("ascii")
-    safe_ascii = "".join("_" if (c in '"\\' or c < " " or c == "\x7f") else c for c in ascii_name)
-    value = f'{disposition}; filename="{safe_ascii}"'
-    if ascii_name != filename:  # the original had non-ASCII characters
-        value += f"; filename*=UTF-8''{quote(filename, safe='')}"
-    return value
+from veloce.status import (
+    HTTP_200_OK,
+    HTTP_304_NOT_MODIFIED,
+    HTTP_307_TEMPORARY_REDIRECT,
+)
 
 
 class Response:
@@ -61,9 +86,9 @@ class Response:
 
     def __init__(
         self,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         body: bytes = b"",
-        content_type: str = "text/plain",
+        content_type: str = MIME_TEXT_PLAIN,
         headers: dict[str, str] | None = None,
         background: Any = None,
     ) -> None:
@@ -81,7 +106,7 @@ class Response:
         # direct attribute load (no `getattr` fallback to None).
         self._stream: Any = None
 
-    # ── `body` ───────────────────────────────────────────────────────
+    # -- `body` -------------------------------------------------------
     # Backed by `_body` so the setter can invalidate the encode cache.
     # Middleware that mutates `response.body = new_bytes` after a prior
     # `.encode()` call would otherwise emit stale bytes + wrong
@@ -98,7 +123,7 @@ class Response:
         self._body = value
         self._encoded = None
 
-    # ── `media_type` alias ────────────────────────────────────────────
+    # -- `media_type` alias --------------------------------------------
     # ASGI servers name this attribute `media_type`; veloce's
     # canonical name is `content_type`. Expose both names so code that
     # uses either name reads and writes cleanly.
@@ -116,7 +141,7 @@ class Response:
         # takes effect on the next `encode()` call.
         self._encoded = None
 
-    # ── `mimetype` ───────────────────────────────────────────────────
+    # -- `mimetype` ---------------------------------------------------
     # `mimetype` is the bare media type, with no parameters.
     # Setting it preserves the existing `charset` parameter.
 
@@ -125,10 +150,10 @@ class Response:
         """True when `Content-Type` is JSON.
 
         Matches `application/json` and any `application/*+json`
-        structured suffix (RFC 6839 §3.1).
+        structured suffix (RFC 6839 Sec. 3.1).
         """
         mt = self.mimetype
-        if mt == "application/json":
+        if mt == MIME_JSON:
             return True
         return mt.startswith("application/") and mt.endswith("+json")
 
@@ -144,10 +169,10 @@ class Response:
 
     @property
     def mimetype(self) -> str:
-        """The bare media type — `Content-Type` without parameters.
+        """The bare media type - `Content-Type` without parameters.
 
-        `text/html; charset=utf-8` → `text/html`. Lower-cased and
-        stripped per RFC 9110 §8.3 (media types are case-insensitive).
+        `text/html; charset=utf-8` -> `text/html`. Lower-cased and
+        stripped per RFC 9110 Sec. 8.3 (media types are case-insensitive).
         """
         return (self.content_type or "").split(";", 1)[0].strip().lower()
 
@@ -161,7 +186,7 @@ class Response:
         self.content_type = f"{value}; charset={cs}" if had_charset else value
         self._encoded = None
 
-    # ── `status` line ────────────────────────────────────────────────
+    # -- `status` line ------------------------------------------------
     # `response.status` is the full status line
     # ("200 OK"), with `status_code` as the bare int. veloce's
     # canonical field is `status_code`; `status` is the string view.
@@ -192,14 +217,14 @@ class Response:
         self._encoded = None
 
     def encode(self) -> bytes:
-        """Encode to raw HTTP/1.1 bytes — called once, cached."""
+        """Encode to raw HTTP/1.1 bytes - called once, cached."""
         if self._encoded is not None:
             return self._encoded
 
         default_headers = {
-            "Content-Type": self.content_type,
-            "Content-Length": str(len(self.body)),
-            "Connection": "keep-alive",
+            HEADER_CONTENT_TYPE: self.content_type,
+            HEADER_CONTENT_LENGTH: str(len(self.body)),
+            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
         }
         parts = _encode_response_head(self.status_code, default_headers, self.headers)
         parts.append("\r\n")
@@ -222,35 +247,35 @@ class Response:
     ) -> None:
         """Build a `Set-Cookie` header per RFC 6265.
 
-        `samesite` defaults to `"Lax"` — a CSRF-resistant default that
+        `samesite` defaults to `"Lax"` - a CSRF-resistant default that
         matches modern browser behaviour. Pass `samesite="None"` (with
         `secure=True`) for a cookie that must travel on cross-site
         requests, or `samesite=None`/`""` to omit the attribute.
 
         `expires=` accepts a `datetime`, a Unix timestamp `int|float`,
         or an already-formatted IMF-fixdate `str`. When both `max_age`
-        and `expires` are set, both are emitted (RFC 6265 §5.2.2: clients
+        and `expires` are set, both are emitted (RFC 6265 Sec. 5.2.2: clients
         prefer `Max-Age` when supported, falling back to `Expires` on
         legacy IE).
 
         `partitioned=True` adds the CHIPS `Partitioned` attribute
-        (Cookies Having Independent Partitioned State) — a partitioned
+        (Cookies Having Independent Partitioned State) - a partitioned
         cookie is keyed to the top-level site, so embedded third-party
         contexts each get an isolated jar. `Partitioned` requires
         `Secure`, so it is only emitted when `secure=True`.
 
         The cookie name and value are rejected if they contain CR, LF, or
-        NUL — untrusted data must not be able to inject additional cookies
+        NUL - untrusted data must not be able to inject additional cookies
         or response headers.
         """
-        _reject_header_crlf(key, "cookie name")
-        _reject_header_crlf(value, "cookie value")
+        _reject_header_crlf(key, MSG_LABEL_COOKIE_NAME)
+        _reject_header_crlf(value, MSG_LABEL_COOKIE_VALUE)
         if domain:
-            _reject_header_crlf(domain, "cookie domain")
+            _reject_header_crlf(domain, MSG_LABEL_COOKIE_DOMAIN)
         if path:
-            _reject_header_crlf(path, "cookie path")
+            _reject_header_crlf(path, MSG_LABEL_COOKIE_PATH)
         if samesite:
-            _reject_header_crlf(samesite, "cookie samesite")
+            _reject_header_crlf(samesite, MSG_LABEL_COOKIE_SAMESITE)
 
         # Normalise empty samesite to None so dump_cookie omits it.
         if samesite is not None and not samesite.strip():
@@ -279,7 +304,7 @@ class Response:
         )
         if expires_str is not None:
             cookie += f"; Expires={expires_str}"
-        # CHIPS `Partitioned` — only valid alongside `Secure`.
+        # CHIPS `Partitioned` - only valid alongside `Secure`.
         if partitioned and secure:
             cookie += "; Partitioned"
         self._append_set_cookie_header(cookie)
@@ -291,11 +316,11 @@ class Response:
         Set-Cookie header without overwriting earlier cookies. Single
         canonical home for the Q44 multi-cookie join format.
         """
-        existing = self.headers.get("Set-Cookie")
+        existing = self.headers.get(HEADER_SET_COOKIE)
         if existing:
-            self.headers["Set-Cookie"] = existing + "\r\nSet-Cookie: " + raw_value
+            self.headers[HEADER_SET_COOKIE] = existing + SET_COOKIE_JOINER + raw_value
         else:
-            self.headers["Set-Cookie"] = raw_value
+            self.headers[HEADER_SET_COOKIE] = raw_value
 
     @property
     def content_length(self) -> int:
@@ -329,7 +354,7 @@ class Response:
     @charset.setter
     def charset(self, value: str) -> None:
         """Set the charset."""
-        ct = self.content_type or "text/plain"
+        ct = self.content_type or MIME_TEXT_PLAIN
         # Keep the bare media type, drop any existing parameters, then
         # re-attach the new charset.
         media = ct.split(";", 1)[0].strip()
@@ -364,18 +389,18 @@ class Response:
         want it locked into `self.headers` ahead of time.
         """
         n = len(self.body)
-        self.headers["Content-Length"] = str(n)
+        self.headers[HEADER_CONTENT_LENGTH] = str(n)
         self._encoded = None
         return n
 
     @property
     def last_modified(self) -> Any:
-        """Parsed `Last-Modified` header → UTC `datetime` or None.
+        """Parsed `Last-Modified` header -> UTC `datetime` or None.
 
-        Accepts the three RFC 9110 §5.6.7 HTTP-date
+        Accepts the three RFC 9110 Sec. 5.6.7 HTTP-date
         forms. Returns `None` on missing/unparseable.
         """
-        raw = self.headers.get("Last-Modified") or self.headers.get("last-modified")
+        raw = self.headers.get(HEADER_LAST_MODIFIED) or self.headers.get("last-modified")
         if not raw:
             return None
         return parse_date(raw)
@@ -383,12 +408,12 @@ class Response:
     @last_modified.setter
     def last_modified(self, value: Any) -> None:
         """Set the last modified date."""
-        self._set_http_date_header("Last-Modified", value)
+        self._set_http_date_header(HEADER_LAST_MODIFIED, value)
 
     @property
     def expires(self) -> Any:
-        """Parsed `Expires` header → UTC `datetime` or None (RFC 9111 §5.3)."""
-        raw = self.headers.get("Expires") or self.headers.get("expires")
+        """Parsed `Expires` header -> UTC `datetime` or None (RFC 9111 Sec. 5.3)."""
+        raw = self.headers.get(HEADER_EXPIRES) or self.headers.get("expires")
         if not raw:
             return None
         return parse_date(raw)
@@ -396,7 +421,7 @@ class Response:
     @expires.setter
     def expires(self, value: Any) -> None:
         """Set the expires date."""
-        self._set_http_date_header("Expires", value)
+        self._set_http_date_header(HEADER_EXPIRES, value)
 
     def _set_http_date_header(self, name: str, value: Any) -> None:
         """Set an HTTP-date header from datetime / unix ts / preformatted str.
@@ -409,9 +434,9 @@ class Response:
             self.headers.pop(name.lower(), None)
             self._encoded = None
             return
-        if isinstance(value, _dt.datetime) and value.tzinfo is None:
-            value = value.replace(tzinfo=_dt.timezone.utc)
-        if isinstance(value, (_dt.datetime, _dt.date, int, float)):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        if isinstance(value, (datetime, date, int, float)):
             self.headers[name] = http_date(value)
         else:
             self.headers[name] = str(value)
@@ -423,16 +448,16 @@ class Response:
 
         Walks every `Set-Cookie` entry (Q44 separator `\\r\\nSet-Cookie: `
         respected) and returns `{name: value}`. Multiple cookies with
-        the same name resolve to the last set — matches the wire
+        the same name resolve to the last set - matches the wire
         behaviour where the client also keeps the most-recent value.
         Caller introspection only; mutation goes through `set_cookie()`.
         """
         out: dict[str, str] = {}
-        existing = self.headers.get("Set-Cookie", "") or self.headers.get("set-cookie", "")
+        existing = self.headers.get(HEADER_SET_COOKIE, "") or self.headers.get("set-cookie", "")
         if not existing:
             return out
-        # Q44 emits multi-cookies as `cookie1\r\nSet-Cookie: cookie2…`.
-        for line in existing.split("\r\nSet-Cookie: "):
+        # Q44 emits multi-cookies as `cookie1\r\nSet-Cookie: cookie2...`.
+        for line in existing.split(SET_COOKIE_JOINER):
             first = line.split(";", 1)[0].strip()
             if "=" in first:
                 name, _, value = first.partition("=")
@@ -450,7 +475,7 @@ class Response:
         result: list[tuple[str, str]] = []
         for k, v in self.headers.items():
             if k.lower() == "set-cookie":
-                for piece in v.split("\r\nSet-Cookie: "):
+                for piece in v.split(SET_COOKIE_JOINER):
                     result.append((k, piece.strip()))
             else:
                 result.append((k, v))
@@ -489,7 +514,7 @@ class Response:
         # always recomputes Content-Length from `body`, so leaving
         # the header stale would only affect the raw HTTP/1.1 encode
         # path. Keep both consistent.
-        for key in ("Content-Length", "content-length"):
+        for key in (HEADER_CONTENT_LENGTH, "content-length"):
             if key in self.headers:
                 self.headers[key] = str(len(value))
 
@@ -504,20 +529,20 @@ class Response:
         immutable: bool = False,
         s_maxage: int | None = None,
     ) -> str:
-        """Build and set the `Cache-Control` header — RFC 9111 §5.2.
+        """Build and set the `Cache-Control` header - RFC 9111 Sec. 5.2.
 
-        Combines the standard directives in the order RFC 9111 §5.2
+        Combines the standard directives in the order RFC 9111 Sec. 5.2
         documents. Values that are False / None are omitted, so a plain
         `resp.set_cache_control(max_age=3600, public=True)` produces
         `Cache-Control: public, max-age=3600`. Returns the value set.
         """
         parts: list[str] = []
         if public:
-            parts.append("public")
+            parts.append(HEADER_VALUE_PUBLIC)
         if private:
             parts.append("private")
         if no_cache:
-            parts.append("no-cache")
+            parts.append(HEADER_VALUE_NO_CACHE)
         if no_store:
             parts.append("no-store")
         if must_revalidate:
@@ -530,12 +555,12 @@ class Response:
             parts.append(f"s-maxage={s_maxage}")
         value = ", ".join(parts)
         if value:
-            self.headers["Cache-Control"] = value
+            self.headers[HEADER_CACHE_CONTROL] = value
             self._encoded = None
         return value
 
     def add_vary(self, *header_names: str) -> str:
-        """Append header names to the `Vary` response header — RFC 9110 §12.5.5.
+        """Append header names to the `Vary` response header - RFC 9110 Sec. 12.5.5.
 
         Merges with any existing `Vary` value (de-duplicates,
         case-insensitive). Returns the resulting header value.
@@ -546,14 +571,14 @@ class Response:
         # Delegate dedup + ordering to `HeaderSet` so the same
         # case-insensitive merge logic doesn't drift between this method
         # and the `vary` property's own datastructure.
-        existing = self.headers.get("Vary", "") or self.headers.get("vary", "")
+        existing = self.headers.get(HEADER_VARY, "") or self.headers.get("vary", "")
         merged = HeaderSet(existing)
         merged.update(header_names)
         value = merged.to_header()
         # Always write under `Vary` (canonical case) and clear any
         # lower-case duplicate.
         self.headers.pop("vary", None)
-        self.headers["Vary"] = value
+        self.headers[HEADER_VARY] = value
         self._encoded = None
         return value
 
@@ -564,127 +589,131 @@ class Response:
         Returns a fresh `HeaderSet` parsed from the current header.
         Assign a `HeaderSet`, iterable of strings, or a comma-separated
         string to replace it. Mutating the returned object does *not*
-        write back — call `add_vary(...)` or reassign for that.
+        write back - call `add_vary(...)` or reassign for that.
         """
 
-        return HeaderSet(self.headers.get("Vary", ""))
+        return HeaderSet(self.headers.get(HEADER_VARY, ""))
 
     @vary.setter
     def vary(self, value: Any) -> None:
         """Set the vary."""
         hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
         self.headers.pop("vary", None)
-        self.headers["Vary"] = hs.to_header()
+        self.headers[HEADER_VARY] = hs.to_header()
         self._encoded = None
 
     @property
     def allow(self) -> Any:
         """The `Allow` header as a `HeaderSet`.
 
-        Lists the HTTP methods the resource supports (RFC 9110 §10.2.1).
+        Lists the HTTP methods the resource supports (RFC 9110 Sec. 10.2.1).
         Assign a `HeaderSet`, iterable, or comma-separated string.
         """
 
-        return HeaderSet(self.headers.get("Allow", ""))
+        return HeaderSet(self.headers.get(HEADER_ALLOW, ""))
 
     @allow.setter
     def allow(self, value: Any) -> None:
         """Set the allow."""
         hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
         self.headers.pop("allow", None)
-        self.headers["Allow"] = hs.to_header()
+        self.headers[HEADER_ALLOW] = hs.to_header()
         self._encoded = None
 
     @property
     def www_authenticate(self) -> str | None:
-        """The `WWW-Authenticate` challenge header — RFC 9110 §11.6.1.
+        """The `WWW-Authenticate` challenge header - RFC 9110 Sec. 11.6.1.
 
         Sent on `401 Unauthorized` to tell the client which auth
         scheme(s) to use. `None` when unset.
         """
-        return self.headers.get("WWW-Authenticate")
+        return self.headers.get(HEADER_WWW_AUTHENTICATE)
 
     @www_authenticate.setter
     def www_authenticate(self, value: str | None) -> None:
         """Set the WWW-Authenticate."""
         if value is None:
-            self.headers.pop("WWW-Authenticate", None)
+            self.headers.pop(HEADER_WWW_AUTHENTICATE, None)
         else:
             # Caller-supplied challenges may interpolate a realm or
             # token68; reject CRLF here so this low-level setter has the
             # same header-injection guarantees as set_basic_auth_challenge.
-            _reject_header_crlf(value, "WWW-Authenticate")
-            self.headers["WWW-Authenticate"] = value
+            _reject_header_crlf(value, HEADER_WWW_AUTHENTICATE)
+            self.headers[HEADER_WWW_AUTHENTICATE] = value
         self._encoded = None
 
     def set_basic_auth_challenge(self, realm: str = "Authentication Required") -> str:
-        """Write a `Basic` `WWW-Authenticate` challenge — RFC 7617.
+        """Write a `Basic` `WWW-Authenticate` challenge - RFC 7617.
 
         Convenience for the common 401 case:
         `WWW-Authenticate: Basic realm="<realm>", charset="UTF-8"`.
         Returns the header value written.
         """
         _reject_header_crlf(realm, "realm")
-        value = f'Basic realm="{realm}", charset="UTF-8"'
-        self.headers["WWW-Authenticate"] = value
+        value = f'{AUTH_SCHEME_BASIC} realm="{realm}", charset="UTF-8"'
+        self.headers[HEADER_WWW_AUTHENTICATE] = value
         self._encoded = None
         return value
 
     @property
     def content_encoding(self) -> str | None:
-        """The `Content-Encoding` header — RFC 9110 §8.4. `None` when unset."""
-        return self.headers.get("Content-Encoding")
+        """The `Content-Encoding` header - RFC 9110 Sec. 8.4. `None` when unset."""
+        return self.headers.get(HEADER_CONTENT_ENCODING)
 
     @content_encoding.setter
     def content_encoding(self, value: str | None) -> None:
         """Set the content encoding."""
         if value is None:
-            self.headers.pop("Content-Encoding", None)
+            self.headers.pop(HEADER_CONTENT_ENCODING, None)
         else:
-            self.headers["Content-Encoding"] = value
+            self.headers[HEADER_CONTENT_ENCODING] = value
         self._encoded = None
 
     @property
     def content_language(self) -> str | None:
-        """The `Content-Language` header — RFC 9110 §8.5. `None` when unset."""
-        return self.headers.get("Content-Language")
+        """The `Content-Language` header - RFC 9110 Sec. 8.5. `None` when unset."""
+        return self.headers.get(HEADER_CONTENT_LANGUAGE)
 
     @content_language.setter
     def content_language(self, value: str | None) -> None:
         """Set the content language."""
         if value is None:
-            self.headers.pop("Content-Language", None)
+            self.headers.pop(HEADER_CONTENT_LANGUAGE, None)
         else:
-            self.headers["Content-Language"] = value
+            self.headers[HEADER_CONTENT_LANGUAGE] = value
         self._encoded = None
 
     @property
     def accept_ranges(self) -> str | None:
-        """The `Accept-Ranges` header — RFC 9110 §14.3.
+        """The `Accept-Ranges` header - RFC 9110 Sec. 14.3.
 
         Typically `bytes` (range requests supported) or `none`
         (explicitly unsupported). `None` when the header is unset.
         """
-        return self.headers.get("Accept-Ranges")
+        return self.headers.get(HEADER_ACCEPT_RANGES)
 
     @accept_ranges.setter
     def accept_ranges(self, value: str | None) -> None:
         """Set the accept ranges."""
         if value is None:
-            self.headers.pop("Accept-Ranges", None)
+            self.headers.pop(HEADER_ACCEPT_RANGES, None)
         else:
-            self.headers["Accept-Ranges"] = value
+            self.headers[HEADER_ACCEPT_RANGES] = value
         self._encoded = None
 
     def set_content_range(
-        self, start: int | None, stop: int | None, length: int | None, unit: str = "bytes"
+        self,
+        start: int | None,
+        stop: int | None,
+        length: int | None,
+        unit: str = HEADER_VALUE_BYTES,
     ) -> str:
-        """Write a `Content-Range` header — RFC 9110 §14.4.
+        """Write a `Content-Range` header - RFC 9110 Sec. 14.4.
 
-        - `set_content_range(0, 499, 1234)` → `bytes 0-499/1234`.
-        - `start`/`stop` both `None` → an unsatisfied-range response:
+        - `set_content_range(0, 499, 1234)` -> `bytes 0-499/1234`.
+        - `start`/`stop` both `None` -> an unsatisfied-range response:
           `bytes */1234` (length required in that form).
-        - `length` `None` → unknown total: `bytes 0-499/*`.
+        - `length` `None` -> unknown total: `bytes 0-499/*`.
 
         Returns the header value written.
         """
@@ -694,71 +723,71 @@ class Response:
         else:
             total = "*" if length is None else str(length)
             value = f"{unit} {start}-{stop}/{total}"
-        self.headers["Content-Range"] = value
+        self.headers[HEADER_CONTENT_RANGE] = value
         self._encoded = None
         return value
 
     @property
     def content_range(self) -> str | None:
-        """The raw `Content-Range` header — RFC 9110 §14.4. `None` if unset."""
-        return self.headers.get("Content-Range")
+        """The raw `Content-Range` header - RFC 9110 Sec. 14.4. `None` if unset."""
+        return self.headers.get(HEADER_CONTENT_RANGE)
 
     @property
     def date(self) -> Any:
-        """The `Date` header as a tz-aware UTC `datetime` — RFC 9110 §6.6.1.
+        """The `Date` header as a tz-aware UTC `datetime` - RFC 9110 Sec. 6.6.1.
 
         Returns `None` when unset or unparseable. Assign a `datetime`
         or POSIX timestamp to set it; assign `None` to remove it.
         """
 
-        return parse_date(self.headers.get("Date"))
+        return parse_date(self.headers.get(HEADER_DATE))
 
     @date.setter
     def date(self, value: Any) -> None:
         """Set the date."""
         if value is None:
-            self.headers.pop("Date", None)
+            self.headers.pop(HEADER_DATE, None)
         else:
-            self.headers["Date"] = http_date(value)
+            self.headers[HEADER_DATE] = http_date(value)
         self._encoded = None
 
     @property
     def location(self) -> str | None:
-        """The `Location` header — RFC 9110 §10.2.2. `None` when unset."""
-        return self.headers.get("Location")
+        """The `Location` header - RFC 9110 Sec. 10.2.2. `None` when unset."""
+        return self.headers.get(HEADER_LOCATION)
 
     @location.setter
     def location(self, value: str | None) -> None:
         """Set the location."""
         if value is None:
-            self.headers.pop("Location", None)
+            self.headers.pop(HEADER_LOCATION, None)
         else:
-            self.headers["Location"] = value
+            self.headers[HEADER_LOCATION] = value
         self._encoded = None
 
     @property
     def content_location(self) -> str | None:
-        """The `Content-Location` header — RFC 9110 §8.7. `None` when unset."""
-        return self.headers.get("Content-Location")
+        """The `Content-Location` header - RFC 9110 Sec. 8.7. `None` when unset."""
+        return self.headers.get(HEADER_CONTENT_LOCATION)
 
     @content_location.setter
     def content_location(self, value: str | None) -> None:
         if value is None:
-            self.headers.pop("Content-Location", None)
+            self.headers.pop(HEADER_CONTENT_LOCATION, None)
         else:
-            self.headers["Content-Location"] = value
+            self.headers[HEADER_CONTENT_LOCATION] = value
         self._encoded = None
 
     @property
     def retry_after(self) -> Any:
-        """The `Retry-After` header — RFC 9110 §10.2.3.
+        """The `Retry-After` header - RFC 9110 Sec. 10.2.3.
 
         Returns an `int` (delay in seconds) when the header is numeric,
         a tz-aware `datetime` when it's an HTTP-date, or `None` when
         unset. Assign an int / `timedelta` / `datetime` to set it;
         assign `None` to remove it.
         """
-        raw = self.headers.get("Retry-After")
+        raw = self.headers.get(HEADER_RETRY_AFTER)
         if not raw:
             return None
         raw = raw.strip()
@@ -771,19 +800,19 @@ class Response:
     def retry_after(self, value: Any) -> None:
         """Set the retry after."""
         if value is None:
-            self.headers.pop("Retry-After", None)
-        elif isinstance(value, _dt.timedelta):
-            self.headers["Retry-After"] = str(int(value.total_seconds()))
-        elif isinstance(value, _dt.datetime):
-            self.headers["Retry-After"] = http_date(value)
+            self.headers.pop(HEADER_RETRY_AFTER, None)
+        elif isinstance(value, timedelta):
+            self.headers[HEADER_RETRY_AFTER] = str(int(value.total_seconds()))
+        elif isinstance(value, datetime):
+            self.headers[HEADER_RETRY_AFTER] = http_date(value)
         else:
-            self.headers["Retry-After"] = str(int(value))
+            self.headers[HEADER_RETRY_AFTER] = str(int(value))
         self._encoded = None
 
     @property
     def age(self) -> int | None:
-        """The `Age` header in seconds — RFC 9110 §5.1. `None` when unset."""
-        raw = self.headers.get("Age")
+        """The `Age` header in seconds - RFC 9110 Sec. 5.1. `None` when unset."""
+        raw = self.headers.get(HEADER_AGE)
         if not raw or not raw.strip().isdigit():
             return None
         return int(raw.strip())
@@ -791,9 +820,9 @@ class Response:
     @age.setter
     def age(self, value: int | None) -> None:
         if value is None:
-            self.headers.pop("Age", None)
+            self.headers.pop(HEADER_AGE, None)
         else:
-            self.headers["Age"] = str(int(value))
+            self.headers[HEADER_AGE] = str(int(value))
         self._encoded = None
 
     def set_etag(self, etag: str, weak: bool = False) -> None:
@@ -809,7 +838,7 @@ class Response:
             etag = f'"{etag}"'
         if weak and not etag.startswith("W/"):
             etag = "W/" + etag
-        self.headers["ETag"] = etag
+        self.headers[HEADER_ETAG] = etag
         self._encoded = None
 
     def get_etag(self) -> tuple[str | None, bool]:
@@ -818,7 +847,7 @@ class Response:
         `(None, False)` when unset. Returned tag keeps its quotes so
         it compares directly with `If-None-Match` values.
         """
-        raw = self.headers.get("ETag") or self.headers.get("etag")
+        raw = self.headers.get(HEADER_ETAG) or self.headers.get("etag")
         if not raw:
             return (None, False)
         if raw.startswith("W/"):
@@ -847,7 +876,7 @@ class Response:
         `resp.cache_control.no_store`, etc.
         """
 
-        return CacheControl(self.headers.get("Cache-Control", ""))
+        return CacheControl(self.headers.get(HEADER_CACHE_CONTROL, ""))
 
     def iter_encoded(self) -> Any:
         """Yield the response body.
@@ -855,9 +884,9 @@ class Response:
         Return type is mode-dependent and the two modes are NOT
         interchangeable:
 
-        - Buffered response (`is_streamed is False`) → returns a
+        - Buffered response (`is_streamed is False`) -> returns a
           synchronous iterator yielding `bytes`. Drain with `for`.
-        - Streaming response (`is_streamed is True`) → returns the
+        - Streaming response (`is_streamed is True`) -> returns the
           underlying async iterator (`AsyncIterator[bytes]`). Drain
           with `async for`.
 
@@ -887,10 +916,10 @@ class Response:
         Return type is mode-dependent and the two modes are NOT
         interchangeable:
 
-        - Buffered response (`is_streamed is False`) → returns a
+        - Buffered response (`is_streamed is False`) -> returns a
           synchronous generator yielding `bytes` slices of length
           `size` (the final slice may be shorter). Drain with `for`.
-        - Streaming response (`is_streamed is True`) → returns the
+        - Streaming response (`is_streamed is True`) -> returns the
           underlying async iterator unchanged (`AsyncIterator[bytes]`);
           `size` is ignored because chunk boundaries are controlled by
           the source generator, not the caller. Drain with `async for`.
@@ -920,7 +949,7 @@ class Response:
     def add_etag(self, weak: bool = False) -> str:
         """Compute and attach an ETag derived from the body.
 
-        Uses MD5 of the response body, opaque-quoted per RFC 9110 §8.8.3.
+        Uses MD5 of the response body, opaque-quoted per RFC 9110 Sec. 8.8.3.
         `weak=True` prepends `W/` so the validator is treated as a
         weak match (matching content but possibly different
         byte-for-byte). Sets `ETag` even if one was already set; pass
@@ -929,7 +958,7 @@ class Response:
         """
         digest = hashlib.md5(self.body).hexdigest()
         etag = f'"{digest}"' if not weak else f'W/"{digest}"'
-        self.headers["ETag"] = etag
+        self.headers[HEADER_ETAG] = etag
         self._encoded = None
         return etag
 
@@ -937,7 +966,7 @@ class Response:
         """Downgrade this response to 304 when the request's preconditions
         match the response's ETag / Last-Modified.
 
-        Checks `If-None-Match` first (per RFC 9110 §13.2 precedence),
+        Checks `If-None-Match` first (per RFC 9110 Sec. 13.2 precedence),
         then `If-Modified-Since`. On a match, mutates `self` to status
         304 with no body. Returns `self` so callers can use it inline:
         `return resp.make_conditional(request)`.
@@ -947,56 +976,56 @@ class Response:
         """
         # If-None-Match: any token (or `*`) that equals the response's
         # ETag returns 304.
-        ours_etag = self.headers.get("ETag", "")
+        ours_etag = self.headers.get(HEADER_ETAG, "")
         inm = getattr(request, "if_none_match", ())
         if inm and ours_etag:
             if "*" in inm:
                 self._downgrade_to_304()
                 return self
-            # Weak comparison per RFC 9110 §8.8.3.2.
+            # Weak comparison per RFC 9110 Sec. 8.8.3.2.
             for tag in inm:
                 if _etag_matches_weak(ours_etag, tag):
                     self._downgrade_to_304()
                     return self
-            # Explicit non-match — caller's other preconditions don't apply.
+            # Explicit non-match - caller's other preconditions don't apply.
             return self
 
         # If-Modified-Since (only consulted when If-None-Match absent).
-        ours_lm = self.headers.get("Last-Modified", "")
+        ours_lm = self.headers.get(HEADER_LAST_MODIFIED, "")
         ims = getattr(request, "if_modified_since", None)
         if ims is not None and ours_lm:
             ours_dt = parse_date(ours_lm)
             if ours_dt is None:
                 return self
             ours_ts = ours_dt.timestamp()
-            # HTTP-date second resolution — integer floor.
+            # HTTP-date second resolution - integer floor.
             if int(ours_ts) <= int(ims):
                 self._downgrade_to_304()
         return self
 
     def _downgrade_to_304(self) -> None:
         """Strip body + flip status to 304. Used by `make_conditional`."""
-        self.status_code = 304
+        self.status_code = HTTP_304_NOT_MODIFIED
         self.body = b""
         # Content-Length removal so a 304 doesn't carry a length
-        # for a body it isn't sending (RFC 9110 §15.4.5).
-        self.headers.pop("Content-Length", None)
+        # for a body it isn't sending (RFC 9110 Sec. 15.4.5).
+        self.headers.pop(HEADER_CONTENT_LENGTH, None)
         self.headers.pop("content-length", None)
         self._encoded = None
 
     def set_content_disposition(
-        self, disposition: str = "attachment", filename: str | None = None
+        self, disposition: str = HEADER_VALUE_ATTACHMENT, filename: str | None = None
     ) -> str:
-        """Write a `Content-Disposition` header — RFC 6266.
+        """Write a `Content-Disposition` header - RFC 6266.
 
         `disposition` is `"attachment"` (force download) or `"inline"`
         (render in-browser). When `filename` is given it is added as
         the `filename` parameter; non-ASCII names also get the
-        RFC 5987 `filename*=UTF-8''…` form for modern browsers.
+        RFC 5987 `filename*=UTF-8''...` form for modern browsers.
         Returns the header value written.
         """
         value = _format_content_disposition(disposition, filename) if filename else disposition
-        self.headers["Content-Disposition"] = value
+        self.headers[HEADER_CONTENT_DISPOSITION] = value
         self._encoded = None
         return value
 
@@ -1013,7 +1042,7 @@ class Response:
 
         The browser only treats the new cookie as a replacement for the
         existing one if `Path`, `Domain`, **and the `Secure` / `SameSite`
-        attributes match** — otherwise it stores both. So a session
+        attributes match** - otherwise it stores both. So a session
         cookie originally set with `Secure; SameSite=None` will not be
         deleted by a plain `delete_cookie(key)` call. Pass the same
         flags here.
@@ -1046,7 +1075,7 @@ class JSONResponse(Response):
     def __init__(
         self,
         data: Any,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> None:
         try:
@@ -1065,12 +1094,12 @@ class JSONResponse(Response):
         cls,
         body: bytes,
         *,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> JSONResponse:
         """Build a `JSONResponse` from already-encoded JSON bytes.
 
-        Skips `__init__`'s orjson re-encode — use this when the caller
+        Skips `__init__`'s orjson re-encode - use this when the caller
         has produced the JSON body itself (e.g. with custom orjson
         options or via a `JSONProvider.dumps`). The body is sent
         verbatim with `Content-Type` taken from `cls.default_media_type`
@@ -1115,7 +1144,7 @@ class ORJSONResponse(JSONResponse):
     """Explicit orjson-backed JSON response.
 
     `JSONResponse` already uses `orjson` for encoding, so this class is a
-    semantic alias — useful when route declarations want to communicate
+    semantic alias - useful when route declarations want to communicate
     the encoder choice via `response_class=ORJSONResponse`.
     """
 
@@ -1135,7 +1164,7 @@ class UJSONResponse(Response):
     def __init__(
         self,
         data: Any,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> None:
         try:
@@ -1161,7 +1190,7 @@ class HTMLResponse(Response):
     def __init__(
         self,
         content: str,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(
@@ -1180,7 +1209,7 @@ class PlainTextResponse(Response):
     def __init__(
         self,
         content: str,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(
@@ -1199,7 +1228,7 @@ class RedirectResponse(Response):
     def __init__(
         self,
         url: str,
-        status_code: int = 307,
+        status_code: int = HTTP_307_TEMPORARY_REDIRECT,
         headers: dict[str, str] | None = None,
     ) -> None:
         hdrs = headers or {}
@@ -1208,11 +1237,11 @@ class RedirectResponse(Response):
         # safe set keeps URL-structural characters (RFC 3986) and `%`
         # so an already-encoded URL is not double-encoded.
         _reject_header_crlf(url, "redirect URL")
-        hdrs["Location"] = quote(url, safe="/:?#[]@!$&'()*+,;=%~")
+        hdrs[HEADER_LOCATION] = quote(url, safe="/:?#[]@!$&'()*+,;=%~")
         super().__init__(
             status_code=status_code,
             body=b"",
-            content_type="text/plain",
+            content_type=MIME_TEXT_PLAIN,
             headers=hdrs,
         )
 
@@ -1230,7 +1259,7 @@ class StreamingResponse(Response):
     def __init__(
         self,
         content: Any,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         content_type: str = MIME_OCTET,
         headers: dict[str, str] | None = None,
     ) -> None:
@@ -1258,9 +1287,9 @@ class StreamingResponse(Response):
     def encode(self) -> bytes:
         """For streaming, encode headers with chunked transfer."""
         default_headers = {
-            "Content-Type": self.content_type,
-            "Transfer-Encoding": "chunked",
-            "Connection": "keep-alive",
+            HEADER_CONTENT_TYPE: self.content_type,
+            HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
+            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
         }
         parts = _encode_response_head(self.status_code, default_headers, self.headers)
         parts.append("\r\n")
@@ -1275,8 +1304,25 @@ class StreamingResponse(Response):
         transport.write(b"0\r\n\r\n")
 
 
+def _format_content_disposition(disposition: str, filename: str) -> str:
+    """Build a safe RFC 6266 ``Content-Disposition`` header value.
+
+    The filename is reduced to a quoted ASCII ``filename="..."`` form with
+    backslashes, double-quotes, and control characters neutralised, so a
+    crafted filename cannot break out of the header. When the original
+    name had non-ASCII characters, an RFC 5987 ``filename*=UTF-8''...``
+    parameter is appended for modern browsers.
+    """
+    ascii_name = filename.encode("ascii", "replace").decode("ascii")
+    safe_ascii = "".join("_" if (c in '"\\' or c < " " or c == "\x7f") else c for c in ascii_name)
+    value = f'{disposition}; filename="{safe_ascii}"'
+    if ascii_name != filename:  # the original had non-ASCII characters
+        value += f"; filename*=UTF-8''{quote(filename, safe='')}"
+    return value
+
+
 class FileResponse(Response):
-    """Serve a file from disk — uses async I/O via executor."""
+    """Serve a file from disk - uses async I/O via executor."""
 
     def __init__(
         self,
@@ -1284,9 +1330,9 @@ class FileResponse(Response):
         filename: str | None = None,
         content_type: str | None = None,
         headers: dict[str, str] | None = None,
-        content_disposition_type: str = "attachment",
+        content_disposition_type: str = HEADER_VALUE_ATTACHMENT,
     ) -> None:
-        # Validate path exists (cheap stat check — actual read is deferred)
+        # Validate path exists (cheap stat check - actual read is deferred)
         if not os.path.isfile(path):
             raise FileNotFoundError(f"File not found: {path}")
 
@@ -1295,19 +1341,19 @@ class FileResponse(Response):
 
         hdrs = headers or {}
         if filename:
-            # `content_disposition_type` — "attachment" (force a
+            # `content_disposition_type` - "attachment" (force a
             # download dialog) or "inline" (render in the browser).
-            hdrs["Content-Disposition"] = _format_content_disposition(
+            hdrs[HEADER_CONTENT_DISPOSITION] = _format_content_disposition(
                 content_disposition_type, filename
             )
 
         st = os.stat(path)
-        if "Last-Modified" not in hdrs and "last-modified" not in hdrs:
-            hdrs["Last-Modified"] = http_date(st.st_mtime)
-        if "ETag" not in hdrs and "etag" not in hdrs:
-            hdrs["ETag"] = _file_etag(path, st.st_size, st.st_mtime)
+        if HEADER_LAST_MODIFIED not in hdrs and "last-modified" not in hdrs:
+            hdrs[HEADER_LAST_MODIFIED] = http_date(st.st_mtime)
+        if HEADER_ETAG not in hdrs and "etag" not in hdrs:
+            hdrs[HEADER_ETAG] = _file_etag(path, st.st_size, st.st_mtime)
 
-        # Warn when called on a running loop — a 50 MB read on the loop
+        # Warn when called on a running loop - a 50 MB read on the loop
         # pauses every other request. The cheap factory
         # `await FileResponse.from_path(path)` streams the file through
         # `loop.run_in_executor` without blocking. We emit a
@@ -1334,7 +1380,7 @@ class FileResponse(Response):
             body = f.read()
 
         super().__init__(
-            status_code=200,
+            status_code=HTTP_200_OK,
             body=body,
             content_type=content_type,
             headers=hdrs,
@@ -1347,9 +1393,9 @@ class FileResponse(Response):
         filename: str | None = None,
         content_type: str | None = None,
         headers: dict[str, str] | None = None,
-        content_disposition_type: str = "attachment",
+        content_disposition_type: str = HEADER_VALUE_ATTACHMENT,
     ) -> FileResponse:
-        """Async factory — reads file in executor to avoid blocking event loop."""
+        """Async factory - reads file in executor to avoid blocking event loop."""
         loop = asyncio.get_running_loop()
 
         def _read_and_stat() -> tuple[bytes, os.stat_result]:
@@ -1367,14 +1413,16 @@ class FileResponse(Response):
 
         hdrs = headers or {}
         if filename:
-            hdrs["Content-Disposition"] = _format_content_disposition(
+            hdrs[HEADER_CONTENT_DISPOSITION] = _format_content_disposition(
                 content_disposition_type, filename
             )
-        if "Last-Modified" not in hdrs and "last-modified" not in hdrs:
-            hdrs["Last-Modified"] = http_date(st.st_mtime)
-        if "ETag" not in hdrs and "etag" not in hdrs:
-            hdrs["ETag"] = _file_etag(path, st.st_size, st.st_mtime)
+        if HEADER_LAST_MODIFIED not in hdrs and "last-modified" not in hdrs:
+            hdrs[HEADER_LAST_MODIFIED] = http_date(st.st_mtime)
+        if HEADER_ETAG not in hdrs and "etag" not in hdrs:
+            hdrs[HEADER_ETAG] = _file_etag(path, st.st_size, st.st_mtime)
 
         resp = Response.__new__(cls)
-        Response.__init__(resp, status_code=200, body=body, content_type=content_type, headers=hdrs)
+        Response.__init__(
+            resp, status_code=HTTP_200_OK, body=body, content_type=content_type, headers=hdrs
+        )
         return resp

@@ -1,7 +1,7 @@
-"""HTTP date helpers — `http_date` / `parse_date` (RFC 9110 §5.6.7).
+"""HTTP date helpers - `http_date` / `parse_date` (RFC 9110 Sec. 5.6.7).
 
 RFC 9110 mandates the IMF-fixdate form for HTTP date headers
-(`Date`, `Last-Modified`, `Expires`, `If-Modified-Since`, …):
+(`Date`, `Last-Modified`, `Expires`, `If-Modified-Since`, ...):
 
     Sun, 06 Nov 1994 08:49:37 GMT
 
@@ -16,11 +16,10 @@ from __future__ import annotations
 import calendar
 from datetime import date, datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
-from time import struct_time
-from time import time as _time
+from time import struct_time, time
 
 # `http_date(None)` is the per-response `Date:` header. Formatting that
-# string costs ~3 µs on every response but only changes once a second;
+# string costs ~3 us on every response but only changes once a second;
 # cache the result keyed by the whole-second bucket.
 _now_cache: tuple[int, str] = (-1, "")
 
@@ -28,7 +27,7 @@ _now_cache: tuple[int, str] = (-1, "")
 def _http_date_now() -> str:
     """Return the current HTTP-date, cached to a 1-second granularity."""
     global _now_cache
-    sec = int(_time())
+    sec = int(time())
     bucket, cached = _now_cache
     if sec != bucket:
         cached = formatdate(sec, usegmt=True)
@@ -40,11 +39,11 @@ def http_date(value: datetime | date | struct_time | int | float | None = None) 
     """Render `value` as an RFC 9110 IMF-fixdate string.
 
     Accepts:
-    - `None` → current time.
-    - `datetime` → naive datetimes are assumed UTC.
-    - `date` → midnight UTC of that day.
-    - numeric → POSIX timestamp (seconds since the epoch).
-    - `struct_time` → as returned by `time.gmtime()`.
+    - `None` -> current time.
+    - `datetime` -> naive datetimes are assumed UTC.
+    - `date` -> midnight UTC of that day.
+    - numeric -> POSIX timestamp (seconds since the epoch).
+    - `struct_time` -> as returned by `time.gmtime()`.
 
     Always emits the `GMT` zone suffix per the spec.
     """
@@ -57,7 +56,7 @@ def http_date(value: datetime | date | struct_time | int | float | None = None) 
     elif isinstance(value, struct_time):
         ts = calendar.timegm(value)
     elif isinstance(value, date):
-        # `date` (not datetime) → midnight UTC.
+        # `date` (not datetime) -> midnight UTC.
         ts = datetime(value.year, value.month, value.day, tzinfo=timezone.utc).timestamp()
     else:
         ts = float(value)

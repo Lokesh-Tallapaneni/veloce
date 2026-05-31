@@ -1,4 +1,4 @@
-"""Multipart form-data parser — RFC 2046 boundary-delimited bodies."""
+"""Multipart form-data parser - RFC 2046 boundary-delimited bodies."""
 
 from __future__ import annotations
 
@@ -10,13 +10,14 @@ from typing import Any
 from python_multipart import MultipartParser
 from python_multipart.exceptions import FormParserError
 
+from veloce._constants import MIME_TEXT_PLAIN
 from veloce._header_parsing import parse_header_params
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.datastructures import FormData, UploadFile
 
-_logger = logging.getLogger("veloce.http.formparsers")
+_logger = logging.getLogger(__name__)
 
-# Multipart-parsing safety limits — guard against algorithmic-complexity
+# Multipart-parsing safety limits - guard against algorithmic-complexity
 # DoS from a body crafted with pathologically many or oversized parts.
 DEFAULT_MAX_MULTIPART_PARTS = 1000
 DEFAULT_MAX_MULTIPART_PART_SIZE = 10 * 1024 * 1024  # 10 MiB per part
@@ -140,7 +141,7 @@ def parse_multipart_form(
                 name,
                 UploadFile(
                     filename=filename,
-                    content_type=state["headers"].get("content-type", "text/plain"),
+                    content_type=state["headers"].get("content-type", MIME_TEXT_PLAIN),
                     file=spool,
                     size=state["part_size"],
                 ),

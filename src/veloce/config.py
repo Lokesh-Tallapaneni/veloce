@@ -1,4 +1,4 @@
-"""`Config` dict subclass with convenient loader methods.
+"""Config - a `dict` subclass with convenient loader methods.
 
 `app.config` is a `Config`. The class inherits `dict`, so every existing
 idiom (`config["DEBUG"] = True`, `config.get("X")`, `config.update(...)`)
@@ -22,7 +22,9 @@ from typing import IO, Any
 
 import orjson
 
-_logger = logging.getLogger("veloce.config")
+from veloce._protocol_constants import URL_SCHEME_HTTP
+
+_logger = logging.getLogger(__name__)
 
 
 def _orjson_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:
@@ -59,7 +61,7 @@ def _parse_env_lines(lines: list[str], *, source: str = "<env>") -> dict[str, st
         key = key.strip()
         value = value.strip()
         if value[:1] in ("'", '"'):
-            # Quoted value — take the span up to the matching close
+            # Quoted value - take the span up to the matching close
             # quote. Anything after it is an inline comment and is
             # dropped; a `#` *inside* the quotes stays literal.
             quote = value[0]
@@ -77,7 +79,7 @@ def _parse_env_lines(lines: list[str], *, source: str = "<env>") -> dict[str, st
             else:
                 value = value[1:close]
         else:
-            # Unquoted value — a whitespace-delimited `#` starts an
+            # Unquoted value - a whitespace-delimited `#` starts an
             # inline comment. A bare `#` (no leading space) is kept,
             # since it may be a legitimate part of the value.
             comment = value.find(" #")
@@ -87,11 +89,36 @@ def _parse_env_lines(lines: list[str], *, source: str = "<env>") -> dict[str, st
     return parsed
 
 
+def _import_string(dotted_path: str) -> object:
+    """Resolve `"package.module.attr"` to the attribute object.
+
+    Walks right-to-left until a prefix imports cleanly, then takes
+    the remaining segments as attribute accesses.
+    """
+    parts = dotted_path.split(".")
+    for split_at in range(len(parts), 0, -1):
+        module_path = ".".join(parts[:split_at])
+        attrs = parts[split_at:]
+        try:
+            obj: Any = importlib.import_module(module_path)
+        except ImportError:
+            continue
+        try:
+            for attr in attrs:
+                obj = getattr(obj, attr)
+        except AttributeError as err:
+            raise ImportError(
+                f"module {module_path!r} has no attribute path {'.'.join(attrs)!r}"
+            ) from err
+        return obj
+    raise ImportError(f"could not import {dotted_path!r}")
+
+
 class Config(dict[str, Any]):
     """A dict that knows how to load itself from common config sources.
 
     Only keys made of ASCII uppercase letters, digits, or underscores
-    (and not starting with a digit) are stored — see `_is_uppercase_key`.
+    (and not starting with a digit) are stored - see `_is_uppercase_key`.
     """
 
     @staticmethod
@@ -109,7 +136,7 @@ class Config(dict[str, Any]):
             "SECRET_KEY": None,
             "SERVER_NAME": None,
             "APPLICATION_ROOT": "/",
-            "PREFERRED_URL_SCHEME": "http",
+            "PREFERRED_URL_SCHEME": URL_SCHEME_HTTP,
             "MAX_CONTENT_LENGTH": None,
             "MAX_FORM_PARTS": 1000,
             "MAX_FORM_PART_SIZE": 10 * 1024 * 1024,
@@ -137,7 +164,7 @@ class Config(dict[str, Any]):
             return False
         return all(("A" <= c <= "Z") or c.isdigit() or c == "_" for c in name)
 
-    # ── from_mapping ─────────────────────────────────────────────────
+    # -- from_mapping -------------------------------------------------
 
     def from_mapping(self, mapping: Mapping[str, Any] | None = None, **kwargs: Any) -> bool:
         """Bulk-update from `mapping` and/or kwargs.
@@ -155,7 +182,7 @@ class Config(dict[str, Any]):
                 self[k] = v
         return True
 
-    # ── from_object ──────────────────────────────────────────────────
+    # -- from_object --------------------------------------------------
 
     def from_object(self, obj: object | str) -> bool:
         """Import UPPERCASE attributes from a module, class, instance, or
@@ -171,7 +198,7 @@ class Config(dict[str, Any]):
                 self[name] = getattr(obj, name)
         return True
 
-    # ── from_pyfile ──────────────────────────────────────────────────
+    # -- from_pyfile --------------------------------------------------
 
     def from_pyfile(self, filename: str, silent: bool = False) -> bool:
         """Execute a Python file and pull UPPERCASE module-level names.
@@ -189,7 +216,7 @@ class Config(dict[str, Any]):
                 return False
             raise
         # Compile + exec into the module namespace. Errors raised by the
-        # config file itself propagate — they're legitimate misconfig
+        # config file itself propagate - they're legitimate misconfig
         # and silently swallowing them would mask real bugs.
         code = compile(source, filename, "exec")
         exec(code, module.__dict__)
@@ -198,7 +225,7 @@ class Config(dict[str, Any]):
                 self[name] = getattr(module, name)
         return True
 
-    # ── from_env_file ────────────────────────────────────────────────
+    # -- from_env_file ------------------------------------------------
 
     def from_env_file(self, filename: str = ".env", silent: bool = False) -> bool:
         """Load ``KEY=VALUE`` pairs from a dotenv-style ``.env`` file.
@@ -207,7 +234,7 @@ class Config(dict[str, Any]):
         `export ` prefix is accepted, and a value wrapped in matching
         single or double quotes is unquoted. An unquoted value may carry
         a trailing ` #` inline comment, which is stripped; a `#` inside
-        quotes is kept literal. Values are stored as plain strings —
+        quotes is kept literal. Values are stored as plain strings -
         a `.env` file carries no types. Only UPPERCASE keys are kept (see
         `from_mapping`). With `silent=True` a missing file returns
         `False` rather than raising.
@@ -221,7 +248,7 @@ class Config(dict[str, Any]):
             raise
         return self.from_mapping(_parse_env_lines(lines, source=filename))
 
-    # ── from_envvar ──────────────────────────────────────────────────
+    # -- from_envvar --------------------------------------------------
 
     def from_envvar(self, varname: str, silent: bool = False) -> bool:
         """Read a filename from `os.environ[varname]` and `from_pyfile` it."""
@@ -232,7 +259,7 @@ class Config(dict[str, Any]):
             raise RuntimeError(f"environment variable {varname!r} is not set; cannot load config")
         return self.from_pyfile(path, silent=silent)
 
-    # ── from_prefixed_env ────────────────────────────────────────────
+    # -- from_prefixed_env --------------------------------------------
 
     def from_prefixed_env(
         self,
@@ -271,7 +298,7 @@ class Config(dict[str, Any]):
             cursor[segments[-1]] = value
         return True
 
-    # ── from_file ────────────────────────────────────────────────────
+    # -- from_file ----------------------------------------------------
 
     def from_file(
         self,
@@ -280,7 +307,7 @@ class Config(dict[str, Any]):
         silent: bool = False,
         text: bool = False,
     ) -> bool:
-        """Load any structured file (JSON, TOML via `tomllib.load`, YAML …).
+        """Load any structured file (JSON, TOML via `tomllib.load`, YAML ...).
 
         Opens the file in text or binary mode (per `text=`), hands the
         file object to `load`, expects a mapping back, then applies it
@@ -300,7 +327,7 @@ class Config(dict[str, Any]):
             )
         return self.from_mapping(data)
 
-    # ── get_namespace ────────────────────────────────────────────────
+    # -- get_namespace ------------------------------------------------
 
     def get_namespace(
         self, namespace: str, *, lowercase: bool = True, trim_namespace: bool = True
@@ -309,7 +336,7 @@ class Config(dict[str, Any]):
 
         A helper for extracting one subsystem's settings.
         With `lowercase=True` (default), trimmed keys are lower-cased
-        — extension code conventionally uses lowercase attribute names.
+        - extension code conventionally uses lowercase attribute names.
         """
         result: dict[str, Any] = {}
         for key, value in self.items():
@@ -320,28 +347,3 @@ class Config(dict[str, Any]):
                 trimmed = trimmed.lower()
             result[trimmed] = value
         return result
-
-
-def _import_string(dotted_path: str) -> object:
-    """Resolve `"package.module.attr"` to the attribute object.
-
-    Walks right-to-left until a prefix imports cleanly, then takes
-    the remaining segments as attribute accesses.
-    """
-    parts = dotted_path.split(".")
-    for split_at in range(len(parts), 0, -1):
-        module_path = ".".join(parts[:split_at])
-        attrs = parts[split_at:]
-        try:
-            obj: Any = importlib.import_module(module_path)
-        except ImportError:
-            continue
-        try:
-            for attr in attrs:
-                obj = getattr(obj, attr)
-        except AttributeError as err:
-            raise ImportError(
-                f"module {module_path!r} has no attribute path {'.'.join(attrs)!r}"
-            ) from err
-        return obj
-    raise ImportError(f"could not import {dotted_path!r}")

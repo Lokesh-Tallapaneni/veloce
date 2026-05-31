@@ -1,4 +1,4 @@
-"""Background tasks — run work after response is sent."""
+"""Background tasks - run work after response is sent."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 
 from veloce._internal import _is_async_callable
 
-logger = logging.getLogger("veloce.background")
+_logger = logging.getLogger(__name__)
 
 
 class BackgroundTask:
@@ -52,7 +52,7 @@ class BackgroundTasks:
             try:
                 await task.run()
             except Exception:
-                logger.exception(
+                _logger.exception(
                     "Background task %s raised an exception",
                     getattr(task.func, "__name__", repr(task.func)),
                 )

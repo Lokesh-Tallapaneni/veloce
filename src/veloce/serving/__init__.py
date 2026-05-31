@@ -1,4 +1,4 @@
-"""Serving sub-package — HTTP protocol implementation."""
+"""Serving sub-package - HTTP protocol implementation."""
 
 from veloce.serving.protocol import HttpProtocol
 

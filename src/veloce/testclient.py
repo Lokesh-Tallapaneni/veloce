@@ -1,8 +1,8 @@
-"""In-memory test client driving the app through its ASGI surface.
+"""Test client - in-memory driver for the app's ASGI surface.
 
 Constructs ASGI scopes directly and calls `app.__call__(scope, receive, send)`
 on a dedicated event loop. This exercises the same path a production ASGI
-server would take — the radix router, dependency resolver, middleware chain,
+server would take - the radix router, dependency resolver, middleware chain,
 response encoder, and ASGI lifespan handshake.
 
 The external API exposes both an `app.test_client()` factory and a
@@ -27,6 +27,50 @@ from urllib.parse import urlencode, urlparse
 import orjson
 from multidict import CIMultiDict
 
+from veloce._constants import (
+    HEADER_CONTENT_TYPE,
+    HEADER_LOCATION,
+    HEADER_SET_COOKIE,
+    MIME_FORM_URLENCODED,
+    MIME_JSON,
+    MIME_MULTIPART_FORM_DATA,
+    MIME_OCTET_STREAM,
+)
+from veloce._protocol_constants import (
+    ASGI_EVENT_HTTP_DISCONNECT,
+    ASGI_EVENT_HTTP_REQUEST,
+    ASGI_EVENT_HTTP_RESPONSE_BODY,
+    ASGI_EVENT_HTTP_RESPONSE_START,
+    ASGI_EVENT_WS_ACCEPT,
+    ASGI_EVENT_WS_CLOSE,
+    ASGI_EVENT_WS_CONNECT,
+    ASGI_EVENT_WS_DISCONNECT,
+    ASGI_EVENT_WS_RECEIVE,
+    ASGI_SCOPE_HTTP,
+    ASGI_SCOPE_WEBSOCKET,
+    HTTP_METHOD_DELETE,
+    HTTP_METHOD_GET,
+    HTTP_METHOD_HEAD,
+    HTTP_METHOD_OPTIONS,
+    HTTP_METHOD_PATCH,
+    HTTP_METHOD_POST,
+    HTTP_METHOD_PUT,
+    LIFECYCLE_SHUTDOWN,
+    LIFECYCLE_STARTUP,
+    SET_COOKIE_JOINER,
+    URL_SCHEME_HTTP,
+    URL_SCHEME_WS,
+)
+from veloce.status import (
+    HTTP_301_MOVED_PERMANENTLY,
+    HTTP_302_FOUND,
+    HTTP_303_SEE_OTHER,
+    HTTP_307_TEMPORARY_REDIRECT,
+    HTTP_308_PERMANENT_REDIRECT,
+    HTTP_500_INTERNAL_SERVER_ERROR,
+    WS_1000_NORMAL_CLOSURE,
+)
+
 
 def _resolve_redirect_location(location: str, base_url: str) -> tuple[str, str]:
     """Decompose a `Location` header into `(path, query)` for the next hop.
@@ -43,9 +87,9 @@ def _resolve_redirect_location(location: str, base_url: str) -> tuple[str, str]:
                 f"TestClient cannot follow redirect to absolute URL {location!r} "
                 f"on a different host (test client host is {own_host!r})"
             )
-        # Fragments are stripped by browsers on redirect — drop them.
+        # Fragments are stripped by browsers on redirect - drop them.
         return parsed.path or "/", parsed.query
-    # Relative location (or odd scheme-only) — use verbatim, splitting any qs.
+    # Relative location (or odd scheme-only) - use verbatim, splitting any qs.
     path, _, query = location.partition("?")
     return path, query
 
@@ -82,14 +126,14 @@ class TestResponse:
         for k, v in raw_headers:
             name = k.decode("latin-1")
             value = v.decode("latin-1")
-            if name.lower() == "set-cookie":
+            if name.lower() == HEADER_SET_COOKIE.lower():
                 set_cookies.append(value)
             else:
                 flat[name] = value
         if set_cookies:
-            flat["Set-Cookie"] = "\r\nSet-Cookie: ".join(set_cookies)
+            flat[HEADER_SET_COOKIE] = SET_COOKIE_JOINER.join(set_cookies)
         self.headers = flat
-        self.content_type = flat.get("content-type") or ""
+        self.content_type = flat.get(HEADER_CONTENT_TYPE) or ""
         # Parse cookies from all Set-Cookie headers; each cookie's first
         # `name=value` segment wins.
         self.cookies: dict[str, str] = {}
@@ -131,12 +175,12 @@ def _build_request_headers(
 
 def _apply_set_cookie_to_jar(jar: dict[str, str], raw_headers: list[tuple[bytes, bytes]]) -> None:
     """Update `jar` from `Set-Cookie` response headers. Honours `Max-Age=0`
-    as a deletion signal (RFC 6265 §5.2.2). Both test clients share this
+    as a deletion signal (RFC 6265 Sec. 5.2.2). Both test clients share this
     so a fix to the cookie semantics applies to sync + async at once.
     """
     for name_bytes, value_bytes in raw_headers:
         name = name_bytes.decode("latin-1")
-        if name.lower() != "set-cookie":
+        if name.lower() != HEADER_SET_COOKIE.lower():
             continue
         value = value_bytes.decode("latin-1")
         first = value.split(";", 1)[0].strip()
@@ -168,7 +212,7 @@ def _guess_content_type(filename: str | None, content: Any) -> str:
         guess = mimetypes.guess_type(filename)[0]
         if guess:
             return guess
-    return "application/octet-stream"
+    return MIME_OCTET_STREAM
 
 
 def _encode_multipart(
@@ -177,7 +221,7 @@ def _encode_multipart(
 ) -> tuple[bytes, str]:
     """Build a `multipart/form-data` body from files + extra form fields.
 
-    `files` shape per RFC 7578 §4 — values can be:
+    `files` shape per RFC 7578 Sec. 4 - values can be:
     - `bytes` / `str`: raw file content, filename inferred from key.
     - file-like (`BytesIO`, open file handle, anything with `.read()`):
       content read on demand, filename from `getattr(spec, "name", key)`.
@@ -195,7 +239,7 @@ def _encode_multipart(
     """
 
     def _q(value: str) -> str:
-        # Per RFC 7578 §4.2 / RFC 2616 §2.2 quoted-string: escape `"` and
+        # Per RFC 7578 Sec. 4.2 / RFC 2616 Sec. 2.2 quoted-string: escape `"` and
         # `\`; reject embedded CR or LF which cannot be carried inside a
         # quoted-string and would otherwise let a caller inject header
         # fields into the multipart preamble.
@@ -215,20 +259,20 @@ def _encode_multipart(
 
     for name, spec in files.items():
         # Match `requests` / `httpx`: accept bytes / str, file-likes (any
-        # object with `.read()` — BytesIO, open file handle, IO[bytes]),
+        # object with `.read()` - BytesIO, open file handle, IO[bytes]),
         # 2-tuple `(filename, content_or_filelike)`, or 3-tuple
         # `(filename, content_or_filelike, content_type)`. Tests
         # migrating from `requests.post(files={"f": BytesIO(...)})`
         # used to crash with a TypeError here.
         if isinstance(spec, (bytes, str)):
-            filename, content, ct = name, spec, "application/octet-stream"
+            filename, content, ct = name, spec, MIME_OCTET_STREAM
         elif isinstance(spec, tuple) and len(spec) == 2:
             filename, content = spec
             ct = _guess_content_type(filename, content)
         elif isinstance(spec, tuple) and len(spec) == 3:
             filename, content, ct = spec
         elif hasattr(spec, "read"):
-            # Bare file-like — pull filename from `.name` when present
+            # Bare file-like - pull filename from `.name` when present
             # (open()'d files set it; BytesIO doesn't), fall back to
             # the field name.
             filename = getattr(spec, "name", None) or name
@@ -254,7 +298,7 @@ def _encode_multipart(
 
     parts.append(b"--" + b + b"--\r\n")
     body = b"".join(parts)
-    return body, f"multipart/form-data; boundary={boundary}"
+    return body, f"{MIME_MULTIPART_FORM_DATA}; boundary={boundary}"
 
 
 def _build_scope(
@@ -264,7 +308,7 @@ def _build_scope(
     headers: dict[str, str],
     client: tuple[str, int] = ("testclient", 50000),
     server: tuple[str, int] = ("testserver", 80),
-    scheme: str = "http",
+    scheme: str = URL_SCHEME_HTTP,
     root_path: str = "",
 ) -> dict[str, Any]:
     """Build an ASGI 3.0 HTTP scope. Header values are encoded latin-1 per spec."""
@@ -278,7 +322,7 @@ def _build_scope(
         raw_headers.append((b"host", server[0].encode("latin-1")))
 
     return {
-        "type": "http",
+        "type": ASGI_SCOPE_HTTP,
         "asgi": {"version": "3.0", "spec_version": "2.3"},
         "http_version": "1.1",
         "method": method.upper(),
@@ -298,7 +342,7 @@ def _build_scope(
 
 
 class TestClient:
-    """Sync test client — drives the app through its ASGI surface."""
+    """Sync test client - drives the app through its ASGI surface."""
 
     __test__ = False  # don't let pytest collect this as a test class
 
@@ -309,7 +353,7 @@ class TestClient:
     def __init__(
         self,
         app: Any,
-        base_url: str = "http://testserver",
+        base_url: str = f"{URL_SCHEME_HTTP}://testserver",
         follow_redirects: bool = False,
     ) -> None:
         self.app = app
@@ -329,10 +373,10 @@ class TestClient:
         # Run startup lifecycle once at construction so users can mutate
         # app.state etc. in startup hooks before the first call.
         if hasattr(app, "_run_lifecycle"):
-            self._loop.run_until_complete(app._run_lifecycle("startup"))
+            self._loop.run_until_complete(app._run_lifecycle(LIFECYCLE_STARTUP))
             self._lifespan_run = True
 
-    # ── Cookie management (conventional shape) ────────────────────────
+    # -- Cookie management (conventional shape) -----------------------
 
     @property
     def cookies(self) -> _TestClientCookies:
@@ -393,7 +437,7 @@ class TestClient:
 
         self._cookies[mw.cookie_name] = mw._signer.dumps(dict(sess))
 
-    # ── Header / cookie plumbing ─────────────────────────────────────
+    # -- Header / cookie plumbing -------------------------------------
 
     def _build_headers(self, extra: dict[str, str] | None) -> dict[str, str]:
         return _build_request_headers(self._base_headers, self._cookies, extra)
@@ -402,7 +446,7 @@ class TestClient:
         # Cookies the server sent persist on the client across calls.
         _apply_set_cookie_to_jar(self._cookies, response.raw_headers)
 
-    # ── ASGI dispatch ────────────────────────────────────────────────
+    # -- ASGI dispatch ------------------------------------------------
 
     async def _send_one_request(
         self,
@@ -424,21 +468,21 @@ class TestClient:
                 # `http.disconnect` rather than hang forever on a
                 # never-set Event. The old behaviour leaked the coroutine
                 # and froze the test on the second receive.
-                return {"type": "http.disconnect"}
+                return {"type": ASGI_EVENT_HTTP_DISCONNECT}
             body_sent = True
-            return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": ASGI_EVENT_HTTP_REQUEST, "body": body, "more_body": False}
 
-        status_code = 500
+        status_code = HTTP_500_INTERNAL_SERVER_ERROR
         raw_headers: list[tuple[bytes, bytes]] = []
         body_chunks: list[bytes] = []
 
         async def send(message: dict[str, Any]) -> None:
             nonlocal status_code, raw_headers
             mtype = message["type"]
-            if mtype == "http.response.start":
+            if mtype == ASGI_EVENT_HTTP_RESPONSE_START:
                 status_code = message["status"]
                 raw_headers = list(message.get("headers") or [])
-            elif mtype == "http.response.body":
+            elif mtype == ASGI_EVENT_HTTP_RESPONSE_BODY:
                 chunk = message.get("body", b"")
                 if chunk:
                     body_chunks.append(chunk)
@@ -476,20 +520,30 @@ class TestClient:
                 )
             )
             self._update_cookies(resp)
-            if not follow or resp.status_code not in (301, 302, 303, 307, 308):
+            if not follow or resp.status_code not in (
+                HTTP_301_MOVED_PERMANENTLY,
+                HTTP_302_FOUND,
+                HTTP_303_SEE_OTHER,
+                HTTP_307_TEMPORARY_REDIRECT,
+                HTTP_308_PERMANENT_REDIRECT,
+            ):
                 return resp
-            location = resp.headers.get("location") or resp.headers.get("Location")
+            location = resp.headers.get(HEADER_LOCATION)
             if not location:
                 return resp
-            # RFC 9110 §15.4: 303 always changes the method to GET and
+            # RFC 9110 Sec. 15.4: 303 always changes the method to GET and
             # drops the body. 301/302 historically did the same (browsers
             # all do); modern recommendation is to preserve, but for
             # test-client predictability we follow the browser convention.
             # 307/308 strictly preserve method+body.
             new_method = current_method
             new_body = current_body
-            if resp.status_code in (301, 302, 303):
-                new_method = "GET"
+            if resp.status_code in (
+                HTTP_301_MOVED_PERMANENTLY,
+                HTTP_302_FOUND,
+                HTTP_303_SEE_OTHER,
+            ):
+                new_method = HTTP_METHOD_GET
                 new_body = b""
             new_path, new_query = _resolve_redirect_location(location, self.base_url)
             current_method = new_method
@@ -500,7 +554,7 @@ class TestClient:
             f"TestClient exceeded {self._MAX_REDIRECTS} redirects following {method} {path}"
         )
 
-    # ── Method shortcuts ─────────────────────────────────────────────
+    # -- Method shortcuts ---------------------------------------------
 
     def get(
         self,
@@ -511,7 +565,11 @@ class TestClient:
     ) -> TestResponse:
         qs = urlencode(params) if params else ""
         return self._make_request(
-            "GET", path, headers=headers, query_string=qs, follow_redirects=follow_redirects
+            HTTP_METHOD_GET,
+            path,
+            headers=headers,
+            query_string=qs,
+            follow_redirects=follow_redirects,
         )
 
     def _json_or_form(
@@ -529,13 +587,13 @@ class TestClient:
         body = b""
         if files is not None:
             body, ct = _encode_multipart(files, data or {})
-            hdrs["content-type"] = ct
+            hdrs[HEADER_CONTENT_TYPE] = ct
         elif json is not None:
             body = orjson.dumps(json)
-            hdrs.setdefault("content-type", "application/json")
+            hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_JSON)
         elif data is not None:
             body = urlencode(data).encode()
-            hdrs.setdefault("content-type", "application/x-www-form-urlencoded")
+            hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_FORM_URLENCODED)
         elif content is not None:
             body = content
         return self._make_request(
@@ -553,7 +611,7 @@ class TestClient:
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         return self._json_or_form(
-            "POST",
+            HTTP_METHOD_POST,
             path,
             json,
             data,
@@ -574,7 +632,7 @@ class TestClient:
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         return self._json_or_form(
-            "PUT",
+            HTTP_METHOD_PUT,
             path,
             json,
             data,
@@ -595,7 +653,7 @@ class TestClient:
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         return self._json_or_form(
-            "PATCH",
+            HTTP_METHOD_PATCH,
             path,
             json,
             data,
@@ -612,7 +670,7 @@ class TestClient:
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         return self._make_request(
-            "DELETE", path, headers=headers, follow_redirects=follow_redirects
+            HTTP_METHOD_DELETE, path, headers=headers, follow_redirects=follow_redirects
         )
 
     def head(
@@ -621,7 +679,9 @@ class TestClient:
         headers: dict[str, str] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
-        return self._make_request("HEAD", path, headers=headers, follow_redirects=follow_redirects)
+        return self._make_request(
+            HTTP_METHOD_HEAD, path, headers=headers, follow_redirects=follow_redirects
+        )
 
     def options(
         self,
@@ -630,7 +690,7 @@ class TestClient:
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         return self._make_request(
-            "OPTIONS", path, headers=headers, follow_redirects=follow_redirects
+            HTTP_METHOD_OPTIONS, path, headers=headers, follow_redirects=follow_redirects
         )
 
     def request(
@@ -645,10 +705,10 @@ class TestClient:
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
-        """Generic request dispatcher — httpx/test-client shape.
+        """Generic request dispatcher - httpx/test-client shape.
 
         `client.request("PATCH", "/x", json=...)` is the verb-agnostic
-        form of `client.get` / `client.post` / …. Bodies (`json` /
+        form of `client.get` / `client.post` / .... Bodies (`json` /
         `data` / `content` / `files`) and `params` are handled exactly
         as the per-verb methods do.
         """
@@ -673,7 +733,7 @@ class TestClient:
             follow_redirects=follow_redirects,
         )
 
-    # ── WebSocket ────────────────────────────────────────────────────
+    # -- WebSocket ----------------------------------------------------
 
     def websocket_connect(
         self,
@@ -681,7 +741,7 @@ class TestClient:
         subprotocols: list[str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> _WebSocketSession:
-        """Open an in-memory WebSocket against the app — context manager.
+        """Open an in-memory WebSocket against the app - context manager.
 
         Drives the ASGI websocket protocol: synthesise the scope, send
         `websocket.connect`, route to the handler, then forward
@@ -690,12 +750,12 @@ class TestClient:
         """
         return _WebSocketSession(self, path, subprotocols, headers)
 
-    # ── Lifecycle ────────────────────────────────────────────────────
+    # -- Lifecycle ----------------------------------------------------
 
     def close(self) -> None:
         """Run shutdown lifecycle and close the loop if we own it."""
         if self._lifespan_run and hasattr(self.app, "_run_lifecycle"):
-            self._loop.run_until_complete(self.app._run_lifecycle("shutdown"))
+            self._loop.run_until_complete(self.app._run_lifecycle(LIFECYCLE_SHUTDOWN))
             self._lifespan_run = False
         if self._owns_loop and not self._loop.is_closed():
             self._loop.close()
@@ -718,7 +778,7 @@ class _WebSocketSession:
     The handler runs as a background task on the TestClient's loop.
     Calls to `send_text`/`receive_text`/`close` route through two
     asyncio queues that play the role the network would normally play
-    — the client-side `send_text` enqueues `websocket.receive` for the
+    - the client-side `send_text` enqueues `websocket.receive` for the
     handler, and the handler's `send_text` enqueues `websocket.send`
     back for the client to pull.
     """
@@ -759,9 +819,9 @@ class _WebSocketSession:
             ws_path, _, ws_query = self._path.partition("?")
 
             scope = {
-                "type": "websocket",
+                "type": ASGI_SCOPE_WEBSOCKET,
                 "asgi": {"version": "3.0", "spec_version": "2.3"},
-                "scheme": "ws",
+                "scheme": URL_SCHEME_WS,
                 "path": ws_path,
                 "raw_path": ws_path.encode("utf-8"),
                 "query_string": ws_query.encode("ascii"),
@@ -779,15 +839,15 @@ class _WebSocketSession:
                 await self._from_handler.put(msg)
 
             # Kick the handshake.
-            await self._to_handler.put({"type": "websocket.connect"})
+            await self._to_handler.put({"type": ASGI_EVENT_WS_CONNECT})
             self._handler_task = asyncio.create_task(self._client.app(scope, receive, send))
 
             # Wait for the accept (or close) frame before returning.
             first = await self._from_handler.get()
-            if first["type"] == "websocket.close":
-                code = first.get("code", 1000)
+            if first["type"] == ASGI_EVENT_WS_CLOSE:
+                code = first.get("code", WS_1000_NORMAL_CLOSURE)
                 raise RuntimeError(f"WebSocket rejected with close code {code}")
-            if first["type"] != "websocket.accept":
+            if first["type"] != ASGI_EVENT_WS_ACCEPT:
                 raise RuntimeError(
                     f"WebSocket handshake produced an unexpected ASGI message: {first['type']!r}"
                 )
@@ -799,7 +859,9 @@ class _WebSocketSession:
     def __exit__(self, *exc: Any) -> None:
         async def _close() -> None:
             if self._handler_task and not self._handler_task.done():
-                await self._to_handler.put({"type": "websocket.disconnect", "code": 1000})
+                await self._to_handler.put(
+                    {"type": ASGI_EVENT_WS_DISCONNECT, "code": WS_1000_NORMAL_CLOSURE}
+                )
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(self._handler_task, timeout=1.0)
 
@@ -807,19 +869,19 @@ class _WebSocketSession:
 
     def send_text(self, data: str) -> None:
         self._client._loop.run_until_complete(
-            self._to_handler.put({"type": "websocket.receive", "text": data})
+            self._to_handler.put({"type": ASGI_EVENT_WS_RECEIVE, "text": data})
         )
 
     def send_bytes(self, data: bytes) -> None:
         self._client._loop.run_until_complete(
-            self._to_handler.put({"type": "websocket.receive", "bytes": data})
+            self._to_handler.put({"type": ASGI_EVENT_WS_RECEIVE, "bytes": data})
         )
 
     def receive_text(self) -> str:
         async def _r() -> str:
             msg = await self._from_handler.get()
-            if msg.get("type") == "websocket.close":
-                raise Exception(f"WebSocket closed: {msg.get('code', 1000)}")
+            if msg.get("type") == ASGI_EVENT_WS_CLOSE:
+                raise Exception(f"WebSocket closed: {msg.get('code', WS_1000_NORMAL_CLOSURE)}")
             return msg["text"]
 
         return self._client._loop.run_until_complete(_r())
@@ -827,8 +889,8 @@ class _WebSocketSession:
     def receive_bytes(self) -> bytes:
         async def _r() -> bytes:
             msg = await self._from_handler.get()
-            if msg.get("type") == "websocket.close":
-                raise Exception(f"WebSocket closed: {msg.get('code', 1000)}")
+            if msg.get("type") == ASGI_EVENT_WS_CLOSE:
+                raise Exception(f"WebSocket closed: {msg.get('code', WS_1000_NORMAL_CLOSURE)}")
             return msg["bytes"]
 
         return self._client._loop.run_until_complete(_r())
@@ -895,12 +957,12 @@ class _TestClientCookies:
 
 
 class AsyncTestClient:
-    """Async in-memory test client — drives the app through its ASGI surface.
+    """Async in-memory test client - drives the app through its ASGI surface.
 
     The async counterpart of `TestClient`: used as an async context
     manager inside an async test, so each request is `await`ed on the
     test's own running event loop instead of through a private loop. The
-    request methods (`get` / `post` / …) are coroutines.
+    request methods (`get` / `post` / ...) are coroutines.
 
         async with AsyncTestClient(app) as client:
             resp = await client.get("/")
@@ -917,7 +979,7 @@ class AsyncTestClient:
     def __init__(
         self,
         app: Any,
-        base_url: str = "http://testserver",
+        base_url: str = f"{URL_SCHEME_HTTP}://testserver",
         follow_redirects: bool = False,
     ) -> None:
         self.app = app
@@ -931,22 +993,22 @@ class AsyncTestClient:
         # client has been entered as a context manager.
         self._entered = False
 
-    # ── async context manager ────────────────────────────────────────
+    # -- Async context manager ----------------------------------------
 
     async def __aenter__(self) -> AsyncTestClient:
         self._entered = True
         if hasattr(self.app, "_run_lifecycle"):
-            await self.app._run_lifecycle("startup")
+            await self.app._run_lifecycle(LIFECYCLE_STARTUP)
             self._lifespan_run = True
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
         if self._lifespan_run and hasattr(self.app, "_run_lifecycle"):
-            await self.app._run_lifecycle("shutdown")
+            await self.app._run_lifecycle(LIFECYCLE_SHUTDOWN)
             self._lifespan_run = False
         self._entered = False
 
-    # ── cookie management ────────────────────────────────────────────
+    # -- Cookie management --------------------------------------------
 
     @property
     def cookies(self) -> _TestClientCookies:
@@ -961,7 +1023,7 @@ class AsyncTestClient:
         """Remove a cookie from the jar. No-op if not present."""
         self._cookies.pop(key, None)
 
-    # ── header / cookie plumbing ─────────────────────────────────────
+    # -- Header / cookie plumbing -------------------------------------
 
     def _build_headers(self, extra: dict[str, str] | None) -> dict[str, str]:
         return _build_request_headers(self._base_headers, self._cookies, extra)
@@ -969,7 +1031,7 @@ class AsyncTestClient:
     def _update_cookies(self, response: TestResponse) -> None:
         _apply_set_cookie_to_jar(self._cookies, response.raw_headers)
 
-    # ── ASGI dispatch ────────────────────────────────────────────────
+    # -- ASGI dispatch ------------------------------------------------
 
     async def _send_one_request(
         self,
@@ -986,21 +1048,21 @@ class AsyncTestClient:
         async def receive() -> dict[str, Any]:
             nonlocal body_sent
             if body_sent:
-                return {"type": "http.disconnect"}
+                return {"type": ASGI_EVENT_HTTP_DISCONNECT}
             body_sent = True
-            return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": ASGI_EVENT_HTTP_REQUEST, "body": body, "more_body": False}
 
-        status_code = 500
+        status_code = HTTP_500_INTERNAL_SERVER_ERROR
         raw_headers: list[tuple[bytes, bytes]] = []
         body_chunks: list[bytes] = []
 
         async def send(message: dict[str, Any]) -> None:
             nonlocal status_code, raw_headers
             mtype = message["type"]
-            if mtype == "http.response.start":
+            if mtype == ASGI_EVENT_HTTP_RESPONSE_START:
                 status_code = message["status"]
                 raw_headers = list(message.get("headers") or [])
-            elif mtype == "http.response.body":
+            elif mtype == ASGI_EVENT_HTTP_RESPONSE_BODY:
                 chunk = message.get("body", b"")
                 if chunk:
                     body_chunks.append(chunk)
@@ -1038,17 +1100,27 @@ class AsyncTestClient:
                 current_method, current_path, current_query, all_headers, current_body
             )
             self._update_cookies(resp)
-            if not follow or resp.status_code not in (301, 302, 303, 307, 308):
+            if not follow or resp.status_code not in (
+                HTTP_301_MOVED_PERMANENTLY,
+                HTTP_302_FOUND,
+                HTTP_303_SEE_OTHER,
+                HTTP_307_TEMPORARY_REDIRECT,
+                HTTP_308_PERMANENT_REDIRECT,
+            ):
                 return resp
-            location = resp.headers.get("location") or resp.headers.get("Location")
+            location = resp.headers.get(HEADER_LOCATION)
             if not location:
                 return resp
-            # 301/302/303 → GET with no body (browser convention);
+            # 301/302/303 -> GET with no body (browser convention);
             # 307/308 preserve method + body.
-            if resp.status_code in (301, 302, 303):
-                current_method, current_body = "GET", b""
+            if resp.status_code in (
+                HTTP_301_MOVED_PERMANENTLY,
+                HTTP_302_FOUND,
+                HTTP_303_SEE_OTHER,
+            ):
+                current_method, current_body = HTTP_METHOD_GET, b""
             current_path, current_query = _resolve_redirect_location(location, self.base_url)
-            # `current_headers` is intentionally kept across the hop — the
+            # `current_headers` is intentionally kept across the hop - the
             # caller's headers (Authorization, custom headers) must reach
             # the redirected request, matching the sync TestClient.
         raise RuntimeError(
@@ -1067,18 +1139,18 @@ class AsyncTestClient:
         body = b""
         if files is not None:
             body, ct = _encode_multipart(files, data or {})
-            hdrs["content-type"] = ct
+            hdrs[HEADER_CONTENT_TYPE] = ct
         elif json is not None:
             body = orjson.dumps(json)
-            hdrs.setdefault("content-type", "application/json")
+            hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_JSON)
         elif data is not None:
             body = urlencode(data).encode()
-            hdrs.setdefault("content-type", "application/x-www-form-urlencoded")
+            hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_FORM_URLENCODED)
         elif content is not None:
             body = content
         return body, hdrs
 
-    # ── method shortcuts ─────────────────────────────────────────────
+    # -- Method shortcuts ---------------------------------------------
 
     async def get(
         self,
@@ -1089,7 +1161,11 @@ class AsyncTestClient:
     ) -> TestResponse:
         qs = urlencode(params) if params else ""
         return await self._make_request(
-            "GET", path, headers=headers, query_string=qs, follow_redirects=follow_redirects
+            HTTP_METHOD_GET,
+            path,
+            headers=headers,
+            query_string=qs,
+            follow_redirects=follow_redirects,
         )
 
     async def post(
@@ -1104,7 +1180,7 @@ class AsyncTestClient:
     ) -> TestResponse:
         body, hdrs = self._assemble_body(json, data, content, files, headers)
         return await self._make_request(
-            "POST", path, headers=hdrs, body=body, follow_redirects=follow_redirects
+            HTTP_METHOD_POST, path, headers=hdrs, body=body, follow_redirects=follow_redirects
         )
 
     async def put(
@@ -1119,7 +1195,7 @@ class AsyncTestClient:
     ) -> TestResponse:
         body, hdrs = self._assemble_body(json, data, content, files, headers)
         return await self._make_request(
-            "PUT", path, headers=hdrs, body=body, follow_redirects=follow_redirects
+            HTTP_METHOD_PUT, path, headers=hdrs, body=body, follow_redirects=follow_redirects
         )
 
     async def patch(
@@ -1134,7 +1210,7 @@ class AsyncTestClient:
     ) -> TestResponse:
         body, hdrs = self._assemble_body(json, data, content, files, headers)
         return await self._make_request(
-            "PATCH", path, headers=hdrs, body=body, follow_redirects=follow_redirects
+            HTTP_METHOD_PATCH, path, headers=hdrs, body=body, follow_redirects=follow_redirects
         )
 
     async def delete(
@@ -1144,7 +1220,7 @@ class AsyncTestClient:
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         return await self._make_request(
-            "DELETE", path, headers=headers, follow_redirects=follow_redirects
+            HTTP_METHOD_DELETE, path, headers=headers, follow_redirects=follow_redirects
         )
 
     async def head(
@@ -1154,7 +1230,7 @@ class AsyncTestClient:
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         return await self._make_request(
-            "HEAD", path, headers=headers, follow_redirects=follow_redirects
+            HTTP_METHOD_HEAD, path, headers=headers, follow_redirects=follow_redirects
         )
 
     async def options(
@@ -1164,7 +1240,7 @@ class AsyncTestClient:
         follow_redirects: bool | None = None,
     ) -> TestResponse:
         return await self._make_request(
-            "OPTIONS", path, headers=headers, follow_redirects=follow_redirects
+            HTTP_METHOD_OPTIONS, path, headers=headers, follow_redirects=follow_redirects
         )
 
     async def request(

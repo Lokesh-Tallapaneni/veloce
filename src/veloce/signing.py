@@ -1,4 +1,4 @@
-"""HMAC-signed value serialiser.
+"""signing - HMAC-signed value serialiser.
 
 A standalone payload-signing helper for cookies, password-reset links,
 email-confirmation tokens, and similar use cases where the server hands
@@ -10,21 +10,20 @@ Token format: `<base64url(payload)>.<base64url(timestamp)>.<base64url(sig)>`
 - The payload is the user's value serialised to JSON (via `orjson`).
 - The timestamp is a big-endian uint64 of seconds since the epoch.
 - The signature is `HMAC-SHA256(derived_key, payload.timestamp)` where
-  `derived_key = HMAC-SHA256(secret, salt)` (nested HMAC, RFC 2104 §2).
+  `derived_key = HMAC-SHA256(secret, salt)` (nested HMAC, RFC 2104 Sec. 2).
   The salt is used to derive a per-purpose key, not appended to the
-  secret — sharing one secret across purposes (sessions, CSRF, password
+  secret - sharing one secret across purposes (sessions, CSRF, password
   reset) yields cryptographically distinct keys.
 
 Tokens are URL-safe (no `/`, `+`, `=` characters). Comparison is
 constant-time. The implementation is derived from RFC 2104 (HMAC) and
-RFC 4648 §5 (base64url); the observable token shape matches
+RFC 4648 Sec. 5 (base64url); the observable token shape matches
 a timestamped signer's `URLSafeTimedSerializer` so swapping is straightforward,
 but no a timestamped signer code is copied.
 
-Why an in-tree signer (rather than depending on `itsdangerous`)
----------------------------------------------------------------
+Why an in-tree signer (rather than depending on `itsdangerous`):
 Veloce keeps this ~150-line signer instead of taking the `itsdangerous`
-dependency — a considered trade-off, not an oversight:
+dependency - a considered trade-off, not an oversight:
 
 - Signing rests entirely on the standard library (`hmac`, `hashlib`,
   `base64`, `struct`), so the dependency surface stays minimal and the
@@ -32,7 +31,7 @@ dependency — a considered trade-off, not an oversight:
 - The security-critical properties are deliberately narrow and covered
   by `tests/test_signing.py`: HMAC-SHA256, a salt mixed into the MAC key
   (so tokens for different purposes never cross-validate), constant-time
-  comparison, and — importantly — signature verified *before* the
+  comparison, and - importantly - signature verified *before* the
   timestamp and payload are decoded, so a malformed token cannot drive
   the JSON parser ahead of the MAC check.
 - The token shape is wire-compatible with `URLSafeTimedSerializer`, so
@@ -51,6 +50,8 @@ from typing import Any
 import orjson
 
 from veloce._internal import _b64decode, _b64encode
+
+# -- Exceptions ---------------------------------------------------
 
 
 class BadSignature(Exception):
@@ -102,7 +103,7 @@ class Signer:
         # Future support for key rotation: extra accepted keys for verify.
         self._secret_keys: list[bytes] = [self._key]
 
-    # ── Key rotation ───────────────────────────────────────────────
+    # -- Key rotation -----------------------------------------------
 
     def add_fallback_secret(
         self, secret: str | bytes, salt: str | bytes = "veloce.signing"
@@ -119,7 +120,7 @@ class Signer:
             salt = salt.encode("utf-8")
         self._secret_keys.append(hmac.new(secret, salt, hashlib.sha256).digest())
 
-    # ── dumps / loads ──────────────────────────────────────────────
+    # -- dumps / loads ----------------------------------------------
 
     def dumps(self, data: Any) -> str:
         """Serialise `data` to a signed, timestamped, URL-safe token."""

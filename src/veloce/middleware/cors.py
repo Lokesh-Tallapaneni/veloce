@@ -1,7 +1,7 @@
-"""Cross-Origin Resource Sharing (CORS) middleware.
+"""CORS middleware - Cross-Origin Resource Sharing per the Fetch standard.
 
 Implemented from the Fetch standard's CORS protocol section
-(https://fetch.spec.whatwg.org/#http-cors-protocol) and RFC 9110 §10.2.
+(https://fetch.spec.whatwg.org/#http-cors-protocol) and RFC 9110 Sec. 10.2.
 Names match the spec; semantics are veloce's own.
 
 Notable spec rules this middleware enforces:
@@ -14,7 +14,7 @@ Notable spec rules this middleware enforces:
   response MUST include `Vary: Origin` to prevent cache poisoning.
 - Preflight (`OPTIONS` with `Access-Control-Request-Method`) returns
   204 with the negotiated set; preflight from a disallowed origin gets
-  the same 204 (with no allow-* headers) — the browser enforces the
+  the same 204 (with no allow-* headers) - the browser enforces the
   block.
 """
 
@@ -24,6 +24,24 @@ import re
 from re import Pattern
 
 from veloce import status
+from veloce._constants import (
+    HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS,
+    HEADER_ACCESS_CONTROL_ALLOW_HEADERS,
+    HEADER_ACCESS_CONTROL_ALLOW_METHODS,
+    HEADER_ACCESS_CONTROL_ALLOW_ORIGIN,
+    HEADER_ACCESS_CONTROL_EXPOSE_HEADERS,
+    HEADER_ACCESS_CONTROL_MAX_AGE,
+    HEADER_ACCESS_CONTROL_REQUEST_HEADERS,
+    HEADER_ORIGIN,
+)
+from veloce._protocol_constants import (
+    HTTP_METHOD_DELETE,
+    HTTP_METHOD_GET,
+    HTTP_METHOD_OPTIONS,
+    HTTP_METHOD_PATCH,
+    HTTP_METHOD_POST,
+    HTTP_METHOD_PUT,
+)
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -31,7 +49,7 @@ from veloce.middleware.base import Middleware
 # Fast-path literals that match every possible origin. Anchors and the
 # equivalent `^$`-bracketed forms collapse to the same set, as do
 # `.*`/`.+`/`.{0,}` quantifiers. Stripping anchors first lets a single
-# tuple cover them all. The probe-test below is the real guard — this is
+# tuple cover them all. The probe-test below is the real guard - this is
 # just a cheap pre-check that avoids compiling the regex for the obvious
 # cases.
 _WILDCARD_REGEX_BODIES = frozenset({".*", ".+", ".{0,}", ".{1,}"})
@@ -85,7 +103,7 @@ class CORSMiddleware(Middleware):
                 raise ValueError(
                     f"CORSMiddleware: invalid allow_origin_regex {allow_origin_regex!r}: {exc}"
                 ) from exc
-            # Reject trivially wildcard patterns when credentials are on —
+            # Reject trivially wildcard patterns when credentials are on -
             # mirrors the `allow_origins=["*"]` + credentials guard so the
             # regex escape hatch can't be used to bypass it. Probes a set
             # of impossible-origin strings so dialect variants like
@@ -95,18 +113,18 @@ class CORSMiddleware(Middleware):
                 raise ValueError(
                     "CORSMiddleware: allow_credentials=True cannot be combined with a "
                     f"wildcard allow_origin_regex {allow_origin_regex!r} "
-                    "(Fetch CORS spec §3.2.4)"
+                    "(Fetch CORS spec Sec. 3.2.4)"
                 )
             self.allow_origin_regex = compiled
         else:
             self.allow_origin_regex = None
         self.allow_methods = allow_methods or [
-            "GET",
-            "POST",
-            "PUT",
-            "DELETE",
-            "PATCH",
-            "OPTIONS",
+            HTTP_METHOD_GET,
+            HTTP_METHOD_POST,
+            HTTP_METHOD_PUT,
+            HTTP_METHOD_DELETE,
+            HTTP_METHOD_PATCH,
+            HTTP_METHOD_OPTIONS,
         ]
         self.allow_headers = allow_headers or ["*"]
         self.allow_credentials = allow_credentials
@@ -117,29 +135,29 @@ class CORSMiddleware(Middleware):
         # are O(1): origin lookups hit a frozenset, and the preflight
         # header intersection reuses one lowercased set instead of
         # rebuilding it each request. `allow_headers` itself stays a list
-        # — it is `", ".join`-ed into the response header.
+        # - it is `", ".join`-ed into the response header.
         self._allow_origins_set: frozenset[str] = frozenset(self.allow_origins)
         self._allow_origins_has_star = "*" in self._allow_origins_set
         self._allow_headers_lower: frozenset[str] = frozenset(h.lower() for h in self.allow_headers)
         self._allow_headers_has_star = "*" in self.allow_headers
-        # Precompute the joined header strings — these are constant for
+        # Precompute the joined header strings - these are constant for
         # the middleware lifetime, so the per-response `", ".join(...)`
         # in `_add_cors_headers` is wasted work.
         self._allow_methods_joined = ", ".join(self.allow_methods)
         self._allow_headers_joined = ", ".join(self.allow_headers)
         self._expose_headers_joined = ", ".join(self.expose_headers)
 
-        # Wildcard-with-credentials is invalid per spec — fail loudly at
+        # Wildcard-with-credentials is invalid per spec - fail loudly at
         # construction so a misconfigured app never serves it.
         if self.allow_credentials and (
             self._allow_origins_has_star or self._allow_headers_has_star
         ):
             raise ValueError(
                 "CORSMiddleware: allow_credentials=True cannot be combined with "
-                "wildcard allow_origins or allow_headers (Fetch CORS spec §3.2.4)"
+                "wildcard allow_origins or allow_headers (Fetch CORS spec Sec. 3.2.4)"
             )
 
-    # ── Origin matching ──────────────────────────────────────────────
+    # -- Origin matching ----------------------------------------------
 
     def _origin_allowed(self, origin: str) -> bool:
         """True if `origin` matches the configured allow-list or regex."""
@@ -152,7 +170,7 @@ class CORSMiddleware(Middleware):
     def _resolve_allow_origin(self, origin: str) -> str | None:
         """Pick the value for `Access-Control-Allow-Origin`.
 
-        - With credentials: must echo the exact origin or refuse — `*` is
+        - With credentials: must echo the exact origin or refuse - `*` is
           forbidden.
         - Without credentials and a `*` allow-list: emit `*`.
         - Otherwise: echo the origin if it matches the list/regex.
@@ -165,11 +183,11 @@ class CORSMiddleware(Middleware):
             return "*"
         return origin
 
-    # ── Request hooks ────────────────────────────────────────────────
+    # -- Request hooks ------------------------------------------------
 
     async def process_request(self, request: Request) -> Response | None:
         """Handle CORS preflight requests and validate origins."""
-        origin = request.headers.get("origin", "")
+        origin = request.headers.get(HEADER_ORIGIN, "")
         request._state["_cors_origin"] = origin
 
         # Preflight: OPTIONS + Origin. Strict spec requires
@@ -177,9 +195,9 @@ class CORSMiddleware(Middleware):
         # test clients) send OPTIONS+Origin alone for soft preflight checks.
         # Honour both shapes so common patterns work; we still echo only
         # ACR-Headers when that header is actually present.
-        if request.method == "OPTIONS" and origin:
+        if request.method == HTTP_METHOD_OPTIONS and origin:
             # A preflight from a disallowed origin gets a diagnostic 400
-            # rather than a bare 204 — the browser would block it either
+            # rather than a bare 204 - the browser would block it either
             # way, but 400 makes the rejection visible to developers.
             if not self._origin_allowed(origin):
                 return Response(
@@ -188,16 +206,16 @@ class CORSMiddleware(Middleware):
             response = Response(status_code=status.HTTP_204_NO_CONTENT, body=b"")
             self._add_cors_headers(response, origin, preflight=True)
             # Echo the requested headers (filtered) and method.
-            requested = request.headers.get("access-control-request-headers", "")
+            requested = request.headers.get(HEADER_ACCESS_CONTROL_REQUEST_HEADERS, "")
             if requested and self._allow_headers_has_star:
-                response.headers["Access-Control-Allow-Headers"] = requested
+                response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = requested
             elif requested:
                 # Intersect requested vs the precomputed lowercased allow-set.
                 tokens = [t.strip() for t in requested.split(",") if t.strip()]
                 matched = [t for t in tokens if t.lower() in self._allow_headers_lower]
                 if matched:
-                    response.headers["Access-Control-Allow-Headers"] = ", ".join(matched)
-            response.headers["Access-Control-Max-Age"] = str(self.max_age)
+                    response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = ", ".join(matched)
+            response.headers[HEADER_ACCESS_CONTROL_MAX_AGE] = str(self.max_age)
             return response
 
         return None
@@ -211,28 +229,28 @@ class CORSMiddleware(Middleware):
         self._add_cors_headers(response, origin, preflight=False)
         return response
 
-    # ── Header writer ────────────────────────────────────────────────
+    # -- Header writer ------------------------------------------------
 
     def _add_cors_headers(self, response: Response, origin: str, preflight: bool) -> None:
         allow_origin = self._resolve_allow_origin(origin)
         if allow_origin is not None:
-            response.headers["Access-Control-Allow-Origin"] = allow_origin
+            response.headers[HEADER_ACCESS_CONTROL_ALLOW_ORIGIN] = allow_origin
 
         # `Vary: Origin` is required whenever the response value depends on
         # the request origin (i.e. anything other than literal `*` without
         # credentials). Cache poisoning class is real here.
         if allow_origin is not None and allow_origin != "*":
-            response.add_vary("Origin")
+            response.add_vary(HEADER_ORIGIN)
 
         if preflight:
-            response.headers["Access-Control-Allow-Methods"] = self._allow_methods_joined
+            response.headers[HEADER_ACCESS_CONTROL_ALLOW_METHODS] = self._allow_methods_joined
             if self._allow_headers_has_star:
-                response.headers["Access-Control-Allow-Headers"] = "*"
+                response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = "*"
             else:
-                response.headers["Access-Control-Allow-Headers"] = self._allow_headers_joined
+                response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = self._allow_headers_joined
 
         if self.allow_credentials:
-            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers[HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS] = "true"
 
         if self.expose_headers:
-            response.headers["Access-Control-Expose-Headers"] = self._expose_headers_joined
+            response.headers[HEADER_ACCESS_CONTROL_EXPOSE_HEADERS] = self._expose_headers_joined

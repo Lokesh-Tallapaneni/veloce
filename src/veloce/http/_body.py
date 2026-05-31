@@ -43,8 +43,8 @@ class RequestBodySource:
 
     The protocol calls `feed(chunk)` from `on_body` and `feed_eof()` from
     `on_message_complete`. The handler consumes via `__aiter__` (chunk at a
-    time) or `read()` (everything to EOF). A single waiter is supported — one
-    handler consumes one request's body — which matches the per-connection
+    time) or `read()` (everything to EOF). A single waiter is supported - one
+    handler consumes one request's body - which matches the per-connection
     FIFO server loop (one in-flight request at a time).
 
     `max_content_length` caps the running total: feeding past it flips an
@@ -57,8 +57,8 @@ class RequestBodySource:
     pushes the count to `high_water` the `pause` callback fires (the protocol
     pauses socket reading); when a consumer drains the count back to
     `low_water` the `resume` callback fires. Pausing does not cap a single
-    read — every chunked frame in one delivered segment is fed in one pass
-    before the handler runs — so the true memory cap is `max_content_length`,
+    read - every chunked frame in one delivered segment is fed in one pass
+    before the handler runs - so the true memory cap is `max_content_length`,
     not the chunk count. Both callbacks default to no-ops, so the in-memory
     ASGI/TestClient path (which pre-fills the body) is unaffected.
     """
@@ -153,7 +153,7 @@ class RequestBodySource:
             return
         self._size += len(chunk)
         if self._max is not None and self._size > self._max:
-            # Drop the over-limit bytes — we will refuse with 413 on read and
+            # Drop the over-limit bytes - we will refuse with 413 on read and
             # the connection is going to be torn down, so retaining them is
             # pure memory pressure.
             self._overflow = True
@@ -208,14 +208,14 @@ class RequestBodySource:
 
         Called on request teardown so a body-ignoring handler cannot leave
         unconsumed bytes that the protocol would otherwise misread as the
-        start of the next pipelined request. Overflow is swallowed here — the
+        start of the next pipelined request. Overflow is swallowed here - the
         connection that overflowed is already being closed.
 
         If the source paused reading on the producer side, this resumes it and
         latches `_draining` so `feed` never re-pauses for the rest of the
         drain: a paused connection delivers no further bytes and never reaches
         EOF, so any re-pause mid-drain (as the resumed socket delivers more
-        body past the high-water mark) would deadlock — the body and its
+        body past the high-water mark) would deadlock - the body and its
         terminating EOF would never arrive.
         """
         self._draining = True

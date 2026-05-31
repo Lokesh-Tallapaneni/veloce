@@ -1,4 +1,4 @@
-"""API Key authentication schemes — header, query, cookie."""
+"""API Key authentication schemes - header, query, cookie."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ class _APIKeyBase:
     future change to the extraction signature.
     """
 
+    _source_attr: str = ""  # subclass overrides - Request attribute name
     __slots__ = ("name", "auto_error")
-    _source_attr: str = ""  # subclass overrides — Request attribute name
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

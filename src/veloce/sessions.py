@@ -1,4 +1,4 @@
-"""Session container — a dict that tracks mutation and newness.
+"""Session container - a dict that tracks mutation and newness.
 
 `SessionMiddleware` stores one of these on every request. `new` reports
 whether the request arrived without a valid session cookie; `modified`
@@ -23,7 +23,7 @@ _SWEEP_PROBABILITY = 1.0 / 32
 
 
 class Session(dict[str, Any]):
-    """The request session — a dict that knows when it has changed."""
+    """The request session - a dict that knows when it has changed."""
 
     __slots__ = ("new", "modified", "regenerate")
 
@@ -34,22 +34,9 @@ class Session(dict[str, Any]):
         super().__init__(*args, **kwargs)
         self.new = False
         self.modified = False
-        # Set by `regenerate_id()` — asks a server-side session backend to
+        # Set by `regenerate_id()` - asks a server-side session backend to
         # mint a fresh id for this session on the next response.
         self.regenerate = False
-
-    def regenerate_id(self) -> None:
-        """Request a fresh server-side session id on the next response.
-
-        Call this at a privilege boundary — login, role change — so a
-        pre-existing (possibly attacker-planted) session id cannot be
-        replayed against the now-elevated session: the session-fixation
-        defence. It marks the session modified so the rotation is written
-        back. Harmless with cookie-only sessions, which carry no
-        server-side id to rotate.
-        """
-        self.regenerate = True
-        self.modified = True
 
     @property
     def permanent(self) -> bool:
@@ -65,13 +52,22 @@ class Session(dict[str, Any]):
     def permanent(self, value: bool) -> None:
         self["_permanent"] = bool(value)
 
-    def __setitem__(self, key: Any, value: Any) -> None:
-        super().__setitem__(key, value)
+    def regenerate_id(self) -> None:
+        """Request a fresh server-side session id on the next response.
+
+        Call this at a privilege boundary - login, role change - so a
+        pre-existing (possibly attacker-planted) session id cannot be
+        replayed against the now-elevated session: the session-fixation
+        defence. It marks the session modified so the rotation is written
+        back. Harmless with cookie-only sessions, which carry no
+        server-side id to rotate.
+        """
+        self.regenerate = True
         self.modified = True
 
-    def __delitem__(self, key: Any) -> None:
-        super().__delitem__(key)
-        self.modified = True
+    # -- Mutation tracking --------------------------------------
+    # Every mutating dict operation is overridden to flip `modified`,
+    # so the cookie middleware can cheaply tell when a re-write is due.
 
     def clear(self) -> None:
         super().clear()
@@ -114,6 +110,14 @@ class Session(dict[str, Any]):
             return
         self.modified = True
 
+    def __setitem__(self, key: Any, value: Any) -> None:
+        super().__setitem__(key, value)
+        self.modified = True
+
+    def __delitem__(self, key: Any) -> None:
+        super().__delitem__(key)
+        self.modified = True
+
     def __ior__(self, other: Any) -> Session:  # type: ignore[override,misc]
         # PEP 584 `|=` goes through the C-level merge, not `__setitem__`.
         # Without this override the mutation is invisible to `.modified`
@@ -131,7 +135,7 @@ class SessionStore:
     A concrete store persists session payloads keyed by an opaque session
     id; `ServerSessionMiddleware` drives it. The methods are async so a
     network-backed store (Redis, a database) can implement them without
-    blocking the event loop — the bundled `InMemorySessionStore` satisfies
+    blocking the event loop - the bundled `InMemorySessionStore` satisfies
     the contract without any real awaiting.
     """
 
@@ -145,13 +149,13 @@ class SessionStore:
         raise NotImplementedError
 
     async def delete(self, session_id: str) -> None:
-        """Revoke `session_id` — a later `read` of it must return `None`."""
+        """Revoke `session_id` - a later `read` of it must return `None`."""
         raise NotImplementedError
 
     async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
         """Write `data` for `session_id` **only if it still exists**.
 
-        Returns `True` on success, `False` when the id is absent — it was
+        Returns `True` on success, `False` when the id is absent - it was
         revoked or expired. This is the race-safe write the middleware
         uses for an already-stored session, so a request still in flight
         cannot resurrect a session a concurrent `delete` removed.
@@ -167,7 +171,7 @@ class SessionStore:
 
 
 class InMemorySessionStore(SessionStore):
-    """A process-local `SessionStore` — a dict with per-entry expiry.
+    """A process-local `SessionStore` - a dict with per-entry expiry.
 
     Fine for a single-process app and for tests. It does not share state
     across workers, so a multi-worker deployment needs a shared backend
@@ -208,7 +212,7 @@ class InMemorySessionStore(SessionStore):
     async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
         # Atomic against the event loop: this coroutine does no `await`,
         # so a concurrent `delete` cannot land between the check and the
-        # write — a revoked session stays revoked. An expired entry that
+        # write - a revoked session stays revoked. An expired entry that
         # has not yet been lazily evicted counts as absent (mirrors
         # `read`), so a stale session is never rewritten back to life.
         entry = self._entries.get(session_id)
@@ -227,7 +231,7 @@ class InMemorySessionStore(SessionStore):
         the probabilistic sweep that fires from `write` / `replace`.
         """
         now = time.time()
-        # Snapshot first — a concurrent write during iteration would otherwise
+        # Snapshot first - a concurrent write during iteration would otherwise
         # raise `RuntimeError: dictionary changed size during iteration`. Use
         # `pop(..., None)` so a concurrent delete of the same id is a no-op.
         expired = [sid for sid, (_, exp) in list(self._entries.items()) if exp <= now]

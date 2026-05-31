@@ -1,4 +1,4 @@
-"""Veloce — Ultra-fast async Python web framework.
+"""Veloce - Ultra-fast async Python web framework.
 
 Veloce is a high-performance asynchronous web framework built on raw asyncio,
 httptools, and orjson. It pairs a small, well-typed API with predictable
@@ -17,6 +17,8 @@ Basic usage::
     app.run()
 """
 
+from __future__ import annotations
+
 # Status codes
 from veloce import status
 from veloce.app import Veloce
@@ -28,7 +30,7 @@ from veloce.blueprints import Blueprint
 # Static files
 from veloce.contrib.staticfiles import StaticFiles
 
-# Templating — Flask-style top-level shortcuts. The full Jinja2Templates
+# Templating - Flask-style top-level shortcuts. The full Jinja2Templates
 # class stays under veloce.contrib.templating for callers that want the
 # class-based API.
 from veloce.contrib.templating import (

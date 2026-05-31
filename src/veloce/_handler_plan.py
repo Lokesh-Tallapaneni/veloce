@@ -1,9 +1,9 @@
-"""Pre-computed parameter-resolution plan for a route handler.
+"""Handler plan - pre-computed parameter-resolution plan for a route handler.
 
 Built once at route registration; consumed per request. Removes the per-request
 cost of `inspect.signature` and `typing.get_type_hints` from the dispatch path.
 
-The plan is a list of `_Slot` records — one per handler parameter — each tagged
+The plan is a list of `_Slot` records - one per handler parameter - each tagged
 with the source the request should be read from. The plan also carries
 pre-planned route-level dependencies and the recursive plans for any
 `Depends` sub-graph reachable from the handler.
@@ -28,12 +28,13 @@ from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.routing.params import Body, Cookie, File, Form, Header, ParamBase, Path
 
-# `Depends` is imported lazily inside builders to break the dependency.py ↔
+# `Depends` is imported lazily inside builders to break the dependency.py <->
 # _handler_plan.py cycle: dependency.py imports the plan API at module load,
 # and we are imported back via that chain.
 
 
-# Slot kinds — bare integers for cheap dispatch in the hot loop.
+# -- Slot-kind constants ------------------------------------
+# Bare integers (not IntEnum) for cheap branching in the request hot loop.
 K_REQUEST = 0
 K_BG_TASKS = 1
 K_DEPENDS = 2
@@ -57,11 +58,12 @@ MK_FORM = 5
 MK_FILE = 6
 
 
+# -- Annotation helpers -------------------------------------
 def _unwrap_optional(annotation: Any) -> tuple[bool, Any]:
     """Detect `Optional[T]` / `Union[T, None]` / `T | None` and unwrap T."""
     origin = get_origin(annotation)
     # `Union[X, None]` has origin typing.Union; `X | None` (PEP 604) has origin
-    # types.UnionType — both must be recognised.
+    # types.UnionType - both must be recognised.
     if origin is Union or origin is types.UnionType:
         args = get_args(annotation)
         non_none = [a for a in args if a is not type(None)]
@@ -96,10 +98,11 @@ def _marker_kind(marker: ParamBase) -> int:
     return MK_QUERY
 
 
+# -- Slot record --------------------------------------------
 class _Slot:
     """One handler parameter's pre-resolved binding to a request source.
 
-    All fields packed onto one class — branching on `kind` is cheaper than
+    All fields packed onto one class - branching on `kind` is cheaper than
     dispatching on object type in the request hot path.
     """
 
@@ -146,11 +149,12 @@ class _Slot:
         self.dep_is_async_gen = False
 
 
+# -- Parallel-dependency grouping ---------------------------
 def _slot_parallel_safe(slot: _Slot, seen_plans: set[int]) -> bool:
     """Whether a K_DEPENDS slot and its whole sub-graph are parallel-safe.
 
     Unsafe when the slot (or any K_DEPENDS below it) pushes Security() scopes
-    or is a yield-style dependency — both touch shared resolver state whose
+    or is a yield-style dependency - both touch shared resolver state whose
     ordering parallel execution would corrupt. A pure function of plan
     structure, so the grouping it drives is computed once at registration.
     Cycle-guarded via `seen_plans`.
@@ -204,7 +208,7 @@ def compute_parallel_groups(slots: list[_Slot]) -> dict[int, int]:
 
     Returns `{start_index: end_index}` for every contiguous K_DEPENDS run of
     two or more slots that may run concurrently. The resolver consults this
-    map per request instead of re-deriving the grouping each time — the
+    map per request instead of re-deriving the grouping each time - the
     grouping depends only on the plan, never on request data.
     """
     groups: dict[int, int] = {}
@@ -221,6 +225,7 @@ def compute_parallel_groups(slots: list[_Slot]) -> dict[int, int]:
     return groups
 
 
+# -- Handler plan -------------------------------------------
 class HandlerPlan:
     """Frozen resolution plan for one handler, plus its dependency graph."""
 
@@ -254,6 +259,7 @@ class HandlerPlan:
         self.parallel_groups = compute_parallel_groups(slots)
 
 
+# -- Plan builders ------------------------------------------
 def _build_depends_slot(
     name: str,
     dep: Any,
@@ -265,7 +271,7 @@ def _build_depends_slot(
     """Build a K_DEPENDS slot, recursively planning the sub-callable.
 
     `Depends()` with no explicit dependency falls back to `inferred`
-    (the parameter's type annotation) — the shorthand for
+    (the parameter's type annotation) - the shorthand for
     `x: SomeClass = Depends()`. `websocket` is threaded down the chain so
     a dependency of a WebSocket handler can itself receive the
     `WebSocket` connection by annotation or `ws` / `websocket` name.
@@ -283,7 +289,8 @@ def _build_depends_slot(
     # scopes attribute; we read defensively.
     scopes = getattr(dep, "scopes", None)
     if scopes:
-        slot.target_type = list(scopes)  # repurpose target_type as scope list
+        # target_type is repurposed as the scope list for Security() slots.
+        slot.target_type = list(scopes)
     return slot
 
 
@@ -293,12 +300,12 @@ def build_plan(
     """Inspect `handler` and freeze a resolution plan.
 
     Called exactly once per route registration. Safe to call on builtins,
-    lambdas, partials, or callable classes — returns an empty plan for
+    lambdas, partials, or callable classes - returns an empty plan for
     handlers without inspectable signatures.
 
     When `websocket` is set, a parameter typed `WebSocket` (or named `ws`
     / `websocket`) is bound to a `K_WEBSOCKET` slot instead of being read
-    from the request — the same plan machinery then drives WebSocket
+    from the request - the same plan machinery then drives WebSocket
     dependency injection, giving it `yield`-teardown and `Security` parity
     with the HTTP path.
 
@@ -308,7 +315,7 @@ def build_plan(
     """
     from veloce.dependency import Depends, SecurityScopes  # local import breaks the import cycle
 
-    # Cycle guard — entries are the callables themselves so the chain in
+    # Cycle guard - entries are the callables themselves so the chain in
     # the error reads naturally. Created lazily so external callers that
     # call `build_plan(handler)` keep the original two-arg shape.
     if _seen is None:
@@ -339,7 +346,7 @@ def build_plan(
 
     # `inspect.signature` transparently follows the class -> `__init__`,
     # callable-instance -> `__call__`, and `functools.partial` -> wrapped
-    # function indirection, but `get_type_hints` does not — on a class it
+    # function indirection, but `get_type_hints` does not - on a class it
     # returns the *class-level* annotations, not `__init__`'s. Resolve the
     # same object `signature` did so dependencies keep their parameter types.
     real: Any = handler
@@ -359,7 +366,7 @@ def build_plan(
         hints = get_type_hints(hint_target, include_extras=True)
     except Exception:
         # get_type_hints chokes on forward refs / private modules; degrade
-        # gracefully — slots that need annotations fall back to defaults.
+        # gracefully - slots that need annotations fall back to defaults.
         hints = {}
 
     slots: list[_Slot] = []
@@ -396,14 +403,14 @@ def build_plan(
                 has_default = True
             annotation = base_type
 
-        # WebSocket injection (websocket plans only) — by annotation or by
+        # WebSocket injection (websocket plans only) - by annotation or by
         # the `ws` / `websocket` parameter name. Checked first so it wins
         # over the request/path fallbacks for a WebSocket handler.
         if websocket and (annotation is ws_type or param_name in ("ws", "websocket")):
             slots.append(_Slot(K_WEBSOCKET, param_name))
             continue
 
-        # Request injection — either by name or by annotation.
+        # Request injection - either by name or by annotation.
         if param_name == "request" or annotation is Request:
             slots.append(_Slot(K_REQUEST, param_name))
             continue
@@ -419,13 +426,13 @@ def build_plan(
         # Response injection by annotation. The handler
         # receives a fresh Response it can mutate (status_code, headers,
         # cookies); the dispatcher merges those onto the final response.
-        # There is no HTTP Response on a WebSocket route — skip it there.
+        # There is no HTTP Response on a WebSocket route - skip it there.
         if annotation is Response:
             if not websocket:
                 slots.append(_Slot(K_RESPONSE, param_name))
             continue
 
-        # SecurityScopes — receives the accumulated Security() chain scopes.
+        # SecurityScopes - receives the accumulated Security() chain scopes.
         if annotation is SecurityScopes:
             slots.append(_Slot(K_SECURITY_SCOPES, param_name))
             continue
@@ -449,7 +456,7 @@ def build_plan(
         if isinstance(default, ParamBase):
             marker_kind = _marker_kind(default)
             # Body / Form / File markers read the HTTP request body, which
-            # a WebSocket handshake does not have — skip them so the
+            # a WebSocket handshake does not have - skip them so the
             # handler default applies instead of crashing at resolve time.
             if websocket and marker_kind in (MK_BODY, MK_FORM, MK_FILE):
                 continue
@@ -457,8 +464,8 @@ def build_plan(
             slot.marker = default
             slot.marker_kind = marker_kind
             slot.lookup_name = default.alias or param_name
-            # An un-aliased Header param converts `_` → `-`
-            # in its name (`x_token` → `x-token`) unless disabled.
+            # An un-aliased Header param converts `_` -> `-`
+            # in its name (`x_token` -> `x-token`) unless disabled.
             if (
                 slot.marker_kind == MK_HEADER
                 and not default.alias

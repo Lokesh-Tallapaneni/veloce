@@ -1,4 +1,4 @@
-"""Jinja2 templating — lazy import, zero cost when unused."""
+"""Jinja2 templating - lazy import, zero cost when unused."""
 
 from __future__ import annotations
 
@@ -8,10 +8,11 @@ from typing import Any
 
 from veloce.helpers import _current_app_var, current_app, g
 from veloce.http.response import HTMLResponse
+from veloce.status import HTTP_200_OK
 
 # Sentinel attribute name written onto each Jinja Environment to memoize
 # the result of `_sync_app_jinja_helpers`. Holds a (id(app), filter/global/
-# test counts) tuple — bumps invalidate the cache when the user registers
+# test counts) tuple - bumps invalidate the cache when the user registers
 # a new filter / global / test after init.
 _HELPER_SYNC_TOKEN_ATTR = "_veloce_helper_sync_token"
 
@@ -19,13 +20,13 @@ _HELPER_SYNC_TOKEN_ATTR = "_veloce_helper_sync_token"
 def _sync_app_jinja_helpers(env: Any) -> None:
     """Copy filters/globals/tests registered on the active app into `env`.
 
-    Also injects the standard template globals — `url_for`, `g`, and
-    `current_app` — so templates can `{{ url_for('endpoint') }}` and
+    Also injects the standard template globals - `url_for`, `g`, and
+    `current_app` - so templates can `{{ url_for('endpoint') }}` and
     `{{ g.user }}` without manual context plumbing. `request` is bound
     by `_gather_context_processors` since it's request-scoped (not
     available outside dispatch).
 
-    Memoized per (env, app) — re-syncing is idempotent but it still
+    Memoized per (env, app) - re-syncing is idempotent but it still
     runs three loops and several attribute lookups per render, which
     is wasted work on every request once filters are stable. The
     token includes the registration-list lengths, so adding a new
@@ -71,7 +72,7 @@ def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str,
         result = processor()
         # Async context processors are uncommon but legal; await only if
         # the result is a coroutine. The templating layer is sync, so we
-        # can't actually await — async processors must be invoked from an
+        # can't actually await - async processors must be invoked from an
         # async context; here we just skip them with a clear failure mode.
         if inspect.iscoroutine(result):
             # The user declared an async context processor but called the
@@ -91,7 +92,7 @@ def _context_preserving_iter(iterator: Any) -> Any:
     """Wrap a lazy sync iterator so each step runs in the caller's context.
 
     A streamed template body is consumed by the response-emit layer after the
-    handler returns — on the built-in server, from a separate task whose
+    handler returns - on the built-in server, from a separate task whose
     context lacks the request-scoped `current_app` / `g` / `request`. Jinja
     resolves globals like `url_for` during iteration, so without this the
     stream would raise "working outside of application context". A snapshot of
@@ -145,14 +146,14 @@ class Jinja2Templates:
         if autoescape is None:
             autoescape = select_autoescape(["html", "htm", "xhtml", "xml"])
         # `auto_reload=None` (the default) tracks the bound app's `debug`
-        # flag at render time — on in development, off in production,
+        # flag at render time - on in development, off in production,
         # where the per-render template `stat` is pure overhead. Pass an
         # explicit `True`/`False` to pin it. The Environment starts
         # `auto_reload=True` so standalone (no-app) rendering still
         # hot-reloads.
         self._auto_reload = auto_reload
         initial_reload = auto_reload if auto_reload is not None else True
-        # `enable_async=False` so `Template.render(...)` is plain sync —
+        # `enable_async=False` so `Template.render(...)` is plain sync -
         # required because `TemplateResponse` is invoked inside an
         # already-running event loop, and `render` with `enable_async=True`
         # would `asyncio.run()` internally and crash.
@@ -171,7 +172,7 @@ class Jinja2Templates:
 
     def _apply_auto_reload(self, env: Any) -> None:
         """When `auto_reload` was left unset, track the bound app's
-        `debug` flag — production (`debug=False`) skips the per-render
+        `debug` flag - production (`debug=False`) skips the per-render
         template `stat`. Explicit settings are left untouched."""
         if self._auto_reload is not None:
             return
@@ -183,7 +184,7 @@ class Jinja2Templates:
         self,
         name: str,
         context: dict[str, Any],
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> HTMLResponse:
         """Render a template and return as HTMLResponse."""
@@ -215,7 +216,7 @@ class Jinja2Templates:
         streamed to the client without buffering the whole body. Wrap it in
         a `StreamingResponse` to return it from a handler.
 
-        Jinja's generator is lazy — chunks render as the response body is
+        Jinja's generator is lazy - chunks render as the response body is
         consumed, which on the built-in server happens on a separate task
         after the handler returns. Each chunk is therefore produced inside a
         snapshot of the current context (`current_app`, `g`, `request`), so a
@@ -238,7 +239,7 @@ class Jinja2Templates:
         return template.render(merged)
 
     async def render_async(self, name: str, context: dict[str, Any] | None = None) -> str:
-        """Asynchronously render a named template — Jinja `enable_async`.
+        """Asynchronously render a named template - Jinja `enable_async`.
 
         Uses a separate async-enabled `Environment` (built lazily) so
         `{% include %}`d templates with async I/O resolve without
@@ -265,7 +266,7 @@ class Jinja2Templates:
         return self.env.get_template(name)
 
 
-# ── Module-level helpers ──────────────────────────────
+# -- Module-level helpers ---------------------------------------------
 
 
 def render_template(template_name: str, **context: Any) -> str:
@@ -287,7 +288,7 @@ def render_template(template_name: str, **context: Any) -> str:
     if templates is None:
         raise RuntimeError(
             "render_template requires a Jinja2Templates instance on "
-            "`app._templates` — assign one after construction."
+            "`app._templates` - assign one after construction."
         )
     return templates.render(template_name, context)
 
@@ -318,7 +319,7 @@ def stream_template(template_name: str, **context: Any) -> Any:
     if templates is None:
         raise RuntimeError(
             "stream_template requires a Jinja2Templates instance on "
-            "`app._templates` — assign one after construction."
+            "`app._templates` - assign one after construction."
         )
     return templates.stream(template_name, context)
 

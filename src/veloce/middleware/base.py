@@ -1,10 +1,8 @@
-"""Base middleware classes.
-
-Two shapes are first-class:
+"""Middleware base classes - the two first-class middleware shapes.
 
 - `Middleware`: split request/response hooks. Veloce-native shape, lightweight.
 - `BaseHTTPMiddleware`: a single `dispatch(request, call_next)` coroutine that
-  wraps the inner handler — a common ASGI pattern. Useful when the
+  wraps the inner handler - a common ASGI pattern. Useful when the
   middleware needs to inspect the response after computing the request.
 """
 
@@ -27,9 +25,11 @@ class Middleware:
         """Called after route handler. Can modify the response."""
         return response
 
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__}>"
 
-# Type alias for the `call_next` argument so user dispatch functions can
-# annotate it.
+
+# The `call_next` argument type, so user dispatch functions can annotate it.
 CallNext = Callable[[Request], Awaitable[Response]]
 
 
@@ -60,13 +60,9 @@ class BaseHTTPMiddleware:
     """
 
     def __init__(self, dispatch: Callable | None = None) -> None:
-        if dispatch is not None:
-            # Bind the supplied callable as the dispatch method. Note that
-            # bare-function bindings don't get an automatic `self` — we call
-            # them with (request, call_next) directly via `__call__`.
-            self._dispatch_override: Callable | None = dispatch
-        else:
-            self._dispatch_override = None
+        # A supplied callable is invoked with (request, call_next) directly via
+        # `__call__`; bare-function bindings don't receive an automatic `self`.
+        self._dispatch_override: Callable | None = dispatch
 
     async def dispatch(self, request: Request, call_next: CallNext) -> Response:
         """Override this in subclasses. Default just calls through.
@@ -75,6 +71,9 @@ class BaseHTTPMiddleware:
         reach the wrapped handler.
         """
         return await call_next(request)
+
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__}>"
 
     async def __call__(self, request: Request, call_next: CallNext) -> Response:
         if self._dispatch_override is not None:

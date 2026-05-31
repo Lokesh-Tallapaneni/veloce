@@ -1,9 +1,9 @@
-"""Blueprint primitive — a core building block.
+"""Blueprint primitive - a core building block.
 
 A `Blueprint` is a deferred-registration collection of routes, hooks,
 and error handlers that gets bound to an app via
 `app.register_blueprint(bp, url_prefix=...)`. The blueprint itself owns
-nothing at runtime — its routes are added to the app's radix tree at
+nothing at runtime - its routes are added to the app's radix tree at
 registration time with the (optionally combined) prefix.
 
 Scope of this implementation:
@@ -16,7 +16,7 @@ Scope of this implementation:
   exceptions raised by blueprint handlers; falls through to the app's
   global handlers when no blueprint-level match.
 - `url_prefix` set at construction or override at registration.
-- Nested blueprints are *not* supported in this slice — that's R4,
+- Nested blueprints are *not* supported in this slice - that's R4,
   separate work.
 
 `Blueprint` extends `Router`, so blueprint-level routes inherit the
@@ -67,7 +67,7 @@ class Blueprint(Router):
         )
         self.name = name
         self.url_prefix = url_prefix
-        # Pending hook + handler registrations — applied to the app at
+        # Pending hook + handler registrations - applied to the app at
         # `register_blueprint` time.
         self._before_request_hooks: list[Callable] = []
         self._after_request_hooks: list[Callable] = []
@@ -79,7 +79,7 @@ class Blueprint(Router):
         self._url_value_preprocessors: list[Callable] = []
         self._url_default_funcs: list[Callable] = []
 
-    # ── Hook decorators ───────────────────────────────
+    # -- Hook decorators -----------------------------------
 
     def before_request(self, func: Callable) -> Callable:
         """Register a function to run before each blueprint request.
@@ -124,7 +124,7 @@ class Blueprint(Router):
     def url_value_preprocessor(self, func: Callable) -> Callable:
         """Register a `fn(endpoint, values)` URL preprocessor on this blueprint.
 
-        Mirrors `@app.url_value_preprocessor` (R20) — runs after route
+        Mirrors `@app.url_value_preprocessor` (R20) - runs after route
         match for blueprint-routed requests, mutating `values` in
         place. Use to pop a path-param into `g` (e.g. a lang segment)
         before the handler sees it.
@@ -135,14 +135,14 @@ class Blueprint(Router):
     def url_defaults(self, func: Callable) -> Callable:
         """Register a `fn(endpoint, values)` URL-defaults injector for `url_for`.
 
-        Mirrors `@app.url_defaults` (R21) — runs inside `url_for` /
+        Mirrors `@app.url_defaults` (R21) - runs inside `url_for` /
         `url_path_for` for endpoints belonging to this blueprint. Use
         `values.setdefault(...)` for caller-wins semantics.
         """
         self._url_default_funcs.append(func)
         return func
 
-    # ── Nested blueprints (R4) ───────────────────────────────────────
+    # -- Nested blueprints (R4) ----------------------------
 
     def register_blueprint(
         self,
@@ -160,7 +160,7 @@ class Blueprint(Router):
         dispatcher's prefix-gate finds them under either name.
 
         Hooks and error handlers from `child` are merged into this
-        blueprint's lists (not the app's — the app gets them when
+        blueprint's lists (not the app's - the app gets them when
         *this* blueprint is registered).
         """
         if child is self:
@@ -202,7 +202,7 @@ class Blueprint(Router):
         # Inherit child hooks + error handlers. Child's hooks will be
         # endpoint-gated when *this* blueprint registers onto the app
         # (parent gate covers `<parent_name>.` which matches
-        # `<parent_name>.<child_name>.…`).
+        # `<parent_name>.<child_name>....`).
         self._before_request_hooks.extend(child._before_request_hooks)
         self._after_request_hooks.extend(child._after_request_hooks)
         self._teardown_request_hooks.extend(child._teardown_request_hooks)
@@ -213,7 +213,7 @@ class Blueprint(Router):
         self._url_value_preprocessors.extend(child._url_value_preprocessors)
         self._url_default_funcs.extend(child._url_default_funcs)
 
-    # ── Route collection inspection — used by register_blueprint ─────
+    # -- Route collection inspection - used by register_blueprint ---
 
     def _walk_routes(self) -> list[tuple[str, list[str], RouteInfo]]:
         """Return `(path, methods, RouteInfo)` triples for every route.
@@ -232,12 +232,12 @@ class Blueprint(Router):
             # which loses the trailing-slash distinction the router
             # collapses at storage time (both `@bp.get("/")` and
             # `@bp.get("")` map to the same radix node). Read from
-            # `RouteInfo.path_template` instead — it carries the original
+            # `RouteInfo.path_template` instead - it carries the original
             # `prefix + user_path` string so we can tell the two apart
             # and re-prefix correctly.
             full_path = info.path_template
             if own_prefix and full_path.startswith(own_prefix):
-                # Strip the prefix verbatim — preserving an empty
+                # Strip the prefix verbatim - preserving an empty
                 # remainder (`@bp.get("")` against the bare prefix) and
                 # an explicit `/` remainder (`@bp.get("/")`) as their
                 # own distinct shapes for the re-prefix step.

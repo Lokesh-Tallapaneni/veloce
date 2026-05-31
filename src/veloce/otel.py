@@ -1,9 +1,9 @@
-"""OpenTelemetry tracing bridge for a Veloce application.
+"""OpenTelemetry tracing bridge - one server span per finished HTTP request.
 
 This is an **optional** integration that turns each finished HTTP request into
 an OpenTelemetry server span using Veloce's existing instrumentation hook
 (:meth:`Veloce.add_instrumentation`). It does not replace or rebuild that hook
-— it registers exactly one hook that emits a span per request.
+- it registers exactly one hook that emits a span per request.
 
 Only the OpenTelemetry **API** is required; the application supplies its own
 configured SDK, ``TracerProvider``, and exporter. Install the extra with::
@@ -23,7 +23,7 @@ Importing this module (or ``import veloce``) never requires OpenTelemetry: the
 clear :class:`ImportError` with an install hint when it is missing.
 
 **Timing:** Veloce's instrumentation hook fires *after* the response is
-produced — :meth:`Veloce._run_instrumentation` runs once the request is
+produced - :meth:`Veloce._run_instrumentation` runs once the request is
 finished, with the already-measured wall-clock duration. The span emitted here
 is therefore recorded retroactively from the
 :class:`~veloce.instrumentation.RequestMetrics` record, but it is *backdated*:
@@ -31,17 +31,17 @@ its ``end_time`` is the wall-clock instant captured the moment dispatch
 returned (``RequestMetrics.end_time_ns``, taken *before* any other
 instrumentation hook or ``request_finished`` receiver runs, so a slow earlier
 hook cannot shift the window) and its ``start_time`` is that end minus the
-measured duration — so the exported span covers the real request window rather
+measured duration - so the exported span covers the real request window rather
 than the instant this bridge's own hook executes. Because the span is created
 after the fact, it is rooted
-in a fresh, empty context — never the ambient OpenTelemetry context active at
-emission time — so it is always a clean server-root span and never accidentally
+in a fresh, empty context - never the ambient OpenTelemetry context active at
+emission time - so it is always a clean server-root span and never accidentally
 parents itself under unrelated work running on the same task.
 
 **Distributed-trace continuation.** The framework carries the inbound
 ``traceparent`` / ``tracestate`` headers on the metrics record, and this bridge
 extracts a parent context from them via ``TraceContextTextMapPropagator`` when
-it emits the span — so a request arriving with an upstream trace joins it (same
+it emits the span - so a request arriving with an upstream trace joins it (same
 ``trace_id``, parented under the caller's span) rather than starting a
 disconnected root. A request with no trace headers yields an empty context and
 the span is a clean root. Extraction happens on the span-emit path, which runs
@@ -51,7 +51,7 @@ or an error), so continuation never depends on hook ordering.
 **Scope.** This is a *server-span* bridge: it continues an inbound trace and
 emits one server span per request, but it does not inject context into
 *outbound* calls your handler makes, nor does it open a live span that wraps
-handler execution for fine-grained child spans — for that you would instrument
+handler execution for fine-grained child spans - for that you would instrument
 at the call site / ASGI layer. The span is driven off the same low-cardinality
 dimensions a metrics exporter consumes.
 
@@ -60,12 +60,12 @@ dimensions a metrics exporter consumes.
 :class:`~veloce.sse.EventSourceResponse`, a chunked
 :class:`~veloce.http.response.FileResponse`) the instrumentation hook fires
 *before* the body is emitted on the ASGI send path. The measured duration and
-status would cover only the time to produce the response object — not the time
-to drain the stream, and not a failure raised mid-stream — so backdating a span
+status would cover only the time to produce the response object - not the time
+to drain the stream, and not a failure raised mid-stream - so backdating a span
 from them would mis-time the request and hide stream errors. This bridge
 therefore skips records where :attr:`RequestMetrics.streamed` is set and emits
-no span for them. (A ``HEAD`` request never iterates its body — the ASGI path
-sends headers and an empty terminal frame — so it is *not* marked streamed even
+no span for them. (A ``HEAD`` request never iterates its body - the ASGI path
+sends headers and an empty terminal frame - so it is *not* marked streamed even
 on a streaming route, and is traced normally.) Closing a span accurately
 around a stream would require
 moving the span lifecycle onto the ASGI send path so it ends after the stream
@@ -87,7 +87,20 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
-if TYPE_CHECKING:
+from veloce._protocol_constants import (
+    HTTP_METHOD_CONNECT,
+    HTTP_METHOD_DELETE,
+    HTTP_METHOD_GET,
+    HTTP_METHOD_HEAD,
+    HTTP_METHOD_OPTIONS,
+    HTTP_METHOD_PATCH,
+    HTTP_METHOD_POST,
+    HTTP_METHOD_PUT,
+    HTTP_METHOD_TRACE,
+)
+from veloce.status import HTTP_500_INTERNAL_SERVER_ERROR
+
+if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
     from veloce.instrumentation import RequestMetrics
 
@@ -121,7 +134,17 @@ _INSTALL_HINT = (
 # Only these may appear in a span name; any other verb is attacker-controlled
 # and collapses to "HTTP other" so it cannot explode span-name cardinality.
 _STANDARD_METHODS = frozenset(
-    {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"}
+    {
+        HTTP_METHOD_GET,
+        HTTP_METHOD_HEAD,
+        HTTP_METHOD_POST,
+        HTTP_METHOD_PUT,
+        HTTP_METHOD_PATCH,
+        HTTP_METHOD_DELETE,
+        HTTP_METHOD_OPTIONS,
+        HTTP_METHOD_TRACE,
+        HTTP_METHOD_CONNECT,
+    }
 )
 
 
@@ -143,7 +166,7 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
 
     Pass ``tracer_provider`` to source the tracer from a specific provider;
     otherwise the globally configured provider is used. The application owns SDK
-    and exporter configuration — this only emits spans.
+    and exporter configuration - this only emits spans.
 
     Raises :class:`ImportError` with an install hint when OpenTelemetry is not
     installed. Returns the registered hook (which is also the value
@@ -183,7 +206,7 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
         # Name from the route template, never the concrete path: an unmatched
         # request (route is None for both 404 and 405) carries an
         # attacker-controlled, high-cardinality path. Fall back to a stable
-        # method-based name — but only for a recognised HTTP method, since the
+        # method-based name - but only for a recognised HTTP method, since the
         # method token is also attacker-controlled (Veloce accepts arbitrary
         # verbs). An unrecognised verb collapses to a single constant so the
         # span name can never explode cardinality. Raw path stays out entirely.
@@ -202,8 +225,8 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
         # Parent the span under the inbound W3C trace context extracted from
         # the request's trace headers (so a distributed trace is continued),
         # if any; otherwise root it in a fresh empty context. Extraction
-        # happens here — in the emit hook that runs on every dispatch path
-        # (success, short-circuit, error) — rather than a before_request hook,
+        # happens here - in the emit hook that runs on every dispatch path
+        # (success, short-circuit, error) - rather than a before_request hook,
         # which an earlier short-circuiting hook could skip. Either way the
         # parent is never the ambient context active when this retroactive
         # hook fires (which would parent under unrelated same-task work).
@@ -221,7 +244,7 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
                 span.set_attribute("http.route", metrics.route)
             span.set_attribute("http.response.status_code", metrics.status_code)
             span.set_attribute("duration_ms", metrics.duration_ms)
-            if metrics.status_code >= 500:
+            if metrics.status_code >= HTTP_500_INTERNAL_SERVER_ERROR:
                 span.set_status(Status(StatusCode.ERROR))
         finally:
             span.end(end_time=end_time)

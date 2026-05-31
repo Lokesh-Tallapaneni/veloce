@@ -1,4 +1,4 @@
-"""JSON-compatible encoding for arbitrary Python objects."""
+"""JSON encoding - convert arbitrary Python objects to JSON-compatible types."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def jsonable_encoder(
     Handles Pydantic models, dataclasses, datetime, Decimal, UUID, Enum, Path,
     sets, frozensets, and nested structures.
 
-    `include` / `exclude` apply to dict keys at **every depth** — passing
+    `include` / `exclude` apply to dict keys at **every depth** - passing
     `exclude={"password"}` strips a `password` key wherever it appears
     in the structure, not only at the top level.
 
@@ -83,7 +83,7 @@ def jsonable_encoder(
     if isinstance(obj, uuid.UUID):
         return str(obj)
 
-    # Cycle detection — only matters for container types that recurse
+    # Cycle detection - only matters for container types that recurse
     # back through `jsonable_encoder`. Allocate the seen-set lazily so
     # leaf-only call graphs pay zero.
     if _seen is None:
@@ -121,7 +121,7 @@ def jsonable_encoder(
                 if exclude and str_key in exclude:
                     continue
                 # Forward the filters into the recursion so nested dicts
-                # honour them too — matches the dataclass branch above.
+                # honour them too - matches the dataclass branch above.
                 result[str_key] = jsonable_encoder(
                     value, include=include, exclude=exclude, _seen=_seen
                 )

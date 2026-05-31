@@ -1,4 +1,4 @@
-"""Path converters — match-time validation and coercion of URL segments.
+"""Path converters - match-time validation and coercion of URL segments.
 
 Two segment syntaxes are accepted: the angle-bracket form
 (`<int:id>`, `<path:p>`, `<any(a,b):x>`) and the brace form
@@ -12,7 +12,7 @@ A converter:
 When a route declares `{name:converter}`, the radix node holding that param
 keeps the converter and applies it during the match traversal. A segment
 the converter rejects causes the router to fall through to the next child
-candidate (next param or wildcard) — which means a typed mismatch is a
+candidate (next param or wildcard) - which means a typed mismatch is a
 **route miss**, not a 422.
 """
 
@@ -46,7 +46,7 @@ _UUID_PATTERN = (
 # Un-anchored regex fragments for the built-in converters. A bare `{name}`
 # (no converter) and the `str`/`string` converters both match one non-slash
 # segment. `path` is greedy and crosses slashes. These feed the regex
-# fallback only — the radix fast path never consults them.
+# fallback only - the radix fast path never consults them.
 _BUILTIN_REGEX: dict[str, str] = {
     "str": r"[^/]+",
     "string": r"[^/]+",
@@ -62,8 +62,11 @@ _BUILTIN_REGEX: dict[str, str] = {
 _MAX_INT_DIGITS = 20
 
 
+# -- Converters ----------------------------------------------
+
+
 class _Converter:
-    """Base class — subclasses override `match` and may set `greedy`."""
+    """Base class - subclasses override `match` and may set `greedy`."""
 
     __slots__ = ()
     greedy = False
@@ -138,7 +141,7 @@ class UUIDConverter(_Converter):
 
 
 class PathConverter(_Converter):
-    """Greedy converter — consumes the rest of the URL, including slashes."""
+    """Greedy converter - consumes the rest of the URL, including slashes."""
 
     __slots__ = ()
     greedy = True
@@ -162,7 +165,10 @@ class AnyConverter(_Converter):
         return (value in self._choices), value
 
 
-# Public base-class alias — subclass `Converter` to build a custom one.
+# -- Registry and parsing ------------------------------------
+
+
+# Public base-class alias - subclass `Converter` to build a custom one.
 Converter = _Converter
 
 _BUILTIN = {
@@ -174,7 +180,7 @@ _BUILTIN = {
     "path": PathConverter,
 }
 
-# User-registered converters — `register_converter(name, cls)` populates
+# User-registered converters - `register_converter(name, cls)` populates
 # this; `parse_converter` consults it after the built-ins.
 _CUSTOM: dict[str, type[_Converter]] = {}
 
@@ -185,7 +191,7 @@ def register_converter(name: str, converter_cls: type[_Converter]) -> None:
     After `register_converter("slug", SlugConverter)`, routes may use
     `{post:slug}` and the radix tree validates/coerces the segment via
     `SlugConverter().match(...)`. `converter_cls` must subclass
-    `Converter` (= `_Converter`). A built-in name cannot be shadowed —
+    `Converter` (= `_Converter`). A built-in name cannot be shadowed -
     that raises `ValueError`.
     """
     if name in _BUILTIN:
@@ -198,7 +204,7 @@ def register_converter(name: str, converter_cls: type[_Converter]) -> None:
 def parse_converter(spec: str | None) -> _Converter:
     """Build a converter from the `:spec` portion of `{name:spec}`.
 
-    `None` or empty `spec` → StringConverter (the default).
+    `None` or empty `spec` -> StringConverter (the default).
     Unknown specs raise `ValueError` at route-registration time, never at
     match time. Custom converters registered via `register_converter`
     are consulted after the built-ins.
@@ -219,6 +225,9 @@ def parse_converter(spec: str | None) -> _Converter:
     return cls()
 
 
+# -- Regex-path classification and compilation ---------------
+
+
 # Names the radix tree can express natively. A converter spec outside this
 # set (a raw regex like `[0-9]+`) forces the route onto the regex fallback.
 _TREE_EXPRESSIBLE = frozenset(_BUILTIN)
@@ -233,7 +242,7 @@ class _Placeholder:
     """One `{...}` placeholder located in a path: its span, name, and spec.
 
     `spec` is the text after the first `:` (or `None` for a bare `{name}`),
-    and may itself carry regex braces — `{id:[0-9]{2}}` yields spec `[0-9]{2}`.
+    and may itself carry regex braces - `{id:[0-9]{2}}` yields spec `[0-9]{2}`.
     """
 
     __slots__ = ("start", "end", "name", "spec")
@@ -271,7 +280,7 @@ def _iter_placeholders(text: str) -> list[_Placeholder]:
                 depth -= 1
             j += 1
         if depth:
-            # Unbalanced brace — leave the rest as literal text.
+            # Unbalanced brace - leave the rest as literal text.
             break
         inner = text[i + 1 : j - 1]
         name, sep, spec = inner.partition(":")
@@ -306,9 +315,9 @@ def _validate_bare_word_spec(spec: str | None) -> None:
     (`/v{version:bogus}/api`). Two cases must raise at registration rather than
     silently miscompile into literal regex:
 
-    - an unknown-converter typo (`{version:bogus}`) — the same `ValueError`
+    - an unknown-converter typo (`{version:bogus}`) - the same `ValueError`
       the radix path raises via `parse_converter`.
-    - a registered custom converter (`{name:slug}`) — its `match()` has no
+    - a registered custom converter (`{name:slug}`) - its `match()` has no
       regex representation, so `build_route_regex` cannot express it. Emitting
       `(?P<name>slug)` would match the literal text "slug" instead of the
       converter's semantics. Built-in converters and `any(...)` are exempt:
@@ -385,7 +394,7 @@ def extract_regex_converters(path: str) -> dict[str, _Converter]:
     """Return the built-in converter for each placeholder in a regex route.
 
     Bare `{name}` and raw-regex placeholders (`{id:[0-9]+}`) have no built-in
-    converter and are omitted — their matched groups stay as strings. Built-in
+    converter and are omitted - their matched groups stay as strings. Built-in
     specs (`int`, `float`, `uuid`, `path`, `any(...)`) map to the converter the
     radix tree would apply, so `_match_regex` can coerce matched groups to the
     same Python types the tree produces. Custom converters never reach here:

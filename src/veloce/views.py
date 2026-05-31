@@ -1,8 +1,8 @@
-"""Class-based views — `View` base + `MethodView`.
+"""Class-based views - `View` base + `MethodView`.
 
 Two class-based view styles:
 
-`View` — one class, one `dispatch_request`. Override it to handle the
+`View` - one class, one `dispatch_request`. Override it to handle the
 URL however you like (read `request.method` yourself if needed):
 
     class IndexView(View):
@@ -11,7 +11,7 @@ URL however you like (read `request.method` yourself if needed):
 
     app.add_url_rule("/", view_func=IndexView.as_view("index"))
 
-`MethodView` — one async method per HTTP verb, dispatched by method:
+`MethodView` - one async method per HTTP verb, dispatched by method:
 
     class UserView(MethodView):
         async def get(self, request, id: int): ...
@@ -24,7 +24,7 @@ instance is built per request (`init_every_request = True`); set it `False` to r
 `decorators` class list is applied to the generated view function
 outermost-last.
 
-Veloce-specific: handlers must be `async def` — a sync verb method on
+Veloce-specific: handlers must be `async def` - a sync verb method on
 a `MethodView` subclass raises at class-definition time.
 """
 
@@ -33,34 +33,35 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, ClassVar
 
+from veloce._constants import HEADER_ALLOW
 from veloce._internal import _is_async_callable
+from veloce._protocol_constants import HTTP_METHOD_GET
 from veloce.exceptions import MethodNotAllowed
 
-# Standard HTTP method names (RFC 9110 §9.3). Lower-cased because that's
+# Standard HTTP method names (RFC 9110 Sec. 9.3). Lower-cased because that's
 # how methods are spelled on the class; we upper-case for the Allow header.
 _HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
 
 
 class View:
-    """Base class-based view — one `dispatch_request` per class.
+    """Base class-based view - one `dispatch_request` per class.
 
     Subclasses override `dispatch_request`. Class attributes:
 
-    - `methods` — the HTTP verbs this view answers (advisory; used by
+    - `methods` - the HTTP verbs this view answers (advisory; used by
       the router / OpenAPI introspection).
-    - `decorators` — decorators applied to the generated view function,
+    - `decorators` - decorators applied to the generated view function,
       innermost-first (the last entry wraps outermost).
-    - `init_every_request` — when True (default) a fresh instance is
+    - `init_every_request` - when True (default) a fresh instance is
       built for each request; when False one instance is reused.
     """
 
     methods: ClassVar[list[str] | None] = None
+    # Shared mutable default: subclasses that want their own decorator chain
+    # must assign a fresh list (`decorators = [auth]`) rather than mutating
+    # this one in place, or every view class would share the same list.
     decorators: ClassVar[list[Callable]] = []
     init_every_request: ClassVar[bool] = True
-
-    async def dispatch_request(self, *args: Any, **kwargs: Any) -> Any:
-        """Handle the request — subclasses must override."""
-        raise NotImplementedError(f"{type(self).__name__} must implement dispatch_request()")
 
     @classmethod
     def as_view(cls, name: str, *class_args: Any, **class_kwargs: Any) -> Callable:
@@ -97,13 +98,17 @@ class View:
         """The HTTP verbs this view advertises. Base `View` uses `methods`."""
         if cls.methods is not None:
             return [m.upper() for m in cls.methods]
-        return ["GET"]
+        return [HTTP_METHOD_GET]
+
+    async def dispatch_request(self, *args: Any, **kwargs: Any) -> Any:
+        """Handle the request - subclasses must override."""
+        raise NotImplementedError(f"{type(self).__name__} must implement dispatch_request()")
 
 
 class MethodView(View):
     """Class-based view dispatching one async method per HTTP verb.
 
-    Subclasses define `get` / `post` / … as `async def`. `methods` is
+    Subclasses define `get` / `post` / ... as `async def`. `methods` is
     inferred from the defined verbs unless set explicitly.
     """
 
@@ -137,6 +142,6 @@ class MethodView(View):
         if handler is None:
             raise MethodNotAllowed(
                 detail=f"Method {method.upper()} not allowed",
-                headers={"Allow": ", ".join(self._allowed_methods())},
+                headers={HEADER_ALLOW: ", ".join(self._allowed_methods())},
             )
         return await handler(*args, **kwargs)

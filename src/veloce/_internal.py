@@ -1,18 +1,18 @@
-"""Semi-public internal utilities — shared across subpackages, not part of the public API.
+"""Semi-public internal utilities - shared across subpackages, not part of the public API.
 
 The codebase guardrail in ``.claude/rules/development-guardrails.md`` under
 "Cross-Subpackage Imports" forbids importing underscore-prefixed symbols
 across subpackage boundaries. This module is the documented carve-out:
 symbols defined here (``_reject_header_crlf``, ``_file_etag``, ``_b64encode``,
 ``_is_async_callable``, ``_extract_host``, and the MIME / status-phrase
-constants) ARE permitted to be imported from any subpackage —
+constants) ARE permitted to be imported from any subpackage -
 ``http/``, ``middleware/``, ``security/``, ``serving/``, ``contrib/``,
-``routing/`` — because they are explicitly internal-to-the-framework
+``routing/`` - because they are explicitly internal-to-the-framework
 helpers with a stable contract.
 
 The leading underscore signals "not for users"; this module's existence
 and docstring signal "stable for internal use across the framework".
-External users must not depend on these symbols — they are not in
+External users must not depend on these symbols - they are not in
 ``veloce/__init__.py``'s ``__all__`` and may change in any release.
 
 When adding a new helper here, it must be (a) genuinely needed by two
@@ -32,12 +32,23 @@ from collections.abc import Callable
 from http import HTTPStatus
 from typing import Any
 
-MIME_JSON = "application/json"
-MIME_HTML = "text/html; charset=utf-8"
-MIME_PLAIN = "text/plain; charset=utf-8"
-MIME_OCTET = "application/octet-stream"
+from veloce._constants import (
+    MIME_JSON as MIME_JSON,
+)
+from veloce._constants import (
+    MIME_OCTET_STREAM,
+    MIME_TEXT_HTML_UTF8,
+    MIME_TEXT_PLAIN_UTF8,
+    MSG_LABEL_HEADER_NAME,
+    MSG_LABEL_SET_COOKIE_VALUE,
+)
+from veloce._protocol_constants import SET_COOKIE_JOINER
 
-# Reason-phrase lookup — `HTTPStatus(code).phrase` walks the IntEnum on
+MIME_HTML = MIME_TEXT_HTML_UTF8
+MIME_PLAIN = MIME_TEXT_PLAIN_UTF8
+MIME_OCTET = MIME_OCTET_STREAM
+
+# Reason-phrase lookup - `HTTPStatus(code).phrase` walks the IntEnum on
 # every access. Build the mapping once at import time.
 _STATUS_PHRASES: dict[int, str] = {s.value: s.phrase for s in HTTPStatus}
 
@@ -46,8 +57,8 @@ def _reject_header_crlf(value: str, what: str) -> str:
     """Reject CR, LF, or NUL in a header field name or value.
 
     Untrusted data carrying these characters enables HTTP response
-    splitting / header injection. Raising — rather than silently
-    stripping — surfaces the bug at the offending call site.
+    splitting / header injection. Raising - rather than silently
+    stripping - surfaces the bug at the offending call site.
     """
     if "\r" in value or "\n" in value or "\x00" in value:
         raise ValueError(f"{what} contains an illegal control character (CR, LF, or NUL)")
@@ -90,11 +101,11 @@ def _encode_response_head(
         if key.lower() == "set-cookie":
             # One `Set-Cookie` dict entry may carry several cookies joined
             # by the internal separator; emit and CRLF-validate each line.
-            for line in str(value).split("\r\nSet-Cookie: "):
-                _reject_header_crlf(line, "Set-Cookie value")
+            for line in str(value).split(SET_COOKIE_JOINER):
+                _reject_header_crlf(line, MSG_LABEL_SET_COOKIE_VALUE)
                 parts.append(f"Set-Cookie: {line}\r\n")
         else:
-            _reject_header_crlf(str(key), "header name")
+            _reject_header_crlf(str(key), MSG_LABEL_HEADER_NAME)
             _reject_header_crlf(str(value), f"{key} header value")
             parts.append(f"{key}: {value}\r\n")
     return parts
@@ -103,11 +114,11 @@ def _encode_response_head(
 def _file_etag(path: str, size: int, mtime: float) -> str:
     """Weak, opaque-quoted ETag derived from (path, size, mtime).
 
-    RFC 9110 §8.8.3 — entity-tags must be marked weak (`W/`) when they
+    RFC 9110 Sec. 8.8.3 - entity-tags must be marked weak (`W/`) when they
     do not guarantee byte-for-byte identity. mtime-derived tags can
     collide within the same second across content-altering writes, so
     a weak validator is the only spec-compliant choice. Weak compare
-    (§8.8.3.2) still lets `If-None-Match` / `If-Range` work for cache
+    (Sec. 8.8.3.2) still lets `If-None-Match` / `If-Range` work for cache
     revalidation; strict `If-Match` correctly refuses these tags.
     """
     key = f"{path}:{size}:{mtime}".encode()
@@ -115,12 +126,12 @@ def _file_etag(path: str, size: int, mtime: float) -> str:
 
 
 def _etag_matches_weak(server_etag: str, client_token: str) -> bool:
-    """Weak comparison of two ETag tokens per RFC 9110 §8.8.3.2.
+    """Weak comparison of two ETag tokens per RFC 9110 Sec. 8.8.3.2.
 
     Strips surrounding whitespace, an optional `W/` weak marker, and
     the surrounding double quotes on both sides before comparing the
     opaque tags. Returns True when the opaque-tags are equal regardless
-    of weak/strong marking — required for `If-None-Match` and `If-Range`
+    of weak/strong marking - required for `If-None-Match` and `If-Range`
     against weak server validators.
     """
     a = server_etag.strip().removeprefix("W/").strip('"')
@@ -147,7 +158,7 @@ _iscoro_cache: weakref.WeakKeyDictionary[Callable[..., Any], bool] = weakref.Wea
 def _is_async_callable(fn: Callable[..., Any]) -> bool:
     """Memoised `inspect.iscoroutinefunction` for hot-path hook dispatch.
 
-    Also detects class instances whose `__call__` is `async def` —
+    Also detects class instances whose `__call__` is `async def` -
     plain `iscoroutinefunction(instance)` returns False for those.
     """
     try:
@@ -165,7 +176,7 @@ def _is_async_callable(fn: Callable[..., Any]) -> bool:
 def _check_async(fn: Callable[..., Any]) -> bool:
     if inspect.iscoroutinefunction(fn):
         return True
-    # Inspect the bound `__call__` directly — `callable()` would tell us
+    # Inspect the bound `__call__` directly - `callable()` would tell us
     # whether `fn` is callable, not whether its `__call__` is `async def`.
     call = getattr(fn, "__call__", None)  # noqa: B004
     return call is not None and inspect.iscoroutinefunction(call)

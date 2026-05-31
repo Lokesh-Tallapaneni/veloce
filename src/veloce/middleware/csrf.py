@@ -1,4 +1,4 @@
-"""CSRF protection — double-submit-cookie pattern.
+"""CSRF protection - double-submit-cookie pattern.
 
 Spec anchors:
 - OWASP CSRF Cheat Sheet (Double Submit Cookie pattern, 2024 revision)
@@ -9,14 +9,14 @@ defences (the other being the synchronizer-token pattern, which
 requires server-side state). It works like this:
 
 1. On every request, the middleware ensures there's a CSRF token in
-   a cookie named `csrf_token` (random per session — generated on
+   a cookie named `csrf_token` (random per session - generated on
    first request when missing).
 2. For state-changing methods (`POST`/`PUT`/`PATCH`/`DELETE`), the
    client must echo the cookie value in a header (`X-CSRF-Token` by
    default) **or** in a form field (`csrf_token`). If neither matches
    the cookie, the request is refused with 403.
 3. Safe methods (`GET`/`HEAD`/`OPTIONS`/`TRACE`) bypass the check
-   entirely — RFC 9110 §9.2.1 spec semantics: they MUST NOT have
+   entirely - RFC 9110 Sec. 9.2.1 spec semantics: they MUST NOT have
    side effects.
 
 The defence works because a cross-site request can't read the
@@ -25,24 +25,24 @@ matching header / form field. SameSite=Lax/Strict cookies are
 additional belt-and-braces.
 
 Veloce-specific knobs:
-- `cookie_name` / `header_name` / `form_field` — rename the slots.
-- `safe_methods` — override the bypass set.
-- `cookie_secure` / `cookie_httponly` / `cookie_samesite` — cookie
+- `cookie_name` / `header_name` / `form_field` - rename the slots.
+- `safe_methods` - override the bypass set.
+- `cookie_secure` / `cookie_httponly` / `cookie_samesite` - cookie
   attribute flags. Default `httponly=False` is required (the
   *client-side* JS must read the cookie to echo it in the header);
   `secure` defaults to `True` so the cookie is never sent over plain
-  HTTP — pass `cookie_secure=False` for local HTTP development.
-- `secret` — when set, the token in the cookie is HMAC-signed. The
+  HTTP - pass `cookie_secure=False` for local HTTP development.
+- `secret` - when set, the token in the cookie is HMAC-signed. The
   double-submit equality check still applies; the signature additionally
   proves the value was minted by this server, so an attacker who can
   plant a cookie but cannot obtain a server-issued token (network/HTTP
   cookie injection, a cookie-writing sibling subdomain) is refused.
   Signing alone does **not** stop an attacker who can obtain their own
-  valid token — bind the token to the authenticated session for that.
-- `max_age` — when set together with `secret`, a signed token older
+  valid token - bind the token to the authenticated session for that.
+- `max_age` - when set together with `secret`, a signed token older
   than this many seconds is rejected, bounding how long a leaked token
   stays replayable.
-- `token_factory` — overridable for tests; default
+- `token_factory` - overridable for tests; default
   `secrets.token_urlsafe(32)`.
 """
 
@@ -52,6 +52,18 @@ import secrets
 from typing import Any
 
 from veloce import status
+from veloce._constants import (
+    HEADER_CONTENT_TYPE,
+    HEADER_X_CSRF_TOKEN,
+    MIME_FORM_URLENCODED,
+    MIME_MULTIPART_FORM_DATA,
+)
+from veloce._protocol_constants import (
+    HTTP_METHOD_GET,
+    HTTP_METHOD_HEAD,
+    HTTP_METHOD_OPTIONS,
+    HTTP_METHOD_TRACE,
+)
 from veloce.http.request import Request
 from veloce.http.response import JSONResponse, Response
 from veloce.middleware.base import Middleware
@@ -64,9 +76,14 @@ class CSRFMiddleware(Middleware):
     def __init__(
         self,
         cookie_name: str = "csrf_token",
-        header_name: str = "X-CSRF-Token",
+        header_name: str = HEADER_X_CSRF_TOKEN,
         form_field: str = "csrf_token",
-        safe_methods: tuple[str, ...] = ("GET", "HEAD", "OPTIONS", "TRACE"),
+        safe_methods: tuple[str, ...] = (
+            HTTP_METHOD_GET,
+            HTTP_METHOD_HEAD,
+            HTTP_METHOD_OPTIONS,
+            HTTP_METHOD_TRACE,
+        ),
         cookie_secure: bool = True,
         cookie_httponly: bool = False,
         cookie_samesite: str = "Lax",
@@ -118,10 +135,10 @@ class CSRFMiddleware(Middleware):
         if self._matches(header_val, cookie_val):
             return None
         # Fall back to form-field check. Only consult `request.form` when
-        # the body looks form-shaped — JSON / multipart-without-form-field
+        # the body looks form-shaped - JSON / multipart-without-form-field
         # paths shouldn't fail the check on a parse error.
-        ct = request.headers.get("content-type", "")
-        if "application/x-www-form-urlencoded" in ct or "multipart/form-data" in ct:
+        ct = request.headers.get(HEADER_CONTENT_TYPE, "")
+        if MIME_FORM_URLENCODED in ct or MIME_MULTIPART_FORM_DATA in ct:
             try:
                 form = await request.form()
             except Exception:
@@ -132,20 +149,13 @@ class CSRFMiddleware(Middleware):
 
         return self._forbidden("CSRF token mismatch")
 
-    @staticmethod
-    def _matches(candidate: object, cookie_val: str) -> bool:
-        # Constant-time equality, gated on the candidate being a string so
-        # multipart UploadFile parts and missing fields don't reach
-        # `compare_digest` (which would raise on non-bytes/str).
-        return isinstance(candidate, str) and secrets.compare_digest(candidate, cookie_val)
-
     async def process_response(self, request: Request, response: Response) -> Response:
         """Set or rotate the CSRF cookie."""
         existing = request._state.get("_csrf_cookie") if request._state else None
         # `rotate_csrf_token()` sets this sentinel on the request state to
         # force a fresh token regardless of an existing cookie. Without
         # this, an anonymous session's CSRF cookie would persist across
-        # login — a session-fixation pathway.
+        # login - a session-fixation pathway.
         force_rotate = bool(request._state.get("_csrf_rotate") if request._state else False)
         if existing and not force_rotate:
             return response
@@ -161,6 +171,13 @@ class CSRFMiddleware(Middleware):
             samesite=self.cookie_samesite,
         )
         return response
+
+    @staticmethod
+    def _matches(candidate: object, cookie_val: str) -> bool:
+        # Constant-time equality, gated on the candidate being a string so
+        # multipart UploadFile parts and missing fields don't reach
+        # `compare_digest` (which would raise on non-bytes/str).
+        return isinstance(candidate, str) and secrets.compare_digest(candidate, cookie_val)
 
     def _forbidden(self, detail: str) -> Response:
         return JSONResponse(

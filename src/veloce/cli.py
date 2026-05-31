@@ -2,13 +2,13 @@
 
 Two subcommands today:
 
-- `veloce run app:app [--host --port --reload --workers]` — boot the
+- `veloce run app:app [--host --port --reload --workers]` - boot the
   app under uvicorn using a familiar, minimal command surface.
-- `veloce routes app:app` — print the route table (method, path, name).
+- `veloce routes app:app` - print the route table (method, path, name).
   Useful for sanity-checking a blueprint mount without `curl`ing each
   path.
 
-Built on `argparse` (stdlib) — keeps the dep surface small. The
+Built on `argparse` (stdlib) - keeps the dep surface small. The
 "module:attribute" reference syntax is the same one ASGI servers use,
 so the same string passed to `--app` works with `uvicorn` directly.
 
@@ -32,7 +32,10 @@ import sys
 import warnings
 from typing import Any
 
+from veloce._constants import MSG_APP_REFERENCE_FORM
 from veloce.config import _parse_env_lines
+
+# -- Constants -----------------------------------------------
 
 # Default dotenv filename auto-loaded by `run`/`shell`/`custom` when the
 # file exists in the CWD and `--no-env-file` was not passed.
@@ -49,9 +52,12 @@ _DEFAULT_ENV_FILE = ".env"
 _COMMAND_ENTRY_POINT_GROUP = "veloce.commands"
 
 
+# -- Shared helpers ------------------------------------------
+
+
 def _resolve_version() -> str:
     # Avoid `from veloce import __version__` so `veloce --version` does not
-    # drag the entire framework (router, middleware, security, sse, …) into
+    # drag the entire framework (router, middleware, security, sse, ...) into
     # sys.modules just to print a string. Fallback must mirror the one in
     # `veloce/__init__.py` for editable installs without resolved metadata.
     try:
@@ -92,7 +98,7 @@ def _apply_env_file(args: argparse.Namespace) -> None:
 
     Subcommands that import user code (`run`, `shell`, `custom`) call
     this first so config read at import time sees the file's values.
-    A real environment variable always wins — keys already present in
+    A real environment variable always wins - keys already present in
     `os.environ` are never overwritten. With `--no-env-file` nothing is
     loaded. An explicit `--env-file PATH` that is missing is an error;
     the auto-discovered default `.env` is loaded only when it exists.
@@ -110,17 +116,32 @@ def _apply_env_file(args: argparse.Namespace) -> None:
         return  # auto-discovery: an absent default `.env` is fine
     except OSError as err:
         # Permission denied, "is a directory", etc. are real failures even
-        # for the auto-discovered default — never boot with silent loss.
+        # for the auto-discovered default - never boot with silent loss.
         raise SystemExit(f"Could not read env file {path!r}: {err}") from err
     for key, value in _parse_env_lines(lines, source=path).items():
         os.environ.setdefault(key, value)
 
 
+def _require_app_attr(app: Any, attr: str, hint: str) -> None:
+    """Raise `SystemExit` with a consistent message when `app` lacks `attr`.
+
+    Centralises the four near-identical guards in `_cmd_shell`,
+    `_cmd_custom`, `_cmd_routes`, and `_cmd_check` so a future rename of
+    `make_shell_context` / `cli` / `routes` / `security_audit` only needs
+    one edit, and the error message stays uniform across subcommands.
+    """
+    if not hasattr(app, attr):
+        raise SystemExit(f"target is not a Veloce app (missing {hint})")
+
+
+# -- Subcommands ---------------------------------------------
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
-    """`veloce run` — hand the app off to uvicorn."""
+    """`veloce run` - hand the app off to uvicorn."""
     try:
         import uvicorn
-    except ImportError as err:  # pragma: no cover — only on broken envs
+    except ImportError as err:  # pragma: no cover - only on broken envs
         raise SystemExit("uvicorn is not installed. Install it with: pip install uvicorn") from err
 
     _apply_env_file(args)
@@ -137,23 +158,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _require_app_attr(app: Any, attr: str, hint: str) -> None:
-    """Raise `SystemExit` with a consistent message when `app` lacks `attr`.
-
-    Centralises the four near-identical guards in `_cmd_shell`,
-    `_cmd_custom`, `_cmd_routes`, and `_cmd_check` so a future rename of
-    `make_shell_context` / `cli` / `routes` / `security_audit` only needs
-    one edit, and the error message stays uniform across subcommands.
-    """
-    if not hasattr(app, attr):
-        raise SystemExit(f"target is not a Veloce app (missing {hint})")
-
-
 def _cmd_shell(args: argparse.Namespace) -> int:
-    """`veloce shell` — drop into a Python REPL with the app loaded.
+    """`veloce shell` - drop into a Python REPL with the app loaded.
 
     Surfaces `app` and `g` plus anything `@app.shell_context_processor`
-    contributes. Uses `code.interact` so the shell is stdlib-only — no
+    contributes. Uses `code.interact` so the shell is stdlib-only - no
     IPython dependency. Inside an `app_context()` so `current_app` and
     `g` resolve as if a request were active.
     """
@@ -166,7 +175,7 @@ def _cmd_shell(args: argparse.Namespace) -> int:
     with app.app_context():
         ctx = app.make_shell_context()
         banner = (
-            f"Veloce shell — {getattr(app, 'title', 'app')!r} loaded as `app`.\n"
+            f"Veloce shell - {getattr(app, 'title', 'app')!r} loaded as `app`.\n"
             f"Locals: {', '.join(sorted(ctx))}"
         )
         code.interact(banner=banner, local=ctx)
@@ -174,7 +183,7 @@ def _cmd_shell(args: argparse.Namespace) -> int:
 
 
 def _cmd_custom(args: argparse.Namespace) -> int:
-    """`veloce custom app:app -- ...args...` — run an app.cli command.
+    """`veloce custom app:app -- ...args...` - run an app.cli command.
 
     Drops into the app's Click group (built lazily from
     `@app.cli.command(...)` decorators) inside an `app.app_context()` so
@@ -197,7 +206,7 @@ def _cmd_custom(args: argparse.Namespace) -> int:
 
 
 def _cmd_routes(args: argparse.Namespace) -> int:
-    """`veloce routes` — print the route table."""
+    """`veloce routes` - print the route table."""
     app = _load_app(args.app)
     _require_app_attr(app, "routes", "`.routes` property")
 
@@ -206,7 +215,7 @@ def _cmd_routes(args: argparse.Namespace) -> int:
         print("No routes registered.")
         return 0
 
-    # Compute column widths from the data — no fixed-width truncation.
+    # Compute column widths from the data - no fixed-width truncation.
     method_w = max(len(r["method"]) for r in rows + [{"method": "METHOD"}])
     path_w = max(len(r["path"]) for r in rows + [{"path": "PATH"}])
     name_w = max(len(str(r.get("name") or "")) for r in rows + [{"name": "NAME"}])
@@ -222,7 +231,7 @@ def _cmd_routes(args: argparse.Namespace) -> int:
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
-    """`veloce check` — run a pre-deploy security audit of the app."""
+    """`veloce check` - run a pre-deploy security audit of the app."""
     app = _load_app(args.app)
     _require_app_attr(app, "security_audit", "`.security_audit()`")
 
@@ -234,6 +243,9 @@ def _cmd_check(args: argparse.Namespace) -> int:
     for warning in warnings:
         print(f"  - {warning}")
     return 1
+
+
+# -- Parser construction -------------------------------------
 
 
 def _add_env_file_args(p: argparse.ArgumentParser) -> None:
@@ -262,8 +274,8 @@ def _split_custom_argv(argv: list[str]) -> tuple[list[str], list[str] | None]:
     verbatim. `argparse.REMAINDER` cannot express this: it begins capturing
     at the first token after `app`, so a trailing `--env-file` would be
     swallowed into the forwarded args and the dotenv file would never load.
-    We therefore peel the tail off ourselves — greedily consuming only the
-    env-file flags after `app` — and let argparse parse just the head. An
+    We therefore peel the tail off ourselves - greedily consuming only the
+    env-file flags after `app` - and let argparse parse just the head. An
     explicit `--` ends the flag region and is dropped from the forwarded
     args (POSIX convention).
 
@@ -275,7 +287,7 @@ def _split_custom_argv(argv: list[str]) -> tuple[list[str], list[str] | None]:
         return argv, None
     # Locate the `app` positional: the first non-flag token after `custom`.
     # A space-separated `--env-file PATH` placed before `app` consumes its
-    # value token, so skip that value too — otherwise PATH is mistaken for
+    # value token, so skip that value too - otherwise PATH is mistaken for
     # the app reference and the real reference is pushed into the tail.
     idx = 1
     while idx < len(argv) and argv[idx].startswith("-") and argv[idx] != "--":
@@ -284,7 +296,7 @@ def _split_custom_argv(argv: list[str]) -> tuple[list[str], list[str] | None]:
         else:
             idx += 1
     if idx >= len(argv):
-        return argv, None  # no `app` — let argparse report the error
+        return argv, None  # no `app` - let argparse report the error
     head = argv[: idx + 1]  # ["custom", ..., "app"]
     rest = argv[idx + 1 :]
     # Consume env-file flags that precede the forwarded command.
@@ -317,7 +329,7 @@ def _iter_command_entry_points() -> list[importlib.metadata.EntryPoint]:
     """
     try:
         return list(importlib.metadata.entry_points().select(group=_COMMAND_ENTRY_POINT_GROUP))
-    except Exception:  # pragma: no cover — corrupt distribution metadata
+    except Exception:  # pragma: no cover - corrupt distribution metadata
         return []
 
 
@@ -332,7 +344,7 @@ def _rollback_subparsers(
     and then raises (or never sets a `func`) leaves entries in the
     subparsers action's `choices` map and its help-listing actions. This
     deletes every parser added since `keep` was snapshotted so the
-    documented "warn and skip" guarantee holds — a failed plugin leaves the
+    documented "warn and skip" guarantee holds - a failed plugin leaves the
     parser exactly as it was before the plugin ran.
     """
     for name in [n for n in sub.choices if n not in keep]:
@@ -358,12 +370,12 @@ def _load_plugin_command(
     default) to it. Plugins are isolated from the core: a plugin that fails
     to import, does not load to a callable, raises while registering, leaves
     no `func` default, or whose name collides with a built-in is warned
-    about and skipped — and any parser it partially registered is rolled
-    back — so the built-in commands always remain usable.
+    about and skipped - and any parser it partially registered is rolled
+    back - so the built-in commands always remain usable.
     """
     if name in reserved:
         # A plugin may not shadow a built-in. Warn that the entry point is
-        # being skipped — but do not load it: the built-in handles this name.
+        # being skipped - but do not load it: the built-in handles this name.
         for ep in _iter_command_entry_points():
             if ep.name == name:
                 warnings.warn(
@@ -375,7 +387,7 @@ def _load_plugin_command(
     # Entry points are sorted (see `_iter_command_entry_points`), so the
     # candidates for this name are enumerated in a stable order. The first
     # one that registers a runnable command wins; any further entry point
-    # sharing the name is a collision — warn and skip it deterministically
+    # sharing the name is a collision - warn and skip it deterministically
     # so behaviour never depends on install order.
     # Sort candidates by (name, value) so precedence and the collision warning
     # are deterministic regardless of entry-point iteration / install order.
@@ -396,7 +408,7 @@ def _load_plugin_command(
         # import or registration. The boundary swallows everything and skips.
         try:
             register = ep.load()
-        except BaseException as err:  # noqa: BLE001 — a bad plugin must not break the CLI
+        except BaseException as err:  # noqa: BLE001 - a bad plugin must not break the CLI
             warnings.warn(
                 f"veloce CLI plugin {name!r} (from {ep.value!r}) failed to load: {err!r}; "
                 "skipping.",
@@ -412,7 +424,7 @@ def _load_plugin_command(
         existing = frozenset(sub.choices)
         try:
             register(sub)
-        except BaseException as err:  # noqa: BLE001 — a bad plugin must not break the CLI
+        except BaseException as err:  # noqa: BLE001 - a bad plugin must not break the CLI
             _rollback_subparsers(sub, keep=existing)
             warnings.warn(
                 f"veloce CLI plugin {name!r} (from {ep.value!r}) raised while registering: "
@@ -468,7 +480,7 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     """
     parser = _VeloceArgumentParser(
         prog="veloce",
-        description="Veloce — ultra-fast async Python web framework.",
+        description="Veloce - ultra-fast async Python web framework.",
     )
     parser.add_argument(
         "--version",
@@ -479,7 +491,7 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_run = sub.add_parser("run", help="Run the app under uvicorn.")
-    p_run.add_argument("app", help="App reference in 'module:attribute' form.")
+    p_run.add_argument("app", help=MSG_APP_REFERENCE_FORM)
     p_run.add_argument("--host", default="127.0.0.1")
     p_run.add_argument("--port", type=int, default=8000)
     p_run.add_argument("--reload", action="store_true", help="Auto-reload on code changes.")
@@ -489,15 +501,15 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     p_run.set_defaults(func=_cmd_run)
 
     p_routes = sub.add_parser("routes", help="Print the route table.")
-    p_routes.add_argument("app", help="App reference in 'module:attribute' form.")
+    p_routes.add_argument("app", help=MSG_APP_REFERENCE_FORM)
     p_routes.set_defaults(func=_cmd_routes)
 
     p_check = sub.add_parser("check", help="Run a pre-deploy security audit.")
-    p_check.add_argument("app", help="App reference in 'module:attribute' form.")
+    p_check.add_argument("app", help=MSG_APP_REFERENCE_FORM)
     p_check.set_defaults(func=_cmd_check)
 
     p_shell = sub.add_parser("shell", help="Interactive Python shell with the app loaded.")
-    p_shell.add_argument("app", help="App reference in 'module:attribute' form.")
+    p_shell.add_argument("app", help=MSG_APP_REFERENCE_FORM)
     _add_env_file_args(p_shell)
     p_shell.set_defaults(func=_cmd_shell)
 
@@ -505,7 +517,7 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
         "custom",
         help="Run an app.cli (Click) command defined on the app.",
     )
-    p_custom.add_argument("app", help="App reference in 'module:attribute' form.")
+    p_custom.add_argument("app", help=MSG_APP_REFERENCE_FORM)
     _add_env_file_args(p_custom)
     # The forwarded Click argv is peeled off after a literal `--` by
     # `_VeloceArgumentParser.parse_known_args`; argparse only ever sees the
@@ -515,11 +527,14 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     # Built-in names are reserved; a plugin may not shadow them. `sub.choices`
     # holds every subparser registered above, so it stays correct as commands
     # are added or removed without a hand-maintained list. Only the selected
-    # plugin command (if any) is loaded — never the whole entry-point group.
+    # plugin command (if any) is loaded - never the whole entry-point group.
     if plugin_command is not None:
         _load_plugin_command(sub, reserved=frozenset(sub.choices), name=plugin_command)
 
     return parser
+
+
+# -- Entry point ---------------------------------------------
 
 
 def _candidate_plugin_command(argv: list[str] | None) -> str | None:
@@ -528,12 +543,12 @@ def _candidate_plugin_command(argv: list[str] | None) -> str | None:
     Plugin discovery must never run before argv is validated. A PLUGIN-FREE
     parser vets the whole argv first:
 
-    - parse succeeds → a built-in was selected; no plugin needed → `None`.
+    - parse succeeds -> a built-in was selected; no plugin needed -> `None`.
     - argparse exits for `-h`/`--help`/`-V`/`--version` (exit 0), a bad
-      option, or a bad value → those must not load plugins → `None` (the real
+      option, or a bad value -> those must not load plugins -> `None` (the real
       parse in `main` reproduces the identical exit/usage).
     - argparse exits with a usage error (code 2) AND the first positional
-      token is an unknown command name → that name is a plugin candidate.
+      token is an unknown command name -> that name is a plugin candidate.
 
     The first-positional check runs only inside the code-2 branch, after
     argparse has already rejected the argv, so a malformed argv never reaches
@@ -541,7 +556,7 @@ def _candidate_plugin_command(argv: list[str] | None) -> str | None:
     before it is a recognised global option), never an option's value.
 
     This probe is SILENT: argparse prints usage/help/version before raising
-    `SystemExit`, and the real parse in `main` prints the canonical message —
+    `SystemExit`, and the real parse in `main` prints the canonical message -
     so the probe's own output is suppressed to avoid emitting it twice.
     """
     strict = build_parser(plugin_command=None)
@@ -550,7 +565,7 @@ def _candidate_plugin_command(argv: list[str] | None) -> str | None:
             strict.parse_args(argv)
     except SystemExit as exit_err:
         if exit_err.code != 2:
-            return None  # help / version — not an error, not a plugin
+            return None  # help / version - not an error, not a plugin
         tokens = sys.argv[1:] if argv is None else list(argv)
         candidate = _first_positional(tokens)
         if candidate is not None and candidate not in _builtin_command_names():
@@ -563,7 +578,7 @@ def _first_positional(tokens: list[str]) -> str | None:
     """First bare token, provided every preceding token is a global option.
 
     Returns `None` if a non-global option appears first (so an unknown global
-    flag like `--bogus` is never mistaken for — nor allowed to mask — a
+    flag like `--bogus` is never mistaken for - nor allowed to mask - a
     command name).
     """
     for token in tokens:
@@ -579,7 +594,7 @@ def _first_positional(tokens: list[str]) -> str | None:
 def _builtin_command_names() -> frozenset[str]:
     """The built-in subcommand names, read once from the plugin-free parser.
 
-    Cached because the built-in command set is fixed for the process — the
+    Cached because the built-in command set is fixed for the process - the
     plugin-free parser always has the same shape, so there is nothing to
     stale-cache. Reads `parser._actions` / `argparse._SubParsersAction`, which
     are private argparse internals: stable across CPython 3.x but not part of
@@ -598,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for the veloce CLI."""
     # First pass (plugin-free) validates argv; only a clean, unknown subcommand
     # becomes a plugin candidate. `-h`, `--version`, and invalid argv never
-    # load a plugin — they fall straight through to the real parse below.
+    # load a plugin - they fall straight through to the real parse below.
     plugin_command = _candidate_plugin_command(argv)
     parser = build_parser(plugin_command=plugin_command)
     args = parser.parse_args(argv)

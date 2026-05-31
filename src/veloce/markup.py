@@ -1,4 +1,4 @@
-"""HTML-safe string utilities — `Markup` and `escape`.
+"""HTML-safe string utilities - `Markup` and `escape`.
 
 `Markup` is a `str` subclass that signals "already-escaped". Templating
 engines (Jinja2) check `__html__()` to decide whether to re-escape:
@@ -10,13 +10,21 @@ the value already implements `__html__` (e.g. a `Markup` instance or
 any object claiming pre-escaped output), the result of that method is
 wrapped instead.
 
-Spec: WHATWG HTML §13 — the five HTML-significant characters
+Spec: WHATWG HTML Sec. 13 - the five HTML-significant characters
 (`& < > " '`) become their named or numeric character references.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+
+def _arg_to_safe(arg: Any) -> Any:
+    if hasattr(arg, "__html__"):
+        return Markup(arg)
+    if isinstance(arg, str):
+        return escape(arg)
+    return arg
 
 
 class Markup(str):
@@ -59,14 +67,6 @@ class Markup(str):
         return f"Markup({str.__repr__(self)})"
 
 
-def _arg_to_safe(arg: Any) -> Any:
-    if hasattr(arg, "__html__"):
-        return Markup(arg)
-    if isinstance(arg, str):
-        return escape(arg)
-    return arg
-
-
 # Pre-compute the translation table once.
 _HTML_ESCAPE_TABLE = str.maketrans(
     {
@@ -85,7 +85,7 @@ def escape(value: Any) -> Markup:
     Objects that implement `__html__()` are trusted: their return is
     wrapped as-is. Otherwise the value is `str()`-coerced and the five
     HTML-significant characters are replaced with numeric character
-    references (per WHATWG HTML §13).
+    references (per WHATWG HTML Sec. 13).
     """
     if hasattr(value, "__html__"):
         return Markup(value.__html__())

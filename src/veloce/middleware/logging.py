@@ -1,18 +1,31 @@
-"""Request logging and request-ID middleware."""
+"""Logging middleware - request/response access logging and request IDs."""
 
 from __future__ import annotations
 
 import logging
 import time
 import uuid
+from typing import TYPE_CHECKING
 
-from veloce.http.request import Request
-from veloce.http.response import Response
+from veloce._constants import HEADER_X_REQUEST_ID
 from veloce.middleware.base import Middleware
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.http.request import Request
+    from veloce.http.response import Response
 
 
 class LoggingMiddleware(Middleware):
     """Structured request/response access logging."""
+
+    # Stash the start timestamp on the request itself rather than in a
+    # middleware-owned dict keyed by id(request). A handler exception
+    # used to leave the entry in the dict forever (memory leak), and
+    # CPython can recycle id()s of GC'd requests for unrelated objects
+    # - a future request could read a stale timestamp and log
+    # nonsensical durations. Tying the start time to the request's
+    # lifetime sidesteps both problems.
+    _START_KEY = "__veloce_logging_start"
 
     def __init__(self, logger: logging.Logger | None = None) -> None:
         if logger is None:
@@ -43,19 +56,10 @@ class LoggingMiddleware(Middleware):
         else:
             self.logger = logger
 
-    # Stash the start timestamp on the request itself rather than in a
-    # middleware-owned dict keyed by id(request). A handler exception
-    # used to leave the entry in the dict forever (memory leak), and
-    # CPython can recycle id()s of GC'd requests for unrelated objects
-    # — a future request could read a stale timestamp and log
-    # nonsensical durations. Tying the start time to the request's
-    # lifetime sidesteps both problems.
-    _START_KEY = "__veloce_logging_start"
-
     async def process_request(self, request: Request) -> Response | None:
         """Record the request start time for duration logging."""
         # Skip the `time.monotonic()` call entirely when the logger is
-        # not actually going to emit anything — the (typically) muted
+        # not actually going to emit anything - the (typically) muted
         # access log is a common production setup, and the clock read
         # is cheap but non-zero.
         if self.logger.isEnabledFor(logging.INFO):
@@ -85,7 +89,7 @@ class LoggingMiddleware(Middleware):
 class RequestIDMiddleware(Middleware):
     """Assign a unique request ID to each request and echo it in the response."""
 
-    def __init__(self, header_name: str = "X-Request-ID") -> None:
+    def __init__(self, header_name: str = HEADER_X_REQUEST_ID) -> None:
         self.header_name = header_name
 
     async def process_request(self, request: Request) -> Response | None:

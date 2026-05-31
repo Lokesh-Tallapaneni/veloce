@@ -1,4 +1,4 @@
-"""Server-Sent Events (SSE) — streaming event responses."""
+"""Server-Sent Events (SSE) - streaming event responses."""
 
 from __future__ import annotations
 
@@ -7,8 +7,20 @@ import math
 from collections.abc import AsyncIterator
 from typing import Any
 
+from veloce._constants import (
+    HEADER_CACHE_CONTROL,
+    HEADER_CONNECTION,
+    HEADER_CONTENT_TYPE,
+    HEADER_TRANSFER_ENCODING,
+    HEADER_VALUE_CHUNKED,
+    HEADER_VALUE_KEEP_ALIVE,
+    HEADER_VALUE_NO_CACHE,
+    HEADER_X_ACCEL_BUFFERING,
+    MIME_TEXT_EVENT_STREAM,
+)
 from veloce._internal import _encode_response_head
 from veloce.http.response import Response
+from veloce.status import HTTP_200_OK
 
 # SSE keep-alive frame: a comment line (colon-prefixed) the spec requires
 # clients to ignore. Sent when no event arrives within the `ping` window
@@ -45,7 +57,7 @@ class ServerSentEvent:
         if self.retry is not None:
             lines.append(f"retry: {self.retry}")
         data = self.data.replace("\r\n", "\n").replace("\r", "\n")
-        # Single-line payloads — by far the common case — skip the
+        # Single-line payloads - by far the common case - skip the
         # `split("\n")` allocation and emit the field directly.
         if "\n" not in data:
             lines.append(f"data: {data}")
@@ -58,7 +70,7 @@ class ServerSentEvent:
 
 
 class EventSourceResponse(Response):
-    """SSE streaming response — sends events over a long-lived connection.
+    """SSE streaming response - sends events over a long-lived connection.
 
     Usage:
         @app.get("/events")
@@ -70,7 +82,7 @@ class EventSourceResponse(Response):
             return EventSourceResponse(generate())
 
     Pass `ping=<seconds>` to emit a keep-alive comment frame whenever no
-    event is produced within that interval — useful for holding idle
+    event is produced within that interval - useful for holding idle
     connections open through proxies that close silent sockets.
     """
 
@@ -81,36 +93,58 @@ class EventSourceResponse(Response):
     def __init__(
         self,
         content: AsyncIterator[ServerSentEvent | str | bytes],
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
         ping: float | None = None,
     ) -> None:
         if ping is not None and not (math.isfinite(ping) and ping > 0):
             # `not finite` rejects NaN (fails every comparison, so `<= 0` lets
             # it slip through) and Infinity (passes `> 0` but is meaningless as
-            # an `asyncio.wait` timeout — the heartbeat would never fire).
+            # an `asyncio.wait` timeout - the heartbeat would never fire).
             raise ValueError(
                 f"ping interval must be a finite positive number of seconds, got {ping!r}"
             )
         hdrs = dict(headers) if headers else {}
         hdrs.update(
             {
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
+                HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
+                HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
+                HEADER_X_ACCEL_BUFFERING: "no",
             }
         )
         super().__init__(
             status_code=status_code,
             body=b"",
-            content_type="text/event-stream",
+            content_type=MIME_TEXT_EVENT_STREAM,
             headers=hdrs,
         )
         self.ping = ping
         # Normalise every yielded item to bytes up front, so the ASGI
         # transport and the raw-socket transport consume an identical
-        # `bytes` stream — see `_encode_stream`.
+        # `bytes` stream - see `_encode_stream`.
         self._stream = self._encode_stream(content)
+
+    async def stream_to(self, transport: Any) -> None:
+        """Stream SSE events to transport."""
+        default_headers = {
+            HEADER_CONTENT_TYPE: self.content_type,
+            HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
+            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
+            HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
+        }
+        parts = _encode_response_head(self.status_code, default_headers, self.headers)
+        parts.append("\r\n")
+        transport.write("".join(parts).encode("latin-1"))
+
+        async for chunk in self._stream:
+            # `_stream` is normalised to bytes by `_encode_stream`.
+            # `writelines` keeps the size-line, payload, and trailer as
+            # separate buffers instead of concatenating them into a fresh
+            # bytes object per chunk.
+            size = format(len(chunk), "x").encode("ascii")
+            transport.writelines((size, b"\r\n", chunk, b"\r\n"))
+
+        transport.write(b"0\r\n\r\n")
 
     def _encode_stream(
         self,
@@ -155,7 +189,7 @@ class EventSourceResponse(Response):
         ping: float,
     ) -> AsyncIterator[bytes]:
         # A single task wraps each `__anext__` so a ping-window timeout
-        # does NOT cancel the in-flight pull — cancelling would throw
+        # does NOT cancel the in-flight pull - cancelling would throw
         # into the generator and kill it. We await the SAME task again
         # on the next loop; it resolves once the source finally yields.
         it = content.__aiter__()
@@ -166,7 +200,7 @@ class EventSourceResponse(Response):
                     pending = asyncio.ensure_future(it.__anext__())
                 done, _ = await asyncio.wait((pending,), timeout=ping)
                 if not done:
-                    # No event within the window — keep the connection warm.
+                    # No event within the window - keep the connection warm.
                     yield _PING_FRAME
                     continue
                 task = pending
@@ -179,25 +213,3 @@ class EventSourceResponse(Response):
         finally:
             if pending is not None:
                 pending.cancel()
-
-    async def stream_to(self, transport: Any) -> None:
-        """Stream SSE events to transport."""
-        default_headers = {
-            "Content-Type": self.content_type,
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Transfer-Encoding": "chunked",
-        }
-        parts = _encode_response_head(self.status_code, default_headers, self.headers)
-        parts.append("\r\n")
-        transport.write("".join(parts).encode("latin-1"))
-
-        async for chunk in self._stream:
-            # `_stream` is normalised to bytes by `_encode_stream`.
-            # `writelines` keeps the size-line, payload, and trailer as
-            # separate buffers instead of concatenating them into a fresh
-            # bytes object per chunk.
-            size = format(len(chunk), "x").encode("ascii")
-            transport.writelines((size, b"\r\n", chunk, b"\r\n"))
-
-        transport.write(b"0\r\n\r\n")
