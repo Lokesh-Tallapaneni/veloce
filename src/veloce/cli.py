@@ -63,7 +63,7 @@ def _resolve_version() -> str:
     try:
         return importlib.metadata.version("veloceframework")
     except importlib.metadata.PackageNotFoundError:
-        return "0.1.4"
+        return "0.2.0"
 
 
 def _load_app(reference: str) -> Any:

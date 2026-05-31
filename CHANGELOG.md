@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-31
+
 Request bodies now stream. The raw HTTP/1.1 server dispatches a handler as
 soon as the request line and headers are parsed and feeds the body in as it
 arrives over a bounded, backpressured queue, instead of buffering the whole
@@ -357,6 +359,13 @@ longer scale memory with body size.
 
 ### Internal
 
+- Source-wide style and constant-centralization pass (behavior-preserving).
+  Modules follow a canonical layout, loggers use `getLogger(__name__)`, and
+  duplicated MIME types, HTTP header names/values, status codes, and
+  ASGI/WebSocket protocol tokens are now defined once in `veloce._constants` /
+  `veloce._protocol_constants` / `veloce.status` and imported, reducing
+  case/typo drift. Docstring em-dashes were normalized to ASCII hyphens. No
+  runtime behavior changed.
 - The raw protocol serves pipelined requests through a per-connection FIFO loop
   (responses preserved in request order), drains-and-discards any body a handler
   leaves unread so keep-alive connections cannot be corrupted by leftover bytes,
