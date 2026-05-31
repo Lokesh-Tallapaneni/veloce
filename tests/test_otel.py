@@ -77,6 +77,25 @@ def _app() -> Veloce:
     return app
 
 
+def _exporter_and_app():
+    """Build an in-memory exporter wired to an instrumented `_app()`."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    app = _app()
+    instrument_with_otel(app, tracer_provider=provider)
+    return exporter, app
+
+
 def test_emits_server_span_per_request() -> None:
     pytest.importorskip("opentelemetry")
     pytest.importorskip("opentelemetry.sdk")
@@ -225,3 +244,123 @@ def test_5xx_marks_span_error() -> None:
     span = spans[0]
     assert span.attributes["http.response.status_code"] == 500
     assert span.status.status_code == StatusCode.ERROR
+
+
+# ── streamed responses are skipped ────────────────────────────────────
+
+
+def test_no_span_for_delayed_streaming_response() -> None:
+    """A streaming body is emitted on the ASGI send path *after* the
+    instrumentation hook fires, so the available timing/status would be wrong.
+    The bridge must skip such records and export no span — even when the
+    stream is artificially delayed between chunks."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    import asyncio
+
+    from veloce.http.response import StreamingResponse
+
+    exporter, app = _exporter_and_app()
+
+    @app.get("/slow-stream")
+    async def slow_stream():
+        async def gen():
+            for i in range(3):
+                await asyncio.sleep(0.01)
+                yield f"chunk-{i}".encode()
+
+        return StreamingResponse(gen())
+
+    resp = app.test_client().get("/slow-stream")
+    assert resp.status_code == 200
+    assert resp.body == b"chunk-0chunk-1chunk-2"
+
+    # The hook fired (the request finished) but the bridge emitted no span.
+    assert exporter.get_finished_spans() == ()
+
+
+def test_no_span_when_stream_fails_mid_body() -> None:
+    """A failure raised after some chunks have been sent cannot be reflected
+    in the post-dispatch metrics record (status was already 200, timing was
+    already taken). The bridge must not export a misleading 'successful' span;
+    skipping streamed records guarantees no span is emitted at all."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from veloce.http.response import StreamingResponse
+
+    exporter, app = _exporter_and_app()
+
+    @app.get("/broken-stream")
+    async def broken_stream():
+        async def gen():
+            yield b"partial"
+            raise RuntimeError("stream blew up mid-body")
+
+        return StreamingResponse(gen())
+
+    # The mid-stream failure propagates out of the ASGI emit path; the request
+    # has already been instrumented (streamed=True) by the time it fires.
+    with pytest.raises(RuntimeError, match="stream blew up mid-body"):
+        app.test_client().get("/broken-stream")
+
+    # No span — a streamed record never produces one, so a half-sent, failed
+    # stream is never exported as a clean 200.
+    assert exporter.get_finished_spans() == ()
+
+
+# ── unmatched requests use a low-cardinality fallback name ─────────────
+
+
+def test_404_emits_no_raw_path_in_span_name_or_attributes() -> None:
+    """An unknown path (404) has no matched route. The span name must be a
+    stable, method-based fallback — never the attacker-controlled concrete
+    path — and the raw path must not leak into any attribute."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, app = _exporter_and_app()
+
+    secret_path = "/no/such/path/with-a-very-unique-marker-9f3a"
+    resp = app.test_client().get(secret_path)
+    assert resp.status_code == 404
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+
+    # Low-cardinality method-based fallback name, not the path.
+    assert span.name == "HTTP GET"
+    assert secret_path not in span.name
+
+    # No http.route for an unmatched request, and the path appears nowhere.
+    assert "http.route" not in span.attributes
+    for value in span.attributes.values():
+        assert value != secret_path
+    assert span.attributes["http.request.method"] == "GET"
+    assert span.attributes["http.response.status_code"] == 404
+
+
+def test_405_emits_method_fallback_name_without_raw_path() -> None:
+    """A 405 (path exists, wrong method) also has no matched route. It must
+    use the same method-based fallback and keep the raw path out of the
+    export."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, app = _exporter_and_app()
+
+    # /items/{item_id} exists for GET; DELETE is not allowed -> 405.
+    resp = app.test_client().delete("/items/42")
+    assert resp.status_code == 405
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+
+    assert span.name == "HTTP DELETE"
+    assert "http.route" not in span.attributes
+    for value in span.attributes.values():
+        assert value != "/items/42"
+    assert span.attributes["http.response.status_code"] == 405

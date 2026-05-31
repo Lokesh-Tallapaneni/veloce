@@ -36,6 +36,28 @@ parents itself under unrelated work running on the same task. For live,
 nested per-request causal context propagation you would integrate at the ASGI
 layer instead; this bridge is for backend-agnostic request spans driven off the
 same low-cardinality dimensions a metrics exporter consumes.
+
+**Streamed responses are not traced.** For a streaming body
+(:class:`~veloce.http.response.StreamingResponse`,
+:class:`~veloce.sse.EventSourceResponse`, a chunked
+:class:`~veloce.http.response.FileResponse`) the instrumentation hook fires
+*before* the body is emitted on the ASGI send path. The measured duration and
+status would cover only the time to produce the response object — not the time
+to drain the stream, and not a failure raised mid-stream — so backdating a span
+from them would mis-time the request and hide stream errors. This bridge
+therefore skips records where :attr:`RequestMetrics.streamed` is set and emits
+no span for them. Closing a span accurately around a stream would require
+moving the span lifecycle onto the ASGI send path so it ends after the stream
+completes or fails; that is out of scope for this metrics-driven bridge.
+
+**Span naming and cardinality.** The span is named for the matched route
+*template* (``metrics.route``, e.g. ``/items/{id}``), which is low-cardinality
+and safe to export. When no route matched (a ``404`` for an unknown path or a
+``405`` for a disallowed method, where ``metrics.route`` is ``None``) the span
+is named with a stable method-based fallback (``"HTTP GET"``) and carries no
+``http.route`` attribute. The concrete request path (``metrics.path``) is
+high-cardinality and attacker-controlled for unmatched requests, so it is never
+used as a span name or exported as an attribute by default.
 """
 
 from __future__ import annotations
@@ -75,11 +97,17 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
     """Bridge a Veloce app's instrumentation into OpenTelemetry spans.
 
     Registers a single :meth:`Veloce.add_instrumentation` hook that turns each
-    finished request into a ``SpanKind.SERVER`` span. The span name is the
-    matched route template when available (``metrics.route``), falling back to
-    the concrete path (``metrics.path``) for unmatched requests. Each span
-    carries ``http.request.method``, ``http.route``, ``http.response.status_code``,
-    and a ``duration_ms`` attribute; a ``5xx`` status marks the span error.
+    finished non-streamed request into a ``SpanKind.SERVER`` span. The span name
+    is the matched route template when available (``metrics.route``); when no
+    route matched it falls back to a stable, low-cardinality method-based name
+    (``"HTTP GET"``) and the concrete path is never used as a name or attribute.
+    Each span carries ``http.request.method``, ``http.route`` (only when a route
+    matched), ``http.response.status_code``, and a ``duration_ms`` attribute; a
+    ``5xx`` status marks the span error.
+
+    Streamed responses are not traced: their body is emitted after the hook
+    fires, so the available timing/status would be wrong. Such records are
+    skipped and emit no span. See the module docstring.
 
     Pass ``tracer_provider`` to source the tracer from a specific provider;
     otherwise the globally configured provider is used. The application owns SDK
@@ -106,7 +134,17 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
     Status = _otel_trace.Status
 
     def _emit_span(metrics: RequestMetrics) -> None:
-        span_name = metrics.route or metrics.path
+        # Streamed bodies are sent after this hook fires, so the metrics record
+        # only times response production and cannot see a mid-stream failure.
+        # Backdating a span from it would mis-time the request and hide errors;
+        # skip and emit nothing rather than export a misleading span.
+        if metrics.streamed:
+            return
+        # Name from the route template, never the concrete path: an unmatched
+        # request (route is None for both 404 and 405) carries an
+        # attacker-controlled, high-cardinality path. Fall back to a stable
+        # method-based name and keep the raw path out of the export entirely.
+        span_name = metrics.route or f"HTTP {metrics.method}"
         # The hook fires after the response is produced, so derive an absolute
         # window from the now-known duration: end at emission, start one
         # duration earlier. OpenTelemetry timestamps are integer nanoseconds.

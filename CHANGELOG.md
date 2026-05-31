@@ -16,11 +16,19 @@ longer scale memory with body size.
 ### Added
 
 - **OpenTelemetry tracing bridge (`veloce.otel.instrument_with_otel`).** A new
-  optional integration emits one `SpanKind.SERVER` span per finished request,
-  driven off the existing `app.add_instrumentation` hook. The span is named for
-  the matched route template (falling back to the concrete path) and carries
-  `http.request.method`, `http.route`, `http.response.status_code`, and a
-  `duration_ms` attribute; a `5xx` status marks the span error. Only the
+  optional integration emits one `SpanKind.SERVER` span per finished
+  non-streamed request, driven off the existing `app.add_instrumentation` hook.
+  The span is named for the matched route template; when no route matched (a
+  `404` for an unknown path or a `405` for a disallowed method) it uses a stable,
+  low-cardinality method-based fallback name (`"HTTP GET"`) and the concrete,
+  attacker-controlled request path is never used as a span name or exported as
+  an attribute. Each span carries `http.request.method`, `http.route` (only when
+  a route matched), `http.response.status_code`, and a `duration_ms` attribute; a
+  `5xx` status marks the span error. Streamed responses (`StreamingResponse`,
+  `EventSourceResponse`, a chunked `FileResponse`) are not traced: their body is
+  emitted on the ASGI send path after the instrumentation hook fires, so the
+  available timing and status would predate stream completion and miss a
+  mid-stream failure; such records are skipped and emit no span. Only the
   OpenTelemetry API is required — the application supplies its own SDK,
   `TracerProvider`, and exporter. Install with `pip install veloceframework[otel]`;
   `import veloce` continues to work without the extra. The span is recorded
@@ -30,6 +38,10 @@ longer scale memory with body size.
   request window. It is created in a fresh, empty context — never the ambient
   OpenTelemetry context active when the hook fires — so it is always a clean
   server root span.
+- `RequestMetrics` now carries a `streamed` flag, set when the response body is a
+  streaming iterator. Instrumentation hooks that need accurate end-of-request
+  timing (the response body of a streamed response is emitted after the hook
+  fires) can skip records where it is set.
 - The built-in HTTP/1.1 server's keep-alive and slowloris read timeouts are
   now configurable through `app.config`: `KEEP_ALIVE_TIMEOUT` (idle-connection
   timeout) and `REQUEST_TIMEOUT` (per-request read budget). Defaults are

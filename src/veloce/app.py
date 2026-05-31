@@ -1927,7 +1927,10 @@ class Veloce(Router):
 
         if instrument:
             await self._run_instrumentation(
-                request, response.status_code, (time.perf_counter() - started) * 1000.0
+                request,
+                response.status_code,
+                (time.perf_counter() - started) * 1000.0,
+                streamed=response.is_streamed,
             )
 
         return response
@@ -2698,12 +2701,20 @@ class Veloce(Router):
         return response
 
     async def _run_instrumentation(
-        self, request: Request, status_code: int, duration_ms: float
+        self,
+        request: Request,
+        status_code: int,
+        duration_ms: float,
+        streamed: bool = False,
     ) -> None:
         """Deliver a `RequestMetrics` record to every instrumentation hook.
 
         A hook may be sync or async; one that raises is logged and skipped
         so observability code can never break the response.
+
+        `streamed` marks responses whose body is emitted later on the ASGI
+        send path; for those `duration_ms`/`status_code` cover only response
+        production, not stream completion. See `RequestMetrics.streamed`.
         """
         metrics = RequestMetrics(
             method=request.method,
@@ -2711,6 +2722,7 @@ class Veloce(Router):
             route=request.url_rule,
             status_code=status_code,
             duration_ms=duration_ms,
+            streamed=streamed,
         )
         for hook in self._instrumentation:
             try:

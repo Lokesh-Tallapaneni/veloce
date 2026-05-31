@@ -20,9 +20,17 @@ class RequestMetrics:
     exists but the method is not allowed). Group by `(route, status_code)`
     to keep those apart. `path` is the concrete request path and is
     high-cardinality — prefer `route` for aggregation.
+
+    `streamed` is `True` when the response body is a streaming iterator
+    (`StreamingResponse`, `EventSourceResponse`, a large `FileResponse`).
+    For those, the hook fires *before* the body is emitted on the ASGI send
+    path, so `duration_ms` and `status_code` reflect only the time to
+    produce the response object — not the time to drain the stream, and not
+    a failure that happens mid-stream. A tracing bridge that needs accurate
+    end-of-request timing should skip records with `streamed` set.
     """
 
-    __slots__ = ("method", "path", "route", "status_code", "duration_ms")
+    __slots__ = ("method", "path", "route", "status_code", "duration_ms", "streamed")
 
     def __init__(
         self,
@@ -31,16 +39,18 @@ class RequestMetrics:
         route: str | None,
         status_code: int,
         duration_ms: float,
+        streamed: bool = False,
     ) -> None:
         self.method = method
         self.path = path
         self.route = route
         self.status_code = status_code
         self.duration_ms = duration_ms
+        self.streamed = streamed
 
     def __repr__(self) -> str:
         return (
             f"RequestMetrics(method={self.method!r}, path={self.path!r}, "
             f"route={self.route!r}, status_code={self.status_code}, "
-            f"duration_ms={self.duration_ms:.3f})"
+            f"duration_ms={self.duration_ms:.3f}, streamed={self.streamed})"
         )
