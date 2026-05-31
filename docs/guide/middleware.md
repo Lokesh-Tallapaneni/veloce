@@ -36,17 +36,32 @@ Middleware can also be passed when constructing the app, via the
 
 ## Built-in middleware
 
-| Middleware                | Purpose                                        |
-|---------------------------|------------------------------------------------|
-| `CORSMiddleware`          | Cross-Origin Resource Sharing                  |
-| `GZipMiddleware`          | Response compression                           |
-| `CSRFMiddleware`          | Double-submit-cookie CSRF protection           |
-| `SessionMiddleware`       | Signed, timestamped session cookies            |
-| `TrustedHostMiddleware`   | Host-header allow-list                         |
-| `HTTPSRedirectMiddleware` | Redirect plain HTTP to HTTPS                   |
-| `ProxyFix`                | Honour `X-Forwarded-*` from trusted proxies    |
+Veloce ships the following middleware, all importable from the top-level
+`veloce` package:
 
-All are importable from the top-level `veloce` package.
+| Middleware                  | Purpose                                                       |
+|-----------------------------|---------------------------------------------------------------|
+| `CORSMiddleware`            | Cross-Origin Resource Sharing                                 |
+| `GZipMiddleware`            | Response compression                                          |
+| `CSRFMiddleware`            | Double-submit-cookie CSRF protection                          |
+| `SessionMiddleware`         | Signed, timestamped session cookies                           |
+| `ServerSessionMiddleware`   | Server-side sessions; the cookie carries only an opaque id    |
+| `TrustedHostMiddleware`     | Host-header allow-list                                        |
+| `HTTPSRedirectMiddleware`   | Redirect plain HTTP to HTTPS                                  |
+| `SecurityHeadersMiddleware` | Attach common hardening response headers to every response    |
+| `RateLimitMiddleware`       | In-process token-bucket rate limiter                          |
+| `WebSocketOriginMiddleware` | Reject cross-site WebSocket handshakes (CSWSH)                |
+| `LoggingMiddleware`         | Structured request/response access logging                    |
+| `RequestIDMiddleware`       | Assign a unique request ID and echo it in the response        |
+| `ProxyFix`                  | Honour `X-Forwarded-*` from trusted proxies                   |
+
+The base classes `Middleware` and [`BaseHTTPMiddleware`](#class-based-middleware)
+are also exported, along with the `rotate_csrf_token` helper used with
+`CSRFMiddleware`.
+
+`SessionMiddleware` and `ServerSessionMiddleware` have a dedicated guide —
+see [Sessions](sessions.md). For configuring cookie attributes through
+`app.config`, see [Configuration](configuration.md#built-in-defaults).
 
 ## Function middleware
 
@@ -88,6 +103,9 @@ on the way out — the first one added is the outermost layer.
 
 ## See also
 
+- [Sessions](sessions.md) — `SessionMiddleware` and `ServerSessionMiddleware`.
+- [Configuration](configuration.md) — the `SESSION_COOKIE_*` keys.
 - [Deployment](deployment.md)
 - [Routing](routing.md)
 - [Dependency injection](dependency-injection.md)
+- The [API reference](../reference.md) lists every middleware class.

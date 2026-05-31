@@ -124,8 +124,24 @@ nav:
   - Guide:
       - Routing: guide/routing.md
       - Requests & Responses: guide/requests-responses.md
+      - Configuration: guide/configuration.md
+      - Error Handling: guide/error-handling.md
+      - Blueprints: guide/blueprints.md
+      - Parameters: guide/parameters.md
       - Dependency Injection: guide/dependency-injection.md
+      - Templates: guide/templates.md
+      - Static Files: guide/static-files.md
+      - Sessions: guide/sessions.md
+      - Flask-style Helpers: guide/helpers.md
+      - Security Schemes: guide/security-schemes.md
+      - Passwords: guide/passwords.md
+      - Signing: guide/signing.md
+      - File Uploads: guide/file-uploads.md
+      - Class-based Views: guide/class-based-views.md
       - Middleware: guide/middleware.md
+      - Background Tasks: guide/background-tasks.md
+      - Server-Sent Events: guide/sse.md
+      - Signals: guide/signals.md
       - WebSockets: guide/websockets.md
       - Testing: guide/testing.md
       - Deployment: guide/deployment.md
