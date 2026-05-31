@@ -341,9 +341,7 @@ class _FakeEntryPoint:
 
 def _patch_entry_points(monkeypatch, entry_points):
     """Make `_iter_command_entry_points` return `entry_points`."""
-    monkeypatch.setattr(
-        cli_module, "_iter_command_entry_points", lambda: list(entry_points)
-    )
+    monkeypatch.setattr(cli_module, "_iter_command_entry_points", lambda: list(entry_points))
 
 
 def test_plugin_command_is_registered(monkeypatch):
@@ -352,14 +350,42 @@ def test_plugin_command_is_registered(monkeypatch):
         p.add_argument("target")
         p.set_defaults(func=lambda args: 0)
 
-    _patch_entry_points(
-        monkeypatch, [_FakeEntryPoint("deploy", "mypkg.cli:register", register)]
-    )
-    parser = build_parser()
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("deploy", "mypkg.cli:register", register)])
+    # Discovery is deferred: the parser only sees the plugin when its command
+    # is the selected one.
+    parser = build_parser("deploy")
     args = parser.parse_args(["deploy", "prod"])
     assert args.command == "deploy"
     assert args.target == "prod"
     assert args.func(args) == 0
+
+
+def test_plugin_not_loaded_without_plugin_command(monkeypatch):
+    # Without a selected plugin command, no entry point is loaded or executed
+    # — building the parser for `--version` / `--help` must not run plugin code.
+    loaded = {"count": 0}
+
+    def register(sub):  # pragma: no cover — must never run here
+        loaded["count"] += 1
+        sub.add_parser("deploy").set_defaults(func=lambda args: 0)
+
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("deploy", "mypkg.cli:register", register)])
+    parser = build_parser()
+    assert "deploy" not in parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
+    assert loaded["count"] == 0
+
+
+def test_plugin_entry_point_not_loaded_for_builtin_command(monkeypatch):
+    # Selecting a built-in command must not load or execute any plugin entry
+    # point, even one whose name does not collide with a built-in.
+    class _NeverLoad(_FakeEntryPoint):
+        def load(self):  # pragma: no cover — must never be called
+            raise AssertionError("entry point loaded for a built-in command")
+
+    _patch_entry_points(monkeypatch, [_NeverLoad("deploy", "mypkg.cli:register", None)])
+    parser = build_parser("run")
+    args = parser.parse_args(["run", "demo:app"])
+    assert args.command == "run"
 
 
 def test_plugin_command_dispatches_through_main(monkeypatch):
@@ -370,9 +396,7 @@ def test_plugin_command_dispatches_through_main(monkeypatch):
         p.add_argument("who")
         p.set_defaults(func=lambda args: calls.setdefault("who", args.who) and 0 or 7)
 
-    _patch_entry_points(
-        monkeypatch, [_FakeEntryPoint("greet", "mypkg.cli:register", register)]
-    )
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("greet", "mypkg.cli:register", register)])
     rc = main(["greet", "world"])
     assert rc == 7
     assert calls["who"] == "world"
@@ -382,11 +406,9 @@ def test_plugin_name_collision_with_builtin_is_skipped(monkeypatch):
     def register(sub):
         sub.add_parser("run")  # would clash with the built-in `run`
 
-    _patch_entry_points(
-        monkeypatch, [_FakeEntryPoint("run", "evil.cli:register", register)]
-    )
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("run", "evil.cli:register", register)])
     with pytest.warns(UserWarning, match="collides with an existing command"):
-        parser = build_parser()
+        parser = build_parser("run")
     # The built-in `run` survives intact — its own options are still present.
     args = parser.parse_args(["run", "demo:app", "--port", "9001"])
     assert args.command == "run"
@@ -399,18 +421,16 @@ def test_plugin_load_failure_is_warned_and_skipped(monkeypatch):
         [_FakeEntryPoint("broken", "missing.mod:reg", ImportError("no module named missing"))],
     )
     with pytest.warns(UserWarning, match="failed to load"):
-        parser = build_parser()
+        parser = build_parser("broken")
     # Built-ins remain usable despite the broken plugin.
     args = parser.parse_args(["routes", "demo:app"])
     assert args.command == "routes"
 
 
 def test_plugin_non_callable_is_warned_and_skipped(monkeypatch):
-    _patch_entry_points(
-        monkeypatch, [_FakeEntryPoint("notfunc", "mypkg.cli:thing", object())]
-    )
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("notfunc", "mypkg.cli:thing", object())])
     with pytest.warns(UserWarning, match="is not callable"):
-        parser = build_parser()
+        parser = build_parser("notfunc")
     args = parser.parse_args(["check", "demo:app"])
     assert args.command == "check"
 
@@ -419,13 +439,57 @@ def test_plugin_registration_error_is_warned_and_skipped(monkeypatch):
     def register(sub):
         raise RuntimeError("boom")
 
-    _patch_entry_points(
-        monkeypatch, [_FakeEntryPoint("bad", "mypkg.cli:register", register)]
-    )
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("bad", "mypkg.cli:register", register)])
     with pytest.warns(UserWarning, match="raised while registering"):
-        parser = build_parser()
+        parser = build_parser("bad")
     args = parser.parse_args(["shell", "demo:app"])
     assert args.command == "shell"
+
+
+def test_plugin_partial_registration_is_rolled_back(monkeypatch):
+    # A plugin that adds its parser and then raises must leave the parser in
+    # the exact pre-registration state — no half-registered `half` command.
+    def register(sub):
+        p = sub.add_parser("half", help="Half-built.")
+        p.add_argument("x")
+        raise RuntimeError("exploded after add_parser")
+
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("half", "mypkg.cli:register", register)])
+    with pytest.warns(UserWarning, match="raised while registering"):
+        parser = build_parser("half")
+    sub = parser._subparsers._group_actions[0]  # type: ignore[union-attr]
+    assert "half" not in sub.choices
+    # The leftover parser must also be gone from the help listing.
+    assert all(a.dest != "half" for a in sub._choices_actions)
+    # An unknown command now errors cleanly instead of dispatching a stub.
+    with pytest.raises(SystemExit):
+        parser.parse_args(["half", "y"])
+
+
+def test_plugin_without_func_is_rolled_back_and_skipped(monkeypatch):
+    # A plugin that registers a parser but never sets a `func` default would
+    # crash main() with AttributeError. It must be rolled back and skipped.
+    def register(sub):
+        sub.add_parser("nofunc", help="No runnable handler.")
+
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("nofunc", "mypkg.cli:register", register)])
+    with pytest.warns(UserWarning, match="did not register a runnable"):
+        parser = build_parser("nofunc")
+    sub = parser._subparsers._group_actions[0]  # type: ignore[union-attr]
+    assert "nofunc" not in sub.choices
+    assert all(a.dest != "nofunc" for a in sub._choices_actions)
+
+
+def test_plugin_without_func_does_not_crash_main(monkeypatch):
+    # End-to-end: a func-less plugin selected on the command line must not
+    # surface as an AttributeError from main(); argparse reports the unknown
+    # command instead.
+    def register(sub):
+        sub.add_parser("nofunc")
+
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("nofunc", "mypkg.cli:register", register)])
+    with pytest.warns(UserWarning, match="did not register a runnable"), pytest.raises(SystemExit):
+        main(["nofunc"])
 
 
 def test_two_plugins_with_same_name_keeps_first(monkeypatch):
@@ -433,9 +497,9 @@ def test_two_plugins_with_same_name_keeps_first(monkeypatch):
         p = sub.add_parser("dup")
         p.set_defaults(func=lambda args: "a")
 
-    def register_b(sub):
-        # Adding the same parser name twice would raise inside argparse; the
-        # discovery code must skip the duplicate before that happens.
+    def register_b(sub):  # pragma: no cover — never reached once `a` wins
+        # Adding the same parser name twice would raise inside argparse; once
+        # the first matching plugin registers the command, discovery stops.
         p = sub.add_parser("dup")
         p.set_defaults(func=lambda args: "b")
 
@@ -446,8 +510,8 @@ def test_two_plugins_with_same_name_keeps_first(monkeypatch):
             _FakeEntryPoint("dup", "pkg_b.cli:register", register_b),
         ],
     )
-    with pytest.warns(UserWarning, match="collides with an existing command"):
-        parser = build_parser()
+    # The first valid plugin wins; the second is never loaded or executed.
+    parser = build_parser("dup")
     args = parser.parse_args(["dup"])
     assert args.func(args) == "a"
 

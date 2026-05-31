@@ -25,10 +25,14 @@ longer scale memory with body size.
   ```
 
   where the target is a callable handed the argparse subparsers action to add
-  one subcommand. Plugins are isolated from the core: a plugin that fails to
-  import, does not resolve to a callable, raises while registering, or whose
-  name collides with a built-in (or another plugin) is reported with a warning
-  and skipped, so the built-in commands always remain usable.
+  one subcommand. Discovery is lazy: a plugin is imported and executed only
+  when its command is the one selected on the command line, so `veloce`,
+  `veloce --version`, and `veloce --help` never import or run plugin code.
+  Plugins are isolated from the core: a plugin that fails to import, does not
+  resolve to a callable, raises while registering, leaves no runnable command,
+  or whose name collides with a built-in is reported with a warning and
+  skipped. A plugin that partially registers a parser before failing is rolled
+  back, so the built-in commands always remain usable.
 - The built-in HTTP/1.1 server's keep-alive and slowloris read timeouts are
   now configurable through `app.config`: `KEEP_ALIVE_TIMEOUT` (idle-connection
   timeout) and `REQUEST_TIMEOUT` (per-request read budget). Defaults are

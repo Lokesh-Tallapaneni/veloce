@@ -13,7 +13,10 @@ Built on `argparse` (stdlib) — keeps the dep surface small. The
 so the same string passed to `--app` works with `uvicorn` directly.
 
 Third-party packages can add their own subcommands by advertising a
-`veloce.commands` entry point; see `_load_plugin_commands`.
+`veloce.commands` entry point. Discovery is lazy: a plugin is imported and
+executed only when its command is the one selected on the command line, so
+`veloce`, `veloce --version`, and `veloce --help` never run plugin code. See
+`_load_plugin_command`.
 """
 
 from __future__ import annotations
@@ -315,29 +318,59 @@ def _iter_command_entry_points() -> list[importlib.metadata.EntryPoint]:
         return []
 
 
-def _load_plugin_commands(
+def _rollback_subparsers(
+    sub: argparse._SubParsersAction[Any],
+    *,
+    keep: frozenset[str],
+) -> None:
+    """Remove any subparser whose name is not in `keep`.
+
+    Undoes a partial registration: a plugin that adds one or more parsers
+    and then raises (or never sets a `func`) leaves entries in the
+    subparsers action's `choices` map and its help-listing actions. This
+    deletes every parser added since `keep` was snapshotted so the
+    documented "warn and skip" guarantee holds — a failed plugin leaves the
+    parser exactly as it was before the plugin ran.
+    """
+    for name in [n for n in sub.choices if n not in keep]:
+        del sub.choices[name]
+    sub._choices_actions = [a for a in sub._choices_actions if a.dest in keep]
+
+
+def _load_plugin_command(
     sub: argparse._SubParsersAction[Any],
     *,
     reserved: frozenset[str],
+    name: str,
 ) -> None:
-    """Register third-party subcommands advertised via entry points.
+    """Register the single third-party subcommand named `name`, if any.
+
+    Plugin discovery is deferred until a plugin subcommand is actually
+    selected: only the entry point whose name matches `name` is loaded and
+    executed, so `veloce`, `veloce --version`, `veloce --help`, and every
+    built-in command run without importing or executing any plugin code.
 
     Each `veloce.commands` entry point loads to a callable that is handed
-    the subparsers action and adds exactly one parser to it. Plugins are
-    isolated from the core: a plugin that fails to import, does not load to
-    a callable, raises while registering, or whose name collides with a
-    built-in (or an already-registered plugin) is warned about and skipped
-    so the built-in commands always remain usable.
+    the subparsers action and adds exactly one parser (with a `func`
+    default) to it. Plugins are isolated from the core: a plugin that fails
+    to import, does not load to a callable, raises while registering, leaves
+    no `func` default, or whose name collides with a built-in is warned
+    about and skipped — and any parser it partially registered is rolled
+    back — so the built-in commands always remain usable.
     """
-    seen: set[str] = set()
+    if name in reserved:
+        # A plugin may not shadow a built-in. Warn that the entry point is
+        # being skipped — but do not load it: the built-in handles this name.
+        for ep in _iter_command_entry_points():
+            if ep.name == name:
+                warnings.warn(
+                    f"veloce CLI plugin {name!r} (from {ep.value!r}) collides with an existing "
+                    "command; skipping.",
+                    stacklevel=2,
+                )
+        return
     for ep in _iter_command_entry_points():
-        name = ep.name
-        if name in reserved or name in seen:
-            warnings.warn(
-                f"veloce CLI plugin {name!r} (from {ep.value!r}) collides with an existing "
-                "command; skipping.",
-                stacklevel=2,
-            )
+        if ep.name != name:
             continue
         try:
             register = ep.load()
@@ -354,16 +387,30 @@ def _load_plugin_commands(
                 stacklevel=2,
             )
             continue
+        existing = frozenset(sub.choices)
         try:
             register(sub)
         except Exception as err:  # noqa: BLE001 — a bad plugin must not break the CLI
+            _rollback_subparsers(sub, keep=existing)
             warnings.warn(
                 f"veloce CLI plugin {name!r} (from {ep.value!r}) raised while registering: "
                 f"{err!r}; skipping.",
                 stacklevel=2,
             )
             continue
-        seen.add(name)
+        added = sub.choices.get(name)
+        if added is None or "func" not in getattr(added, "_defaults", {}):
+            # A well-behaved plugin adds a parser named `name` with a `func`
+            # default. Without it, `main()` would crash with AttributeError;
+            # roll the registration back and skip instead.
+            _rollback_subparsers(sub, keep=existing)
+            warnings.warn(
+                f"veloce CLI plugin {name!r} (from {ep.value!r}) did not register a runnable "
+                f"{name!r} command; skipping.",
+                stacklevel=2,
+            )
+            continue
+        return
 
 
 class _VeloceArgumentParser(argparse.ArgumentParser):
@@ -386,8 +433,15 @@ class _VeloceArgumentParser(argparse.ArgumentParser):
         return parsed, extras
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the top-level argparse parser. Exposed for testing."""
+def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
+    """Build the top-level argparse parser. Exposed for testing.
+
+    Built-in commands are always registered. Plugin discovery is deferred:
+    only when `plugin_command` names a command that is not a built-in is the
+    matching `veloce.commands` entry point loaded and executed. With no
+    `plugin_command` (the default) no plugin code runs at all, so building
+    the parser for `--version` / `--help` never triggers plugin imports.
+    """
     parser = _VeloceArgumentParser(
         prog="veloce",
         description="Veloce — ultra-fast async Python web framework.",
@@ -436,15 +490,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Built-in names are reserved; a plugin may not shadow them. `sub.choices`
     # holds every subparser registered above, so it stays correct as commands
-    # are added or removed without a hand-maintained list.
-    _load_plugin_commands(sub, reserved=frozenset(sub.choices))
+    # are added or removed without a hand-maintained list. Only the selected
+    # plugin command (if any) is loaded — never the whole entry-point group.
+    if plugin_command is not None:
+        _load_plugin_command(sub, reserved=frozenset(sub.choices), name=plugin_command)
 
     return parser
 
 
+def _selected_command(argv: list[str] | None) -> str | None:
+    """Return the chosen subcommand name from `argv` without parsing.
+
+    A lightweight pre-scan used to decide whether plugin discovery is
+    needed: the first token that is not an option (does not start with `-`)
+    is the subcommand. Returns `None` when no candidate is present (e.g.
+    `veloce`, `veloce --version`, `veloce --help`), so those paths build the
+    parser without loading any plugin.
+    """
+    tokens = sys.argv[1:] if argv is None else argv
+    for token in tokens:
+        if not token.startswith("-"):
+            return token
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the veloce CLI."""
-    parser = build_parser()
+    parser = build_parser(plugin_command=_selected_command(argv))
     args = parser.parse_args(argv)
     return int(args.func(args))
 
