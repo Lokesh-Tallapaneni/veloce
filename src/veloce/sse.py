@@ -7,6 +7,7 @@ import math
 from collections.abc import AsyncIterator
 from typing import Any
 
+from veloce._constants import HEADER_CACHE_CONTROL, HEADER_CONTENT_TYPE, HEADER_TRANSFER_ENCODING
 from veloce._internal import _encode_response_head
 from veloce.http.response import Response
 
@@ -95,7 +96,7 @@ class EventSourceResponse(Response):
         hdrs = dict(headers) if headers else {}
         hdrs.update(
             {
-                "Cache-Control": "no-cache",
+                HEADER_CACHE_CONTROL: "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
             }
@@ -115,10 +116,10 @@ class EventSourceResponse(Response):
     async def stream_to(self, transport: Any) -> None:
         """Stream SSE events to transport."""
         default_headers = {
-            "Content-Type": self.content_type,
-            "Cache-Control": "no-cache",
+            HEADER_CONTENT_TYPE: self.content_type,
+            HEADER_CACHE_CONTROL: "no-cache",
             "Connection": "keep-alive",
-            "Transfer-Encoding": "chunked",
+            HEADER_TRANSFER_ENCODING: "chunked",
         }
         parts = _encode_response_head(self.status_code, default_headers, self.headers)
         parts.append("\r\n")

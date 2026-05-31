@@ -22,6 +22,15 @@ from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Any
 
+from veloce._constants import (
+    HEADER_ACCEPT_RANGES,
+    HEADER_CACHE_CONTROL,
+    HEADER_CONTENT_RANGE,
+    HEADER_ETAG,
+    HEADER_LAST_MODIFIED,
+    MIME_OCTET_STREAM,
+    MIME_TEXT_HTML_UTF8,
+)
 from veloce._internal import _etag_matches_weak, _file_etag
 from veloce.http.dates import http_date, parse_date
 from veloce.http.request import Request
@@ -38,7 +47,7 @@ def _guess_content_type(path: str) -> str:
     the result keeps the lookup off the hot path. Bounded so a hostile
     client probing arbitrary paths can't grow the cache without bound.
     """
-    return mimetypes.guess_type(path)[0] or "application/octet-stream"
+    return mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM
 
 
 class StaticFiles:
@@ -201,14 +210,14 @@ class StaticFiles:
                 return Response(
                     status_code=304,
                     body=b"",
-                    headers={"ETag": etag, "Last-Modified": last_modified},
+                    headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
                 )
             for token in if_none_match.split(","):
                 if _etag_matches_weak(etag, token):
                     return Response(
                         status_code=304,
                         body=b"",
-                        headers={"ETag": etag, "Last-Modified": last_modified},
+                        headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
                     )
         else:
             ims_header = request.headers.get("if-modified-since", "")
@@ -221,7 +230,7 @@ class StaticFiles:
                 return Response(
                     status_code=304,
                     body=b"",
-                    headers={"ETag": etag, "Last-Modified": last_modified},
+                    headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
                 )
 
         content_type = _guess_content_type(file_path)
@@ -246,10 +255,10 @@ class StaticFiles:
                     status_code=416,
                     body=b"",
                     headers={
-                        "Content-Range": f"bytes */{size}",
-                        "ETag": etag,
-                        "Last-Modified": last_modified,
-                        "Accept-Ranges": "bytes",
+                        HEADER_CONTENT_RANGE: f"bytes */{size}",
+                        HEADER_ETAG: etag,
+                        HEADER_LAST_MODIFIED: last_modified,
+                        HEADER_ACCEPT_RANGES: "bytes",
                     },
                 )
 
@@ -267,19 +276,19 @@ class StaticFiles:
                 body=body,
                 content_type=content_type,
                 headers={
-                    "Content-Range": f"bytes {r_start}-{r_end}/{size}",
-                    "ETag": etag,
-                    "Last-Modified": last_modified,
-                    "Accept-Ranges": "bytes",
-                    "Cache-Control": "public, max-age=3600",
+                    HEADER_CONTENT_RANGE: f"bytes {r_start}-{r_end}/{size}",
+                    HEADER_ETAG: etag,
+                    HEADER_LAST_MODIFIED: last_modified,
+                    HEADER_ACCEPT_RANGES: "bytes",
+                    HEADER_CACHE_CONTROL: "public, max-age=3600",
                 },
             )
 
         common_headers = {
-            "ETag": etag,
-            "Last-Modified": last_modified,
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=3600",
+            HEADER_ETAG: etag,
+            HEADER_LAST_MODIFIED: last_modified,
+            HEADER_ACCEPT_RANGES: "bytes",
+            HEADER_CACHE_CONTROL: "public, max-age=3600",
         }
 
         # Files at or above `STREAM_THRESHOLD` use chunked streaming so
@@ -399,5 +408,5 @@ class StaticFiles:
         return Response(
             status_code=200,
             body=body.encode("utf-8"),
-            content_type="text/html; charset=utf-8",
+            content_type=MIME_TEXT_HTML_UTF8,
         )

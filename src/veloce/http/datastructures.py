@@ -17,6 +17,7 @@ from urllib.parse import parse_qsl
 
 from multidict import CIMultiDict, MultiDict
 
+from veloce._constants import MIME_OCTET_STREAM
 from veloce._header_parsing import parse_header_params
 from veloce.exceptions import RequestURITooLong
 
@@ -76,7 +77,7 @@ class UploadFile:
     def __init__(
         self,
         filename: str,
-        content_type: str = "application/octet-stream",
+        content_type: str = MIME_OCTET_STREAM,
         file: BinaryIO | None = None,
         size: int = 0,
         headers: dict[str, str] | None = None,

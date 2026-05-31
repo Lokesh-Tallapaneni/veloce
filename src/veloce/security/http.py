@@ -8,6 +8,7 @@ import secrets
 from typing import Any
 from urllib.parse import quote
 
+from veloce._constants import HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
 from veloce._header_parsing import parse_header_params
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
@@ -37,8 +38,8 @@ class HTTPBasic:
             if self.auto_error:
                 headers: dict[str, str] = {}
                 if self.realm:
-                    headers["WWW-Authenticate"] = f'Basic realm="{quote(self.realm)}"'
-                raise HTTPException(401, "Not authenticated", headers=headers)
+                    headers[HEADER_WWW_AUTHENTICATE] = f'Basic realm="{quote(self.realm)}"'
+                raise HTTPException(401, MSG_NOT_AUTHENTICATED, headers=headers)
             return None
 
         # Catch only the exceptions that `b64decode(validate=True)` and
@@ -51,7 +52,9 @@ class HTTPBasic:
             decoded = base64.b64decode(auth[6:], validate=True).decode("utf-8")
         except (binascii.Error, ValueError, UnicodeDecodeError) as err:
             headers = (
-                {"WWW-Authenticate": f'Basic realm="{quote(self.realm)}"'} if self.realm else {}
+                {HEADER_WWW_AUTHENTICATE: f'Basic realm="{quote(self.realm)}"'}
+                if self.realm
+                else {}
             )
             raise HTTPException(401, "Invalid authentication credentials", headers=headers) from err
         username, _, password = decoded.partition(":")
@@ -141,7 +144,7 @@ class HTTPDigest:
             f'nonce="{nonce}"',
             f"algorithm={self.algorithm}",
         ]
-        return {"WWW-Authenticate": "Digest " + ", ".join(parts)}
+        return {HEADER_WWW_AUTHENTICATE: "Digest " + ", ".join(parts)}
 
     def __call__(self, request: Request) -> HTTPDigestCredentials | None:
         auth = request.headers.get("authorization", "")
@@ -149,7 +152,7 @@ class HTTPDigest:
             if self.auto_error:
                 raise HTTPException(
                     401,
-                    "Not authenticated",
+                    MSG_NOT_AUTHENTICATED,
                     headers=self._challenge_headers(),
                 )
             return None

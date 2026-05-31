@@ -17,6 +17,7 @@ from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 import orjson
 from pydantic import BaseModel
 
+from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
 from veloce.dependency import Depends
 from veloce.http.response import HTMLResponse, JSONResponse
 from veloce.routing.params import Body as BodyParam
@@ -491,12 +492,12 @@ def _extract_request_body(
     if request_body_schema:
         return {
             "required": True,
-            "content": {"application/json": {"schema": request_body_schema}},
+            "content": {MIME_JSON: {"schema": request_body_schema}},
         }
     if not form_fields:
         return None
     has_file = any(is_file for _, _, _, is_file in form_fields)
-    media_type = "multipart/form-data" if has_file else "application/x-www-form-urlencoded"
+    media_type = MIME_MULTIPART_FORM_DATA if has_file else MIME_FORM_URLENCODED
     properties: dict[str, Any] = {}
     required_fields: list[str] = []
     for fname, fschema, freq, _ in form_fields:
@@ -531,7 +532,7 @@ def _extract_responses(info: Any, schemas_registry: dict[str, dict]) -> dict[str
     if info.response_model is not None:
         resp_schema = _response_model_to_schema(info.response_model, schemas_registry)
         if resp_schema is not None:
-            responses[primary_status]["content"] = {"application/json": {"schema": resp_schema}}
+            responses[primary_status]["content"] = {MIME_JSON: {"schema": resp_schema}}
 
     for status_code, spec in (info.responses or {}).items():
         key = str(status_code)
@@ -542,7 +543,7 @@ def _extract_responses(info: Any, schemas_registry: dict[str, dict]) -> dict[str
         if extra_model is not None:
             extra_schema = _response_model_to_schema(extra_model, schemas_registry)
             if extra_schema is not None:
-                existing.setdefault("content", {})["application/json"] = {"schema": extra_schema}
+                existing.setdefault("content", {})[MIME_JSON] = {"schema": extra_schema}
         if "description" in spec:
             existing["description"] = spec["description"]
         elif "description" not in existing:
@@ -802,7 +803,7 @@ def _walk_webhooks(app: Any, schemas_registry: dict[str, dict]) -> dict[str, Any
             if body is not None:
                 op["requestBody"] = {
                     "required": True,
-                    "content": {"application/json": {"schema": body}},
+                    "content": {MIME_JSON: {"schema": body}},
                 }
             webhook_items.setdefault(event, {})[wmethod.lower()] = op
     return webhook_items

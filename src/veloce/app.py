@@ -18,6 +18,18 @@ from typing import TYPE_CHECKING, Any, get_args, get_origin
 from pydantic import BaseModel as _PydanticBaseModel
 
 from veloce import status
+from veloce._constants import (
+    MIME_TEXT_HTML,
+    MIME_TEXT_HTML_UTF8,
+    MIME_TEXT_PLAIN,
+    MIME_TEXT_PLAIN_UTF8,
+    MSG_INTERNAL_SERVER_ERROR,
+    MSG_LABEL_HEADER_NAME,
+    MSG_LABEL_SET_COOKIE_VALUE,
+    MSG_METHOD_NOT_ALLOWED,
+    MSG_NOT_FOUND,
+    MSG_REQUEST_BODY_EXCEEDS_MAX,
+)
 from veloce._internal import (
     MIME_HTML,
     MIME_JSON,
@@ -86,7 +98,7 @@ _MISSING: Any = object()
 _CT_BYTES_CACHE: dict[str, bytes] = {
     MIME_JSON: b"application/json",
     MIME_HTML: b"text/html; charset=utf-8",
-    "text/plain; charset=utf-8": b"text/plain; charset=utf-8",
+    MIME_TEXT_PLAIN_UTF8: b"text/plain; charset=utf-8",
     MIME_OCTET: b"application/octet-stream",
 }
 
@@ -109,7 +121,7 @@ def _prefers_html(request: Request) -> bool:
     accept = request.headers.get("accept")
     if not accept:
         return False
-    return request.accept_mimetypes.best_match(["text/plain", "text/html"]) == "text/html"
+    return request.accept_mimetypes.best_match([MIME_TEXT_PLAIN, MIME_TEXT_HTML]) == MIME_TEXT_HTML
 
 
 def _trace_carrier(request: Request) -> dict[str, str] | None:
@@ -1308,7 +1320,7 @@ class Veloce(Router):
         return Response(
             status_code=200,
             body=b"",
-            content_type="text/plain",
+            content_type=MIME_TEXT_PLAIN,
             headers={"Allow": ", ".join(advertised)},
         )
 
@@ -1338,7 +1350,7 @@ class Veloce(Router):
             return self._coerce_response(result)
         self.log_exception(exc)
         return JSONResponse(
-            {"detail": "Internal Server Error"},
+            {"detail": MSG_INTERNAL_SERVER_ERROR},
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
@@ -2101,7 +2113,7 @@ class Veloce(Router):
             if over:
                 response: Response = JSONResponse(
                     {
-                        "detail": "Request body exceeds MAX_CONTENT_LENGTH",
+                        "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
                         "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                         "limit": max_size,
                     },
@@ -2329,12 +2341,12 @@ class Veloce(Router):
                 # the debug-mode Content-Type contract is unchanged for them.
                 if _prefers_html(request):
                     body = render_traceback_html(exc).encode()
-                    content_type = "text/html; charset=utf-8"
+                    content_type = MIME_TEXT_HTML_UTF8
                 else:
                     body = "".join(
                         traceback.format_exception(type(exc), exc, exc.__traceback__)
                     ).encode()
-                    content_type = "text/plain; charset=utf-8"
+                    content_type = MIME_TEXT_PLAIN_UTF8
                 response = Response(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     body=body,
@@ -2348,7 +2360,7 @@ class Veloce(Router):
                 request,
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
                 JSONResponse(
-                    {"detail": "Internal Server Error"},
+                    {"detail": MSG_INTERNAL_SERVER_ERROR},
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 ),
             )
@@ -2493,7 +2505,7 @@ class Veloce(Router):
             and match.route_info.subdomain is not None
             and not self._subdomain_matches(request, match.route_info.subdomain)
         ):
-            raise HTTPException(404, "Not Found")
+            raise HTTPException(404, MSG_NOT_FOUND)
 
         # Host constraint check — the full `Host` header must equal
         # the route's declared `host` (case-insensitive, port-stripped).
@@ -2501,7 +2513,7 @@ class Veloce(Router):
         if match is not None and match.route_info.host is not None:
             req_host = _extract_host(request.headers.get("host", "") or "")
             if req_host != match.route_info.host.lower():
-                raise HTTPException(404, "Not Found")
+                raise HTTPException(404, MSG_NOT_FOUND)
 
         # Redirect slashes (like common web frameworks): /users -> /users/ or vice versa
         if match is None and self.redirect_slashes:
@@ -2533,12 +2545,12 @@ class Veloce(Router):
                     request,
                     status.HTTP_405_METHOD_NOT_ALLOWED,
                     JSONResponse(
-                        {"detail": "Method Not Allowed", "allowed": allowed},
+                        {"detail": MSG_METHOD_NOT_ALLOWED, "allowed": allowed},
                         status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
                         headers={"Allow": ", ".join(allowed)},
                     ),
                 )
-            raise HTTPException(404, "Not Found")
+            raise HTTPException(404, MSG_NOT_FOUND)
 
         # Set path params + endpoint name on request.
         request.path_params = match.path_params
@@ -3236,7 +3248,7 @@ class Veloce(Router):
         """
         resp = JSONResponse(
             {
-                "detail": "Request body exceeds MAX_CONTENT_LENGTH",
+                "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
                 "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 "limit": limit,
             },
@@ -3392,10 +3404,10 @@ class Veloce(Router):
                     if sk_lower == "set-cookie":
                         for piece in sv.split("\r\nSet-Cookie:"):
                             cookie = piece.strip()
-                            _reject_header_crlf(cookie, "Set-Cookie value")
+                            _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
                             stream_headers.append((b"set-cookie", cookie.encode()))
                     else:
-                        _reject_header_crlf(sk, "header name")
+                        _reject_header_crlf(sk, MSG_LABEL_HEADER_NAME)
                         _reject_header_crlf(sv, f"{sk} header value")
                         stream_headers.append((sk_lower.encode(), sv.encode()))
                 await send(
@@ -3487,10 +3499,10 @@ class Veloce(Router):
                         # ASGI tuples regardless of how many cookies are there.
                         for piece in v.split("\r\nSet-Cookie:"):
                             cookie = piece.strip()
-                            _reject_header_crlf(cookie, "Set-Cookie value")
+                            _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
                             asgi_headers.append((b"set-cookie", cookie.encode()))
                     else:
-                        _reject_header_crlf(k, "header name")
+                        _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
                         _reject_header_crlf(v, f"{k} header value")
                         asgi_headers.append((k_lower.encode(), v.encode()))
 

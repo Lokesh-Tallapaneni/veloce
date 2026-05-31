@@ -32,10 +32,20 @@ from collections.abc import Callable
 from http import HTTPStatus
 from typing import Any
 
-MIME_JSON = "application/json"
-MIME_HTML = "text/html; charset=utf-8"
-MIME_PLAIN = "text/plain; charset=utf-8"
-MIME_OCTET = "application/octet-stream"
+from veloce._constants import (
+    MIME_JSON as MIME_JSON,
+)
+from veloce._constants import (
+    MIME_OCTET_STREAM,
+    MIME_TEXT_HTML_UTF8,
+    MIME_TEXT_PLAIN_UTF8,
+    MSG_LABEL_HEADER_NAME,
+    MSG_LABEL_SET_COOKIE_VALUE,
+)
+
+MIME_HTML = MIME_TEXT_HTML_UTF8
+MIME_PLAIN = MIME_TEXT_PLAIN_UTF8
+MIME_OCTET = MIME_OCTET_STREAM
 
 # Reason-phrase lookup — `HTTPStatus(code).phrase` walks the IntEnum on
 # every access. Build the mapping once at import time.
@@ -91,10 +101,10 @@ def _encode_response_head(
             # One `Set-Cookie` dict entry may carry several cookies joined
             # by the internal separator; emit and CRLF-validate each line.
             for line in str(value).split("\r\nSet-Cookie: "):
-                _reject_header_crlf(line, "Set-Cookie value")
+                _reject_header_crlf(line, MSG_LABEL_SET_COOKIE_VALUE)
                 parts.append(f"Set-Cookie: {line}\r\n")
         else:
-            _reject_header_crlf(str(key), "header name")
+            _reject_header_crlf(str(key), MSG_LABEL_HEADER_NAME)
             _reject_header_crlf(str(value), f"{key} header value")
             parts.append(f"{key}: {value}\r\n")
     return parts

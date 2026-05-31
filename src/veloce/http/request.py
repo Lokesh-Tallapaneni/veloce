@@ -9,6 +9,11 @@ from urllib.parse import parse_qsl
 import orjson
 from multidict import MultiDict
 
+from veloce._constants import (
+    MIME_FORM_URLENCODED,
+    MIME_JSON,
+    MIME_MULTIPART_FORM_DATA,
+)
 from veloce.exceptions import RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
 from veloce.http.datastructures import (
@@ -388,7 +393,7 @@ class Request:
         body as JSON-encoded.
         """
         ct = self.mimetype
-        if ct == "application/json":
+        if ct == MIME_JSON:
             return True
         return ct.startswith("application/") and ct.endswith("+json")
 
@@ -402,7 +407,7 @@ class Request:
         """`True` when the body is `application/x-www-form-urlencoded`
         or `multipart/form-data`."""
         m = self.mimetype
-        return m == "application/x-www-form-urlencoded" or m.startswith("multipart/")
+        return m == MIME_FORM_URLENCODED or m.startswith("multipart/")
 
     # ── Content negotiation (Accept) ───────────────────────────────────
     @property
@@ -1092,7 +1097,7 @@ class Request:
         """Parse form data including file uploads."""
         if self._form is None:
             mt = self.mimetype
-            if mt == "application/x-www-form-urlencoded":
+            if mt == MIME_FORM_URLENCODED:
                 body = await self._drain_body()
                 # Cap the field count so a pathological body cannot exhaust
                 # memory/CPU even when its total size is within
@@ -1113,7 +1118,7 @@ class Request:
                         f"form exceeds the {max_fields}-field limit"
                     ) from exc
                 self._form = FormData(items)
-            elif mt == "multipart/form-data":
+            elif mt == MIME_MULTIPART_FORM_DATA:
                 # Per-app multipart caps come from config when an app is
                 # bound; otherwise the module defaults apply.
                 max_parts = DEFAULT_MAX_MULTIPART_PARTS

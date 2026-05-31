@@ -11,6 +11,12 @@ from typing import Any, NoReturn
 
 import orjson
 
+from veloce._constants import (
+    HEADER_CACHE_CONTROL,
+    HEADER_ETAG,
+    HEADER_LAST_MODIFIED,
+    MSG_ACCESS_DENIED,
+)
 from veloce._internal import MIME_HTML, MIME_OCTET
 from veloce.exceptions import exception_for_status
 from veloce.http.dates import http_date
@@ -361,15 +367,15 @@ def send_file(
     headers: dict[str, str] = {}
     if last_modified is not None:
         if isinstance(last_modified, str):
-            headers["Last-Modified"] = last_modified
+            headers[HEADER_LAST_MODIFIED] = last_modified
         else:
-            headers["Last-Modified"] = http_date(last_modified)
+            headers[HEADER_LAST_MODIFIED] = http_date(last_modified)
 
     if isinstance(etag, str):
-        headers["ETag"] = etag
+        headers[HEADER_ETAG] = etag
 
     if max_age is not None:
-        headers["Cache-Control"] = f"public, max-age={max_age}"
+        headers[HEADER_CACHE_CONTROL] = f"public, max-age={max_age}"
 
     path = str(path_or_file)
     if as_attachment and not download_name:
@@ -383,7 +389,7 @@ def send_file(
         headers=headers,
     )
     if _strip_etag:
-        resp.headers.pop("ETag", None)
+        resp.headers.pop(HEADER_ETAG, None)
         resp._encoded = None
     return resp
 
@@ -504,7 +510,7 @@ def send_from_directory(
 
     resolved = safe_join(directory, filename)
     if resolved is None:
-        abort(403, "Access denied")
+        abort(403, MSG_ACCESS_DENIED)
 
     if as_attachment and not download_name:
         download_name = os.path.basename(str(resolved))
@@ -531,7 +537,7 @@ async def send_from_directory_async(
     # `safe_join` is pure string arithmetic; the file read happens below.
     resolved = safe_join(directory, filename)  # noqa: ASYNC240
     if resolved is None:
-        abort(403, "Access denied")
+        abort(403, MSG_ACCESS_DENIED)
 
     if as_attachment and not download_name:
         download_name = os.path.basename(str(resolved))

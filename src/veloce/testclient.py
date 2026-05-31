@@ -27,6 +27,13 @@ from urllib.parse import urlencode, urlparse
 import orjson
 from multidict import CIMultiDict
 
+from veloce._constants import (
+    HEADER_SET_COOKIE,
+    MIME_FORM_URLENCODED,
+    MIME_JSON,
+    MIME_OCTET_STREAM,
+)
+
 
 def _resolve_redirect_location(location: str, base_url: str) -> tuple[str, str]:
     """Decompose a `Location` header into `(path, query)` for the next hop.
@@ -87,7 +94,7 @@ class TestResponse:
             else:
                 flat[name] = value
         if set_cookies:
-            flat["Set-Cookie"] = "\r\nSet-Cookie: ".join(set_cookies)
+            flat[HEADER_SET_COOKIE] = "\r\nSet-Cookie: ".join(set_cookies)
         self.headers = flat
         self.content_type = flat.get("content-type") or ""
         # Parse cookies from all Set-Cookie headers; each cookie's first
@@ -168,7 +175,7 @@ def _guess_content_type(filename: str | None, content: Any) -> str:
         guess = mimetypes.guess_type(filename)[0]
         if guess:
             return guess
-    return "application/octet-stream"
+    return MIME_OCTET_STREAM
 
 
 def _encode_multipart(
@@ -221,7 +228,7 @@ def _encode_multipart(
         # migrating from `requests.post(files={"f": BytesIO(...)})`
         # used to crash with a TypeError here.
         if isinstance(spec, (bytes, str)):
-            filename, content, ct = name, spec, "application/octet-stream"
+            filename, content, ct = name, spec, MIME_OCTET_STREAM
         elif isinstance(spec, tuple) and len(spec) == 2:
             filename, content = spec
             ct = _guess_content_type(filename, content)
@@ -532,10 +539,10 @@ class TestClient:
             hdrs["content-type"] = ct
         elif json is not None:
             body = orjson.dumps(json)
-            hdrs.setdefault("content-type", "application/json")
+            hdrs.setdefault("content-type", MIME_JSON)
         elif data is not None:
             body = urlencode(data).encode()
-            hdrs.setdefault("content-type", "application/x-www-form-urlencoded")
+            hdrs.setdefault("content-type", MIME_FORM_URLENCODED)
         elif content is not None:
             body = content
         return self._make_request(
@@ -1070,10 +1077,10 @@ class AsyncTestClient:
             hdrs["content-type"] = ct
         elif json is not None:
             body = orjson.dumps(json)
-            hdrs.setdefault("content-type", "application/json")
+            hdrs.setdefault("content-type", MIME_JSON)
         elif data is not None:
             body = urlencode(data).encode()
-            hdrs.setdefault("content-type", "application/x-www-form-urlencoded")
+            hdrs.setdefault("content-type", MIME_FORM_URLENCODED)
         elif content is not None:
             body = content
         return body, hdrs

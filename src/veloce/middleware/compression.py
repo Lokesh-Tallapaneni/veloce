@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import gzip
 
+from veloce._constants import HEADER_CONTENT_ENCODING, HEADER_CONTENT_LENGTH, MIME_JSON
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -16,7 +17,7 @@ from veloce.middleware.base import Middleware
 # wire savings.
 _DEFAULT_COMPRESSIBLE = (
     "text/",
-    "application/json",
+    MIME_JSON,
     "application/javascript",
     "application/xml",
     "application/xhtml+xml",
@@ -98,7 +99,7 @@ class GZipMiddleware(Middleware):
         # Stacking encodings produces a payload no client will decode, and
         # violates RFC 9110 §8.4 (each Content-Encoding identifies one
         # transformation; doubling them silently is a bug).
-        existing_encoding = response.headers.get("Content-Encoding")
+        existing_encoding = response.headers.get(HEADER_CONTENT_ENCODING)
         if existing_encoding and existing_encoding.strip().lower() not in ("", "identity"):
             return response
 
@@ -114,8 +115,8 @@ class GZipMiddleware(Middleware):
 
         if len(compressed) < len(response.body):
             response.body = compressed
-            response.headers["Content-Encoding"] = "gzip"
-            response.headers["Content-Length"] = str(len(compressed))
+            response.headers[HEADER_CONTENT_ENCODING] = "gzip"
+            response.headers[HEADER_CONTENT_LENGTH] = str(len(compressed))
             response.add_vary("Accept-Encoding")
             response._encoded = None
 

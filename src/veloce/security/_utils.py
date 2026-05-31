@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from veloce._constants import HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
 from veloce.exceptions import HTTPException
 
 
@@ -15,14 +16,18 @@ def _extract_bearer_token(
     prefix = f"{scheme} "
     if auth[: len(prefix)].lower() != prefix.lower():
         if auto_error:
-            raise HTTPException(401, "Not authenticated", headers={"WWW-Authenticate": scheme})
+            raise HTTPException(
+                401, MSG_NOT_AUTHENTICATED, headers={HEADER_WWW_AUTHENTICATE: scheme}
+            )
         return None
     # RFC 6750 section 2.1 + RFC 7235: only SP/HTAB are permitted between
     # scheme and token. Do not trim other Unicode whitespace (NBSP, \n, \r, ...).
     token = auth[len(prefix) :].strip(" \t")
     if not token:
         if auto_error:
-            raise HTTPException(401, "Not authenticated", headers={"WWW-Authenticate": scheme})
+            raise HTTPException(
+                401, MSG_NOT_AUTHENTICATED, headers={HEADER_WWW_AUTHENTICATE: scheme}
+            )
         return None
     return token
 
@@ -32,6 +37,6 @@ def _extract_api_key(source: Any, name: str, auto_error: bool = True) -> str | N
     key = source.get(name)
     if not key or not key.strip():
         if auto_error:
-            raise HTTPException(401, "Not authenticated")
+            raise HTTPException(401, MSG_NOT_AUTHENTICATED)
         return None
     return key

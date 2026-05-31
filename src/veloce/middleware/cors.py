@@ -24,6 +24,7 @@ import re
 from re import Pattern
 
 from veloce import status
+from veloce._constants import HEADER_ACCESS_CONTROL_ALLOW_HEADERS
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -190,13 +191,13 @@ class CORSMiddleware(Middleware):
             # Echo the requested headers (filtered) and method.
             requested = request.headers.get("access-control-request-headers", "")
             if requested and self._allow_headers_has_star:
-                response.headers["Access-Control-Allow-Headers"] = requested
+                response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = requested
             elif requested:
                 # Intersect requested vs the precomputed lowercased allow-set.
                 tokens = [t.strip() for t in requested.split(",") if t.strip()]
                 matched = [t for t in tokens if t.lower() in self._allow_headers_lower]
                 if matched:
-                    response.headers["Access-Control-Allow-Headers"] = ", ".join(matched)
+                    response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = ", ".join(matched)
             response.headers["Access-Control-Max-Age"] = str(self.max_age)
             return response
 
@@ -227,9 +228,9 @@ class CORSMiddleware(Middleware):
         if preflight:
             response.headers["Access-Control-Allow-Methods"] = self._allow_methods_joined
             if self._allow_headers_has_star:
-                response.headers["Access-Control-Allow-Headers"] = "*"
+                response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = "*"
             else:
-                response.headers["Access-Control-Allow-Headers"] = self._allow_headers_joined
+                response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = self._allow_headers_joined
 
         if self.allow_credentials:
             response.headers["Access-Control-Allow-Credentials"] = "true"

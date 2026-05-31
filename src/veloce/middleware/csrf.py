@@ -52,6 +52,7 @@ import secrets
 from typing import Any
 
 from veloce import status
+from veloce._constants import MIME_FORM_URLENCODED, MIME_MULTIPART_FORM_DATA
 from veloce.http.request import Request
 from veloce.http.response import JSONResponse, Response
 from veloce.middleware.base import Middleware
@@ -121,7 +122,7 @@ class CSRFMiddleware(Middleware):
         # the body looks form-shaped — JSON / multipart-without-form-field
         # paths shouldn't fail the check on a parse error.
         ct = request.headers.get("content-type", "")
-        if "application/x-www-form-urlencoded" in ct or "multipart/form-data" in ct:
+        if MIME_FORM_URLENCODED in ct or MIME_MULTIPART_FORM_DATA in ct:
             try:
                 form = await request.form()
             except Exception:

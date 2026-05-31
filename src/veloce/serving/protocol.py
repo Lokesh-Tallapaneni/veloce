@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import httptools
 
 from veloce import status
+from veloce._constants import MIME_TEXT_PLAIN, MSG_ERROR_RESPONSE_EMISSION
 from veloce.http._body import RequestBodySource
 from veloce.http.request import Request
 from veloce.http.response import Response, StreamingResponse
@@ -578,7 +579,7 @@ class HttpProtocol(asyncio.Protocol):
             response = Response(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 body=b"Gateway Timeout",
-                content_type="text/plain",
+                content_type=MIME_TEXT_PLAIN,
             )
             detached = not inner.done()
         except Exception:
@@ -586,7 +587,7 @@ class HttpProtocol(asyncio.Protocol):
             response = Response(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 body=b"Internal Server Error",
-                content_type="text/plain",
+                content_type=MIME_TEXT_PLAIN,
             )
             detached = not inner.done()
 
@@ -623,7 +624,7 @@ class HttpProtocol(asyncio.Protocol):
             else:
                 self.transport.write(response.encode())
         except Exception:
-            _logger.exception("Error during response emission")
+            _logger.exception(MSG_ERROR_RESPONSE_EMISSION)
             self.transport.close()
             return False
 
@@ -647,7 +648,7 @@ class HttpProtocol(asyncio.Protocol):
             try:
                 transport.write(response.encode())
             except Exception:
-                _logger.exception("Error during response emission")
+                _logger.exception(MSG_ERROR_RESPONSE_EMISSION)
             transport.close()
         return False
 

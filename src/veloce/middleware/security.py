@@ -15,6 +15,7 @@ import uuid
 from collections import deque
 
 from veloce import status
+from veloce._constants import HEADER_RETRY_AFTER
 from veloce._internal import _extract_host
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response
@@ -138,7 +139,7 @@ class RateLimitMiddleware(Middleware):
             rejected = Response(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 body=b"Too Many Requests",
-                headers={"Retry-After": str(reset or self.window_seconds)},
+                headers={HEADER_RETRY_AFTER: str(reset or self.window_seconds)},
             )
             self._apply_headers(rejected, self.max_requests, 0, reset)
             return rejected

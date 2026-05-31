@@ -10,6 +10,7 @@ from typing import Any
 from python_multipart import MultipartParser
 from python_multipart.exceptions import FormParserError
 
+from veloce._constants import MIME_TEXT_PLAIN
 from veloce._header_parsing import parse_header_params
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.datastructures import FormData, UploadFile
@@ -140,7 +141,7 @@ def parse_multipart_form(
                 name,
                 UploadFile(
                     filename=filename,
-                    content_type=state["headers"].get("content-type", "text/plain"),
+                    content_type=state["headers"].get("content-type", MIME_TEXT_PLAIN),
                     file=spool,
                     size=state["part_size"],
                 ),
