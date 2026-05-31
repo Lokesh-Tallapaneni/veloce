@@ -10,6 +10,7 @@ from veloce._constants import (
     HEADER_ACCEPT_ENCODING,
     HEADER_CONTENT_ENCODING,
     HEADER_CONTENT_LENGTH,
+    HEADER_CONTENT_RANGE,
     HEADER_VALUE_GZIP,
     MIME_APPLICATION_JAVASCRIPT,
     MIME_APPLICATION_X_YAML,
@@ -20,6 +21,7 @@ from veloce._constants import (
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
+from veloce.status import HTTP_206_PARTIAL_CONTENT
 
 # Default compressible content types - text formats and JSON/XML/JS.
 # Image/video/audio/zip are intentionally absent: those formats already
@@ -99,6 +101,17 @@ class GZipMiddleware(Middleware):
         """Compress the response body with gzip if the client accepts it."""
         accept = request.headers.get(HEADER_ACCEPT_ENCODING, "")
         if not _accepts_gzip(accept) or len(response.body) < self.minimum_size:
+            return response
+
+        # Never compress a partial-content (206) response, or any response
+        # carrying a Content-Range: gzipping changes the body bytes while
+        # Content-Range / Accept-Ranges / ETag keep describing the
+        # uncompressed representation, producing a protocol-invalid response
+        # (RFC 9110 Sec. 14). Range responses are served whole, uncompressed.
+        if (
+            response.status_code == HTTP_206_PARTIAL_CONTENT
+            or HEADER_CONTENT_RANGE in response.headers
+        ):
             return response
 
         if not self._should_compress_type(response.content_type):

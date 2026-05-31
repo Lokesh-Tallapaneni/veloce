@@ -226,6 +226,21 @@ longer scale memory with body size.
 
 ### Fixed
 
+- `StaticFiles` now consults `If-Range` before honoring a `Range` request
+  (RFC 9110 Sec. 13.1.5). A `Range` accompanied by a stale validator — an
+  `If-Range` ETag that no longer matches, or an HTTP-date older than the file's
+  mtime — is served as a full `200` instead of a `206` slice, so a client
+  resuming a download with an outdated validator can no longer splice bytes
+  from a newer file version.
+- `GZipMiddleware` no longer compresses partial-content responses. A `206`
+  response, or any response carrying a `Content-Range`, is passed through
+  uncompressed; previously the body was gzipped while `Content-Range`,
+  `Accept-Ranges`, and `ETag` continued to describe the uncompressed
+  representation, producing a protocol-invalid response.
+- `async def` template context processors now contribute on the async render
+  path. `Jinja2Templates.render_async` awaits coroutine-returning context
+  processors instead of discarding them, so values they provide appear during
+  async rendering (the sync render path is unchanged).
 - `StreamingResponse` and `EventSourceResponse` no longer emit a duplicate
   `Content-Type` (or `Connection`) header on the raw HTTP/1.1 transport when the
   caller supplies that header name in non-title case. The default headers were

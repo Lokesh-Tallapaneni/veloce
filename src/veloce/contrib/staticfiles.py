@@ -248,8 +248,30 @@ class StaticFiles:
         # Range request - RFC 9110 Sec. 14.2. Single-range only; multi-range
         # would require multipart/byteranges which we don't ship yet.
         range_spec = request.range
+        # If-Range (RFC 9110 Sec. 13.1.5): honor the Range only when the
+        # client's validator still matches the current representation.
+        # Otherwise the resource changed since the client last saw it, and
+        # serving a 206 slice would splice bytes from a different version into
+        # a stale download - so fall through to a full 200 instead.
+        honor_range = True
+        if range_spec is not None:
+            if_etag, if_date = request.if_range
+            if if_etag:
+                # Honor the range only if the If-Range ETag still matches the
+                # current representation. Weak comparison, consistent with the
+                # weak `(size, mtime)`-derived ETags this server emits and with
+                # its If-None-Match handling: a changed file gets a new ETag, so
+                # a stale validator no longer matches and we fall through to a
+                # full 200 rather than splicing a 206 from a different version.
+                honor_range = _etag_matches_weak(etag, if_etag)
+            elif if_date is not None:
+                # Honor only if the representation has not been modified after
+                # the client's snapshot date (second resolution, matching
+                # HTTP-date precision).
+                honor_range = int(mtime) <= int(if_date)
         if (
-            range_spec is not None
+            honor_range
+            and range_spec is not None
             and range_spec.unit == HEADER_VALUE_BYTES
             and len(range_spec.ranges) == 1
         ):

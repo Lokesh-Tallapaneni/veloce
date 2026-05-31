@@ -56,3 +56,25 @@ async def test_render_async_matches_sync_render(tmp_path):
     tpl = Jinja2Templates(directory=str(tmp_path))
     ctx = {"a": "1", "b": "2"}
     assert await tpl.render_async("t.html", ctx) == tpl.render("t.html", ctx)
+
+
+def test_async_context_processor_contributes_to_render_async(tmp_path):
+    """An `async def` context processor must contribute values on the async render path."""
+    from veloce import HTMLResponse, Veloce
+    from veloce.testclient import TestClient
+
+    (tmp_path / "hello.html").write_text("Hello, {{ name }} ({{ flavor }})!")
+    app = Veloce(debug=True, openapi_url=None)
+    templates = Jinja2Templates(directory=str(tmp_path))
+
+    @app.context_processor
+    async def add_flavor():
+        return {"flavor": "async-vanilla"}
+
+    @app.get("/")
+    async def index():
+        return HTMLResponse(await templates.render_async("hello.html", {"name": "alice"}))
+
+    resp = TestClient(app).get("/")
+    assert resp.status_code == 200
+    assert b"async-vanilla" in resp.body

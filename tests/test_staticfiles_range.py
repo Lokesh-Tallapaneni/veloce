@@ -101,3 +101,42 @@ async def test_partial_response_keeps_etag_and_last_modified(static):
     assert resp.headers["ETag"].startswith('W/"')
     assert "Last-Modified" in resp.headers
     assert resp.headers["Accept-Ranges"] == "bytes"
+
+
+# ── If-Range gate (RFC 9110 Sec. 13.1.5) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_if_range_matching_etag_still_serves_206(static):
+    """A Range with an If-Range validator that matches the current ETag is honored."""
+    sf, _ = static
+    etag = (await sf.handle(_req("/static/blob.bin"))).headers["ETag"]
+    resp = await sf.handle(_req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": etag}))
+    assert resp.status_code == 206
+    assert len(resp.body) == 10
+
+
+@pytest.mark.asyncio
+async def test_if_range_stale_etag_serves_full_200(static):
+    """A Range with a stale If-Range ETag downgrades to a full 200, not a 206 slice."""
+    sf, _ = static
+    resp = await sf.handle(
+        _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": '"stale-different-version"'})
+    )
+    assert resp.status_code == 200
+    assert len(resp.body) == 100
+    assert "Content-Range" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_if_range_stale_date_serves_full_200(static):
+    """An If-Range HTTP-date older than the file's mtime downgrades to a full 200."""
+    sf, _ = static
+    resp = await sf.handle(
+        _req(
+            "/static/blob.bin",
+            {"Range": "bytes=0-9", "If-Range": "Wed, 01 Jan 2020 00:00:00 GMT"},
+        )
+    )
+    assert resp.status_code == 200
+    assert len(resp.body) == 100
