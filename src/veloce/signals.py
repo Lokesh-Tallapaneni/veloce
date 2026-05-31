@@ -32,7 +32,7 @@ import weakref
 from collections.abc import Callable, Iterator
 from typing import Any
 
-_logger = logging.getLogger("veloce.signals")
+_logger = logging.getLogger(__name__)
 
 # Sentinel for "connect to all senders" — the public API exports it so
 # callers can write `signal.connect(fn, sender=ANY_SENDER)` explicitly.

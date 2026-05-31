@@ -15,7 +15,7 @@ from veloce._header_parsing import parse_header_params
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.datastructures import FormData, UploadFile
 
-_logger = logging.getLogger("veloce.http.formparsers")
+_logger = logging.getLogger(__name__)
 
 # Multipart-parsing safety limits — guard against algorithmic-complexity
 # DoS from a body crafted with pathologically many or oversized parts.
