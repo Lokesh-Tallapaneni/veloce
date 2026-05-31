@@ -33,6 +33,50 @@ longer scale memory with body size.
   or whose name collides with a built-in is reported with a warning and
   skipped. A plugin that partially registers a parser before failing is rolled
   back, so the built-in commands always remain usable.
+- **OpenTelemetry tracing bridge (`veloce.otel.instrument_with_otel`).** A new
+  optional integration emits one `SpanKind.SERVER` span per finished
+  non-streamed request, driven off the existing `app.add_instrumentation` hook.
+  The span is named for the matched route template; when no route matched (a
+  `404` for an unknown path or a `405` for a disallowed method) it falls back to
+  a low-cardinality method-based name (`"HTTP GET"`) **only for a recognised HTTP
+  method** — an arbitrary/attacker-controlled verb collapses to the constant
+  `"HTTP other"` so the span name can never explode cardinality. The concrete
+  request path is never used as a span name. Each span carries
+  `http.request.method` (the real method, per OTel semconv), `http.route` (only
+  when a route matched), `http.response.status_code`, and a `duration_ms`
+  attribute; a `5xx` status marks the span error. Streamed response *bodies*
+  (`StreamingResponse`, `EventSourceResponse`, a chunked `FileResponse`) are not
+  traced: the body is emitted on the ASGI send path after the instrumentation
+  hook fires, so the available timing/status would predate stream completion and
+  miss a mid-stream failure; such records are skipped. A `HEAD` request never
+  iterates its body, so it is traced normally even on a streaming route. Only the
+  OpenTelemetry API is required — the application supplies its own SDK,
+  `TracerProvider`, and exporter. Install with `pip install veloceframework[otel]`;
+  `import veloce` continues to work without the extra. The span is recorded
+  retroactively from the request's metrics record: its `end_time` is the
+  wall-clock instant captured the moment dispatch returned (before any other
+  instrumentation hook or `request_finished` receiver runs, so a slow earlier
+  hook cannot shift it) and its `start_time` is that end minus the measured
+  duration, so the exported span covers the real request window. It continues an
+  inbound **W3C distributed trace**: the inbound `traceparent` / `tracestate`
+  headers are carried on the metrics record and the bridge extracts a parent
+  context from them, so a request arriving with an upstream trace joins it (same
+  `trace_id`, parented under the caller's span); absent those headers the span is
+  a clean root. Extraction happens in the span-emit path, which runs on every
+  dispatch outcome — including a request short-circuited by an earlier
+  `before_request` hook — so trace continuation never depends on hook ordering. It is never parented
+  under the ambient OpenTelemetry context active when the hook fires. This is a
+  *server-span* bridge — it continues inbound traces and emits one span per
+  request, but does not inject context into outbound calls or wrap handler
+  execution for child spans, and (as above) does not trace streamed response
+  bodies.
+- `RequestMetrics` now carries a `streamed` flag (set when the response body is a
+  streaming iterator), an `end_time_ns` field (the wall-clock end captured
+  before any hook runs), and an opaque `parent_context` (the inbound
+  `traceparent` / `tracestate` headers, carried so a tracing bridge can
+  continue a distributed trace; the core never interprets it). Instrumentation
+  hooks that need accurate end-of-request timing can skip streamed records and
+  anchor timing to `end_time_ns`.
 - The built-in HTTP/1.1 server's keep-alive and slowloris read timeouts are
   now configurable through `app.config`: `KEEP_ALIVE_TIMEOUT` (idle-connection
   timeout) and `REQUEST_TIMEOUT` (per-request read budget). Defaults are

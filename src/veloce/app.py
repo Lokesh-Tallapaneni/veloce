@@ -112,6 +112,24 @@ def _prefers_html(request: Request) -> bool:
     return request.accept_mimetypes.best_match(["text/plain", "text/html"]) == "text/html"
 
 
+def _trace_carrier(request: Request) -> dict[str, str] | None:
+    """Inbound W3C trace headers as a carrier dict, or `None` if absent.
+
+    Only `traceparent` / `tracestate` are copied — the dimensions a tracing
+    bridge needs to continue a distributed trace — keeping the framework core
+    free of any OpenTelemetry dependency. Returns `None` (not an empty dict)
+    when no `traceparent` is present so the bridge can cheaply skip extraction.
+    """
+    traceparent = request.headers.get("traceparent")
+    if traceparent is None:
+        return None
+    carrier = {"traceparent": traceparent}
+    tracestate = request.headers.get("tracestate")
+    if tracestate is not None:
+        carrier["tracestate"] = tracestate
+    return carrier
+
+
 class Veloce(Router):
     """Ultra-fast async web framework.
 
@@ -1930,8 +1948,17 @@ class Veloce(Router):
                         request,
                         status.HTTP_500_INTERNAL_SERVER_ERROR,
                         (time.perf_counter() - started) * 1000.0,
+                        end_time_ns=time.time_ns(),
                     )
             raise
+
+        # Capture the wall-clock end the instant dispatch returned — before
+        # the request_finished receivers and instrumentation hooks run — so a
+        # tracing bridge can anchor an accurate span window regardless of how
+        # long a slow earlier hook/receiver takes.
+        if instrument:
+            end_time_ns = time.time_ns()
+            duration_ms = (time.perf_counter() - started) * 1000.0
 
         # Signal: request finished. Sender is the app, `response=` is the
         # final Response, `request=` lets a receiver correlate with the
@@ -1943,8 +1970,17 @@ class Veloce(Router):
                 self.logger.exception("request_finished signal raised an exception")
 
         if instrument:
+            # A HEAD response never iterates its body (the ASGI path sends
+            # headers + an empty terminal frame), so its timing/status are
+            # already final at this point — it is NOT a live stream even when
+            # the underlying response object is a streaming type.
+            is_streamed = response.is_streamed and request.method != "HEAD"
             await self._run_instrumentation(
-                request, response.status_code, (time.perf_counter() - started) * 1000.0
+                request,
+                response.status_code,
+                duration_ms,
+                streamed=is_streamed,
+                end_time_ns=end_time_ns,
             )
 
         return response
@@ -2724,12 +2760,22 @@ class Veloce(Router):
         return response
 
     async def _run_instrumentation(
-        self, request: Request, status_code: int, duration_ms: float
+        self,
+        request: Request,
+        status_code: int,
+        duration_ms: float,
+        streamed: bool = False,
+        end_time_ns: int | None = None,
     ) -> None:
         """Deliver a `RequestMetrics` record to every instrumentation hook.
 
         A hook may be sync or async; one that raises is logged and skipped
         so observability code can never break the response.
+
+        `streamed` marks responses whose body is emitted later on the ASGI
+        send path; for those `duration_ms`/`status_code` cover only response
+        production, not stream completion. See `RequestMetrics.streamed`.
+        `end_time_ns` is the wall-clock end captured before any hook runs.
         """
         metrics = RequestMetrics(
             method=request.method,
@@ -2737,6 +2783,14 @@ class Veloce(Router):
             route=request.url_rule,
             status_code=status_code,
             duration_ms=duration_ms,
+            streamed=streamed,
+            end_time_ns=end_time_ns,
+            # Inbound distributed-trace headers, carried verbatim so a tracing
+            # bridge (e.g. veloce.otel) can extract a parent context and
+            # continue the trace. Built on every dispatch path here — never via
+            # a before_request hook, which a short-circuiting hook could skip.
+            # `None` when the request carries no trace headers.
+            parent_context=_trace_carrier(request),
         )
         for hook in self._instrumentation:
             try:

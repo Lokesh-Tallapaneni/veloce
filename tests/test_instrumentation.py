@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from veloce import HTTPException, RequestMetrics, Veloce
+from veloce.http.response import StreamingResponse
 from veloce.signals import request_finished, request_started
 
 
@@ -29,6 +30,14 @@ def _app() -> Veloce:
     @app.get("/crash")
     async def crash():
         raise ValueError("kaboom")
+
+    @app.get("/stream")
+    async def stream():
+        async def gen():
+            yield b"a"
+            yield b"b"
+
+        return StreamingResponse(gen())
 
     return app
 
@@ -189,6 +198,39 @@ def test_405_reports_route_none():
     app.test_client().post("/items/5")
     assert seen[0].status_code == 405
     assert seen[0].route is None
+
+
+# ── streamed flag ─────────────────────────────────────────────────────
+
+
+def test_streamed_flag_false_for_buffered_response():
+    app = _app()
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append)
+
+    app.test_client().get("/items/7")
+    assert seen[0].streamed is False
+
+
+def test_streamed_flag_true_for_streaming_response():
+    """A `StreamingResponse` body is emitted on the ASGI send path after the
+    hook fires; the record must flag this so timing-sensitive consumers can
+    skip it."""
+    app = _app()
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append)
+
+    resp = app.test_client().get("/stream")
+    assert resp.body == b"ab"
+    assert len(seen) == 1
+    assert seen[0].streamed is True
+    assert seen[0].route == "/stream"
+
+
+def test_request_metrics_streamed_defaults_false():
+    m = RequestMetrics(method="GET", path="/x", route="/x", status_code=200, duration_ms=1.0)
+    assert m.streamed is False
+    assert "streamed=False" in repr(m)
 
 
 # ── lifecycle signals carry the request ───────────────────────────────
