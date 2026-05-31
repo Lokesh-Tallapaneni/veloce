@@ -62,8 +62,17 @@ ws = ["websockets>=12"]
 # is opt-in and never pulled in by a plain install. uvicorn (a core dep)
 # remains the recommended production server.
 gunicorn = ["gunicorn>=21.0; sys_platform != 'win32'"]
+# OpenTelemetry tracing bridge for `veloce.otel.instrument_with_otel`. Only the
+# OTel API is pulled in — the application supplies its own configured SDK,
+# TracerProvider, and exporter. Kept optional so a plain install carries no
+# tracing dependency. Install with `pip install veloceframework[otel]`.
+otel = ["opentelemetry-api>=1.20"]
 # Everything optional in one shot.
-all = ["websockets>=12", "gunicorn>=21.0; sys_platform != 'win32'"]
+all = [
+    "websockets>=12",
+    "gunicorn>=21.0; sys_platform != 'win32'",
+    "opentelemetry-api>=1.20",
+]
 
 [project.scripts]
 veloce = "veloce.cli:main"
@@ -156,5 +165,5 @@ check_untyped_defs = true
 exclude = ["build", "dist", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["uvloop", "httptools", "multipart.*", "gunicorn.*"]
+module = ["uvloop", "httptools", "multipart.*", "gunicorn.*", "opentelemetry.*"]
 ignore_missing_imports = true

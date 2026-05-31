@@ -15,6 +15,17 @@ longer scale memory with body size.
 
 ### Added
 
+- **OpenTelemetry tracing bridge (`veloce.otel.instrument_with_otel`).** A new
+  optional integration emits one `SpanKind.SERVER` span per finished request,
+  driven off the existing `app.add_instrumentation` hook. The span is named for
+  the matched route template (falling back to the concrete path) and carries
+  `http.request.method`, `http.route`, `http.response.status_code`, and a
+  `duration_ms` attribute; a `5xx` status marks the span error. Only the
+  OpenTelemetry API is required — the application supplies its own SDK,
+  `TracerProvider`, and exporter. Install with `pip install veloceframework[otel]`;
+  `import veloce` continues to work without the extra. The span is recorded
+  retroactively from the request's metrics record, not as a live wrap of handler
+  execution.
 - The built-in HTTP/1.1 server's keep-alive and slowloris read timeouts are
   now configurable through `app.config`: `KEEP_ALIVE_TIMEOUT` (idle-connection
   timeout) and `REQUEST_TIMEOUT` (per-request read budget). Defaults are
