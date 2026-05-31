@@ -139,6 +139,14 @@ longer scale memory with body size.
   `Signal` instances, caching one per name so independent parts of an application
   can share a signal by agreeing on its name.
 
+### Docs
+
+- Expanded the documentation guide with pages for configuration, error
+  handling, blueprints, parameters, templates, static files, sessions,
+  Flask-style helpers, security schemes, passwords, signing, file uploads,
+  class-based views, background tasks, server-sent events, and signals. The
+  built-in middleware table now lists every shipped middleware class.
+
 ### Changed
 
 - The raw HTTP/1.1 response-head construction shared by `Response.encode()`,
