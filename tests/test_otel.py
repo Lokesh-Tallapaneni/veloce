@@ -364,3 +364,158 @@ def test_405_emits_method_fallback_name_without_raw_path() -> None:
     for value in span.attributes.values():
         assert value != "/items/42"
     assert span.attributes["http.response.status_code"] == 405
+
+
+def test_factory_refuses_when_otel_marked_absent(monkeypatch) -> None:
+    # Deterministic no-OpenTelemetry path: force the import sentinel to an
+    # ImportError so this runs even in an environment where opentelemetry IS
+    # installed. The factory must refuse with the install hint, never proceed.
+    import veloce.otel as otel
+
+    monkeypatch.setattr(otel, "_OTEL_IMPORT_ERROR", ImportError("no module named opentelemetry"))
+    app = Veloce(openapi_url=None)
+    with pytest.raises(ImportError) as excinfo:
+        otel.instrument_with_otel(app)
+    assert "veloceframework[otel]" in str(excinfo.value)
+
+
+def test_arbitrary_method_does_not_explode_span_name() -> None:
+    # A non-standard (attacker-controlled) HTTP verb on an unmatched route must
+    # NOT appear in the span name — it collapses to a single constant so it
+    # cannot blow up span-name cardinality.
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, app = _exporter_and_app()
+    # Drive an arbitrary method at an unmatched path (route is None → fallback).
+    app.test_client()._make_request("CUSTOMVERB-9F3A", "/nope")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    # The span NAME is the cardinality-sensitive field (backends index it);
+    # an arbitrary verb must never reach it — it collapses to a constant.
+    assert spans[0].name == "HTTP other"
+    assert "CUSTOMVERB-9F3A" not in spans[0].name
+    # The real method is still recorded as an attribute (OTel semconv) — the
+    # correct place for it; attribute values are not a span-name index.
+    assert spans[0].attributes["http.request.method"] == "CUSTOMVERB-9F3A"
+
+
+def test_standard_method_keeps_its_name_in_fallback() -> None:
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, app = _exporter_and_app()
+    app.test_client().get("/nope")  # 404 → route None → fallback to method
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].name == "HTTP GET"
+
+
+def test_span_end_time_is_not_shifted_by_a_slow_earlier_hook() -> None:
+    # Hold: the span window must anchor to the end captured at dispatch, not
+    # the moment the OTel hook runs — so a slow EARLIER instrumentation hook
+    # cannot push the span's end_time past the real request boundary.
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+    import time
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    app = _app()
+
+    # A slow instrumentation hook registered BEFORE the OTel bridge: it runs
+    # first and sleeps, which would shift a now()-anchored span end forward.
+    def _slow_hook(metrics):
+        time.sleep(0.05)
+
+    app.add_instrumentation(_slow_hook)
+    instrument_with_otel(app, tracer_provider=provider)
+
+    before = time.time_ns()
+    app.test_client().get("/items/3")
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    # The span must end at/near dispatch completion (before the 50ms sleep),
+    # not ~50ms later. Allow generous slack but well under the 50ms skew.
+    assert spans[0].end_time - before < 30_000_000  # < 30ms in ns
+
+
+def test_head_to_streaming_endpoint_is_traced() -> None:
+    # Hold: a HEAD request to a streaming route must still be traced. HEAD
+    # sends no body (headers + empty terminal frame), so timing/status are
+    # final at hook time — it must NOT be dropped as a live stream.
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce import StreamingResponse
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/stream", name="stream")
+    async def stream():
+        async def gen():
+            yield b"chunk"
+
+        return StreamingResponse(gen())
+
+    instrument_with_otel(app, tracer_provider=provider)
+    resp = app.test_client().head("/stream")
+    assert resp.status_code == 200
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1, "HEAD to a streaming endpoint must emit a span"
+    assert spans[0].attributes["http.response.status_code"] == 200
+
+
+def test_streaming_get_is_not_traced() -> None:
+    # The complement: a real streaming GET body IS emitted later, so the
+    # bridge correctly skips it (no misleading backdated span).
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce import StreamingResponse
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/stream2", name="stream2")
+    async def stream2():
+        async def gen():
+            yield b"chunk"
+
+        return StreamingResponse(gen())
+
+    instrument_with_otel(app, tracer_provider=provider)
+    app.test_client().get("/stream2")
+    assert exporter.get_finished_spans() == ()

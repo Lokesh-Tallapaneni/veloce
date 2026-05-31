@@ -19,29 +19,33 @@ longer scale memory with body size.
   optional integration emits one `SpanKind.SERVER` span per finished
   non-streamed request, driven off the existing `app.add_instrumentation` hook.
   The span is named for the matched route template; when no route matched (a
-  `404` for an unknown path or a `405` for a disallowed method) it uses a stable,
-  low-cardinality method-based fallback name (`"HTTP GET"`) and the concrete,
-  attacker-controlled request path is never used as a span name or exported as
-  an attribute. Each span carries `http.request.method`, `http.route` (only when
-  a route matched), `http.response.status_code`, and a `duration_ms` attribute; a
-  `5xx` status marks the span error. Streamed responses (`StreamingResponse`,
-  `EventSourceResponse`, a chunked `FileResponse`) are not traced: their body is
-  emitted on the ASGI send path after the instrumentation hook fires, so the
-  available timing and status would predate stream completion and miss a
-  mid-stream failure; such records are skipped and emit no span. Only the
+  `404` for an unknown path or a `405` for a disallowed method) it falls back to
+  a low-cardinality method-based name (`"HTTP GET"`) **only for a recognised HTTP
+  method** — an arbitrary/attacker-controlled verb collapses to the constant
+  `"HTTP other"` so the span name can never explode cardinality. The concrete
+  request path is never used as a span name. Each span carries
+  `http.request.method` (the real method, per OTel semconv), `http.route` (only
+  when a route matched), `http.response.status_code`, and a `duration_ms`
+  attribute; a `5xx` status marks the span error. Streamed response *bodies*
+  (`StreamingResponse`, `EventSourceResponse`, a chunked `FileResponse`) are not
+  traced: the body is emitted on the ASGI send path after the instrumentation
+  hook fires, so the available timing/status would predate stream completion and
+  miss a mid-stream failure; such records are skipped. A `HEAD` request never
+  iterates its body, so it is traced normally even on a streaming route. Only the
   OpenTelemetry API is required — the application supplies its own SDK,
   `TracerProvider`, and exporter. Install with `pip install veloceframework[otel]`;
   `import veloce` continues to work without the extra. The span is recorded
-  retroactively from the request's metrics record, not as a live wrap of handler
-  execution, but it is backdated: its `start_time` and `end_time` are derived
-  from the measured request duration so the exported span covers the real
-  request window. It is created in a fresh, empty context — never the ambient
-  OpenTelemetry context active when the hook fires — so it is always a clean
-  server root span.
-- `RequestMetrics` now carries a `streamed` flag, set when the response body is a
-  streaming iterator. Instrumentation hooks that need accurate end-of-request
-  timing (the response body of a streamed response is emitted after the hook
-  fires) can skip records where it is set.
+  retroactively from the request's metrics record: its `end_time` is the
+  wall-clock instant captured the moment dispatch returned (before any other
+  instrumentation hook or `request_finished` receiver runs, so a slow earlier
+  hook cannot shift it) and its `start_time` is that end minus the measured
+  duration, so the exported span covers the real request window. It is created in
+  a fresh, empty context — never the ambient OpenTelemetry context active when
+  the hook fires — so it is always a clean server root span.
+- `RequestMetrics` now carries a `streamed` flag (set when the response body is a
+  streaming iterator) and an `end_time_ns` field (the wall-clock end captured
+  before any hook runs). Instrumentation hooks that need accurate end-of-request
+  timing can skip streamed records and anchor timing to `end_time_ns`.
 - The built-in HTTP/1.1 server's keep-alive and slowloris read timeouts are
   now configurable through `app.config`: `KEEP_ALIVE_TIMEOUT` (idle-connection
   timeout) and `REQUEST_TIMEOUT` (per-request read budget). Defaults are

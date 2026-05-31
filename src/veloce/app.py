@@ -1913,8 +1913,17 @@ class Veloce(Router):
                         request,
                         status.HTTP_500_INTERNAL_SERVER_ERROR,
                         (time.perf_counter() - started) * 1000.0,
+                        end_time_ns=time.time_ns(),
                     )
             raise
+
+        # Capture the wall-clock end the instant dispatch returned — before
+        # the request_finished receivers and instrumentation hooks run — so a
+        # tracing bridge can anchor an accurate span window regardless of how
+        # long a slow earlier hook/receiver takes.
+        if instrument:
+            end_time_ns = time.time_ns()
+            duration_ms = (time.perf_counter() - started) * 1000.0
 
         # Signal: request finished. Sender is the app, `response=` is the
         # final Response, `request=` lets a receiver correlate with the
@@ -1926,11 +1935,17 @@ class Veloce(Router):
                 self.logger.exception("request_finished signal raised an exception")
 
         if instrument:
+            # A HEAD response never iterates its body (the ASGI path sends
+            # headers + an empty terminal frame), so its timing/status are
+            # already final at this point — it is NOT a live stream even when
+            # the underlying response object is a streaming type.
+            is_streamed = response.is_streamed and request.method != "HEAD"
             await self._run_instrumentation(
                 request,
                 response.status_code,
-                (time.perf_counter() - started) * 1000.0,
-                streamed=response.is_streamed,
+                duration_ms,
+                streamed=is_streamed,
+                end_time_ns=end_time_ns,
             )
 
         return response
@@ -2706,6 +2721,7 @@ class Veloce(Router):
         status_code: int,
         duration_ms: float,
         streamed: bool = False,
+        end_time_ns: int | None = None,
     ) -> None:
         """Deliver a `RequestMetrics` record to every instrumentation hook.
 
@@ -2715,6 +2731,7 @@ class Veloce(Router):
         `streamed` marks responses whose body is emitted later on the ASGI
         send path; for those `duration_ms`/`status_code` cover only response
         production, not stream completion. See `RequestMetrics.streamed`.
+        `end_time_ns` is the wall-clock end captured before any hook runs.
         """
         metrics = RequestMetrics(
             method=request.method,
@@ -2723,6 +2740,7 @@ class Veloce(Router):
             status_code=status_code,
             duration_ms=duration_ms,
             streamed=streamed,
+            end_time_ns=end_time_ns,
         )
         for hook in self._instrumentation:
             try:

@@ -27,9 +27,13 @@ produced — :meth:`Veloce._run_instrumentation` runs once the request is
 finished, with the already-measured wall-clock duration. The span emitted here
 is therefore recorded retroactively from the
 :class:`~veloce.instrumentation.RequestMetrics` record, but it is *backdated*:
-its ``start_time`` and ``end_time`` are set explicitly from the measured
-duration so the exported span covers the real request window rather than the
-instant of emission. Because the span is created after the fact, it is rooted
+its ``end_time`` is the wall-clock instant captured the moment dispatch
+returned (``RequestMetrics.end_time_ns``, taken *before* any other
+instrumentation hook or ``request_finished`` receiver runs, so a slow earlier
+hook cannot shift the window) and its ``start_time`` is that end minus the
+measured duration — so the exported span covers the real request window rather
+than the instant this bridge's own hook executes. Because the span is created
+after the fact, it is rooted
 in a fresh, empty context — never the ambient OpenTelemetry context active at
 emission time — so it is always a clean server-root span and never accidentally
 parents itself under unrelated work running on the same task. For live,
@@ -37,7 +41,7 @@ nested per-request causal context propagation you would integrate at the ASGI
 layer instead; this bridge is for backend-agnostic request spans driven off the
 same low-cardinality dimensions a metrics exporter consumes.
 
-**Streamed responses are not traced.** For a streaming body
+**Streamed response bodies are not traced.** For a streaming body
 (:class:`~veloce.http.response.StreamingResponse`,
 :class:`~veloce.sse.EventSourceResponse`, a chunked
 :class:`~veloce.http.response.FileResponse`) the instrumentation hook fires
@@ -46,7 +50,10 @@ status would cover only the time to produce the response object — not the time
 to drain the stream, and not a failure raised mid-stream — so backdating a span
 from them would mis-time the request and hide stream errors. This bridge
 therefore skips records where :attr:`RequestMetrics.streamed` is set and emits
-no span for them. Closing a span accurately around a stream would require
+no span for them. (A ``HEAD`` request never iterates its body — the ASGI path
+sends headers and an empty terminal frame — so it is *not* marked streamed even
+on a streaming route, and is traced normally.) Closing a span accurately
+around a stream would require
 moving the span lifecycle onto the ASGI send path so it ends after the stream
 completes or fails; that is out of scope for this metrics-driven bridge.
 
@@ -90,6 +97,13 @@ except ImportError as exc:  # pragma: no cover - exercised only without opentele
 _INSTALL_HINT = (
     "instrument_with_otel requires OpenTelemetry, which is an optional "
     "dependency. Install it with: pip install veloceframework[otel]"
+)
+
+# Recognised HTTP methods (RFC 9110 + PATCH/RFC 5789, plus Veloce's TRACE).
+# Only these may appear in a span name; any other verb is attacker-controlled
+# and collapses to "HTTP other" so it cannot explode span-name cardinality.
+_STANDARD_METHODS = frozenset(
+    {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"}
 )
 
 
@@ -143,12 +157,21 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
         # Name from the route template, never the concrete path: an unmatched
         # request (route is None for both 404 and 405) carries an
         # attacker-controlled, high-cardinality path. Fall back to a stable
-        # method-based name and keep the raw path out of the export entirely.
-        span_name = metrics.route or f"HTTP {metrics.method}"
-        # The hook fires after the response is produced, so derive an absolute
-        # window from the now-known duration: end at emission, start one
-        # duration earlier. OpenTelemetry timestamps are integer nanoseconds.
-        end_time = time.time_ns()
+        # method-based name — but only for a recognised HTTP method, since the
+        # method token is also attacker-controlled (Veloce accepts arbitrary
+        # verbs). An unrecognised verb collapses to a single constant so the
+        # span name can never explode cardinality. Raw path stays out entirely.
+        if metrics.route is not None:
+            span_name = metrics.route
+        elif metrics.method in _STANDARD_METHODS:
+            span_name = f"HTTP {metrics.method}"
+        else:
+            span_name = "HTTP other"
+        # Anchor the window to the end captured at dispatch completion (before
+        # any other hook ran); fall back to now only if a caller built the
+        # metrics without it. Backdate the start by the measured duration.
+        # OpenTelemetry timestamps are integer nanoseconds.
+        end_time = metrics.end_time_ns if metrics.end_time_ns is not None else time.time_ns()
         start_time = end_time - int(metrics.duration_ms * 1_000_000)
         # Root the span in an empty context, not the ambient one: a retroactive
         # request span must never inherit an unrelated active span as parent.
