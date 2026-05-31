@@ -54,6 +54,52 @@ def _reject_header_crlf(value: str, what: str) -> str:
     return value
 
 
+def _encode_response_head(
+    status_code: int,
+    default_headers: dict[str, str],
+    headers: dict[str, str],
+) -> list[str]:
+    """Build the HTTP/1.1 status line plus header lines for a response.
+
+    Shared by ``Response.encode()``, ``StreamingResponse.encode()`` and
+    ``EventSourceResponse.stream_to()`` so the three raw-transport heads
+    stay in lock-step. ``default_headers`` are framework defaults applied
+    in their given order; each is emitted only when the caller has not
+    supplied a header of the same name (case-insensitive), so a
+    lower-cased ``content-type`` override does not produce a duplicate.
+
+    User ``headers`` are then emitted in order, splitting any joined
+    ``Set-Cookie`` blob and rejecting CR/LF/NUL in names and values.
+    Default values are CRLF/NUL-validated too: their names are
+    framework constants but a value such as ``content_type`` is a
+    public, caller-settable constructor argument, so it must clear the
+    same response-splitting check before it reaches the wire.
+    Returns the line list (each ending in CRLF); the caller joins,
+    encodes latin-1, and appends the blank-line terminator and any body.
+    """
+    reason = _STATUS_PHRASES.get(status_code, "")
+    parts = [f"HTTP/1.1 {status_code} {reason}".rstrip() + "\r\n"]
+
+    user_keys_lc = {k.lower() for k in headers}
+    for name, value in default_headers.items():
+        if name.lower() not in user_keys_lc:
+            _reject_header_crlf(value, f"{name} header value")
+            parts.append(f"{name}: {value}\r\n")
+
+    for key, value in headers.items():
+        if key.lower() == "set-cookie":
+            # One `Set-Cookie` dict entry may carry several cookies joined
+            # by the internal separator; emit and CRLF-validate each line.
+            for line in str(value).split("\r\nSet-Cookie: "):
+                _reject_header_crlf(line, "Set-Cookie value")
+                parts.append(f"Set-Cookie: {line}\r\n")
+        else:
+            _reject_header_crlf(str(key), "header name")
+            _reject_header_crlf(str(value), f"{key} header value")
+            parts.append(f"{key}: {value}\r\n")
+    return parts
+
+
 def _file_etag(path: str, size: int, mtime: float) -> str:
     """Weak, opaque-quoted ETag derived from (path, size, mtime).
 
