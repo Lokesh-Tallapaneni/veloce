@@ -100,3 +100,77 @@ def test_render_traceback_html_escapes_message():
 
     assert "<b>bold</b>" not in page
     assert "&lt;b&gt;bold&lt;/b&gt;" in page
+
+
+def test_render_traceback_html_survives_unprintable_exception():
+    # An exception whose __str__ itself raises must not crash the renderer;
+    # the stdlib traceback placeholder is emitted instead of a second error.
+    class Unprintable(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("str() blew up")
+
+    try:
+        raise Unprintable()
+    except Unprintable as exc:
+        page = render_traceback_html(exc)
+
+    assert page.startswith("<!doctype html>")
+    assert "Unprintable" in page
+    assert "&lt;exception str() failed&gt;" in page
+
+
+def test_render_traceback_html_includes_explicit_cause_chain():
+    # raise ... from ... must surface both exceptions and the cause separator.
+    try:
+        try:
+            raise ValueError("the-inner-cause")
+        except ValueError as inner:
+            raise RuntimeError("the-outer-error") from inner
+    except RuntimeError as exc:
+        page = render_traceback_html(exc)
+
+    assert "the-inner-cause" in page
+    assert "the-outer-error" in page
+    assert "The above exception was the direct cause" in page
+    # The cause is rendered before the outer error within the body.
+    body = page[page.index("<main>") :]
+    assert body.index("the-inner-cause") < body.index("the-outer-error")
+
+
+def test_render_traceback_html_includes_implicit_context_chain():
+    # An exception raised while handling another keeps the context separator.
+    try:
+        try:
+            raise KeyError("first-failure")
+        except KeyError:
+            raise TypeError("second-failure")
+    except TypeError as exc:
+        page = render_traceback_html(exc)
+
+    assert "first-failure" in page
+    assert "second-failure" in page
+    assert "During handling of the above exception" in page
+
+
+def test_render_traceback_html_renders_exception_notes():
+    # BaseException.add_note() content (PEP 678) appears in the output.
+    try:
+        raise ValueError("with-notes")
+    except ValueError as exc:
+        exc.add_note("first added note")
+        exc.add_note("second added note")
+        page = render_traceback_html(exc)
+
+    assert "first added note" in page
+    assert "second added note" in page
+
+
+def test_render_traceback_html_escapes_notes():
+    try:
+        raise ValueError("noted")
+    except ValueError as exc:
+        exc.add_note("<i>note-markup</i>")
+        page = render_traceback_html(exc)
+
+    assert "<i>note-markup</i>" not in page
+    assert "&lt;i&gt;note-markup&lt;/i&gt;" in page
