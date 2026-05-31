@@ -29,7 +29,8 @@ def _boom_app(message: str = "kaboom") -> Veloce:
 def test_debug_returns_html_traceback_with_source_context():
     app = _boom_app()
     with TestClient(app) as client:
-        resp = client.get("/boom")
+        # A browser-like Accept selects the HTML traceback view.
+        resp = client.get("/boom", headers={"accept": "text/html"})
 
     assert resp.status_code == 500
     assert "text/html" in resp.content_type
@@ -41,10 +42,31 @@ def test_debug_returns_html_traceback_with_source_context():
     assert "raise ValueError(message)" in body
 
 
+def test_debug_serves_plaintext_traceback_to_non_html_clients():
+    # A curl / CLI / programmatic client (no Accept, or not preferring HTML)
+    # keeps the plain-text traceback it got before the HTML page existed —
+    # the debug Content-Type contract is unchanged for them.
+    app = _boom_app()
+    with TestClient(app) as client:
+        no_accept = client.get("/boom")
+        star = client.get("/boom", headers={"accept": "*/*"})
+        plain = client.get("/boom", headers={"accept": "text/plain"})
+
+    for resp in (no_accept, star, plain):
+        assert resp.status_code == 500
+        assert "text/plain" in resp.content_type
+        assert "text/html" not in resp.content_type
+        # Still a real traceback, just not the HTML view.
+        assert "ValueError" in resp.text
+        assert "Traceback" in resp.text
+        # No HTML markup leaked into the plain-text body.
+        assert "<html" not in resp.text.lower()
+
+
 def test_debug_html_escapes_exception_message():
     app = _boom_app("<script>alert(1)</script>")
     with TestClient(app) as client:
-        resp = client.get("/boom")
+        resp = client.get("/boom", headers={"accept": "text/html"})
 
     body = resp.text
     # The raw tag must not survive into the markup.
