@@ -36,6 +36,13 @@ from veloce.http.dates import http_date, parse_date
 from veloce.http.request import Request
 from veloce.http.response import Response, StreamingResponse
 from veloce.safe import safe_join
+from veloce.status import (
+    HTTP_200_OK,
+    HTTP_206_PARTIAL_CONTENT,
+    HTTP_304_NOT_MODIFIED,
+    HTTP_403_FORBIDDEN,
+    HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+)
 
 
 @lru_cache(maxsize=512)
@@ -124,7 +131,7 @@ class StaticFiles:
         # Pure string arithmetic; actual filesystem I/O is offloaded below.
         file_path = safe_join(self.directory, relative)  # noqa: ASYNC240
         if file_path is None:
-            return Response(status_code=403, body=b"Forbidden")
+            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
 
         loop = asyncio.get_running_loop()
 
@@ -145,7 +152,7 @@ class StaticFiles:
 
         stat_result, denied = await loop.run_in_executor(None, _try_stat, file_path)
         if denied:
-            return Response(status_code=403, body=b"Forbidden")
+            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
         is_dir = stat_result is not None and stat.S_ISDIR(stat_result.st_mode)
         is_file = stat_result is not None and stat.S_ISREG(stat_result.st_mode)
 
@@ -156,7 +163,7 @@ class StaticFiles:
                 file_path_html = file_path + ".html"
                 stat_html, denied_html = await loop.run_in_executor(None, _try_stat, file_path_html)
                 if denied_html:
-                    return Response(status_code=403, body=b"Forbidden")
+                    return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
                 if stat_html is not None and stat.S_ISREG(stat_html.st_mode):
                     file_path = file_path_html
                     stat_result = stat_html
@@ -168,7 +175,7 @@ class StaticFiles:
                 # symlink in the index path from escaping.
                 real = await loop.run_in_executor(None, os.path.realpath, file_path)
                 if not self._is_under_root(real):
-                    return Response(status_code=403, body=b"Forbidden")
+                    return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
                 return await self._render_directory_index(file_path, request.path, loop)
             if not is_file:
                 return None
@@ -179,7 +186,7 @@ class StaticFiles:
         # directory must not expose files elsewhere on the filesystem.
         real_path = await loop.run_in_executor(None, os.path.realpath, file_path)
         if not self._is_under_root(real_path):
-            return Response(status_code=403, body=b"Forbidden")
+            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
 
         # stat_result was populated by the existence check above; reuse it.
         assert stat_result is not None  # narrowed by the `not is_file` returns
@@ -208,14 +215,14 @@ class StaticFiles:
         if if_none_match:
             if if_none_match.strip() == "*":
                 return Response(
-                    status_code=304,
+                    status_code=HTTP_304_NOT_MODIFIED,
                     body=b"",
                     headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
                 )
             for token in if_none_match.split(","):
                 if _etag_matches_weak(etag, token):
                     return Response(
-                        status_code=304,
+                        status_code=HTTP_304_NOT_MODIFIED,
                         body=b"",
                         headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
                     )
@@ -228,7 +235,7 @@ class StaticFiles:
             # "newer" than `IMS=1`.
             if ims_ts is not None and int(mtime) <= int(ims_ts):
                 return Response(
-                    status_code=304,
+                    status_code=HTTP_304_NOT_MODIFIED,
                     body=b"",
                     headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
                 )
@@ -252,7 +259,7 @@ class StaticFiles:
 
             if resolved is None or resolved[0] >= size or resolved[0] > resolved[1]:
                 return Response(
-                    status_code=416,
+                    status_code=HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
                     body=b"",
                     headers={
                         HEADER_CONTENT_RANGE: f"bytes */{size}",
@@ -272,7 +279,7 @@ class StaticFiles:
 
             body = await loop.run_in_executor(None, _read_range)
             return Response(
-                status_code=206,
+                status_code=HTTP_206_PARTIAL_CONTENT,
                 body=body,
                 content_type=content_type,
                 headers={
@@ -306,7 +313,7 @@ class StaticFiles:
             # progress hint can issue a HEAD or read `ETag`.
             return StreamingResponse(
                 content=self._iter_file(file_path, loop),
-                status_code=200,
+                status_code=HTTP_200_OK,
                 content_type=content_type,
                 headers=dict(common_headers),
             )
@@ -318,7 +325,7 @@ class StaticFiles:
         body = await loop.run_in_executor(None, _read)
 
         return Response(
-            status_code=200,
+            status_code=HTTP_200_OK,
             body=body,
             content_type=content_type,
             headers=common_headers,
@@ -406,7 +413,7 @@ class StaticFiles:
             f"<h1>{title}</h1><ul>" + "".join(rows) + "</ul></body></html>"
         )
         return Response(
-            status_code=200,
+            status_code=HTTP_200_OK,
             body=body.encode("utf-8"),
             content_type=MIME_TEXT_HTML_UTF8,
         )

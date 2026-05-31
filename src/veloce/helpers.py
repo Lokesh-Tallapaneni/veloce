@@ -23,6 +23,7 @@ from veloce.http.dates import http_date
 from veloce.http.response import FileResponse, JSONResponse, RedirectResponse, Response
 from veloce.safe import safe_join
 from veloce.signals import message_flashed
+from veloce.status import HTTP_200_OK, HTTP_302_FOUND, HTTP_403_FORBIDDEN
 
 # ── Context vars ──────────────────────────────────────────
 
@@ -399,7 +400,7 @@ def send_file(
 
 def redirect(
     location: str,
-    code: int = 302,
+    code: int = HTTP_302_FOUND,
     headers: dict[str, str] | None = None,
 ) -> Response:
     """Build a redirect response helper.
@@ -457,7 +458,7 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
 
 def make_response(
     body: Any = b"",
-    status_code: int = 200,
+    status_code: int = HTTP_200_OK,
     headers: dict[str, str] | None = None,
     content_type: str | None = None,
 ) -> Response:
@@ -510,7 +511,7 @@ def send_from_directory(
 
     resolved = safe_join(directory, filename)
     if resolved is None:
-        abort(403, MSG_ACCESS_DENIED)
+        abort(HTTP_403_FORBIDDEN, MSG_ACCESS_DENIED)
 
     if as_attachment and not download_name:
         download_name = os.path.basename(str(resolved))
@@ -537,7 +538,7 @@ async def send_from_directory_async(
     # `safe_join` is pure string arithmetic; the file read happens below.
     resolved = safe_join(directory, filename)  # noqa: ASYNC240
     if resolved is None:
-        abort(403, MSG_ACCESS_DENIED)
+        abort(HTTP_403_FORBIDDEN, MSG_ACCESS_DENIED)
 
     if as_attachment and not download_name:
         download_name = os.path.basename(str(resolved))

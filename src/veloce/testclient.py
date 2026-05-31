@@ -33,6 +33,14 @@ from veloce._constants import (
     MIME_JSON,
     MIME_OCTET_STREAM,
 )
+from veloce.status import (
+    HTTP_301_MOVED_PERMANENTLY,
+    HTTP_302_FOUND,
+    HTTP_303_SEE_OTHER,
+    HTTP_307_TEMPORARY_REDIRECT,
+    HTTP_308_PERMANENT_REDIRECT,
+    HTTP_500_INTERNAL_SERVER_ERROR,
+)
 
 
 def _resolve_redirect_location(location: str, base_url: str) -> tuple[str, str]:
@@ -435,7 +443,7 @@ class TestClient:
             body_sent = True
             return {"type": "http.request", "body": body, "more_body": False}
 
-        status_code = 500
+        status_code = HTTP_500_INTERNAL_SERVER_ERROR
         raw_headers: list[tuple[bytes, bytes]] = []
         body_chunks: list[bytes] = []
 
@@ -483,7 +491,13 @@ class TestClient:
                 )
             )
             self._update_cookies(resp)
-            if not follow or resp.status_code not in (301, 302, 303, 307, 308):
+            if not follow or resp.status_code not in (
+                HTTP_301_MOVED_PERMANENTLY,
+                HTTP_302_FOUND,
+                HTTP_303_SEE_OTHER,
+                HTTP_307_TEMPORARY_REDIRECT,
+                HTTP_308_PERMANENT_REDIRECT,
+            ):
                 return resp
             location = resp.headers.get("location") or resp.headers.get("Location")
             if not location:
@@ -495,7 +509,11 @@ class TestClient:
             # 307/308 strictly preserve method+body.
             new_method = current_method
             new_body = current_body
-            if resp.status_code in (301, 302, 303):
+            if resp.status_code in (
+                HTTP_301_MOVED_PERMANENTLY,
+                HTTP_302_FOUND,
+                HTTP_303_SEE_OTHER,
+            ):
                 new_method = "GET"
                 new_body = b""
             new_path, new_query = _resolve_redirect_location(location, self.base_url)
@@ -997,7 +1015,7 @@ class AsyncTestClient:
             body_sent = True
             return {"type": "http.request", "body": body, "more_body": False}
 
-        status_code = 500
+        status_code = HTTP_500_INTERNAL_SERVER_ERROR
         raw_headers: list[tuple[bytes, bytes]] = []
         body_chunks: list[bytes] = []
 
@@ -1045,14 +1063,24 @@ class AsyncTestClient:
                 current_method, current_path, current_query, all_headers, current_body
             )
             self._update_cookies(resp)
-            if not follow or resp.status_code not in (301, 302, 303, 307, 308):
+            if not follow or resp.status_code not in (
+                HTTP_301_MOVED_PERMANENTLY,
+                HTTP_302_FOUND,
+                HTTP_303_SEE_OTHER,
+                HTTP_307_TEMPORARY_REDIRECT,
+                HTTP_308_PERMANENT_REDIRECT,
+            ):
                 return resp
             location = resp.headers.get("location") or resp.headers.get("Location")
             if not location:
                 return resp
             # 301/302/303 → GET with no body (browser convention);
             # 307/308 preserve method + body.
-            if resp.status_code in (301, 302, 303):
+            if resp.status_code in (
+                HTTP_301_MOVED_PERMANENTLY,
+                HTTP_302_FOUND,
+                HTTP_303_SEE_OTHER,
+            ):
                 current_method, current_body = "GET", b""
             current_path, current_query = _resolve_redirect_location(location, self.base_url)
             # `current_headers` is intentionally kept across the hop — the

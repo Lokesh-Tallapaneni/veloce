@@ -15,6 +15,34 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from veloce.http.response import JSONResponse
+from veloce.status import (
+    HTTP_400_BAD_REQUEST,
+    HTTP_401_UNAUTHORIZED,
+    HTTP_402_PAYMENT_REQUIRED,
+    HTTP_403_FORBIDDEN,
+    HTTP_404_NOT_FOUND,
+    HTTP_405_METHOD_NOT_ALLOWED,
+    HTTP_406_NOT_ACCEPTABLE,
+    HTTP_407_PROXY_AUTHENTICATION_REQUIRED,
+    HTTP_408_REQUEST_TIMEOUT,
+    HTTP_409_CONFLICT,
+    HTTP_410_GONE,
+    HTTP_411_LENGTH_REQUIRED,
+    HTTP_412_PRECONDITION_FAILED,
+    HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+    HTTP_414_REQUEST_URI_TOO_LONG,
+    HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+    HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+    HTTP_417_EXPECTATION_FAILED,
+    HTTP_418_IM_A_TEAPOT,
+    HTTP_422_UNPROCESSABLE_ENTITY,
+    HTTP_429_TOO_MANY_REQUESTS,
+    HTTP_500_INTERNAL_SERVER_ERROR,
+    HTTP_501_NOT_IMPLEMENTED,
+    HTTP_502_BAD_GATEWAY,
+    HTTP_503_SERVICE_UNAVAILABLE,
+    HTTP_504_GATEWAY_TIMEOUT,
+)
 
 if TYPE_CHECKING:
     from veloce.http.response import Response
@@ -70,110 +98,110 @@ class HTTPException(Exception):
 
 
 class BadRequest(HTTPException):
-    code = 400
+    code = HTTP_400_BAD_REQUEST
     description = "Bad Request"
 
 
 class Unauthorized(HTTPException):
-    code = 401
+    code = HTTP_401_UNAUTHORIZED
     description = "Unauthorized"
 
 
 class PaymentRequired(HTTPException):
-    code = 402
+    code = HTTP_402_PAYMENT_REQUIRED
     description = "Payment Required"
 
 
 class Forbidden(HTTPException):
-    code = 403
+    code = HTTP_403_FORBIDDEN
     description = "Forbidden"
 
 
 class NotFound(HTTPException):
-    code = 404
+    code = HTTP_404_NOT_FOUND
     description = "Not Found"
 
 
 class MethodNotAllowed(HTTPException):
-    code = 405
+    code = HTTP_405_METHOD_NOT_ALLOWED
     description = "Method Not Allowed"
 
 
 class NotAcceptable(HTTPException):
-    code = 406
+    code = HTTP_406_NOT_ACCEPTABLE
     description = "Not Acceptable"
 
 
 class ProxyAuthenticationRequired(HTTPException):
-    code = 407
+    code = HTTP_407_PROXY_AUTHENTICATION_REQUIRED
     description = "Proxy Authentication Required"
 
 
 class RequestTimeout(HTTPException):
-    code = 408
+    code = HTTP_408_REQUEST_TIMEOUT
     description = "Request Timeout"
 
 
 class Conflict(HTTPException):
-    code = 409
+    code = HTTP_409_CONFLICT
     description = "Conflict"
 
 
 class Gone(HTTPException):
-    code = 410
+    code = HTTP_410_GONE
     description = "Gone"
 
 
 class LengthRequired(HTTPException):
-    code = 411
+    code = HTTP_411_LENGTH_REQUIRED
     description = "Length Required"
 
 
 class PreconditionFailed(HTTPException):
-    code = 412
+    code = HTTP_412_PRECONDITION_FAILED
     description = "Precondition Failed"
 
 
 class RequestEntityTooLarge(HTTPException):
-    code = 413
+    code = HTTP_413_REQUEST_ENTITY_TOO_LARGE
     description = "Content Too Large"
 
 
 class RequestURITooLong(HTTPException):
-    code = 414
+    code = HTTP_414_REQUEST_URI_TOO_LONG
     description = "URI Too Long"
 
 
 class UnsupportedMediaType(HTTPException):
-    code = 415
+    code = HTTP_415_UNSUPPORTED_MEDIA_TYPE
     description = "Unsupported Media Type"
 
 
 class RangeNotSatisfiable(HTTPException):
-    code = 416
+    code = HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE
     description = "Range Not Satisfiable"
 
 
 class ExpectationFailed(HTTPException):
-    code = 417
+    code = HTTP_417_EXPECTATION_FAILED
     description = "Expectation Failed"
 
 
 class ImATeapot(HTTPException):
     # RFC 2324 — not technically RFC 9110 but ubiquitous in test suites.
-    code = 418
+    code = HTTP_418_IM_A_TEAPOT
     description = "I'm a teapot"
 
 
 class UnprocessableEntity(HTTPException):
     # Reused by RFC 9110 §15.5.21 (formerly WebDAV-only); also the typed-DI 422.
-    code = 422
+    code = HTTP_422_UNPROCESSABLE_ENTITY
     description = "Unprocessable Content"
 
 
 class TooManyRequests(HTTPException):
     # RFC 6585 §4.
-    code = 429
+    code = HTTP_429_TOO_MANY_REQUESTS
     description = "Too Many Requests"
 
 
@@ -181,28 +209,28 @@ class TooManyRequests(HTTPException):
 
 
 class InternalServerError(HTTPException):
-    code = 500
+    code = HTTP_500_INTERNAL_SERVER_ERROR
     description = "Internal Server Error"
 
 
 class NotImplemented_(HTTPException):
     # Trailing underscore — `NotImplemented` is a builtin singleton.
-    code = 501
+    code = HTTP_501_NOT_IMPLEMENTED
     description = "Not Implemented"
 
 
 class BadGateway(HTTPException):
-    code = 502
+    code = HTTP_502_BAD_GATEWAY
     description = "Bad Gateway"
 
 
 class ServiceUnavailable(HTTPException):
-    code = 503
+    code = HTTP_503_SERVICE_UNAVAILABLE
     description = "Service Unavailable"
 
 
 class GatewayTimeout(HTTPException):
-    code = 504
+    code = HTTP_504_GATEWAY_TIMEOUT
     description = "Gateway Timeout"
 
 
@@ -363,7 +391,7 @@ async def request_validation_exception_handler(
 
     Uses the structured shape ``{"detail": [ ...per-field errors... ]}``.
     """
-    return JSONResponse({"detail": exc.errors or []}, status_code=422)
+    return JSONResponse({"detail": exc.errors or []}, status_code=HTTP_422_UNPROCESSABLE_ENTITY)
 
 
 # Backward-compat re-export — Aborter moved to veloce.helpers.

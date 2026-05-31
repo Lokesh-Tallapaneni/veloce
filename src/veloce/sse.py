@@ -10,6 +10,7 @@ from typing import Any
 from veloce._constants import HEADER_CACHE_CONTROL, HEADER_CONTENT_TYPE, HEADER_TRANSFER_ENCODING
 from veloce._internal import _encode_response_head
 from veloce.http.response import Response
+from veloce.status import HTTP_200_OK
 
 # SSE keep-alive frame: a comment line (colon-prefixed) the spec requires
 # clients to ignore. Sent when no event arrives within the `ping` window
@@ -82,7 +83,7 @@ class EventSourceResponse(Response):
     def __init__(
         self,
         content: AsyncIterator[ServerSentEvent | str | bytes],
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
         ping: float | None = None,
     ) -> None:

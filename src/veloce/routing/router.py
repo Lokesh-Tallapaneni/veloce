@@ -21,6 +21,7 @@ from veloce.routing.converters import (
     is_regex_path,
     parse_converter,
 )
+from veloce.status import HTTP_200_OK
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 
@@ -150,7 +151,7 @@ class RouteInfo:
         description: str | None = None,
         deprecated: bool = False,
         response_description: str = "Successful Response",
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         response_class: Any = None,
         response_model_include: set[str] | None = None,
         response_model_exclude: set[str] | None = None,
@@ -414,7 +415,7 @@ class Router:
         description: str | None = None,
         deprecated: bool = False,
         response_description: str = "Successful Response",
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         response_class: Any = None,
         response_model_include: set[str] | None = None,
         response_model_exclude: set[str] | None = None,
@@ -812,7 +813,7 @@ class Router:
         description: str | None = None,
         deprecated: bool = False,
         response_description: str = "Successful Response",
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         response_class: Any = None,
         response_model_include: set[str] | None = None,
         response_model_exclude: set[str] | None = None,

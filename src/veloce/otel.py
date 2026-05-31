@@ -87,6 +87,8 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
+from veloce.status import HTTP_500_INTERNAL_SERVER_ERROR
+
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
     from veloce.instrumentation import RequestMetrics
@@ -221,7 +223,7 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
                 span.set_attribute("http.route", metrics.route)
             span.set_attribute("http.response.status_code", metrics.status_code)
             span.set_attribute("duration_ms", metrics.duration_ms)
-            if metrics.status_code >= 500:
+            if metrics.status_code >= HTTP_500_INTERNAL_SERVER_ERROR:
                 span.set_status(Status(StatusCode.ERROR))
         finally:
             span.end(end_time=end_time)

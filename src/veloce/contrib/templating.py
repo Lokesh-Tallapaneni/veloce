@@ -8,6 +8,7 @@ from typing import Any
 
 from veloce.helpers import _current_app_var, current_app, g
 from veloce.http.response import HTMLResponse
+from veloce.status import HTTP_200_OK
 
 # Sentinel attribute name written onto each Jinja Environment to memoize
 # the result of `_sync_app_jinja_helpers`. Holds a (id(app), filter/global/
@@ -183,7 +184,7 @@ class Jinja2Templates:
         self,
         name: str,
         context: dict[str, Any],
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> HTMLResponse:
         """Render a template and return as HTMLResponse."""

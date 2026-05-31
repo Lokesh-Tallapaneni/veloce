@@ -1318,7 +1318,7 @@ class Veloce(Router):
         if "OPTIONS" not in advertised:
             advertised.append("OPTIONS")
         return Response(
-            status_code=200,
+            status_code=status.HTTP_200_OK,
             body=b"",
             content_type=MIME_TEXT_PLAIN,
             headers={"Allow": ", ".join(advertised)},
@@ -2524,7 +2524,11 @@ class Veloce(Router):
             )
             alt_match = self.match(request.method, alt)
             if alt_match is not None:
-                code = 308 if request.method != "GET" else 307
+                code = (
+                    status.HTTP_308_PERMANENT_REDIRECT
+                    if request.method != "GET"
+                    else status.HTTP_307_TEMPORARY_REDIRECT
+                )
                 response = RedirectResponse(alt, status_code=code)
                 if self._middlewares:
                     response = await self._run_response_middleware(request, response)
@@ -2628,7 +2632,10 @@ class Veloce(Router):
         response = self._coerce_response(result, route_info.response_class)
 
         # Apply route-level status_code override
-        if route_info.status_code != 200 and response.status_code == 200:
+        if (
+            route_info.status_code != status.HTTP_200_OK
+            and response.status_code == status.HTTP_200_OK
+        ):
             response.status_code = route_info.status_code
             response._encoded = None
 
@@ -3434,7 +3441,11 @@ class Veloce(Router):
             # MUST NOT include a payload. Strip the body before sending so
             # buggy handlers can't violate the spec.
             body_out = response.body
-            if response.status_code in (204, 304, 205):
+            if response.status_code in (
+                status.HTTP_204_NO_CONTENT,
+                status.HTTP_304_NOT_MODIFIED,
+                status.HTTP_205_RESET_CONTENT,
+            ):
                 body_out = b""
 
             # RFC 9110 §9.3.2: HEAD responses must not include a payload

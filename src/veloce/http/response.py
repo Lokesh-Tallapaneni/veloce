@@ -50,6 +50,11 @@ from veloce._internal import (
 from veloce.http.cache_control import CacheControl
 from veloce.http.dates import http_date, parse_date
 from veloce.http.header_set import HeaderSet
+from veloce.status import (
+    HTTP_200_OK,
+    HTTP_304_NOT_MODIFIED,
+    HTTP_307_TEMPORARY_REDIRECT,
+)
 
 
 class Response:
@@ -67,7 +72,7 @@ class Response:
 
     def __init__(
         self,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         body: bytes = b"",
         content_type: str = MIME_TEXT_PLAIN,
         headers: dict[str, str] | None = None,
@@ -982,7 +987,7 @@ class Response:
 
     def _downgrade_to_304(self) -> None:
         """Strip body + flip status to 304. Used by `make_conditional`."""
-        self.status_code = 304
+        self.status_code = HTTP_304_NOT_MODIFIED
         self.body = b""
         # Content-Length removal so a 304 doesn't carry a length
         # for a body it isn't sending (RFC 9110 §15.4.5).
@@ -1052,7 +1057,7 @@ class JSONResponse(Response):
     def __init__(
         self,
         data: Any,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> None:
         try:
@@ -1071,7 +1076,7 @@ class JSONResponse(Response):
         cls,
         body: bytes,
         *,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> JSONResponse:
         """Build a `JSONResponse` from already-encoded JSON bytes.
@@ -1141,7 +1146,7 @@ class UJSONResponse(Response):
     def __init__(
         self,
         data: Any,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> None:
         try:
@@ -1167,7 +1172,7 @@ class HTMLResponse(Response):
     def __init__(
         self,
         content: str,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(
@@ -1186,7 +1191,7 @@ class PlainTextResponse(Response):
     def __init__(
         self,
         content: str,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(
@@ -1205,7 +1210,7 @@ class RedirectResponse(Response):
     def __init__(
         self,
         url: str,
-        status_code: int = 307,
+        status_code: int = HTTP_307_TEMPORARY_REDIRECT,
         headers: dict[str, str] | None = None,
     ) -> None:
         hdrs = headers or {}
@@ -1236,7 +1241,7 @@ class StreamingResponse(Response):
     def __init__(
         self,
         content: Any,
-        status_code: int = 200,
+        status_code: int = HTTP_200_OK,
         content_type: str = MIME_OCTET,
         headers: dict[str, str] | None = None,
     ) -> None:
@@ -1357,7 +1362,7 @@ class FileResponse(Response):
             body = f.read()
 
         super().__init__(
-            status_code=200,
+            status_code=HTTP_200_OK,
             body=body,
             content_type=content_type,
             headers=hdrs,
@@ -1399,5 +1404,7 @@ class FileResponse(Response):
             hdrs[HEADER_ETAG] = _file_etag(path, st.st_size, st.st_mtime)
 
         resp = Response.__new__(cls)
-        Response.__init__(resp, status_code=200, body=body, content_type=content_type, headers=hdrs)
+        Response.__init__(
+            resp, status_code=HTTP_200_OK, body=body, content_type=content_type, headers=hdrs
+        )
         return resp
