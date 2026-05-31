@@ -107,11 +107,28 @@ async def test_partial_response_keeps_etag_and_last_modified(static):
 
 
 @pytest.mark.asyncio
-async def test_if_range_matching_etag_still_serves_206(static):
-    """A Range with an If-Range validator that matches the current ETag is honored."""
+async def test_if_range_weak_etag_serves_full_200(static):
+    """RFC 9110 Sec. 13.1.5 mandates STRONG comparison for an If-Range ETag.
+    Veloce emits weak file ETags, so even a byte-identical weak ETag cannot
+    authorize a range resume - the server returns the full 200."""
     sf, _ = static
     etag = (await sf.handle(_req("/static/blob.bin"))).headers["ETag"]
+    assert etag.startswith("W/")  # the server's file ETags are weak
     resp = await sf.handle(_req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": etag}))
+    assert resp.status_code == 200
+    assert len(resp.body) == 100
+    assert "Content-Range" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_if_range_exact_date_serves_206(static):
+    """An If-Range HTTP-date that exactly matches the file's Last-Modified
+    authorizes the range resume (RFC 9110 Sec. 13.1.5 exact-match rule)."""
+    sf, _ = static
+    last_modified = (await sf.handle(_req("/static/blob.bin"))).headers["Last-Modified"]
+    resp = await sf.handle(
+        _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": last_modified})
+    )
     assert resp.status_code == 206
     assert len(resp.body) == 10
 

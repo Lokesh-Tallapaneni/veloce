@@ -257,18 +257,21 @@ class StaticFiles:
         if range_spec is not None:
             if_etag, if_date = request.if_range
             if if_etag:
-                # Honor the range only if the If-Range ETag still matches the
-                # current representation. Weak comparison, consistent with the
-                # weak `(size, mtime)`-derived ETags this server emits and with
-                # its If-None-Match handling: a changed file gets a new ETag, so
-                # a stale validator no longer matches and we fall through to a
-                # full 200 rather than splicing a 206 from a different version.
-                honor_range = _etag_matches_weak(etag, if_etag)
+                # RFC 9110 Sec. 13.1.5 mandates the STRONG comparison function
+                # for an If-Range ETag: both tags must be strong (no `W/`
+                # prefix) and byte-identical. A weak validator only guarantees
+                # semantic equivalence, not the byte-for-byte identity a range
+                # resume needs. Veloce emits weak file ETags, so an ETag
+                # If-Range never satisfies strong comparison and we serve a
+                # full 200 - clients should resume via the Last-Modified date.
+                honor_range = (
+                    not if_etag.startswith("W/") and not etag.startswith("W/") and if_etag == etag
+                )
             elif if_date is not None:
-                # Honor only if the representation has not been modified after
-                # the client's snapshot date (second resolution, matching
-                # HTTP-date precision).
-                honor_range = int(mtime) <= int(if_date)
+                # RFC 9110 Sec. 13.1.5 requires an EXACT date match here (unlike
+                # the "earlier than or equal" test used for If-Unmodified-Since).
+                # Compare at HTTP-date (whole-second) resolution.
+                honor_range = int(mtime) == int(if_date)
         if (
             honor_range
             and range_spec is not None
