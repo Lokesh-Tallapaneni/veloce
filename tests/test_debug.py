@@ -184,12 +184,13 @@ def test_render_traceback_html_includes_implicit_context_chain():
 
 
 def test_render_traceback_html_renders_exception_notes():
-    # BaseException.add_note() content (PEP 678) appears in the output.
+    # PEP 678 exception notes appear in the output. Set ``__notes__`` directly
+    # (the attribute the renderer reads) rather than via ``add_note()`` so the
+    # test runs on Python 3.10, where ``add_note()`` does not yet exist.
     try:
         raise ValueError("with-notes")
     except ValueError as exc:
-        exc.add_note("first added note")
-        exc.add_note("second added note")
+        exc.__notes__ = ["first added note", "second added note"]
         page = render_traceback_html(exc)
 
     assert "first added note" in page
@@ -200,7 +201,7 @@ def test_render_traceback_html_escapes_notes():
     try:
         raise ValueError("noted")
     except ValueError as exc:
-        exc.add_note("<i>note-markup</i>")
+        exc.__notes__ = ["<i>note-markup</i>"]
         page = render_traceback_html(exc)
 
     assert "<i>note-markup</i>" not in page
