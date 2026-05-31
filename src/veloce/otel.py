@@ -22,19 +22,25 @@ Importing this module (or ``import veloce``) never requires OpenTelemetry: the
 ``opentelemetry`` import is guarded, and :func:`instrument_with_otel` raises a
 clear :class:`ImportError` with an install hint when it is missing.
 
-**Timing limitation (honest):** Veloce's instrumentation hook fires *after* the
-response is produced — :meth:`Veloce._run_instrumentation` runs once the request
-is finished, with the already-measured wall-clock duration. The span emitted
-here therefore *represents* a request (its method, route, status, and duration
-attribute) but is **not** a live wrap around handler execution; it is recorded
-retroactively from the :class:`~veloce.instrumentation.RequestMetrics` record.
-For per-request causal context propagation you would integrate at the ASGI
+**Timing:** Veloce's instrumentation hook fires *after* the response is
+produced — :meth:`Veloce._run_instrumentation` runs once the request is
+finished, with the already-measured wall-clock duration. The span emitted here
+is therefore recorded retroactively from the
+:class:`~veloce.instrumentation.RequestMetrics` record, but it is *backdated*:
+its ``start_time`` and ``end_time`` are set explicitly from the measured
+duration so the exported span covers the real request window rather than the
+instant of emission. Because the span is created after the fact, it is rooted
+in a fresh, empty context — never the ambient OpenTelemetry context active at
+emission time — so it is always a clean server-root span and never accidentally
+parents itself under unrelated work running on the same task. For live,
+nested per-request causal context propagation you would integrate at the ASGI
 layer instead; this bridge is for backend-agnostic request spans driven off the
 same low-cardinality dimensions a metrics exporter consumes.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -50,10 +56,12 @@ if TYPE_CHECKING:
 # raised.
 try:
     from opentelemetry import trace as _otel_trace
+    from opentelemetry.context import Context as _OtelContext
 
     _OTEL_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover - exercised only without opentelemetry
     _otel_trace = None  # type: ignore[assignment]
+    _OtelContext = None  # type: ignore[assignment,misc]
     _OTEL_IMPORT_ERROR = exc
 
 
@@ -82,9 +90,12 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
     :meth:`Veloce.add_instrumentation` returns), so callers can hold a reference
     to it for tests or introspection.
 
-    Note the timing limitation documented in this module: the span is recorded
-    retroactively from the request's metrics record, not as a live wrap of
-    handler execution.
+    The span is recorded retroactively from the request's metrics record, not
+    as a live wrap of handler execution, but it is backdated: ``start_time`` and
+    ``end_time`` are set from the measured duration so the exported span covers
+    the real request window. It is created in a fresh, empty context so it is
+    always a clean server root, never parented under the ambient OpenTelemetry
+    context that happens to be active when the hook fires.
     """
     if _OTEL_IMPORT_ERROR is not None:
         raise ImportError(_INSTALL_HINT) from _OTEL_IMPORT_ERROR
@@ -96,7 +107,19 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
 
     def _emit_span(metrics: RequestMetrics) -> None:
         span_name = metrics.route or metrics.path
-        span = tracer.start_span(span_name, kind=SpanKind.SERVER)
+        # The hook fires after the response is produced, so derive an absolute
+        # window from the now-known duration: end at emission, start one
+        # duration earlier. OpenTelemetry timestamps are integer nanoseconds.
+        end_time = time.time_ns()
+        start_time = end_time - int(metrics.duration_ms * 1_000_000)
+        # Root the span in an empty context, not the ambient one: a retroactive
+        # request span must never inherit an unrelated active span as parent.
+        span = tracer.start_span(
+            span_name,
+            context=_OtelContext(),
+            kind=SpanKind.SERVER,
+            start_time=start_time,
+        )
         try:
             span.set_attribute("http.request.method", metrics.method)
             if metrics.route is not None:
@@ -106,7 +129,7 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
             if metrics.status_code >= 500:
                 span.set_status(Status(StatusCode.ERROR))
         finally:
-            span.end()
+            span.end(end_time=end_time)
 
     app.add_instrumentation(_emit_span)
     return _emit_span

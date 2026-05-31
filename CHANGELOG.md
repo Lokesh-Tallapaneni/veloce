@@ -25,7 +25,11 @@ longer scale memory with body size.
   `TracerProvider`, and exporter. Install with `pip install veloceframework[otel]`;
   `import veloce` continues to work without the extra. The span is recorded
   retroactively from the request's metrics record, not as a live wrap of handler
-  execution.
+  execution, but it is backdated: its `start_time` and `end_time` are derived
+  from the measured request duration so the exported span covers the real
+  request window. It is created in a fresh, empty context — never the ambient
+  OpenTelemetry context active when the hook fires — so it is always a clean
+  server root span.
 - The built-in HTTP/1.1 server's keep-alive and slowloris read timeouts are
   now configurable through `app.config`: `KEEP_ALIVE_TIMEOUT` (idle-connection
   timeout) and `REQUEST_TIMEOUT` (per-request read budget). Defaults are

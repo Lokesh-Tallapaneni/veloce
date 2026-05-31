@@ -110,6 +110,94 @@ def test_emits_server_span_per_request() -> None:
     assert "duration_ms" in span.attributes
 
 
+def test_span_is_backdated_to_the_measured_request_window() -> None:
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    import time
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    app = _app()
+    instrument_with_otel(app, tracer_provider=provider)
+
+    # Bracket the request with wall-clock readings so we can prove the exported
+    # span timestamps reflect the real request window, not just a duration_ms
+    # attribute. start_time/end_time are integer nanoseconds since the epoch.
+    before = time.time_ns()
+    app.test_client().get("/items/7")
+    after = time.time_ns()
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+
+    # The span has real, distinct, ordered timestamps.
+    assert span.start_time is not None
+    assert span.end_time is not None
+    assert span.end_time >= span.start_time
+
+    # The whole window falls inside the bracket we measured around the request.
+    assert before <= span.start_time
+    assert span.end_time <= after
+
+    # The exported window matches the duration_ms attribute (within 1ms of
+    # rounding), proving the backdate is derived from the measured duration.
+    exported_ms = (span.end_time - span.start_time) / 1_000_000
+    assert abs(exported_ms - span.attributes["duration_ms"]) <= 1.0
+
+
+def test_span_is_root_and_ignores_ambient_context() -> None:
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry import context as otel_context
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    app = _app()
+    instrument_with_otel(app, tracer_provider=provider)
+
+    # Make an unrelated span the ambient current context while the request runs.
+    # The retroactive request span must NOT pick this up as its parent.
+    tracer = provider.get_tracer("test-ambient")
+    ambient = tracer.start_span("ambient", kind=trace.SpanKind.INTERNAL)
+    token = otel_context.attach(trace.set_span_in_context(ambient))
+    try:
+        app.test_client().get("/items/7")
+    finally:
+        otel_context.detach(token)
+        ambient.end()
+
+    request_spans = [s for s in exporter.get_finished_spans() if s.name == "/items/{item_id}"]
+    assert len(request_spans) == 1
+    request_span = request_spans[0]
+
+    # A clean server root: no parent, and specifically not the ambient span.
+    assert request_span.parent is None
+    assert request_span.context.trace_id != ambient.get_span_context().trace_id
+
+
 def test_5xx_marks_span_error() -> None:
     pytest.importorskip("opentelemetry")
     pytest.importorskip("opentelemetry.sdk")
