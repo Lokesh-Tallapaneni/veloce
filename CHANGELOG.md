@@ -208,6 +208,16 @@ longer scale memory with body size.
 
 ### Fixed
 
+- The buffered ASGI response path no longer emits a duplicate `Content-Length`
+  (or `Content-Type`) header. It now checks the response headers
+  case-insensitively and sends the framework default only when the response
+  does not already carry that header, so a value set by middleware — such as
+  the compressed length written by `GZipMiddleware` — appears exactly once and
+  wins. This matches the raw HTTP/1.1 `Response.encode()` path. Responses with
+  no explicit `Content-Length`/`Content-Type` are unchanged, and
+  `Content-Encoding`, `Vary`, and per-cookie `Set-Cookie` headers still pass
+  through. Strict HTTP clients that reject duplicate `Content-Length` now
+  accept gzip-compressed responses.
 - OpenAPI schemas for non-body parameters (query, path, header, cookie) and
   `Form()` fields now match what the request resolver can actually deliver.
   These values arrive over the wire as raw strings, so a parameter annotated
