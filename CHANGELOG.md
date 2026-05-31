@@ -97,6 +97,23 @@ longer scale memory with body size.
 
 ### Changed
 
+- In debug mode, an unhandled exception now renders a styled, read-only HTML
+  traceback page **for clients that prefer HTML** (a browser, via the `Accept`
+  header); curl / CLI / programmatic clients (`*/*`, no `Accept`, or an explicit
+  `text/plain` preference) keep the plain-text traceback unchanged. The page shows the
+  exception type and message, each frame's file path, line number and function
+  name, and a short source-context window read from `linecache`; every
+  interpolated value is HTML-escaped. Chained exceptions (`raise ... from`,
+  implicit context), per-exception `__notes__`, PEP 654 exception groups
+  (`ExceptionGroup` / `BaseExceptionGroup`, including those raised by
+  `asyncio.TaskGroup`), and the offending source line and caret for
+  `SyntaxError`/`IndentationError`/`TabError` are all preserved, matching the
+  detail of the plain-text traceback that non-HTML clients still receive; an
+  exception whose `__str__` raises is rendered with a safe placeholder rather
+  than crashing the renderer. The page is a read-only traceback viewer — there
+  is no evaluating console, no frame-local inspection over the wire, and no
+  code-eval endpoint — and remains gated behind `debug=True` only. The
+  production error response is unchanged.
 - Parameter-only handlers (the request plus scalar path/query parameters, with
   no dependencies) now resolve through a straight-line resolver generated and
   compiled once on first dispatch and cached on the route's plan, replacing the

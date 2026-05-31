@@ -9,6 +9,7 @@ import functools
 import inspect
 import signal
 import time
+import traceback
 import warnings
 import weakref
 from collections.abc import Callable, Mapping
@@ -27,6 +28,7 @@ from veloce._internal import (
 )
 from veloce.blueprints import _endpoint_blueprint
 from veloce.contrib.staticfiles import StaticFiles
+from veloce.debug import render_traceback_html
 from veloce.dependency import DependencyResolver, Depends
 from veloce.exceptions import (
     HTTPException,
@@ -93,6 +95,21 @@ _CT_BYTES_CACHE: dict[str, bytes] = {
 # vast majority of typical JSON API responses; larger payloads fall
 # through to the per-request `str(n).encode()` allocation.
 _CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(2048))
+
+
+def _prefers_html(request: Request) -> bool:
+    """Whether the client prefers an HTML response over plain text.
+
+    Used by the debug traceback page: a browser (`Accept: text/html`) gets the
+    rich HTML view, while curl / CLI / programmatic clients (`*/*`, no Accept,
+    or an explicit text/plain preference) keep the plain-text traceback. A
+    missing Accept header is treated as "no HTML preference" → plain text,
+    preserving the pre-existing debug Content-Type for non-browser clients.
+    """
+    accept = request.headers.get("accept")
+    if not accept:
+        return False
+    return request.accept_mimetypes.best_match(["text/plain", "text/html"]) == "text/html"
 
 
 class Veloce(Router):
@@ -2085,13 +2102,22 @@ class Veloce(Router):
                 raise
 
             if self.debug:
-                import traceback
-
-                tb = traceback.format_exc()
+                # Serve the rich HTML traceback only to a client that prefers
+                # HTML (a browser); curl / CLI / programmatic clients keep the
+                # plain-text traceback they got before this page existed, so
+                # the debug-mode Content-Type contract is unchanged for them.
+                if _prefers_html(request):
+                    body = render_traceback_html(exc).encode()
+                    content_type = "text/html; charset=utf-8"
+                else:
+                    body = "".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    ).encode()
+                    content_type = "text/plain; charset=utf-8"
                 response = Response(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    body=tb.encode(),
-                    content_type="text/plain",
+                    body=body,
+                    content_type=content_type,
                 )
                 if self._middlewares:
                     response = await self._run_response_middleware(request, response)
