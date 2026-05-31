@@ -27,6 +27,7 @@ from veloce._internal import (
 )
 from veloce.blueprints import _endpoint_blueprint
 from veloce.contrib.staticfiles import StaticFiles
+from veloce.debug import render_traceback_html
 from veloce.dependency import DependencyResolver, Depends
 from veloce.exceptions import (
     HTTPException,
@@ -2085,13 +2086,11 @@ class Veloce(Router):
                 raise
 
             if self.debug:
-                import traceback
-
-                tb = traceback.format_exc()
+                html_page = render_traceback_html(exc)
                 response = Response(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    body=tb.encode(),
-                    content_type="text/plain",
+                    body=html_page.encode(),
+                    content_type="text/html; charset=utf-8",
                 )
                 if self._middlewares:
                     response = await self._run_response_middleware(request, response)

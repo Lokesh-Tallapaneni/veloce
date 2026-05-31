@@ -79,6 +79,14 @@ longer scale memory with body size.
 
 ### Changed
 
+- In debug mode, an unhandled exception now renders a styled, read-only HTML
+  traceback page instead of the plain-text traceback. The page shows the
+  exception type and message, each frame's file path, line number and function
+  name, and a short source-context window read from `linecache`; every
+  interpolated value is HTML-escaped. It is strictly read-only — there is no
+  evaluating console, no frame-local inspection over the wire, and no code-eval
+  endpoint — and remains gated behind `debug=True` only. The production error
+  response is unchanged.
 - Parameter-only handlers (the request plus scalar path/query parameters, with
   no dependencies) now resolve through a straight-line resolver generated and
   compiled once on first dispatch and cached on the route's plan, replacing the
