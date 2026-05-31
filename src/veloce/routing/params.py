@@ -1,4 +1,4 @@
-"""Parameter declaration classes.
+"""Parameter markers — declarative bindings for query, path, body, and header values.
 
 Usage:
     @app.get("/items")
@@ -50,6 +50,15 @@ class ParamBase:
         "convert_underscores",
         "include_in_schema",
     )
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        # Markers are slotless semantic tags; without `__slots__ = ()` each
+        # instance silently gains a `__dict__`, negating the base's layout.
+        super().__init_subclass__(**kwargs)
+        if "__slots__" not in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} must define __slots__ (use __slots__ = () if no new fields needed)"
+            )
 
     def __init__(
         self,
@@ -148,40 +157,40 @@ class ParamBase:
 class Query(ParamBase):
     """Query parameter declaration."""
 
-    pass
+    __slots__ = ()
 
 
 class Path(ParamBase):
     """Path parameter declaration."""
 
-    pass
+    __slots__ = ()
 
 
 class Body(ParamBase):
     """Request body parameter declaration."""
 
-    pass
+    __slots__ = ()
 
 
 class Form(ParamBase):
     """Form field parameter declaration."""
 
-    pass
+    __slots__ = ()
 
 
 class File(ParamBase):
     """File upload parameter declaration."""
 
-    pass
+    __slots__ = ()
 
 
 class Header(ParamBase):
     """HTTP header parameter declaration."""
 
-    pass
+    __slots__ = ()
 
 
 class Cookie(ParamBase):
     """Cookie parameter declaration."""
 
-    pass
+    __slots__ = ()

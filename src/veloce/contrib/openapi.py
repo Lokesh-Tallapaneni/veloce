@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import contextlib
-import datetime as _datetime
-import enum as _enum
-import html as _html
+import datetime
+import enum
+import html
 import inspect
 import logging
-import types as _types
-import uuid as _uuid
+import types
+import uuid
 import weakref
 from decimal import Decimal
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
@@ -27,7 +27,7 @@ from veloce.routing.params import Header as HeaderParam
 from veloce.routing.params import ParamBase
 from veloce.routing.params import Path as PathParam
 
-_logger = logging.getLogger("veloce.openapi")
+_logger = logging.getLogger(__name__)
 
 # Per-handler memoization of `inspect.signature` + `get_type_hints`. The
 # OpenAPI generator visits each handler from four sites (operation
@@ -38,6 +38,22 @@ _logger = logging.getLogger("veloce.openapi")
 _HANDLER_INTRO_CACHE: weakref.WeakKeyDictionary[Any, tuple[Any, dict[str, Any]]] = (
     weakref.WeakKeyDictionary()
 )
+
+# Swagger UI / ReDoc bundles are pinned to a specific patch version and
+# loaded with a Subresource Integrity hash. Together with
+# `crossorigin="anonymous"` the browser refuses to execute the script
+# if the CDN ever serves bytes that do not hash to this exact digest,
+# so a CDN compromise cannot inject arbitrary JavaScript onto a
+# `/docs` page. Bump the versions in lock-step with the hashes — the
+# hash will not match if you change one without the other.
+_SWAGGER_UI_VERSION = "5.18.2"
+_SWAGGER_UI_CSS_INTEGRITY = "sha512-xRGj65XGEcpPTE7Cn6ujJWokpXVLxqLxdtNZ/n1w52+76XaCRO7UWKZl9yJHvzpk99A0EP6EW+opPcRwPDxwkA=="
+_SWAGGER_UI_JS_INTEGRITY = "sha512-9tBcCofqWq+PelL6USpUB7OJrCaObfefi9ht9nVZuKt1XP7eHDs7NwVljLSLVtSsErax1Tz3pG3O82eeq546Rg=="
+_REDOC_VERSION = "2.1.5"
+_REDOC_JS_INTEGRITY = "sha384-0GrsyTQc9Oqd8h+b2dbc4XdR2T/DYpy0tLNNstyx+LBMUyiBbcWPbEs9aRmUcaxD"
+
+
+# ── Introspection / merge helpers ───────────────────────────
 
 
 def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
@@ -80,6 +96,211 @@ def _deep_merge(target: dict, overlay: dict) -> None:
             _deep_merge(target[key], value)
         else:
             target[key] = value
+
+
+# ── Python type → JSON Schema helpers ───────────────────────
+
+
+def _is_model_type(annotation: Any) -> bool:
+    """Return True for a Pydantic ``BaseModel`` subclass annotation."""
+    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
+
+
+def _literal_enum_schema(values: list) -> dict[str, Any]:
+    """Build an OpenAPI schema for a fixed set of literal / enum values."""
+    schema: dict[str, Any] = {"enum": values}
+    if not values:
+        return schema
+    if all(isinstance(v, bool) for v in values):
+        schema["type"] = "boolean"
+    elif all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+        schema["type"] = "integer"
+    elif all(isinstance(v, str) for v in values):
+        schema["type"] = "string"
+    return schema
+
+
+def _python_type_to_schema(annotation: Any) -> dict:
+    """Convert a Python type to its OpenAPI 3.1 / JSON Schema 2020-12 form.
+
+    This builds the schema for a non-body parameter (query / path / header
+    / cookie) or a form field. Those values arrive over the wire as raw
+    strings: the resolver pulls them from `request.query_params`,
+    `request.headers`, `request.cookies`, or `request.form()` and coerces
+    each through `_coerce_value`. The schema therefore documents only what
+    that string-origin pipeline can actually deliver.
+
+    Scalars resolve to their richer JSON Schema form — `datetime`, `date`,
+    `time`, `UUID`, `Decimal`, `Enum` subclasses and `Literal[...]` all
+    keep their `format` / `enum` keywords. A nullable scalar
+    (`Optional[T]`) unwraps to the inner schema.
+
+    Pydantic models — and models nested inside `list` / `set` / `dict` —
+    keep `{"type": "string"}`: the value arrives as a raw string and the
+    resolver parses that string as a JSON document into the model
+    (`?tag={"name":"x"}`), so the wire shape is genuinely a string.
+
+    Multi-member unions are schema'd by which branches a *string* input
+    can actually reach under Pydantic's smart coercion:
+
+    - A union that includes `str` (`int | str`, `int | str | None`)
+      collapses to `{"type": "string"}`: smart-mode coercion keeps a
+      string value as the `str` member, so that is the only reachable
+      branch.
+    - A union with no string-accepting member (`int | float`,
+      `UUID | int`, `date | datetime`) emits an `anyOf` over the members'
+      schemas: the resolver feeds the string to Pydantic, which resolves
+      it to whichever non-string branch matches, so several branches are
+      genuinely reachable.
+    """
+    if annotation is None or annotation is inspect.Parameter.empty:
+        return {"type": "string"}
+    # `Any` means "any value allowed" — JSON Schema convention is an empty
+    # schema, not a string default. Lets `dict[str, Any]` emit
+    # `additionalProperties: {}` rather than forcing string-valued entries.
+    if annotation is Any:
+        return {}
+
+    origin = get_origin(annotation)
+    # Unwrap `Optional[T]` / `T | None` to the inner type so a nullable
+    # rich-typed parameter still emits its `format` / `enum` keywords.
+    #
+    # For a genuine multi-member union the schema follows which branch a
+    # string wire value can reach under Pydantic's smart coercion (verified
+    # against the resolver, not assumed):
+    #   - a member that accepts a string directly (`str` / `bytes`) always
+    #     wins, so the union collapses to `{"type": "string"}`;
+    #   - a Pydantic-model member is NOT reachable from a string in a union —
+    #     the resolver only JSON-decodes a *bare* model annotation, so
+    #     `Tag | int` rejects `?v={"name":"x"}` with 422. Model members are
+    #     dropped from the union schema so it never advertises a 422 branch;
+    #   - the remaining scalar branches (`int | float`, `UUID | int`, …) are
+    #     each genuinely reachable, so the union emits an `anyOf` over them.
+    if origin is Union or origin is types.UnionType:
+        members = get_args(annotation)
+        inner = [a for a in members if a is not type(None)]
+        if len(inner) == 1:
+            return _python_type_to_schema(inner[0])
+        if any(m is str or m is bytes for m in inner):
+            return {"type": "string"}
+        reachable = [m for m in inner if not _is_model_type(m)]
+        if not reachable:
+            # Every member is a model; none is reachable from a string in a
+            # union (`A | B` 422s on any string value), so document a bare
+            # object rather than a string the resolver would also reject.
+            return {"type": "object"}
+        if len(reachable) == 1:
+            return _python_type_to_schema(reachable[0])
+        return {"anyOf": [_python_type_to_schema(m) for m in reachable]}
+
+    # Parametrised `list[T]` / `set[T]` → an array schema with typed items.
+    # A model item is not reachable: `list[Tag]` 422s on a JSON-array string,
+    # so the item schema falls through to `{"type": "string"}` rather than the
+    # model's fields (the resolver only JSON-decodes a bare model annotation).
+    if origin in (list, set, tuple):
+        args = get_args(annotation)
+        item = _python_type_to_schema(args[0]) if args else {}
+        return {"type": "array", "items": item}
+    # Parametrised `dict[K, V]` → a bare object schema. A non-body dict
+    # parameter is not wire-addressable at all: the resolver only JSON-decodes
+    # a bare model annotation, so `dict[str, int]` (and `dict[str, Tag]`) 422s
+    # on a JSON-object string and there is no repeated-param form for a dict.
+    # Documenting typed `additionalProperties` would therefore advertise a
+    # shape the resolver always rejects, so the value type is intentionally
+    # not emitted.
+    if origin is dict:
+        return {"type": "object"}
+    # `Literal["a", "b"]` → an enum schema of the literal values.
+    if origin is Literal:
+        return _literal_enum_schema(list(get_args(annotation)))
+
+    type_map: dict[Any, dict[str, Any]] = {
+        str: {"type": "string"},
+        int: {"type": "integer"},
+        float: {"type": "number"},
+        bool: {"type": "boolean"},
+        bytes: {"type": "string", "format": "binary"},
+        list: {"type": "array", "items": {}},
+        dict: {"type": "object"},
+        datetime.datetime: {"type": "string", "format": "date-time"},
+        datetime.date: {"type": "string", "format": "date"},
+        datetime.time: {"type": "string", "format": "time"},
+        datetime.timedelta: {"type": "string", "format": "duration"},
+        uuid.UUID: {"type": "string", "format": "uuid"},
+        Decimal: {"type": "number"},
+    }
+    mapped = type_map.get(annotation)
+    if mapped is not None:
+        return mapped
+
+    # `Enum` subclass → an enum schema carrying the member values.
+    if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
+        return _literal_enum_schema([member.value for member in annotation])
+
+    # Pydantic model → `string`. A non-body parameter / form field arrives
+    # as a raw string; the resolver parses that string as a JSON document
+    # and validates it into the model (`?tag={"name":"x"}`), so the wire
+    # shape is a string. A model carried as a structured JSON body belongs
+    # in `requestBody`, handled by `_pydantic_to_schema`.
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return {"type": "string"}
+
+    return {"type": "string"}
+
+
+def _pydantic_to_schema(model: type[BaseModel], registry: dict[str, dict]) -> dict:
+    """Convert a Pydantic model to OpenAPI schema, adding to registry."""
+    name = model.__name__
+    if name not in registry:
+        try:
+            schema = model.model_json_schema()
+            # Extract definitions
+            if "$defs" in schema:
+                for def_name, def_schema in schema["$defs"].items():
+                    registry[def_name] = def_schema
+                del schema["$defs"]
+            registry[name] = schema
+        except Exception as exc:
+            # Silently degrading to `{type: object}` hides genuine schema
+            # bugs in the user's models. Log loudly at WARNING so the
+            # failure surfaces in dev logs, then fall back so /docs still
+            # renders (an underspecified schema beats a 500 on /openapi.json).
+            _logger.warning(
+                "OpenAPI schema generation failed for %s: %s. "
+                "Falling back to {type: object}. "
+                "Inspect the model definition or attach a debugger to "
+                "veloce.contrib.openapi to see the full traceback.",
+                name,
+                exc,
+                exc_info=_logger.isEnabledFor(logging.DEBUG),
+            )
+            registry[name] = {"type": "object"}
+    return {"$ref": f"#/components/schemas/{name}"}
+
+
+def _response_model_to_schema(response_model: Any, registry: dict[str, dict]) -> dict | None:
+    """Render `response_model` into an OpenAPI schema object.
+
+    Handles three shapes:
+    - `MyModel` (Pydantic BaseModel subclass) → `{"$ref": ".../MyModel"}`.
+    - `list[MyModel]` (or any `Sequence[MyModel]`) → array-of-refs.
+    - Anything else → `None` (caller omits the schema).
+    """
+    origin = get_origin(response_model)
+    if origin is list:
+        args = get_args(response_model)
+        if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+            inner = _pydantic_to_schema(args[0], registry)
+            return {"type": "array", "items": inner}
+        return {"type": "array", "items": {}}
+
+    if isinstance(response_model, type) and issubclass(response_model, BaseModel):
+        return _pydantic_to_schema(response_model, registry)
+
+    return None
+
+
+# ── Info / parameter / body / response builders ─────────────
 
 
 def _build_info_object(app: Any) -> dict[str, Any]:
@@ -335,295 +556,7 @@ def _extract_responses(info: Any, schemas_registry: dict[str, dict]) -> dict[str
     return responses
 
 
-def _walk_webhooks(app: Any, schemas_registry: dict[str, dict]) -> dict[str, Any]:
-    """Return the OpenAPI 3.1 `webhooks` map from `app.webhooks`.
-
-    Empty when no webhooks router exists or it has no routes. Each entry
-    is keyed by event name (the path on `@app.webhooks.post`) and carries
-    one operation per HTTP method registered.
-    """
-    webhook_items: dict[str, Any] = {}
-    webhooks_router = getattr(app, "webhooks", None)
-    walker = getattr(webhooks_router, "_walk_routes", None) if webhooks_router else None
-    if walker is None:
-        return webhook_items
-    for wpath, wmethods, winfo in walker():
-        event = wpath.strip("/") or wpath
-        for wmethod in wmethods:
-            op: dict[str, Any] = {
-                "summary": winfo.summary or winfo.name,
-                "operationId": f"{winfo.name}_{wmethod.lower()}",
-                "responses": {"200": {"description": winfo.response_description}},
-            }
-            if winfo.description:
-                op["description"] = winfo.description
-            body = _webhook_request_body(winfo.handler, schemas_registry)
-            if body is not None:
-                op["requestBody"] = {
-                    "required": True,
-                    "content": {"application/json": {"schema": body}},
-                }
-            webhook_items.setdefault(event, {})[wmethod.lower()] = op
-    return webhook_items
-
-
-def _build_operation(
-    info: Any,
-    method_lower: str,
-    schemas_registry: dict[str, dict],
-    security_schemes_registry: dict[str, dict],
-) -> dict[str, Any]:
-    """Assemble one OpenAPI operation object for a single route entry."""
-    # OpenAPI 3.1 §4.8.10 — operationId must be unique across the document.
-    # Explicit override wins; default = `<name>_<method>`.
-    op_id = (
-        info.operation_id if getattr(info, "operation_id", None) else f"{info.name}_{method_lower}"
-    )
-    operation: dict[str, Any] = {
-        "summary": info.summary or info.name,
-        "operationId": op_id,
-        "responses": {"200": {"description": info.response_description}},
-    }
-
-    if info.description:
-        operation["description"] = info.description
-    if info.tags:
-        operation["tags"] = info.tags
-    if info.deprecated:
-        operation["deprecated"] = True
-    # OpenAPI 3.1 §4.8.8 — route-level `callbacks` map emitted verbatim.
-    if getattr(info, "callbacks", None):
-        operation["callbacks"] = info.callbacks
-
-    parameters, request_body_schema, form_fields = _extract_parameters(info, schemas_registry)
-    if parameters:
-        operation["parameters"] = parameters
-
-    request_body = _extract_request_body(request_body_schema, form_fields)
-    if request_body is not None:
-        operation["requestBody"] = request_body
-
-    # Walk this route's Security() chain to register OpenAPI security
-    # schemes and attach the operation-level `security` requirement.
-    security_requirements = _collect_security_requirements(info, security_schemes_registry)
-    if security_requirements:
-        operation["security"] = security_requirements
-
-    operation["responses"] = _extract_responses(info, schemas_registry)
-
-    # `openapi_extra` — deep-merge the user-supplied dict over the
-    # generated operation. Nested dicts merge key-by-key; scalars and
-    # lists in `openapi_extra` overwrite.
-    extra = getattr(info, "openapi_extra", None)
-    if extra:
-        _deep_merge(operation, extra)
-
-    return operation
-
-
-def get_openapi_schema(app: Any) -> dict:
-    """Generate OpenAPI 3.1 schema from the app's registered routes."""
-    schema: dict[str, Any] = {
-        "openapi": "3.1.0",
-        "info": _build_info_object(app),
-        "paths": {},
-        "components": {"schemas": {}},
-    }
-
-    if getattr(app, "servers", None):
-        schema["servers"] = app.servers
-    if getattr(app, "openapi_tags", None):
-        schema["tags"] = app.openapi_tags
-    # OpenAPI 3.1 §4.8.11 — top-level `externalDocs` object.
-    if getattr(app, "openapi_external_docs", None):
-        schema["externalDocs"] = app.openapi_external_docs
-
-    schemas_registry: dict[str, dict] = {}
-    security_schemes_registry: dict[str, dict] = {}
-
-    for method, path, info in app._collect_all_routes():
-        method_lower = method.lower()
-        if path not in schema["paths"]:
-            schema["paths"][path] = {}
-        schema["paths"][path][method_lower] = _build_operation(
-            info, method_lower, schemas_registry, security_schemes_registry
-        )
-
-    webhook_items = _walk_webhooks(app, schemas_registry)
-    if webhook_items:
-        schema["webhooks"] = webhook_items
-
-    if schemas_registry:
-        schema["components"]["schemas"] = schemas_registry
-    if security_schemes_registry:
-        schema["components"]["securitySchemes"] = security_schemes_registry
-
-    return schema
-
-
-def _webhook_request_body(handler: Any, registry: dict[str, dict]) -> dict | None:
-    """Return the OpenAPI schema for a webhook handler's Pydantic body param.
-
-    A webhook handler documents the payload an external caller will
-    POST; the first BaseModel-typed parameter is treated as that body.
-    """
-    sig, hints = _handler_intro(handler)
-    if sig is None:
-        return None
-    for pname in sig.parameters:
-        if pname in ("self", "request"):
-            continue
-        annotation = hints.get(pname)
-        if annotation and isinstance(annotation, type) and issubclass(annotation, BaseModel):
-            return _pydantic_to_schema(annotation, registry)
-    return None
-
-
-def _literal_enum_schema(values: list) -> dict[str, Any]:
-    """Build an OpenAPI schema for a fixed set of literal / enum values."""
-    schema: dict[str, Any] = {"enum": values}
-    if not values:
-        return schema
-    if all(isinstance(v, bool) for v in values):
-        schema["type"] = "boolean"
-    elif all(isinstance(v, int) and not isinstance(v, bool) for v in values):
-        schema["type"] = "integer"
-    elif all(isinstance(v, str) for v in values):
-        schema["type"] = "string"
-    return schema
-
-
-def _is_model_type(annotation: Any) -> bool:
-    """Return True for a Pydantic ``BaseModel`` subclass annotation."""
-    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
-
-
-def _python_type_to_schema(annotation: Any) -> dict:
-    """Convert a Python type to its OpenAPI 3.1 / JSON Schema 2020-12 form.
-
-    This builds the schema for a non-body parameter (query / path / header
-    / cookie) or a form field. Those values arrive over the wire as raw
-    strings: the resolver pulls them from `request.query_params`,
-    `request.headers`, `request.cookies`, or `request.form()` and coerces
-    each through `_coerce_value`. The schema therefore documents only what
-    that string-origin pipeline can actually deliver.
-
-    Scalars resolve to their richer JSON Schema form — `datetime`, `date`,
-    `time`, `UUID`, `Decimal`, `Enum` subclasses and `Literal[...]` all
-    keep their `format` / `enum` keywords. A nullable scalar
-    (`Optional[T]`) unwraps to the inner schema.
-
-    Pydantic models — and models nested inside `list` / `set` / `dict` —
-    keep `{"type": "string"}`: the value arrives as a raw string and the
-    resolver parses that string as a JSON document into the model
-    (`?tag={"name":"x"}`), so the wire shape is genuinely a string.
-
-    Multi-member unions are schema'd by which branches a *string* input
-    can actually reach under Pydantic's smart coercion:
-
-    - A union that includes `str` (`int | str`, `int | str | None`)
-      collapses to `{"type": "string"}`: smart-mode coercion keeps a
-      string value as the `str` member, so that is the only reachable
-      branch.
-    - A union with no string-accepting member (`int | float`,
-      `UUID | int`, `date | datetime`) emits an `anyOf` over the members'
-      schemas: the resolver feeds the string to Pydantic, which resolves
-      it to whichever non-string branch matches, so several branches are
-      genuinely reachable.
-    """
-    if annotation is None or annotation is inspect.Parameter.empty:
-        return {"type": "string"}
-    # `Any` means "any value allowed" — JSON Schema convention is an empty
-    # schema, not a string default. Lets `dict[str, Any]` emit
-    # `additionalProperties: {}` rather than forcing string-valued entries.
-    if annotation is Any:
-        return {}
-
-    origin = get_origin(annotation)
-    # Unwrap `Optional[T]` / `T | None` to the inner type so a nullable
-    # rich-typed parameter still emits its `format` / `enum` keywords.
-    #
-    # For a genuine multi-member union the schema follows which branch a
-    # string wire value can reach under Pydantic's smart coercion (verified
-    # against the resolver, not assumed):
-    #   - a member that accepts a string directly (`str` / `bytes`) always
-    #     wins, so the union collapses to `{"type": "string"}`;
-    #   - a Pydantic-model member is NOT reachable from a string in a union —
-    #     the resolver only JSON-decodes a *bare* model annotation, so
-    #     `Tag | int` rejects `?v={"name":"x"}` with 422. Model members are
-    #     dropped from the union schema so it never advertises a 422 branch;
-    #   - the remaining scalar branches (`int | float`, `UUID | int`, …) are
-    #     each genuinely reachable, so the union emits an `anyOf` over them.
-    if origin is Union or origin is _types.UnionType:
-        members = get_args(annotation)
-        inner = [a for a in members if a is not type(None)]
-        if len(inner) == 1:
-            return _python_type_to_schema(inner[0])
-        if any(m is str or m is bytes for m in inner):
-            return {"type": "string"}
-        reachable = [m for m in inner if not _is_model_type(m)]
-        if not reachable:
-            # Every member is a model; none is reachable from a string in a
-            # union (`A | B` 422s on any string value), so document a bare
-            # object rather than a string the resolver would also reject.
-            return {"type": "object"}
-        if len(reachable) == 1:
-            return _python_type_to_schema(reachable[0])
-        return {"anyOf": [_python_type_to_schema(m) for m in reachable]}
-
-    # Parametrised `list[T]` / `set[T]` → an array schema with typed items.
-    # A model item is not reachable: `list[Tag]` 422s on a JSON-array string,
-    # so the item schema falls through to `{"type": "string"}` rather than the
-    # model's fields (the resolver only JSON-decodes a bare model annotation).
-    if origin in (list, set, tuple):
-        args = get_args(annotation)
-        item = _python_type_to_schema(args[0]) if args else {}
-        return {"type": "array", "items": item}
-    # Parametrised `dict[K, V]` → a bare object schema. A non-body dict
-    # parameter is not wire-addressable at all: the resolver only JSON-decodes
-    # a bare model annotation, so `dict[str, int]` (and `dict[str, Tag]`) 422s
-    # on a JSON-object string and there is no repeated-param form for a dict.
-    # Documenting typed `additionalProperties` would therefore advertise a
-    # shape the resolver always rejects, so the value type is intentionally
-    # not emitted.
-    if origin is dict:
-        return {"type": "object"}
-    # `Literal["a", "b"]` → an enum schema of the literal values.
-    if origin is Literal:
-        return _literal_enum_schema(list(get_args(annotation)))
-
-    type_map: dict[Any, dict[str, Any]] = {
-        str: {"type": "string"},
-        int: {"type": "integer"},
-        float: {"type": "number"},
-        bool: {"type": "boolean"},
-        bytes: {"type": "string", "format": "binary"},
-        list: {"type": "array", "items": {}},
-        dict: {"type": "object"},
-        _datetime.datetime: {"type": "string", "format": "date-time"},
-        _datetime.date: {"type": "string", "format": "date"},
-        _datetime.time: {"type": "string", "format": "time"},
-        _datetime.timedelta: {"type": "string", "format": "duration"},
-        _uuid.UUID: {"type": "string", "format": "uuid"},
-        Decimal: {"type": "number"},
-    }
-    mapped = type_map.get(annotation)
-    if mapped is not None:
-        return mapped
-
-    # `Enum` subclass → an enum schema carrying the member values.
-    if isinstance(annotation, type) and issubclass(annotation, _enum.Enum):
-        return _literal_enum_schema([member.value for member in annotation])
-
-    # Pydantic model → `string`. A non-body parameter / form field arrives
-    # as a raw string; the resolver parses that string as a JSON document
-    # and validates it into the model (`?tag={"name":"x"}`), so the wire
-    # shape is a string. A model carried as a structured JSON body belongs
-    # in `requestBody`, handled by `_pydantic_to_schema`.
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        return {"type": "string"}
-
-    return {"type": "string"}
+# ── Security scheme discovery ───────────────────────────────
 
 
 def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
@@ -768,70 +701,158 @@ def _collect_security_requirements(
     return requirements
 
 
-def _response_model_to_schema(response_model: Any, registry: dict[str, dict]) -> dict | None:
-    """Render `response_model` into an OpenAPI schema object.
+# ── Operation + webhook assembly ────────────────────────────
 
-    Handles three shapes:
-    - `MyModel` (Pydantic BaseModel subclass) → `{"$ref": ".../MyModel"}`.
-    - `list[MyModel]` (or any `Sequence[MyModel]`) → array-of-refs.
-    - Anything else → `None` (caller omits the schema).
+
+def _build_operation(
+    info: Any,
+    method_lower: str,
+    schemas_registry: dict[str, dict],
+    security_schemes_registry: dict[str, dict],
+) -> dict[str, Any]:
+    """Assemble one OpenAPI operation object for a single route entry."""
+    # OpenAPI 3.1 §4.8.10 — operationId must be unique across the document.
+    # Explicit override wins; default = `<name>_<method>`.
+    op_id = (
+        info.operation_id if getattr(info, "operation_id", None) else f"{info.name}_{method_lower}"
+    )
+    operation: dict[str, Any] = {
+        "summary": info.summary or info.name,
+        "operationId": op_id,
+        "responses": {"200": {"description": info.response_description}},
+    }
+
+    if info.description:
+        operation["description"] = info.description
+    if info.tags:
+        operation["tags"] = info.tags
+    if info.deprecated:
+        operation["deprecated"] = True
+    # OpenAPI 3.1 §4.8.8 — route-level `callbacks` map emitted verbatim.
+    if getattr(info, "callbacks", None):
+        operation["callbacks"] = info.callbacks
+
+    parameters, request_body_schema, form_fields = _extract_parameters(info, schemas_registry)
+    if parameters:
+        operation["parameters"] = parameters
+
+    request_body = _extract_request_body(request_body_schema, form_fields)
+    if request_body is not None:
+        operation["requestBody"] = request_body
+
+    # Walk this route's Security() chain to register OpenAPI security
+    # schemes and attach the operation-level `security` requirement.
+    security_requirements = _collect_security_requirements(info, security_schemes_registry)
+    if security_requirements:
+        operation["security"] = security_requirements
+
+    operation["responses"] = _extract_responses(info, schemas_registry)
+
+    # `openapi_extra` — deep-merge the user-supplied dict over the
+    # generated operation. Nested dicts merge key-by-key; scalars and
+    # lists in `openapi_extra` overwrite.
+    extra = getattr(info, "openapi_extra", None)
+    if extra:
+        _deep_merge(operation, extra)
+
+    return operation
+
+
+def _webhook_request_body(handler: Any, registry: dict[str, dict]) -> dict | None:
+    """Return the OpenAPI schema for a webhook handler's Pydantic body param.
+
+    A webhook handler documents the payload an external caller will
+    POST; the first BaseModel-typed parameter is treated as that body.
     """
-    origin = get_origin(response_model)
-    if origin is list:
-        args = get_args(response_model)
-        if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
-            inner = _pydantic_to_schema(args[0], registry)
-            return {"type": "array", "items": inner}
-        return {"type": "array", "items": {}}
-
-    if isinstance(response_model, type) and issubclass(response_model, BaseModel):
-        return _pydantic_to_schema(response_model, registry)
-
+    sig, hints = _handler_intro(handler)
+    if sig is None:
+        return None
+    for pname in sig.parameters:
+        if pname in ("self", "request"):
+            continue
+        annotation = hints.get(pname)
+        if annotation and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return _pydantic_to_schema(annotation, registry)
     return None
 
 
-def _pydantic_to_schema(model: type[BaseModel], registry: dict[str, dict]) -> dict:
-    """Convert a Pydantic model to OpenAPI schema, adding to registry."""
-    name = model.__name__
-    if name not in registry:
-        try:
-            schema = model.model_json_schema()
-            # Extract definitions
-            if "$defs" in schema:
-                for def_name, def_schema in schema["$defs"].items():
-                    registry[def_name] = def_schema
-                del schema["$defs"]
-            registry[name] = schema
-        except Exception as exc:
-            # Silently degrading to `{type: object}` hides genuine schema
-            # bugs in the user's models. Log loudly at WARNING so the
-            # failure surfaces in dev logs, then fall back so /docs still
-            # renders (an underspecified schema beats a 500 on /openapi.json).
-            _logger.warning(
-                "OpenAPI schema generation failed for %s: %s. "
-                "Falling back to {type: object}. "
-                "Inspect the model definition or attach a debugger to "
-                "veloce.openapi to see the full traceback.",
-                name,
-                exc,
-                exc_info=_logger.isEnabledFor(logging.DEBUG),
-            )
-            registry[name] = {"type": "object"}
-    return {"$ref": f"#/components/schemas/{name}"}
+def _walk_webhooks(app: Any, schemas_registry: dict[str, dict]) -> dict[str, Any]:
+    """Return the OpenAPI 3.1 `webhooks` map from `app.webhooks`.
+
+    Empty when no webhooks router exists or it has no routes. Each entry
+    is keyed by event name (the path on `@app.webhooks.post`) and carries
+    one operation per HTTP method registered.
+    """
+    webhook_items: dict[str, Any] = {}
+    webhooks_router = getattr(app, "webhooks", None)
+    walker = getattr(webhooks_router, "_walk_routes", None) if webhooks_router else None
+    if walker is None:
+        return webhook_items
+    for wpath, wmethods, winfo in walker():
+        event = wpath.strip("/") or wpath
+        for wmethod in wmethods:
+            op: dict[str, Any] = {
+                "summary": winfo.summary or winfo.name,
+                "operationId": f"{winfo.name}_{wmethod.lower()}",
+                "responses": {"200": {"description": winfo.response_description}},
+            }
+            if winfo.description:
+                op["description"] = winfo.description
+            body = _webhook_request_body(winfo.handler, schemas_registry)
+            if body is not None:
+                op["requestBody"] = {
+                    "required": True,
+                    "content": {"application/json": {"schema": body}},
+                }
+            webhook_items.setdefault(event, {})[wmethod.lower()] = op
+    return webhook_items
 
 
-# Swagger UI / ReDoc bundles are pinned to a specific patch version and
-# loaded with a Subresource Integrity hash. Together with
-# `crossorigin="anonymous"` the browser refuses to execute the script
-# if the CDN ever serves bytes that do not hash to this exact digest,
-# so a CDN compromise cannot inject arbitrary JavaScript onto a
-# `/docs` page. Bump the versions in lock-step with the hashes — the
-# hash will not match if you change one without the other.
-_SWAGGER_UI_VERSION = "5.18.2"
-_SWAGGER_UI_CSS_INTEGRITY = "sha512-xRGj65XGEcpPTE7Cn6ujJWokpXVLxqLxdtNZ/n1w52+76XaCRO7UWKZl9yJHvzpk99A0EP6EW+opPcRwPDxwkA=="
-_SWAGGER_UI_JS_INTEGRITY = "sha512-9tBcCofqWq+PelL6USpUB7OJrCaObfefi9ht9nVZuKt1XP7eHDs7NwVljLSLVtSsErax1Tz3pG3O82eeq546Rg=="
-_REDOC_VERSION = "2.1.5"
-_REDOC_JS_INTEGRITY = "sha384-0GrsyTQc9Oqd8h+b2dbc4XdR2T/DYpy0tLNNstyx+LBMUyiBbcWPbEs9aRmUcaxD"
+# ── Public API ──────────────────────────────────────────────
+
+
+def get_openapi_schema(app: Any) -> dict:
+    """Generate OpenAPI 3.1 schema from the app's registered routes."""
+    schema: dict[str, Any] = {
+        "openapi": "3.1.0",
+        "info": _build_info_object(app),
+        "paths": {},
+        "components": {"schemas": {}},
+    }
+
+    if getattr(app, "servers", None):
+        schema["servers"] = app.servers
+    if getattr(app, "openapi_tags", None):
+        schema["tags"] = app.openapi_tags
+    # OpenAPI 3.1 §4.8.11 — top-level `externalDocs` object.
+    if getattr(app, "openapi_external_docs", None):
+        schema["externalDocs"] = app.openapi_external_docs
+
+    schemas_registry: dict[str, dict] = {}
+    security_schemes_registry: dict[str, dict] = {}
+
+    for method, path, info in app._collect_all_routes():
+        method_lower = method.lower()
+        if path not in schema["paths"]:
+            schema["paths"][path] = {}
+        schema["paths"][path][method_lower] = _build_operation(
+            info, method_lower, schemas_registry, security_schemes_registry
+        )
+
+    webhook_items = _walk_webhooks(app, schemas_registry)
+    if webhook_items:
+        schema["webhooks"] = webhook_items
+
+    if schemas_registry:
+        schema["components"]["schemas"] = schemas_registry
+    if security_schemes_registry:
+        schema["components"]["securitySchemes"] = security_schemes_registry
+
+    return schema
+
+
+# ── Swagger UI / ReDoc templates ────────────────────────────
+
 
 SWAGGER_HTML = (
     """<!DOCTYPE html>
@@ -929,19 +950,19 @@ def setup_openapi_routes(
         oauth_init = getattr(app, "swagger_ui_init_oauth", None)
         init_oauth = f"ui.initOAuth({orjson.dumps(oauth_init).decode()});" if oauth_init else ""
 
-        html = SWAGGER_HTML.format(
-            title=_html.escape(app.title),
-            openapi_url=_html.escape(openapi_url),
+        html_page = SWAGGER_HTML.format(
+            title=html.escape(app.title),
+            openapi_url=html.escape(openapi_url),
             ui_params=ui_params,
             init_oauth=init_oauth,
         )
-        return HTMLResponse(html)
+        return HTMLResponse(html_page)
 
     async def redoc_ui(request: Any):
-        html = REDOC_HTML.format(
-            title=_html.escape(app.title), openapi_url=_html.escape(openapi_url)
+        html_page = REDOC_HTML.format(
+            title=html.escape(app.title), openapi_url=html.escape(openapi_url)
         )
-        return HTMLResponse(html)
+        return HTMLResponse(html_page)
 
     # Register each interactive UI only when its URL is set — a `None`
     # disables that UI while leaving the JSON schema route in place.

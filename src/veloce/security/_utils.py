@@ -1,4 +1,4 @@
-"""Shared helpers for security schemes."""
+"""Security utilities — shared credential extraction helpers for auth schemes."""
 
 from __future__ import annotations
 

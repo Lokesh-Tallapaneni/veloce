@@ -79,7 +79,7 @@ class Blueprint(Router):
         self._url_value_preprocessors: list[Callable] = []
         self._url_default_funcs: list[Callable] = []
 
-    # ── Hook decorators ───────────────────────────────
+    # ── Hook decorators ───────────────────────────────────
 
     def before_request(self, func: Callable) -> Callable:
         """Register a function to run before each blueprint request.
@@ -142,7 +142,7 @@ class Blueprint(Router):
         self._url_default_funcs.append(func)
         return func
 
-    # ── Nested blueprints (R4) ───────────────────────────────────────
+    # ── Nested blueprints (R4) ────────────────────────────
 
     def register_blueprint(
         self,
@@ -213,7 +213,7 @@ class Blueprint(Router):
         self._url_value_preprocessors.extend(child._url_value_preprocessors)
         self._url_default_funcs.extend(child._url_default_funcs)
 
-    # ── Route collection inspection — used by register_blueprint ─────
+    # ── Route collection inspection — used by register_blueprint ───
 
     def _walk_routes(self) -> list[tuple[str, list[str], RouteInfo]]:
         """Return `(path, methods, RouteInfo)` triples for every route.

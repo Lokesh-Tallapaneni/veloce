@@ -24,12 +24,15 @@ from veloce.middleware.base import Middleware
 from veloce.sessions import InMemorySessionStore, Session, SessionStore
 from veloce.signing import BadSignature, Signer
 
+# The logger name is part of the public contract: callers (and the test
+# suite) filter on "veloce.sessions", so it stays a literal rather than
+# `__name__` (which would resolve to "veloce.middleware.sessions").
+_logger = logging.getLogger("veloce.sessions")
+
 # RFC 6265 §6.1 only mandates 4096 bytes per cookie (name + value + attrs);
 # browsers and proxies enforce this inconsistently, so 4093 is the de-facto
 # safe ceiling (4096 − 3 bytes of separator overhead some impls reserve).
 _DEFAULT_MAX_COOKIE_SIZE = 4093
-
-_logger = logging.getLogger("veloce.sessions")
 
 
 class SessionMiddleware(Middleware):
@@ -180,18 +183,6 @@ class ServerSessionMiddleware(Middleware):
         self.secure = secure
         self.samesite = samesite
 
-    def _clear_session_cookie(self, response: Response) -> None:
-        """Tell the client to drop the session cookie. Single place that
-        knows how this middleware's cookie attribute set maps to
-        `delete_cookie` — three callers all share the same kwargs."""
-        response.delete_cookie(
-            self.cookie_name,
-            path=self.path,
-            secure=self.secure,
-            httponly=self.httponly,
-            samesite=self.samesite,
-        )
-
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the server-side store by cookie id."""
         data: dict[str, Any] | None = None
@@ -252,3 +243,15 @@ class ServerSessionMiddleware(Middleware):
             samesite=self.samesite,
         )
         return response
+
+    def _clear_session_cookie(self, response: Response) -> None:
+        """Tell the client to drop the session cookie. Single place that
+        knows how this middleware's cookie attribute set maps to
+        `delete_cookie` — three callers all share the same kwargs."""
+        response.delete_cookie(
+            self.cookie_name,
+            path=self.path,
+            secure=self.secure,
+            httponly=self.httponly,
+            samesite=self.samesite,
+        )

@@ -1,4 +1,8 @@
-"""High-performance HTTP/1.1 protocol implementation using httptools."""
+"""Serving protocol — high-performance HTTP/1.1 over a raw asyncio transport.
+
+Parses the wire with httptools and dispatches requests through the Veloce app,
+bypassing the ASGI layer entirely.
+"""
 
 from __future__ import annotations
 
@@ -17,8 +21,10 @@ from veloce.http._body import RequestBodySource
 from veloce.http.request import Request
 from veloce.http.response import Response, StreamingResponse
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
+
+_logger = logging.getLogger(__name__)
 
 
 # Per-field + cumulative caps on the request line and headers. Prevents a
@@ -446,9 +452,7 @@ class HttpProtocol(asyncio.Protocol):
             return
         exc = task.exception()
         if exc is not None:
-            logging.getLogger("veloce.serving.protocol").error(
-                "Unhandled error in request dispatch: %s", exc, exc_info=exc
-            )
+            _logger.error("Unhandled error in request dispatch: %s", exc, exc_info=exc)
 
     def data_received(self, data: bytes) -> None:
         if self._oversized:
@@ -493,9 +497,7 @@ class HttpProtocol(asyncio.Protocol):
                 try:
                     hook()
                 except Exception:
-                    logging.getLogger("veloce.serving.protocol").exception(
-                        "on_request_complete hook raised"
-                    )
+                    _logger.exception("on_request_complete hook raised")
             if not should_continue:
                 # Connection: close (or a failed write) — stop serving.
                 return
@@ -511,9 +513,7 @@ class HttpProtocol(asyncio.Protocol):
                     serve_next = keep()
                 except Exception:
                     serve_next = True
-                    logging.getLogger("veloce.serving.protocol").exception(
-                        "should_keep_serving hook raised"
-                    )
+                    _logger.exception("should_keep_serving hook raised")
                 if not serve_next:
                     if self.transport is not None and not self.transport.is_closing():
                         self.transport.close()
@@ -582,9 +582,7 @@ class HttpProtocol(asyncio.Protocol):
             )
             detached = not inner.done()
         except Exception:
-            logging.getLogger("veloce.serving.protocol").exception(
-                "Unhandled exception in request dispatch"
-            )
+            _logger.exception("Unhandled exception in request dispatch")
             response = Response(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 body=b"Internal Server Error",
@@ -625,7 +623,7 @@ class HttpProtocol(asyncio.Protocol):
             else:
                 self.transport.write(response.encode())
         except Exception:
-            logging.getLogger("veloce.serving.protocol").exception("Error during response emission")
+            _logger.exception("Error during response emission")
             self.transport.close()
             return False
 
@@ -649,9 +647,7 @@ class HttpProtocol(asyncio.Protocol):
             try:
                 transport.write(response.encode())
             except Exception:
-                logging.getLogger("veloce.serving.protocol").exception(
-                    "Error during response emission"
-                )
+                _logger.exception("Error during response emission")
             transport.close()
         return False
 

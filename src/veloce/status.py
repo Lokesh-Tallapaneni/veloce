@@ -1,6 +1,7 @@
 """HTTP status codes — convenient named constants.
 
-Usage:
+Usage::
+
     from veloce import status
 
     @app.post("/items", status_code=status.HTTP_201_CREATED)

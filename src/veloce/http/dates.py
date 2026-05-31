@@ -16,8 +16,7 @@ from __future__ import annotations
 import calendar
 from datetime import date, datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
-from time import struct_time
-from time import time as _time
+from time import struct_time, time
 
 # `http_date(None)` is the per-response `Date:` header. Formatting that
 # string costs ~3 µs on every response but only changes once a second;
@@ -28,7 +27,7 @@ _now_cache: tuple[int, str] = (-1, "")
 def _http_date_now() -> str:
     """Return the current HTTP-date, cached to a 1-second granularity."""
     global _now_cache
-    sec = int(_time())
+    sec = int(time())
     bucket, cached = _now_cache
     if sec != bucket:
         cached = formatdate(sec, usegmt=True)

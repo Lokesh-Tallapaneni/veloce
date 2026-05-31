@@ -1,4 +1,4 @@
-"""HMAC-signed value serialiser.
+"""signing — HMAC-signed value serialiser.
 
 A standalone payload-signing helper for cookies, password-reset links,
 email-confirmation tokens, and similar use cases where the server hands
@@ -21,8 +21,7 @@ RFC 4648 §5 (base64url); the observable token shape matches
 a timestamped signer's `URLSafeTimedSerializer` so swapping is straightforward,
 but no a timestamped signer code is copied.
 
-Why an in-tree signer (rather than depending on `itsdangerous`)
----------------------------------------------------------------
+Why an in-tree signer (rather than depending on `itsdangerous`):
 Veloce keeps this ~150-line signer instead of taking the `itsdangerous`
 dependency — a considered trade-off, not an oversight:
 
@@ -51,6 +50,8 @@ from typing import Any
 import orjson
 
 from veloce._internal import _b64decode, _b64encode
+
+# ── Exceptions ───────────────────────────────────────────────────
 
 
 class BadSignature(Exception):

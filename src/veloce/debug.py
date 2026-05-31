@@ -1,4 +1,4 @@
-"""Development-mode HTML traceback page.
+"""Debug — development-mode HTML traceback page.
 
 When an unhandled exception escapes a handler and the application is running
 in debug mode, Veloce renders the traceback as a styled HTML page instead of
@@ -47,6 +47,9 @@ _CONTEXT_MESSAGE = "During handling of the above exception, another exception oc
 _BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
 
 
+# ── String safety ──────────────────────────────────────────
+
+
 def _safe_str(value: object) -> str:
     """Return ``str(value)``, falling back to a placeholder if it raises.
 
@@ -60,6 +63,9 @@ def _safe_str(value: object) -> str:
     except Exception:
         return _STR_FAILED
     return result
+
+
+# ── HTML rendering ──────────────────────────────────────────
 
 
 _STYLE = """\
@@ -186,6 +192,9 @@ def _render_notes(exc: BaseException) -> str:
     return '<div class="exc-notes">' + html.escape(text) + "</div>"
 
 
+# ── Exception chain ─────────────────────────────────────────
+
+
 def _exc_chain(exc: BaseException) -> list[tuple[BaseException, str]]:
     """Return the linked exception chain, oldest first.
 
@@ -259,6 +268,9 @@ def _render_chain(exc: BaseException, seen: set[int]) -> str:
             sections.append('<div class="chain">' + html.escape(separator) + "</div>")
         sections.append(_render_exception(linked, seen))
     return "".join(sections)
+
+
+# ── Public entry point ──────────────────────────────────────
 
 
 def render_traceback_html(exc: BaseException) -> str:

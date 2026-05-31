@@ -1,4 +1,7 @@
-"""Registration-time code generation for parameter-only handler resolvers.
+"""Resolver codegen — registration-time codegen for parameter-only handlers.
+
+Runs at registration time only: the generated resolver is built once when a
+route is registered and never recompiled on the request path.
 
 For handlers whose plan binds only the request and scalar path/query
 parameters, the generic `_resolve_slots` interpreter (a `while` loop with a

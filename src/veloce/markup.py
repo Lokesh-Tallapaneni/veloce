@@ -19,6 +19,14 @@ from __future__ import annotations
 from typing import Any
 
 
+def _arg_to_safe(arg: Any) -> Any:
+    if hasattr(arg, "__html__"):
+        return Markup(arg)
+    if isinstance(arg, str):
+        return escape(arg)
+    return arg
+
+
 class Markup(str):
     """A string flagged as already HTML-safe.
 
@@ -57,14 +65,6 @@ class Markup(str):
 
     def __repr__(self) -> str:
         return f"Markup({str.__repr__(self)})"
-
-
-def _arg_to_safe(arg: Any) -> Any:
-    if hasattr(arg, "__html__"):
-        return Markup(arg)
-    if isinstance(arg, str):
-        return escape(arg)
-    return arg
 
 
 # Pre-compute the translation table once.

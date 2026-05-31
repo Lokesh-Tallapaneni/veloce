@@ -1,4 +1,4 @@
-"""Gunicorn worker class that serves a Veloce app via the raw HTTP protocol.
+"""Gunicorn worker — serves a Veloce app via the raw HTTP protocol.
 
 This is an **advanced, optional** alternative to running Veloce under
 uvicorn. It lets gunicorn manage process supervision (forking, restarts,
@@ -43,7 +43,7 @@ import os
 import ssl
 from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
 
 # gunicorn is optional and POSIX-only. Import its worker base at module load

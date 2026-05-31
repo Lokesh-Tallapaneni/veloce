@@ -1,4 +1,4 @@
-"""Cross-Origin Resource Sharing (CORS) middleware.
+"""CORS middleware — Cross-Origin Resource Sharing per the Fetch standard.
 
 Implemented from the Fetch standard's CORS protocol section
 (https://fetch.spec.whatwg.org/#http-cors-protocol) and RFC 9110 §10.2.

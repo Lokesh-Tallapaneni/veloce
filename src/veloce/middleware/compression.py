@@ -84,14 +84,6 @@ class GZipMiddleware(Middleware):
         )
         self.exclude_types: tuple[str, ...] = tuple(exclude_types)
 
-    def _should_compress_type(self, content_type: str) -> bool:
-        ct = (content_type or "").split(";", 1)[0].strip().lower()
-        if not ct:
-            return False
-        if any(ct.startswith(p) for p in self.exclude_types):
-            return False
-        return any(ct.startswith(p) for p in self.include_types)
-
     async def process_response(self, request: Request, response: Response) -> Response:
         """Compress the response body with gzip if the client accepts it."""
         accept = request.headers.get("accept-encoding", "")
@@ -128,3 +120,11 @@ class GZipMiddleware(Middleware):
             response._encoded = None
 
         return response
+
+    def _should_compress_type(self, content_type: str) -> bool:
+        ct = (content_type or "").split(";", 1)[0].strip().lower()
+        if not ct:
+            return False
+        if any(ct.startswith(p) for p in self.exclude_types):
+            return False
+        return any(ct.startswith(p) for p in self.include_types)

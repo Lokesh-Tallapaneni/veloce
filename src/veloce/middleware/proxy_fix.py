@@ -58,69 +58,6 @@ class ProxyFix(Middleware):
         self.x_prefix = x_prefix
         self.trust_forwarded = trust_forwarded
 
-    @staticmethod
-    def _pick_hop(header_value: str | None, hops: int) -> str | None:
-        """Pick the Nth-from-the-right value in a comma-separated header.
-
-        `X-Forwarded-For: client, proxy1, proxy2` with hops=2 returns
-        "client" (we trust two proxies); with hops=1 returns "proxy1".
-        Returns None if `hops <= 0` or the list is shorter than `hops`.
-        """
-        if not header_value or hops <= 0:
-            return None
-        parts = [p.strip() for p in header_value.split(",") if p.strip()]
-        if len(parts) < hops:
-            return None
-        return parts[-hops]
-
-    @staticmethod
-    def _parse_forwarded_element(element: str) -> dict[str, str]:
-        """Parse a single element of a `Forwarded:` header (RFC 7239 §4).
-
-        Returns the lowercase key -> value mapping. Quotes and IPv6
-        brackets are stripped.
-        """
-        result: dict[str, str] = {}
-        for pair in element.split(";"):
-            pair = pair.strip()
-            if "=" not in pair:
-                continue
-            k, _, v = pair.partition("=")
-            k = k.strip().lower()
-            v = v.strip().strip('"')
-            if v.startswith("[") and "]" in v:
-                v = v.split("]", 1)[0][1:]
-            result[k] = v
-        return result
-
-    def _parse_forwarded(
-        self, value: str, x_for: int, x_proto: int, x_host: int, x_prefix: int
-    ) -> dict[str, str]:
-        """Select trusted directives from a `Forwarded:` header (RFC 7239 §4).
-
-        Each comma-separated element represents one hop. Attacker-controlled
-        hops are on the LEFT; trusted proxies append on the RIGHT. For each
-        directive (for, proto, host, prefix), select the element at
-        position ``len(elements) - hop_count`` -- the same logic as
-        ``_pick_hop``.
-        """
-        elements = [e.strip() for e in value.split(",") if e.strip()]
-        parsed = [self._parse_forwarded_element(e) for e in elements]
-
-        result: dict[str, str] = {}
-        for directive, hops in (
-            ("for", x_for),
-            ("proto", x_proto),
-            ("host", x_host),
-            ("prefix", x_prefix),
-        ):
-            if hops <= 0 or len(parsed) < hops:
-                continue
-            val = parsed[-hops].get(directive)
-            if val:
-                result[directive] = val
-        return result
-
     async def process_request(self, request: Request) -> Response | None:
         """Rewrite request attributes from trusted proxy headers."""
         forwarded = request.headers.get("forwarded") if self.trust_forwarded else None
@@ -189,3 +126,66 @@ class ProxyFix(Middleware):
         # the now-corrected headers.
         request._url = None
         return None
+
+    def _parse_forwarded(
+        self, value: str, x_for: int, x_proto: int, x_host: int, x_prefix: int
+    ) -> dict[str, str]:
+        """Select trusted directives from a `Forwarded:` header (RFC 7239 §4).
+
+        Each comma-separated element represents one hop. Attacker-controlled
+        hops are on the LEFT; trusted proxies append on the RIGHT. For each
+        directive (for, proto, host, prefix), select the element at
+        position ``len(elements) - hop_count`` -- the same logic as
+        ``_pick_hop``.
+        """
+        elements = [e.strip() for e in value.split(",") if e.strip()]
+        parsed = [self._parse_forwarded_element(e) for e in elements]
+
+        result: dict[str, str] = {}
+        for directive, hops in (
+            ("for", x_for),
+            ("proto", x_proto),
+            ("host", x_host),
+            ("prefix", x_prefix),
+        ):
+            if hops <= 0 or len(parsed) < hops:
+                continue
+            val = parsed[-hops].get(directive)
+            if val:
+                result[directive] = val
+        return result
+
+    @staticmethod
+    def _parse_forwarded_element(element: str) -> dict[str, str]:
+        """Parse a single element of a `Forwarded:` header (RFC 7239 §4).
+
+        Returns the lowercase key -> value mapping. Quotes and IPv6
+        brackets are stripped.
+        """
+        result: dict[str, str] = {}
+        for pair in element.split(";"):
+            pair = pair.strip()
+            if "=" not in pair:
+                continue
+            k, _, v = pair.partition("=")
+            k = k.strip().lower()
+            v = v.strip().strip('"')
+            if v.startswith("[") and "]" in v:
+                v = v.split("]", 1)[0][1:]
+            result[k] = v
+        return result
+
+    @staticmethod
+    def _pick_hop(header_value: str | None, hops: int) -> str | None:
+        """Pick the Nth-from-the-right value in a comma-separated header.
+
+        `X-Forwarded-For: client, proxy1, proxy2` with hops=2 returns
+        "client" (we trust two proxies); with hops=1 returns "proxy1".
+        Returns None if `hops <= 0` or the list is shorter than `hops`.
+        """
+        if not header_value or hops <= 0:
+            return None
+        parts = [p.strip() for p in header_value.split(",") if p.strip()]
+        if len(parts) < hops:
+            return None
+        return parts[-hops]

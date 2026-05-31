@@ -38,19 +38,6 @@ class Session(dict[str, Any]):
         # mint a fresh id for this session on the next response.
         self.regenerate = False
 
-    def regenerate_id(self) -> None:
-        """Request a fresh server-side session id on the next response.
-
-        Call this at a privilege boundary — login, role change — so a
-        pre-existing (possibly attacker-planted) session id cannot be
-        replayed against the now-elevated session: the session-fixation
-        defence. It marks the session modified so the rotation is written
-        back. Harmless with cookie-only sessions, which carry no
-        server-side id to rotate.
-        """
-        self.regenerate = True
-        self.modified = True
-
     @property
     def permanent(self) -> bool:
         """Whether the session cookie should use the longer lifetime.
@@ -65,13 +52,22 @@ class Session(dict[str, Any]):
     def permanent(self, value: bool) -> None:
         self["_permanent"] = bool(value)
 
-    def __setitem__(self, key: Any, value: Any) -> None:
-        super().__setitem__(key, value)
+    def regenerate_id(self) -> None:
+        """Request a fresh server-side session id on the next response.
+
+        Call this at a privilege boundary — login, role change — so a
+        pre-existing (possibly attacker-planted) session id cannot be
+        replayed against the now-elevated session: the session-fixation
+        defence. It marks the session modified so the rotation is written
+        back. Harmless with cookie-only sessions, which carry no
+        server-side id to rotate.
+        """
+        self.regenerate = True
         self.modified = True
 
-    def __delitem__(self, key: Any) -> None:
-        super().__delitem__(key)
-        self.modified = True
+    # ── Mutation tracking ──────────────────────────────────────
+    # Every mutating dict operation is overridden to flip `modified`,
+    # so the cookie middleware can cheaply tell when a re-write is due.
 
     def clear(self) -> None:
         super().clear()
@@ -112,6 +108,14 @@ class Session(dict[str, Any]):
         first = args[0]
         if isinstance(first, dict) and not first:
             return
+        self.modified = True
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        super().__setitem__(key, value)
+        self.modified = True
+
+    def __delitem__(self, key: Any) -> None:
+        super().__delitem__(key)
         self.modified = True
 
     def __ior__(self, other: Any) -> Session:  # type: ignore[override,misc]

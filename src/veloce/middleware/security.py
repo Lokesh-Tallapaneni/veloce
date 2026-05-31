@@ -1,4 +1,10 @@
-"""Security-related middleware — trusted hosts, rate limiting, HTTPS redirect."""
+"""Security-related middleware — trusted hosts, rate limiting, HTTPS redirect.
+
+Covers Host validation (RFC 9110 §7.2), HTTPS upgrade via 308 redirect
+(RFC 9110 §15.4.9), rate-limit headers (draft-ietf-httpapi-ratelimit-headers),
+WebSocket origin checks against CSWSH (RFC 6455 §4.1, §4.2.2), and common
+hardening response headers.
+"""
 
 from __future__ import annotations
 
@@ -95,55 +101,6 @@ class RateLimitMiddleware(Middleware):
         # the sweep block would otherwise open a check-then-act race.
         self._sweep_lock: asyncio.Lock | None = None
 
-    def _bucket_key(self, request: Request) -> str:
-        """Pick a bucket key for `request`.
-
-        Falls back through several signals when the transport peer is
-        unknown so anonymous traffic does NOT share one global bucket
-        (otherwise a single anonymous source could exhaust the limit for
-        every other anonymous caller — a trivial DoS).
-        """
-        client = request.client_host
-        if client:
-            return f"host:{client}"
-        # Right-most X-Forwarded-For hop — the closest proxy is the only
-        # trustworthy entry in the chain; left-most entries are
-        # attacker-controlled (see development-guardrails.md, Security
-        # Parameter Validation).
-        xff = request.headers.get("x-forwarded-for", "")
-        if xff:
-            last = xff.split(",")[-1].strip()
-            if last:
-                return f"xff:{last}"
-        # User-Agent hash — coarse, but partitions anonymous callers by
-        # client software when no IP is available.
-        ua = request.headers.get("user-agent", "")
-        if ua:
-            return "ua:" + hashlib.sha256(ua.encode("utf-8", "replace")).hexdigest()[:16]
-        # Last resort: per-request UUID stashed on _state so a scope-id
-        # reuse after GC can't leak a stale deque into a new request.
-        # Effectively disables limiting for fully anonymous traffic —
-        # the correct failure mode (fail-open per caller, not fail-shared
-        # across all callers).
-        anon_id = request._state.get("_rl_anon_id")
-        if anon_id is None:
-            anon_id = uuid.uuid4().hex
-            request._state["_rl_anon_id"] = anon_id
-        return f"scope:{anon_id}"
-
-    def _reset_after(self, bucket: deque[float], now: float) -> int:
-        """Seconds until the oldest stamp in `bucket` falls out of the window."""
-        if not bucket:
-            return 0
-        remaining = int(bucket[0] + self.window_seconds - now)
-        return remaining if remaining > 0 else 0
-
-    def _apply_headers(self, response: Response, limit: int, remaining: int, reset: int) -> None:
-        """Attach X-RateLimit-* headers to `response` (draft-ietf-httpapi-ratelimit-headers)."""
-        response.headers["X-RateLimit-Limit"] = str(limit)
-        response.headers["X-RateLimit-Remaining"] = str(remaining)
-        response.headers["X-RateLimit-Reset"] = str(reset)
-
     async def process_request(self, request: Request) -> Response | None:
         """Enforce per-client request rate limits."""
         client = self._bucket_key(request)
@@ -203,6 +160,55 @@ class RateLimitMiddleware(Middleware):
         reset = self._reset_after(bucket, time.monotonic())
         self._apply_headers(response, self.max_requests, remaining, reset)
         return response
+
+    def _bucket_key(self, request: Request) -> str:
+        """Pick a bucket key for `request`.
+
+        Falls back through several signals when the transport peer is
+        unknown so anonymous traffic does NOT share one global bucket
+        (otherwise a single anonymous source could exhaust the limit for
+        every other anonymous caller — a trivial DoS).
+        """
+        client = request.client_host
+        if client:
+            return f"host:{client}"
+        # Right-most X-Forwarded-For hop — the closest proxy is the only
+        # trustworthy entry in the chain; left-most entries are
+        # attacker-controlled (see development-guardrails.md, Security
+        # Parameter Validation).
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            last = xff.split(",")[-1].strip()
+            if last:
+                return f"xff:{last}"
+        # User-Agent hash — coarse, but partitions anonymous callers by
+        # client software when no IP is available.
+        ua = request.headers.get("user-agent", "")
+        if ua:
+            return "ua:" + hashlib.sha256(ua.encode("utf-8", "replace")).hexdigest()[:16]
+        # Last resort: per-request UUID stashed on _state so a scope-id
+        # reuse after GC can't leak a stale deque into a new request.
+        # Effectively disables limiting for fully anonymous traffic —
+        # the correct failure mode (fail-open per caller, not fail-shared
+        # across all callers).
+        anon_id = request._state.get("_rl_anon_id")
+        if anon_id is None:
+            anon_id = uuid.uuid4().hex
+            request._state["_rl_anon_id"] = anon_id
+        return f"scope:{anon_id}"
+
+    def _reset_after(self, bucket: deque[float], now: float) -> int:
+        """Seconds until the oldest stamp in `bucket` falls out of the window."""
+        if not bucket:
+            return 0
+        remaining = int(bucket[0] + self.window_seconds - now)
+        return remaining if remaining > 0 else 0
+
+    def _apply_headers(self, response: Response, limit: int, remaining: int, reset: int) -> None:
+        """Attach X-RateLimit-* headers to `response` (draft-ietf-httpapi-ratelimit-headers)."""
+        response.headers["X-RateLimit-Limit"] = str(limit)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        response.headers["X-RateLimit-Reset"] = str(reset)
 
 
 class HTTPSRedirectMiddleware(Middleware):

@@ -1,10 +1,11 @@
-"""Filesystem-safety helpers derived from the OWASP Path Traversal cheatsheet.
+"""Safety helpers — constant-time comparison, filename sanitisation, path joining.
 
+`constant_time_compare(a, b)` compares two secrets without timing leaks.
 `secure_filename(name)` returns a safe basename for a user-supplied filename.
 `safe_join(directory, *paths)` joins paths and refuses if the result escapes
 the base directory or any component is absolute.
 
-Both helpers are derived from the OWASP guidance and the underlying
+The filesystem helpers are derived from the OWASP guidance and the underlying
 filesystem semantics.
 
 References:
@@ -18,19 +19,6 @@ import hmac
 import os
 import re
 import unicodedata
-
-
-def constant_time_compare(a: str | bytes, b: str | bytes) -> bool:
-    """Compare two secrets without leaking their contents through timing.
-
-    Wraps ``hmac.compare_digest``; ``str`` inputs are UTF-8 encoded first.
-    """
-    if isinstance(a, str) and isinstance(b, str):
-        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
-    if isinstance(a, (bytes, bytearray)) and isinstance(b, (bytes, bytearray)):
-        return hmac.compare_digest(bytes(a), bytes(b))
-    return False
-
 
 # Permitted characters in a sanitised filename: ASCII letters, digits,
 # underscore, period, hyphen. Everything else collapses to underscore.
@@ -51,6 +39,18 @@ _WIN_RESERVED = frozenset(
         *(f"LPT{i}" for i in range(1, 10)),
     }
 )
+
+
+def constant_time_compare(a: str | bytes, b: str | bytes) -> bool:
+    """Compare two secrets without leaking their contents through timing.
+
+    Wraps ``hmac.compare_digest``; ``str`` inputs are UTF-8 encoded first.
+    """
+    if isinstance(a, str) and isinstance(b, str):
+        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    if isinstance(a, (bytes, bytearray)) and isinstance(b, (bytes, bytearray)):
+        return hmac.compare_digest(bytes(a), bytes(b))
+    return False
 
 
 def secure_filename(name: str) -> str:

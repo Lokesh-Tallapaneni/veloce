@@ -1,5 +1,7 @@
 """Security sub-package — authentication schemes for dependency injection."""
 
+from __future__ import annotations
+
 from veloce.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery
 from veloce.security.http import (
     HTTPBasic,

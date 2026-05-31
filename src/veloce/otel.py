@@ -1,4 +1,4 @@
-"""OpenTelemetry tracing bridge for a Veloce application.
+"""OpenTelemetry tracing bridge — one server span per finished HTTP request.
 
 This is an **optional** integration that turns each finished HTTP request into
 an OpenTelemetry server span using Veloce's existing instrumentation hook
@@ -87,7 +87,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
     from veloce.instrumentation import RequestMetrics
 

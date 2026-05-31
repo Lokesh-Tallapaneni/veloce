@@ -132,13 +132,6 @@ class CSRFMiddleware(Middleware):
 
         return self._forbidden("CSRF token mismatch")
 
-    @staticmethod
-    def _matches(candidate: object, cookie_val: str) -> bool:
-        # Constant-time equality, gated on the candidate being a string so
-        # multipart UploadFile parts and missing fields don't reach
-        # `compare_digest` (which would raise on non-bytes/str).
-        return isinstance(candidate, str) and secrets.compare_digest(candidate, cookie_val)
-
     async def process_response(self, request: Request, response: Response) -> Response:
         """Set or rotate the CSRF cookie."""
         existing = request._state.get("_csrf_cookie") if request._state else None
@@ -161,6 +154,13 @@ class CSRFMiddleware(Middleware):
             samesite=self.cookie_samesite,
         )
         return response
+
+    @staticmethod
+    def _matches(candidate: object, cookie_val: str) -> bool:
+        # Constant-time equality, gated on the candidate being a string so
+        # multipart UploadFile parts and missing fields don't reach
+        # `compare_digest` (which would raise on non-bytes/str).
+        return isinstance(candidate, str) and secrets.compare_digest(candidate, cookie_val)
 
     def _forbidden(self, detail: str) -> Response:
         return JSONResponse(

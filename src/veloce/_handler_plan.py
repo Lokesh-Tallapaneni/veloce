@@ -1,4 +1,4 @@
-"""Pre-computed parameter-resolution plan for a route handler.
+"""Handler plan — pre-computed parameter-resolution plan for a route handler.
 
 Built once at route registration; consumed per request. Removes the per-request
 cost of `inspect.signature` and `typing.get_type_hints` from the dispatch path.
@@ -33,7 +33,8 @@ from veloce.routing.params import Body, Cookie, File, Form, Header, ParamBase, P
 # and we are imported back via that chain.
 
 
-# Slot kinds — bare integers for cheap dispatch in the hot loop.
+# ── Slot-kind constants ────────────────────────────────────
+# Bare integers (not IntEnum) for cheap branching in the request hot loop.
 K_REQUEST = 0
 K_BG_TASKS = 1
 K_DEPENDS = 2
@@ -57,6 +58,7 @@ MK_FORM = 5
 MK_FILE = 6
 
 
+# ── Annotation helpers ─────────────────────────────────────
 def _unwrap_optional(annotation: Any) -> tuple[bool, Any]:
     """Detect `Optional[T]` / `Union[T, None]` / `T | None` and unwrap T."""
     origin = get_origin(annotation)
@@ -96,6 +98,7 @@ def _marker_kind(marker: ParamBase) -> int:
     return MK_QUERY
 
 
+# ── Slot record ────────────────────────────────────────────
 class _Slot:
     """One handler parameter's pre-resolved binding to a request source.
 
@@ -146,6 +149,7 @@ class _Slot:
         self.dep_is_async_gen = False
 
 
+# ── Parallel-dependency grouping ───────────────────────────
 def _slot_parallel_safe(slot: _Slot, seen_plans: set[int]) -> bool:
     """Whether a K_DEPENDS slot and its whole sub-graph are parallel-safe.
 
@@ -221,6 +225,7 @@ def compute_parallel_groups(slots: list[_Slot]) -> dict[int, int]:
     return groups
 
 
+# ── Handler plan ───────────────────────────────────────────
 class HandlerPlan:
     """Frozen resolution plan for one handler, plus its dependency graph."""
 
@@ -254,6 +259,7 @@ class HandlerPlan:
         self.parallel_groups = compute_parallel_groups(slots)
 
 
+# ── Plan builders ──────────────────────────────────────────
 def _build_depends_slot(
     name: str,
     dep: Any,
@@ -283,7 +289,8 @@ def _build_depends_slot(
     # scopes attribute; we read defensively.
     scopes = getattr(dep, "scopes", None)
     if scopes:
-        slot.target_type = list(scopes)  # repurpose target_type as scope list
+        # target_type is repurposed as the scope list for Security() slots.
+        slot.target_type = list(scopes)
     return slot
 
 

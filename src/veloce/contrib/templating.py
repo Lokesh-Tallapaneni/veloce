@@ -265,7 +265,7 @@ class Jinja2Templates:
         return self.env.get_template(name)
 
 
-# ── Module-level helpers ──────────────────────────────
+# ── Module-level helpers ─────────────────────────────────────────────
 
 
 def render_template(template_name: str, **context: Any) -> str:

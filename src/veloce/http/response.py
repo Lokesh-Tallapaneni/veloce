@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import datetime as _dt
 import hashlib
 import mimetypes
 import os
 from collections.abc import AsyncIterator
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -27,23 +27,6 @@ from veloce._internal import (
 from veloce.http.cache_control import CacheControl
 from veloce.http.dates import http_date, parse_date
 from veloce.http.header_set import HeaderSet
-
-
-def _format_content_disposition(disposition: str, filename: str) -> str:
-    """Build a safe RFC 6266 ``Content-Disposition`` header value.
-
-    The filename is reduced to a quoted ASCII ``filename="..."`` form with
-    backslashes, double-quotes, and control characters neutralised, so a
-    crafted filename cannot break out of the header. When the original
-    name had non-ASCII characters, an RFC 5987 ``filename*=UTF-8''...``
-    parameter is appended for modern browsers.
-    """
-    ascii_name = filename.encode("ascii", "replace").decode("ascii")
-    safe_ascii = "".join("_" if (c in '"\\' or c < " " or c == "\x7f") else c for c in ascii_name)
-    value = f'{disposition}; filename="{safe_ascii}"'
-    if ascii_name != filename:  # the original had non-ASCII characters
-        value += f"; filename*=UTF-8''{quote(filename, safe='')}"
-    return value
 
 
 class Response:
@@ -409,9 +392,9 @@ class Response:
             self.headers.pop(name.lower(), None)
             self._encoded = None
             return
-        if isinstance(value, _dt.datetime) and value.tzinfo is None:
-            value = value.replace(tzinfo=_dt.timezone.utc)
-        if isinstance(value, (_dt.datetime, _dt.date, int, float)):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        if isinstance(value, (datetime, date, int, float)):
             self.headers[name] = http_date(value)
         else:
             self.headers[name] = str(value)
@@ -772,9 +755,9 @@ class Response:
         """Set the retry after."""
         if value is None:
             self.headers.pop("Retry-After", None)
-        elif isinstance(value, _dt.timedelta):
+        elif isinstance(value, timedelta):
             self.headers["Retry-After"] = str(int(value.total_seconds()))
-        elif isinstance(value, _dt.datetime):
+        elif isinstance(value, datetime):
             self.headers["Retry-After"] = http_date(value)
         else:
             self.headers["Retry-After"] = str(int(value))
@@ -1273,6 +1256,23 @@ class StreamingResponse(Response):
             size = format(len(chunk), "x")
             transport.write(f"{size}\r\n".encode() + chunk + b"\r\n")
         transport.write(b"0\r\n\r\n")
+
+
+def _format_content_disposition(disposition: str, filename: str) -> str:
+    """Build a safe RFC 6266 ``Content-Disposition`` header value.
+
+    The filename is reduced to a quoted ASCII ``filename="..."`` form with
+    backslashes, double-quotes, and control characters neutralised, so a
+    crafted filename cannot break out of the header. When the original
+    name had non-ASCII characters, an RFC 5987 ``filename*=UTF-8''...``
+    parameter is appended for modern browsers.
+    """
+    ascii_name = filename.encode("ascii", "replace").decode("ascii")
+    safe_ascii = "".join("_" if (c in '"\\' or c < " " or c == "\x7f") else c for c in ascii_name)
+    value = f'{disposition}; filename="{safe_ascii}"'
+    if ascii_name != filename:  # the original had non-ASCII characters
+        value += f"; filename*=UTF-8''{quote(filename, safe='')}"
+    return value
 
 
 class FileResponse(Response):

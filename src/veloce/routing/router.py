@@ -1,4 +1,4 @@
-"""Radix-tree router with path parameters, method dispatch, and route groups."""
+"""Router — radix-tree routing with path parameters, method dispatch, and route groups."""
 
 from __future__ import annotations
 
@@ -69,7 +69,8 @@ class RadixNode:
         # The ordered list above is still the source of truth at match time.
         self._param_index: dict[tuple[str, type], RadixNode] = {}
         self.wildcard_child: RadixNode | None = None
-        self.handlers: dict[str, RouteInfo] = {}  # method -> RouteInfo
+        # Method name (uppercase) -> RouteInfo.
+        self.handlers: dict[str, RouteInfo] = {}
         self.param_name: str | None = None
         self.is_param = False
         self.is_wildcard = False
@@ -317,9 +318,8 @@ class Router:
         # 404/403/422 shape every route shares).
         self.router_responses: dict[int, dict[str, Any]] = dict(responses or {})
         self._root = RadixNode()
-        self._named_routes: dict[
-            str, tuple[str, list[str]]
-        ] = {}  # name -> (path_template, param_names)
+        # Route name -> (path_template, param_names), for url_for reverse lookup.
+        self._named_routes: dict[str, tuple[str, list[str]]] = {}
         # Regex fallback routes, in registration order. Empty for the common
         # case; `match()` guards on `if self._regex_routes:` so the radix
         # fast path pays nothing when no regex route is registered.
@@ -327,6 +327,8 @@ class Router:
         # template -> RegexRoute, so a second method on the same regex path
         # reuses one compiled pattern instead of appending a duplicate.
         self._regex_route_index: dict[str, RegexRoute] = {}
+
+    # ── Route registration ───────────────────────────────────────
 
     def _split_path(self, path: str) -> tuple[str, ...]:
         """Split path into segments (cached)."""
@@ -556,6 +558,8 @@ class Router:
             handler_table = node.handlers
         for method in methods:
             handler_table[method.upper()] = route_info
+
+    # ── Matching ─────────────────────────────────────────────────
 
     @staticmethod
     def _regex_route_match(route: RegexRoute, path: str) -> re.Match[str] | None:
@@ -794,7 +798,7 @@ class Router:
                 methods.update(dict.fromkeys(route.handlers))
         return list(methods)
 
-    # ── Decorator API ───────────────────────
+    # ── Decorator API ────────────────────────────────────────────
 
     def route(
         self,
@@ -941,6 +945,8 @@ class Router:
             **kwargs,
         )
 
+    # ── Reverse URL lookup ───────────────────────────────────────
+
     def url_for(self, name: str, **path_params: Any) -> str:
         """Reverse URL lookup by route name (`url_for`).
 
@@ -1018,6 +1024,8 @@ class Router:
     # `url_for` is the canonical method; this is a thin
     # alias so calling code reads cleanly.
     url_path_for = url_for
+
+    # ── Introspection and merge ──────────────────────────────────
 
     def _collect_all_routes(self, include_hidden: bool = False) -> list[tuple[str, str, RouteInfo]]:
         """Collect routes as (method, path, info) tuples.

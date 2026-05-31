@@ -46,6 +46,9 @@ ANY_SENDER: Any = object()
 SignalResult = list[tuple[Callable, Any]]
 
 
+# ── Matching helpers ────────────────────────────────────────────────
+
+
 def _matches(subscribed: Any, sent: Any) -> bool:
     """A receiver subscribed for `subscribed` should fire on `sent`."""
     if subscribed is ANY_SENDER:
@@ -58,6 +61,9 @@ def _matches(subscribed: Any, sent: Any) -> bool:
         return bool(subscribed == sent)
     except Exception:
         return False
+
+
+# ── Signal ──────────────────────────────────────────────────────────
 
 
 class Signal:
@@ -258,6 +264,9 @@ class Signal:
 
     def __repr__(self) -> str:
         return f"<Signal name={self.name!r} receivers={len(self._subs)}>"
+
+
+# ── Namespace ───────────────────────────────────────────────────────
 
 
 class Namespace:

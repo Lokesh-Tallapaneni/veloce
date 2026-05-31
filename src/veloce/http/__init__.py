@@ -1,5 +1,8 @@
 """HTTP sub-package — request, response, and data structures."""
 
+from __future__ import annotations
+
+from veloce.http.cache_control import CacheControl
 from veloce.http.datastructures import (
     URL,
     AcceptHeader,
@@ -32,6 +35,7 @@ __all__ = [
     "AcceptHeader",
     "Address",
     "Authorization",
+    "CacheControl",
     "Cookies",
     "Request",
     "Response",

@@ -1,4 +1,4 @@
-"""In-memory test client driving the app through its ASGI surface.
+"""Test client — in-memory driver for the app's ASGI surface.
 
 Constructs ASGI scopes directly and calls `app.__call__(scope, receive, send)`
 on a dedicated event loop. This exercises the same path a production ASGI
@@ -332,7 +332,7 @@ class TestClient:
             self._loop.run_until_complete(app._run_lifecycle("startup"))
             self._lifespan_run = True
 
-    # ── Cookie management (conventional shape) ────────────────────────
+    # ── Cookie management (conventional shape) ───────────────────────
 
     @property
     def cookies(self) -> _TestClientCookies:
@@ -931,7 +931,7 @@ class AsyncTestClient:
         # client has been entered as a context manager.
         self._entered = False
 
-    # ── async context manager ────────────────────────────────────────
+    # ── Async context manager ────────────────────────────────────────
 
     async def __aenter__(self) -> AsyncTestClient:
         self._entered = True
@@ -946,7 +946,7 @@ class AsyncTestClient:
             self._lifespan_run = False
         self._entered = False
 
-    # ── cookie management ────────────────────────────────────────────
+    # ── Cookie management ────────────────────────────────────────────
 
     @property
     def cookies(self) -> _TestClientCookies:
@@ -961,7 +961,7 @@ class AsyncTestClient:
         """Remove a cookie from the jar. No-op if not present."""
         self._cookies.pop(key, None)
 
-    # ── header / cookie plumbing ─────────────────────────────────────
+    # ── Header / cookie plumbing ─────────────────────────────────────
 
     def _build_headers(self, extra: dict[str, str] | None) -> dict[str, str]:
         return _build_request_headers(self._base_headers, self._cookies, extra)
@@ -1078,7 +1078,7 @@ class AsyncTestClient:
             body = content
         return body, hdrs
 
-    # ── method shortcuts ─────────────────────────────────────────────
+    # ── Method shortcuts ─────────────────────────────────────────────
 
     async def get(
         self,

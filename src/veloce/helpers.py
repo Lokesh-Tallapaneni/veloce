@@ -1,5 +1,4 @@
-"""Helper functions — abort, jsonify, make_response, flash, g,
-current_app, send_from_directory."""
+"""Helpers — abort, jsonify, make_response, flash, g, current_app, send_from_directory."""
 
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ from veloce.http.response import FileResponse, JSONResponse, RedirectResponse, R
 from veloce.safe import safe_join
 from veloce.signals import message_flashed
 
-# ── current_app proxy ────────────────────────────────────────────────
+# ── Context vars ──────────────────────────────────────────
 
 # The active app is stashed on this ContextVar by `Veloce.handle_request`.
 # `current_app` is a proxy that resolves to the active app on every
@@ -35,6 +34,9 @@ _current_app_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
 _current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "veloce_current_request", default=None
 )
+
+
+# ── Proxy classes ─────────────────────────────────────────
 
 
 class _ContextProxy:
@@ -91,10 +93,6 @@ class _CurrentAppProxy(_ContextProxy):
     _scope_label = "application"
 
 
-# Singleton — `from veloce import current_app`.
-current_app = _CurrentAppProxy()
-
-
 class _CurrentRequestProxy(_ContextProxy):
     """Context-local proxy to the request being handled.
 
@@ -106,10 +104,6 @@ class _CurrentRequestProxy(_ContextProxy):
     __slots__ = ()
     _var = _current_request_var
     _subject = "request"
-
-
-# Singleton — `from veloce import request`.
-request = _CurrentRequestProxy()
 
 
 class _SessionProxy(_ContextProxy):
@@ -155,323 +149,6 @@ class _SessionProxy(_ContextProxy):
     def __bool__(self) -> bool:
         req = self._var.get()
         return req is not None and "session" in req._state
-
-
-# Singleton — `from veloce import session`.
-session = _SessionProxy()
-
-
-def has_app_context() -> bool:
-    """True iff `current_app` resolves to a real app.
-
-    Use this to gate code that reads `current_app`/`app.config` so it
-    can also run outside a request (e.g. helper modules imported at
-    module-import time, before any app is bound to the contextvar).
-    """
-    return _current_app_var.get() is not None
-
-
-def has_request_context() -> bool:
-    """True iff a request is bound to this task/context.
-
-    Veloce passes the live request through arguments during dispatch,
-    so this only flips True inside `app.test_request_context()` blocks
-    or when application code explicitly sets the contextvar.
-    """
-    return _current_request_var.get() is not None
-
-
-# ── Aborter / abort() ────────────────────────────────────────────
-
-
-class Aborter:
-    """A callable that turns a status code into an HTTPException.
-
-    Used as `app.aborter(404)` or `app.aborter(403, "Forbidden")`.
-    Subclasses can override `mapping` to register custom exception
-    classes for specific status codes; the base class leaves it empty
-    so the default `exception_for_status` lookup applies.
-    """
-
-    mapping: dict[int, type] = {}
-
-    def __init__(self, extra_mapping: dict[int, type] | None = None) -> None:
-        self._mapping: dict[int, type] = {}
-        if extra_mapping:
-            self._mapping.update(extra_mapping)
-
-    def __call__(
-        self,
-        code: int,
-        detail: str = "",
-        headers: dict[str, str] | None = None,
-    ) -> NoReturn:
-        if not detail:
-            try:
-                detail = HTTPStatus(code).phrase
-            except ValueError:
-                detail = "Error"
-        cls = self._mapping.get(code) or self.mapping.get(code) or exception_for_status(code)
-        raise cls(status_code=code, detail=detail, headers=headers)
-
-
-def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = None) -> NoReturn:
-    """Raise an HTTPException — a concise shorthand.
-
-    Raises the typed subclass for known status codes (e.g. `NotFound` for 404,
-    `Forbidden` for 403) so error handlers registered against a specific
-    subclass match. Unknown codes fall back to the bare `HTTPException`.
-
-    Usage:
-        abort(404)              # → raises NotFound
-        abort(403, "Forbidden") # → raises Forbidden
-    """
-    if not detail:
-        try:
-            detail = HTTPStatus(status_code).phrase
-        except ValueError:
-            detail = "Error"
-    cls = exception_for_status(status_code)
-    raise cls(status_code=status_code, detail=detail, headers=headers)
-
-
-# ── after_this_request() ────────────────────────────────────────
-
-
-def after_this_request(func: Any) -> Any:
-    """Register a one-shot after-request callback.
-
-    Fires after the global `@app.after_request` hooks have run for the
-    current request only — future requests are unaffected. Useful for
-    work that depends on data computed inside the handler (e.g. setting
-    a cookie whose value the handler decided).
-
-    Returns the callback unchanged so it can be used as a decorator.
-    Raises `RuntimeError` when called outside an active request.
-    """
-    request = _current_request_var.get()
-    if request is None:
-        raise RuntimeError("after_this_request() requires an active request context.")
-    # List, not set: order matters — dispatcher drains in registration order.
-    cbs = request._state.setdefault("_after_this_request", [])
-    cbs.append(func)
-    return func
-
-
-# ── send_file() ─────────────────────────────────────────────────
-
-
-def send_file(
-    path_or_file: Any,
-    mimetype: str | None = None,
-    as_attachment: bool = False,
-    download_name: str | None = None,
-    last_modified: Any = None,
-    etag: bool | str = True,
-    max_age: int | None = None,
-) -> Response:
-    """Serve a file top-level helper.
-
-    Accepts a filesystem path (str / PathLike) and returns a `FileResponse`
-    with conditional-GET headers already set (Last-Modified, ETag — both
-    were added by Q40/Q42). Optional knobs:
-
-    - `mimetype=` overrides the auto-guessed content type.
-    - `as_attachment=True` sets `Content-Disposition: attachment;
-      filename=<download_name or basename>`.
-    - `download_name=` overrides the filename in `Content-Disposition`.
-    - `last_modified=` overrides the file's mtime (datetime, unix ts,
-      or pre-formatted IMF-fixdate string).
-    - `etag=False` suppresses the auto-generated ETag; `etag="<value>"`
-      uses the caller-provided one verbatim (already-quoted).
-    - `max_age=` adds `Cache-Control: public, max-age=<n>`.
-    """
-    headers: dict[str, str] = {}
-    if last_modified is not None:
-        if isinstance(last_modified, str):
-            headers["Last-Modified"] = last_modified
-        else:
-            headers["Last-Modified"] = http_date(last_modified)
-
-    if isinstance(etag, str):
-        headers["ETag"] = etag
-
-    if max_age is not None:
-        headers["Cache-Control"] = f"public, max-age={max_age}"
-
-    path = str(path_or_file)
-    if as_attachment and not download_name:
-        download_name = os.path.basename(path)
-    attachment_name = download_name if as_attachment else None
-    _strip_etag = etag is False
-    resp = FileResponse(
-        path=path,
-        filename=attachment_name,
-        content_type=mimetype,
-        headers=headers,
-    )
-    if _strip_etag:
-        resp.headers.pop("ETag", None)
-        resp._encoded = None
-    return resp
-
-
-# ── redirect() ──────────────────────────────────────────────────
-
-
-def redirect(
-    location: str,
-    code: int = 302,
-    headers: dict[str, str] | None = None,
-) -> Response:
-    """Build a redirect response helper.
-
-    Default `code=302` matches the long-standing convention. RFC 9110 §15.4
-    catalogue: 301 (permanent, method may change), 302 (found, method
-    may change), 303 (see other, method becomes GET), 307 (temporary,
-    method preserved), 308 (permanent, method preserved). Pick the one
-    that matches your semantics — the helper is a thin wrapper, not a
-    policy. Accepts extra headers (e.g. `Vary`).
-    """
-    return RedirectResponse(location, status_code=code, headers=headers)
-
-
-# ── jsonify() ────────────────────────────────────────────────────
-
-
-def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
-    """Create a JSON response — a concise shorthand.
-
-    Honours two app-config flags when called inside a request:
-    - `JSON_SORT_KEYS` (default True) — sort dict keys alphabetically.
-    - `JSONIFY_PRETTYPRINT_REGULAR` (default False) — indent the output
-      with 2 spaces for readability. Often enabled under DEBUG.
-
-    Usage:
-        return jsonify(name="alice", age=30)
-        return jsonify({"name": "alice"})
-        return jsonify([1, 2, 3])
-    """
-    if args and kwargs:
-        raise TypeError("jsonify() takes either positional or keyword args, not both")
-    data = (args[0] if len(args) == 1 else list(args)) if args else kwargs
-
-    # Try to read flags from the current app's config; fall back to the
-    # plain defaults when called outside a request context.
-    options = 0
-    app = _current_app_var.get()
-    if app is not None:
-        cfg = app.config
-        if cfg.get("JSON_SORT_KEYS"):
-            options |= orjson.OPT_SORT_KEYS
-        if cfg.get("JSONIFY_PRETTYPRINT_REGULAR"):
-            options |= orjson.OPT_INDENT_2
-
-    if options:
-        # Pre-encode here so the orjson options apply; `from_bytes` skips
-        # JSONResponse's default re-serialise.
-        return JSONResponse.from_bytes(orjson.dumps(data, option=options))
-    return JSONResponse(data)
-
-
-# ── make_response() ─────────────────────────────────────────────
-
-
-def make_response(
-    body: Any = b"",
-    status_code: int = 200,
-    headers: dict[str, str] | None = None,
-    content_type: str | None = None,
-) -> Response:
-    """Create a Response — a convenience wrapper.
-
-    Usage:
-        resp = make_response("Hello", 200)
-        resp = make_response({"data": True}, 201)
-    """
-    if isinstance(body, (dict, list)):
-        return JSONResponse(body, status_code=status_code, headers=headers)
-    if isinstance(body, str):
-        ct = content_type or MIME_HTML
-        return Response(
-            status_code=status_code,
-            body=body.encode("utf-8"),
-            content_type=ct,
-            headers=headers,
-        )
-    if isinstance(body, bytes):
-        ct = content_type or MIME_OCTET
-        return Response(
-            status_code=status_code,
-            body=body,
-            content_type=ct,
-            headers=headers,
-        )
-    # Pydantic model
-    if hasattr(body, "model_dump"):
-        return JSONResponse(body.model_dump(), status_code=status_code, headers=headers)
-    return JSONResponse(body, status_code=status_code, headers=headers)
-
-
-# ── send_from_directory() ────────────────────────────────────────
-
-
-def send_from_directory(
-    directory: str,
-    filename: str,
-    mimetype: str | None = None,
-    as_attachment: bool = False,
-    download_name: str | None = None,
-) -> FileResponse:
-    """Send a file from a directory (sync version).
-
-    Traversal-safe via `safe_join`. Returns 403 on any escape attempt.
-
-    For async, use send_from_directory_async() instead.
-    """
-
-    resolved = safe_join(directory, filename)
-    if resolved is None:
-        abort(403, "Access denied")
-
-    if as_attachment and not download_name:
-        download_name = os.path.basename(str(resolved))
-    attachment_name = download_name if as_attachment else None
-    return FileResponse(
-        path=resolved,
-        filename=attachment_name,
-        content_type=mimetype,
-    )
-
-
-async def send_from_directory_async(
-    directory: str,
-    filename: str,
-    mimetype: str | None = None,
-    as_attachment: bool = False,
-    download_name: str | None = None,
-) -> FileResponse:
-    """Send a file from a directory — async version, reads file in executor.
-
-    Traversal-safe via `safe_join`.
-    """
-
-    # `safe_join` is pure string arithmetic; the file read happens below.
-    resolved = safe_join(directory, filename)  # noqa: ASYNC240
-    if resolved is None:
-        abort(403, "Access denied")
-
-    if as_attachment and not download_name:
-        download_name = os.path.basename(str(resolved))
-    attachment_name = download_name if as_attachment else None
-    return await FileResponse.from_path(
-        path=resolved,
-        filename=attachment_name,
-        content_type=mimetype,
-    )
-
-
-# ── g (request-scoped globals) ───────────────────────────────────
 
 
 class _RequestGlobals:
@@ -535,11 +212,338 @@ class _RequestGlobals:
         self._ctx_var.set(None)
 
 
-# Singleton
+# ── Aborter ───────────────────────────────────────────────
+
+
+class Aborter:
+    """A callable that turns a status code into an HTTPException.
+
+    Used as `app.aborter(404)` or `app.aborter(403, "Forbidden")`.
+    Subclasses can override `mapping` to register custom exception
+    classes for specific status codes; the base class leaves it empty
+    so the default `exception_for_status` lookup applies.
+    """
+
+    mapping: dict[int, type] = {}
+
+    def __init__(self, extra_mapping: dict[int, type] | None = None) -> None:
+        self._mapping: dict[int, type] = {}
+        if extra_mapping:
+            self._mapping.update(extra_mapping)
+
+    def __call__(
+        self,
+        code: int,
+        detail: str = "",
+        headers: dict[str, str] | None = None,
+    ) -> NoReturn:
+        if not detail:
+            try:
+                detail = HTTPStatus(code).phrase
+            except ValueError:
+                detail = "Error"
+        cls = self._mapping.get(code) or self.mapping.get(code) or exception_for_status(code)
+        raise cls(status_code=code, detail=detail, headers=headers)
+
+
+# ── Singletons ────────────────────────────────────────────
+
+# `from veloce import current_app`.
+current_app = _CurrentAppProxy()
+
+# `from veloce import request`.
+request = _CurrentRequestProxy()
+
+# `from veloce import session`.
+session = _SessionProxy()
+
+# `from veloce import g`.
 g = _RequestGlobals()
 
 
-# ── flash() / get_flashed_messages() ─────────────────────────────
+# ── Context introspection ─────────────────────────────────
+
+
+def has_app_context() -> bool:
+    """True iff `current_app` resolves to a real app.
+
+    Use this to gate code that reads `current_app`/`app.config` so it
+    can also run outside a request (e.g. helper modules imported at
+    module-import time, before any app is bound to the contextvar).
+    """
+    return _current_app_var.get() is not None
+
+
+def has_request_context() -> bool:
+    """True iff a request is bound to this task/context.
+
+    Veloce passes the live request through arguments during dispatch,
+    so this only flips True inside `app.test_request_context()` blocks
+    or when application code explicitly sets the contextvar.
+    """
+    return _current_request_var.get() is not None
+
+
+# ── abort() ───────────────────────────────────────────────
+
+
+def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = None) -> NoReturn:
+    """Raise an HTTPException — a concise shorthand.
+
+    Raises the typed subclass for known status codes (e.g. `NotFound` for 404,
+    `Forbidden` for 403) so error handlers registered against a specific
+    subclass match. Unknown codes fall back to the bare `HTTPException`.
+
+    Usage:
+        abort(404)              # → raises NotFound
+        abort(403, "Forbidden") # → raises Forbidden
+    """
+    if not detail:
+        try:
+            detail = HTTPStatus(status_code).phrase
+        except ValueError:
+            detail = "Error"
+    cls = exception_for_status(status_code)
+    raise cls(status_code=status_code, detail=detail, headers=headers)
+
+
+# ── after_this_request() ──────────────────────────────────
+
+
+def after_this_request(func: Any) -> Any:
+    """Register a one-shot after-request callback.
+
+    Fires after the global `@app.after_request` hooks have run for the
+    current request only — future requests are unaffected. Useful for
+    work that depends on data computed inside the handler (e.g. setting
+    a cookie whose value the handler decided).
+
+    Returns the callback unchanged so it can be used as a decorator.
+    Raises `RuntimeError` when called outside an active request.
+    """
+    request = _current_request_var.get()
+    if request is None:
+        raise RuntimeError("after_this_request() requires an active request context.")
+    # List, not set: order matters — dispatcher drains in registration order.
+    cbs = request._state.setdefault("_after_this_request", [])
+    cbs.append(func)
+    return func
+
+
+# ── send_file() ───────────────────────────────────────────
+
+
+def send_file(
+    path_or_file: Any,
+    mimetype: str | None = None,
+    as_attachment: bool = False,
+    download_name: str | None = None,
+    last_modified: Any = None,
+    etag: bool | str = True,
+    max_age: int | None = None,
+) -> Response:
+    """Serve a file top-level helper.
+
+    Accepts a filesystem path (str / PathLike) and returns a `FileResponse`
+    with conditional-GET headers already set (Last-Modified, ETag — both
+    were added by Q40/Q42). Optional knobs:
+
+    - `mimetype=` overrides the auto-guessed content type.
+    - `as_attachment=True` sets `Content-Disposition: attachment;
+      filename=<download_name or basename>`.
+    - `download_name=` overrides the filename in `Content-Disposition`.
+    - `last_modified=` overrides the file's mtime (datetime, unix ts,
+      or pre-formatted IMF-fixdate string).
+    - `etag=False` suppresses the auto-generated ETag; `etag="<value>"`
+      uses the caller-provided one verbatim (already-quoted).
+    - `max_age=` adds `Cache-Control: public, max-age=<n>`.
+    """
+    headers: dict[str, str] = {}
+    if last_modified is not None:
+        if isinstance(last_modified, str):
+            headers["Last-Modified"] = last_modified
+        else:
+            headers["Last-Modified"] = http_date(last_modified)
+
+    if isinstance(etag, str):
+        headers["ETag"] = etag
+
+    if max_age is not None:
+        headers["Cache-Control"] = f"public, max-age={max_age}"
+
+    path = str(path_or_file)
+    if as_attachment and not download_name:
+        download_name = os.path.basename(path)
+    attachment_name = download_name if as_attachment else None
+    _strip_etag = etag is False
+    resp = FileResponse(
+        path=path,
+        filename=attachment_name,
+        content_type=mimetype,
+        headers=headers,
+    )
+    if _strip_etag:
+        resp.headers.pop("ETag", None)
+        resp._encoded = None
+    return resp
+
+
+# ── redirect() ────────────────────────────────────────────
+
+
+def redirect(
+    location: str,
+    code: int = 302,
+    headers: dict[str, str] | None = None,
+) -> Response:
+    """Build a redirect response helper.
+
+    Default `code=302` matches the long-standing convention. RFC 9110 §15.4
+    catalogue: 301 (permanent, method may change), 302 (found, method
+    may change), 303 (see other, method becomes GET), 307 (temporary,
+    method preserved), 308 (permanent, method preserved). Pick the one
+    that matches your semantics — the helper is a thin wrapper, not a
+    policy. Accepts extra headers (e.g. `Vary`).
+    """
+    return RedirectResponse(location, status_code=code, headers=headers)
+
+
+# ── jsonify() ─────────────────────────────────────────────
+
+
+def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
+    """Create a JSON response — a concise shorthand.
+
+    Honours two app-config flags when called inside a request:
+    - `JSON_SORT_KEYS` (default True) — sort dict keys alphabetically.
+    - `JSONIFY_PRETTYPRINT_REGULAR` (default False) — indent the output
+      with 2 spaces for readability. Often enabled under DEBUG.
+
+    Usage:
+        return jsonify(name="alice", age=30)
+        return jsonify({"name": "alice"})
+        return jsonify([1, 2, 3])
+    """
+    if args and kwargs:
+        raise TypeError("jsonify() takes either positional or keyword args, not both")
+    data = (args[0] if len(args) == 1 else list(args)) if args else kwargs
+
+    # Try to read flags from the current app's config; fall back to the
+    # plain defaults when called outside a request context.
+    options = 0
+    app = _current_app_var.get()
+    if app is not None:
+        cfg = app.config
+        if cfg.get("JSON_SORT_KEYS"):
+            options |= orjson.OPT_SORT_KEYS
+        if cfg.get("JSONIFY_PRETTYPRINT_REGULAR"):
+            options |= orjson.OPT_INDENT_2
+
+    if options:
+        # Pre-encode here so the orjson options apply; `from_bytes` skips
+        # JSONResponse's default re-serialise.
+        return JSONResponse.from_bytes(orjson.dumps(data, option=options))
+    return JSONResponse(data)
+
+
+# ── make_response() ───────────────────────────────────────
+
+
+def make_response(
+    body: Any = b"",
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+    content_type: str | None = None,
+) -> Response:
+    """Create a Response — a convenience wrapper.
+
+    Usage:
+        resp = make_response("Hello", 200)
+        resp = make_response({"data": True}, 201)
+    """
+    if isinstance(body, (dict, list)):
+        return JSONResponse(body, status_code=status_code, headers=headers)
+    if isinstance(body, str):
+        ct = content_type or MIME_HTML
+        return Response(
+            status_code=status_code,
+            body=body.encode("utf-8"),
+            content_type=ct,
+            headers=headers,
+        )
+    if isinstance(body, bytes):
+        ct = content_type or MIME_OCTET
+        return Response(
+            status_code=status_code,
+            body=body,
+            content_type=ct,
+            headers=headers,
+        )
+    # Pydantic model
+    if hasattr(body, "model_dump"):
+        return JSONResponse(body.model_dump(), status_code=status_code, headers=headers)
+    return JSONResponse(body, status_code=status_code, headers=headers)
+
+
+# ── send_from_directory() ─────────────────────────────────
+
+
+def send_from_directory(
+    directory: str,
+    filename: str,
+    mimetype: str | None = None,
+    as_attachment: bool = False,
+    download_name: str | None = None,
+) -> FileResponse:
+    """Send a file from a directory (sync version).
+
+    Traversal-safe via `safe_join`. Returns 403 on any escape attempt.
+
+    For async, use send_from_directory_async() instead.
+    """
+
+    resolved = safe_join(directory, filename)
+    if resolved is None:
+        abort(403, "Access denied")
+
+    if as_attachment and not download_name:
+        download_name = os.path.basename(str(resolved))
+    attachment_name = download_name if as_attachment else None
+    return FileResponse(
+        path=resolved,
+        filename=attachment_name,
+        content_type=mimetype,
+    )
+
+
+async def send_from_directory_async(
+    directory: str,
+    filename: str,
+    mimetype: str | None = None,
+    as_attachment: bool = False,
+    download_name: str | None = None,
+) -> FileResponse:
+    """Send a file from a directory — async version, reads file in executor.
+
+    Traversal-safe via `safe_join`.
+    """
+
+    # `safe_join` is pure string arithmetic; the file read happens below.
+    resolved = safe_join(directory, filename)  # noqa: ASYNC240
+    if resolved is None:
+        abort(403, "Access denied")
+
+    if as_attachment and not download_name:
+        download_name = os.path.basename(str(resolved))
+    attachment_name = download_name if as_attachment else None
+    return await FileResponse.from_path(
+        path=resolved,
+        filename=attachment_name,
+        content_type=mimetype,
+    )
+
+
+# ── flash() / get_flashed_messages() ──────────────────────
 
 
 def _flash_store() -> Any:
@@ -612,7 +616,7 @@ def get_flashed_messages(
     return [msg for _, msg in flashes]
 
 
-# ── stream_with_context() ────────────────────────────────────────
+# ── stream_with_context() ─────────────────────────────────
 
 
 def stream_with_context(generator: Any) -> Any:

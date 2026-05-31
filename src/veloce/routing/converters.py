@@ -62,6 +62,9 @@ _BUILTIN_REGEX: dict[str, str] = {
 _MAX_INT_DIGITS = 20
 
 
+# ── Converters ──────────────────────────────────────────────
+
+
 class _Converter:
     """Base class — subclasses override `match` and may set `greedy`."""
 
@@ -162,6 +165,9 @@ class AnyConverter(_Converter):
         return (value in self._choices), value
 
 
+# ── Registry and parsing ────────────────────────────────────
+
+
 # Public base-class alias — subclass `Converter` to build a custom one.
 Converter = _Converter
 
@@ -217,6 +223,9 @@ def parse_converter(spec: str | None) -> _Converter:
     if cls is None:
         raise ValueError(f"unknown path converter: {spec!r}")
     return cls()
+
+
+# ── Regex-path classification and compilation ───────────────
 
 
 # Names the radix tree can express natively. A converter spec outside this

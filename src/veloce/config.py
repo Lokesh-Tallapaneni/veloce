@@ -1,4 +1,4 @@
-"""`Config` dict subclass with convenient loader methods.
+"""Config — a `dict` subclass with convenient loader methods.
 
 `app.config` is a `Config`. The class inherits `dict`, so every existing
 idiom (`config["DEBUG"] = True`, `config.get("X")`, `config.update(...)`)
@@ -22,7 +22,7 @@ from typing import IO, Any
 
 import orjson
 
-_logger = logging.getLogger("veloce.config")
+_logger = logging.getLogger(__name__)
 
 
 def _orjson_load(fp: IO[str] | IO[bytes]) -> Mapping[str, Any]:
@@ -85,6 +85,31 @@ def _parse_env_lines(lines: list[str], *, source: str = "<env>") -> dict[str, st
                 value = value[:comment].rstrip()
         parsed[key] = value
     return parsed
+
+
+def _import_string(dotted_path: str) -> object:
+    """Resolve `"package.module.attr"` to the attribute object.
+
+    Walks right-to-left until a prefix imports cleanly, then takes
+    the remaining segments as attribute accesses.
+    """
+    parts = dotted_path.split(".")
+    for split_at in range(len(parts), 0, -1):
+        module_path = ".".join(parts[:split_at])
+        attrs = parts[split_at:]
+        try:
+            obj: Any = importlib.import_module(module_path)
+        except ImportError:
+            continue
+        try:
+            for attr in attrs:
+                obj = getattr(obj, attr)
+        except AttributeError as err:
+            raise ImportError(
+                f"module {module_path!r} has no attribute path {'.'.join(attrs)!r}"
+            ) from err
+        return obj
+    raise ImportError(f"could not import {dotted_path!r}")
 
 
 class Config(dict[str, Any]):
@@ -320,28 +345,3 @@ class Config(dict[str, Any]):
                 trimmed = trimmed.lower()
             result[trimmed] = value
         return result
-
-
-def _import_string(dotted_path: str) -> object:
-    """Resolve `"package.module.attr"` to the attribute object.
-
-    Walks right-to-left until a prefix imports cleanly, then takes
-    the remaining segments as attribute accesses.
-    """
-    parts = dotted_path.split(".")
-    for split_at in range(len(parts), 0, -1):
-        module_path = ".".join(parts[:split_at])
-        attrs = parts[split_at:]
-        try:
-            obj: Any = importlib.import_module(module_path)
-        except ImportError:
-            continue
-        try:
-            for attr in attrs:
-                obj = getattr(obj, attr)
-        except AttributeError as err:
-            raise ImportError(
-                f"module {module_path!r} has no attribute path {'.'.join(attrs)!r}"
-            ) from err
-        return obj
-    raise ImportError(f"could not import {dotted_path!r}")

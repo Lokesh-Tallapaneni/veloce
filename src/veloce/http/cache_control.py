@@ -1,4 +1,4 @@
-"""Parsed `Cache-Control` header `CacheControl` view.
+"""CacheControl — parsed view of a `Cache-Control` header.
 
 RFC 9111 §5.2 defines the `Cache-Control` directives. Each directive
 is either a bare token (`no-cache`, `must-revalidate`) or a

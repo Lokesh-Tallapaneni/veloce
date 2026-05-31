@@ -1,4 +1,4 @@
-"""HTTP Basic and Bearer authentication schemes."""
+"""HTTP authentication schemes — Basic, Digest, Bearer."""
 
 from __future__ import annotations
 

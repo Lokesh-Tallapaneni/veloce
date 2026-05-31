@@ -1,4 +1,12 @@
-"""OAuth2 authentication schemes."""
+"""OAuth2 — authentication schemes.
+
+Some constructor parameters use camelCase (`authorizationUrl`, `tokenUrl`,
+`refreshUrl`, `openIdConnectUrl`) rather than the project's snake_case
+convention. These names mirror the OAuth2/OpenID Connect security-scheme
+field names defined by the OpenAPI specification, so a scheme description
+copied from a standard OpenAPI document maps onto these classes without
+renaming. They are kept as-is deliberately for spec compliance.
+"""
 
 from __future__ import annotations
 

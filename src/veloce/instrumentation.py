@@ -1,4 +1,4 @@
-"""Observability instrumentation primitives.
+"""Instrumentation — per-request metrics record for observability hooks.
 
 `RequestMetrics` is the per-request record handed to every instrumentation
 hook registered with `Veloce.add_instrumentation`. It carries exactly the
@@ -10,7 +10,12 @@ request without re-deriving anything.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 
+# ── Public classes ─────────────────────────────────────────────────
+
+
+@dataclass(slots=True, eq=False, repr=False)
 class RequestMetrics:
     """A finished HTTP request, as seen by an instrumentation hook.
 
@@ -37,41 +42,19 @@ class RequestMetrics:
     earlier hook cannot shift the span past the real request boundary.
     """
 
-    __slots__ = (
-        "method",
-        "path",
-        "route",
-        "status_code",
-        "duration_ms",
-        "streamed",
-        "end_time_ns",
-        "parent_context",
-    )
-
-    def __init__(
-        self,
-        method: str,
-        path: str,
-        route: str | None,
-        status_code: int,
-        duration_ms: float,
-        streamed: bool = False,
-        end_time_ns: int | None = None,
-        parent_context: object | None = None,
-    ) -> None:
-        self.method = method
-        self.path = path
-        self.route = route
-        self.status_code = status_code
-        self.duration_ms = duration_ms
-        self.streamed = streamed
-        self.end_time_ns = end_time_ns
-        # Inbound distributed-trace headers (a `{"traceparent": ..., maybe
-        # "tracestate": ...}` carrier dict) so a tracing bridge (e.g.
-        # veloce.otel) can extract a parent context and continue the trace.
-        # `None` when the request carried no trace headers. The core never
-        # interprets this value — it stays framework-agnostic.
-        self.parent_context = parent_context
+    method: str
+    path: str
+    route: str | None
+    status_code: int
+    duration_ms: float
+    streamed: bool = False
+    end_time_ns: int | None = None
+    # Inbound distributed-trace headers (a `{"traceparent": ..., maybe
+    # "tracestate": ...}` carrier dict) so a tracing bridge (e.g.
+    # veloce.otel) can extract a parent context and continue the trace.
+    # `None` when the request carried no trace headers. The core never
+    # interprets this value — it stays framework-agnostic.
+    parent_context: object | None = None
 
     def __repr__(self) -> str:
         return (

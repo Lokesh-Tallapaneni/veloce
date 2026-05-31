@@ -1,4 +1,4 @@
-"""HTTP and validation exceptions, plus default exception handlers.
+"""HTTP and validation exceptions — plus default exception handlers.
 
 Each named HTTP exception below corresponds to a status code from RFC 9110
 (HTTP Semantics) and RFC 6585 (Additional HTTP Status Codes). The subclass
@@ -240,6 +240,9 @@ class RequestValidationError(ValidationError):
     pass
 
 
+# ── WebSocket exceptions ─────────────────────────────────────────────
+
+
 class WebSocketDisconnect(Exception):
     """WebSocket connection closed."""
 
@@ -273,6 +276,9 @@ class WebSocketRequestValidationError(RequestValidationError):
     """
 
     pass
+
+
+# ── Other exception families ─────────────────────────────────────────
 
 
 class BuildError(LookupError):

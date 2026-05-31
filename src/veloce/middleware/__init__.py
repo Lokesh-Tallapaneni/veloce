@@ -1,4 +1,14 @@
-"""Middleware sub-package — base class and all built-in middleware."""
+"""Middleware — base class and all built-in middleware.
+
+Middleware wraps the request/response cycle. Ordering is significant: the
+outermost layer sees the request first and the response last. Register
+security-related middleware (trusted host, HTTPS redirect, CORS, security
+headers) outermost so they run before anything that inspects or mutates the
+request body, with session/CSRF and observability (logging, request id)
+layered inside.
+"""
+
+from __future__ import annotations
 
 from veloce.middleware.base import BaseHTTPMiddleware, Middleware
 from veloce.middleware.compression import GZipMiddleware

@@ -112,6 +112,28 @@ class EventSourceResponse(Response):
         # `bytes` stream — see `_encode_stream`.
         self._stream = self._encode_stream(content)
 
+    async def stream_to(self, transport: Any) -> None:
+        """Stream SSE events to transport."""
+        default_headers = {
+            "Content-Type": self.content_type,
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Transfer-Encoding": "chunked",
+        }
+        parts = _encode_response_head(self.status_code, default_headers, self.headers)
+        parts.append("\r\n")
+        transport.write("".join(parts).encode("latin-1"))
+
+        async for chunk in self._stream:
+            # `_stream` is normalised to bytes by `_encode_stream`.
+            # `writelines` keeps the size-line, payload, and trailer as
+            # separate buffers instead of concatenating them into a fresh
+            # bytes object per chunk.
+            size = format(len(chunk), "x").encode("ascii")
+            transport.writelines((size, b"\r\n", chunk, b"\r\n"))
+
+        transport.write(b"0\r\n\r\n")
+
     def _encode_stream(
         self,
         content: AsyncIterator[ServerSentEvent | str | bytes],
@@ -179,25 +201,3 @@ class EventSourceResponse(Response):
         finally:
             if pending is not None:
                 pending.cancel()
-
-    async def stream_to(self, transport: Any) -> None:
-        """Stream SSE events to transport."""
-        default_headers = {
-            "Content-Type": self.content_type,
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Transfer-Encoding": "chunked",
-        }
-        parts = _encode_response_head(self.status_code, default_headers, self.headers)
-        parts.append("\r\n")
-        transport.write("".join(parts).encode("latin-1"))
-
-        async for chunk in self._stream:
-            # `_stream` is normalised to bytes by `_encode_stream`.
-            # `writelines` keeps the size-line, payload, and trailer as
-            # separate buffers instead of concatenating them into a fresh
-            # bytes object per chunk.
-            size = format(len(chunk), "x").encode("ascii")
-            transport.writelines((size, b"\r\n", chunk, b"\r\n"))
-
-        transport.write(b"0\r\n\r\n")

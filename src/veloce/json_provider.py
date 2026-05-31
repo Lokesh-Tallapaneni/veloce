@@ -1,4 +1,4 @@
-"""Pluggable JSON provider.
+"""JSON provider — pluggable serialisation boundary for response bodies.
 
 The base `JSONProvider` declares three methods: `dumps`/`loads` for the
 bytes <-> object boundary, and `response` for handing a

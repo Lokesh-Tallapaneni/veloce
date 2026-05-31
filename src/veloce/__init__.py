@@ -17,6 +17,8 @@ Basic usage::
     app.run()
 """
 
+from __future__ import annotations
+
 # Status codes
 from veloce import status
 from veloce.app import Veloce

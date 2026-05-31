@@ -8,8 +8,7 @@ import contextlib
 import enum
 import hashlib
 import struct
-from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import orjson
 
@@ -17,6 +16,9 @@ from veloce._internal import _reject_header_crlf
 from veloce.exceptions import WebSocketDisconnect
 from veloce.http.cookies import parse_cookie
 from veloce.http.datastructures import Address, QueryParams, State
+
+if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Iterable
 
 
 class WebSocketState(enum.IntEnum):

@@ -1,4 +1,4 @@
-"""Development-mode event-loop blocking watchdog.
+"""Event-loop watchdog — a development-mode detector for blocking calls.
 
 A coroutine that makes a *blocking* call — a synchronous database driver,
 `time.sleep`, a CPU-heavy loop — freezes the whole event loop: every
@@ -84,7 +84,7 @@ class EventLoopWatchdog:
         self._loop = loop
         self._interval = interval
         self._stall_threshold = stall_threshold
-        self._logger = logger or logging.getLogger("veloce.watchdog")
+        self._logger = logger or logging.getLogger(__name__)
         self._loop_thread_id = 0
         self._last_beat = time.monotonic()
         # Bumped by every heartbeat — the loop thread is its only writer.
@@ -156,6 +156,10 @@ class EventLoopWatchdog:
                 self._report(elapsed)
 
     def _capture_stack(self) -> str:
+        # sys._current_frames() is the only way to read another thread's
+        # stack from outside it. It is a CPython-private API (leading
+        # underscore, no cross-implementation guarantee), but there is no
+        # public equivalent; this is acceptable for a dev-only diagnostic.
         frame = sys._current_frames().get(self._loop_thread_id)
         if frame is None:
             return "<event-loop stack unavailable>"

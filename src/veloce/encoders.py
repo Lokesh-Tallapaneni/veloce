@@ -1,4 +1,4 @@
-"""JSON-compatible encoding for arbitrary Python objects."""
+"""JSON encoding — convert arbitrary Python objects to JSON-compatible types."""
 
 from __future__ import annotations
 

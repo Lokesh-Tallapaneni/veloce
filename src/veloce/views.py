@@ -55,12 +55,11 @@ class View:
     """
 
     methods: ClassVar[list[str] | None] = None
+    # Shared mutable default: subclasses that want their own decorator chain
+    # must assign a fresh list (`decorators = [auth]`) rather than mutating
+    # this one in place, or every view class would share the same list.
     decorators: ClassVar[list[Callable]] = []
     init_every_request: ClassVar[bool] = True
-
-    async def dispatch_request(self, *args: Any, **kwargs: Any) -> Any:
-        """Handle the request — subclasses must override."""
-        raise NotImplementedError(f"{type(self).__name__} must implement dispatch_request()")
 
     @classmethod
     def as_view(cls, name: str, *class_args: Any, **class_kwargs: Any) -> Callable:
@@ -98,6 +97,10 @@ class View:
         if cls.methods is not None:
             return [m.upper() for m in cls.methods]
         return ["GET"]
+
+    async def dispatch_request(self, *args: Any, **kwargs: Any) -> Any:
+        """Handle the request — subclasses must override."""
+        raise NotImplementedError(f"{type(self).__name__} must implement dispatch_request()")
 
 
 class MethodView(View):

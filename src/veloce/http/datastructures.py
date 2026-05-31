@@ -25,6 +25,7 @@ from veloce.exceptions import RequestURITooLong
 _MAX_QUERY_FIELDS = 1000
 
 
+# ── Request scope primitives ────────────────────────────────────────
 class Address(NamedTuple):
     """Client/server address — ASGI shape.
 
@@ -66,6 +67,7 @@ class State(dict):
             raise AttributeError(name) from None
 
 
+# ── Uploaded files ──────────────────────────────────────────────────
 class UploadFile:
     """Uploaded file with an async read/write interface."""
 
@@ -84,57 +86,6 @@ class UploadFile:
         self.file = file or io.BytesIO()
         self.size = size
         self.headers = headers or {}
-
-    def _file_is_in_memory(self) -> bool:
-        """`True` when reads/writes are pure-Python memory ops.
-
-        Both a `BytesIO` (the constructor default) *and* a
-        `SpooledTemporaryFile` that has not rolled over to disk fall
-        into this category — the multipart parser hands us the
-        latter, and that's the production hot path. Once the spool
-        rolls over to a real file, every op becomes a syscall and
-        must go to a thread.
-
-        `_rolled` is a `SpooledTemporaryFile` attribute (stdlib);
-        anything else falls back to "treat as on-disk" for safety.
-        """
-        if isinstance(self.file, io.BytesIO):
-            return True
-        return getattr(self.file, "_rolled", None) is False
-
-    async def read(self, size: int = -1) -> bytes:
-        """Read up to size bytes from the upload."""
-        # In-memory file objects stay on the loop; rolled-over spools
-        # and arbitrary file-likes hop to a thread.
-        if self._file_is_in_memory():
-            return self.file.read(size)
-        return await asyncio.to_thread(self.file.read, size)
-
-    async def write(self, data: bytes) -> int:
-        """Write data to the upload's spool file."""
-        if self._file_is_in_memory():
-            return self.file.write(data)
-        return await asyncio.to_thread(self.file.write, data)
-
-    async def seek(self, offset: int) -> None:
-        """Seek to a position in the upload's spool file."""
-        if self._file_is_in_memory():
-            self.file.seek(offset)
-            return
-        await asyncio.to_thread(self.file.seek, offset)
-
-    async def close(self) -> None:
-        """Close the upload's underlying spool file."""
-        if self._file_is_in_memory():
-            self.file.close()
-            return
-        await asyncio.to_thread(self.file.close)
-
-    async def __aenter__(self) -> UploadFile:
-        return self
-
-    async def __aexit__(self, *args: Any) -> None:
-        await self.close()
 
     @property
     def content(self) -> bytes:
@@ -180,6 +131,51 @@ class UploadFile:
             with contextlib.suppress(ValueError, OSError):
                 self.file.seek(pos)
 
+    async def read(self, size: int = -1) -> bytes:
+        """Read up to size bytes from the upload."""
+        # In-memory file objects stay on the loop; rolled-over spools
+        # and arbitrary file-likes hop to a thread.
+        if self._file_is_in_memory():
+            return self.file.read(size)
+        return await asyncio.to_thread(self.file.read, size)
+
+    async def write(self, data: bytes) -> int:
+        """Write data to the upload's spool file."""
+        if self._file_is_in_memory():
+            return self.file.write(data)
+        return await asyncio.to_thread(self.file.write, data)
+
+    async def seek(self, offset: int) -> None:
+        """Seek to a position in the upload's spool file."""
+        if self._file_is_in_memory():
+            self.file.seek(offset)
+            return
+        await asyncio.to_thread(self.file.seek, offset)
+
+    async def close(self) -> None:
+        """Close the upload's underlying spool file."""
+        if self._file_is_in_memory():
+            self.file.close()
+            return
+        await asyncio.to_thread(self.file.close)
+
+    def _file_is_in_memory(self) -> bool:
+        """`True` when reads/writes are pure-Python memory ops.
+
+        Both a `BytesIO` (the constructor default) *and* a
+        `SpooledTemporaryFile` that has not rolled over to disk fall
+        into this category — the multipart parser hands us the
+        latter, and that's the production hot path. Once the spool
+        rolls over to a real file, every op becomes a syscall and
+        must go to a thread.
+
+        `_rolled` is a `SpooledTemporaryFile` attribute (stdlib);
+        anything else falls back to "treat as on-disk" for safety.
+        """
+        if isinstance(self.file, io.BytesIO):
+            return True
+        return getattr(self.file, "_rolled", None) is False
+
     def _stream_into(self, out: BinaryIO, buffer_size: int) -> None:
         while True:
             chunk = self.file.read(buffer_size)
@@ -187,10 +183,17 @@ class UploadFile:
                 break
             out.write(chunk)
 
+    async def __aenter__(self) -> UploadFile:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.close()
+
     def __repr__(self) -> str:
         return f"UploadFile(filename={self.filename!r}, content_type={self.content_type!r}, size={self.size})"
 
 
+# ── URL ─────────────────────────────────────────────────────────────
 class URL:
     """Parsed URL with component access — lazily constructed."""
 
@@ -282,13 +285,6 @@ class URL:
             return f"{host_str}:{self.port}"
         return host_str
 
-    def __str__(self) -> str:
-        if self._full is None:
-            qs = f"?{self.query_string}" if self.query_string else ""
-            frag = f"#{self.fragment}" if self.fragment else ""
-            self._full = f"{self.scheme}://{self.netloc}{self.path}{qs}{frag}"
-        return self._full
-
     def replace(self, **kwargs: Any) -> URL:
         """Return a new URL with the specified components replaced."""
         return URL(
@@ -300,7 +296,15 @@ class URL:
             fragment=kwargs.get("fragment", self.fragment),
         )
 
+    def __str__(self) -> str:
+        if self._full is None:
+            qs = f"?{self.query_string}" if self.query_string else ""
+            frag = f"#{self.fragment}" if self.fragment else ""
+            self._full = f"{self.scheme}://{self.netloc}{self.path}{qs}{frag}"
+        return self._full
 
+
+# ── Multidict-backed collections ────────────────────────────────────
 class FormData(MultiDict):
     """Multi-value form-field collection (text fields + file uploads).
 
@@ -370,6 +374,7 @@ class Headers(CIMultiDict):
         super().add(key, value)
 
 
+# ── Parsed header values ────────────────────────────────────────────
 class RangeSpec:
     """Parsed `Range:` header (RFC 9110 §14.2).
 
@@ -489,22 +494,6 @@ class AcceptHeader:
                 best = q
         return best
 
-    def _matches(self, opt: str, value: str) -> bool:
-        if opt == value:
-            return True
-        if not self._mime:
-            # RFC 9110 §12.5.4: bare `*` matches any value in
-            # Accept-Language / Accept-Encoding / Accept-Charset.
-            return opt == "*"
-        # MIME wildcards: `*/*`, `text/*`.
-        if opt == "*/*":
-            return True
-        if "/" not in opt or "/" not in value:
-            return False
-        opt_type, opt_sub = opt.split("/", 1)
-        val_type, _val_sub = value.split("/", 1)
-        return bool(opt_sub == "*" and opt_type == val_type)
-
     def best_match(self, options: list[str], default: str | None = None) -> str | None:
         """Return the option the client accepts with the highest q-value.
 
@@ -523,6 +512,22 @@ class AcceptHeader:
                 best_q = q
                 best_opt = opt
         return best_opt
+
+    def _matches(self, opt: str, value: str) -> bool:
+        if opt == value:
+            return True
+        if not self._mime:
+            # RFC 9110 §12.5.4: bare `*` matches any value in
+            # Accept-Language / Accept-Encoding / Accept-Charset.
+            return opt == "*"
+        # MIME wildcards: `*/*`, `text/*`.
+        if opt == "*/*":
+            return True
+        if "/" not in opt or "/" not in value:
+            return False
+        opt_type, opt_sub = opt.split("/", 1)
+        val_type, _val_sub = value.split("/", 1)
+        return bool(opt_sub == "*" and opt_type == val_type)
 
     def __contains__(self, value: str) -> bool:
         return self.quality(value) > 0
@@ -608,6 +613,7 @@ class Authorization:
         return f"Authorization(type={self.type!r})"
 
 
+# ── Cookies & query parameters ──────────────────────────────────────
 class Cookies(MultiDict):
     """Cookie collection parsed from the `Cookie` header.
 
@@ -676,6 +682,7 @@ class QueryParams(MultiDict):
         return cls(items)
 
 
+# ── Backward-compatible re-exports ──────────────────────────────────
 # Re-export from formparsers for backward compatibility.
 from veloce.http.formparsers import (  # noqa: E402, F401
     DEFAULT_MAX_MULTIPART_PART_SIZE,

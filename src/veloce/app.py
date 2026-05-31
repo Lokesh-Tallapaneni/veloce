@@ -59,7 +59,7 @@ from veloce.signals import (
 )
 from veloce.websocket import WebSocket
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     import ssl
 
 
@@ -128,6 +128,191 @@ def _trace_carrier(request: Request) -> dict[str, str] | None:
     if tracestate is not None:
         carrier["tracestate"] = tracestate
     return carrier
+
+
+class _LifespanManager:
+    """Async context manager driving the app's lifespan cycle.
+
+    `async with app.lifespan_context(): ...` runs startup on entry and
+    shutdown on exit. Re-entrant guard: a second `__aenter__` without
+    an intervening `__aexit__` raises, since lifespan is once-per-app.
+    """
+
+    __slots__ = ("_app", "_entered")
+
+    def __init__(self, app: Veloce) -> None:
+        self._app = app
+        self._entered = False
+
+    async def __aenter__(self) -> Veloce:
+        if self._entered:
+            raise RuntimeError("lifespan_context already entered")
+        self._entered = True
+        await self._app._run_lifecycle("startup")
+        return self._app
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        await self._app._run_lifecycle("shutdown")
+        self._entered = False
+
+
+class _AppContext:
+    """Outside-request binding for `current_app` and `g`.
+
+    Implemented as a re-entrant context manager: nested
+    `with app.app_context(): ...` blocks restore the previous binding on
+    exit (via the `ContextVar` token returned by `set()`), so two apps
+    in one process don't bleed into each other.
+    """
+
+    __slots__ = ("_app", "_app_token", "_g_token")
+
+    def __init__(self, app: Veloce) -> None:
+        self._app = app
+        self._app_token: Any = None
+        self._g_token: Any = None
+
+    def __enter__(self) -> Veloce:
+        self._app_token = _current_app_var.set(self._app)
+        # Fresh `g` store — each app_context block gets its own.
+        self._g_token = _RequestGlobals._ctx_var.set({})
+        appcontext_pushed.send(self._app)
+        return self._app
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        appcontext_tearing_down.send(self._app, exc=exc)
+        if self._app_token is not None:
+            _current_app_var.reset(self._app_token)
+        if self._g_token is not None:
+            _RequestGlobals._ctx_var.reset(self._g_token)
+        appcontext_popped.send(self._app)
+
+
+class _TestRequestContext:
+    """Synthesises a request for tests/scripts without running dispatch.
+
+    Inside the block: `current_app`, `g`, and `request._state` resolve.
+    Outside: the bindings are unwound. No middleware, no DI, no handler
+    — that's what `TestClient` is for. This is for unit tests that just
+    need `current_app.config[...]` or `g.foo = ...` to work in isolation.
+    """
+
+    __slots__ = ("_app_ctx", "_request", "_request_token")
+
+    def __init__(
+        self,
+        app: Veloce,
+        path: str,
+        method: str,
+        headers: dict[str, str],
+        query_string: str,
+        body: bytes,
+    ) -> None:
+        self._app_ctx = _AppContext(app)
+        self._request = Request(
+            method=method,
+            path=path,
+            query_string=query_string,
+            headers=headers,
+            body=body,
+        )
+        self._request.app = app
+        self._request_token: Any = None
+
+    def __enter__(self) -> Request:
+        self._app_ctx.__enter__()
+        # Stash the synthetic request on a contextvar so user code can
+        # read it via the same `current_request`-style helpers used at
+        # dispatch time.
+        # Provide an in-memory `Session` so helpers that read the
+        # request's session (`flash`, `get_flashed_messages`,
+        # `session` proxy) work inside the block without requiring
+        # the caller to also install `SessionMiddleware`. Production
+        # dispatch installs one via the middleware; the context just
+        # mirrors that surface.
+        if "session" not in self._request._state:
+            self._request._state["session"] = Session()
+        self._request_token = _current_request_var.set(self._request)
+        return self._request
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._request_token is not None:
+            _current_request_var.reset(self._request_token)
+        self._app_ctx.__exit__(exc_type, exc, tb)
+
+
+class URLRule:
+    """A single registered URL rule view object.
+
+    Iterable over its fields as `(rule, methods, endpoint)` so callers
+    that just want tuple-unpack semantics work; full attribute access
+    gives `rule`, `methods`, `endpoint`, `defaults`, `host`, etc. for
+    introspection.
+    """
+
+    __slots__ = ("rule", "methods", "endpoint")
+
+    def __init__(self, rule: str, methods: list[str], endpoint: str) -> None:
+        self.rule = rule
+        self.methods = methods
+        self.endpoint = endpoint
+
+    def __iter__(self) -> Any:
+        return iter((self.rule, self.methods, self.endpoint))
+
+    def __repr__(self) -> str:
+        return f"<URLRule {self.endpoint}: {','.join(self.methods)} {self.rule}>"
+
+
+class _URLMap:
+    """Veloce's read-only `Map`-style route-table wrapper.
+
+    Iterating yields `URLRule` objects in registration order (grouped
+    by `(path, name)` so each unique route is one rule even when
+    several HTTP methods share it). `len()` counts unique rules.
+    Lookup by endpoint name returns the list of matching rules.
+    """
+
+    __slots__ = ("_app", "_cached")
+
+    def __init__(self, app: Veloce) -> None:
+        self._app = app
+        self._cached: list[URLRule] | None = None
+
+    def _build(self) -> list[URLRule]:
+        # Collect every (method, path, info) tuple, then group by
+        # (path, endpoint-name) so a route registered for both GET and
+        # POST shows up as a single rule. Result is cached on the
+        # `_URLMap` instance; the app drops the whole instance via
+        # `_invalidate_route_caches()` on any route mutation, so the
+        # cache cannot go stale.
+        cached = self._cached
+        if cached is not None:
+            return cached
+        groups: dict[tuple[str, str], URLRule] = {}
+        for method, path, info in self._app._collect_all_routes():
+            key = (path, info.name)
+            existing = groups.get(key)
+            if existing is None:
+                groups[key] = URLRule(rule=path, methods=[method], endpoint=info.name)
+            else:
+                existing.methods.append(method)
+        result = list(groups.values())
+        self._cached = result
+        return result
+
+    def __iter__(self) -> Any:
+        return iter(self._build())
+
+    def __len__(self) -> int:
+        return len(self._build())
+
+    def __getitem__(self, endpoint: str) -> list[URLRule]:
+        return [r for r in self._build() if r.endpoint == endpoint]
+
+    def __repr__(self) -> str:
+        rules = self._build()
+        return f"<URLMap with {len(rules)} rule{'s' if len(rules) != 1 else ''}>"
 
 
 class Veloce(Router):
@@ -1292,7 +1477,7 @@ class Veloce(Router):
         """View of registered URL-default callbacks."""
         return {None: list(self._url_default_funcs)}
 
-    # ── Before/After request hooks ─────────────────
+    # ── Before/After request hooks ───────────────────────────────
 
     def before_request(self, func: Callable) -> Callable:
         """Register a function to run before each request."""
@@ -1376,7 +1561,7 @@ class Veloce(Router):
         self._context_processors.append(func)
         return func
 
-    # ── Jinja2 helper registration ────────────────────
+    # ── Jinja2 helper registration ───────────────────────────────
 
     def template_filter(self, name: str | None = None) -> Callable:
         """Register a function as a Jinja filter.
@@ -3444,188 +3629,3 @@ class Veloce(Router):
                     await self._run_lifecycle("shutdown")
                     await send({"type": "lifespan.shutdown.complete"})
                     return
-
-
-class _LifespanManager:
-    """Async context manager driving the app's lifespan cycle.
-
-    `async with app.lifespan_context(): ...` runs startup on entry and
-    shutdown on exit. Re-entrant guard: a second `__aenter__` without
-    an intervening `__aexit__` raises, since lifespan is once-per-app.
-    """
-
-    __slots__ = ("_app", "_entered")
-
-    def __init__(self, app: Veloce) -> None:
-        self._app = app
-        self._entered = False
-
-    async def __aenter__(self) -> Veloce:
-        if self._entered:
-            raise RuntimeError("lifespan_context already entered")
-        self._entered = True
-        await self._app._run_lifecycle("startup")
-        return self._app
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        await self._app._run_lifecycle("shutdown")
-        self._entered = False
-
-
-class _AppContext:
-    """Outside-request binding for `current_app` and `g`.
-
-    Implemented as a re-entrant context manager: nested
-    `with app.app_context(): ...` blocks restore the previous binding on
-    exit (via the `ContextVar` token returned by `set()`), so two apps
-    in one process don't bleed into each other.
-    """
-
-    __slots__ = ("_app", "_app_token", "_g_token")
-
-    def __init__(self, app: Veloce) -> None:
-        self._app = app
-        self._app_token: Any = None
-        self._g_token: Any = None
-
-    def __enter__(self) -> Veloce:
-        self._app_token = _current_app_var.set(self._app)
-        # Fresh `g` store — each app_context block gets its own.
-        self._g_token = _RequestGlobals._ctx_var.set({})
-        appcontext_pushed.send(self._app)
-        return self._app
-
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        appcontext_tearing_down.send(self._app, exc=exc)
-        if self._app_token is not None:
-            _current_app_var.reset(self._app_token)
-        if self._g_token is not None:
-            _RequestGlobals._ctx_var.reset(self._g_token)
-        appcontext_popped.send(self._app)
-
-
-class _TestRequestContext:
-    """Synthesises a request for tests/scripts without running dispatch.
-
-    Inside the block: `current_app`, `g`, and `request._state` resolve.
-    Outside: the bindings are unwound. No middleware, no DI, no handler
-    — that's what `TestClient` is for. This is for unit tests that just
-    need `current_app.config[...]` or `g.foo = ...` to work in isolation.
-    """
-
-    __slots__ = ("_app_ctx", "_request", "_request_token")
-
-    def __init__(
-        self,
-        app: Veloce,
-        path: str,
-        method: str,
-        headers: dict[str, str],
-        query_string: str,
-        body: bytes,
-    ) -> None:
-        self._app_ctx = _AppContext(app)
-        self._request = Request(
-            method=method,
-            path=path,
-            query_string=query_string,
-            headers=headers,
-            body=body,
-        )
-        self._request.app = app
-        self._request_token: Any = None
-
-    def __enter__(self) -> Request:
-        self._app_ctx.__enter__()
-        # Stash the synthetic request on a contextvar so user code can
-        # read it via the same `current_request`-style helpers used at
-        # dispatch time.
-        # Provide an in-memory `Session` so helpers that read the
-        # request's session (`flash`, `get_flashed_messages`,
-        # `session` proxy) work inside the block without requiring
-        # the caller to also install `SessionMiddleware`. Production
-        # dispatch installs one via the middleware; the context just
-        # mirrors that surface.
-        if "session" not in self._request._state:
-            self._request._state["session"] = Session()
-        self._request_token = _current_request_var.set(self._request)
-        return self._request
-
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        if self._request_token is not None:
-            _current_request_var.reset(self._request_token)
-        self._app_ctx.__exit__(exc_type, exc, tb)
-
-
-class URLRule:
-    """A single registered URL rule view object.
-
-    Iterable over its fields as `(rule, methods, endpoint)` so callers
-    that just want tuple-unpack semantics work; full attribute access
-    gives `rule`, `methods`, `endpoint`, `defaults`, `host`, etc. for
-    introspection.
-    """
-
-    __slots__ = ("rule", "methods", "endpoint")
-
-    def __init__(self, rule: str, methods: list[str], endpoint: str) -> None:
-        self.rule = rule
-        self.methods = methods
-        self.endpoint = endpoint
-
-    def __iter__(self) -> Any:
-        return iter((self.rule, self.methods, self.endpoint))
-
-    def __repr__(self) -> str:
-        return f"<URLRule {self.endpoint}: {','.join(self.methods)} {self.rule}>"
-
-
-class _URLMap:
-    """Veloce's read-only `Map`-style route-table wrapper.
-
-    Iterating yields `URLRule` objects in registration order (grouped
-    by `(path, name)` so each unique route is one rule even when
-    several HTTP methods share it). `len()` counts unique rules.
-    Lookup by endpoint name returns the list of matching rules.
-    """
-
-    __slots__ = ("_app", "_cached")
-
-    def __init__(self, app: Veloce) -> None:
-        self._app = app
-        self._cached: list[URLRule] | None = None
-
-    def _build(self) -> list[URLRule]:
-        # Collect every (method, path, info) tuple, then group by
-        # (path, endpoint-name) so a route registered for both GET and
-        # POST shows up as a single rule. Result is cached on the
-        # `_URLMap` instance; the app drops the whole instance via
-        # `_invalidate_route_caches()` on any route mutation, so the
-        # cache cannot go stale.
-        cached = self._cached
-        if cached is not None:
-            return cached
-        groups: dict[tuple[str, str], URLRule] = {}
-        for method, path, info in self._app._collect_all_routes():
-            key = (path, info.name)
-            existing = groups.get(key)
-            if existing is None:
-                groups[key] = URLRule(rule=path, methods=[method], endpoint=info.name)
-            else:
-                existing.methods.append(method)
-        result = list(groups.values())
-        self._cached = result
-        return result
-
-    def __iter__(self) -> Any:
-        return iter(self._build())
-
-    def __len__(self) -> int:
-        return len(self._build())
-
-    def __getitem__(self, endpoint: str) -> list[URLRule]:
-        return [r for r in self._build() if r.endpoint == endpoint]
-
-    def __repr__(self) -> str:
-        rules = self._build()
-        return f"<URLMap with {len(rules)} rule{'s' if len(rules) != 1 else ''}>"

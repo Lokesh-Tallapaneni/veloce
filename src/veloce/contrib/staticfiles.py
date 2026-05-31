@@ -13,7 +13,7 @@ Spec anchors:
 from __future__ import annotations
 
 import asyncio
-import html as _html
+import html
 import mimetypes
 import os
 import stat
@@ -348,7 +348,7 @@ class StaticFiles:
     async def _render_directory_index(self, dir_path: str, url_path: str, loop: Any) -> Response:
         """Render an HTML index of `dir_path`'s entries.
 
-        Entries are HTML-escaped via `_html.escape` so a filename
+        Entries are HTML-escaped via `html.escape` so a filename
         containing `<script>` can't poison the page. Subdirectories
         get a trailing slash. Hidden files (`.foo`) are omitted —
         matches nginx `autoindex on;` default.
@@ -383,12 +383,12 @@ class StaticFiles:
             rows.append('<li><a href="../">../</a></li>')
 
         for name, is_dir in entries:
-            display = _html.escape(name) + ("/" if is_dir else "")
+            display = html.escape(name) + ("/" if is_dir else "")
             rows.append(
-                f'<li><a href="{_html.escape(name)}{("/" if is_dir else "")}">{display}</a></li>'
+                f'<li><a href="{html.escape(name)}{("/" if is_dir else "")}">{display}</a></li>'
             )
 
-        title = f"Index of {_html.escape(base)}"
+        title = f"Index of {html.escape(base)}"
         body = (
             "<!doctype html><html><head>"
             f"<title>{title}</title>"

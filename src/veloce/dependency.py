@@ -49,58 +49,32 @@ _logger = logging.getLogger(__name__)
 # resolve_plan does not retry compilation on every request.
 _NOT_COMPILABLE = object()
 
+_MARKER_LOC = {
+    # Map MK_* → openapi-style location string. Resolved lazily to avoid import
+    # ordering issues.
+    0: "query",
+    1: "path",
+    2: "header",
+    3: "cookie",
+    4: "body",
+    5: "form",
+    6: "form",
+}
 
-class Depends:
-    """Dependency marker — use in function signature defaults.
-
-    `dependency` may be omitted (`Depends()`); the resolver then infers
-    it from the parameter's type annotation — the shorthand for
-    `x: SomeClass = Depends()`.
-    """
-
-    __slots__ = ("dependency", "use_cache")
-
-    def __init__(self, dependency: Callable | None = None, use_cache: bool = True) -> None:
-        self.dependency = dependency
-        self.use_cache = use_cache
-
-
-class Security(Depends):
-    """Dependency marker with OAuth2 scopes for OpenAPI emission."""
-
-    __slots__ = ("scopes",)
-
-    def __init__(
-        self,
-        dependency: Callable | None = None,
-        scopes: list[str] | None = None,
-        use_cache: bool = True,
-    ) -> None:
-        super().__init__(dependency=dependency, use_cache=use_cache)
-        self.scopes = scopes or []
+# Shared empty sentinels for resolvers that never see app-level overrides
+# (the dispatcher overwrites the slot before any read, so the sentinels
+# never appear on the dispatch path). Module-level so they are not
+# reallocated per request. `_EMPTY_OVERRIDES` is only ever `.get(...)`'d
+# by `_exec_depends`, so it stays untouched. `_EMPTY_OVERRIDE_SUBPLANS`
+# is read AND written by `_exec_depends`; the writer swaps the slot to a
+# fresh `WeakKeyDictionary` on the first write so the sentinel is never
+# mutated and cross-resolver contamination is impossible for direct
+# `DependencyResolver()` callers (tests, public-API users).
+_EMPTY_OVERRIDES: dict[Callable, Callable] = {}
+_EMPTY_OVERRIDE_SUBPLANS: weakref.WeakKeyDictionary[Callable, Any] = weakref.WeakKeyDictionary()
 
 
-class SecurityScopes:
-    """Aggregated OAuth 2.0 scopes for the current Security() chain.
-
-    A handler / sub-dependency that declares a parameter of this type
-    receives the union of all `Security(..., scopes=[...])` calls between
-    the route entry and this point in the dependency graph. Typical use:
-    an authorising dependency checks `security_scopes.scopes` against
-    the scopes the bearer token actually carries and builds a
-    `WWW-Authenticate: Bearer scope="<...>"` header when denying.
-
-    Per RFC 6749 §3.3 the scope-string serialisation is space-separated.
-    """
-
-    __slots__ = ("scopes", "scope_str")
-
-    def __init__(self, scopes: list[str] | None = None) -> None:
-        self.scopes: list[str] = list(scopes) if scopes else []
-        self.scope_str: str = " ".join(self.scopes)
-
-    def __repr__(self) -> str:
-        return f"SecurityScopes({self.scopes!r})"
+# ── Helpers ───────────────────────────────────────────────
 
 
 @functools.lru_cache(maxsize=512)
@@ -248,30 +222,63 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
     return _coerce_via_pydantic(value, target_type, param_name, loc)
 
 
-_MARKER_LOC = {
-    # Map MK_* → openapi-style location string. Resolved lazily to avoid import
-    # ordering issues.
-    0: "query",
-    1: "path",
-    2: "header",
-    3: "cookie",
-    4: "body",
-    5: "form",
-    6: "form",
-}
+# ── Markers ───────────────────────────────────────────────
 
 
-# Shared empty sentinels for resolvers that never see app-level overrides
-# (the dispatcher overwrites the slot before any read, so the sentinels
-# never appear on the dispatch path). Module-level so they are not
-# reallocated per request. `_EMPTY_OVERRIDES` is only ever `.get(...)`'d
-# by `_exec_depends`, so it stays untouched. `_EMPTY_OVERRIDE_SUBPLANS`
-# is read AND written by `_exec_depends`; the writer swaps the slot to a
-# fresh `WeakKeyDictionary` on the first write so the sentinel is never
-# mutated and cross-resolver contamination is impossible for direct
-# `DependencyResolver()` callers (tests, public-API users).
-_EMPTY_OVERRIDES: dict[Callable, Callable] = {}
-_EMPTY_OVERRIDE_SUBPLANS: weakref.WeakKeyDictionary[Callable, Any] = weakref.WeakKeyDictionary()
+class Depends:
+    """Dependency marker — use in function signature defaults.
+
+    `dependency` may be omitted (`Depends()`); the resolver then infers
+    it from the parameter's type annotation — the shorthand for
+    `x: SomeClass = Depends()`.
+    """
+
+    __slots__ = ("dependency", "use_cache")
+
+    def __init__(self, dependency: Callable | None = None, use_cache: bool = True) -> None:
+        self.dependency = dependency
+        self.use_cache = use_cache
+
+
+class Security(Depends):
+    """Dependency marker with OAuth2 scopes for OpenAPI emission."""
+
+    __slots__ = ("scopes",)
+
+    def __init__(
+        self,
+        dependency: Callable | None = None,
+        scopes: list[str] | None = None,
+        use_cache: bool = True,
+    ) -> None:
+        super().__init__(dependency=dependency, use_cache=use_cache)
+        self.scopes = scopes or []
+
+
+class SecurityScopes:
+    """Aggregated OAuth 2.0 scopes for the current Security() chain.
+
+    A handler / sub-dependency that declares a parameter of this type
+    receives the union of all `Security(..., scopes=[...])` calls between
+    the route entry and this point in the dependency graph. Typical use:
+    an authorising dependency checks `security_scopes.scopes` against
+    the scopes the bearer token actually carries and builds a
+    `WWW-Authenticate: Bearer scope="<...>"` header when denying.
+
+    Per RFC 6749 §3.3 the scope-string serialisation is space-separated.
+    """
+
+    __slots__ = ("scopes", "scope_str")
+
+    def __init__(self, scopes: list[str] | None = None) -> None:
+        self.scopes: list[str] = list(scopes) if scopes else []
+        self.scope_str: str = " ".join(self.scopes)
+
+    def __repr__(self) -> str:
+        return f"SecurityScopes({self.scopes!r})"
+
+
+# ── Resolver ──────────────────────────────────────────────
 
 
 class DependencyResolver:

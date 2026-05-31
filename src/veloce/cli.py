@@ -34,6 +34,8 @@ from typing import Any
 
 from veloce.config import _parse_env_lines
 
+# ── Constants ───────────────────────────────────────────────
+
 # Default dotenv filename auto-loaded by `run`/`shell`/`custom` when the
 # file exists in the CWD and `--no-env-file` was not passed.
 _DEFAULT_ENV_FILE = ".env"
@@ -47,6 +49,9 @@ _DEFAULT_ENV_FILE = ".env"
 # where `mypkg.cli:register` is a callable taking the argparse subparsers
 # action and adding one parser (with a `func` default) to it.
 _COMMAND_ENTRY_POINT_GROUP = "veloce.commands"
+
+
+# ── Shared helpers ──────────────────────────────────────────
 
 
 def _resolve_version() -> str:
@@ -116,6 +121,21 @@ def _apply_env_file(args: argparse.Namespace) -> None:
         os.environ.setdefault(key, value)
 
 
+def _require_app_attr(app: Any, attr: str, hint: str) -> None:
+    """Raise `SystemExit` with a consistent message when `app` lacks `attr`.
+
+    Centralises the four near-identical guards in `_cmd_shell`,
+    `_cmd_custom`, `_cmd_routes`, and `_cmd_check` so a future rename of
+    `make_shell_context` / `cli` / `routes` / `security_audit` only needs
+    one edit, and the error message stays uniform across subcommands.
+    """
+    if not hasattr(app, attr):
+        raise SystemExit(f"target is not a Veloce app (missing {hint})")
+
+
+# ── Subcommands ─────────────────────────────────────────────
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """`veloce run` — hand the app off to uvicorn."""
     try:
@@ -135,18 +155,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
         log_level=args.log_level,
     )
     return 0
-
-
-def _require_app_attr(app: Any, attr: str, hint: str) -> None:
-    """Raise `SystemExit` with a consistent message when `app` lacks `attr`.
-
-    Centralises the four near-identical guards in `_cmd_shell`,
-    `_cmd_custom`, `_cmd_routes`, and `_cmd_check` so a future rename of
-    `make_shell_context` / `cli` / `routes` / `security_audit` only needs
-    one edit, and the error message stays uniform across subcommands.
-    """
-    if not hasattr(app, attr):
-        raise SystemExit(f"target is not a Veloce app (missing {hint})")
 
 
 def _cmd_shell(args: argparse.Namespace) -> int:
@@ -234,6 +242,9 @@ def _cmd_check(args: argparse.Namespace) -> int:
     for warning in warnings:
         print(f"  - {warning}")
     return 1
+
+
+# ── Parser construction ─────────────────────────────────────
 
 
 def _add_env_file_args(p: argparse.ArgumentParser) -> None:
@@ -520,6 +531,9 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
         _load_plugin_command(sub, reserved=frozenset(sub.choices), name=plugin_command)
 
     return parser
+
+
+# ── Entry point ─────────────────────────────────────────────
 
 
 def _candidate_plugin_command(argv: list[str] | None) -> str | None:
