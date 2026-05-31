@@ -375,6 +375,38 @@ def test_plugin_not_loaded_without_plugin_command(monkeypatch):
     assert loaded["count"] == 0
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["-h", "deploy"],
+        ["--help", "deploy"],
+        ["-V", "deploy"],
+        ["--version", "deploy"],
+    ],
+)
+def test_global_flag_before_plugin_name_does_not_select_it(argv):
+    # `veloce -h deploy` / `veloce --version deploy`: argparse acts on the
+    # global flag and exits before any subcommand. The pre-scan must not treat
+    # the trailing `deploy` as the selected command, or plugin discovery would
+    # run while building the parser for `-h` / `--version`.
+    assert cli_module._selected_command(argv) is None
+
+
+def test_plugin_not_loaded_when_named_after_global_flag(monkeypatch):
+    # The plugin entry point must not load when its name only appears after a
+    # global flag (`veloce -h deploy`), since the flag short-circuits dispatch.
+    loaded = {"count": 0}
+
+    def register(sub):  # pragma: no cover — must never run here
+        loaded["count"] += 1
+        sub.add_parser("deploy").set_defaults(func=lambda args: 0)
+
+    _patch_entry_points(monkeypatch, [_FakeEntryPoint("deploy", "mypkg.cli:register", register)])
+    parser = build_parser(cli_module._selected_command(["-h", "deploy"]))
+    assert "deploy" not in parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
+    assert loaded["count"] == 0
+
+
 def test_plugin_entry_point_not_loaded_for_builtin_command(monkeypatch):
     # Selecting a built-in command must not load or execute any plugin entry
     # point, even one whose name does not collide with a built-in.

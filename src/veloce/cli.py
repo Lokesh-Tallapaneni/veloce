@@ -498,6 +498,9 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     return parser
 
 
+_GLOBAL_OPTIONS = frozenset({"-h", "--help", "-V", "--version"})
+
+
 def _selected_command(argv: list[str] | None) -> str | None:
     """Return the chosen subcommand name from `argv` without parsing.
 
@@ -506,9 +509,16 @@ def _selected_command(argv: list[str] | None) -> str | None:
     is the subcommand. Returns `None` when no candidate is present (e.g.
     `veloce`, `veloce --version`, `veloce --help`), so those paths build the
     parser without loading any plugin.
+
+    Scanning stops at a global option (`-h`/`--help`, `-V`/`--version`):
+    argparse acts on these immediately and exits before any subcommand runs,
+    so a name following one (e.g. `veloce -h deploy`) is never the selected
+    command and must not trigger plugin discovery.
     """
     tokens = sys.argv[1:] if argv is None else argv
     for token in tokens:
+        if token in _GLOBAL_OPTIONS:
+            return None
         if not token.startswith("-"):
             return token
     return None
