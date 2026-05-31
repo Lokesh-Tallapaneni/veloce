@@ -7,7 +7,17 @@ import math
 from collections.abc import AsyncIterator
 from typing import Any
 
-from veloce._constants import HEADER_CACHE_CONTROL, HEADER_CONTENT_TYPE, HEADER_TRANSFER_ENCODING
+from veloce._constants import (
+    HEADER_CACHE_CONTROL,
+    HEADER_CONNECTION,
+    HEADER_CONTENT_TYPE,
+    HEADER_TRANSFER_ENCODING,
+    HEADER_VALUE_CHUNKED,
+    HEADER_VALUE_KEEP_ALIVE,
+    HEADER_VALUE_NO_CACHE,
+    HEADER_X_ACCEL_BUFFERING,
+    MIME_TEXT_EVENT_STREAM,
+)
 from veloce._internal import _encode_response_head
 from veloce.http.response import Response
 from veloce.status import HTTP_200_OK
@@ -97,15 +107,15 @@ class EventSourceResponse(Response):
         hdrs = dict(headers) if headers else {}
         hdrs.update(
             {
-                HEADER_CACHE_CONTROL: "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
+                HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
+                HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
+                HEADER_X_ACCEL_BUFFERING: "no",
             }
         )
         super().__init__(
             status_code=status_code,
             body=b"",
-            content_type="text/event-stream",
+            content_type=MIME_TEXT_EVENT_STREAM,
             headers=hdrs,
         )
         self.ping = ping
@@ -118,9 +128,9 @@ class EventSourceResponse(Response):
         """Stream SSE events to transport."""
         default_headers = {
             HEADER_CONTENT_TYPE: self.content_type,
-            HEADER_CACHE_CONTROL: "no-cache",
-            "Connection": "keep-alive",
-            HEADER_TRANSFER_ENCODING: "chunked",
+            HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
+            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
+            HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
         }
         parts = _encode_response_head(self.status_code, default_headers, self.headers)
         parts.append("\r\n")

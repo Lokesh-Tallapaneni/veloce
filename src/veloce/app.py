@@ -19,6 +19,7 @@ from pydantic import BaseModel as _PydanticBaseModel
 
 from veloce import status
 from veloce._constants import (
+    HEADER_ALLOW,
     MIME_TEXT_HTML,
     MIME_TEXT_HTML_UTF8,
     MIME_TEXT_PLAIN,
@@ -1321,7 +1322,7 @@ class Veloce(Router):
             status_code=status.HTTP_200_OK,
             body=b"",
             content_type=MIME_TEXT_PLAIN,
-            headers={"Allow": ", ".join(advertised)},
+            headers={HEADER_ALLOW: ", ".join(advertised)},
         )
 
     async def handle_user_exception(
@@ -2551,7 +2552,7 @@ class Veloce(Router):
                     JSONResponse(
                         {"detail": MSG_METHOD_NOT_ALLOWED, "allowed": allowed},
                         status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
-                        headers={"Allow": ", ".join(allowed)},
+                        headers={HEADER_ALLOW: ", ".join(allowed)},
                     ),
                 )
             raise HTTPException(404, MSG_NOT_FOUND)

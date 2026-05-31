@@ -28,9 +28,11 @@ import orjson
 from multidict import CIMultiDict
 
 from veloce._constants import (
+    HEADER_LOCATION,
     HEADER_SET_COOKIE,
     MIME_FORM_URLENCODED,
     MIME_JSON,
+    MIME_MULTIPART_FORM_DATA,
     MIME_OCTET_STREAM,
 )
 from veloce.status import (
@@ -269,7 +271,7 @@ def _encode_multipart(
 
     parts.append(b"--" + b + b"--\r\n")
     body = b"".join(parts)
-    return body, f"multipart/form-data; boundary={boundary}"
+    return body, f"{MIME_MULTIPART_FORM_DATA}; boundary={boundary}"
 
 
 def _build_scope(
@@ -499,7 +501,7 @@ class TestClient:
                 HTTP_308_PERMANENT_REDIRECT,
             ):
                 return resp
-            location = resp.headers.get("location") or resp.headers.get("Location")
+            location = resp.headers.get("location") or resp.headers.get(HEADER_LOCATION)
             if not location:
                 return resp
             # RFC 9110 §15.4: 303 always changes the method to GET and
@@ -1071,7 +1073,7 @@ class AsyncTestClient:
                 HTTP_308_PERMANENT_REDIRECT,
             ):
                 return resp
-            location = resp.headers.get("location") or resp.headers.get("Location")
+            location = resp.headers.get("location") or resp.headers.get(HEADER_LOCATION)
             if not location:
                 return resp
             # 301/302/303 → GET with no body (browser convention);

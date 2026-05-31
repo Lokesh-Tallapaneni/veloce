@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from veloce._constants import HEADER_VALUE_PUBLIC
+
 _BOOL_DIRECTIVES = frozenset(
     {
         "no_cache",
@@ -22,7 +24,7 @@ _BOOL_DIRECTIVES = frozenset(
         "no_transform",
         "must_revalidate",
         "proxy_revalidate",
-        "public",
+        HEADER_VALUE_PUBLIC,
         "private",
         "immutable",
         "only_if_cached",

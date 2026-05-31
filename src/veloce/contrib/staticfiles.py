@@ -28,6 +28,7 @@ from veloce._constants import (
     HEADER_CONTENT_RANGE,
     HEADER_ETAG,
     HEADER_LAST_MODIFIED,
+    HEADER_VALUE_BYTES,
     MIME_OCTET_STREAM,
     MIME_TEXT_HTML_UTF8,
 )
@@ -245,7 +246,11 @@ class StaticFiles:
         # Range request — RFC 9110 §14.2. Single-range only; multi-range
         # would require multipart/byteranges which we don't ship yet.
         range_spec = request.range
-        if range_spec is not None and range_spec.unit == "bytes" and len(range_spec.ranges) == 1:
+        if (
+            range_spec is not None
+            and range_spec.unit == HEADER_VALUE_BYTES
+            and len(range_spec.ranges) == 1
+        ):
             start, end = range_spec.ranges[0]
             if start is None and end is None:
                 resolved = None
@@ -265,7 +270,7 @@ class StaticFiles:
                         HEADER_CONTENT_RANGE: f"bytes */{size}",
                         HEADER_ETAG: etag,
                         HEADER_LAST_MODIFIED: last_modified,
-                        HEADER_ACCEPT_RANGES: "bytes",
+                        HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
                     },
                 )
 
@@ -286,7 +291,7 @@ class StaticFiles:
                     HEADER_CONTENT_RANGE: f"bytes {r_start}-{r_end}/{size}",
                     HEADER_ETAG: etag,
                     HEADER_LAST_MODIFIED: last_modified,
-                    HEADER_ACCEPT_RANGES: "bytes",
+                    HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
                     HEADER_CACHE_CONTROL: "public, max-age=3600",
                 },
             )
@@ -294,7 +299,7 @@ class StaticFiles:
         common_headers = {
             HEADER_ETAG: etag,
             HEADER_LAST_MODIFIED: last_modified,
-            HEADER_ACCEPT_RANGES: "bytes",
+            HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
             HEADER_CACHE_CONTROL: "public, max-age=3600",
         }
 

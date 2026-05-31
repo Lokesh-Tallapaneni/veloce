@@ -52,7 +52,11 @@ import secrets
 from typing import Any
 
 from veloce import status
-from veloce._constants import MIME_FORM_URLENCODED, MIME_MULTIPART_FORM_DATA
+from veloce._constants import (
+    HEADER_X_CSRF_TOKEN,
+    MIME_FORM_URLENCODED,
+    MIME_MULTIPART_FORM_DATA,
+)
 from veloce.http.request import Request
 from veloce.http.response import JSONResponse, Response
 from veloce.middleware.base import Middleware
@@ -65,7 +69,7 @@ class CSRFMiddleware(Middleware):
     def __init__(
         self,
         cookie_name: str = "csrf_token",
-        header_name: str = "X-CSRF-Token",
+        header_name: str = HEADER_X_CSRF_TOKEN,
         form_field: str = "csrf_token",
         safe_methods: tuple[str, ...] = ("GET", "HEAD", "OPTIONS", "TRACE"),
         cookie_secure: bool = True,

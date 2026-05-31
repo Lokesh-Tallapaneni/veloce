@@ -15,7 +15,18 @@ import uuid
 from collections import deque
 
 from veloce import status
-from veloce._constants import HEADER_RETRY_AFTER
+from veloce._constants import (
+    HEADER_CONTENT_SECURITY_POLICY,
+    HEADER_PERMISSIONS_POLICY,
+    HEADER_REFERRER_POLICY,
+    HEADER_RETRY_AFTER,
+    HEADER_STRICT_TRANSPORT_SECURITY,
+    HEADER_X_CONTENT_TYPE_OPTIONS,
+    HEADER_X_FRAME_OPTIONS,
+    HEADER_X_RATELIMIT_LIMIT,
+    HEADER_X_RATELIMIT_REMAINING,
+    HEADER_X_RATELIMIT_RESET,
+)
 from veloce._internal import _extract_host
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response
@@ -207,9 +218,9 @@ class RateLimitMiddleware(Middleware):
 
     def _apply_headers(self, response: Response, limit: int, remaining: int, reset: int) -> None:
         """Attach X-RateLimit-* headers to `response` (draft-ietf-httpapi-ratelimit-headers)."""
-        response.headers["X-RateLimit-Limit"] = str(limit)
-        response.headers["X-RateLimit-Remaining"] = str(remaining)
-        response.headers["X-RateLimit-Reset"] = str(reset)
+        response.headers[HEADER_X_RATELIMIT_LIMIT] = str(limit)
+        response.headers[HEADER_X_RATELIMIT_REMAINING] = str(remaining)
+        response.headers[HEADER_X_RATELIMIT_RESET] = str(reset)
 
 
 class HTTPSRedirectMiddleware(Middleware):
@@ -285,22 +296,22 @@ class SecurityHeadersMiddleware(Middleware):
         # per-response cost is just copying a small, fixed dict.
         headers: dict[str, str] = {}
         if content_type_options:
-            headers["X-Content-Type-Options"] = content_type_options
+            headers[HEADER_X_CONTENT_TYPE_OPTIONS] = content_type_options
         if frame_options:
-            headers["X-Frame-Options"] = frame_options
+            headers[HEADER_X_FRAME_OPTIONS] = frame_options
         if referrer_policy:
-            headers["Referrer-Policy"] = referrer_policy
+            headers[HEADER_REFERRER_POLICY] = referrer_policy
         if hsts_max_age is not None:
             value = f"max-age={hsts_max_age}"
             if hsts_include_subdomains:
                 value += "; includeSubDomains"
             if hsts_preload:
                 value += "; preload"
-            headers["Strict-Transport-Security"] = value
+            headers[HEADER_STRICT_TRANSPORT_SECURITY] = value
         if content_security_policy:
-            headers["Content-Security-Policy"] = content_security_policy
+            headers[HEADER_CONTENT_SECURITY_POLICY] = content_security_policy
         if permissions_policy:
-            headers["Permissions-Policy"] = permissions_policy
+            headers[HEADER_PERMISSIONS_POLICY] = permissions_policy
         self._headers = headers
 
     async def process_response(self, request: Request, response: Response) -> Response:

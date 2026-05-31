@@ -6,7 +6,17 @@ import asyncio
 import contextvars
 import gzip
 
-from veloce._constants import HEADER_CONTENT_ENCODING, HEADER_CONTENT_LENGTH, MIME_JSON
+from veloce._constants import (
+    HEADER_ACCEPT_ENCODING,
+    HEADER_CONTENT_ENCODING,
+    HEADER_CONTENT_LENGTH,
+    HEADER_VALUE_GZIP,
+    MIME_APPLICATION_JAVASCRIPT,
+    MIME_APPLICATION_X_YAML,
+    MIME_APPLICATION_XHTML_XML,
+    MIME_APPLICATION_XML,
+    MIME_JSON,
+)
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -18,10 +28,10 @@ from veloce.middleware.base import Middleware
 _DEFAULT_COMPRESSIBLE = (
     "text/",
     MIME_JSON,
-    "application/javascript",
-    "application/xml",
-    "application/xhtml+xml",
-    "application/x-yaml",
+    MIME_APPLICATION_JAVASCRIPT,
+    MIME_APPLICATION_XML,
+    MIME_APPLICATION_XHTML_XML,
+    MIME_APPLICATION_X_YAML,
     "image/svg+xml",
 )
 
@@ -35,7 +45,7 @@ def _accepts_gzip(accept: str) -> bool:
             continue
         pieces = part.split(";")
         encoding = pieces[0].strip().lower()
-        if encoding == "gzip":
+        if encoding == HEADER_VALUE_GZIP:
             for param in pieces[1:]:
                 param = param.strip()
                 if param.startswith("q="):
@@ -115,9 +125,9 @@ class GZipMiddleware(Middleware):
 
         if len(compressed) < len(response.body):
             response.body = compressed
-            response.headers[HEADER_CONTENT_ENCODING] = "gzip"
+            response.headers[HEADER_CONTENT_ENCODING] = HEADER_VALUE_GZIP
             response.headers[HEADER_CONTENT_LENGTH] = str(len(compressed))
-            response.add_vary("Accept-Encoding")
+            response.add_vary(HEADER_ACCEPT_ENCODING)
             response._encoded = None
 
         return response

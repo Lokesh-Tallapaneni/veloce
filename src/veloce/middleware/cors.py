@@ -24,7 +24,15 @@ import re
 from re import Pattern
 
 from veloce import status
-from veloce._constants import HEADER_ACCESS_CONTROL_ALLOW_HEADERS
+from veloce._constants import (
+    HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS,
+    HEADER_ACCESS_CONTROL_ALLOW_HEADERS,
+    HEADER_ACCESS_CONTROL_ALLOW_METHODS,
+    HEADER_ACCESS_CONTROL_ALLOW_ORIGIN,
+    HEADER_ACCESS_CONTROL_EXPOSE_HEADERS,
+    HEADER_ACCESS_CONTROL_MAX_AGE,
+    HEADER_ORIGIN,
+)
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -198,7 +206,7 @@ class CORSMiddleware(Middleware):
                 matched = [t for t in tokens if t.lower() in self._allow_headers_lower]
                 if matched:
                     response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = ", ".join(matched)
-            response.headers["Access-Control-Max-Age"] = str(self.max_age)
+            response.headers[HEADER_ACCESS_CONTROL_MAX_AGE] = str(self.max_age)
             return response
 
         return None
@@ -217,23 +225,23 @@ class CORSMiddleware(Middleware):
     def _add_cors_headers(self, response: Response, origin: str, preflight: bool) -> None:
         allow_origin = self._resolve_allow_origin(origin)
         if allow_origin is not None:
-            response.headers["Access-Control-Allow-Origin"] = allow_origin
+            response.headers[HEADER_ACCESS_CONTROL_ALLOW_ORIGIN] = allow_origin
 
         # `Vary: Origin` is required whenever the response value depends on
         # the request origin (i.e. anything other than literal `*` without
         # credentials). Cache poisoning class is real here.
         if allow_origin is not None and allow_origin != "*":
-            response.add_vary("Origin")
+            response.add_vary(HEADER_ORIGIN)
 
         if preflight:
-            response.headers["Access-Control-Allow-Methods"] = self._allow_methods_joined
+            response.headers[HEADER_ACCESS_CONTROL_ALLOW_METHODS] = self._allow_methods_joined
             if self._allow_headers_has_star:
                 response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = "*"
             else:
                 response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = self._allow_headers_joined
 
         if self.allow_credentials:
-            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers[HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS] = "true"
 
         if self.expose_headers:
-            response.headers["Access-Control-Expose-Headers"] = self._expose_headers_joined
+            response.headers[HEADER_ACCESS_CONTROL_EXPOSE_HEADERS] = self._expose_headers_joined

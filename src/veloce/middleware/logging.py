@@ -7,6 +7,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
+from veloce._constants import HEADER_X_REQUEST_ID
 from veloce.middleware.base import Middleware
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -88,7 +89,7 @@ class LoggingMiddleware(Middleware):
 class RequestIDMiddleware(Middleware):
     """Assign a unique request ID to each request and echo it in the response."""
 
-    def __init__(self, header_name: str = "X-Request-ID") -> None:
+    def __init__(self, header_name: str = HEADER_X_REQUEST_ID) -> None:
         self.header_name = header_name
 
     async def process_request(self, request: Request) -> Response | None:

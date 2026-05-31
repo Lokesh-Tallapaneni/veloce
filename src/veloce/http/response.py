@@ -15,7 +15,10 @@ import orjson
 
 from veloce._constants import (
     HEADER_ACCEPT_RANGES,
+    HEADER_AGE,
+    HEADER_ALLOW,
     HEADER_CACHE_CONTROL,
+    HEADER_CONNECTION,
     HEADER_CONTENT_DISPOSITION,
     HEADER_CONTENT_ENCODING,
     HEADER_CONTENT_LANGUAGE,
@@ -23,11 +26,21 @@ from veloce._constants import (
     HEADER_CONTENT_LOCATION,
     HEADER_CONTENT_RANGE,
     HEADER_CONTENT_TYPE,
+    HEADER_DATE,
     HEADER_ETAG,
+    HEADER_EXPIRES,
     HEADER_LAST_MODIFIED,
+    HEADER_LOCATION,
     HEADER_RETRY_AFTER,
     HEADER_SET_COOKIE,
     HEADER_TRANSFER_ENCODING,
+    HEADER_VALUE_ATTACHMENT,
+    HEADER_VALUE_BYTES,
+    HEADER_VALUE_CHUNKED,
+    HEADER_VALUE_KEEP_ALIVE,
+    HEADER_VALUE_NO_CACHE,
+    HEADER_VALUE_PUBLIC,
+    HEADER_VARY,
     HEADER_WWW_AUTHENTICATE,
     MIME_TEXT_PLAIN,
     MSG_LABEL_COOKIE_DOMAIN,
@@ -210,7 +223,7 @@ class Response:
         default_headers = {
             HEADER_CONTENT_TYPE: self.content_type,
             HEADER_CONTENT_LENGTH: str(len(self.body)),
-            "Connection": "keep-alive",
+            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
         }
         parts = _encode_response_head(self.status_code, default_headers, self.headers)
         parts.append("\r\n")
@@ -399,7 +412,7 @@ class Response:
     @property
     def expires(self) -> Any:
         """Parsed `Expires` header → UTC `datetime` or None (RFC 9111 §5.3)."""
-        raw = self.headers.get("Expires") or self.headers.get("expires")
+        raw = self.headers.get(HEADER_EXPIRES) or self.headers.get("expires")
         if not raw:
             return None
         return parse_date(raw)
@@ -407,7 +420,7 @@ class Response:
     @expires.setter
     def expires(self, value: Any) -> None:
         """Set the expires date."""
-        self._set_http_date_header("Expires", value)
+        self._set_http_date_header(HEADER_EXPIRES, value)
 
     def _set_http_date_header(self, name: str, value: Any) -> None:
         """Set an HTTP-date header from datetime / unix ts / preformatted str.
@@ -524,11 +537,11 @@ class Response:
         """
         parts: list[str] = []
         if public:
-            parts.append("public")
+            parts.append(HEADER_VALUE_PUBLIC)
         if private:
             parts.append("private")
         if no_cache:
-            parts.append("no-cache")
+            parts.append(HEADER_VALUE_NO_CACHE)
         if no_store:
             parts.append("no-store")
         if must_revalidate:
@@ -557,14 +570,14 @@ class Response:
         # Delegate dedup + ordering to `HeaderSet` so the same
         # case-insensitive merge logic doesn't drift between this method
         # and the `vary` property's own datastructure.
-        existing = self.headers.get("Vary", "") or self.headers.get("vary", "")
+        existing = self.headers.get(HEADER_VARY, "") or self.headers.get("vary", "")
         merged = HeaderSet(existing)
         merged.update(header_names)
         value = merged.to_header()
         # Always write under `Vary` (canonical case) and clear any
         # lower-case duplicate.
         self.headers.pop("vary", None)
-        self.headers["Vary"] = value
+        self.headers[HEADER_VARY] = value
         self._encoded = None
         return value
 
@@ -578,14 +591,14 @@ class Response:
         write back — call `add_vary(...)` or reassign for that.
         """
 
-        return HeaderSet(self.headers.get("Vary", ""))
+        return HeaderSet(self.headers.get(HEADER_VARY, ""))
 
     @vary.setter
     def vary(self, value: Any) -> None:
         """Set the vary."""
         hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
         self.headers.pop("vary", None)
-        self.headers["Vary"] = hs.to_header()
+        self.headers[HEADER_VARY] = hs.to_header()
         self._encoded = None
 
     @property
@@ -596,14 +609,14 @@ class Response:
         Assign a `HeaderSet`, iterable, or comma-separated string.
         """
 
-        return HeaderSet(self.headers.get("Allow", ""))
+        return HeaderSet(self.headers.get(HEADER_ALLOW, ""))
 
     @allow.setter
     def allow(self, value: Any) -> None:
         """Set the allow."""
         hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
         self.headers.pop("allow", None)
-        self.headers["Allow"] = hs.to_header()
+        self.headers[HEADER_ALLOW] = hs.to_header()
         self._encoded = None
 
     @property
@@ -688,7 +701,11 @@ class Response:
         self._encoded = None
 
     def set_content_range(
-        self, start: int | None, stop: int | None, length: int | None, unit: str = "bytes"
+        self,
+        start: int | None,
+        stop: int | None,
+        length: int | None,
+        unit: str = HEADER_VALUE_BYTES,
     ) -> str:
         """Write a `Content-Range` header — RFC 9110 §14.4.
 
@@ -722,29 +739,29 @@ class Response:
         or POSIX timestamp to set it; assign `None` to remove it.
         """
 
-        return parse_date(self.headers.get("Date"))
+        return parse_date(self.headers.get(HEADER_DATE))
 
     @date.setter
     def date(self, value: Any) -> None:
         """Set the date."""
         if value is None:
-            self.headers.pop("Date", None)
+            self.headers.pop(HEADER_DATE, None)
         else:
-            self.headers["Date"] = http_date(value)
+            self.headers[HEADER_DATE] = http_date(value)
         self._encoded = None
 
     @property
     def location(self) -> str | None:
         """The `Location` header — RFC 9110 §10.2.2. `None` when unset."""
-        return self.headers.get("Location")
+        return self.headers.get(HEADER_LOCATION)
 
     @location.setter
     def location(self, value: str | None) -> None:
         """Set the location."""
         if value is None:
-            self.headers.pop("Location", None)
+            self.headers.pop(HEADER_LOCATION, None)
         else:
-            self.headers["Location"] = value
+            self.headers[HEADER_LOCATION] = value
         self._encoded = None
 
     @property
@@ -794,7 +811,7 @@ class Response:
     @property
     def age(self) -> int | None:
         """The `Age` header in seconds — RFC 9110 §5.1. `None` when unset."""
-        raw = self.headers.get("Age")
+        raw = self.headers.get(HEADER_AGE)
         if not raw or not raw.strip().isdigit():
             return None
         return int(raw.strip())
@@ -802,9 +819,9 @@ class Response:
     @age.setter
     def age(self, value: int | None) -> None:
         if value is None:
-            self.headers.pop("Age", None)
+            self.headers.pop(HEADER_AGE, None)
         else:
-            self.headers["Age"] = str(int(value))
+            self.headers[HEADER_AGE] = str(int(value))
         self._encoded = None
 
     def set_etag(self, etag: str, weak: bool = False) -> None:
@@ -996,7 +1013,7 @@ class Response:
         self._encoded = None
 
     def set_content_disposition(
-        self, disposition: str = "attachment", filename: str | None = None
+        self, disposition: str = HEADER_VALUE_ATTACHMENT, filename: str | None = None
     ) -> str:
         """Write a `Content-Disposition` header — RFC 6266.
 
@@ -1219,7 +1236,7 @@ class RedirectResponse(Response):
         # safe set keeps URL-structural characters (RFC 3986) and `%`
         # so an already-encoded URL is not double-encoded.
         _reject_header_crlf(url, "redirect URL")
-        hdrs["Location"] = quote(url, safe="/:?#[]@!$&'()*+,;=%~")
+        hdrs[HEADER_LOCATION] = quote(url, safe="/:?#[]@!$&'()*+,;=%~")
         super().__init__(
             status_code=status_code,
             body=b"",
@@ -1270,8 +1287,8 @@ class StreamingResponse(Response):
         """For streaming, encode headers with chunked transfer."""
         default_headers = {
             HEADER_CONTENT_TYPE: self.content_type,
-            HEADER_TRANSFER_ENCODING: "chunked",
-            "Connection": "keep-alive",
+            HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
+            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
         }
         parts = _encode_response_head(self.status_code, default_headers, self.headers)
         parts.append("\r\n")
@@ -1312,7 +1329,7 @@ class FileResponse(Response):
         filename: str | None = None,
         content_type: str | None = None,
         headers: dict[str, str] | None = None,
-        content_disposition_type: str = "attachment",
+        content_disposition_type: str = HEADER_VALUE_ATTACHMENT,
     ) -> None:
         # Validate path exists (cheap stat check — actual read is deferred)
         if not os.path.isfile(path):
@@ -1375,7 +1392,7 @@ class FileResponse(Response):
         filename: str | None = None,
         content_type: str | None = None,
         headers: dict[str, str] | None = None,
-        content_disposition_type: str = "attachment",
+        content_disposition_type: str = HEADER_VALUE_ATTACHMENT,
     ) -> FileResponse:
         """Async factory — reads file in executor to avoid blocking event loop."""
         loop = asyncio.get_running_loop()

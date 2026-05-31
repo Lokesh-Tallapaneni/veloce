@@ -33,6 +33,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, ClassVar
 
+from veloce._constants import HEADER_ALLOW
 from veloce._internal import _is_async_callable
 from veloce.exceptions import MethodNotAllowed
 
@@ -140,6 +141,6 @@ class MethodView(View):
         if handler is None:
             raise MethodNotAllowed(
                 detail=f"Method {method.upper()} not allowed",
-                headers={"Allow": ", ".join(self._allowed_methods())},
+                headers={HEADER_ALLOW: ", ".join(self._allowed_methods())},
             )
         return await handler(*args, **kwargs)
