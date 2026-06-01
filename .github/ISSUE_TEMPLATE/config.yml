@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security disclosure
+    url: https://github.com/Lokesh-Tallapaneni/veloce/security/advisories/new
+    about: Report a security vulnerability privately. Do NOT open a public issue.
+  - name: Documentation site
+    url: https://veloceframework.com
+    about: Read the guides, API reference, and migration notes before filing.
