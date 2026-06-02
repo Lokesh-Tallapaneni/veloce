@@ -93,7 +93,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         return response
 
 
-app.add_middleware(RequestIDMiddleware())
+app.add_http_middleware(RequestIDMiddleware())
 ```
 
 ## Ordering

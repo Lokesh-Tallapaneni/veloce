@@ -24,7 +24,7 @@ def build_app() -> Veloce:
         return {"id": item_id}
 
     async def echo(request):
-        return {"len": len(request.body)}
+        return {"len": len(await request.body())}
 
     app.add_route("/", index, ["GET"])
     app.add_route("/items/{item_id}", show, ["GET"])

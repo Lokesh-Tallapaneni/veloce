@@ -30,8 +30,9 @@ Veloce is a from-scratch async Python web framework — not a wrapper around Sta
 
 ## Key design points
 
-* **Async-only handlers.** No sync fallback; every request runs on the
-  event loop.
+* **Async-first handlers.** `async def` handlers run directly on the
+  event loop; sync `def` handlers are supported transparently and run in
+  a thread-pool executor so they do not block it.
 * **Precompiled dispatch.** Handler signatures are inspected once at
   registration into a `HandlerPlan`; the per-request hot path performs
   no reflection.
@@ -116,17 +117,17 @@ The full Tier 0/1/2 feature matrix and per-feature design notes live in
 ## Benchmarks
 
 Comparative benches against equivalent third-party async and sync
-frameworks live in `benchmark.py`. On the JSON-hello and path-param
+frameworks live in [`bench/`](bench/). On the JSON-hello and path-param
 hot paths Veloce sustains a 3-7x throughput multiplier on Python 3.12
 under the configurations measured. Numbers are workload-specific and
 reproducible; run the suite locally before quoting them.
 
 ## Project status
 
-`0.1.0` is the first public release. The public API surface — the
+`0.3.0` is the current release. The public API surface — the
 names exported from `veloce/__init__.py` — is what this version commits
-to; further `0.1.x` releases follow [semantic
-versioning](https://semver.org/) and will not break it.
+to; releases follow [semantic
+versioning](https://semver.org/).
 
 ## License
 
