@@ -9,8 +9,6 @@ from collections.abc import Sequence
 from http import HTTPStatus
 from typing import Any, NoReturn
 
-import orjson
-
 from veloce._constants import (
     HEADER_CACHE_CONTROL,
     HEADER_ETAG,
@@ -340,6 +338,47 @@ def after_this_request(func: Any) -> Any:
 # -- send_file() -------------------------------------------
 
 
+def _build_send_file_args(
+    path_or_file: Any,
+    as_attachment: bool,
+    download_name: str | None,
+    last_modified: Any,
+    etag: bool | str,
+    max_age: int | None,
+) -> tuple[str, str | None, dict[str, str], bool]:
+    """Compute the path, attachment name, headers, and strip-ETag flag.
+
+    Shared by `send_file` and `async_send_file` so the conditional-GET header
+    assembly and `etag=False` handling live in one place.
+    """
+    headers: dict[str, str] = {}
+    if last_modified is not None:
+        if isinstance(last_modified, str):
+            headers[HEADER_LAST_MODIFIED] = last_modified
+        else:
+            headers[HEADER_LAST_MODIFIED] = http_date(last_modified)
+
+    if isinstance(etag, str):
+        headers[HEADER_ETAG] = etag
+
+    if max_age is not None:
+        headers[HEADER_CACHE_CONTROL] = f"public, max-age={max_age}"
+
+    path = str(path_or_file)
+    if as_attachment and not download_name:
+        download_name = os.path.basename(path)
+    attachment_name = download_name if as_attachment else None
+    return path, attachment_name, headers, etag is False
+
+
+def _finish_send_file(resp: Response, strip_etag: bool) -> Response:
+    """Apply the `etag=False` strip-and-reset to a built FileResponse."""
+    if strip_etag:
+        resp.headers.pop(HEADER_ETAG, None)
+        resp._encoded = None
+    return resp
+
+
 def send_file(
     path_or_file: Any,
     mimetype: str | None = None,
@@ -365,34 +404,44 @@ def send_file(
       uses the caller-provided one verbatim (already-quoted).
     - `max_age=` adds `Cache-Control: public, max-age=<n>`.
     """
-    headers: dict[str, str] = {}
-    if last_modified is not None:
-        if isinstance(last_modified, str):
-            headers[HEADER_LAST_MODIFIED] = last_modified
-        else:
-            headers[HEADER_LAST_MODIFIED] = http_date(last_modified)
-
-    if isinstance(etag, str):
-        headers[HEADER_ETAG] = etag
-
-    if max_age is not None:
-        headers[HEADER_CACHE_CONTROL] = f"public, max-age={max_age}"
-
-    path = str(path_or_file)
-    if as_attachment and not download_name:
-        download_name = os.path.basename(path)
-    attachment_name = download_name if as_attachment else None
-    _strip_etag = etag is False
+    path, attachment_name, headers, strip_etag = _build_send_file_args(
+        path_or_file, as_attachment, download_name, last_modified, etag, max_age
+    )
     resp = FileResponse(
         path=path,
         filename=attachment_name,
         content_type=mimetype,
         headers=headers,
     )
-    if _strip_etag:
-        resp.headers.pop(HEADER_ETAG, None)
-        resp._encoded = None
-    return resp
+    return _finish_send_file(resp, strip_etag)
+
+
+async def async_send_file(
+    path_or_file: Any,
+    mimetype: str | None = None,
+    as_attachment: bool = False,
+    download_name: str | None = None,
+    last_modified: Any = None,
+    etag: bool | str = True,
+    max_age: int | None = None,
+) -> Response:
+    """Serve a file - async variant of `send_file`.
+
+    Identical to `send_file` but reads the file in an executor via
+    `FileResponse.from_path`, so it never blocks the event loop. Prefer
+    this from async handlers; the sync `send_file` emits a
+    `DeprecationWarning` when called on a running loop.
+    """
+    path, attachment_name, headers, strip_etag = _build_send_file_args(
+        path_or_file, as_attachment, download_name, last_modified, etag, max_age
+    )
+    resp = await FileResponse.from_path(
+        path=path,
+        filename=attachment_name,
+        content_type=mimetype,
+        headers=headers,
+    )
+    return _finish_send_file(resp, strip_etag)
 
 
 # -- redirect() --------------------------------------------
@@ -435,21 +484,13 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
         raise TypeError("jsonify() takes either positional or keyword args, not both")
     data = (args[0] if len(args) == 1 else list(args)) if args else kwargs
 
-    # Try to read flags from the current app's config; fall back to the
-    # plain defaults when called outside a request context.
-    options = 0
+    # Inside a request, serialise through the app's JSON provider so jsonify
+    # and `app.json.dumps()` share one source of truth (the provider caches
+    # the config bitmask on first access). Outside a request context there is
+    # no app, so fall back to the plain JSONResponse defaults.
     app = _current_app_var.get()
     if app is not None:
-        cfg = app.config
-        if cfg.get("JSON_SORT_KEYS"):
-            options |= orjson.OPT_SORT_KEYS
-        if cfg.get("JSONIFY_PRETTYPRINT_REGULAR"):
-            options |= orjson.OPT_INDENT_2
-
-    if options:
-        # Pre-encode here so the orjson options apply; `from_bytes` skips
-        # JSONResponse's default re-serialise.
-        return JSONResponse.from_bytes(orjson.dumps(data, option=options))
+        return app.json.response(data)
     return JSONResponse(data)
 
 

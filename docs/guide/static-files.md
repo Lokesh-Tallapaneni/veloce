@@ -178,10 +178,11 @@ async def index(request: Request):
 
 ## Serving a single file from the app's static folder
 
-For one-off file serving, [`app.send_static_file`](../reference.md#veloce.Veloce.send_static_file)
+For one-off file serving, [`app.send_static_file_async`](../reference.md#veloce.Veloce.send_static_file_async)
 returns a [`FileResponse`](../reference.md#veloce.FileResponse) for a file in
 the app's `static_folder` (default `"static"`, resolved against the app's
-package directory). It is traversal-safe via the same join logic:
+package directory). It is traversal-safe via the same join logic and reads the
+file in an executor, so it never blocks the event loop from an async handler:
 
 ```python title="app.py"
 from veloce import Request, Veloce
@@ -191,8 +192,15 @@ app = Veloce()
 
 @app.get("/favicon.ico")
 async def favicon(request: Request):
-    return app.send_static_file("favicon.ico")
+    return await app.send_static_file_async("favicon.ico")
 ```
+
+!!! warning
+    The synchronous [`app.send_static_file`](../reference.md#veloce.Veloce.send_static_file)
+    reads the file on the calling thread and emits a `DeprecationWarning` when
+    invoked on a running event loop. From async handlers, use
+    `app.send_static_file_async` (above) or
+    [`send_from_directory_async`](../reference.md#veloce.send_from_directory_async).
 
 `app.static_folder` and `app.static_url_path` (default `"/static"`) hold the
 defaults used when wiring up static serving; assign to them before mounting to
@@ -201,9 +209,9 @@ change the conventions for your app.
 ## Next steps
 
 - Render HTML that links to these assets — see [Templates](templates.md).
-- Stream and download files from handlers with `FileResponse` and `send_file` —
-  see [Requests and responses](requests-responses.md) and
-  [Flask-style helpers](helpers.md).
+- Stream and download files from handlers with `FileResponse`, `send_file`, and
+  the async `async_send_file` — see [Requests and responses](requests-responses.md)
+  and [Flask-style helpers](helpers.md).
 - Add compression and caching middleware around static responses — see
   [Middleware](middleware.md).
 - Full signatures are in the [API reference](../reference.md).
