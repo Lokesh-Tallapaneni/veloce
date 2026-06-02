@@ -252,13 +252,15 @@ class Signal:
         return results
 
     def has_receivers_for(self, sender: Any = None) -> bool:
-        """`True` if any connected receiver would fire for `sender`."""
-        subs = self._subs
-        if not subs:
-            return False
-        for sub_sender, ref, is_weak in subs:
+        """`True` if any connected receiver would fire for `sender`.
+
+        A side-effect-free predicate that short-circuits on the first
+        live, matching receiver. Dead weakrefs are skipped but not pruned
+        here; pruning is left to `send` / `_iter_live_targets`.
+        """
+        for sub_sender, ref, is_weak in self._subs:
             target = ref() if is_weak else ref
-            if target is None:
+            if target is None:  # dead weakref - skip without firing
                 continue
             if _matches(sub_sender, sender):
                 return True
