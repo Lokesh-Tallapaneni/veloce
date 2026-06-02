@@ -131,8 +131,11 @@ class SessionMiddleware(Middleware):
         # Measure the on-the-wire byte length, not the character count: a
         # non-ASCII cookie_name/path/domain would otherwise under-count and
         # let the Set-Cookie line exceed the browser's ~4 KB truncation limit
-        # without tripping this guard. Cookie headers serialise as latin-1.
-        rendered_size = len(rendered.encode("latin-1"))
+        # without tripping this guard. Cookie headers serialise as latin-1,
+        # where each code point maps to exactly one byte, so an all-ASCII line
+        # (the common case - the signed value is base64) needs no encode; the
+        # latin-1 fallback still raises on code points above U+00FF, as before.
+        rendered_size = len(rendered) if rendered.isascii() else len(rendered.encode("latin-1"))
         if rendered_size > self.max_cookie_size:
             _logger.warning(
                 "Session cookie %r is %d bytes, exceeds max_cookie_size=%d; "

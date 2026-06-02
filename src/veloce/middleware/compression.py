@@ -40,6 +40,17 @@ _DEFAULT_COMPRESSIBLE = (
 
 def _accepts_gzip(accept: str) -> bool:
     """Parse Accept-Encoding and return True only if gzip is accepted (explicit or wildcard)."""
+    # Fast path for the common browser shape: no header, or a list of bare
+    # tokens with no q-value parameters (e.g. "gzip, deflate, br"). Only when a
+    # ';' is present do we need the full parameter-aware parse below.
+    if not accept:
+        return False
+    if ";" not in accept:
+        for part in accept.split(","):
+            tok = part.strip().lower()
+            if tok == HEADER_VALUE_GZIP or tok == "*":
+                return True
+        return False
     wildcard_ok: bool | None = None
     for part in accept.split(","):
         part = part.strip()

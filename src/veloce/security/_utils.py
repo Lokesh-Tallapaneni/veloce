@@ -9,15 +9,26 @@ from veloce._protocol_constants import AUTH_SCHEME_BEARER
 from veloce.exceptions import HTTPException
 from veloce.status import HTTP_401_UNAUTHORIZED
 
+_BEARER_PREFIX = AUTH_SCHEME_BEARER + " "
+_BEARER_PREFIX_LOWER = _BEARER_PREFIX.lower()
+_BEARER_PREFIX_LEN = len(_BEARER_PREFIX)
+
 
 def _extract_bearer_token(
     request: Any, scheme: str = AUTH_SCHEME_BEARER, auto_error: bool = True
 ) -> str | None:
     """Extract a bearer token from the Authorization header."""
     auth = request.headers.get(HEADER_AUTHORIZATION, "")
-    prefix = f"{scheme} "
-    prefix_lower = prefix.lower()
-    if auth[: len(prefix)].lower() != prefix_lower:
+    # The default "Bearer" prefix is precomputed; only a custom scheme name
+    # pays for per-call prefix construction.
+    if scheme == AUTH_SCHEME_BEARER:
+        prefix_len = _BEARER_PREFIX_LEN
+        prefix_lower = _BEARER_PREFIX_LOWER
+    else:
+        prefix = scheme + " "
+        prefix_len = len(prefix)
+        prefix_lower = prefix.lower()
+    if auth[:prefix_len].lower() != prefix_lower:
         if auto_error:
             raise HTTPException(
                 HTTP_401_UNAUTHORIZED,
@@ -27,7 +38,7 @@ def _extract_bearer_token(
         return None
     # RFC 6750 section 2.1 + RFC 7235: only SP/HTAB are permitted between
     # scheme and token. Do not trim other Unicode whitespace (NBSP, \n, \r, ...).
-    token = auth[len(prefix) :].strip(" \t")
+    token = auth[prefix_len:].strip(" \t")
     if not token:
         if auto_error:
             raise HTTPException(
