@@ -7,11 +7,36 @@ name/value pair plus the standard attributes. Both are derived from RFC 6265.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from urllib.parse import quote, unquote
 
 from veloce._internal import _reject_header_crlf
 from veloce.http.dates import http_date
+
+
+def iter_cookies(header: str | None) -> Iterator[tuple[str, str]]:
+    """Yield `(name, value)` pairs from a `Cookie:` header - RFC 6265 Sec. 5.4.
+
+    Values are percent-decoded (the inverse of `dump_cookie`'s quoting).
+    Segments without an `=` are skipped. When a name repeats, the first
+    occurrence wins (browsers send the most specific cookie first), so
+    later duplicates are not yielded.
+    """
+    if not header:
+        return
+    seen: set[str] = set()
+    for chunk in header.split(";"):
+        chunk = chunk.strip()
+        if "=" not in chunk:
+            continue
+        name, _, value = chunk.partition("=")
+        name = name.strip()
+        if name in seen:
+            continue
+        seen.add(name)
+        value = value.strip().strip('"')
+        yield name, unquote(value)
 
 
 def parse_cookie(header: str | None) -> dict[str, str]:
@@ -21,20 +46,7 @@ def parse_cookie(header: str | None) -> dict[str, str]:
     Segments without an `=` are skipped. When a name repeats, the first
     occurrence wins (browsers send the most specific cookie first).
     """
-    result: dict[str, str] = {}
-    if not header:
-        return result
-    for chunk in header.split(";"):
-        chunk = chunk.strip()
-        if "=" not in chunk:
-            continue
-        name, _, value = chunk.partition("=")
-        name = name.strip()
-        if name in result:
-            continue
-        value = value.strip().strip('"')
-        result[name] = unquote(value)
-    return result
+    return dict(iter_cookies(header))
 
 
 def dump_cookie(

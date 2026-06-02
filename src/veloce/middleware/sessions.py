@@ -62,6 +62,7 @@ class SessionMiddleware(Middleware):
         self.httponly = httponly
         self.secure = secure
         self.samesite = samesite
+        self._samesite_cap = self.samesite.capitalize() if self.samesite else None
         # `PERMANENT_SESSION_LIFETIME` analog - used for the cookie
         # `Max-Age` when `session.permanent` is set. Defaults to 31 days.
         self.permanent_lifetime = permanent_lifetime
@@ -125,8 +126,12 @@ class SessionMiddleware(Middleware):
             path=self.path,
             httponly=self.httponly,
             secure=self.secure,
-            samesite=self.samesite.capitalize() if self.samesite else None,
+            samesite=self._samesite_cap,
         )
+        # Measure the on-the-wire byte length, not the character count: a
+        # non-ASCII cookie_name/path/domain would otherwise under-count and
+        # let the Set-Cookie line exceed the browser's ~4 KB truncation limit
+        # without tripping this guard. Cookie headers serialise as latin-1.
         rendered_size = len(rendered.encode("latin-1"))
         if rendered_size > self.max_cookie_size:
             _logger.warning(
@@ -138,15 +143,11 @@ class SessionMiddleware(Middleware):
                 self.max_cookie_size,
             )
             return response
-        response.set_cookie(
-            self.cookie_name,
-            cookie_value,
-            max_age=lifetime,
-            path=self.path,
-            httponly=self.httponly,
-            secure=self.secure,
-            samesite=self.samesite,
-        )
+        # `rendered` already holds the fully serialised Set-Cookie line built
+        # from this middleware's own (validated) `__init__` parameters, so it
+        # is appended directly rather than re-serialised through set_cookie.
+        response._append_set_cookie_header(rendered)
+        response._encoded = None
         return response
 
 

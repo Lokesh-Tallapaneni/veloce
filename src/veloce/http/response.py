@@ -43,11 +43,6 @@ from veloce._constants import (
     HEADER_VARY,
     HEADER_WWW_AUTHENTICATE,
     MIME_TEXT_PLAIN,
-    MSG_LABEL_COOKIE_DOMAIN,
-    MSG_LABEL_COOKIE_NAME,
-    MSG_LABEL_COOKIE_PATH,
-    MSG_LABEL_COOKIE_SAMESITE,
-    MSG_LABEL_COOKIE_VALUE,
 )
 from veloce._internal import (
     _STATUS_PHRASES,
@@ -266,17 +261,10 @@ class Response:
 
         The cookie name and value are rejected if they contain CR, LF, or
         NUL - untrusted data must not be able to inject additional cookies
-        or response headers.
+        or response headers. `dump_cookie` performs that CRLF check on all
+        five fields (name, value, domain, path, samesite), so `set_cookie`
+        does not repeat it.
         """
-        _reject_header_crlf(key, MSG_LABEL_COOKIE_NAME)
-        _reject_header_crlf(value, MSG_LABEL_COOKIE_VALUE)
-        if domain:
-            _reject_header_crlf(domain, MSG_LABEL_COOKIE_DOMAIN)
-        if path:
-            _reject_header_crlf(path, MSG_LABEL_COOKIE_PATH)
-        if samesite:
-            _reject_header_crlf(samesite, MSG_LABEL_COOKIE_SAMESITE)
-
         # Normalise empty samesite to None so dump_cookie omits it.
         if samesite is not None and not samesite.strip():
             samesite = None

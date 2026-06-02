@@ -21,6 +21,7 @@ from veloce._constants import HEADER_HOST, HEADER_X_FORWARDED_PROTO, MIME_OCTET_
 from veloce._header_parsing import parse_header_params
 from veloce._protocol_constants import URL_SCHEME_HTTP, URL_SCHEME_HTTPS
 from veloce.exceptions import RequestURITooLong
+from veloce.http.cookies import iter_cookies
 
 # Cap on number of query-string fields parsed per request to bound CPU
 # and memory under hash-collision / parameter-pollution DoS.
@@ -619,7 +620,7 @@ class Authorization:
 class Cookies(MultiDict):
     """Cookie collection parsed from the `Cookie` header.
 
-    Built on `multidict.MultiDict`. Parsing delegates to `parse_cookie`
+    Built on `multidict.MultiDict`. Parsing delegates to `iter_cookies`
     (RFC 6265 section 5.4) so values are percent-decoded. Duplicate names
     collapse to the first occurrence per the spec.
     """
@@ -634,17 +635,11 @@ class Cookies(MultiDict):
     def from_cookie_header(cls, header_value: str) -> Cookies:
         """Parse a `Cookie:` header value into a `Cookies` mapping.
 
-        Delegates to `parse_cookie` for RFC 6265-compliant parsing
+        Delegates to `iter_cookies` for RFC 6265-compliant parsing
         (percent-decoding, quote-stripping). Duplicate names collapse
         to the first occurrence per RFC 6265 section 5.4.
         """
-        from veloce.http.cookies import parse_cookie
-
-        parsed = parse_cookie(header_value)
-        cookies = cls()
-        for name, value in parsed.items():
-            cookies.add(name, value)
-        return cookies
+        return cls(iter_cookies(header_value))
 
 
 class QueryParams(MultiDict):
