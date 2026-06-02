@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `WebSocket.receive_text()` / `receive_bytes()` skip the `asyncio.wait_for`
+  wrapper when neither a per-call `timeout` nor a connection `idle_timeout` is
+  set (the common case), awaiting the ASGI receive directly. Measured on uvloop,
+  this cuts Veloce's own per-message receive+send overhead from ~1.65us to
+  ~0.70us per echo; the timeout/idle path is unchanged.
 - `DefaultJSONProvider` reads the `JSON_SORT_KEYS` and
   `JSONIFY_PRETTYPRINT_REGULAR` config flags once when the provider is first
   instantiated (on first `app.json` access) and caches the resulting orjson
