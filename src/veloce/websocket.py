@@ -54,7 +54,25 @@ class WebSocketState(enum.IntEnum):
 
 
 class WebSocket:
-    """WebSocket connection handler."""
+    """WebSocket connection handler.
+
+    Usage::
+
+        from veloce import Veloce, WebSocket
+
+        app = Veloce()
+
+        @app.websocket("/ws")
+        async def chat(ws: WebSocket):
+            async with ws:
+                await ws.accept()
+                async for message in ws.iter_text():
+                    await ws.send_text(message)
+
+    Using ``async with ws:`` guarantees the connection is closed on both
+    normal exit and exception - the ``__aexit__`` calls ``close()`` (a
+    no-op once the peer has already disconnected).
+    """
 
     GUID = "258EAFA5-E914-47DA-95CA-5AB5DC525D63"
 
@@ -830,3 +848,9 @@ class WebSocket:
             writelines((bytes(header), data))
         else:
             self.transport.write(bytes(header) + bytes(data))
+
+    async def __aenter__(self) -> WebSocket:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
