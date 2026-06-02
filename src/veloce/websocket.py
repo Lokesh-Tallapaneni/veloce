@@ -54,7 +54,27 @@ class WebSocketState(enum.IntEnum):
 
 
 class WebSocket:
-    """WebSocket connection handler."""
+    """WebSocket connection handler.
+
+    Usage::
+
+        from veloce import Veloce, WebSocket
+
+        app = Veloce()
+
+        @app.websocket("/ws")
+        async def chat(ws: WebSocket):
+            async with ws:
+                await ws.accept()
+                async for message in ws.iter_text():
+                    await ws.send_text(message)
+
+    Using ``async with ws:`` closes the connection on a clean exit with a
+    normal-closure 1000. If the block exits via an exception, ``__aexit__``
+    leaves the close to the dispatcher's error handling, which sends the
+    mapped close code (e.g. 1008 for a policy violation, 1011 for an
+    unhandled error) before the exception propagates.
+    """
 
     GUID = "258EAFA5-E914-47DA-95CA-5AB5DC525D63"
 
@@ -830,3 +850,15 @@ class WebSocket:
             writelines((bytes(header), data))
         else:
             self.transport.write(bytes(header) + bytes(data))
+
+    async def __aenter__(self) -> WebSocket:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        # On a clean exit close normally (1000). When the block exits via an
+        # exception, leave closing to the dispatcher's error handling so the
+        # mapped close code (e.g. 1008 policy violation, 1011 internal error)
+        # is sent instead of a normal-closure 1000 - closing here first would
+        # set `_closed` and make the dispatcher skip its `close()`.
+        if exc[0] is None:
+            await self.close()

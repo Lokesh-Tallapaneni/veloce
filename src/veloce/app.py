@@ -833,6 +833,10 @@ class Veloce(Router):
         `app.package_root`). Use `app.static_url_path` to control the
         URL prefix when mounting via `app.static(...)`. Returns a
         `FileResponse`; traversal-safe via `safe_join`.
+
+        This reads the file synchronously and emits a
+        `DeprecationWarning` when called on a running loop. From async
+        handlers, prefer `send_static_file_async`.
         """
         import os
 
@@ -842,6 +846,22 @@ class Veloce(Router):
         if not os.path.isabs(directory):
             directory = os.path.join(self.package_root, directory)
         return send_from_directory(directory, filename)
+
+    async def send_static_file_async(self, filename: str) -> Any:
+        """Serve a file from `app.static_folder` - async variant.
+
+        Reads the file in an executor via `send_from_directory_async`, so
+        it never blocks the event loop. Prefer this from async handlers
+        over the sync `send_static_file`.
+        """
+        import os
+
+        from veloce.helpers import send_from_directory_async
+
+        directory = self.static_folder
+        if not os.path.isabs(directory):
+            directory = os.path.join(self.package_root, directory)
+        return await send_from_directory_async(directory, filename)
 
     @property
     def package_root(self) -> str:
@@ -1334,16 +1354,20 @@ class Veloce(Router):
             headers=exc.headers,
         )
 
-    def make_default_options_response(self, path: str) -> Response:
+    def make_default_options_response(
+        self, path: str, allowed_methods: list[str] | None = None
+    ) -> Response:
         """Build the auto-OPTIONS response for `path`.
 
         Returns a 200 response with an empty body and an `Allow` header
         listing every method registered for `path`, augmented with
         `HEAD` (whenever `GET` is supported) and `OPTIONS` itself per
         RFC 9110 Sec. 9.3.7. Callers that register an explicit OPTIONS
-        handler can use this to compose the default `Allow` set.
+        handler can use this to compose the default `Allow` set. Pass
+        `allowed_methods` when the registered set is already known to skip
+        the redundant `get_allowed_methods` lookup.
         """
-        allowed = self.get_allowed_methods(path)
+        allowed = allowed_methods if allowed_methods is not None else self.get_allowed_methods(path)
         advertised = list(allowed)
         if HTTP_METHOD_GET in advertised and HTTP_METHOD_HEAD not in advertised:
             advertised.append(HTTP_METHOD_HEAD)
@@ -2550,7 +2574,7 @@ class Veloce(Router):
         # Mismatch -> 404 (the path is reachable, just not from this host).
         if match is not None and match.route_info.host is not None:
             req_host = _extract_host(request.headers.get(HEADER_HOST, "") or "")
-            if req_host != match.route_info.host.lower():
+            if req_host != match.route_info.host:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, MSG_NOT_FOUND)
 
         # Redirect slashes (like common web frameworks): /users -> /users/ or vice versa
@@ -2579,7 +2603,9 @@ class Veloce(Router):
                 # RFC 9110 Sec. 9.3.7: OPTIONS auto-responds with `Allow:` and
                 # an empty body even when no handler is registered.
                 if request.method == HTTP_METHOD_OPTIONS:
-                    response = self.make_default_options_response(request.path)
+                    response = self.make_default_options_response(
+                        request.path, allowed_methods=allowed
+                    )
                     if self._middlewares:
                         response = await self._run_response_middleware(request, response)
                     return response
@@ -3518,26 +3544,13 @@ class Veloce(Router):
                 if 0 <= content_length < 2048
                 else str(content_length).encode("ascii")
             )
-            # Emit the framework default content-type/content-length only when
-            # the response does not already carry that header (case-insensitive),
-            # mirroring `Response.encode()`. A user/middleware value - e.g. the
-            # compressed length set by `GZipMiddleware` - is emitted once below
-            # via the header loop and wins; prepending the default too would put
-            # a duplicate header on the wire, which strict HTTP clients reject.
+            # Single pass over the response headers: emit each as an ASGI
+            # tuple while tracking whether a content-type / content-length
+            # was supplied, so the framework default is only prepended when
+            # the response does not already carry it.
             has_ct = False
             has_cl = False
-            if response.headers:
-                for k in response.headers:
-                    k_lower = k.lower()
-                    if k_lower == "content-type":
-                        has_ct = True
-                    elif k_lower == "content-length":
-                        has_cl = True
             asgi_headers: list[tuple[bytes, bytes]] = []
-            if not has_ct:
-                asgi_headers.append((RAW_HEADER_CONTENT_TYPE, _ct_bytes))
-            if not has_cl:
-                asgi_headers.append((RAW_HEADER_CONTENT_LENGTH, _cl_bytes))
             if response.headers:
                 for k, v in response.headers.items():
                     k_lower = k.lower()
@@ -3551,9 +3564,22 @@ class Veloce(Router):
                             _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
                             asgi_headers.append((RAW_HEADER_SET_COOKIE, cookie.encode()))
                     else:
+                        if k_lower == "content-type":
+                            has_ct = True
+                        elif k_lower == "content-length":
+                            has_cl = True
                         _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
                         _reject_header_crlf(v, f"{k} header value")
                         asgi_headers.append((k_lower.encode(), v.encode()))
+            # Prepend the framework default content-type/content-length only
+            # when the response does not already carry that header. A user or
+            # middleware value (e.g. the compressed length from
+            # `GZipMiddleware`) was emitted above and wins; prepending the
+            # default too would put a duplicate header on the wire.
+            if not has_cl:
+                asgi_headers.insert(0, (RAW_HEADER_CONTENT_LENGTH, _cl_bytes))
+            if not has_ct:
+                asgi_headers.insert(0, (RAW_HEADER_CONTENT_TYPE, _ct_bytes))
 
             await send(
                 {

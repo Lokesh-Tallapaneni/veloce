@@ -16,6 +16,11 @@ from veloce.status import HTTP_200_OK
 # a new filter / global / test after init.
 _HELPER_SYNC_TOKEN_ATTR = "_veloce_helper_sync_token"
 
+# Memoized transient Jinja Environment for `render_template_string`'s
+# no-app fallback path. Built once on first fallback render and reused
+# thereafter so repeated string renders skip per-call env construction.
+_fallback_env: Any = None
+
 
 def _sync_app_jinja_helpers(env: Any) -> None:
     """Copy filters/globals/tests registered on the active app into `env`.
@@ -361,9 +366,12 @@ def render_template_string(source: str, **context: Any) -> str:
     if templates is not None:
         return templates.render_string(source, context or {})
 
-    # Fallback path: no `Jinja2Templates` bound. Use a minimal env so
-    # the helper is still usable in scripts / tests.
-    from jinja2 import Environment, select_autoescape
+    # Fallback path: no `Jinja2Templates` bound. Build a minimal env once
+    # and reuse it so the helper stays usable in scripts / tests without
+    # reconstructing the environment on every call.
+    global _fallback_env
+    if _fallback_env is None:
+        from jinja2 import Environment, select_autoescape
 
-    env = Environment(autoescape=select_autoescape(["html", "htm", "xml", "xhtml"]))
-    return env.from_string(source).render(context)
+        _fallback_env = Environment(autoescape=select_autoescape(["html", "htm", "xml", "xhtml"]))
+    return _fallback_env.from_string(source).render(context)

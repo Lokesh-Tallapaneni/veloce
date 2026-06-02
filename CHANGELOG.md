@@ -6,6 +6,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `async_send_file` top-level helper - the async counterpart of `send_file`.
+  It takes the same arguments but reads the file in an executor (via
+  `FileResponse.from_path`), so it never blocks the event loop. Prefer it
+  over `send_file` from `async def` handlers. Exported from the top-level
+  `veloce` package.
+- `Veloce.send_static_file_async` - async variant of `send_static_file` that
+  serves a file from `app.static_folder` without blocking the event loop.
+- `WebSocket` now supports the async-context-manager protocol. `async with ws:`
+  closes the connection with a normal-closure 1000 on a clean exit. If the
+  block exits via an exception, `__aexit__` defers closing to the dispatcher's
+  error handling so the mapped close code (e.g. 1008 policy violation, 1011
+  internal error) is sent rather than a normal-closure 1000.
+
+### Changed
+
+- `DefaultJSONProvider` reads the `JSON_SORT_KEYS` and
+  `JSONIFY_PRETTYPRINT_REGULAR` config flags once when the provider is first
+  instantiated (on first `app.json` access) and caches the resulting orjson
+  option bitmask, instead of re-reading `app.config` on every `dumps()` call.
+  Set these flags before the first `app.json` access; mutating them afterwards
+  no longer affects the already-instantiated provider. Per-call `sort_keys` /
+  `indent` overrides are unaffected.
+- `jsonify()` now serialises through the active app's JSON provider
+  (`app.json.response()`) when called inside a request, instead of re-reading
+  `app.config` on every call. This makes `jsonify()` and `app.json.dumps()`
+  share one source of truth, so the two JSON paths cannot diverge when the
+  config flags are mutated at runtime. Outside a request context `jsonify()`
+  still falls back to the plain `JSONResponse` defaults.
+- `RequestIDMiddleware` now generates a fresh request ID when the incoming
+  request-ID header is missing **or empty**. Previously a present-but-empty
+  header value (e.g. `X-Request-ID:`) was propagated verbatim as the empty
+  string; it is now replaced with a generated UUID.
+
+### Fixed
+
+- The raw HTTP/1.1 server's early request-size guard now uses the **first**
+  `Content-Length` value when a malformed request carries duplicate
+  `Content-Length` headers, matching the previous header-scan behaviour.
+
 ## [0.3.0] - 2026-06-01
 
 ### Fixed

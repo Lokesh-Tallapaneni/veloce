@@ -91,10 +91,11 @@ class RequestIDMiddleware(Middleware):
 
     def __init__(self, header_name: str = HEADER_X_REQUEST_ID) -> None:
         self.header_name = header_name
+        self._header_name_lower = header_name.lower()
 
     async def process_request(self, request: Request) -> Response | None:
         """Attach a unique request ID to each request."""
-        request_id = request.headers.get(self.header_name.lower(), str(uuid.uuid4()))
+        request_id = request.headers.get(self._header_name_lower) or str(uuid.uuid4())
         request._state["request_id"] = request_id
         return None
 

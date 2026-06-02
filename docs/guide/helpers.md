@@ -290,6 +290,34 @@ auto-generated ETag, and `max_age=` to add a `Cache-Control` header.
     [OWASP path-traversal
     reference](https://owasp.org/www-community/attacks/Path_Traversal).
 
+!!! warning "send_file blocks inside async handlers"
+    `send_file` calls the blocking [`FileResponse`](../reference.md#veloce.FileResponse)
+    constructor, which reads file metadata synchronously and emits a
+    `DeprecationWarning` when invoked from an `async def` handler on a running
+    event loop. Inside async routes use the async-safe alternatives instead:
+    `async_send_file` (the async counterpart of `send_file`, same arguments),
+    `await FileResponse.from_path(...)` for a lower-level single file, or
+    `await send_from_directory_async(...)` for traversal-safe directory serving.
+
+`async_send_file` mirrors `send_file` argument-for-argument but reads the file
+in an executor so it never blocks the event loop:
+
+```python
+from veloce import Veloce, async_send_file
+
+app = Veloce()
+
+
+@app.get("/download")
+async def download():
+    return await async_send_file(
+        "reports/q1.pdf",
+        as_attachment=True,
+        download_name="quarter-1.pdf",
+        max_age=3600,
+    )
+```
+
 ## flash
 
 [`flash`](../reference.md#veloce.flash) queues a one-time message for the next

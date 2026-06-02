@@ -64,6 +64,8 @@ class HttpProtocol(asyncio.Protocol):
         "_server_loop",
         "_closing",
         "_current_source",
+        "_raw_content_length",
+        "_has_expect_continue",
     )
 
     # Class-level set: prevents GC of in-flight tasks across all connections.
@@ -134,6 +136,14 @@ class HttpProtocol(asyncio.Protocol):
         # the request the server loop is dispatching (an earlier one may still
         # be in flight while a pipelined follow-up's body streams in).
         self._current_source: RequestBodySource | None = None
+        # Captured during header parsing so headers-complete reads them in O(1)
+        # rather than rescanning the whole header list. The raw Content-Length
+        # value (still bytes, parsed lazily) drives the early 413; the expect
+        # flag drives the 100-continue interim. Both are cleared alongside the
+        # header buffers in on_headers_complete so a pipelined follow-up starts
+        # from a clean slate.
+        self._raw_content_length: bytes | None = None
+        self._has_expect_continue: bool = False
 
     # -- httptools callbacks --------------------------------------
 
@@ -159,7 +169,18 @@ class HttpProtocol(asyncio.Protocol):
             )
             return
         self._header_bytes_total += field_size
-        self.headers.append((name.lower(), value))
+        name = name.lower()
+        # Capture the two headers the dispatch path needs so headers-complete
+        # reads a slot instead of rescanning the list. `Content-Length` is kept
+        # raw and parsed lazily; `Expect: 100-continue` is a case-insensitive
+        # token (RFC 9110 section 10.1.1). On a (malformed) duplicate
+        # `Content-Length`, the first value wins for the early-413 size guard.
+        if name == RAW_HEADER_CONTENT_LENGTH:
+            if self._raw_content_length is None:
+                self._raw_content_length = value
+        elif name == b"expect" and value.strip().lower() == b"100-continue":
+            self._has_expect_continue = True
+        self.headers.append((name, value))
 
     def on_headers_complete(self) -> None:
         """Headers are fully parsed - build the Request and dispatch it now.
@@ -230,6 +251,8 @@ class HttpProtocol(asyncio.Protocol):
         self.url = b""
         self.headers = []
         self._header_bytes_total = 0
+        self._raw_content_length = None
+        self._has_expect_continue = False
         self._request_queue.append((request, source, keep_alive))
         # Start the per-connection server loop on the first queued request; it
         # runs until the queue drains, guaranteeing FIFO response ordering.
@@ -373,18 +396,18 @@ class HttpProtocol(asyncio.Protocol):
     def _declared_content_length(self) -> int | None:
         """Parse the just-parsed request's `Content-Length` header, or None.
 
-        Read at headers-complete, off the raw `(name, value)` tuples the
-        parser appended, so an over-limit upload can be refused before its
-        body is read. Returns None when absent or malformed (the streamed
-        running-total cap is the backstop in that case).
+        Read at headers-complete off the value captured in `on_header`, so an
+        over-limit upload can be refused before its body is read. Returns None
+        when absent or malformed (the streamed running-total cap is the backstop
+        in that case).
         """
-        for name, value in self.headers:
-            if name == RAW_HEADER_CONTENT_LENGTH:
-                try:
-                    return int(value)
-                except (ValueError, TypeError):
-                    return None
-        return None
+        raw = self._raw_content_length
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            return None
 
     def _wants_continue(self) -> bool:
         """Return whether the just-parsed request asks for a 100 Continue.
@@ -401,10 +424,7 @@ class HttpProtocol(asyncio.Protocol):
                 return False
         except (AttributeError, RuntimeError):
             return False
-        for name, value in self.headers:
-            if name == b"expect" and value.strip().lower() == b"100-continue":
-                return True
-        return False
+        return self._has_expect_continue
 
     def _reject_413(self) -> None:
         """Emit a 413 and close - the body exceeds MAX_CONTENT_LENGTH.

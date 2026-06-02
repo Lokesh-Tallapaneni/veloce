@@ -54,3 +54,21 @@ def test_send_static_file_missing_file_raises():
     app.static_folder = os.path.dirname(__file__)
     with pytest.raises(FileNotFoundError):
         app.send_static_file("does-not-exist.txt")
+
+
+async def test_send_static_file_async_serves_from_absolute_static_folder(tmp_path):
+    (tmp_path / "hello.txt").write_bytes(b"hi")
+    app = Veloce(openapi_url=None)
+    app.static_folder = str(tmp_path)
+    resp = await app.send_static_file_async("hello.txt")
+    assert isinstance(resp, FileResponse)
+    assert resp.body == b"hi"
+
+
+async def test_send_static_file_async_blocks_traversal():
+    from veloce.exceptions import Forbidden
+
+    app = Veloce(openapi_url=None)
+    app.static_folder = os.path.dirname(__file__)
+    with pytest.raises(Forbidden):
+        await app.send_static_file_async("../etc/passwd")

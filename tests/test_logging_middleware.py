@@ -6,7 +6,19 @@ import logging
 
 import pytest
 
-from veloce.middleware.logging import LoggingMiddleware
+from veloce._constants import HEADER_X_REQUEST_ID
+from veloce.http.request import Request
+from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
+
+
+def _request(headers=None) -> Request:
+    return Request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers=headers or {},
+        body=b"",
+    )
 
 
 @pytest.fixture
@@ -99,3 +111,29 @@ def test_logging_respects_handler_only_or_level_only_config(access_logger_state)
     assert logger.level == logging.DEBUG  # pre-set level preserved
     assert len(logger.handlers) == 1
     assert isinstance(logger.handlers[0], logging.StreamHandler)
+
+
+# ── RequestIDMiddleware ─────────────────────────────────────────────
+
+
+async def test_request_id_uses_incoming_header():
+    mw = RequestIDMiddleware()
+    request = _request({HEADER_X_REQUEST_ID: "abc-123"})
+    await mw.process_request(request)
+    assert request._state["request_id"] == "abc-123"
+
+
+async def test_request_id_generated_when_header_missing():
+    mw = RequestIDMiddleware()
+    request = _request()
+    await mw.process_request(request)
+    assert request._state["request_id"]
+
+
+async def test_request_id_generated_when_header_empty():
+    # An empty incoming X-Request-ID is unusable; a fresh ID is generated
+    # rather than propagating the empty string.
+    mw = RequestIDMiddleware()
+    request = _request({HEADER_X_REQUEST_ID: ""})
+    await mw.process_request(request)
+    assert request._state["request_id"]

@@ -63,6 +63,7 @@ from veloce.exceptions import (
 from veloce.helpers import (
     abort,
     after_this_request,
+    async_send_file,
     current_app,
     flash,
     g,
@@ -293,6 +294,7 @@ __all__ = [
     # Helpers
     "abort",
     "after_this_request",
+    "async_send_file",
     "jsonify",
     "make_response",
     "redirect",
