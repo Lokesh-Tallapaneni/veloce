@@ -170,8 +170,14 @@ class Signal:
     def send(self, sender: Any = None, **kwargs: Any) -> SignalResult:
         """Fire receivers subscribed for `sender` (and for ANY_SENDER).
 
-        Returns `(receiver, value)` pairs in registration order.
+        Returns `(receiver, value)` pairs in registration order. With no
+        subscriptions the call short-circuits, so callers can invoke
+        `send` unconditionally rather than guarding with
+        `has_receivers_for` - a single live-scan then both fires and
+        prunes dead weakrefs.
         """
+        if not self._subs:
+            return []
         return [(target, target(sender, **kwargs)) for target in self._iter_live_targets(sender)]
 
     def send_robust(self, sender: Any = None, **kwargs: Any) -> SignalResult:
