@@ -7,8 +7,9 @@ import base64
 import contextlib
 import enum
 import hashlib
+import math
 import struct
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import orjson
 
@@ -31,12 +32,27 @@ from veloce.http.cookies import parse_cookie
 from veloce.http.datastructures import Address, QueryParams, State
 from veloce.status import (
     WS_1000_NORMAL_CLOSURE,
+    WS_1001_GOING_AWAY,
     WS_1002_PROTOCOL_ERROR,
     WS_1009_MESSAGE_TOO_BIG,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable
+
+
+def _validate_idle_timeout(idle_timeout: float | None) -> None:
+    """Reject a non-finite or non-positive idle timeout.
+
+    Mirrors `EventSourceResponse.ping` validation: `None` disables the
+    feature, otherwise the value must be a finite positive number of
+    seconds. NaN fails `> 0` and Infinity passes `> 0` but is meaningless
+    as a deadline, so both are rejected via `math.isfinite`.
+    """
+    if idle_timeout is not None and not (math.isfinite(idle_timeout) and idle_timeout > 0):
+        raise ValueError(
+            f"idle_timeout must be a finite positive number of seconds, got {idle_timeout!r}"
+        )
 
 
 class WebSocketState(enum.IntEnum):
@@ -74,6 +90,19 @@ class WebSocket:
     leaves the close to the dispatcher's error handling, which sends the
     mapped close code (e.g. 1008 for a policy violation, 1011 for an
     unhandled error) before the exception propagates.
+
+    Pass ``idle_timeout=<seconds>`` (default ``None`` -> disabled) to bound
+    how long a blocking receive (``receive``/``receive_text``/
+    ``receive_bytes``/``receive_json`` and the ``iter_*`` loops) waits for
+    the next message. When no message arrives within ``idle_timeout``
+    seconds the connection performs a clean RFC 6455 close with
+    ``1001 Going Away`` and the receive raises ``WebSocketDisconnect``, so
+    the handler loop unwinds exactly as it would on a peer-initiated close.
+    A per-call ``timeout`` still applies; whichever deadline is smaller
+    wins. Set it at construction via ``from_asgi(idle_timeout=...)`` or from
+    inside the handler with ``set_idle_timeout``. The window bounds each
+    complete message (in production, ASGI delivers complete messages and
+    owns ping/pong; the raw-transport path measures it the same way).
     """
 
     GUID = "258EAFA5-E914-47DA-95CA-5AB5DC525D63"
@@ -108,11 +137,14 @@ class WebSocket:
         transport: asyncio.Transport,
         headers: dict[str, str],
         recv_queue_maxsize: int | None = None,
+        idle_timeout: float | None = None,
     ) -> None:
+        _validate_idle_timeout(idle_timeout)
         self.transport = transport
         self.headers = headers
         self._accepted = False
         self._closed = False
+        self._idle_timeout = idle_timeout
         maxsize = (
             recv_queue_maxsize
             if recv_queue_maxsize is not None
@@ -146,6 +178,7 @@ class WebSocket:
         scope: dict,
         receive: Any,
         send: Any,
+        idle_timeout: float | None = None,
     ) -> WebSocket:
         """Construct an ASGI-driven WebSocket (no asyncio.Transport).
 
@@ -154,7 +187,12 @@ class WebSocket:
         decoded latin-1 per ASGI. `accept`/`send_*`/`receive_*`/`close`
         all dispatch through `send`/`receive` instead of the raw frame
         writer used by the asyncio.Transport mode.
+
+        `idle_timeout` (default `None` -> disabled) bounds how long a
+        blocking receive waits for the next frame before performing a
+        clean `1001 Going Away` close; see the class docstring.
         """
+        _validate_idle_timeout(idle_timeout)
         headers: dict[str, str] = {}
         for k, v in scope.get("headers", []):
             headers[k.decode("latin-1").lower()] = v.decode("latin-1")
@@ -164,6 +202,7 @@ class WebSocket:
         ws.headers = headers
         ws._accepted = False
         ws._closed = False
+        ws._idle_timeout = idle_timeout
         ws._receive_queue = None  # type: ignore[assignment]
         ws._frag_opcode = None  # unused in ASGI mode (no raw frame parsing)
         ws._frag_buffer = bytearray()
@@ -485,7 +524,14 @@ class WebSocket:
                 "WebSocket.receive() is ASGI-mode only; use receive_text/"
                 "receive_bytes for raw asyncio-transport connections"
             )
-        return await self._asgi_recv_msg()
+        if self._idle_timeout is None:
+            return await self._asgi_recv_msg()
+        try:
+            return await asyncio.wait_for(self._asgi_recv_msg(), timeout=self._idle_timeout)
+        except (TimeoutError, asyncio.TimeoutError):
+            # `_idle_close` always raises WebSocketDisconnect after the
+            # 1001 close handshake, so control never returns here.
+            await self._idle_close()
 
     async def send(self, message: dict) -> None:
         """Send a raw ASGI WebSocket message.
@@ -521,15 +567,96 @@ class WebSocket:
         if self._closed:
             raise WebSocketDisconnect()
 
+    def set_idle_timeout(self, idle_timeout: float | None) -> None:
+        """Set the idle-receive timeout in seconds (`None` disables it).
+
+        Applies to every subsequent blocking receive on this connection.
+        Call it inside the handler (typically right after `accept()`) to
+        enable or adjust the window; passing `idle_timeout=` to
+        `WebSocket.from_asgi` sets the same value at construction.
+        """
+        _validate_idle_timeout(idle_timeout)
+        self._idle_timeout = idle_timeout
+
+    def _effective_timeout(self, timeout: float | None) -> float | None:
+        """Bound a per-call timeout by the connection's idle timeout.
+
+        Returns the smaller of the explicit per-call `timeout` and the
+        configured `idle_timeout`; either being `None` falls back to the
+        other. The result drives `asyncio.wait_for` so a silent peer trips
+        whichever deadline is shorter.
+        """
+        idle = self._idle_timeout
+        if idle is None:
+            return timeout
+        if timeout is None:
+            return idle
+        return min(timeout, idle)
+
+    async def _idle_close(self) -> NoReturn:
+        """Close cleanly on an idle timeout and signal the handler.
+
+        Performs the RFC 6455 close handshake with `1001 Going Away`
+        (never a fabricated 1006) so the peer sees a graceful shutdown,
+        then raises `WebSocketDisconnect` so the receive call and any
+        `iter_*` loop unwind exactly as on a peer-initiated close.
+        """
+        with contextlib.suppress(Exception):
+            await self.close(code=WS_1001_GOING_AWAY)
+        raise WebSocketDisconnect(WS_1001_GOING_AWAY)
+
     async def receive_text(self, timeout: float | None = None) -> str:
-        """Receive a text message. Raises asyncio.TimeoutError if timeout exceeded."""
+        """Receive a text message. Raises asyncio.TimeoutError if timeout exceeded.
+
+        When `idle_timeout` is configured, a wait longer than the idle
+        window closes the connection with `1001 Going Away` and raises
+        `WebSocketDisconnect` instead of `asyncio.TimeoutError`.
+        """
         self._check_can_receive("receive_text")
         if self._is_asgi:
-            msg = await asyncio.wait_for(self._asgi_recv_msg(), timeout=timeout)
+            eff = self._effective_timeout(timeout)
+            try:
+                msg = await asyncio.wait_for(self._asgi_recv_msg(), timeout=eff)
+            except (TimeoutError, asyncio.TimeoutError):
+                await self._maybe_idle_timeout(timeout, eff)
+                raise
             data = msg.get("text") or (msg.get("bytes") or b"").decode("utf-8")
             return data
-        data = await asyncio.wait_for(self._receive_queue.get(), timeout=timeout)
+        data = await self._raw_recv(timeout)
         return data.decode("utf-8") if isinstance(data, bytes) else str(data)
+
+    async def _raw_recv(self, timeout: float | None) -> bytes:
+        """Receive one complete message in raw mode, bounded by the idle window.
+
+        The wait is bounded by the smaller of the per-call `timeout` and the
+        connection's `idle_timeout`. In raw-transport mode the idle window is
+        measured per completed message, so a peer that only streams long
+        fragmented messages or keep-alive control frames can still trip it -
+        this is acceptable because raw transport is not the deployed path
+        (production WebSockets run over ASGI, where the server delivers
+        complete messages and owns ping/pong). An idle expiry performs the
+        `1001 Going Away` close; a binding per-call `timeout` raises
+        `asyncio.TimeoutError` unchanged.
+        """
+        eff = self._effective_timeout(timeout)
+        if eff is None:
+            return await self._receive_queue.get()
+        try:
+            return await asyncio.wait_for(self._receive_queue.get(), timeout=eff)
+        except (TimeoutError, asyncio.TimeoutError):
+            await self._maybe_idle_timeout(timeout, eff)
+            raise
+
+    async def _maybe_idle_timeout(self, timeout: float | None, eff: float | None) -> None:
+        """Treat a `wait_for` timeout as an idle close when idle won the race.
+
+        A timeout only means "idle" when the effective deadline came from
+        the idle window rather than a smaller explicit per-call `timeout`.
+        When the per-call `timeout` was the binding (smaller) deadline the
+        original `asyncio.TimeoutError` propagates to the caller unchanged.
+        """
+        if self._idle_timeout is not None and (timeout is None or eff == self._idle_timeout):
+            await self._idle_close()
 
     async def receive_json(self, timeout: float | None = None) -> Any:
         """Receive and parse JSON."""
@@ -538,12 +665,22 @@ class WebSocket:
         return orjson.loads(text)
 
     async def receive_bytes(self, timeout: float | None = None) -> bytes:
-        """Receive binary data. Raises asyncio.TimeoutError if timeout exceeded."""
+        """Receive binary data. Raises asyncio.TimeoutError if timeout exceeded.
+
+        When `idle_timeout` is configured, a wait longer than the idle
+        window closes the connection with `1001 Going Away` and raises
+        `WebSocketDisconnect` instead of `asyncio.TimeoutError`.
+        """
         self._check_can_receive("receive_bytes")
         if self._is_asgi:
-            msg = await asyncio.wait_for(self._asgi_recv_msg(), timeout=timeout)
+            eff = self._effective_timeout(timeout)
+            try:
+                msg = await asyncio.wait_for(self._asgi_recv_msg(), timeout=eff)
+            except (TimeoutError, asyncio.TimeoutError):
+                await self._maybe_idle_timeout(timeout, eff)
+                raise
             return msg.get("bytes") or msg.get("text", "").encode("utf-8")
-        return await asyncio.wait_for(self._receive_queue.get(), timeout=timeout)
+        return await self._raw_recv(timeout)
 
     async def iter_text(self) -> Any:
         """Async-iterate over incoming text frames until the peer closes.

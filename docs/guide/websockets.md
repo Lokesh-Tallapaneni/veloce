@@ -56,6 +56,49 @@ async def chat(ws):
         await ws.send_text(f"you said: {message}")
 ```
 
+## Idle-receive timeout
+
+A peer that opens a connection and then goes silent ties up server resources
+indefinitely. Pass `idle_timeout=<seconds>` when constructing the `WebSocket`
+to bound how long any blocking receive (`receive`, `receive_text`,
+`receive_bytes`, `receive_json`, and the `iter_*` loops) waits for the next
+message. When no message arrives within the window the connection performs a
+clean RFC 6455 close with `1001 Going Away` and the receive raises
+`WebSocketDisconnect`, so the handler loop unwinds exactly as it would on a
+peer-initiated close. The window bounds each complete message (under ASGI the
+server delivers complete messages and handles ping/pong).
+
+The handler receives a live `WebSocket`, so set the window with
+`set_idle_timeout` (or tighten/relax it mid-connection):
+
+```python
+from veloce import Veloce, WebSocket, WebSocketDisconnect
+
+app = Veloce()
+
+
+@app.websocket("/chat")
+async def chat(ws: WebSocket):
+    ws.set_idle_timeout(30)  # close a peer silent for 30s
+    await ws.accept()
+    try:
+        async for message in ws.iter_text():
+            await ws.send_text(f"you said: {message}")
+    except WebSocketDisconnect:
+        pass  # idle close or peer close — both land here
+```
+
+A per-call `timeout` still applies; whichever deadline is smaller wins. A
+smaller per-call `timeout` raises a plain `TimeoutError` and leaves the
+connection open, while the idle window closing raises `WebSocketDisconnect`.
+
+!!! note "Added in version 0.4"
+    `idle_timeout` is opt-in. The default `None` preserves the previous
+    unbounded behaviour. The value must be a finite positive number of
+    seconds. It can also be supplied at construction via
+    `WebSocket(..., idle_timeout=...)` and `WebSocket.from_asgi(...,
+    idle_timeout=...)`.
+
 ## Subprotocol negotiation
 
 Pick a subprotocol the client offered and confirm it during `accept`:

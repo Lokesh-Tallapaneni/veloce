@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block exits via an exception, `__aexit__` defers closing to the dispatcher's
   error handling so the mapped close code (e.g. 1008 policy violation, 1011
   internal error) is sent rather than a normal-closure 1000.
+- `WebSocket` idle-receive timeout. `WebSocket(..., idle_timeout=<seconds>)`,
+  `WebSocket.from_asgi(..., idle_timeout=<seconds>)`, and the new
+  `WebSocket.set_idle_timeout(<seconds>)` setter bound how long a blocking
+  receive (`receive`, `receive_text`, `receive_bytes`, `receive_json`, and the
+  `iter_*` loops) waits for the next message. Opt-in; the default `None`
+  preserves the previous unbounded behaviour. On timeout the connection performs
+  a clean RFC 6455 close with `1001 Going Away` and the receive raises
+  `WebSocketDisconnect`, so the handler unwinds as on a peer-initiated close. A
+  per-call `timeout` still applies, and whichever deadline is smaller wins. The
+  window bounds each complete message (under ASGI the server delivers complete
+  messages and owns ping/pong; the raw-transport path measures it the same way).
+  The value must be a finite positive number of seconds or `None`.
 
 ### Changed
 
