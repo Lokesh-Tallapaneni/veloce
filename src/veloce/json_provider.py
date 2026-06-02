@@ -20,6 +20,22 @@ from veloce.http.response import JSONResponse
 from veloce.status import HTTP_200_OK
 
 
+def config_orjson_options(cfg: Any) -> int:
+    """Build the orjson option bitmask from an app config mapping.
+
+    Reads the `JSON_SORT_KEYS` and `JSONIFY_PRETTYPRINT_REGULAR` flags.
+    Shared by `DefaultJSONProvider` and `helpers.jsonify` so the two
+    paths cannot drift. Returns `0` when `cfg` is `None`.
+    """
+    opts = 0
+    if cfg is not None:
+        if cfg.get("JSON_SORT_KEYS"):
+            opts |= orjson.OPT_SORT_KEYS
+        if cfg.get("JSONIFY_PRETTYPRINT_REGULAR"):
+            opts |= orjson.OPT_INDENT_2
+    return opts
+
+
 class JSONProvider:
     """Base class for JSON serialisation providers."""
 
@@ -59,14 +75,18 @@ class DefaultJSONProvider(JSONProvider):
     needing to subclass.
     """
 
+    def __init__(self, app: Any) -> None:
+        super().__init__(app)
+        # The `JSON_SORT_KEYS` / `JSONIFY_PRETTYPRINT_REGULAR` flags are read
+        # once here and cached as a bitmask: the provider is instantiated lazily
+        # on first `app.json` access, by which point startup config is settled.
+        # Mutating those flags afterwards does not retroactively change this
+        # provider; set them before the first `app.json` access. Per-call
+        # `sort_keys` / `indent` overrides are still ORed in on each `dumps`.
+        self._config_options = config_orjson_options(getattr(app, "config", None))
+
     def dumps(self, obj: Any, **kwargs: Any) -> bytes:
-        opts = 0
-        cfg = getattr(self._app, "config", None)
-        if cfg is not None:
-            if cfg.get("JSON_SORT_KEYS"):
-                opts |= orjson.OPT_SORT_KEYS
-            if cfg.get("JSONIFY_PRETTYPRINT_REGULAR"):
-                opts |= orjson.OPT_INDENT_2
+        opts = self._config_options
         if kwargs.get("sort_keys"):
             opts |= orjson.OPT_SORT_KEYS
         if kwargs.get("indent"):
