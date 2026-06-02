@@ -614,14 +614,8 @@ class WebSocket:
         """
         self._check_can_receive("receive_text")
         if self._is_asgi:
-            eff = self._effective_timeout(timeout)
-            try:
-                msg = await asyncio.wait_for(self._asgi_recv_msg(), timeout=eff)
-            except (TimeoutError, asyncio.TimeoutError):
-                await self._maybe_idle_timeout(timeout, eff)
-                raise
-            data = msg.get("text") or (msg.get("bytes") or b"").decode("utf-8")
-            return data
+            msg = await self._asgi_recv_text_or_bytes(timeout)
+            return msg.get("text") or (msg.get("bytes") or b"").decode("utf-8")
         data = await self._raw_recv(timeout)
         return data.decode("utf-8") if isinstance(data, bytes) else str(data)
 
@@ -658,6 +652,22 @@ class WebSocket:
         if self._idle_timeout is not None and (timeout is None or eff == self._idle_timeout):
             await self._idle_close()
 
+    async def _asgi_recv_text_or_bytes(self, timeout: float | None) -> dict:
+        """Receive one ASGI message, bounding the wait only when a deadline is set.
+
+        The common case has neither a per-call `timeout` nor a configured
+        `idle_timeout`, so the receive awaits directly and skips the
+        `asyncio.wait_for` Task wrapper that only the bounded case needs.
+        """
+        eff = self._effective_timeout(timeout)
+        if eff is None:
+            return await self._asgi_recv_msg()
+        try:
+            return await asyncio.wait_for(self._asgi_recv_msg(), timeout=eff)
+        except (TimeoutError, asyncio.TimeoutError):
+            await self._maybe_idle_timeout(timeout, eff)
+            raise
+
     async def receive_json(self, timeout: float | None = None) -> Any:
         """Receive and parse JSON."""
         # Routes through `receive_text`, which enforces the state guards.
@@ -673,12 +683,7 @@ class WebSocket:
         """
         self._check_can_receive("receive_bytes")
         if self._is_asgi:
-            eff = self._effective_timeout(timeout)
-            try:
-                msg = await asyncio.wait_for(self._asgi_recv_msg(), timeout=eff)
-            except (TimeoutError, asyncio.TimeoutError):
-                await self._maybe_idle_timeout(timeout, eff)
-                raise
+            msg = await self._asgi_recv_text_or_bytes(timeout)
             return msg.get("bytes") or msg.get("text", "").encode("utf-8")
         return await self._raw_recv(timeout)
 
