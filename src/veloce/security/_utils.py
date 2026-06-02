@@ -16,7 +16,8 @@ def _extract_bearer_token(
     """Extract a bearer token from the Authorization header."""
     auth = request.headers.get(HEADER_AUTHORIZATION, "")
     prefix = f"{scheme} "
-    if auth[: len(prefix)].lower() != prefix.lower():
+    prefix_lower = prefix.lower()
+    if auth[: len(prefix)].lower() != prefix_lower:
         if auto_error:
             raise HTTPException(
                 HTTP_401_UNAUTHORIZED,

@@ -16,6 +16,9 @@ from veloce.http.request import Request
 from veloce.security._utils import _extract_bearer_token
 from veloce.status import HTTP_401_UNAUTHORIZED
 
+_BASIC_PREFIX = (AUTH_SCHEME_BASIC + " ").lower()
+_DIGEST_PREFIX = (AUTH_SCHEME_DIGEST + " ").lower()
+
 
 class HTTPBasicCredentials:
     """HTTP Basic auth credentials."""
@@ -36,8 +39,7 @@ class HTTPBasic:
 
     def __call__(self, request: Request) -> HTTPBasicCredentials | None:
         auth = request.headers.get(HEADER_AUTHORIZATION, "")
-        basic_prefix = f"{AUTH_SCHEME_BASIC} "
-        if auth[: len(basic_prefix)].lower() != basic_prefix.lower():
+        if auth[: len(_BASIC_PREFIX)].lower() != _BASIC_PREFIX:
             if self.auto_error:
                 headers: dict[str, str] = {}
                 if self.realm:
@@ -54,7 +56,7 @@ class HTTPBasic:
         # genuine bugs (NameError, AttributeError) and convert them to
         # a 401, masking defects.
         try:
-            decoded = base64.b64decode(auth[len(basic_prefix) :], validate=True).decode("utf-8")
+            decoded = base64.b64decode(auth[len(_BASIC_PREFIX) :], validate=True).decode("utf-8")
         except (binascii.Error, ValueError, UnicodeDecodeError) as err:
             headers = (
                 {HEADER_WWW_AUTHENTICATE: f'{AUTH_SCHEME_BASIC} realm="{quote(self.realm)}"'}
@@ -155,8 +157,7 @@ class HTTPDigest:
 
     def __call__(self, request: Request) -> HTTPDigestCredentials | None:
         auth = request.headers.get(HEADER_AUTHORIZATION, "")
-        digest_prefix = f"{AUTH_SCHEME_DIGEST} "
-        if auth[: len(digest_prefix)].lower() != digest_prefix.lower():
+        if auth[: len(_DIGEST_PREFIX)].lower() != _DIGEST_PREFIX:
             if self.auto_error:
                 raise HTTPException(
                     HTTP_401_UNAUTHORIZED,
@@ -164,7 +165,7 @@ class HTTPDigest:
                     headers=self._challenge_headers(),
                 )
             return None
-        return _parse_digest(auth[len(digest_prefix) :])
+        return _parse_digest(auth[len(_DIGEST_PREFIX) :])
 
 
 def _default_nonce() -> str:

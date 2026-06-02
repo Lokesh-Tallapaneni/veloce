@@ -229,7 +229,9 @@ class RouteInfo:
         # Host constraint - the full `Host` header must equal this value
         # exactly (case-insensitive). `None` means "any host". Broader
         # than `subdomain`, which only constrains the leftmost label.
-        self.host = host
+        # Normalised to lower case here so dispatch can compare without
+        # re-lowering on every request.
+        self.host = host.lower() if host is not None else None
         # Pre-computed reflection plan - filled in by Router.add_route once
         # this RouteInfo has been constructed. Tests that build RouteInfo
         # directly will see `None` here and the resolver will fall back to

@@ -211,7 +211,7 @@ class CORSMiddleware(Middleware):
                 response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = requested
             elif requested:
                 # Intersect requested vs the precomputed lowercased allow-set.
-                tokens = [t.strip() for t in requested.split(",") if t.strip()]
+                tokens = [s for t in requested.split(",") if (s := t.strip())]
                 matched = [t for t in tokens if t.lower() in self._allow_headers_lower]
                 if matched:
                     response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = ", ".join(matched)
