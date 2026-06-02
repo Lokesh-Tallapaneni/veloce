@@ -541,6 +541,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WRITE_BUFFER_HIGH_WATER` config key. `drain()` is a no-op until the buffer
   crosses the mark, so the common keep-alive path is unaffected; the ASGI path
   (where the server owns flow control) is unchanged.
+- Native WebSocket upgrades on the `Veloce.run()` serving path. The raw-transport
+  `HttpProtocol` now performs the RFC 6455 handshake itself: a `GET` carrying the
+  upgrade triplet (`Connection: Upgrade`, `Upgrade: websocket`,
+  `Sec-WebSocket-Key`, `Sec-WebSocket-Version: 13`) that matches a `@app.websocket`
+  route is answered with a 101 Switching Protocols response and diverted into
+  WebSocket mode, dispatching through the same `_run_websocket` core as the ASGI
+  path. Host and `Origin` allow-lists (`TrustedHostMiddleware`,
+  `WebSocketOriginMiddleware`) are enforced before the 101. Refusals are plain
+  HTTP responses, not close frames: unmatched route -> 404, unsupported version
+  -> 426 with `Sec-WebSocket-Version: 13`, rejected host/Origin -> 403, missing
+  key -> 400. Previously WebSockets required running under an external ASGI server
+  (uvicorn/hypercorn); they now work under `Veloce.run()` directly. Native
+  subprotocol negotiation is not yet supported on this path - `accept(subprotocol=...)`
+  / `accept(headers=...)` raises `RuntimeError`, since the 101 is already on the
+  wire; run under an ASGI server for that case. The native dispatch binds the same
+  application context as the ASGI path, so `current_app`, `g`, template rendering,
+  and context processors work identically under `Veloce.run()`. A peer-initiated
+  close now completes the RFC 6455 Sec. 5.5.1 handshake: the close frame wakes a
+  handler parked on a blocking receive, which unwinds via `WebSocketDisconnect`,
+  and the server sends its reply close frame before dropping the connection. A
+  server-initiated `close()` sends its close frame and waits (bounded by
+  `WebSocket.CLOSE_HANDSHAKE_TIMEOUT`) for the peer's reply before closing the
+  transport.
+- Outbound backpressure on the native WebSocket send path. The raw-transport
+  send path (`WebSocket.send_text` / `send_bytes` / `send_json`) now awaits the
+  same `HttpProtocol.drain()` write-side gate the streaming/SSE paths use before
+  writing each frame, so a slow-reading client - which trips the transport's
+  write high-water mark - suspends the producing handler at its next send instead
+  of letting the transport buffer frames in memory without bound. This affects
+  only the native raw-transport path; ASGI mode leaves the hook unset and the
+  ASGI server owns flow control, so its send path is unchanged.
 - `async_send_file` top-level helper - the async counterpart of `send_file`.
   It takes the same arguments but reads the file in an executor (via
   `FileResponse.from_path`), so it never blocks the event loop. Prefer it
