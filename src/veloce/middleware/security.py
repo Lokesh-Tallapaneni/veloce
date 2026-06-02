@@ -202,7 +202,11 @@ class RateLimitMiddleware(Middleware):
             if last:
                 return f"xff:{last}"
         # User-Agent hash - coarse, but partitions anonymous callers by
-        # client software when no IP is available.
+        # client software when no IP is available. This digest is the ONLY
+        # isolation between anonymous callers here, so it must resist chosen
+        # collisions: a CRC32 checksum would let an attacker craft a
+        # User-Agent that lands in another anonymous caller's bucket and
+        # drain their quota. Use a collision-resistant truncated SHA-256.
         ua = request.headers.get(HEADER_USER_AGENT, "")
         if ua:
             return "ua:" + hashlib.sha256(ua.encode("utf-8", "replace")).hexdigest()[:16]

@@ -2134,8 +2134,7 @@ class Veloce(Router):
         g._reset()
 
         try:
-            if request_started.has_receivers_for(self):
-                request_started.send(self, request=request)
+            request_started.send(self, request=request)
         except Exception:
             self.logger.exception("request_started signal receiver raised")
 
@@ -2222,11 +2221,10 @@ class Veloce(Router):
         # Signal: request finished. Sender is the app, `response=` is the
         # final Response, `request=` lets a receiver correlate with the
         # matching `request_started`. Receivers may peek but not replace.
-        if request_finished.has_receivers_for(self):
-            try:
-                request_finished.send(self, response=response, request=request)
-            except Exception:
-                self.logger.exception("request_finished signal raised an exception")
+        try:
+            request_finished.send(self, response=response, request=request)
+        except Exception:
+            self.logger.exception("request_finished signal raised an exception")
 
         if instrument:
             # A HEAD response never iterates its body (the ASGI path sends
@@ -2470,10 +2468,9 @@ class Veloce(Router):
             # raise - log + continue so a buggy listener doesn't poison
             # the dispatch path. Names hoisted to module top.
             try:
-                if _exc is not None and got_request_exception.has_receivers_for(self):
+                if _exc is not None:
                     got_request_exception.send(self, exception=_exc)
-                if request_tearing_down.has_receivers_for(self):
-                    request_tearing_down.send(self, exc=_exc)
+                request_tearing_down.send(self, exc=_exc)
             except Exception:
                 self.logger.exception("signal receiver raised an exception")
 

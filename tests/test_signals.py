@@ -350,6 +350,34 @@ def test_iter_live_targets_prunes_dead_weakref_after_single_send():
     assert len(sig_b._subs) == 1
 
 
+def test_send_prunes_when_only_receiver_is_dead():
+    """A signal whose sole receiver is a dead weakref is pruned by send().
+
+    The lifecycle dispatch calls send() unconditionally rather than guarding
+    on has_receivers_for(): the guard never pruned, so a signal left with only
+    dead weakrefs would strand them forever. send() now resolves to the empty
+    fast-path only when _subs is truly empty, so the dead entry is dropped.
+    """
+    import gc
+
+    class Owner:
+        def handle(self, sender, **kw):
+            return "ok"
+
+    sig = Signal("prune-only-dead")
+    drop = Owner()
+    sig.connect(drop.handle, weak=True)
+    assert len(sig._subs) == 1
+    assert sig.has_receivers_for("x") is True
+    del drop
+    gc.collect()
+    # The only receiver is now dead; has_receivers_for sees no live target but
+    # does not prune. send() fires nothing yet prunes the stranded entry.
+    assert sig.has_receivers_for("x") is False
+    assert sig.send("x") == []
+    assert sig._subs == []
+
+
 def test_send_robust_logs_failures(caplog):
     sig = Signal("robust-log")
 

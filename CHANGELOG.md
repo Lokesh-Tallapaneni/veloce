@@ -40,12 +40,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request-ID header is missing **or empty**. Previously a present-but-empty
   header value (e.g. `X-Request-ID:`) was propagated verbatim as the empty
   string; it is now replaced with a generated UUID.
+- Request-lifecycle signals (`request_started`, `request_finished`,
+  `got_request_exception`, `request_tearing_down`) are now dispatched
+  unconditionally instead of being guarded by `has_receivers_for()`. `Signal.send()`
+  short-circuits when there are no subscriptions, so the guard only duplicated the
+  subscriber scan; removing it means a single live-scan that both fires receivers
+  and prunes dead weakrefs.
+- `GzipMiddleware` parses `Accept-Encoding` with a fast path for the common
+  parameterless token list (e.g. `gzip, deflate, br`), falling back to the full
+  q-value-aware parse only when the header contains a `;`. Behaviour is unchanged.
+- `SessionMiddleware` measures the rendered `Set-Cookie` size using the string
+  length directly for all-ASCII cookies (the common case) and only encodes to
+  `latin-1` for non-ASCII content. The size enforced and the `UnicodeEncodeError`
+  for code points above U+00FF are unchanged.
+- Bearer-token extraction precomputes the lowercased scheme prefix for the
+  default `Bearer` scheme, removing a per-request string construction on
+  HTTP Bearer and OAuth2/OpenID authenticated paths. A custom scheme name is
+  unaffected.
 
 ### Fixed
 
 - The raw HTTP/1.1 server's early request-size guard now uses the **first**
   `Content-Length` value when a malformed request carries duplicate
   `Content-Length` headers, matching the previous header-scan behaviour.
+- A request-lifecycle signal whose only remaining receiver was a dead weakref
+  (its bound-method owner garbage-collected) is no longer stranded in the
+  subscriber list. Because the previous `has_receivers_for()` guard never pruned,
+  such entries accumulated; dispatching `send()` directly now drops them.
 
 ## [0.3.0] - 2026-06-01
 
