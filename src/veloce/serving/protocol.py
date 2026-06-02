@@ -12,7 +12,7 @@ import logging
 import threading
 from collections import deque
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import httptools
 
@@ -290,15 +290,23 @@ class HttpProtocol(asyncio.Protocol):
     # -- asyncio.Protocol callbacks -------------------------------
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        # ASGI/HTTP runs over a full duplex transport; the Liskov-correct
-        # signature widens to `BaseTransport`, so narrow back here.
-        # Explicit raise (not `assert`) so `python -O` does not strip the
-        # check and let a half-duplex transport flow into code that
-        # assumes full-duplex semantics two frames deeper.
-        if not isinstance(transport, asyncio.Transport):
+        # HTTP runs over a full-duplex transport; the Liskov-correct signature
+        # widens to `BaseTransport`, so narrow back here. Check by capability,
+        # not `isinstance(asyncio.Transport)`: uvloop's transport implements the
+        # full-duplex interface but is NOT a subclass of `asyncio.Transport`, so
+        # an isinstance check rejects the production uvloop loop (every
+        # connection fails). A full-duplex transport has both `write` (write
+        # side) and `pause_reading` (read side); a half-duplex one lacks one.
+        # Explicit raise (not `assert`) so `python -O` does not strip it.
+        if not (
+            callable(getattr(transport, "write", None))
+            and callable(getattr(transport, "pause_reading", None))
+        ):
             raise RuntimeError(
-                f"expected a full-duplex asyncio.Transport, got {type(transport).__name__}"
+                f"expected a full-duplex transport (write + pause_reading), "
+                f"got {type(transport).__name__}"
             )
+        transport = cast("asyncio.Transport", transport)
         self.transport = transport
 
         # Per-process connection cap (DDoS guard). Admit-or-reject decision
