@@ -207,7 +207,9 @@ class WebSocket:
     symmetry but never starts a timer.
     """
 
-    GUID = "258EAFA5-E914-47DA-95CA-5AB5DC525D63"
+    # RFC 6455 Sec. 1.3 magic GUID, concatenated with the client's
+    # `Sec-WebSocket-Key` and SHA-1+base64'd to form `Sec-WebSocket-Accept`.
+    GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
     # Cap inbound frame backlog. An unbounded `asyncio.Queue` lets a peer
     # that sends faster than the handler reads grow it without limit -

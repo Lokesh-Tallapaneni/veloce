@@ -1624,6 +1624,55 @@ def test_connection_made_arms_write_buffer_limit():
         loop.close()
 
 
+class _UvloopLikeTransport:
+    """A full-duplex transport that is NOT an `asyncio.Transport` subclass.
+
+    Mirrors uvloop's `TCPTransport`, which implements the transport interface
+    without inheriting `asyncio.Transport`. The capability check must accept it.
+    """
+
+    def __init__(self) -> None:
+        self.writes: list[bytes] = []
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
+
+    def pause_reading(self) -> None:
+        pass
+
+    def resume_reading(self) -> None:
+        pass
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _WriteOnlyTransport:
+    """Half-duplex: write side only, no `pause_reading` — must be rejected."""
+
+    def write(self, data: bytes) -> None:
+        pass
+
+
+def test_connection_made_accepts_uvloop_like_transport():
+    """A capability-compatible transport that is not an `asyncio.Transport`
+    subclass (e.g. uvloop's) is accepted, so `Veloce.run()` works under uvloop."""
+    loop = asyncio.new_event_loop()
+    try:
+        proto = HttpProtocol(Veloce(openapi_url=None), loop)
+        transport = _UvloopLikeTransport()
+        assert not isinstance(transport, asyncio.Transport)
+        proto.connection_made(transport)
+        assert proto.transport is transport
+        proto.connection_lost(None)
+    finally:
+        loop.close()
+
+
 def test_write_buffer_limit_honours_config_override():
     """A WRITE_BUFFER_HIGH_WATER config override is passed through verbatim."""
     loop = asyncio.new_event_loop()
@@ -1748,5 +1797,18 @@ def test_streaming_response_without_drain_unchanged():
         emitted = b"".join(transport.writes)
         assert b"1\r\nx\r\n" in emitted
         assert emitted.endswith(b"0\r\n\r\n")
+    finally:
+        loop.close()
+
+
+def test_connection_made_rejects_half_duplex_transport():
+    """A write-only (half-duplex) transport is still rejected."""
+    import pytest
+
+    loop = asyncio.new_event_loop()
+    try:
+        proto = HttpProtocol(Veloce(openapi_url=None), loop)
+        with pytest.raises(RuntimeError, match="full-duplex"):
+            proto.connection_made(_WriteOnlyTransport())
     finally:
         loop.close()

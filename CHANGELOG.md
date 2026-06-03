@@ -204,6 +204,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   converted (sets become sorted lists, `Path`/`Decimal` map to their scalar
   form, `bytes` decode UTF-8 with replacement, other objects use `vars()`
   then `str()`). The hook is also exported as `veloce.encoders.orjson_default`.
+- The WebSocket handshake now uses the correct RFC 6455 magic GUID
+  (`258EAFA5-E914-47DA-95CA-C5AB0DC85B11`) when computing
+  `Sec-WebSocket-Accept`. The previous value produced an accept token no
+  conformant client accepts. This only affected raw-transport handshakes
+  (under an ASGI server such as uvicorn the server performs the handshake), so
+  it was latent until exercised directly.
+- `HttpProtocol.connection_made` now checks the transport by capability
+  (`write` + `pause_reading`) instead of `isinstance(asyncio.Transport)`.
+  uvloop's transport implements the full-duplex interface but is not an
+  `asyncio.Transport` subclass, so the previous check rejected every connection
+  under uvloop - meaning `Veloce.run()` was broken on Linux whenever uvloop was
+  installed. Half-duplex transports are still rejected.
 - The raw HTTP/1.1 server's early request-size guard now uses the **first**
   `Content-Length` value when a malformed request carries duplicate
   `Content-Length` headers, matching the previous header-scan behaviour.
