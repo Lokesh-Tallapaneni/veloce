@@ -1635,6 +1635,40 @@ class Veloce(Router):
         self._teardown_appcontext_hooks.append(func)
         return func
 
+    async def _run_request_teardown(self, exc: BaseException | None, bp_name: str | None) -> None:
+        """Run `teardown_request` + `teardown_appcontext` for one request.
+
+        Selects the matched blueprint's `teardown_request` bucket (app-level
+        hooks first, then the blueprint's) and then fires the app-level
+        `teardown_appcontext` hooks. Hooks always run - even on an exception -
+        and receive `exc` (the failing exception or `None`). Shared by the HTTP
+        dispatch `finally` and the MCP tool-call path so a route exposed as an
+        MCP tool gets the same cleanup an HTTP request gets.
+        """
+        if self._teardown_request_hooks or self._bp_teardown_hooks:
+            if (
+                self._bp_teardown_hooks
+                and bp_name is not None
+                and bp_name in self._bp_teardown_hooks
+            ):
+                td_hooks: list[Callable] = list(self._teardown_request_hooks)
+                td_hooks.extend(self._bp_teardown_hooks[bp_name])
+            else:
+                td_hooks = list(self._teardown_request_hooks)
+        else:
+            td_hooks = ()  # type: ignore[assignment]
+        if td_hooks:
+            await self._run_teardown_hooks(td_hooks, exc, "teardown_request")
+
+        # `teardown_appcontext` fires when the app context pops; in veloce that
+        # happens at the end of each request (no separate app/request context
+        # split). Hooks receive the exception or None. Errors are logged, never
+        # re-raised.
+        if self._teardown_appcontext_hooks:
+            await self._run_teardown_hooks(
+                self._teardown_appcontext_hooks, exc, "teardown_appcontext"
+            )
+
     async def _run_teardown_hooks(
         self, hooks: list[Callable], exc: BaseException | None, label: str
     ) -> None:
@@ -2540,30 +2574,10 @@ class Veloce(Router):
                 except Exception:
                     self.logger.exception("yield-dependency teardown raised")
 
-            # Teardown hooks - always run, even on exceptions.
-            if self._teardown_request_hooks or self._bp_teardown_hooks:
-                if (
-                    self._bp_teardown_hooks
-                    and _bp_name is not None
-                    and _bp_name in self._bp_teardown_hooks
-                ):
-                    _td_hooks: list[Callable] = list(self._teardown_request_hooks)
-                    _td_hooks.extend(self._bp_teardown_hooks[_bp_name])
-                else:
-                    _td_hooks = list(self._teardown_request_hooks)
-            else:
-                _td_hooks = ()  # type: ignore[assignment]
-            if _td_hooks:
-                await self._run_teardown_hooks(_td_hooks, _exc, "teardown_request")
-
-            # `teardown_appcontext` fires when the app context pops; in
-            # veloce that happens at the end of each request (no separate
-            # app/request context split). Hooks receive the exception or
-            # None. Errors are logged, never re-raised.
-            if self._teardown_appcontext_hooks:
-                await self._run_teardown_hooks(
-                    self._teardown_appcontext_hooks, _exc, "teardown_appcontext"
-                )
+            # Teardown hooks - always run, even on exceptions. The bucket
+            # selection + both hook lists live in a shared helper so the MCP
+            # tool path can replay the identical teardown.
+            await self._run_request_teardown(_exc, _bp_name)
 
             # Signals: fire `got_request_exception` first when an exc bubbled
             # up, then always fire `request_tearing_down`. Receivers may

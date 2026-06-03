@@ -28,6 +28,7 @@ from veloce.exceptions import RequestValidationError
 from veloce.helpers import _current_app_var, _current_request_var, g
 from veloce.http.response import Response
 from veloce.instrumentation import RequestMetrics
+from veloce.routing.router import RouteMatch
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.registry import MCPTool
@@ -141,9 +142,12 @@ class MCPServer:
         except _ToolInputError:
             raise
         except Exception as exc:
-            # A handler error is a tool-level error, surfaced in the result
-            # (isError=true) rather than a JSON-RPC transport error, so the
-            # agent can read the message. MCP spec: tool errors live in-band.
+            # A pure `@app.mcp_tool` (no route) has no exception-handler
+            # machinery to run through, so its handler error is surfaced
+            # in-band (isError=true) rather than as a JSON-RPC transport error,
+            # letting the agent read the message. A route-backed tool never
+            # reaches here on a handler error: `_invoke` routes that exception
+            # through the app's exception handlers and returns a `_RouteResponse`.
             await self._instrument(tool, started)
             return {
                 "content": [{"type": "text", "text": str(exc)}],
@@ -155,12 +159,14 @@ class MCPServer:
         # before the handler ran. The hook's `Response` is the tool result;
         # surface a 4xx/5xx as an in-band error so the agent reads the denial.
         if isinstance(result, _ShortCircuit):
-            shaped = self._shape_result(tool, result.response)
-            text = _stringify(shaped)
-            content: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-            if result.response.status_code >= 400:
-                content["isError"] = True
-            return content
+            return self._result_from_response(tool, result.response)
+
+        # A route-backed tool produced a `Response` - the handler return shaped
+        # by the route's `_build_response` + `after_request` chain (or the
+        # response an exception handler built). Surface its body, flagging a
+        # 4xx/5xx as an in-band error.
+        if isinstance(result, _RouteResponse):
+            return self._result_from_response(tool, result.response)
 
         try:
             shaped = self._shape_result(tool, result)
@@ -170,6 +176,23 @@ class MCPServer:
             # an empty result.
             return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
         return {"content": [{"type": "text", "text": _stringify(shaped)}]}
+
+    def _result_from_response(self, tool: MCPTool, response: Response) -> dict[str, Any]:
+        """Shape a route-backed tool's `Response` into the MCP call result.
+
+        The response body is decoded back to a value (so the agent sees the same
+        JSON the HTTP client would) and a 4xx/5xx status is flagged as an in-band
+        `isError`. A streamed / SSE response carries no buffered body, so the
+        limitation is surfaced in-band rather than yielding an empty result.
+        """
+        try:
+            shaped = self._shape_result(tool, response)
+        except _StreamingNotSupported as exc:
+            return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+        content: dict[str, Any] = {"content": [{"type": "text", "text": _stringify(shaped)}]}
+        if response.status_code >= 400:
+            content["isError"] = True
+        return content
 
     def _shape_result(self, tool: MCPTool, result: Any) -> Any:
         """Run a route-derived tool's return through the HTTP response shaping.
@@ -204,10 +227,19 @@ class MCPServer:
         The handler runs inside the same request-context binding the HTTP path
         uses: `current_app` and `request` are bound onto their contextvars and
         `g` is reset, so a handler or dependency that reads `current_app` / `g`
-        works. For a route-derived tool the app's `before_request` hook chain
-        runs first (after `request.endpoint` is set so a hook can gate on the
-        route name); a hook that returns a `Response` short-circuits the call -
-        the handler is not invoked and that response becomes the tool result.
+        works.
+
+        For a route-derived tool the full request lifecycle is replayed so the
+        tool result matches the HTTP response: the matched path parameters are
+        copied onto `request.path_params`, the app's `before_request` chain runs
+        first (a hook returning a `Response` short-circuits the call), the
+        handler return is shaped through the route's `_build_response`, the
+        `after_request` chain runs and may rewrite that response, and the
+        `teardown_request` / `teardown_appcontext` hooks fire in the `finally`.
+        A handler exception is routed through the app's exception handlers (the
+        same lookup the HTTP path uses) and the resulting response becomes the
+        tool result. A pure `@app.mcp_tool` (no route) has no such lifecycle and
+        its return value is passed back unchanged.
         """
         context = MCPContext(tool.name, arguments)
         resolver = DependencyResolver()
@@ -226,74 +258,152 @@ class MCPServer:
         _current_request_var.set(request)
         g._reset()
 
-        # For a route-derived tool, run the app's `before_request` hooks (and
-        # the matched blueprint's), mirroring HTTP dispatch. `request.endpoint`
-        # is set first so a hook can gate on the route name and the blueprint
-        # bucket resolves. A short-circuit response is the tool result.
-        if route_info is not None:
-            request.endpoint = route_info.name
-            request._state["url_rule"] = route_info.path_template
-            early, _bp_name = await self.app._run_before_hooks(request)
-            if early is not None:
-                return _ShortCircuit(early)
-
         exc: BaseException | None = None
-        try:
-            # Only the argument-binding boundary maps a malformed argument to an
-            # invalid-params transport error: a missing argument (TypeError), a
-            # failed type coercion (RequestValidationError, raised by the shared
-            # coercion helper) or a failed model validation (ValueError). The
-            # handler call lives outside this guard so any exception raised in
-            # the handler body - including a genuine TypeError / ValueError -
-            # propagates and is surfaced as an in-band isError result by
-            # `_tools_call`, never leaked onto the JSON-RPC error channel.
+        bp_name: str | None = None
+
+        # For a pure `@app.mcp_tool` there is no route lifecycle to replay - run
+        # the handler with its DI graph and return the raw value, draining only
+        # the yield-dependency teardowns. The exception path stays in-band.
+        if route_info is None:
             try:
-                kwargs, request = await bind_arguments(
-                    tool.plan,
-                    arguments,
-                    context,
-                    resolver,
-                    tool.route_dep_plans,
-                    request=request,
-                )
-            except (TypeError, ValueError, RequestValidationError) as err:
-                raise _ToolInputError(str(err)) from err
+                return await self._invoke_pure(tool, arguments, context, resolver, request)
+            except BaseException as err:  # noqa: BLE001 - re-raised after teardown
+                exc = err
+                raise
+            finally:
+                await resolver.run_teardowns(exc)
 
-            handler = tool.handler
-            if _is_async_callable(handler):
-                result = await handler(**kwargs)
-            else:
-                # A sync handler runs in the thread pool so it cannot block the
-                # event loop - the same offload the HTTP path applies, with the
-                # current context copied so contextvars (`current_app` / `g` /
-                # the `request` proxy) stay readable in the worker thread.
-                loop = asyncio.get_running_loop()
-                ctx = contextvars.copy_context()
-                result = await loop.run_in_executor(
-                    None, ctx.run, functools.partial(handler, **kwargs)
-                )
+        # Route-derived tool: replay the matched-route state the HTTP path sets
+        # before dispatch. `request.endpoint` and `url_rule` let a hook gate on
+        # the route name and the blueprint bucket resolve; `path_params` carries
+        # the tool arguments that name a route path parameter so a hook /
+        # dependency / handler reading `request.path_params` sees them, exactly
+        # as on the HTTP path.
+        request.endpoint = route_info.name
+        request._state["url_rule"] = route_info.path_template
+        request.path_params = _route_path_params(route_info, arguments)
 
-            # Run any background tasks the handler scheduled, mirroring the HTTP
-            # path's post-handler execution. The stdio path has no response to
-            # return to first, so they are awaited inline; a task error is
-            # logged, never allowed to fail the (already-produced) tool result.
+        # `before_request` (app-level then matched blueprint). A short-circuit
+        # response is the tool result; `bp_name` is recorded so the matched
+        # blueprint's `after_request` / teardown hooks fire even on short-circuit.
+        early, bp_name = await self.app._run_before_hooks(request)
+        if early is not None:
+            return _ShortCircuit(early)
+
+        try:
+            result = await self._bind_and_call(tool, arguments, context, resolver, request)
+
+            # Shape the handler return into the final `Response` exactly as the
+            # HTTP path does (`_build_response` runs the route `response_model`
+            # filtering + coercion + injected-response merge), then run the
+            # `after_request` chain so a hook can rewrite the response before the
+            # tool result is derived from it - mirroring HTTP dispatch order.
+            match = RouteMatch(route_info, request.path_params)
+            response = self.app._build_response(request, match, result)
+            response = await self.app._run_after_hooks(request, response, bp_name)
+
+            # Background work: the handler's injected queue plus any task it
+            # attached to its own `Response`. Awaited inline (the stdio path has
+            # no response to flush first); a task error is logged, never allowed
+            # to fail the produced tool result.
             tasks = request._background_tasks
             if tasks is not None:
                 try:
                     await tasks.run_all()
                 except Exception:
                     _logger.exception("MCP background task failed")
-
-            # A handler that built its own `Response(background=...)` carries
-            # side effects the HTTP path schedules in addition to the injected
-            # queue. Run them here too so those effects are not lost over MCP.
-            await self._run_response_background(result)
-            return result
-        except BaseException as err:  # noqa: BLE001 - re-raised after teardown
+            await self._run_response_background(response)
+            return _RouteResponse(response)
+        except _ToolInputError:
+            # A malformed argument is a transport-level invalid-params error,
+            # not a handled application failure - re-raise so `_tools_call`
+            # surfaces it on the JSON-RPC error channel. It still flows through
+            # the `finally` so teardowns run.
+            raise
+        except BaseException as err:  # noqa: BLE001 - re-raised / routed after teardown
             exc = err
+            # Route the handler exception through the app's exception handlers
+            # (the same status-code + class lookup the HTTP path uses) so a
+            # route relying on `@app.exception_handler(...)` - or the default
+            # `HTTPException` JSON body - yields the right MCP payload. A
+            # `BaseException` that is not an `Exception` (e.g. cancellation)
+            # has no handler path and is re-raised after teardown.
+            if isinstance(err, Exception):
+                response = await self.app.handle_user_exception(err, request=request)
+                return _RouteResponse(response)
             raise
         finally:
+            # Yield-dependency teardowns first (the resource was acquired before
+            # the handler ran and must be released regardless of outcome), then
+            # the `teardown_request` / `teardown_appcontext` hooks - both receive
+            # the exception (or None), mirroring the HTTP dispatch `finally`.
             await resolver.run_teardowns(exc)
+            await self.app._run_request_teardown(exc, bp_name)
+
+    async def _invoke_pure(
+        self,
+        tool: MCPTool,
+        arguments: dict[str, Any],
+        context: MCPContext,
+        resolver: DependencyResolver,
+        request: Any,
+    ) -> Any:
+        """Run a pure `@app.mcp_tool` handler and return its raw value.
+
+        No route lifecycle applies, so the return value is passed back unchanged
+        (the caller stringifies it) and a handler exception propagates to be
+        surfaced in-band by `_tools_call`.
+        """
+        result = await self._bind_and_call(tool, arguments, context, resolver, request)
+        tasks = request._background_tasks
+        if tasks is not None:
+            try:
+                await tasks.run_all()
+            except Exception:
+                _logger.exception("MCP background task failed")
+        await self._run_response_background(result)
+        return result
+
+    async def _bind_and_call(
+        self,
+        tool: MCPTool,
+        arguments: dict[str, Any],
+        context: MCPContext,
+        resolver: DependencyResolver,
+        request: Any,
+    ) -> Any:
+        """Bind the handler kwargs from `arguments` and call the handler.
+
+        The argument-binding boundary is the only place that maps a malformed
+        argument to an invalid-params transport error (`_ToolInputError`): a
+        missing argument (TypeError), a failed coercion (RequestValidationError)
+        or a failed model validation (ValueError). The handler call lives outside
+        that guard so a genuine TypeError / ValueError raised in the handler body
+        propagates unchanged - surfaced in-band for a pure tool, routed through
+        the app's exception handlers for a route-backed one.
+        """
+        try:
+            kwargs, _request = await bind_arguments(
+                tool.plan,
+                arguments,
+                context,
+                resolver,
+                tool.route_dep_plans,
+                request=request,
+            )
+        except (TypeError, ValueError, RequestValidationError) as err:
+            raise _ToolInputError(str(err)) from err
+
+        handler = tool.handler
+        if _is_async_callable(handler):
+            return await handler(**kwargs)
+        # A sync handler runs in the thread pool so it cannot block the event
+        # loop - the same offload the HTTP path applies, with the current context
+        # copied so contextvars (`current_app` / `g` / the `request` proxy) stay
+        # readable in the worker thread.
+        loop = asyncio.get_running_loop()
+        ctx = contextvars.copy_context()
+        return await loop.run_in_executor(None, ctx.run, functools.partial(handler, **kwargs))
 
     @staticmethod
     async def _run_response_background(result: Any) -> None:
@@ -361,6 +471,32 @@ class _ShortCircuit:
 
     def __init__(self, response: Response) -> None:
         self.response = response
+
+
+class _RouteResponse:
+    """A route-backed tool's final `Response` (shaped + after_request-rewritten,
+    or built by an exception handler), returned in place of the raw value."""
+
+    __slots__ = ("response",)
+
+    def __init__(self, response: Response) -> None:
+        self.response = response
+
+
+def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Build `request.path_params` for a route-backed tool call.
+
+    The HTTP path fills `path_params` from the URL segments the router matched;
+    a tool call has no URL, so the equivalent values arrive as named entries in
+    the JSON `arguments`. Copy each argument whose name is one of the route's
+    declared path parameters, then fill any route `defaults` not supplied, so a
+    hook / dependency / handler that reads `request.path_params` sees the same
+    mapping it would on the HTTP path.
+    """
+    params = {name: arguments[name] for name in route_info.param_names if name in arguments}
+    for key, value in route_info.defaults.items():
+        params.setdefault(key, value)
+    return params
 
 
 def _error(msg_id: Any, code: int, message: str) -> dict[str, Any]:

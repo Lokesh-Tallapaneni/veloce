@@ -1150,3 +1150,139 @@ def test_typed_context_still_injected():
 
     out = _call(app, "named", {})
     assert out["result"]["content"][0]["text"] == "named"
+
+
+# -- Route-backed tool request lifecycle ------------------------------
+
+
+def test_exposed_route_exception_routes_through_exception_handler():
+    """A route raising `HTTPException` goes through the app's exception handlers
+    over MCP, so the registered handler's body is the tool result (isError),
+    not a `str(exc)` repr."""
+    app = Veloce(openapi_url=None)
+
+    @app.exception_handler(HTTPException)
+    async def _handle(request, exc):
+        return JSONResponse(
+            {"error": exc.detail, "code": exc.status_code}, status_code=exc.status_code
+        )
+
+    @app.get("/boom", expose_as_mcp_tool=True, mcp_description="Always fails")
+    async def boom() -> dict:
+        raise HTTPException(status_code=418, detail="teapot")
+
+    out = _call(app, "boom", {})
+    assert "error" not in out  # in-band tool error, not a JSON-RPC transport error
+    assert out["result"]["isError"] is True
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"error": "teapot", "code": 418}
+
+
+def test_exposed_route_httpexception_default_body():
+    """With no registered handler, a route raising `HTTPException` still yields
+    the framework's default JSON error body (not `str(exc)`)."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/missing", expose_as_mcp_tool=True, mcp_description="Not found")
+    async def missing() -> dict:
+        raise HTTPException(status_code=404, detail="nope")
+
+    out = _call(app, "missing", {})
+    assert "error" not in out
+    assert out["result"]["isError"] is True
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"detail": "nope"}
+
+
+def test_exposed_route_path_param_visible_in_dependency():
+    """A tool argument naming a route path parameter lands on
+    `request.path_params`, so a dependency / hook reading it sees the value."""
+    app = Veloce(openapi_url=None)
+    seen: dict[str, object] = {}
+
+    def read_path_param(request) -> int:
+        # The HTTP path fills this from URL segments; over MCP it must come from
+        # the tool arguments that name a path parameter. The value carries the
+        # client's JSON type (an int here), not a re-stringified URL segment.
+        seen["params"] = dict(request.path_params)
+        return request.path_params["item_id"]
+
+    @app.get("/items/{item_id}", expose_as_mcp_tool=True, mcp_description="Get an item")
+    async def get_item(item_id: int, pp: int = Depends(read_path_param)) -> dict:
+        return {"item_id": item_id, "from_path_params": pp}
+
+    out = _call(app, "get_item", {"item_id": 7})
+    assert "error" not in out
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"item_id": 7, "from_path_params": 7}
+    assert seen["params"] == {"item_id": 7}
+
+
+def test_exposed_route_after_request_rewrite_reflected_in_result():
+    """An `@app.after_request` hook that replaces the response is honoured over
+    MCP, so the rewritten body is the tool result."""
+    app = Veloce(openapi_url=None)
+
+    @app.after_request
+    async def _rewrite(request, response):
+        # Replace the handler's response entirely - the tool result must follow.
+        return JSONResponse({"rewritten": True})
+
+    @app.get("/orig", expose_as_mcp_tool=True, mcp_description="Original")
+    async def orig() -> dict:
+        return {"rewritten": False}
+
+    out = _call(app, "orig", {})
+    assert "error" not in out
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"rewritten": True}
+
+
+def test_exposed_route_teardown_request_runs_on_success_and_failure():
+    """`@app.teardown_request` runs for a route-backed tool and receives the
+    exception on failure (and `None` on success), mirroring the HTTP path."""
+    app = Veloce(openapi_url=None)
+    torn: list[object] = []
+
+    @app.teardown_request
+    def _teardown(exc):
+        torn.append(exc)
+
+    @app.get("/ok", expose_as_mcp_tool=True, mcp_description="Succeeds")
+    async def ok() -> dict:
+        return {"ok": True}
+
+    @app.get("/fail", expose_as_mcp_tool=True, mcp_description="Fails")
+    async def fail() -> dict:
+        raise RuntimeError("kaboom")
+
+    out_ok = _call(app, "ok", {})
+    assert "error" not in out_ok
+    assert torn == [None]
+
+    torn.clear()
+    out_fail = _call(app, "fail", {})
+    # A non-HTTP exception with no handler falls back to the framework 500 body.
+    assert "error" not in out_fail
+    assert out_fail["result"]["isError"] is True
+    assert len(torn) == 1
+    assert isinstance(torn[0], RuntimeError)
+    assert str(torn[0]) == "kaboom"
+
+
+def test_exposed_route_teardown_appcontext_runs():
+    """`@app.teardown_appcontext` fires for a route-backed tool call."""
+    app = Veloce(openapi_url=None)
+    torn: list[object] = []
+
+    @app.teardown_appcontext
+    def _teardown(exc):
+        torn.append(exc)
+
+    @app.get("/ac", expose_as_mcp_tool=True, mcp_description="App context")
+    async def ac() -> dict:
+        return {"ok": True}
+
+    out = _call(app, "ac", {})
+    assert "error" not in out
+    assert torn == [None]
