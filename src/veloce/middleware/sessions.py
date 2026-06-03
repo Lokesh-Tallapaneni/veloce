@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import secrets
+from collections.abc import Callable
 from typing import Any
 
+from veloce._constants import HEADER_COOKIE
 from veloce.http.cookies import dump_cookie
 from veloce.http.request import Request
 from veloce.http.response import Response
@@ -49,6 +51,8 @@ class SessionMiddleware(Middleware):
         samesite: str = "lax",
         permanent_lifetime: int = 86400 * 31,
         max_cookie_size: int = _DEFAULT_MAX_COOKIE_SIZE,
+        vary_on_cookie: bool = True,
+        persist_on_status: Callable[[int], bool] | None = None,
     ) -> None:
         keys = [secret_key] if isinstance(secret_key, str) else list(secret_key)
         if not keys:
@@ -67,6 +71,14 @@ class SessionMiddleware(Middleware):
         # `Max-Age` when `session.permanent` is set. Defaults to 31 days.
         self.permanent_lifetime = permanent_lifetime
         self.max_cookie_size = max_cookie_size
+        # Emit `Vary: Cookie` on responses that write the session cookie, so a
+        # shared cache keyed on URL alone can't serve one user's session-bearing
+        # body to another (RFC 9110 Sec. 12.5.5). Set False to opt out.
+        self.vary_on_cookie = vary_on_cookie
+        # Policy deciding whether to persist for a given response status. The
+        # `None` default means "persist for status < 500" - a failed request
+        # should not write a half-mutated session (Set-Cookie / store write).
+        self._persist_on_status = persist_on_status
 
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the signed cookie into request state."""
@@ -101,6 +113,12 @@ class SessionMiddleware(Middleware):
         if session is None or not getattr(session, "modified", False):
             return response
 
+        # A 5xx response should not persist a half-mutated session - neither a
+        # Set-Cookie nor the empty-session delete. The gate wraps the whole
+        # persist block. Default (no policy): persist only for status < 500.
+        if not self._should_persist(response.status_code):
+            return response
+
         if not session:
             response.delete_cookie(
                 self.cookie_name,
@@ -109,6 +127,8 @@ class SessionMiddleware(Middleware):
                 httponly=self.httponly,
                 samesite=self.samesite,
             )
+            if self.vary_on_cookie:
+                response.add_vary(HEADER_COOKIE)
             return response
 
         cookie_value = self._signer.dumps(session)
@@ -150,8 +170,15 @@ class SessionMiddleware(Middleware):
         # from this middleware's own (validated) `__init__` parameters, so it
         # is appended directly rather than re-serialised through set_cookie.
         response._append_set_cookie_header(rendered)
+        if self.vary_on_cookie:
+            response.add_vary(HEADER_COOKIE)
         response._encoded = None
         return response
+
+    def _should_persist(self, status_code: int) -> bool:
+        """Whether the (modified) session should be written for this status."""
+        policy = self._persist_on_status
+        return policy(status_code) if policy is not None else status_code < 500
 
 
 class ServerSessionMiddleware(Middleware):
@@ -178,6 +205,8 @@ class ServerSessionMiddleware(Middleware):
         httponly: bool = True,
         secure: bool = False,
         samesite: str = "lax",
+        vary_on_cookie: bool = True,
+        persist_on_status: Callable[[int], bool] | None = None,
     ) -> None:
         self.store = store if store is not None else InMemorySessionStore()
         self.cookie_name = cookie_name
@@ -186,6 +215,10 @@ class ServerSessionMiddleware(Middleware):
         self.httponly = httponly
         self.secure = secure
         self.samesite = samesite
+        # See SessionMiddleware: emit `Vary: Cookie` on session-cookie writes,
+        # and skip persistence on 5xx by default. Same semantics here.
+        self.vary_on_cookie = vary_on_cookie
+        self._persist_on_status = persist_on_status
 
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the server-side store by cookie id."""
@@ -208,6 +241,10 @@ class ServerSessionMiddleware(Middleware):
         """Save the modified session back to the server-side store."""
         session = request._state.get("session")
         if session is None or not getattr(session, "modified", False):
+            return response
+
+        # Do not persist (store write or cookie change) on a 5xx by default.
+        if not self._should_persist(response.status_code):
             return response
 
         session_id = request._state.get("_session_id")
@@ -246,7 +283,14 @@ class ServerSessionMiddleware(Middleware):
             secure=self.secure,
             samesite=self.samesite,
         )
+        if self.vary_on_cookie:
+            response.add_vary(HEADER_COOKIE)
         return response
+
+    def _should_persist(self, status_code: int) -> bool:
+        """Whether the (modified) session should be written for this status."""
+        policy = self._persist_on_status
+        return policy(status_code) if policy is not None else status_code < 500
 
     def _clear_session_cookie(self, response: Response) -> None:
         """Tell the client to drop the session cookie. Single place that
@@ -259,3 +303,5 @@ class ServerSessionMiddleware(Middleware):
             httponly=self.httponly,
             samesite=self.samesite,
         )
+        if self.vary_on_cookie:
+            response.add_vary(HEADER_COOKIE)
