@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Write-side backpressure on the built-in serving path. The native
+  `HttpProtocol` now implements `pause_writing`/`resume_writing` and arms the
+  transport's write-buffer high-water mark in `connection_made`, exposing an
+  `await protocol.drain()` that the streaming and SSE response paths await after
+  each chunk. A producer outrunning a slow client is throttled at the transport
+  buffer instead of growing the event loop's write buffer without bound. The
+  high-water mark defaults to 256 KiB and is configurable via the
+  `WRITE_BUFFER_HIGH_WATER` config key. `drain()` is a no-op until the buffer
+  crosses the mark, so the common keep-alive path is unaffected; the ASGI path
+  (where the server owns flow control) is unchanged.
 - `async_send_file` top-level helper - the async counterpart of `send_file`.
   It takes the same arguments but reads the file in an executor (via
   `FileResponse.from_path`), so it never blocks the event loop. Prefer it

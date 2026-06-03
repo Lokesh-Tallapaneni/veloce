@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import mimetypes
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
@@ -1284,12 +1284,25 @@ class StreamingResponse(Response):
         parts.append("\r\n")
         return "".join(parts).encode("latin-1")
 
-    async def stream_to(self, transport: Any) -> None:
-        """Stream chunks to transport."""
+    async def stream_to(
+        self,
+        transport: Any,
+        drain: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        """Stream chunks to transport.
+
+        When `drain` is supplied (the raw serving protocol passes its write-side
+        flow-control awaitable) it is awaited after each chunk, so a producer
+        outrunning a slow client is throttled instead of growing the transport
+        write buffer without bound. `drain` is a no-op until the buffer crosses
+        the high-water mark, so the fast path pays one already-set check.
+        """
         transport.write(self.encode())
         async for chunk in self._stream:
             size = format(len(chunk), "x")
             transport.write(f"{size}\r\n".encode() + chunk + b"\r\n")
+            if drain is not None:
+                await drain()
         transport.write(b"0\r\n\r\n")
 
 

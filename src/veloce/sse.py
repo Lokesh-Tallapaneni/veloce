@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from veloce._constants import (
@@ -124,8 +124,19 @@ class EventSourceResponse(Response):
         # `bytes` stream - see `_encode_stream`.
         self._stream = self._encode_stream(content)
 
-    async def stream_to(self, transport: Any) -> None:
-        """Stream SSE events to transport."""
+    async def stream_to(
+        self,
+        transport: Any,
+        drain: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        """Stream SSE events to transport.
+
+        When `drain` is supplied (the raw serving protocol passes its write-side
+        flow-control awaitable) it is awaited after each event, so a fast event
+        producer feeding a slow client is throttled at the transport buffer
+        instead of growing it without bound. It is a no-op until the buffer
+        crosses the high-water mark.
+        """
         default_headers = {
             HEADER_CONTENT_TYPE: self.content_type,
             HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
@@ -143,6 +154,8 @@ class EventSourceResponse(Response):
             # bytes object per chunk.
             size = format(len(chunk), "x").encode("ascii")
             transport.writelines((size, b"\r\n", chunk, b"\r\n"))
+            if drain is not None:
+                await drain()
 
         transport.write(b"0\r\n\r\n")
 
