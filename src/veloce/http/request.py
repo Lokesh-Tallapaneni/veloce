@@ -43,6 +43,7 @@ from veloce._constants import (
     MIME_JSON,
     MIME_MULTIPART_FORM_DATA,
 )
+from veloce._internal import _coerce_bool
 from veloce._protocol_constants import URL_SCHEME_HTTPS
 from veloce.exceptions import RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
@@ -1072,9 +1073,11 @@ class Request:
         # Surface the verbose reason when explicitly enabled OR in debug mode.
         # An explicit OR (not a dict-default fallback) is required because the
         # `JSON_ERRORS_VERBOSE` key is seeded into the default config, so it is
-        # never "absent" for the fallback to consult `DEBUG`.
+        # never "absent" for the fallback to consult `DEBUG`. `_coerce_bool`
+        # interprets dotenv-style string flags (`DEBUG=false`) correctly.
         verbose = (
-            bool(cfg.get("JSON_ERRORS_VERBOSE", False)) or bool(cfg.get("DEBUG", False))
+            _coerce_bool(cfg.get("JSON_ERRORS_VERBOSE", False))
+            or _coerce_bool(cfg.get("DEBUG", False))
             if cfg
             else False
         )

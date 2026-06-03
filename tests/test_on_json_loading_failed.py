@@ -167,3 +167,14 @@ def test_async_and_sync_paths_agree_on_masked_detail():
         asyncio.new_event_loop().run_until_complete(async_req.json())
 
     assert sync_exc.value.detail == async_exc.value.detail == "Invalid JSON body"
+
+
+def test_string_false_flags_do_not_surface_reason():
+    from veloce.exceptions import BadRequest
+
+    # Dotenv string "false" for both flags must stay masked, not treated truthy.
+    req = _json_req(b"{bad")
+    req.app = _app_stub(JSON_ERRORS_VERBOSE="false", DEBUG="false")
+    with pytest.raises(BadRequest) as exc:
+        req.get_json()
+    assert exc.value.detail == "Invalid JSON body"

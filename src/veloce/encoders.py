@@ -31,9 +31,16 @@ def _decimal_to_json(obj: decimal.Decimal) -> int | float | str:
     Fractional decimals encode as `float`; `NaN`/`Infinity` and out-of-range
     fractional magnitudes (whose `float` is non-finite) fall back to `str`.
     """
-    exponent = obj.as_tuple().exponent
+    parts = obj.as_tuple()
+    exponent = parts.exponent
     # `exponent` is an int for finite decimals, or 'n'/'N'/'F' for NaN/sNaN/Inf.
     if isinstance(exponent, int) and exponent >= 0:
+        # The integer has `len(digits) + exponent` decimal digits. orjson's
+        # 64-bit window tops out at 2**64 (20 digits), so anything wider is
+        # certainly out of range - return `str` WITHOUT materializing the int,
+        # so an attacker-supplied `1E1000000` can't force a million-digit alloc.
+        if len(parts.digits) + exponent > 20:
+            return str(obj)
         i = int(obj)
         if _ORJSON_INT_MIN <= i < _ORJSON_INT_MAX:
             return i

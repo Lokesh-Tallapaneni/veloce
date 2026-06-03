@@ -37,6 +37,7 @@ from veloce._internal import (
     MIME_HTML,
     MIME_JSON,
     MIME_OCTET,
+    _coerce_bool,
     _encode_header_value,
     _extract_host,
     _is_async_callable,
@@ -621,8 +622,12 @@ class Veloce(Router):
 
     @property
     def debug(self) -> bool:
-        """Whether debug mode is enabled; bound to `config['DEBUG']`."""
-        return bool(self.config.get("DEBUG", False))
+        """Whether debug mode is enabled; bound to `config['DEBUG']`.
+
+        Interprets a dotenv-style string (`DEBUG=false`) correctly rather than
+        treating any non-empty string as truthy.
+        """
+        return _coerce_bool(self.config.get("DEBUG", False))
 
     @debug.setter
     def debug(self, value: bool) -> None:
@@ -807,7 +812,7 @@ class Veloce(Router):
         from veloce.middleware.sessions import SessionMiddleware
 
         warnings: list[str] = []
-        if self.config.get("DEBUG"):
+        if self.debug:
             warnings.append("DEBUG is enabled - disable it before deploying to production.")
         if not self.config.get("SECRET_KEY"):
             warnings.append("SECRET_KEY is not set - session signing falls back to weak defaults.")
@@ -1276,7 +1281,7 @@ class Veloce(Router):
         explicit = self.config.get("PROPAGATE_EXCEPTIONS")
         if explicit is not None:
             return bool(explicit)
-        return bool(self.config.get("DEBUG")) and bool(self.config.get("TESTING"))
+        return self.debug and _coerce_bool(self.config.get("TESTING"))
 
     def _find_exception_handler(self, exc_type: type) -> Callable | None:
         """Walk `exc_type`'s MRO looking for a registered handler.

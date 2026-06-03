@@ -230,3 +230,13 @@ def test_fractional_decimal_still_float():
 
 # Add `Any` import for the type-checker.
 from typing import Any  # noqa: E402
+
+
+def test_huge_exponent_decimal_fast_string_no_int_materialization():
+    import decimal
+
+    from veloce.encoders import orjson_default
+
+    # Must NOT materialize a million-digit int; returns str directly.
+    big = decimal.Decimal("1E1000000")
+    assert orjson_default(big) == str(big)

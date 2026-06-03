@@ -479,3 +479,15 @@ def test_post_construction_debug_enables_html_traceback():
     assert resp.status_code == 500
     assert "text/html" in resp.content_type
     assert "RuntimeError" in resp.text
+
+
+def test_debug_string_false_is_falsey():
+    # A dotenv-loaded `DEBUG=false` is the string "false"; it must read as False,
+    # not truthy. Guards the bool("false") regression on string-based config.
+    from veloce import Veloce
+
+    app = Veloce(openapi_url=None)
+    app.config["DEBUG"] = "false"
+    assert app.debug is False
+    app.config["DEBUG"] = "true"
+    assert app.debug is True
