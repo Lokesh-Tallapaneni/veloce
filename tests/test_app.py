@@ -491,3 +491,14 @@ def test_debug_string_false_is_falsey():
     assert app.debug is False
     app.config["DEBUG"] = "true"
     assert app.debug is True
+
+
+def test_debug_setter_coerces_string():
+    # `app.debug = "false"` (string from an env source) must store False.
+    from veloce import Veloce
+
+    app = Veloce(openapi_url=None)
+    app.debug = "false"
+    assert app.debug is False and app.config["DEBUG"] is False
+    app.debug = "true"
+    assert app.debug is True

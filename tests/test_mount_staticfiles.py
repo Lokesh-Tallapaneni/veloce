@@ -114,3 +114,31 @@ def test_mount_static_missing_directory_opt_out_warns():
     app = Veloce(openapi_url=None)
     with pytest.warns(UserWarning, match="does not exist"):
         app.mount_static(directory="still_missing_dir_xyz", must_exist=False)
+
+
+def test_staticfiles_checks_search_perm_not_read_by_default(tmp_path, monkeypatch):
+    # Serving a known file needs X_OK (search); R_OK (read) is only for listing.
+    import os
+
+    from veloce.contrib import staticfiles
+
+    seen = {}
+
+    def _spy(path, mode):
+        seen["mode"] = mode
+        return True
+
+    monkeypatch.setattr(staticfiles.os, "access", _spy)
+    StaticFiles(directory=str(tmp_path))  # directory_index=False
+    assert seen["mode"] == os.X_OK
+
+
+def test_staticfiles_checks_read_perm_when_listing(tmp_path, monkeypatch):
+    import os
+
+    from veloce.contrib import staticfiles
+
+    seen = {}
+    monkeypatch.setattr(staticfiles.os, "access", lambda p, m: seen.update(mode=m) or True)
+    StaticFiles(directory=str(tmp_path), directory_index=True)
+    assert seen["mode"] == os.R_OK

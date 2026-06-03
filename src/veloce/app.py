@@ -631,7 +631,9 @@ class Veloce(Router):
 
     @debug.setter
     def debug(self, value: bool) -> None:
-        self.config["DEBUG"] = bool(value)
+        # Coerce the same way the getter does, so `app.debug = "false"` (a
+        # string from an env source) stores False rather than a truthy string.
+        self.config["DEBUG"] = _coerce_bool(value)
 
     @property
     def url_map(self) -> _URLMap:
