@@ -466,6 +466,11 @@ class DependencyResolver:
 
         i = 0
         n = len(slots)
+        # Hoist the MCP tool-call context to a local. It is `None` on every
+        # HTTP and WebSocket request (only the MCP bridge sets it), so the
+        # per-`K_QUERY`-slot binding check below reads a local instead of doing
+        # an attribute load each iteration on the dependency hot path.
+        mcp_context = self._mcp_context
         while i < n:
             slot = slots[i]
             kind = slot.kind
@@ -584,8 +589,8 @@ class DependencyResolver:
                 # a WebSocket is injected into sub-deps by declared type. The
                 # type identity check keeps a plain `ctx: str` query parameter
                 # an ordinary agent input.
-                if self._mcp_context is not None and slot.target_type is type(self._mcp_context):
-                    kwargs[name] = self._mcp_context
+                if mcp_context is not None and slot.target_type is type(mcp_context):
+                    kwargs[name] = mcp_context
                     i += 1
                     continue
                 # Path-or-query: a handler param that wasn't otherwise tagged.
