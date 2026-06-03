@@ -35,6 +35,7 @@ from veloce.background import BackgroundTasks
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.openapi import _pydantic_to_schema, _python_type_to_schema
 from veloce.dependency import SecurityScopes, _coerce_value
+from veloce.http.datastructures import Cookies, FormData, Headers, QueryParams
 from veloce.http.request import Request
 from veloce.http.response import Response
 
@@ -255,24 +256,112 @@ def _validate_model(value: Any, model: type[BaseModel]) -> Any:
         raise ValueError(str(exc)) from exc
 
 
-def _build_request(tool_name: str) -> Request:
-    """Construct the minimal `Request` injected for a tool call's `Request` slots.
+def _scalar_str(value: Any) -> str | None:
+    """Render a JSON scalar as the string a request source would carry.
+
+    Query / header / cookie / form values arrive as strings on the HTTP path,
+    where `_coerce_value` then coerces them onto the parameter type. A tool
+    argument may already be typed (`int`, `bool`, `float`), so it is rendered
+    back to the wire string the same coercion expects: `True` -> `"true"`
+    (lower-cased to satisfy the bool coercion's truthy set), numbers via `str`.
+    A non-scalar (dict / list / None) is not a query-style value and is skipped
+    so it cannot poison the source; such values are read from the JSON body.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _build_request(tool_name: str, arguments: dict[str, Any] | None = None) -> Request:
+    """Construct the `Request` injected for a tool call's `Request` slots.
 
     A tool call has no HTTP request, but a handler or dependency may still read
     `request.headers` / `request.state` (built-in auth deps such as
     `HTTPBearer` / `APIKeyHeader` do). Binding the `MCPContext` there would
-    raise `AttributeError`; instead a real, empty `Request` is supplied. Its
-    headers are empty (so an auth dep that needs one fails closed - surfaced
-    in-band as `isError` - rather than crashing) and `request.state` is a fresh,
-    usable store. The synthetic method/path mark the call's MCP origin.
+    raise `AttributeError`; instead a real `Request` is supplied with
+    `request.state` as a fresh, usable store. The synthetic method/path mark the
+    call's MCP origin.
+
+    The tool `arguments` are seeded onto the request's value sources so a
+    *sub-dependency* marker resolves from them exactly as a top-level tool
+    parameter does: a scalar argument feeds `query_params` / `headers` /
+    `cookies` / `form` (where a `Query` / `Header` / `Cookie` / `Form` marker
+    reads it, by the same string then `_coerce_value` path the HTTP resolver
+    uses), and the whole mapping feeds the JSON body (where a `Body` marker or
+    a body model reads it). Top-level slots are bound from `arguments` directly
+    by `bind_arguments`; this seeding is what lets the *same* argument satisfy a
+    `Query(...)` / `Body(...)` parameter declared inside a `Depends` sub-plan.
     """
-    return Request(
+    request = Request(
         method="MCP",
         path=f"/mcp/{tool_name}",
         query_string="",
         headers=[],
         body=b"",
     )
+    if not arguments:
+        return request
+
+    # Body markers / models read `request.json()`; the whole argument mapping is
+    # the synthetic body so a sub-dependency `item: Item = Body(...)` validates
+    # against it (and `Body(embed=True)` finds its key inside the dict).
+    request._json = arguments
+
+    # Scalar arguments feed the string-keyed value sources a Query / Header /
+    # Cookie / Form marker reads. Headers are case-insensitive and an un-aliased
+    # `Header` param looks up its hyphenated name, so the argument name is
+    # registered under both its raw and hyphenated forms.
+    scalars: list[tuple[str, str]] = []
+    for name, value in arguments.items():
+        text = _scalar_str(value)
+        if text is not None:
+            scalars.append((name, text))
+    request._query_params = QueryParams(scalars)
+    request._form = FormData(scalars)
+    request._cookies = Cookies(scalars)
+    header_items: list[tuple[str, str]] = []
+    for name, text in scalars:
+        header_items.append((name, text))
+        hyphenated = name.replace("_", "-")
+        if hyphenated != name:
+            header_items.append((hyphenated, text))
+    request.headers = Headers(header_items)
+    return request
+
+
+def _injected_response(request: Request) -> Response:
+    """Return the request-scoped injected `Response`, creating it on first use.
+
+    Mirrors the HTTP resolver's `K_RESPONSE` slot: one `Response` per request,
+    stored on `request._state["_injected_response"]` and shared by the handler
+    and any dependency that also injects `Response`. `status_code = 0` is the
+    "handler never set it" sentinel `_build_response` checks before merging the
+    injected status onto the final response.
+    """
+    injected = request._state.get("_injected_response")
+    if injected is None:
+        injected = Response()
+        injected.status_code = 0
+        request._state["_injected_response"] = injected
+    return injected
+
+
+def _background_tasks(request: Request) -> BackgroundTasks:
+    """Return the request-scoped `BackgroundTasks` queue, creating it once.
+
+    Mirrors the HTTP resolver's `K_BG_TASKS` slot: a single queue per request,
+    reused for every `BackgroundTasks` injection point so work scheduled by a
+    dependency is not discarded when the handler's own `tasks` parameter binds.
+    """
+    tasks = request._background_tasks
+    if tasks is None:
+        tasks = BackgroundTasks()
+        request._background_tasks = tasks
+    return tasks
 
 
 async def bind_arguments(
@@ -321,7 +410,7 @@ async def bind_arguments(
     # caller that already bound this request onto the request context (the
     # route-derived path, which runs `before_request` first) passes it in.
     if request is None:
-        request = _build_request(context.tool_name)
+        request = _build_request(context.tool_name, arguments)
 
     # Route-level dependencies run before the handler graph (RFC-equivalent to
     # the HTTP/WS paths), so an auth/permission guard fires even though the
@@ -344,20 +433,25 @@ async def bind_arguments(
             kwargs[name] = context
             continue
 
-        # A handler may declare `response: Response`; supply a fresh one it can
-        # mutate, exactly as the HTTP path does. There is no final HTTP response
-        # to merge it onto over MCP, but the handler must still receive it.
+        # A handler may declare `response: Response`; supply the one
+        # request-scoped injected Response the HTTP resolver stores on
+        # `request._state["_injected_response"]`, creating it on first use.
+        # Reusing it (rather than handing out a fresh Response) means a
+        # dependency and the handler that both inject `Response` mutate the
+        # same object, and the route path's `_build_response` merges its
+        # status / headers onto the tool result - exactly as on the HTTP path.
         if kind == K_RESPONSE:
-            kwargs[name] = Response()
+            kwargs[name] = _injected_response(request)
             continue
 
-        # A handler may declare `tasks: BackgroundTasks`; supply a fresh queue
-        # and stash it on the request so the caller can run it after the handler
-        # returns, mirroring the HTTP path's deferred execution.
+        # A handler may declare `tasks: BackgroundTasks`; reuse the single
+        # request-scoped queue (created lazily on first injection point) so a
+        # dependency that injected `BackgroundTasks` and scheduled work shares
+        # it with the handler's own `tasks` parameter - HTTP keeps one queue per
+        # request regardless of how many slots ask for it. The caller runs it
+        # after the handler returns, mirroring deferred HTTP execution.
         if kind == K_BG_TASKS:
-            tasks = BackgroundTasks()
-            request._background_tasks = tasks
-            kwargs[name] = tasks
+            kwargs[name] = _background_tasks(request)
             continue
 
         if kind == K_SECURITY_SCOPES:

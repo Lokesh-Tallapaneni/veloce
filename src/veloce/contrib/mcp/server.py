@@ -247,7 +247,11 @@ class MCPServer:
         resolver._override_subplans = self.app._override_subplans
 
         route_info = tool.route_info
-        request = _build_request(tool.name)
+        # Seed the synthetic request's value sources with the call arguments so
+        # a sub-dependency `Query` / `Body` / `Header` / `Cookie` / `Form`
+        # marker resolves from them, the same way a top-level tool parameter
+        # does (see `_build_request`).
+        request = _build_request(tool.name, arguments)
         request.app = self.app
 
         # Bind the request context exactly as `handle_request` does: the
@@ -283,14 +287,27 @@ class MCPServer:
         request._state["url_rule"] = route_info.path_template
         request.path_params = _route_path_params(route_info, arguments)
 
-        # `before_request` (app-level then matched blueprint). A short-circuit
-        # response is the tool result; `bp_name` is recorded so the matched
-        # blueprint's `after_request` / teardown hooks fire even on short-circuit.
-        early, bp_name = await self.app._run_before_hooks(request)
-        if early is not None:
-            return _ShortCircuit(early)
-
         try:
+            # `before_request` (app-level then matched blueprint). A
+            # short-circuit response is the tool result; `bp_name` is recorded
+            # so the matched blueprint's `after_request` / teardown hooks fire
+            # even on short-circuit. The short-circuit returns from *inside* this
+            # `try` so the `finally` still drains DI teardowns and runs
+            # `teardown_request` / `teardown_appcontext` - the HTTP dispatch runs
+            # its teardown even when `before_request` returns early, and a tool
+            # that relies on `teardown_request` cleanup on a rejected call (an
+            # auth 401 short-circuit) must get the same.
+            early, bp_name = await self.app._run_before_hooks(request)
+            if early is not None:
+                return _ShortCircuit(early)
+
+            # URL value preprocessors run after `before_request` and after
+            # `path_params` is populated, exactly as the HTTP path runs them in
+            # `_resolve_route`, so a processor that rewrites a path param or
+            # seeds `g` (locale / tenant extraction) is observed by the
+            # dependencies and the handler.
+            self.app._run_url_value_preprocessors(route_info.name, request.path_params)
+
             result = await self._bind_and_call(tool, arguments, context, resolver, request)
 
             # Shape the handler return into the final `Response` exactly as the

@@ -2745,12 +2745,24 @@ class Veloce(Router):
 
         # URL value preprocessors: mutate path_params in place
         # before the handler sees them. Endpoint is the route name.
-        if self._url_value_preprocessors:
-            endpoint = match.route_info.name
-            for proc in self._url_value_preprocessors:
-                proc(endpoint, request.path_params)
+        self._run_url_value_preprocessors(match.route_info.name, request.path_params)
 
         return match
+
+    def _run_url_value_preprocessors(
+        self, endpoint: str | None, path_params: dict[str, Any]
+    ) -> None:
+        """Run every registered `url_value_preprocessor` against `path_params`.
+
+        Each processor receives `(endpoint, path_params)` and may mutate
+        `path_params` in place (e.g. pop a locale segment into `g`). App-level
+        processors plus the blueprint-gated ones merged into the single list
+        run in registration order. Shared by HTTP dispatch and the MCP
+        route-backed tool path so a processor sees the same call on both.
+        """
+        if self._url_value_preprocessors:
+            for proc in self._url_value_preprocessors:
+                proc(endpoint, path_params)
 
     async def _resolve_dependencies(
         self, request: Request, match: Any

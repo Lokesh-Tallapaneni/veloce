@@ -1286,3 +1286,179 @@ def test_exposed_route_teardown_appcontext_runs():
     out = _call(app, "ac", {})
     assert "error" not in out
     assert torn == [None]
+
+
+# -- Full request-lifecycle fidelity for route-backed tools -----------
+
+
+def test_sub_dependency_query_marker_resolves_from_tool_args():
+    """A sub-dependency parameter declared `user_id: int = Query(...)` resolves
+    from the tool arguments, the same way a top-level `Query` tool param does -
+    not from the empty synthetic request (which would raise missing-parameter).
+    The value also keeps its coerced type (an `int`, not the raw string)."""
+    from veloce import Query
+
+    app = Veloce(openapi_url=None)
+
+    def lookup(user_id: int = Query(...)) -> int:
+        # Reads from the same `arguments` a top-level `Query` param would.
+        return user_id * 2
+
+    @app.get("/dbl", expose_as_mcp_tool=True, mcp_description="Double a user id")
+    async def dbl(doubled: int = Depends(lookup)) -> dict:
+        return {"doubled": doubled}
+
+    out = _call(app, "dbl", {"user_id": 21})
+    assert "error" not in out
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"doubled": 42}
+
+
+def test_sub_dependency_body_model_resolves_from_tool_args():
+    """A sub-dependency declaring a Pydantic body model (`item: Item`) validates
+    against the tool arguments, mirroring how the HTTP JSON body feeds a body
+    model declared inside a `Depends` sub-plan."""
+    app = Veloce(openapi_url=None)
+
+    def parse(item: Item) -> str:
+        return f"{item.name} x{item.qty}"
+
+    @app.post("/mk", expose_as_mcp_tool=True, mcp_description="Make an item")
+    async def mk(label: str = Depends(parse)) -> dict:
+        return {"label": label}
+
+    out = _call(app, "mk", {"name": "widget", "qty": 3})
+    assert "error" not in out
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"label": "widget x3"}
+
+
+def test_sub_dependency_query_marker_coercion_failure_is_invalid_params():
+    """A coercion failure resolving a sub-dependency marker maps to the
+    JSON-RPC invalid-params error channel, as a prior round established for
+    top-level markers."""
+    from veloce import Query
+
+    app = Veloce(openapi_url=None)
+
+    def lookup(count: int = Query(...)) -> int:
+        return count
+
+    @app.get("/cnt", expose_as_mcp_tool=True, mcp_description="Count")
+    async def cnt(n: int = Depends(lookup)) -> dict:
+        return {"n": n}
+
+    out = _call(app, "cnt", {"count": "not-an-int"})
+    assert "result" not in out
+    assert out["error"]["code"] == -32602
+
+
+def test_before_request_short_circuit_still_runs_teardown_request():
+    """A `before_request` hook returning a Response short-circuits the tool, but
+    `teardown_request` must still run (with `exc=None`) - the HTTP path runs
+    teardown even when `before_request` returns early."""
+    app = Veloce(openapi_url=None)
+    torn: list[object] = []
+
+    @app.teardown_request
+    def _teardown(exc):
+        torn.append(exc)
+
+    @app.before_request
+    async def _deny(request):
+        return JSONResponse({"detail": "nope"}, status_code=401)
+
+    @app.get("/guarded", expose_as_mcp_tool=True, mcp_description="Guarded")
+    async def guarded() -> dict:
+        return {"ok": True}
+
+    out = _call(app, "guarded", {})
+    assert "error" not in out
+    assert out["result"]["isError"] is True
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"detail": "nope"}
+    # Teardown fired despite the short-circuit, receiving None (no exception).
+    assert torn == [None]
+
+
+def test_dependency_injected_response_mutation_reflected_in_result():
+    """A dependency that injects `response: Response` and mutates it (status +
+    header) shares the request-scoped injected Response with the route path's
+    `_build_response`, so the mutation is reflected in the tool result."""
+    app = Veloce(openapi_url=None)
+
+    def stamp(response: Response) -> None:
+        response.status_code = 418
+        response.headers["X-Stamp"] = "on"
+
+    @app.get("/stamped", expose_as_mcp_tool=True, mcp_description="Stamped")
+    async def stamped(_: None = Depends(stamp)) -> dict:
+        return {"ok": True}
+
+    out = _call(app, "stamped", {})
+    assert "error" not in out
+    # The injected 418 was merged onto the final response, so a >= 400 status
+    # surfaces as an in-band tool error.
+    assert out["result"]["isError"] is True
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"ok": True}
+
+
+def test_shared_background_tasks_queue_runs_dependency_and_handler_tasks():
+    """A dependency that injects `BackgroundTasks` and a handler that also takes
+    `BackgroundTasks` share one request-scoped queue, so BOTH scheduled tasks
+    run - the handler's injection must not discard the dependency's work."""
+    app = Veloce(openapi_url=None)
+    ran: list[str] = []
+
+    async def dep_task() -> None:
+        ran.append("dep")
+
+    async def handler_task() -> None:
+        ran.append("handler")
+
+    def schedule_dep(tasks: BackgroundTasks) -> str:
+        tasks.add_task(dep_task)
+        return "scheduled"
+
+    @app.get("/bg2", expose_as_mcp_tool=True, mcp_description="Two bg tasks")
+    async def bg2(tasks: BackgroundTasks, _: str = Depends(schedule_dep)) -> dict:
+        tasks.add_task(handler_task)
+        return {"ok": True}
+
+    out = _call(app, "bg2", {})
+    assert "error" not in out
+    # Both tasks ran - the queue was shared, not overwritten by the handler slot.
+    assert sorted(ran) == ["dep", "handler"]
+
+
+def test_url_value_preprocessor_observed_over_mcp():
+    """A `url_value_preprocessor` that rewrites a path param and seeds `g` runs
+    for a route-backed tool over MCP, so a dependency reading
+    `request.path_params` sees the rewrite and the handler reads the seeded
+    `g` value - exactly as on the HTTP path."""
+    from veloce import g
+
+    app = Veloce(openapi_url=None)
+
+    @app.url_value_preprocessor
+    def pull_lang(endpoint, values):
+        # Rewrite the captured path param and stash a value on `g`, the locale
+        # / tenant extraction pattern preprocessors exist for.
+        values["item_id"] = values["item_id"] + 100
+        g.lang = "en"
+
+    def read_param(request) -> int:
+        # The preprocessor rewrote `path_params` before the handler graph
+        # resolved, so this dependency observes the rewritten value.
+        return request.path_params["item_id"]
+
+    @app.get("/loc/{item_id}", expose_as_mcp_tool=True, mcp_description="Localised")
+    async def loc(rewritten: int = Depends(read_param)) -> dict:
+        return {"item_id": rewritten, "lang": g.lang}
+
+    out = _call(app, "loc", {"item_id": 7})
+    assert "error" not in out
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    # 7 + 100 from the preprocessor's rewrite, and `g.lang` seeded by it.
+    assert payload == {"item_id": 107, "lang": "en"}

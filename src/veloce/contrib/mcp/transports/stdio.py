@@ -50,6 +50,13 @@ class StdioTransport:
         A blank line is skipped; an unparseable line yields a JSON-RPC parse
         error; a notification (no response) writes nothing. The loop ends
         when `read_line` returns `None` (EOF).
+
+        Framing is newline-delimited per the MCP stdio transport spec
+        ("messages are delimited by newlines, and MUST NOT contain embedded
+        newlines"). This is deliberate and correct: the MCP stdio transport
+        does NOT use LSP-style `Content-Length:` header framing - that belongs
+        to the Language Server Protocol, not MCP. One JSON line in, one JSON
+        line out. Do not "fix" this into header framing.
         """
         while True:
             line = await self._read_line()
