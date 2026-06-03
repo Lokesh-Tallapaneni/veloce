@@ -706,7 +706,10 @@ class WebSocket:
         if not self._accepted:
             raise RuntimeError(f"WebSocket.{method}(): call accept() before receiving")
         if self._closed:
-            raise WebSocketDisconnect()
+            # Surface the recorded peer/close code (1001, 1006, ...) when a
+            # close arrived between receives, not a default 1000 - matching the
+            # `_raw_recv` disconnect path.
+            raise WebSocketDisconnect(self.close_code or WS_1000_NORMAL_CLOSURE)
 
     def set_idle_timeout(self, idle_timeout: float | None) -> None:
         """Set the idle-receive timeout in seconds (`None` disables it).

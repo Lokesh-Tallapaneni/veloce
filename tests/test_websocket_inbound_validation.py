@@ -254,6 +254,22 @@ async def test_clean_frame_with_zero_rsv_still_delivered():
     assert ws._receive_queue.get_nowait().decode("utf-8") == "hello"
 
 
+# ── Close code preserved across the between-receives path ──────────────
+
+
+async def test_close_code_preserved_on_receive_after_close():
+    """A close that landed between receives must surface its recorded code on
+    the next receive_*() (which hits _check_can_receive first), not a 1000."""
+    ws, _ = _make_ws()
+    ws._accepted = True
+    # Peer close (going-away) recorded while user code processed a message.
+    ws._closed = True
+    ws.close_code = 1001
+    with pytest.raises(WebSocketDisconnect) as exc:
+        await ws.receive_text()
+    assert exc.value.code == 1001
+
+
 async def test_close_frame_with_invalid_utf8_reason_closes_with_1007():
     ws, transport = _make_ws()
     body = struct.pack("!H", 1000) + b"\xff\xfe"
