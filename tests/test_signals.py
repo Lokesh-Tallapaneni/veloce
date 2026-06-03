@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import time
+
 import pytest
 
 from veloce import Request, Veloce
@@ -315,6 +319,146 @@ async def test_send_robust_async_mixed_sync_async_with_failure():
     assert isinstance(results[1][1], RuntimeError)
     assert str(results[1][1]) == "kaboom"
     assert results[2] == (async_ok, "async-value")
+
+
+# ── asend: concurrent async dispatch ────────────────────────────────
+
+
+async def test_asend_runs_async_receivers_concurrently():
+    sig = Signal("concurrent")
+
+    async def make(marker: str):
+        async def receiver(sender, **kwargs):
+            await asyncio.sleep(0.05)
+            return marker
+
+        return receiver
+
+    for marker in ("a", "b", "c"):
+        sig.connect(await make(marker), weak=False)
+
+    start = time.perf_counter()
+    results = await sig.asend("s")
+    elapsed = time.perf_counter() - start
+
+    # Concurrent: ~0.05s, not ~0.15s sequential.
+    assert elapsed < 0.12
+    assert [value for _, value in results] == ["a", "b", "c"]
+
+
+async def test_asend_mixes_sync_and_async_inline():
+    sig = Signal("mixed-asend")
+    fired: list[str] = []
+
+    def sync_ok(sender, **kwargs):
+        fired.append("sync")
+        return "sync-value"
+
+    async def async_ok(sender, **kwargs):
+        fired.append("async")
+        return "async-value"
+
+    sig.connect(sync_ok, weak=False)
+    sig.connect(async_ok, weak=False)
+
+    results = await sig.asend("s")
+
+    assert results[0] == (sync_ok, "sync-value")
+    assert results[1] == (async_ok, "async-value")
+    # The sync receiver ran inline before the async ones were awaited.
+    assert fired[0] == "sync"
+
+
+async def test_asend_propagates_first_exception():
+    sig = Signal("non-robust")
+
+    async def boom(sender, **kwargs):
+        raise RuntimeError("kaboom")
+
+    sig.connect(boom, weak=False)
+
+    with pytest.raises(RuntimeError, match="kaboom"):
+        await sig.asend("s")
+
+
+async def test_send_robust_async_concurrent_and_robust():
+    sig = Signal("robust-concurrent")
+
+    async def ok_a(sender, **kwargs):
+        await asyncio.sleep(0.05)
+        return "a"
+
+    async def raiser(sender, **kwargs):
+        await asyncio.sleep(0.05)
+        raise RuntimeError("boom")
+
+    async def ok_b(sender, **kwargs):
+        await asyncio.sleep(0.05)
+        return "b"
+
+    sig.connect(ok_a, weak=False)
+    sig.connect(raiser, weak=False)
+    sig.connect(ok_b, weak=False)
+
+    start = time.perf_counter()
+    results = await sig.send_robust_async("s")
+    elapsed = time.perf_counter() - start
+
+    # All fired (no cancellation), order preserved.
+    assert len(results) == 3
+    assert results[0] == (ok_a, "a")
+    assert results[1][0] is raiser
+    assert isinstance(results[1][1], RuntimeError)
+    assert str(results[1][1]) == "boom"
+    assert results[2] == (ok_b, "b")
+    # Concurrency: well under the 0.15s sequential sum.
+    assert elapsed < 0.12
+
+
+async def test_asend_propagates_contextvars_snapshot():
+    var: contextvars.ContextVar[str] = contextvars.ContextVar("cv", default="unset")
+    sig = Signal("ctx")
+    seen: list[str] = []
+
+    async def receiver(sender, **kwargs):
+        await asyncio.sleep(0.01)
+        seen.append(var.get())
+        return var.get()
+
+    sig.connect(receiver, weak=False)
+    sig.connect(receiver, weak=False)
+
+    var.set("snapshot")
+    results = await sig.asend("s")
+
+    assert seen == ["snapshot", "snapshot"]
+    assert [value for _, value in results] == ["snapshot", "snapshot"]
+
+
+def test_connect_is_async_classification_does_not_break_sync_paths():
+    """The 4-tuple `_subs` change leaves sync send/send_robust unchanged."""
+    import warnings
+
+    sig = Signal("classify")
+
+    def sync_ok(sender, **kwargs):
+        return "sync-value"
+
+    async def async_handler(sender, **kwargs):
+        return "async"
+
+    sig.connect(sync_ok, weak=False)
+    sig.connect(async_handler, weak=False)
+
+    # send_robust still closes the async receiver's coroutine and records a
+    # TypeError - no RuntimeWarning, identical to the pre-4-tuple behavior.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        robust = sig.send_robust("s")
+    assert robust[0] == (sync_ok, "sync-value")
+    assert robust[1][0] is async_handler
+    assert isinstance(robust[1][1], TypeError)
+    assert "send_robust_async" in str(robust[1][1])
 
 
 def test_iter_live_targets_prunes_dead_weakref_after_single_send():
