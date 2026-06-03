@@ -30,13 +30,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mount_mcp` serves inside the app's lifespan, so `on_startup` handlers and the
   lifespan context manager run before the first tool is served and the matching
   shutdown runs after. An exposed route runs inside the normal request context
-  (`current_app`, `g`, and the `request` proxy are bound and `before_request`
-  hooks run first); a hook that returns a response short-circuits the call and
-  becomes the tool result, surfaced as an error for a `4xx`/`5xx` status. A
-  dependency typed `MCPContext` receives the per-call context. A handler that
-  returns `Response(background=...)` has those background tasks run, mirroring
-  the HTTP path. A route returning a streaming/SSE response is rejected with a
-  clear error result rather than empty output (a v1 limitation).
+  (`current_app`, `g`, and the `request` proxy are bound); the app's request
+  middleware (`process_request`) and `before_request` hooks run first, in the
+  HTTP order, and a middleware or hook that returns a response short-circuits
+  the call (running `teardown_request`) and becomes the tool result, surfaced as
+  an error for a `4xx`/`5xx` status. The synthetic request carries the wrapped
+  route's real HTTP method and rule path, so handler/dependency/hook branching
+  on `request.method` / `request.path` matches the HTTP path; a client-supplied
+  parameter declared inside a `Depends` dependency (including a body model) is
+  advertised in the tool's input schema; and the route's rule `defaults=` fill
+  any unsupplied handler argument. Per-call instrumentation records the call's
+  real status code (the shaped response's status, `500` for an unhandled error,
+  `200` only on success). A dependency typed `MCPContext` receives the per-call
+  context. A handler that returns `Response(background=...)` has those background
+  tasks run, mirroring the HTTP path. A route returning a streaming/SSE response
+  is rejected with a clear error result rather than empty output (a v1
+  limitation).
 
 - `ServerSentEvent.json` builds an event whose `data` field is a
   JSON-serialized payload. Pass any JSON-encodable value (`dict`, `list`,

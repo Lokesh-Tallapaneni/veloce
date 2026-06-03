@@ -19,6 +19,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from veloce import status
 from veloce._internal import _is_async_callable
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
@@ -148,33 +149,34 @@ class MCPServer:
             # letting the agent read the message. A route-backed tool never
             # reaches here on a handler error: `_invoke` routes that exception
             # through the app's exception handlers and returns a `_RouteResponse`.
-            await self._instrument(tool, started)
+            # An unhandled handler error is a 500, recorded as such.
+            await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
             return {
                 "content": [{"type": "text", "text": str(exc)}],
                 "isError": True,
             }
-        await self._instrument(tool, started)
 
-        # A `before_request` hook short-circuited the call (e.g. an auth 401)
-        # before the handler ran. The hook's `Response` is the tool result;
-        # surface a 4xx/5xx as an in-band error so the agent reads the denial.
-        if isinstance(result, _ShortCircuit):
-            return self._result_from_response(tool, result.response)
-
-        # A route-backed tool produced a `Response` - the handler return shaped
-        # by the route's `_build_response` + `after_request` chain (or the
-        # response an exception handler built). Surface its body, flagging a
-        # 4xx/5xx as an in-band error.
-        if isinstance(result, _RouteResponse):
-            return self._result_from_response(tool, result.response)
+        # A `before_request` / middleware short-circuit or a route-backed tool's
+        # final `Response` carries the real status code (an auth 401, a 500 from
+        # an exception handler, a 200 success); instrumentation must report that,
+        # not a hard-coded 200. The shaped result is derived from the same
+        # response.
+        if isinstance(result, (_ShortCircuit, _RouteResponse)):
+            response = result.response
+            await self._instrument(tool, started, response.status_code)
+            return self._result_from_response(tool, response)
 
         try:
             shaped = self._shape_result(tool, result)
         except _StreamingNotSupported as exc:
             # A streamed / SSE response carries no buffered body for v1 to
             # serialise; surface the limitation in-band rather than returning
-            # an empty result.
+            # an empty result. The unsupported-streaming case is an in-band
+            # error, recorded as a 500.
+            await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
             return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+        # A pure tool's raw return that completed without error is a genuine 200.
+        await self._instrument(tool, started, status.HTTP_200_OK)
         return {"content": [{"type": "text", "text": _stringify(shaped)}]}
 
     def _result_from_response(self, tool: MCPTool, response: Response) -> dict[str, Any]:
@@ -250,8 +252,18 @@ class MCPServer:
         # Seed the synthetic request's value sources with the call arguments so
         # a sub-dependency `Query` / `Body` / `Header` / `Cookie` / `Form`
         # marker resolves from them, the same way a top-level tool parameter
-        # does (see `_build_request`).
-        request = _build_request(tool.name, arguments)
+        # does (see `_build_request`). A route-backed tool also adopts the
+        # wrapped route's real HTTP method and rule path so anything branching
+        # on `request.method` / `request.path` matches the HTTP path.
+        if route_info is not None:
+            request = _build_request(
+                tool.name,
+                arguments,
+                method=tool.route_method,
+                path=route_info.path_template or None,
+            )
+        else:
+            request = _build_request(tool.name, arguments)
         request.app = self.app
 
         # Bind the request context exactly as `handle_request` does: the
@@ -288,6 +300,22 @@ class MCPServer:
         request.path_params = _route_path_params(route_info, arguments)
 
         try:
+            # Request-phase middleware runs first, exactly as `_dispatch_request`
+            # runs it before `before_request`, so a route depending on
+            # middleware-populated state (a session loaded by `SessionMiddleware`,
+            # a header set by a custom middleware) sees it over MCP too. A
+            # middleware that short-circuits by returning a `Response` is treated
+            # like a `before_request` short-circuit: shaped into the tool result
+            # and run through the same teardown `finally`. Returned from *inside*
+            # this `try` so DI + `teardown_request` / `teardown_appcontext` still
+            # fire. The response middleware phase is intentionally not replayed:
+            # the tool result is derived from the response body, not a wire
+            # response, so a response-mutating middleware (compression, headers)
+            # has nothing to act on.
+            early = await self.app._run_request_middleware(request)
+            if early is not None:
+                return _ShortCircuit(early)
+
             # `before_request` (app-level then matched blueprint). A
             # short-circuit response is the tool result; `bp_name` is recorded
             # so the matched blueprint's `after_request` / teardown hooks fire
@@ -399,6 +427,11 @@ class MCPServer:
         propagates unchanged - surfaced in-band for a pure tool, routed through
         the app's exception handlers for a route-backed one.
         """
+        # Route rule `defaults=` fill handler kwargs the call did not supply,
+        # matching HTTP precedence (explicit argument > route default > Python
+        # default). A pure `@app.mcp_tool` has no route, hence no defaults.
+        route_info = tool.route_info
+        route_defaults = route_info.defaults if route_info is not None else None
         try:
             kwargs, _request = await bind_arguments(
                 tool.plan,
@@ -407,6 +440,7 @@ class MCPServer:
                 resolver,
                 tool.route_dep_plans,
                 request=request,
+                route_defaults=route_defaults,
             )
         except (TypeError, ValueError, RequestValidationError) as err:
             raise _ToolInputError(str(err)) from err
@@ -443,12 +477,16 @@ class MCPServer:
         except Exception:
             _logger.exception("MCP response background task failed")
 
-    async def _instrument(self, tool: MCPTool, started: float) -> None:
+    async def _instrument(self, tool: MCPTool, started: float, status_code: int) -> None:
         """Fire the app instrumentation hooks for a finished tool call.
 
         Reuses the same `RequestMetrics`/`add_instrumentation` contract the
         HTTP path uses: `method` is the JSON-RPC method, `route` is the tool
-        name (a low-cardinality label), `path` the tool name too.
+        name (a low-cardinality label), `path` the tool name too. `status_code`
+        is the call's real outcome - the shaped `Response`'s status for a
+        route-backed / short-circuited call, 500 for an unhandled handler error
+        or an unsupported streaming result, 200 only on genuine success - so a
+        4xx/5xx is never misreported as 200.
         """
         hooks = self.app._instrumentation
         if not hooks:
@@ -458,7 +496,7 @@ class MCPServer:
             method="tools/call",
             path=tool.name,
             route=tool.name,
-            status_code=200,
+            status_code=status_code,
             duration_ms=duration_ms,
         )
         for hook in hooks:

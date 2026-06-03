@@ -1462,3 +1462,198 @@ def test_url_value_preprocessor_observed_over_mcp():
     payload = orjson.loads(out["result"]["content"][0]["text"])
     # 7 + 100 from the preprocessor's rewrite, and `g.lang` seeded by it.
     assert payload == {"item_id": 107, "lang": "en"}
+
+
+# -- HTTP-route alignment: schema, method/path, middleware, defaults, status --
+
+
+def test_sub_dependency_query_param_advertised_in_input_schema():
+    """`tools/list` must advertise a sub-dependency's `Query` param as a tool
+    input. The schema is what the agent reads to know which arguments to send;
+    omitting it would advertise no inputs while `tools/call` rejected the call
+    with invalid-params unless the value was supplied."""
+    from veloce import Query
+
+    app = Veloce(openapi_url=None)
+
+    def lookup(user_id: int = Query(...)) -> int:
+        return user_id
+
+    @app.get("/u", expose_as_mcp_tool=True, mcp_description="Look a user up")
+    async def u(found: int = Depends(lookup)) -> dict:
+        return {"found": found}
+
+    schema = build_registry(app).tools["u"].input_schema
+    # The sub-dependency's client-supplied param surfaces as a top-level input.
+    assert "user_id" in schema["properties"]
+    assert schema["properties"]["user_id"]["type"] == "integer"
+    assert "user_id" in schema["required"]
+    # The `Depends` slot itself (`found`) is never an input.
+    assert "found" not in schema["properties"]
+
+
+def test_dependency_body_model_fields_advertised_in_input_schema():
+    """A body model declared inside a `Depends` sub-dependency contributes its
+    fields to the tool input schema, mirroring how a top-level body model does;
+    the model is inlined under `$defs` so the schema stays self-contained."""
+    app = Veloce(openapi_url=None)
+
+    def parse(item: Item) -> str:
+        return item.name
+
+    @app.post("/mk2", expose_as_mcp_tool=True, mcp_description="Make from a dep model")
+    async def mk2(label: str = Depends(parse)) -> dict:
+        return {"label": label}
+
+    schema = build_registry(app).tools["mk2"].input_schema
+    # The dependency's body model surfaces as an input property referencing the
+    # inlined `Item` def, whose fields (name, qty) are resolvable in-schema.
+    assert "item" in schema["properties"]
+    assert "Item" in schema.get("$defs", {})
+    item_def = schema["$defs"]["Item"]
+    assert set(item_def["properties"]) == {"name", "qty"}
+
+
+def test_route_backed_tool_sees_route_method_and_path():
+    """A route-backed tool's handler and a dependency must see the wrapped
+    route's real HTTP method and rule path on `request`, not the synthetic
+    `"MCP"` / `/mcp/<tool>` values - routes/deps that branch on
+    `request.method` / `request.path` then behave as on the HTTP path."""
+    app = Veloce(openapi_url=None)
+
+    def read_method(request) -> str:
+        # A dependency observing the request branches on the real verb.
+        return request.method
+
+    @app.post("/items/{item_id}", expose_as_mcp_tool=True, mcp_description="Make item")
+    async def make_item(item_id: int, request, seen: str = Depends(read_method)) -> dict:
+        return {"method": request.method, "path": request.path, "dep_method": seen}
+
+    out = _call(app, "make_item", {"item_id": 5})
+    assert "error" not in out
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload["method"] == "POST"
+    # `request.path` is the rule pattern; the concrete id lives in path_params.
+    assert payload["path"] == "/items/{item_id}"
+    assert payload["dep_method"] == "POST"
+
+
+def test_request_middleware_process_request_runs_on_mcp_call():
+    """An app `Middleware.process_request` runs for a route-backed MCP call, so
+    a route depending on middleware-populated state behaves as it does over
+    HTTP. The middleware here stamps `request.state`, which the handler reads."""
+    from veloce.middleware.base import Middleware
+
+    app = Veloce(openapi_url=None)
+
+    class StampMiddleware(Middleware):
+        async def process_request(self, request):
+            request.state.stamp = "mw"
+            return None
+
+    app.add_middleware(StampMiddleware)
+
+    @app.get("/stamped2", expose_as_mcp_tool=True, mcp_description="Stamped by mw")
+    async def stamped2(request) -> dict:
+        return {"stamp": getattr(request.state, "stamp", None)}
+
+    out = _call(app, "stamped2", {})
+    assert "error" not in out
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"stamp": "mw"}
+
+
+def test_request_middleware_short_circuit_returns_response_and_runs_teardown():
+    """A request middleware that short-circuits by returning a `Response` ends
+    the MCP call with that response (shaped to an isError result), the handler
+    never runs, and `teardown_request` still fires - mirroring the HTTP path."""
+    from veloce.middleware.base import Middleware
+
+    app = Veloce(openapi_url=None)
+    called: list[str] = []
+    torn: list[object] = []
+
+    @app.teardown_request
+    def _teardown(exc):
+        torn.append(exc)
+
+    class DenyMiddleware(Middleware):
+        async def process_request(self, request):
+            return JSONResponse({"detail": "blocked"}, status_code=403)
+
+    app.add_middleware(DenyMiddleware)
+
+    @app.get("/mwsecret", expose_as_mcp_tool=True, mcp_description="MW guarded")
+    async def mwsecret() -> dict:
+        called.append("handler")
+        return {"ok": True}
+
+    out = _call(app, "mwsecret", {})
+    assert "error" not in out  # not a JSON-RPC transport error
+    assert out["result"]["isError"] is True
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"detail": "blocked"}
+    # The handler was never reached, and teardown ran despite the short-circuit.
+    assert called == []
+    assert torn == [None]
+
+
+def test_route_defaults_fill_unsupplied_mcp_argument():
+    """A route with `defaults={'mode': 'summary'}` is callable over MCP without
+    the agent supplying `mode`: the route default fills the handler kwarg, as
+    the HTTP path merges defaults into the dispatch params."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/dash",
+        defaults={"mode": "summary"},
+        expose_as_mcp_tool=True,
+        mcp_description="Dashboard",
+    )
+    async def dash(mode: str) -> dict:
+        return {"mode": mode}
+
+    # `mode` is not supplied; the route default must fill it.
+    out = _call(app, "dash", {})
+    assert "error" not in out
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"mode": "summary"}
+
+    # An explicit argument still wins over the route default.
+    out2 = _call(app, "dash", {"mode": "detail"})
+    payload2 = orjson.loads(out2["result"]["content"][0]["text"])
+    assert payload2 == {"mode": "detail"}
+
+
+def test_instrumentation_records_real_status_for_short_circuit_and_error():
+    """Instrumentation must record the call's real status, not a hard-coded 200:
+    a 401 `before_request` short-circuit reports 401, and a route handler that
+    raises (routed through the default `HTTPException`/500 path) reports 500."""
+    app = Veloce(openapi_url=None)
+    seen: list[int] = []
+
+    @app.add_instrumentation
+    def record(metrics):
+        seen.append(metrics.status_code)
+
+    @app.before_request
+    async def _auth(request):
+        if request.endpoint == "denied":
+            return JSONResponse({"detail": "no"}, status_code=401)
+        return None
+
+    @app.get("/denied", expose_as_mcp_tool=True, mcp_description="Denied")
+    async def denied() -> dict:
+        return {"ok": True}
+
+    @app.get("/boom", expose_as_mcp_tool=True, mcp_description="Boom")
+    async def boom() -> dict:
+        raise RuntimeError("kaboom")
+
+    _call(app, "denied", {})
+    _call(app, "boom", {})
+    # The 401 short-circuit and the 500 from the unhandled error are both
+    # reported with their real status, never collapsed to 200.
+    assert 401 in seen
+    assert 500 in seen
+    assert 200 not in seen

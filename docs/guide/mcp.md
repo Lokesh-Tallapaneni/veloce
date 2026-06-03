@@ -59,10 +59,20 @@ description raises at registration time, before the server starts.
 
 An exposed route is invoked inside the same request context an HTTP request
 runs in: `current_app`, `g`, and the `request` proxy are bound, and the app's
-`@app.before_request` hooks run before the handler. A hook that returns a
-response (an auth `401`, for example) short-circuits the call - the handler is
-not invoked and the response becomes the tool result, surfaced as an error when
-its status is `4xx`/`5xx`.
+request middleware (`Middleware.process_request`) and `@app.before_request`
+hooks run before the handler, in the same order they run on the HTTP path. A
+middleware or hook that returns a response (an auth `401`, for example)
+short-circuits the call - the handler is not invoked, `teardown_request` still
+runs, and the response becomes the tool result, surfaced as an error when its
+status is `4xx`/`5xx`.
+
+The synthetic `request` carries the wrapped route's real HTTP method and rule
+path, so a handler, dependency, or hook that branches on `request.method` /
+`request.path` sees the route's own values (the concrete path-parameter values
+remain on `request.path_params`). A client-supplied parameter declared inside a
+`Depends` dependency - including a body model - is advertised in the tool's
+input schema, so `tools/list` and `tools/call` agree on the accepted inputs. A
+route's rule `defaults=` fill any handler argument the call does not supply.
 
 ### Streaming responses (v1 limitation)
 
@@ -153,6 +163,9 @@ input closes - exactly as when the app is served by an ASGI server.
 
 Each tool call fires the same `app.add_instrumentation` hooks an HTTP request
 does. The `RequestMetrics` record carries `method="tools/call"`, `route` and
-`path` set to the tool name, and the call duration, so a metrics exporter can
-record tool usage with no extra wiring.
+`path` set to the tool name, the call duration, and the call's real
+`status_code` - the shaped response's status for a route-backed or
+short-circuited call, `500` for an unhandled handler error, `200` only on
+genuine success - so a metrics exporter can record tool usage and error rates
+with no extra wiring.
 ```

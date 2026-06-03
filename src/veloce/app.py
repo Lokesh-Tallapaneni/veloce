@@ -2418,11 +2418,11 @@ class Veloce(Router):
         # (matches the per-connection resolver the WebSocket path uses).
         resolver: DependencyResolver | None = None
         try:
-            # Run middleware (request phase)
-            for mw in self._middlewares:
-                early_response = await mw.process_request(request)
-                if early_response is not None:
-                    return await self._run_response_middleware(request, early_response)
+            # Run middleware (request phase). A short-circuit response is run
+            # back through the response phase before returning.
+            early_response = await self._run_request_middleware(request)
+            if early_response is not None:
+                return await self._run_response_middleware(request, early_response)
 
             # Match the route once. `request.endpoint` is populated here so
             # before_request hooks can gate on the route name; the same
@@ -3145,6 +3145,22 @@ class Veloce(Router):
                 resp._encoded = None
                 return resp
         return JSONResponse(result)
+
+    async def _run_request_middleware(self, request: Request) -> Response | None:
+        """Run the middleware request phase in registration order.
+
+        Each `Middleware.process_request` runs in turn; the first to return a
+        `Response` short-circuits the chain (the caller is responsible for
+        running that response back through the response phase). Returns `None`
+        when no middleware short-circuits. Extracted so the MCP dispatch path
+        can replay the identical request-phase chain a route-backed tool call
+        would see on the HTTP path.
+        """
+        for mw in self._middlewares:
+            early_response = await mw.process_request(request)
+            if early_response is not None:
+                return early_response
+        return None
 
     async def _run_response_middleware(self, request: Request, response: Response) -> Response:
         """Run middleware response phase in reverse order."""

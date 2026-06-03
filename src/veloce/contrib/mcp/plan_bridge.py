@@ -44,11 +44,6 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.dependency import DependencyResolver
 
 
-# Slot kinds an MCP tool input cannot source from the JSON arguments (they
-# belong to the HTTP request/response cycle or the DI graph). Skipped during
-# schema build; bound to the MCPContext or resolved at call time.
-_SKIP_INPUT_KINDS = frozenset({K_REQUEST, K_DEPENDS})
-
 # Slot kinds an agent supplies as a JSON argument (the kinds `_slot_schema`
 # turns into a declared input property). A required slot of one of these kinds
 # that is absent from `arguments` is a binding error, not a handler error.
@@ -84,19 +79,20 @@ def build_input_schema(plan: HandlerPlan, schemas_registry: dict[str, dict]) -> 
     Pydantic body models are referenced by `$ref` and inlined under a `$defs`
     key, so each tool's input schema is standalone and resolvable by a client
     with no external component envelope.
+
+    A client-supplied parameter declared *inside* a `Depends` sub-dependency
+    (e.g. `user_id: int = Query(...)` or a `Body` model on a dependency) is
+    sourced from the same JSON `arguments` mapping `bind_arguments` seeds onto
+    the synthetic request, so it must be advertised as a tool input too -
+    otherwise `tools/list` would declare no required inputs while `tools/call`
+    rejects the call. The `Depends` graph is walked recursively and every such
+    input is merged in by name; the `Depends` slots themselves (and other
+    inject-only slots) are never inputs.
     """
     properties: dict[str, Any] = {}
     required: list[str] = []
 
-    for slot in plan.slots:
-        if slot.kind in _SKIP_INPUT_KINDS or _is_context_slot(slot):
-            continue
-        prop_schema, is_required = _slot_schema(slot, schemas_registry)
-        if prop_schema is None:
-            continue
-        properties[slot.name] = prop_schema
-        if is_required:
-            required.append(slot.name)
+    _collect_input_slots(plan.slots, properties, required, schemas_registry, set())
 
     schema: dict[str, Any] = {"type": "object", "properties": properties}
     if required:
@@ -106,6 +102,53 @@ def build_input_schema(plan: HandlerPlan, schemas_registry: dict[str, dict]) -> 
     if defs:
         schema["$defs"] = defs
     return schema
+
+
+def _collect_input_slots(
+    slots: list[_Slot],
+    properties: dict[str, Any],
+    required: list[str],
+    schemas_registry: dict[str, dict],
+    seen_plans: set[int],
+) -> None:
+    """Accumulate client-supplied input properties from a slot list.
+
+    Recurses into every `Depends` sub-plan so a `Query`/`Body`/`Header`/
+    `Cookie`/`Form` parameter (or body model) declared on a sub-dependency is
+    advertised exactly as a top-level input of that kind. Merge is by name: the
+    first declaration of a name wins (a later identical-name slot is the same
+    cached dependency consuming the same argument, so re-adding it would be
+    redundant). Inject-only slots (`Request`/`Response`/`BackgroundTasks`/
+    `SecurityScopes`/`MCPContext`/`Depends`) contribute no input of their own.
+    Cycle-guarded via `seen_plans` (the plan builder forbids `Depends` cycles,
+    but a diamond-shaped graph can still reach one sub-plan twice).
+    """
+    for slot in slots:
+        if slot.kind == K_DEPENDS:
+            sub_plan = slot.sub_plan
+            if sub_plan is None:
+                continue
+            plan_id = id(sub_plan)
+            if plan_id in seen_plans:
+                continue
+            seen_plans.add(plan_id)
+            _collect_input_slots(sub_plan.slots, properties, required, schemas_registry, seen_plans)
+            continue
+
+        if slot.kind == K_REQUEST or _is_context_slot(slot):
+            continue
+
+        # A name already declared (by an earlier sibling or sub-dependency)
+        # is the same client-supplied value; declare it once.
+        if slot.name in properties:
+            continue
+
+        prop_schema, is_required = _slot_schema(slot, schemas_registry)
+        if prop_schema is None:
+            continue
+        properties[slot.name] = prop_schema
+        if is_required:
+            required.append(slot.name)
 
 
 def _collect_defs(schema: dict[str, Any], schemas_registry: dict[str, dict]) -> dict[str, dict]:
@@ -276,15 +319,29 @@ def _scalar_str(value: Any) -> str | None:
     return None
 
 
-def _build_request(tool_name: str, arguments: dict[str, Any] | None = None) -> Request:
+def _build_request(
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    method: str | None = None,
+    path: str | None = None,
+) -> Request:
     """Construct the `Request` injected for a tool call's `Request` slots.
 
     A tool call has no HTTP request, but a handler or dependency may still read
     `request.headers` / `request.state` (built-in auth deps such as
     `HTTPBearer` / `APIKeyHeader` do). Binding the `MCPContext` there would
     raise `AttributeError`; instead a real `Request` is supplied with
-    `request.state` as a fresh, usable store. The synthetic method/path mark the
-    call's MCP origin.
+    `request.state` as a fresh, usable store.
+
+    For a route-backed tool the caller passes the wrapped route's real HTTP
+    `method` and its rule `path` (the `path_template` pattern), so a handler /
+    dependency / `before_request` hook that branches on `request.method` or
+    `request.path` sees the route's actual values rather than a synthetic MCP
+    marker - `request.path_params` stays the authoritative source of the
+    concrete parameter values. For a pure `@app.mcp_tool` (no route) there is
+    no wrapped route, so a synthetic `"MCP"` method and `/mcp/<tool>` path mark
+    the call's MCP origin.
 
     The tool `arguments` are seeded onto the request's value sources so a
     *sub-dependency* marker resolves from them exactly as a top-level tool
@@ -297,8 +354,8 @@ def _build_request(tool_name: str, arguments: dict[str, Any] | None = None) -> R
     `Query(...)` / `Body(...)` parameter declared inside a `Depends` sub-plan.
     """
     request = Request(
-        method="MCP",
-        path=f"/mcp/{tool_name}",
+        method=method if method is not None else "MCP",
+        path=path if path is not None else f"/mcp/{tool_name}",
         query_string="",
         headers=[],
         body=b"",
@@ -371,6 +428,7 @@ async def bind_arguments(
     resolver: DependencyResolver,
     route_dep_plans: list[Any] | None = None,
     request: Request | None = None,
+    route_defaults: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Request]:
     """Resolve handler kwargs for a tool call from the JSON `arguments`.
 
@@ -390,8 +448,27 @@ async def bind_arguments(
     Route-level dependencies (`route_dep_plans`) run first, before any handler
     slot is bound, mirroring `resolve_plan` / `resolve_ws_plan`; a guard that
     raises here aborts the call before the handler sees an argument.
+
+    `route_defaults` are the route's rule `defaults=` values. The HTTP path
+    merges them into `path_params` (without overriding URL-matched values), so a
+    handler / dependency parameter named by a default - including a non-URL key
+    such as `defaults={"mode": "summary"}` - resolves from it. The MCP path has
+    no URL, so the defaults are overlaid *under* the explicit `arguments`
+    (explicit argument > route default > Python default) and the merged mapping
+    feeds both handler-kwarg binding and the DI graph, matching HTTP precedence.
     """
     resolver.reset()
+
+    # Overlay route defaults under the explicit arguments so a handler /
+    # dependency parameter named by a default resolves from it, while an
+    # explicit argument always wins. A fresh dict is built only when defaults
+    # actually add a key, so the common (no-default) call keeps the caller's
+    # mapping untouched and pays nothing.
+    if route_defaults:
+        merged = {k: v for k, v in route_defaults.items() if k not in arguments}
+        if merged:
+            merged.update(arguments)
+            arguments = merged
 
     # Expose the MCPContext to the resolver so a sub-dependency that declares a
     # parameter typed `MCPContext` receives it. The top-level handler's context

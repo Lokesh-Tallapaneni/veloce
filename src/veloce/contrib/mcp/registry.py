@@ -50,6 +50,12 @@ class MCPTool:
     # and `Response`/`JSONResponse` body extraction (so a returned response
     # object yields its decoded body, not an object repr).
     route_info: Any = None
+    # The route's primary HTTP method (the first method entry the router walk
+    # yielded for this `RouteInfo`). Bound onto the synthetic `Request.method`
+    # so a handler / dependency / `before_request` hook that branches on
+    # `request.method` sees the route's real verb, not the MCP origin. `None`
+    # for a pure `@app.mcp_tool`, which keeps the synthetic MCP method.
+    route_method: str | None = None
 
 
 @dataclass(slots=True)
@@ -163,6 +169,10 @@ def build_registry(app: Any) -> ToolRegistry:
                 input_schema=schema,
                 route_dep_plans=info.route_dep_plans,
                 route_info=info,
+                # `method` is the first method entry yielded for this route
+                # (deduplicated above), so a multi-method route adopts its
+                # leading verb as the synthetic request method.
+                route_method=method,
             )
         )
 
