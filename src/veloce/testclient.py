@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import mimetypes
 import secrets
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
@@ -92,6 +92,81 @@ def _resolve_redirect_location(location: str, base_url: str) -> tuple[str, str]:
     # Relative location (or odd scheme-only) - use verbatim, splitting any qs.
     path, _, query = location.partition("?")
     return path, query
+
+
+async def _aiter_body_chunks(stream: Any) -> AsyncIterator[bytes]:
+    """Normalise a user-supplied streaming body into an async iterator of bytes.
+
+    Accepts a sync `Iterable[bytes | str]` or an `AsyncIterable[bytes | str]`;
+    `str` chunks are UTF-8 encoded. Other element types raise `TypeError`. A
+    plain `bytes` object is rejected here (it is not a stream) - callers pass
+    raw bytes through `content=` instead.
+    """
+    if hasattr(stream, "__aiter__"):
+        async for chunk in stream:
+            yield chunk.encode("utf-8") if isinstance(chunk, str) else _coerce_chunk(chunk)
+    elif hasattr(stream, "__iter__") and not isinstance(stream, (bytes, bytearray)):
+        for chunk in stream:
+            yield chunk.encode("utf-8") if isinstance(chunk, str) else _coerce_chunk(chunk)
+    else:
+        raise TypeError(
+            "stream must be a sync Iterable or an AsyncIterable of bytes/str chunks, "
+            f"got {type(stream).__name__}"
+        )
+
+
+def _coerce_chunk(chunk: Any) -> bytes:
+    """Coerce a single non-str stream chunk to `bytes`, rejecting other types."""
+    if isinstance(chunk, bytes):
+        return chunk
+    if isinstance(chunk, bytearray):
+        return bytes(chunk)
+    raise TypeError(f"stream chunk must be bytes or str, got {type(chunk).__name__}")
+
+
+def _build_receive(body: bytes, stream: Any | None) -> Any:
+    """Build the ASGI `receive` callable shared by both test clients.
+
+    With no `stream`, a single `http.request` frame carries the whole `body`
+    (the historical fast path). With a `stream`, each iterator chunk becomes a
+    `more_body: True` frame, followed by a terminal empty `more_body: False`
+    frame; reads past end-of-body return `http.disconnect`.
+    """
+    if stream is None:
+        body_sent = False
+
+        async def receive() -> dict[str, Any]:
+            nonlocal body_sent
+            if body_sent:
+                # ASGI middleware that legitimately reads past end-of-body
+                # (introspection, fan-out, replay) should see a clean
+                # `http.disconnect` rather than hang forever on a never-set
+                # Event.
+                return {"type": ASGI_EVENT_HTTP_DISCONNECT}
+            body_sent = True
+            return {"type": ASGI_EVENT_HTTP_REQUEST, "body": body, "more_body": False}
+
+        return receive
+
+    chunks = _aiter_body_chunks(stream)
+    exhausted = False
+    disconnected = False
+
+    async def stream_receive() -> dict[str, Any]:
+        nonlocal exhausted, disconnected
+        if disconnected:
+            return {"type": ASGI_EVENT_HTTP_DISCONNECT}
+        if exhausted:
+            disconnected = True
+            return {"type": ASGI_EVENT_HTTP_DISCONNECT}
+        try:
+            chunk = await chunks.__anext__()
+        except StopAsyncIteration:
+            exhausted = True
+            return {"type": ASGI_EVENT_HTTP_REQUEST, "body": b"", "more_body": False}
+        return {"type": ASGI_EVENT_HTTP_REQUEST, "body": chunk, "more_body": True}
+
+    return stream_receive
 
 
 class TestResponse:
@@ -455,22 +530,11 @@ class TestClient:
         query_string: str,
         headers: dict[str, str],
         body: bytes,
+        stream: Any | None = None,
     ) -> TestResponse:
         scope = _build_scope(method, path, query_string, headers)
 
-        body_sent = False
-
-        async def receive() -> dict[str, Any]:
-            nonlocal body_sent
-            if body_sent:
-                # ASGI middleware that legitimately reads past end-of-body
-                # (introspection, fan-out, replay) should see a clean
-                # `http.disconnect` rather than hang forever on a
-                # never-set Event. The old behaviour leaked the coroutine
-                # and froze the test on the second receive.
-                return {"type": ASGI_EVENT_HTTP_DISCONNECT}
-            body_sent = True
-            return {"type": ASGI_EVENT_HTTP_REQUEST, "body": body, "more_body": False}
+        receive = _build_receive(body, stream)
 
         status_code = HTTP_500_INTERNAL_SERVER_ERROR
         raw_headers: list[tuple[bytes, bytes]] = []
@@ -500,6 +564,7 @@ class TestClient:
         body: bytes = b"",
         query_string: str = "",
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
         if "?" in path:
             path, path_qs = path.split("?", 1)
@@ -511,12 +576,18 @@ class TestClient:
         current_query = query_string
         current_body = body
         current_headers = headers
+        current_stream = stream
 
         for _ in range(self._MAX_REDIRECTS + 1):
             all_headers = self._build_headers(current_headers)
             resp = self._loop.run_until_complete(
                 self._send_one_request(
-                    current_method, current_path, current_query, all_headers, current_body
+                    current_method,
+                    current_path,
+                    current_query,
+                    all_headers,
+                    current_body,
+                    current_stream,
                 )
             )
             self._update_cookies(resp)
@@ -545,6 +616,17 @@ class TestClient:
             ):
                 new_method = HTTP_METHOD_GET
                 new_body = b""
+                # The body is dropped on this hop, so the one-shot stream
+                # iterator is no longer needed (and must not be re-consumed).
+                current_stream = None
+            elif current_stream is not None:
+                # 307/308 must replay method + body, but a consumed one-shot
+                # iterator cannot be re-read. Fail loudly rather than silently
+                # sending an empty body.
+                raise RuntimeError(
+                    "streamed request body cannot be replayed across redirects; "
+                    "pass follow_redirects=False"
+                )
             new_path, new_query = _resolve_redirect_location(location, self.base_url)
             current_method = new_method
             current_path = new_path
@@ -582,9 +664,20 @@ class TestClient:
         content: bytes | None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
         hdrs = dict(headers or {})
         body = b""
+        if stream is not None:
+            # A streaming body is mutually exclusive with the buffered body
+            # forms; enforcing it here keeps the API misuse loud (per Veloce's
+            # convention) instead of silently sending one and dropping another.
+            assert json is None and data is None and content is None and files is None, (
+                "stream cannot be combined with json/data/content/files"
+            )
+            return self._make_request(
+                method, path, headers=hdrs, follow_redirects=follow_redirects, stream=stream
+            )
         if files is not None:
             body, ct = _encode_multipart(files, data or {})
             hdrs[HEADER_CONTENT_TYPE] = ct
@@ -609,7 +702,12 @@ class TestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
+        """Send a POST. `stream` feeds the body as multiple `http.request`
+        chunks (a sync `Iterable` or `AsyncIterable` of `bytes`/`str`); when
+        given it takes precedence over and excludes `json`/`data`/`content`/`files`.
+        """
         return self._json_or_form(
             HTTP_METHOD_POST,
             path,
@@ -619,6 +717,7 @@ class TestClient:
             content,
             files=files,
             follow_redirects=follow_redirects,
+            stream=stream,
         )
 
     def put(
@@ -630,7 +729,9 @@ class TestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
+        """Send a PUT. See `post` for the `stream` chunked-body parameter."""
         return self._json_or_form(
             HTTP_METHOD_PUT,
             path,
@@ -640,6 +741,7 @@ class TestClient:
             content,
             files=files,
             follow_redirects=follow_redirects,
+            stream=stream,
         )
 
     def patch(
@@ -651,7 +753,9 @@ class TestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
+        """Send a PATCH. See `post` for the `stream` chunked-body parameter."""
         return self._json_or_form(
             HTTP_METHOD_PATCH,
             path,
@@ -661,6 +765,7 @@ class TestClient:
             content,
             files=files,
             follow_redirects=follow_redirects,
+            stream=stream,
         )
 
     def delete(
@@ -704,16 +809,24 @@ class TestClient:
         files: dict[str, Any] | None = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
         """Generic request dispatcher - httpx/test-client shape.
 
         `client.request("PATCH", "/x", json=...)` is the verb-agnostic
         form of `client.get` / `client.post` / .... Bodies (`json` /
-        `data` / `content` / `files`) and `params` are handled exactly
-        as the per-verb methods do.
+        `data` / `content` / `files` / `stream`) and `params` are handled
+        exactly as the per-verb methods do; `stream` (see `post`) excludes
+        the buffered body forms.
         """
         verb = method.upper()
-        if json is not None or data is not None or content is not None or files is not None:
+        if (
+            json is not None
+            or data is not None
+            or content is not None
+            or files is not None
+            or stream is not None
+        ):
             return self._json_or_form(
                 verb,
                 path,
@@ -723,6 +836,7 @@ class TestClient:
                 content,
                 files=files,
                 follow_redirects=follow_redirects,
+                stream=stream,
             )
         qs = urlencode(params) if params else ""
         return self._make_request(
@@ -1040,17 +1154,11 @@ class AsyncTestClient:
         query_string: str,
         headers: dict[str, str],
         body: bytes,
+        stream: Any | None = None,
     ) -> TestResponse:
         scope = _build_scope(method, path, query_string, headers)
 
-        body_sent = False
-
-        async def receive() -> dict[str, Any]:
-            nonlocal body_sent
-            if body_sent:
-                return {"type": ASGI_EVENT_HTTP_DISCONNECT}
-            body_sent = True
-            return {"type": ASGI_EVENT_HTTP_REQUEST, "body": body, "more_body": False}
+        receive = _build_receive(body, stream)
 
         status_code = HTTP_500_INTERNAL_SERVER_ERROR
         raw_headers: list[tuple[bytes, bytes]] = []
@@ -1078,6 +1186,7 @@ class AsyncTestClient:
         body: bytes = b"",
         query_string: str = "",
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
         if not self._entered:
             raise RuntimeError(
@@ -1093,11 +1202,17 @@ class AsyncTestClient:
         current_method, current_path = method, path
         current_query, current_body = query_string, body
         current_headers = headers
+        current_stream = stream
 
         for _ in range(self._MAX_REDIRECTS + 1):
             all_headers = self._build_headers(current_headers)
             resp = await self._send_one_request(
-                current_method, current_path, current_query, all_headers, current_body
+                current_method,
+                current_path,
+                current_query,
+                all_headers,
+                current_body,
+                current_stream,
             )
             self._update_cookies(resp)
             if not follow or resp.status_code not in (
@@ -1119,6 +1234,15 @@ class AsyncTestClient:
                 HTTP_303_SEE_OTHER,
             ):
                 current_method, current_body = HTTP_METHOD_GET, b""
+                # Body dropped on this hop - discard the one-shot stream too.
+                current_stream = None
+            elif current_stream is not None:
+                # 307/308 replay method + body, but a consumed one-shot
+                # iterator cannot be re-read. Fail loudly.
+                raise RuntimeError(
+                    "streamed request body cannot be replayed across redirects; "
+                    "pass follow_redirects=False"
+                )
             current_path, current_query = _resolve_redirect_location(location, self.base_url)
             # `current_headers` is intentionally kept across the hop - the
             # caller's headers (Authorization, custom headers) must reach
@@ -1168,6 +1292,35 @@ class AsyncTestClient:
             follow_redirects=follow_redirects,
         )
 
+    async def _dispatch_body(
+        self,
+        method: str,
+        path: str,
+        json: Any,
+        data: dict[str, str] | None,
+        content: bytes | None,
+        files: dict[str, Any] | None,
+        headers: dict[str, str] | None,
+        follow_redirects: bool | None,
+        stream: Any | None,
+    ) -> TestResponse:
+        """Send a body-carrying request, routing `stream` to the chunked path."""
+        if stream is not None:
+            assert json is None and data is None and content is None and files is None, (
+                "stream cannot be combined with json/data/content/files"
+            )
+            return await self._make_request(
+                method,
+                path,
+                headers=dict(headers or {}),
+                follow_redirects=follow_redirects,
+                stream=stream,
+            )
+        body, hdrs = self._assemble_body(json, data, content, files, headers)
+        return await self._make_request(
+            method, path, headers=hdrs, body=body, follow_redirects=follow_redirects
+        )
+
     async def post(
         self,
         path: str,
@@ -1177,10 +1330,14 @@ class AsyncTestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
-        body, hdrs = self._assemble_body(json, data, content, files, headers)
-        return await self._make_request(
-            HTTP_METHOD_POST, path, headers=hdrs, body=body, follow_redirects=follow_redirects
+        """Send a POST. `stream` feeds the body as multiple `http.request`
+        chunks (a sync `Iterable` or `AsyncIterable` of `bytes`/`str`); when
+        given it takes precedence over and excludes `json`/`data`/`content`/`files`.
+        """
+        return await self._dispatch_body(
+            HTTP_METHOD_POST, path, json, data, content, files, headers, follow_redirects, stream
         )
 
     async def put(
@@ -1192,10 +1349,11 @@ class AsyncTestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
-        body, hdrs = self._assemble_body(json, data, content, files, headers)
-        return await self._make_request(
-            HTTP_METHOD_PUT, path, headers=hdrs, body=body, follow_redirects=follow_redirects
+        """Send a PUT. See `post` for the `stream` chunked-body parameter."""
+        return await self._dispatch_body(
+            HTTP_METHOD_PUT, path, json, data, content, files, headers, follow_redirects, stream
         )
 
     async def patch(
@@ -1207,10 +1365,11 @@ class AsyncTestClient:
         content: bytes | None = None,
         files: dict[str, Any] | None = None,
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
-        body, hdrs = self._assemble_body(json, data, content, files, headers)
-        return await self._make_request(
-            HTTP_METHOD_PATCH, path, headers=hdrs, body=body, follow_redirects=follow_redirects
+        """Send a PATCH. See `post` for the `stream` chunked-body parameter."""
+        return await self._dispatch_body(
+            HTTP_METHOD_PATCH, path, json, data, content, files, headers, follow_redirects, stream
         )
 
     async def delete(
@@ -1254,13 +1413,19 @@ class AsyncTestClient:
         files: dict[str, Any] | None = None,
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
         follow_redirects: bool | None = None,
+        stream: Any | None = None,
     ) -> TestResponse:
         """Generic verb-agnostic request dispatcher (see `TestClient.request`)."""
         verb = method.upper()
-        if json is not None or data is not None or content is not None or files is not None:
-            body, hdrs = self._assemble_body(json, data, content, files, headers)
-            return await self._make_request(
-                verb, path, headers=hdrs, body=body, follow_redirects=follow_redirects
+        if (
+            json is not None
+            or data is not None
+            or content is not None
+            or files is not None
+            or stream is not None
+        ):
+            return await self._dispatch_body(
+                verb, path, json, data, content, files, headers, follow_redirects, stream
             )
         qs = urlencode(params) if params else ""
         return await self._make_request(
