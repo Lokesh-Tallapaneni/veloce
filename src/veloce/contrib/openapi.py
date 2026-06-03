@@ -28,41 +28,9 @@ from veloce.routing.params import Form as FormParam
 from veloce.routing.params import Header as HeaderParam
 from veloce.routing.params import ParamBase
 from veloce.routing.params import Path as PathParam
-from veloce.status import HTTP_200_OK, HTTP_422_UNPROCESSABLE_ENTITY
+from veloce.status import HTTP_200_OK
 
 _logger = logging.getLogger(__name__)
-
-# Name of the canonical 422 body schema registered into
-# `components.schemas`. It mirrors the exact shape the runtime emits from
-# `request_validation_exception_handler` (`{"detail": [{loc, msg, type}]}`),
-# so the generated spec and the actual error response never drift.
-_VALIDATION_PROBLEM_NAME = "ValidationProblem"
-
-# A non-body parameter that the resolver can only ever receive as a raw,
-# unconstrained string never fails coercion, so it never produces a 422.
-# A 422 is advertised only when at least one input carries one of these
-# JSON Schema validation keywords (a richer `type`, a constraint, or a
-# branch set) or a request body / form field is present.
-_VALIDATION_SCHEMA_KEYS = frozenset(
-    {
-        "format",
-        "enum",
-        "pattern",
-        "minLength",
-        "maxLength",
-        "minimum",
-        "maximum",
-        "exclusiveMinimum",
-        "exclusiveMaximum",
-        "multipleOf",
-        "minItems",
-        "maxItems",
-        "anyOf",
-        "allOf",
-        "oneOf",
-        "$ref",
-    }
-)
 
 # Per-handler memoization of `inspect.signature` + `get_type_hints`. The
 # OpenAPI generator visits each handler from four sites (operation
@@ -283,159 +251,56 @@ def _python_type_to_schema(annotation: Any) -> dict:
     return {"type": "string"}
 
 
-def _register_model_schema(
-    name: str,
-    model: type[BaseModel],
-    registry: dict[str, dict],
-) -> None:
-    """Build `model`'s validation JSON Schema under `name`, hoisting its `$defs`.
-
-    Used for request bodies, which Pydantic validates in default mode.
-    Response shapes go through `_response_pydantic_to_schema`, which renders
-    the serialization shape instead.
-    """
-    try:
-        schema = model.model_json_schema()
-        if "$defs" in schema:
-            for def_name, def_schema in schema["$defs"].items():
-                registry.setdefault(def_name, def_schema)
-            del schema["$defs"]
-        registry[name] = schema
-    except Exception as exc:
-        # Silently degrading to `{type: object}` hides genuine schema
-        # bugs in the user's models. Log loudly at WARNING so the
-        # failure surfaces in dev logs, then fall back so /docs still
-        # renders (an underspecified schema beats a 500 on /openapi.json).
-        _logger.warning(
-            "OpenAPI schema generation failed for %s: %s. "
-            "Falling back to {type: object}. "
-            "Inspect the model definition or attach a debugger to "
-            "veloce.contrib.openapi to see the full traceback.",
-            name,
-            exc,
-            exc_info=_logger.isEnabledFor(logging.DEBUG),
-        )
-        registry[name] = {"type": "object"}
-
-
 def _pydantic_to_schema(model: type[BaseModel], registry: dict[str, dict]) -> dict:
     """Convert a Pydantic model to OpenAPI schema, adding to registry."""
     name = model.__name__
     if name not in registry:
-        _register_model_schema(name, model, registry)
+        try:
+            schema = model.model_json_schema()
+            # Extract definitions
+            if "$defs" in schema:
+                for def_name, def_schema in schema["$defs"].items():
+                    registry[def_name] = def_schema
+                del schema["$defs"]
+            registry[name] = schema
+        except Exception as exc:
+            # Silently degrading to `{type: object}` hides genuine schema
+            # bugs in the user's models. Log loudly at WARNING so the
+            # failure surfaces in dev logs, then fall back so /docs still
+            # renders (an underspecified schema beats a 500 on /openapi.json).
+            _logger.warning(
+                "OpenAPI schema generation failed for %s: %s. "
+                "Falling back to {type: object}. "
+                "Inspect the model definition or attach a debugger to "
+                "veloce.contrib.openapi to see the full traceback.",
+                name,
+                exc,
+                exc_info=_logger.isEnabledFor(logging.DEBUG),
+            )
+            registry[name] = {"type": "object"}
     return {"$ref": f"#/components/schemas/{name}"}
-
-
-def _response_pydantic_to_schema(model: type[BaseModel], registry: dict[str, dict]) -> dict:
-    """Register a model in *serialization* shape and return its `$ref`.
-
-    A response body is what the framework serialises out, so its schema is
-    taken from `model_json_schema(mode="serialization")`. The validation
-    (input) and serialization (output) shapes of a model often coincide;
-    when they do, the input `$ref` is reused so the components map stays
-    lean. They are registered under a distinct `<Name>Output` entry only
-    when the two shapes genuinely differ - e.g. a computed field that
-    appears on output, or a field whose serialization alias diverges from
-    its validation alias - so the output schema is never wrong yet the
-    document is not padded with duplicate definitions.
-    """
-    name = model.__name__
-    out_name = f"{name}Output"
-    if out_name in registry:
-        return {"$ref": f"#/components/schemas/{out_name}"}
-
-    try:
-        # Use a components/schemas ref template so that when we hoist `$defs`
-        # into `components.schemas` below, the inner `$ref`s already resolve
-        # there (Pydantic's default `#/$defs/...` would dangle once hoisted).
-        ref_tmpl = "#/components/schemas/{model}"
-        serialization = model.model_json_schema(mode="serialization", ref_template=ref_tmpl)
-        validation = model.model_json_schema(ref_template=ref_tmpl)
-    except Exception:
-        # Fall back to the validation-mode path, which carries its own
-        # degraded-schema logging and never raises.
-        return _pydantic_to_schema(model, registry)
-
-    if serialization == validation:
-        return _pydantic_to_schema(model, registry)
-
-    if "$defs" in serialization:
-        for def_name, def_schema in serialization["$defs"].items():
-            registry.setdefault(def_name, def_schema)
-        del serialization["$defs"]
-    registry[out_name] = serialization
-    return {"$ref": f"#/components/schemas/{out_name}"}
 
 
 def _response_model_to_schema(response_model: Any, registry: dict[str, dict]) -> dict | None:
     """Render `response_model` into an OpenAPI schema object.
 
-    Walks the annotation so every container the framework can serialise is
-    documented, not just a bare model or `list[Model]`:
-
-    - `MyModel` -> a serialization-mode `$ref`.
-    - `list[T]` / `set[T]` / `frozenset[T]` / `tuple[T, ...]` -> an array
-      whose `items` recurse into `T`.
-    - a fixed `tuple[A, B]` -> a positional `prefixItems` array.
-    - `dict[K, V]` -> an object whose `additionalProperties` recurse into `V`.
-    - `T | None` -> the inner schema with `nullable`-style `anyOf` on the
-      `None` branch; a multi-member union -> an `anyOf` over its branches.
-    - scalars (`int`, `str`, `datetime`, `UUID`, `Enum`, `Literal`, ...) ->
-      their JSON Schema form via the scalar mapper.
-
-    Returns `None` only for a genuinely undocumentable annotation, in which
-    case the caller omits the response content schema.
+    Handles three shapes:
+    - `MyModel` (Pydantic BaseModel subclass) -> `{"$ref": ".../MyModel"}`.
+    - `list[MyModel]` (or any `Sequence[MyModel]`) -> array-of-refs.
+    - Anything else -> `None` (caller omits the schema).
     """
-    if response_model is None:
-        return None
-
-    if isinstance(response_model, type) and issubclass(response_model, BaseModel):
-        return _response_pydantic_to_schema(response_model, registry)
-
     origin = get_origin(response_model)
-
-    if origin is Union or origin is types.UnionType:
-        members = get_args(response_model)
-        non_none = [m for m in members if m is not type(None)]
-        nullable = len(non_none) != len(members)
-        branches = [
-            s for m in non_none if (s := _response_model_to_schema(m, registry)) is not None
-        ]
-        if not branches:
-            return {"type": "null"} if nullable else None
-        if nullable:
-            branches.append({"type": "null"})
-        return branches[0] if len(branches) == 1 else {"anyOf": branches}
-
-    if origin in (list, set, frozenset):
+    if origin is list:
         args = get_args(response_model)
-        item = _response_model_to_schema(args[0], registry) if args else None
-        return {"type": "array", "items": item if item is not None else {}}
-
-    if origin is tuple:
-        args = get_args(response_model)
-        # `tuple[T, ...]` is a homogeneous array; a fixed-length tuple maps
-        # to positional `prefixItems` (JSON Schema 2020-12 Sec. 10.3.1.1).
-        if len(args) == 2 and args[1] is Ellipsis:
-            item = _response_model_to_schema(args[0], registry)
-            return {"type": "array", "items": item if item is not None else {}}
-        if args:
-            prefix = [
-                s if (s := _response_model_to_schema(a, registry)) is not None else {} for a in args
-            ]
-            return {"type": "array", "prefixItems": prefix, "minItems": len(prefix)}
+        if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+            inner = _pydantic_to_schema(args[0], registry)
+            return {"type": "array", "items": inner}
         return {"type": "array", "items": {}}
 
-    if origin is dict:
-        args = get_args(response_model)
-        value = _response_model_to_schema(args[1], registry) if len(args) == 2 else None
-        return {"type": "object", "additionalProperties": value if value is not None else {}}
+    if isinstance(response_model, type) and issubclass(response_model, BaseModel):
+        return _pydantic_to_schema(response_model, registry)
 
-    # Scalars, `Literal[...]`, `Enum`, `date`/`datetime`/`UUID`, etc. share
-    # the parameter mapper's leaf handling - those rules are about the JSON
-    # value's shape, which is identical on the response side.
-    schema = _python_type_to_schema(response_model)
-    return schema or None
+    return None
 
 
 # -- Info / parameter / body / response builders -------------
@@ -650,77 +515,7 @@ def _extract_request_body(
     }
 
 
-def _param_can_validate(param: dict[str, Any]) -> bool:
-    """Return True when a parameter object can fail validation (i.e. 422).
-
-    A bare unconstrained `{"type": "string"}` value taken straight from the
-    wire never fails coercion. Any richer type, constraint keyword, or
-    branch set means the resolver may reject a string input with a 422.
-    """
-    schema = param.get("schema")
-    if not isinstance(schema, dict):
-        return False
-    if schema.get("type") not in (None, "string"):
-        return True
-    return not _VALIDATION_SCHEMA_KEYS.isdisjoint(schema.keys())
-
-
-def _route_has_validatable_input(
-    parameters: list[dict],
-    request_body_schema: dict | None,
-    form_fields: list[tuple[str, dict, bool, bool]],
-) -> bool:
-    """Return True when the route has input that can produce a runtime 422.
-
-    A JSON request body or any form / file field is always validated. A
-    non-body parameter only counts when it carries a richer-than-string
-    schema (see `_param_can_validate`), so a pure path-string param that
-    never 422s does not cause a 422 response to be advertised.
-    """
-    if request_body_schema is not None or form_fields:
-        return True
-    return any(_param_can_validate(p) for p in parameters)
-
-
-def _register_validation_problem(schemas_registry: dict[str, dict]) -> dict[str, str]:
-    """Lazily register the canonical 422 body schema and return a `$ref`.
-
-    The schema documents the `{"detail": [{loc, msg, type}]}` shape the
-    runtime returns, sourced once so docs and handler cannot diverge.
-    """
-    if _VALIDATION_PROBLEM_NAME not in schemas_registry:
-        schemas_registry[_VALIDATION_PROBLEM_NAME] = {
-            "type": "object",
-            "title": _VALIDATION_PROBLEM_NAME,
-            "properties": {
-                "detail": {
-                    "type": "array",
-                    "title": "Detail",
-                    "items": {
-                        "type": "object",
-                        "title": "ValidationProblemItem",
-                        "properties": {
-                            "loc": {
-                                "type": "array",
-                                "title": "Location",
-                                "items": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
-                            },
-                            "msg": {"type": "string", "title": "Message"},
-                            "type": {"type": "string", "title": "Error Type"},
-                        },
-                        "required": ["loc", "msg", "type"],
-                    },
-                }
-            },
-        }
-    return {"$ref": f"#/components/schemas/{_VALIDATION_PROBLEM_NAME}"}
-
-
-def _extract_responses(
-    info: Any,
-    schemas_registry: dict[str, dict],
-    has_validatable_input: bool = False,
-) -> dict[str, dict]:
+def _extract_responses(info: Any, schemas_registry: dict[str, dict]) -> dict[str, dict]:
     """Build the operation `responses` map.
 
     Seeds with the success response (re-keyed to `info.status_code` when
@@ -760,18 +555,6 @@ def _extract_responses(
             if k in ("model", "description"):
                 continue
             existing[k] = v
-
-    # Advertise the 422 the runtime genuinely returns on validation failure,
-    # but only when the route has validatable input and the user has not
-    # already declared a 422 / 4XX / default response of their own.
-    if has_validatable_input and not (
-        responses.keys() & {str(HTTP_422_UNPROCESSABLE_ENTITY), "4XX", "default"}
-    ):
-        problem_ref = _register_validation_problem(schemas_registry)
-        responses[str(HTTP_422_UNPROCESSABLE_ENTITY)] = {
-            "description": "Validation Error",
-            "content": {MIME_JSON: {"schema": problem_ref}},
-        }
 
     return responses
 
@@ -966,10 +749,7 @@ def _build_operation(
     if security_requirements:
         operation["security"] = security_requirements
 
-    has_validatable_input = _route_has_validatable_input(
-        parameters, request_body_schema, form_fields
-    )
-    operation["responses"] = _extract_responses(info, schemas_registry, has_validatable_input)
+    operation["responses"] = _extract_responses(info, schemas_registry)
 
     # `openapi_extra` - deep-merge the user-supplied dict over the
     # generated operation. Nested dicts merge key-by-key; scalars and

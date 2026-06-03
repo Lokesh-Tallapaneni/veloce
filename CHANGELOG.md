@@ -8,18 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Session middleware now emits `Vary: Cookie` whenever a handler reads or
-  writes the session, so a shared/CDN cache cannot serve one user's
-  session-personalised response body to another (RFC 9110 Sec. 12.5.5).
-  `Session` gained an `accessed` flag that flips on any read accessor
-  (`__getitem__`, `get`, `__contains__`, `__iter__`, `keys`, `values`,
-  `items`) - a single boolean, no per-key bookkeeping - and both
-  `SessionMiddleware` and `ServerSessionMiddleware` add the `Vary` token
-  (merging with any existing value) when `accessed` or `modified` is set.
-  The new `suppress_session_vary(request)` helper opts a single response
-  out of the automatic header for handlers that read the session but know
-  the body is not personalised by it.
-
 - `ServerSentEvent.json` builds an event whose `data` field is a
   JSON-serialized payload. Pass any JSON-encodable value (`dict`, `list`,
   string, number) and it is serialized once at construction with the
@@ -27,32 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SSE payloads no longer require a manual `json.dumps` per event. The plain
   `ServerSentEvent(data=...)` constructor is unchanged and remains the raw
   string escape hatch.
-
-- The generated OpenAPI document now documents container-shaped
-  `response_model` annotations instead of dropping them. A response model of
-  `dict[str, Item]` emits an object with `additionalProperties` referencing the
-  item schema, `Item | None` emits an `anyOf` over the model and `{"type":
-  "null"}`, `set[Item]` / `frozenset[Item]` / `tuple[Item, ...]` emit typed
-  arrays, a fixed `tuple[A, B]` emits positional `prefixItems`, and a union of
-  models emits an `anyOf`; these compose for nested shapes such as
-  `list[dict[str, Item]]`. Previously only a bare model or `list[Model]` was
-  rendered and every other shape produced no documented response body. Response
-  schemas are now taken from the model's serialization shape
-  (`model_json_schema(mode="serialization")`); a distinct `<Name>Output` entry
-  is registered only when the serialization and validation shapes actually
-  differ (for example a computed field that appears only on output), so the
-  components map is not padded when input and output coincide.
-
-- The generated OpenAPI document now advertises the `422` validation-error
-  response that the runtime actually returns. A route that has validatable
-  input - a JSON request body, a form/file field, or a non-body parameter
-  with a richer-than-string schema (a typed/constrained query, path, header,
-  or cookie value) - gains a `422` response referencing a canonical
-  `ValidationProblem` schema whose shape (`{"detail": [{loc, msg, type}]}`)
-  matches the framework's validation handler. A plain unconstrained string
-  parameter, which never fails coercion, does not advertise a `422`. The
-  injection is skipped when the route already declares a `422`, `4XX`, or
-  `default` response, so explicit error contracts are left untouched.
 
 - `Depends(..., offload=True)` (and the matching `Security(..., offload=True)`)
   routes a blocking sync dependency through the thread pool instead of calling

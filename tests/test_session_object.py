@@ -78,52 +78,6 @@ def test_clear_marks_modified():
     assert s.modified is True
 
 
-def test_fresh_session_not_accessed():
-    s = Session({"a": 1})
-    assert s.accessed is False
-
-
-def test_getitem_marks_accessed_not_modified():
-    s = Session({"a": 1})
-    assert s["a"] == 1
-    assert s.accessed is True
-    assert s.modified is False
-
-
-def test_get_marks_accessed():
-    s = Session({"a": 1})
-    assert s.get("a") == 1
-    assert s.accessed is True
-    assert s.modified is False
-
-
-def test_contains_marks_accessed():
-    s = Session({"a": 1})
-    assert "a" in s
-    assert s.accessed is True
-    assert s.modified is False
-
-
-def test_iter_marks_accessed():
-    s = Session({"a": 1})
-    assert list(s) == ["a"]
-    assert s.accessed is True
-    assert s.modified is False
-
-
-def test_items_marks_accessed():
-    s = Session({"a": 1})
-    assert list(s.items()) == [("a", 1)]
-    assert s.accessed is True
-
-
-def test_write_only_does_not_mark_accessed():
-    s = Session()
-    s["k"] = 1
-    assert s.modified is True
-    assert s.accessed is False
-
-
 def test_middleware_marks_session_new_without_cookie():
     app = Veloce()
     app.add_middleware(SessionMiddleware, secret_key="k" * 32)
@@ -163,16 +117,3 @@ def test_middleware_session_not_new_with_valid_cookie():
 
     # Second request carried the session cookie → not new.
     assert seen == [False]
-
-
-def test_truthiness_and_len_count_as_access():
-    """`if session:` (dict derives bool from __len__) and `len(session)` read
-    session state, so both must flip `accessed` for the Vary: Cookie guard."""
-    s = Session({"user": "alice"})
-    assert s.accessed is False
-    assert bool(s) is True
-    assert s.accessed is True
-
-    s2 = Session({"user": "bob"})
-    assert len(s2) == 1
-    assert s2.accessed is True

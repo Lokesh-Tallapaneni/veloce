@@ -34,26 +34,6 @@ _logger = logging.getLogger("veloce.sessions")
 # safe ceiling (4096 - 3 bytes of separator overhead some impls reserve).
 _DEFAULT_MAX_COOKIE_SIZE = 4093
 
-# Request-state flag set by `suppress_session_vary()` to skip the
-# automatic `Vary: Cookie` for a response the handler knows is not
-# personalised by the session (e.g. a static asset reached through the
-# session middleware). Reserved internal key - not for application data.
-_VARY_SUPPRESS_KEY = "_session_no_vary"
-
-
-def suppress_session_vary(request: Request) -> None:
-    """Opt this response out of the automatic `Vary: Cookie` on session access.
-
-    Call from a handler that reads the session but emits a response it
-    knows is *not* personalised by it, so a shared cache may still store
-    the body. Use sparingly - the default (vary on access) is the safe one.
-    """
-    request._state[_VARY_SUPPRESS_KEY] = True
-
-
-def _vary_suppressed(request: Request) -> bool:
-    return bool(request._state.get(_VARY_SUPPRESS_KEY))
-
 
 class SessionMiddleware(Middleware):
     """Server-side session stored in a signed, timestamped cookie."""
@@ -115,23 +95,10 @@ class SessionMiddleware(Middleware):
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back into the signed cookie."""
         session = request._state.get("session")
-        # No session attached (handler bypassed middleware?) -> nothing to do.
-        if session is None:
-            return response
-
-        # Snapshot both flags before any internal read below (e.g.
-        # `session.permanent`) flips `accessed` - we only care whether the
-        # *handler* read or wrote the session.
-        modified = getattr(session, "modified", False)
-        if (getattr(session, "accessed", False) or modified) and not _vary_suppressed(request):
-            # A read or write of session state means this response is
-            # personalised by the request Cookie - flag it so a shared cache
-            # does not serve one user's body to another. RFC 9110 Sec. 12.5.5.
-            response.add_vary("Cookie")
-
         # `Session` flips `.modified` on any mutating operation, so we can
         # skip the re-sign + Set-Cookie when the handler never touched it.
-        if not modified:
+        # No session attached (handler bypassed middleware?) -> nothing to do.
+        if session is None or not getattr(session, "modified", False):
             return response
 
         if not session:
@@ -240,16 +207,7 @@ class ServerSessionMiddleware(Middleware):
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back to the server-side store."""
         session = request._state.get("session")
-        if session is None:
-            return response
-
-        modified = getattr(session, "modified", False)
-        if (getattr(session, "accessed", False) or modified) and not _vary_suppressed(request):
-            # See `SessionMiddleware.process_response` - a read or write of
-            # session state makes the response vary by the request Cookie.
-            response.add_vary("Cookie")
-
-        if not modified:
+        if session is None or not getattr(session, "modified", False):
             return response
 
         session_id = request._state.get("_session_id")

@@ -21,7 +21,6 @@ from veloce.contrib.openapi import (
     _extract_parameters,
     _extract_request_body,
     _extract_responses,
-    _route_has_validatable_input,
     _walk_webhooks,
     get_openapi_schema,
 )
@@ -85,11 +84,12 @@ def _fixture_app() -> Veloce:
     return app
 
 
-# Golden byte sequence for the fixture above under orjson with sorted
-# keys (routes with validatable input advertise the injected 422). Drift
-# in either length or sha256 means an unintended change in output.
-_EXPECTED_BYTES_LEN = 3287
-_EXPECTED_SHA256 = "12f1eb9665304fdc709a960d75ec7c006800109142d0b501dc5e1fbd062501a7"
+# Captured from the monolithic implementation prior to the helper split.
+# orjson serialization with sorted keys yields exactly this byte sequence
+# for the fixture above. Drift in either length or sha256 means the
+# refactor altered observable output.
+_EXPECTED_BYTES_LEN = 2339
+_EXPECTED_SHA256 = "3f643b204d0dbec86be2385e0c475389fdf33b01725e6dae14aa2194e67acf64"
 
 
 def test_get_openapi_schema_orchestrator_byte_identical() -> None:
@@ -119,8 +119,7 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     schemas_registry: dict = {}
     params, body_schema, form_fields = _extract_parameters(info, schemas_registry)
     request_body = _extract_request_body(body_schema, form_fields)
-    has_validatable_input = _route_has_validatable_input(params, body_schema, form_fields)
-    responses = _extract_responses(info, schemas_registry, has_validatable_input)
+    responses = _extract_responses(info, schemas_registry)
 
     op = full["paths"]["/items"][method.lower()]
     assert op["requestBody"] == request_body

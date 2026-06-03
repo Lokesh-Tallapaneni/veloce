@@ -229,3 +229,12 @@ async def test_registered_close_codes_1012_1014_accepted(code):
         ws.feed_data(_client_frame(0x8, struct.pack("!H", code), fin=True))
     assert exc.value.code == code
     assert ws.close_code == code
+
+
+async def test_close_code_above_4999_is_protocol_error():
+    """RFC 6455 Sec. 7.4.2: only 3000-4999 are valid in the private range;
+    a code above 4999 (e.g. 5000) is a protocol error answered with 1002."""
+    ws, transport = _make_ws()
+    with pytest.raises(WebSocketDisconnect):
+        ws.feed_data(_client_frame(0x8, struct.pack("!H", 5000), fin=True))
+    assert _last_close_code(transport) == 1002

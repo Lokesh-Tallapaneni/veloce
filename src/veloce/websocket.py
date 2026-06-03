@@ -1171,7 +1171,11 @@ class WebSocket:
             self._close_protocol_error()
             return
         code = struct.unpack("!H", payload[:2])[0]
-        if code < 3000 and code not in _PEER_CLOSE_CODES_OK:
+        # RFC 6455 Sec. 7.4.2: a peer may send a registered code (handled by
+        # the allow-list) or a private code in 3000-4999; anything below 1000,
+        # an unassigned/reserved code below 3000, or a code above 4999 is a
+        # protocol violation answered with 1002.
+        if code > 4999 or (code < 3000 and code not in _PEER_CLOSE_CODES_OK):
             self._close_protocol_error()
             return
         try:
