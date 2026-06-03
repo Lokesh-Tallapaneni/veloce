@@ -103,6 +103,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public `WebSocket.start_heartbeat()` arms the timer for hand-built
   connections. Opt-in; the default `None` preserves the previous behaviour, and
   the value is inert in ASGI mode where the server owns ping/pong.
+- `Response.check_preconditions(request)` enforces the write-side `If-Match`
+  precondition (RFC 9110 Sec. 13.1.1), raising `PreconditionFailed` (412) when
+  the request's `If-Match` does not match the response's ETag under the strong
+  comparison (Sec. 8.8.3.1) - the lost-update guard. `If-Match: *` is satisfied
+  when a current representation exists (an ETag is present); with no `If-Match`
+  header the response is returned unchanged. Opt-in and separate from
+  `make_conditional`, so existing read-side 304 flows are unaffected.
+- `StaticFiles` now honours the write-side preconditions `If-Match` and
+  `If-Unmodified-Since`, returning `412 Precondition Failed` per RFC 9110
+  Sec. 13.1.1 / 13.1.4 (precedence per Sec. 13.2.2: `If-Match` first). Because
+  Veloce serves weak file ETags, a concrete `If-Match` against a static file
+  fails closed (only `*` succeeds); clients needing optimistic concurrency on
+  static assets should use `If-Unmodified-Since`. The read-side `If-None-Match`
+  / `If-Modified-Since` 304 behaviour is unchanged.
+- `SessionMiddleware` and `ServerSessionMiddleware` accept `vary_on_cookie`
+  (default `True`) and `persist_on_status` constructor keywords. The former
+  controls the new `Vary: Cookie` emission (below); the latter is a
+  `(status_code) -> bool` policy that overrides the default 5xx no-persist
+  rule (below).
 
 ### Changed
 
@@ -155,6 +174,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default `Bearer` scheme, removing a per-request string construction on
   HTTP Bearer and OAuth2/OpenID authenticated paths. A custom scheme name is
   unaffected.
+- The session middlewares now emit `Vary: Cookie` (RFC 9110 Sec. 12.5.5) on
+  responses that set or delete the session cookie, so a shared proxy/CDN keyed
+  on URL alone cannot serve one user's session-personalized body to another.
+  Anonymous responses that do not touch the session stay cacheable. Pass
+  `vary_on_cookie=False` to opt out.
+- The session middlewares no longer persist a modified session on a 5xx
+  response by default - a failed request should not write a half-mutated
+  session (neither the signed Set-Cookie nor the server-store write/delete).
+  Pass `persist_on_status=<callable>` to override (e.g. `lambda s: s != 503`).
+  Persistence on 2xx/3xx/4xx is unchanged.
 
 ### Fixed
 
@@ -180,6 +209,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (its bound-method owner garbage-collected) is no longer stranded in the
   subscriber list. Because the previous `has_receivers_for()` guard never pruned,
   such entries accumulated; dispatching `send()` directly now drops them.
+- `HTTPBasic` / `HTTPDigest` now escape the `realm` in the `WWW-Authenticate`
+  challenge as an RFC 7235 / RFC 7230 Sec. 3.2.6 quoted-string (backslash-escaping
+  `"` and `\`) instead of percent-encoding it with `urllib.parse.quote`. A realm
+  such as `testrealm@example.com` is emitted literally rather than as
+  `testrealm%40example.com`. A realm containing CR/LF/NUL or other control
+  characters now raises `ValueError` at construction.
+- Non-latin-1 response header values are now RFC 2047 MIME-encoded (an ASCII
+  `=?utf-8?b?...?=` token) on both the HTTP/1.1 (`Response.encode`) and ASGI
+  emit paths, instead of raising `UnicodeEncodeError` on the HTTP/1.1 path and
+  emitting raw UTF-8 (mojibake once re-decoded as latin-1) on the ASGI path.
+  ASCII and latin-1-representable values are emitted verbatim.
+- `GZipMiddleware` weakens a strong `ETag` to `W/...` after compressing the
+  body, since compression changes the bytes on the wire and a strong validator
+  (RFC 9110 Sec. 8.8.1) must denote byte-identical representations. Already-weak,
+  absent, or malformed (non-quoted) tags are left untouched.
+- WebSocket frames with a non-zero RSV bit (RFC 6455 Sec. 5.2 - Veloce
+  negotiates no extension) or a stray continuation frame with no message in
+  progress (Sec. 5.4) are now rejected with a `1002` protocol-error close,
+  instead of being silently accepted / dropped.
+
+### Security
+
+- `safe_join` now rejects any path segment that names a Windows reserved device
+  (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, `CONIN$`,
+  `CONOUT$`, including extension/trailing-dot/space aliases such as `COM1.txt`
+  and `COM1.`) when running on Windows, so a request like `static/COM1` can no
+  longer reach `os.stat` and hang a worker on a device handle. The check is
+  gated on `os.name == "nt"`, so POSIX deployments are unaffected and pay no
+  per-request cost. `secure_filename` gains the `CONIN$`/`CONOUT$` aliases for
+  consistency.
 
 ## [0.3.0] - 2026-06-01
 
