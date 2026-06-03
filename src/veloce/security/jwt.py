@@ -152,6 +152,13 @@ def decode_jwt(
     if not algorithms:
         raise ValueError("algorithms allow-list is required and must be non-empty")
     secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
+    # RFC 7519/RFC 2104: an empty HMAC key would verify tokens signed with the
+    # empty secret (e.g. an unset secret env var), so reject it symmetrically
+    # with encode_jwt. This is a configuration/programmer error, not a token
+    # error, so it raises ValueError (loud) rather than a JWTError that an auth
+    # dependency would swallow into a 401.
+    if not secret_bytes:
+        raise ValueError("secret must be non-empty")
 
     parts = token.split(".", 3)
     if len(parts) != 3:

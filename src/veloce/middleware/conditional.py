@@ -49,7 +49,12 @@ class ConditionalGetMiddleware(Middleware):
         ):
             response.add_etag(weak=True)
 
-        if (
+        # `make_conditional()` clears `body` but not `_stream`, so downgrading a
+        # streamed response to 304 would emit a bodiless status alongside the
+        # original chunks - protocol-invalid per RFC 9110 Sec. 15.4.5 (a 304
+        # carries no content). Skip the downgrade for streamed responses; they
+        # pass through unchanged (the stream is never buffered for revalidation).
+        if not response.is_streamed and (
             response.headers.get(HEADER_ETAG)
             or response.headers.get("etag")
             or response.headers.get(HEADER_LAST_MODIFIED)

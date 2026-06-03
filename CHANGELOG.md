@@ -430,6 +430,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `decode_jwt` now rejects an empty `str`/`bytes` secret with `ValueError`,
+  symmetric with `encode_jwt`. An empty HMAC key would otherwise verify tokens
+  signed with the empty secret (for example when a secret environment variable
+  is unset). The check runs before any token parsing and raises a loud
+  `ValueError` - a configuration error - rather than a `JWTError` that an auth
+  dependency would translate into a `401`.
+
+- `ConditionalGetMiddleware` no longer downgrades a `StreamingResponse` to
+  `304 Not Modified` on a satisfied `If-None-Match` / `If-Modified-Since`. The
+  downgrade cleared the buffered body but not the stream, so the 304 would still
+  emit the original chunks, which is invalid per RFC 9110. Streamed responses
+  now pass through unchanged.
+
+- `StaticFiles` precompressed selection now honours an explicit `q=0` coding
+  over an `Accept-Encoding` wildcard (RFC 9110 Sec. 12.5.3). Previously
+  `Accept-Encoding: br;q=0, *;q=1` served the `.br` sibling even though Brotli
+  was explicitly rejected; an explicit `q=0` now excludes the coding, with the
+  wildcard q-value used only for codings not explicitly listed. A new
+  `AcceptHeader.quality_explicit` method exposes this explicit-over-wildcard
+  q-value resolution.
+
 - A `WebSocket.send_text` / `send_bytes` to a peer that has gone away under an
   ASGI server now raises `WebSocketDisconnect` instead of a raw transport
   `OSError` / `ConnectionError` (broken pipe, connection reset), so handlers

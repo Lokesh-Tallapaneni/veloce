@@ -501,6 +501,26 @@ class AcceptHeader:
                 best = q
         return best
 
+    def quality_explicit(self, value: str) -> float:
+        """Return the q-value for `value`, with explicit tokens overriding `*`.
+
+        RFC 9110 Sec. 12.5.3: an explicit `q=0` means "not acceptable" and must
+        override a more permissive wildcard. `quality()` returns the MAX across
+        an exact match and a `*` match, so for `br;q=0, *;q=1` it reports 1.0 for
+        `br` - serving a rejected coding. This variant prefers an EXACT token
+        match (so an explicit `q=0` excludes the coding) and only falls back to
+        the `*` wildcard q when `value` is not explicitly listed. Used by
+        precompressed static selection where honoring an explicit rejection
+        matters; non-MIME (Accept-Encoding) semantics.
+        """
+        for opt, q in self._options:
+            if opt == value:
+                return q
+        for opt, q in self._options:
+            if opt == "*":
+                return q
+        return 0.0
+
     def best_match(self, options: list[str], default: str | None = None) -> str | None:
         """Return the option the client accepts with the highest q-value.
 

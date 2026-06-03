@@ -114,6 +114,28 @@ def test_streaming_passes_through():
     assert not (r.headers.get("ETag") or r.headers.get("etag"))
 
 
+def test_streaming_with_etag_not_downgraded_to_304():
+    # A StreamingResponse carrying its own ETag must NOT be downgraded to a
+    # bodiless 304 on a matching If-None-Match: make_conditional() clears `body`
+    # but not `_stream`, so a 304 would still emit the chunks - protocol-invalid
+    # per RFC 9110 Sec. 15.4.5. The stream passes through unchanged (200).
+    app = Veloce(openapi_url=None)
+    app.add_middleware(ConditionalGetMiddleware())
+
+    @app.get("/")
+    async def index(request):
+        async def gen():
+            yield b"chunk-"
+            yield b"data"
+
+        return StreamingResponse(gen(), headers={"ETag": '"stream-tag"'})
+
+    client = TestClient(app)
+    r = client.get("/", headers={"If-None-Match": '"stream-tag"'})
+    assert r.status_code == 200
+    assert r.body == b"chunk-data"
+
+
 def test_compose_with_gzip():
     app = Veloce(openapi_url=None)
     app.add_middleware(GZipMiddleware(minimum_size=0))

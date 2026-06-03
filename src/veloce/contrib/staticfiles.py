@@ -220,10 +220,15 @@ class StaticFiles:
         # negated index keeps the sort stable on that order without reversing.
         accept = request.accept_encodings
         order = list(self.PRECOMPRESSED_VARIANTS)
+        # RFC 9110 Sec. 12.5.3: an explicit `q=0` is an explicit rejection that
+        # must override a permissive `*` wildcard. `quality()` returns the MAX
+        # across an exact and a `*` match, so `br;q=0, *;q=1` would wrongly score
+        # br at 1.0. `quality_explicit()` honors an explicit token's q and only
+        # falls back to the wildcard for codings not explicitly listed.
         scored = [
-            (accept.quality(enc), -idx, enc)
+            (q, -idx, enc)
             for idx, enc in enumerate(order)
-            if accept.quality(enc) > 0
+            if (q := accept.quality_explicit(enc)) > 0
         ]
         if not scored:
             return None

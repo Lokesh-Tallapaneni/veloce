@@ -16,6 +16,7 @@ from veloce.security.jwt import (
     InvalidIssuerError,
     InvalidSignatureError,
     InvalidTokenError,
+    JWTError,
     MissingClaimError,
     UnsupportedAlgorithmError,
 )
@@ -169,6 +170,18 @@ def test_signature_verified_before_payload_decode():
     bad_token = f"{header_b64}.{payload_b64}.{_b64encode(b'badsig')}"
     with pytest.raises(InvalidSignatureError):
         decode_jwt(bad_token, SECRET, algorithms=["HS256"])
+
+
+def test_decode_rejects_empty_secret():
+    # RFC 7519/RFC 2104: an empty HMAC key must be rejected symmetrically with
+    # encode_jwt (a config/programmer error - e.g. unset secret env var). It is
+    # a loud ValueError, NOT a JWTError that an auth dependency would swallow
+    # into a 401, and it fires before any token verification.
+    token = encode_jwt({"sub": "1"}, SECRET)
+    for empty in ("", b""):
+        with pytest.raises(ValueError) as excinfo:
+            decode_jwt(token, empty, algorithms=["HS256"])
+        assert not isinstance(excinfo.value, JWTError)
 
 
 def test_import_surface():

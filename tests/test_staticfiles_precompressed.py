@@ -71,6 +71,50 @@ async def test_qzero_rejects_encoding(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_explicit_qzero_overrides_wildcard(tmp_path):
+    # RFC 9110 Sec. 12.5.3: an explicit `br;q=0` is a rejection that must
+    # override the `*;q=1` wildcard. The buggy MAX-across-exact-and-wildcard
+    # `quality()` would score br at 1.0 and serve the `.br` sibling; the fix
+    # honors the explicit q=0 and falls back to gzip (acceptable via `*`).
+    (tmp_path / "app.css").write_bytes(b"RAW")
+    (tmp_path / "app.css.br").write_bytes(b"BR")
+    (tmp_path / "app.css.gz").write_bytes(b"GZIP")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=0, *;q=1"}))
+    assert resp.status_code == 200
+    assert resp.headers["Content-Encoding"] == "gzip"
+    assert resp.body == b"GZIP"
+
+
+@pytest.mark.asyncio
+async def test_explicit_qzero_all_codings_serves_identity(tmp_path):
+    # Both codings explicitly rejected via q=0 even though `*;q=1` is present:
+    # no acceptable variant remains, so the raw asset is served.
+    (tmp_path / "app.css").write_bytes(b"RAW")
+    (tmp_path / "app.css.br").write_bytes(b"BR")
+    (tmp_path / "app.css.gz").write_bytes(b"GZIP")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=0, gzip;q=0, *;q=1"}))
+    assert resp.status_code == 200
+    assert "Content-Encoding" not in resp.headers
+    assert resp.body == b"RAW"
+
+
+@pytest.mark.asyncio
+async def test_wildcard_only_selects_variant(tmp_path):
+    # A plain `*` with no explicit coding still selects a variant (br preferred
+    # over gzip on the q tie via PRECOMPRESSED_VARIANTS order).
+    (tmp_path / "app.css").write_bytes(b"RAW")
+    (tmp_path / "app.css.br").write_bytes(b"BR")
+    (tmp_path / "app.css.gz").write_bytes(b"GZIP")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "*"}))
+    assert resp.status_code == 200
+    assert resp.headers["Content-Encoding"] == "br"
+    assert resp.body == b"BR"
+
+
+@pytest.mark.asyncio
 async def test_no_sibling_falls_through(tmp_path):
     (tmp_path / "app.css").write_bytes(b"RAW")
     sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
