@@ -14,6 +14,7 @@ import struct
 
 import pytest
 
+from veloce.exceptions import WebSocketDisconnect
 from veloce.status import WS_1006_ABNORMAL_CLOSURE
 from veloce.websocket import WebSocket
 
@@ -199,5 +200,21 @@ def test_pong_with_wrong_token_does_not_clear() -> None:
         ws.feed_data(_client_frame(0xA, struct.pack("!I", 0x99999999)))
         assert ws._hb_token is not None
         await ws.close()
+
+    asyncio.run(go())
+
+
+def test_heartbeat_timeout_unblocks_parked_receive() -> None:
+    """A silent peer that trips the heartbeat must wake a handler parked in
+    receive_*() with a 1006 disconnect, not leave it hung forever."""
+
+    async def go() -> None:
+        ws, _transport = _make_ws(heartbeat=0.02)
+        ws._accepted = True
+        ws.start_heartbeat()
+        with pytest.raises(WebSocketDisconnect) as exc:
+            await ws.receive_text()
+        assert exc.value.code == WS_1006_ABNORMAL_CLOSURE
+        assert ws._closed is True
 
     asyncio.run(go())

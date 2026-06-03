@@ -72,7 +72,15 @@ def _validate_heartbeat(heartbeat: float | None) -> None:
 # code below 1000 or an unassigned code in the 1016-2999 range - is a
 # protocol error answered with 1002. Codes >=3000 are application/registry
 # defined and accepted without a registry check.
-_PEER_CLOSE_CODES_OK = frozenset({1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011})
+_PEER_CLOSE_CODES_OK = frozenset(
+    {1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014}
+)
+
+# Terminal sentinel pushed onto the raw receive queue to wake a handler parked
+# in `receive_*()` when the connection is closed out-of-band (e.g. a heartbeat
+# timeout on a silent peer). Typed `Any` so it can ride the `Queue[bytes]`; the
+# receive path checks identity and raises `WebSocketDisconnect`.
+_RAW_DISCONNECT: Any = object()
 
 
 class _Utf8Validator:
@@ -767,12 +775,19 @@ class WebSocket:
         """
         eff = self._effective_timeout(timeout)
         if eff is None:
-            return await self._receive_queue.get()
-        try:
-            return await asyncio.wait_for(self._receive_queue.get(), timeout=eff)
-        except (TimeoutError, asyncio.TimeoutError):
-            await self._maybe_idle_timeout(timeout, eff)
-            raise
+            item = await self._receive_queue.get()
+        else:
+            try:
+                item = await asyncio.wait_for(self._receive_queue.get(), timeout=eff)
+            except (TimeoutError, asyncio.TimeoutError):
+                await self._maybe_idle_timeout(timeout, eff)
+                raise
+        if item is _RAW_DISCONNECT:
+            # A terminal close (e.g. a heartbeat timeout on a dead peer) woke
+            # this parked receive; surface it as a disconnect carrying the
+            # recorded close code so the handler unwinds like a peer close.
+            raise WebSocketDisconnect(self.close_code or WS_1000_NORMAL_CLOSURE)
+        return item
 
     async def _maybe_idle_timeout(self, timeout: float | None, eff: float | None) -> None:
         """Treat a `wait_for` timeout as an idle close when idle won the race.
@@ -1315,6 +1330,12 @@ class WebSocket:
         self._cancel_heartbeat()
         self._closed = True
         self.close_code = WS_1006_ABNORMAL_CLOSURE
+        # Wake a handler parked in `receive_*()`: a silent peer leaves the
+        # queue empty, so the reader is blocked there - without this the
+        # dead-peer detection would close the transport yet hang the handler.
+        if self._receive_queue is not None:
+            with contextlib.suppress(asyncio.QueueFull):
+                self._receive_queue.put_nowait(_RAW_DISCONNECT)
         with contextlib.suppress(Exception):
             if self.transport is not None:
                 self.transport.close()

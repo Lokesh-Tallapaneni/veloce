@@ -214,3 +214,14 @@ async def test_close_frame_with_invalid_utf8_reason_closes_with_1007():
     with pytest.raises(WebSocketDisconnect):
         ws.feed_data(_client_frame(0x8, body, fin=True))
     assert _last_close_code(transport) == 1007
+
+
+@pytest.mark.parametrize("code", [1012, 1013, 1014])
+async def test_registered_close_codes_1012_1014_accepted(code):
+    """1012 (Service Restart), 1013 (Try Again Later), 1014 (Bad Gateway) are
+    registered peer close codes - surface them, do not answer with 1002."""
+    ws, _ = _make_ws()
+    with pytest.raises(WebSocketDisconnect) as exc:
+        ws.feed_data(_client_frame(0x8, struct.pack("!H", code), fin=True))
+    assert exc.value.code == code
+    assert ws.close_code == code

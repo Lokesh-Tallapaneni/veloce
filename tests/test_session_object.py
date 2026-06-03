@@ -163,3 +163,16 @@ def test_middleware_session_not_new_with_valid_cookie():
 
     # Second request carried the session cookie → not new.
     assert seen == [False]
+
+
+def test_truthiness_and_len_count_as_access():
+    """`if session:` (dict derives bool from __len__) and `len(session)` read
+    session state, so both must flip `accessed` for the Vary: Cookie guard."""
+    s = Session({"user": "alice"})
+    assert s.accessed is False
+    assert bool(s) is True
+    assert s.accessed is True
+
+    s2 = Session({"user": "bob"})
+    assert len(s2) == 1
+    assert s2.accessed is True

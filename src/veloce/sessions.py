@@ -93,6 +93,14 @@ class Session(dict[str, Any]):
         self.accessed = True
         return super().__iter__()
 
+    def __len__(self) -> int:
+        # `len(session)` and truthiness checks (`if session:`/`bool(session)`,
+        # which dict derives from `__len__`) both read session state, so they
+        # must count as access or a personalized response could skip
+        # `Vary: Cookie` and leak across a shared cache.
+        self.accessed = True
+        return super().__len__()
+
     def keys(self) -> Any:
         self.accessed = True
         return super().keys()
