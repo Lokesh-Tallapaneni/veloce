@@ -27,6 +27,10 @@ from veloce.app import Veloce
 from veloce.background import BackgroundTask, BackgroundTasks
 from veloce.blueprints import Blueprint
 
+# MCP (Model Context Protocol) - the per-call context handle a tool handler
+# may declare. The server / transport classes stay under veloce.contrib.mcp.
+from veloce.contrib.mcp.context import MCPContext
+
 # Static files
 from veloce.contrib.staticfiles import StaticFiles
 
@@ -261,6 +265,8 @@ __all__ = [
     "BackgroundTasks",
     # Static
     "StaticFiles",
+    # MCP (Model Context Protocol)
+    "MCPContext",
     # Data structures
     "UploadFile",
     "URL",

@@ -197,6 +197,8 @@ class Blueprint(Router):
                 callbacks=info.callbacks,
                 subdomain=info.subdomain,
                 host=info.host,
+                expose_as_mcp_tool=info.expose_as_mcp_tool,
+                mcp_description=info.mcp_description,
             )
 
         # Inherit child hooks + error handlers. Child's hooks will be

@@ -484,6 +484,11 @@ class Veloce(Router):
         # finished HTTP request with a `RequestMetrics` record. Empty by
         # default, so an un-instrumented app pays nothing.
         self._instrumentation: list[Callable] = []
+        # MCP-only tool registrations (contrib.mcp). Each entry is
+        # `(handler, name, description, namespace)`, recorded by
+        # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
+        # tool registry is assembled.
+        self._mcp_tools: list[tuple[Callable, str | None, str | None, str | None]] = []
         # Dev-mode event-loop blocking watchdog - armed during startup only
         # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
         # (and free) for every other app.
@@ -1861,6 +1866,8 @@ class Veloce(Router):
                 callbacks=info.callbacks,
                 subdomain=info.subdomain,
                 host=info.host,
+                expose_as_mcp_tool=info.expose_as_mcp_tool,
+                mcp_description=info.mcp_description,
             )
 
         # Bucket the blueprint's hooks under its name so dispatch can
@@ -2142,6 +2149,61 @@ class Veloce(Router):
         self._static_handlers.append(
             StaticFiles(directory=directory, prefix=prefix, html=html, must_exist=must_exist)
         )
+
+    # -- MCP (Model Context Protocol) -----------------------------
+
+    def mcp_tool(
+        self,
+        description: str,
+        *,
+        name: str | None = None,
+        namespace: str | None = None,
+    ) -> Callable:
+        """Register an MCP-only tool callable by an AI agent (contrib.mcp).
+
+        The decorated coroutine (or sync function) becomes an MCP tool whose
+        input JSON Schema is derived from its signature; `Depends()` params
+        resolve through the same dependency machinery routes use, with an
+        `MCPContext` standing in for the HTTP `Request`. `description` is the
+        required LLM-facing text (separate from the docstring). `namespace`
+        prefixes the tool name (`<namespace>_<name>`), mirroring how a
+        blueprint namespaces an exposed route.
+
+        Usage::
+
+            @app.mcp_tool(description="Add two integers")
+            async def add(a: int, b: int) -> int:
+                return a + b
+        """
+        from veloce.contrib.mcp.safety import require_mcp_description
+
+        def decorator(func: Callable) -> Callable:
+            require_mcp_description(name or func.__name__, description)
+            self._mcp_tools.append((func, name, description, namespace))
+            return func
+
+        return decorator
+
+    def mount_mcp(self, transport: str = "stdio") -> Any:
+        """Build the MCP server and serve the registered tools.
+
+        Assembles the tool registry from `@app.mcp_tool` registrations plus
+        every route flagged `expose_as_mcp_tool=True`, then serves it over the
+        chosen transport. v1 supports `transport="stdio"` only (JSON-RPC 2.0
+        on stdin/stdout, for subprocess use); the coroutine runs until stdin
+        closes. Returns the awaitable serve coroutine so a caller may schedule
+        it explicitly (`asyncio.run(app.mount_mcp())`).
+        """
+        from veloce.contrib.mcp.server import MCPServer
+        from veloce.contrib.mcp.transports.stdio import serve_stdio
+
+        if transport != "stdio":
+            raise ValueError(
+                f"Unsupported MCP transport {transport!r}; v1 supports 'stdio' only "
+                "(HTTP / SSE transports are planned for v2)."
+            )
+        server = MCPServer(self)
+        return serve_stdio(server)
 
     # -- Request handling -----------------------------------------
 

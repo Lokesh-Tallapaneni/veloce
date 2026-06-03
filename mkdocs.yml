@@ -151,6 +151,7 @@ nav:
       - Server-Sent Events: guide/sse.md
       - Signals: guide/signals.md
       - WebSockets: guide/websockets.md
+      - MCP (AI Tools): guide/mcp.md
       - Testing: guide/testing.md
       - Deployment: guide/deployment.md
   - Comparison: comparison.md

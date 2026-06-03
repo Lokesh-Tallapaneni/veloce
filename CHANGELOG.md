@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Model Context Protocol integration under `veloce.contrib.mcp`, exposing a
+  Veloce app's handlers as MCP tools callable by an AI agent over JSON-RPC 2.0.
+  Register an MCP-only tool with `@app.mcp_tool(description=...)`, or expose an
+  existing route by passing `expose_as_mcp_tool=True` and `mcp_description=...`
+  on `@app.get` / `@app.post` / etc. Each tool's input JSON Schema is derived
+  from the handler signature, reusing the OpenAPI schema generation; `Depends()`
+  parameters resolve through the same dependency machinery routes use, with an
+  `MCPContext` standing in for the HTTP `Request` (mirroring WebSocket DI),
+  including `yield`-style teardown and `Security` support. `app.mount_mcp(
+  transport="stdio")` serves the registered tools over stdin/stdout for
+  subprocess use, handling the `initialize`, `tools/list`, and `tools/call`
+  methods. Mutating verbs (`POST`/`PUT`/`DELETE`/`PATCH`) are never
+  auto-exposed - they require the explicit `expose_as_mcp_tool=True` opt-in -
+  and every exposed handler must carry a non-empty `mcp_description`, enforced
+  at registration. Blueprint-exposed routes are namespaced by the blueprint
+  name, and per-tool calls fire the existing `app.add_instrumentation` hooks.
+  `MCPContext` is importable from the top-level `veloce` package; the server
+  and transport classes live under `veloce.contrib.mcp`. The implementation is
+  a from-spec minimal JSON-RPC handshake with no new hard dependency.
+
 - `ServerSentEvent.json` builds an event whose `data` field is a
   JSON-serialized payload. Pass any JSON-encodable value (`dict`, `list`,
   string, number) and it is serialized once at construction with the
