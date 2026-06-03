@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import gzip
+import zlib
+from typing import TYPE_CHECKING, Any
 
 from veloce._constants import (
     HEADER_ACCEPT_ENCODING,
@@ -18,11 +20,15 @@ from veloce._constants import (
     MIME_APPLICATION_XHTML_XML,
     MIME_APPLICATION_XML,
     MIME_JSON,
+    MIME_TEXT_EVENT_STREAM,
 )
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
 from veloce.status import HTTP_206_PARTIAL_CONTENT
+
+if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import AsyncIterator
 
 # Default compressible content types - text formats and JSON/XML/JS.
 # Image/video/audio/zip are intentionally absent: those formats already
@@ -98,6 +104,8 @@ class GZipMiddleware(Middleware):
         compresslevel: int = 6,
         include_types: tuple[str, ...] | None = None,
         exclude_types: tuple[str, ...] = (),
+        min_stream_chunk_offload: int = 32768,
+        latency_sensitive_types: frozenset[str] = frozenset({MIME_TEXT_EVENT_STREAM}),
     ) -> None:
         self.minimum_size = minimum_size
         self.compresslevel = compresslevel
@@ -108,11 +116,30 @@ class GZipMiddleware(Middleware):
             tuple(include_types) if include_types is not None else _DEFAULT_COMPRESSIBLE
         )
         self.exclude_types: tuple[str, ...] = tuple(exclude_types)
+        # Streaming bodies are compressed chunk-by-chunk through a single
+        # `zlib.compressobj`. A chunk at or above this many bytes is offloaded
+        # to the thread-pool executor (CPU-bound); smaller frames compress
+        # inline to avoid task-scheduling overhead on the common case.
+        self.min_stream_chunk_offload = min_stream_chunk_offload
+        # Bare content types that must never be buffered through compression:
+        # SSE (`text/event-stream`) trades wire size for per-event latency, and
+        # routing it through `compressobj` would merge/delay events.
+        self.latency_sensitive_types = latency_sensitive_types
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Compress the response body with gzip if the client accepts it."""
         accept = request.headers.get(HEADER_ACCEPT_ENCODING, "")
-        if not _accepts_gzip(accept) or len(response.body) < self.minimum_size:
+        if not _accepts_gzip(accept):
+            return response
+
+        # Streaming bodies have no materialised `response.body`, so the
+        # `minimum_size` gate (a buffered-only heuristic) does not apply.
+        # Compress the stream lazily, chunk-by-chunk, and fall through to the
+        # buffered path only for non-streamed responses.
+        if response.is_streamed:
+            return self._process_stream(request, response)
+
+        if len(response.body) < self.minimum_size:
             return response
 
         # Never compress a partial-content (206) response, or any response
@@ -154,19 +181,96 @@ class GZipMiddleware(Middleware):
             response.headers[HEADER_CONTENT_LENGTH] = str(len(compressed))
             response.add_vary(HEADER_ACCEPT_ENCODING)
             response._encoded = None
-            # Compression changes the bytes on the wire, so a STRONG ETag
-            # (RFC 9110 Sec. 8.8.1 - byte-identical representations) no longer
-            # describes them. Weaken it to `W/...`. Already-weak or malformed
-            # (non-quoted) tags are left untouched so we never fabricate a
-            # validator. `headers` is a plain dict, so accept either spelling
-            # and rewrite whichever key actually holds the tag.
-            for etag_key in (HEADER_ETAG, "etag"):
-                etag = response.headers.get(etag_key)
-                if etag and etag[:1] == '"':
-                    response.headers[etag_key] = "W/" + etag
-                    break
+            self._weaken_strong_etag(response)
 
         return response
+
+    def _process_stream(self, request: Request, response: Response) -> Response:
+        """Wrap a streaming response's body in a lazy gzip compressor.
+
+        Mirrors the buffered guards (compressible type, no pre-existing
+        encoding, no 206 / Content-Range) but skips real-time latency-sensitive
+        streams (SSE) so events are not buffered through `compressobj`.
+        """
+        # SSE and other latency-sensitive streams trade wire size for
+        # per-event delivery; routing them through a buffering compressor would
+        # merge or delay frames.
+        if (
+            getattr(response, "is_event_source", False)
+            or response.mimetype in self.latency_sensitive_types
+        ):
+            return response
+
+        if not self._should_compress_type(response.content_type):
+            return response
+
+        # Don't re-encode a response that already declares a Content-Encoding.
+        existing_encoding = response.headers.get(HEADER_CONTENT_ENCODING)
+        if existing_encoding and existing_encoding.strip().lower() not in ("", "identity"):
+            return response
+
+        # Range responses are served whole and uncompressed (see the buffered
+        # path for the RFC 9110 Sec. 14 rationale).
+        if (
+            response.status_code == HTTP_206_PARTIAL_CONTENT
+            or HEADER_CONTENT_RANGE in response.headers
+        ):
+            return response
+
+        response._stream = self._compress_stream(response._stream, request)
+        response.headers[HEADER_CONTENT_ENCODING] = HEADER_VALUE_GZIP
+        # A streamed gzip body is chunked / `more_body`-framed; any declared
+        # length describes the uncompressed representation and must go (the
+        # native chunked path relies on Transfer-Encoding, not Content-Length).
+        response.headers.pop(HEADER_CONTENT_LENGTH, None)
+        response.headers.pop("content-length", None)
+        response.add_vary(HEADER_ACCEPT_ENCODING)
+        response._encoded = None
+        self._weaken_strong_etag(response)
+        return response
+
+    async def _compress_stream(self, stream: Any, request: Request) -> AsyncIterator[bytes]:
+        """Gzip a chunk stream lazily, reusing one `compressobj` across chunks.
+
+        `wbits = MAX_WBITS | 16` selects gzip framing (header + CRC trailer) so
+        the emitted bytes match `Content-Encoding: gzip`, like the buffered
+        path's `gzip.compress`. Compression is deferred (no per-chunk flush) so
+        the stream stays well-compressed; the gzip trailer is written by the
+        final `Z_FINISH` flush.
+        """
+        co = zlib.compressobj(self.compresslevel, zlib.DEFLATED, zlib.MAX_WBITS | 16)
+        loop = asyncio.get_running_loop()
+        async for chunk in stream:
+            # Downstream chunked / ASGI emit paths expect bytes; streams may
+            # yield str (see `StreamingResponse._aiter_sync`).
+            b = chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+            if len(b) < self.min_stream_chunk_offload:
+                out = co.compress(b)
+            else:
+                # Offload large frames to the executor, preserving ContextVars.
+                ctx = contextvars.copy_context()
+                out = await loop.run_in_executor(None, ctx.run, co.compress, b)
+            if out:
+                yield out
+        # `Z_FINISH` emits any buffered output plus the gzip CRC/length trailer.
+        tail = co.flush(zlib.Z_FINISH)
+        if tail:
+            yield tail
+
+    def _weaken_strong_etag(self, response: Response) -> None:
+        """Downgrade a strong ETag to weak after the wire bytes change.
+
+        Compression changes the bytes on the wire, so a STRONG ETag
+        (RFC 9110 Sec. 8.8.1 - byte-identical representations) no longer
+        describes them. Already-weak or malformed (non-quoted) tags are left
+        untouched so we never fabricate a validator. `headers` is a plain dict,
+        so accept either spelling and rewrite whichever key holds the tag.
+        """
+        for etag_key in (HEADER_ETAG, "etag"):
+            etag = response.headers.get(etag_key)
+            if etag and etag[:1] == '"':
+                response.headers[etag_key] = "W/" + etag
+                break
 
     def _should_compress_type(self, content_type: str) -> bool:
         ct = (content_type or "").split(";", 1)[0].strip().lower()
