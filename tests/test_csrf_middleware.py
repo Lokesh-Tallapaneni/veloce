@@ -250,6 +250,228 @@ async def test_signed_csrf_respects_max_age():
     assert resp.status_code == 403
 
 
+# ── Origin-first verification stage ──────────────────────────────────
+
+
+async def test_origin_first_matching_origin_passes():
+    """With trusted_origins set, a matching Origin plus valid double-submit passes."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(trusted_origins=("https://app.example.com",)))
+
+    @app.post("/x")
+    async def x():
+        return {"ok": True}
+
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={
+                "host": "app.example.com",
+                "origin": "https://app.example.com",
+                "cookie": "csrf_token=tok",
+                "x-csrf-token": "tok",
+            },
+        )
+    )
+    assert resp.status_code == 200
+
+
+async def test_origin_first_foreign_origin_refused_before_token():
+    """A foreign Origin is a hard 403 even when double-submit would pass."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(trusted_origins=("https://app.example.com",)))
+
+    @app.post("/x")
+    async def x():
+        return {}
+
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={
+                "host": "app.example.com",
+                "origin": "https://evil.example.org",
+                # Attacker who injected a matching cookie+header still loses.
+                "cookie": "csrf_token=tok",
+                "x-csrf-token": "tok",
+            },
+        )
+    )
+    assert resp.status_code == 403
+    import orjson
+
+    assert orjson.loads(resp.body) == {"detail": "CSRF origin mismatch"}
+
+
+async def test_origin_first_own_origin_always_trusted():
+    """The request's own scheme://host is trusted without listing it."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(trusted_origins=("https://other.example.com",)))
+
+    @app.post("/x")
+    async def x():
+        return {"ok": True}
+
+    req = Request(
+        method="POST",
+        path="/x",
+        query_string="",
+        headers={
+            "host": "self.example.com",
+            "origin": "https://self.example.com",
+            "cookie": "csrf_token=tok",
+            "x-csrf-token": "tok",
+        },
+        body=b"",
+        scope={"type": "http", "scheme": "https"},
+    )
+    resp = await app.handle_request(req)
+    assert resp.status_code == 200
+
+
+async def test_origin_first_subdomain_wildcard():
+    """A leading-dot trusted host matches the host and its subdomains."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(trusted_origins=("https://.example.com",)))
+
+    @app.post("/x")
+    async def x():
+        return {"ok": True}
+
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={
+                "host": "api.internal",
+                "origin": "https://team.example.com",
+                "cookie": "csrf_token=tok",
+                "x-csrf-token": "tok",
+            },
+        )
+    )
+    assert resp.status_code == 200
+
+    # A look-alike suffix attack (exampleXcom) must not match.
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={
+                "host": "api.internal",
+                "origin": "https://evilexample.com",
+                "cookie": "csrf_token=tok",
+                "x-csrf-token": "tok",
+            },
+        )
+    )
+    assert resp.status_code == 403
+
+
+async def test_origin_first_https_missing_origin_requires_referer():
+    """On https with no Origin, a missing Referer is rejected; a matching one passes."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(trusted_origins=("https://app.example.com",)))
+
+    @app.post("/x")
+    async def x():
+        return {"ok": True}
+
+    # https scope, no Origin, no Referer -> refused.
+    scope = {"type": "http", "scheme": "https"}
+    req = Request(
+        method="POST",
+        path="/x",
+        query_string="",
+        headers={
+            "host": "app.example.com",
+            "cookie": "csrf_token=tok",
+            "x-csrf-token": "tok",
+        },
+        body=b"",
+        scope=scope,
+    )
+    resp = await app.handle_request(req)
+    assert resp.status_code == 403
+    import orjson
+
+    assert orjson.loads(resp.body) == {"detail": "CSRF referer missing"}
+
+    # https scope, no Origin, matching Referer -> passes.
+    req = Request(
+        method="POST",
+        path="/x",
+        query_string="",
+        headers={
+            "host": "app.example.com",
+            "referer": "https://app.example.com/some/page",
+            "cookie": "csrf_token=tok",
+            "x-csrf-token": "tok",
+        },
+        body=b"",
+        scope=scope,
+    )
+    resp = await app.handle_request(req)
+    assert resp.status_code == 200
+
+
+async def test_origin_first_http_no_origin_falls_through_to_double_submit():
+    """Plain-http API client with no Origin defers to the double-submit factor."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(trusted_origins=("https://app.example.com",)))
+
+    @app.post("/x")
+    async def x():
+        return {"ok": True}
+
+    # No scheme in scope -> defaults to http. No Origin. Double-submit decides.
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={
+                "host": "app.example.com",
+                "cookie": "csrf_token=tok",
+                "x-csrf-token": "tok",
+            },
+        )
+    )
+    assert resp.status_code == 200
+
+    # Mismatched double-submit still loses.
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={
+                "host": "app.example.com",
+                "cookie": "csrf_token=tok",
+                "x-csrf-token": "WRONG",
+            },
+        )
+    )
+    assert resp.status_code == 403
+
+
+async def test_origin_first_double_submit_still_enforced():
+    """A trusted Origin does not waive the double-submit second factor."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware(trusted_origins=("https://app.example.com",)))
+
+    @app.post("/x")
+    async def x():
+        return {}
+
+    resp = await app.handle_request(
+        _req(
+            "POST",
+            headers={
+                "host": "app.example.com",
+                "origin": "https://app.example.com",
+                "cookie": "csrf_token=tok",
+                "x-csrf-token": "WRONG",
+            },
+        )
+    )
+    assert resp.status_code == 403
+
+
 # ── Form-field as uploaded file part ─────────────────────────────────
 
 

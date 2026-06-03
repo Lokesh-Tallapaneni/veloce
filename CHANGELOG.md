@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `CSRFMiddleware(trusted_origins=...)` adds an Origin-first verification
+  stage that runs before the double-submit check on state-changing
+  requests. The request's own origin (`scheme://host[:port]`, sourced
+  from the ASGI scope rather than spoofable headers) is always trusted;
+  additional callers are listed as full origins, with a leading-dot host
+  (`"https://.example.com"`) matching that host and any subdomain. A
+  present-but-mismatched `Origin` header is a hard 403; when `Origin` is
+  absent the stage falls back to `Referer` on https requests only, while
+  plain-HTTP requests with no Origin defer to double-submit. Double-submit
+  still always runs as a second factor. This closes the cookie-injection /
+  related-domain CSRF class that pure double-submit cannot defend.
+  Omitting `trusted_origins` keeps the previous double-submit-only
+  behaviour unchanged.
+
 - `verify_password_or_dummy(stored, candidate)` and its async counterpart
   `verify_password_or_dummy_async` - login-oriented password checks that
   equalise timing across the no-such-user and wrong-password paths. When
