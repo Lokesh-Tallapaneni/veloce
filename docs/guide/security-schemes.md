@@ -101,7 +101,8 @@ it is included in the `WWW-Authenticate: Basic realm="..."` header on a
 
 [`HTTPBearer`](../reference.md#veloce.HTTPBearer) extracts the token that
 follows `Authorization: Bearer `. It returns the token string with no further
-interpretation — decoding or validating a JWT is up to you.
+interpretation — decoding or validating a JWT is up to you (see
+[JSON Web Tokens](#json-web-tokens) below).
 
 ```python
 from veloce import Depends, HTTPBearer, HTTPException, Veloce
@@ -161,6 +162,16 @@ async def data(key: str = Depends(require_key)):
 
 Header lookup is case-insensitive, so `X-API-Key` matches `x-api-key` on
 the wire. Query and cookie lookups are case-sensitive.
+
+When `auto_error` is left on (the default) and the credential is missing,
+the scheme raises a `401` carrying a `WWW-Authenticate: APIKey` challenge
+(RFC 9110 Sec. 11.6.1). Pass `realm="..."` to emit
+`WWW-Authenticate: APIKey realm="..."` so clients know which protection
+space the resource belongs to:
+
+```python
+api_key = APIKeyHeader(name="X-API-Key", realm="admin")
+```
 
 !!! warning "Keys in URLs leak"
     `APIKeyQuery` puts the key in the URL, where it lands in server access
@@ -348,6 +359,75 @@ assert unauthorized.status_code == 401
 ok = client.get("/secure", headers={"Authorization": "Bearer abc123"})
 assert ok.status_code == 200
 assert ok.json() == {"token": "abc123"}
+```
+
+## JSON Web Tokens
+
+[`encode_jwt`](../reference.md#veloce.encode_jwt) and
+[`decode_jwt`](../reference.md#veloce.decode_jwt) sign and verify compact
+JWTs using the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external
+dependency. RSA/EC algorithms and `alg: "none"` are unsupported by design;
+the signature is always verified before the payload JSON is decoded.
+
+```python
+from veloce import decode_jwt, encode_jwt
+
+token = encode_jwt({"sub": "42", "exp": 1893456000}, "secret")
+claims = decode_jwt(token, "secret", algorithms=["HS256"])
+claims["sub"]   # "42"
+```
+
+The `algorithms` allow-list is required — there is no default — which is
+what defeats algorithm-confusion attacks. `decode_jwt` validates `exp`
+and `nbf` (with optional `leeway`) and can additionally check `audience`,
+`issuer`, and a `require` list of claim names. Each failure raises a
+distinct subclass of [`JWTError`](../reference.md#veloce.JWTError):
+`ExpiredSignatureError`, `ImmatureSignatureError`, `InvalidSignatureError`,
+`InvalidAudienceError`, `InvalidIssuerError`, `MissingClaimError`,
+`UnsupportedAlgorithmError`, and `InvalidTokenError` for a malformed token.
+A successful decode returns a read-only
+[`Claims`](../reference.md#veloce.Claims) mapping.
+
+## Password-reset tokens
+
+[`make_reset_token`](../reference.md#veloce.make_reset_token) and
+[`check_reset_token`](../reference.md#veloce.check_reset_token) issue
+storage-free, self-invalidating password-reset links. They bind an opaque
+caller-supplied state fingerprint — typically the user id plus password
+hash — into a signed, expiring token built on
+[`Signer`](signing.md). When the password changes (or the user logs in)
+the fingerprint changes and the old token stops validating, so no
+server-side record of issued tokens is needed.
+
+```python
+from veloce import check_reset_token, make_reset_token
+
+state = b"".join([str(user.id).encode(), user.password_hash.encode()])
+token = make_reset_token(state, secret=SECRET)
+# ... later, from the reset link ...
+if check_reset_token(token, state, secret=SECRET, max_age=3600):
+    ...   # allow the reset
+```
+
+`check_reset_token` returns `False` for an invalid, expired, or
+no-longer-bound token (it raises only on programmer misuse). Pass
+`fallback_secrets=[...]` to keep accepting tokens signed with a rotated
+previous secret.
+
+## Wrapping secrets
+
+[`Secret`](../reference.md#veloce.Secret) wraps a `str`/`bytes` secret so it
+resists accidental disclosure: `repr`, `str`, f-strings, and `%`
+interpolation all render `***`, and the plaintext only escapes through an
+explicit `.reveal()`. Equality is constant-time, the wrapper is unhashable,
+and the JSON encoder refuses to serialise it.
+
+```python
+from veloce import Secret
+
+token = Secret(os.environ["API_TOKEN"])
+print(token)            # ***
+send(token.reveal())    # the real value
 ```
 
 ## Next steps

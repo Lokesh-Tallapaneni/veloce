@@ -501,6 +501,54 @@ class AcceptHeader:
                 best = q
         return best
 
+    def quality_explicit(self, value: str) -> float:
+        """Return the q-value for `value`, with explicit tokens overriding `*`.
+
+        RFC 9110 Sec. 12.5.3: an explicit `q=0` means "not acceptable" and must
+        override a more permissive wildcard. `quality()` returns the MAX across
+        an exact match and a `*` match, so for `br;q=0, *;q=1` it reports 1.0 for
+        `br` - serving a rejected coding. This variant prefers an EXACT token
+        match (so an explicit `q=0` excludes the coding) and only falls back to
+        the `*` wildcard q when `value` is not explicitly listed. Used by
+        precompressed static selection where honoring an explicit rejection
+        matters; non-MIME (Accept-Encoding) semantics.
+        """
+        # RFC 9110 Sec. 12.5.3 / Sec. 8.4.1: content-coding tokens are
+        # case-insensitive, so `BR` must match an explicit `br` entry and an
+        # explicit `Br;q=0` must reject `br`. Fold both sides to lowercase
+        # before the exact compare; the `*` wildcard fallback is unaffected.
+        folded = value.lower()
+        for opt, q in self._options:
+            if opt.lower() == folded:
+                return q
+        for opt, q in self._options:
+            if opt == "*":
+                return q
+        return 0.0
+
+    def accepts_identity(self) -> bool:
+        """Whether the `identity` (no-encoding) coding is acceptable per RFC 9110.
+
+        RFC 9110 Sec. 12.5.3: `identity` is acceptable by default unless it is
+        explicitly excluded. It is UNacceptable only when an explicit `identity`
+        entry carries `q=0`, OR when `identity` is not explicitly listed and a
+        `*` wildcard entry carries `q=0` (the wildcard rejects every coding not
+        named, including identity). A missing header, or any header that does
+        not exclude identity, leaves identity acceptable. Token comparison is
+        case-insensitive (Sec. 8.4.1). Used by precompressed static selection to
+        decide between serving the uncompressed asset and returning 406.
+        """
+        for opt, q in self._options:
+            if opt.lower() == "identity":
+                # Explicit entry wins: identity is acceptable iff its q > 0.
+                return q > 0
+        for opt, q in self._options:
+            if opt == "*":
+                # Identity not named; the wildcard's q decides it.
+                return q > 0
+        # Neither identity nor `*` listed - identity stays acceptable by default.
+        return True
+
     def best_match(self, options: list[str], default: str | None = None) -> str | None:
         """Return the option the client accepts with the highest q-value.
 
@@ -521,6 +569,12 @@ class AcceptHeader:
         return best_opt
 
     def _matches(self, opt: str, value: str) -> bool:
+        # RFC 9110 Sec. 8.4.1 (content codings) and Sec. 8.3.1 (media type
+        # type/subtype) are case-insensitive, so token comparison folds case;
+        # `Accept-Encoding: BR` matches `br` and `Accept: TEXT/HTML` matches
+        # `text/html`.
+        opt = opt.lower()
+        value = value.lower()
         if opt == value:
             return True
         if not self._mime:

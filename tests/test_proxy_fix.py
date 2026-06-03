@@ -328,3 +328,37 @@ def test_proxy_fix_chain_too_short_does_not_fabricate():
     client = TestClient(app)
     resp = client.get("/info", headers={"X-Forwarded-For": "only-one"})
     assert resp.json()["client"] is None
+
+
+# ── Quoted-delimiter handling (RFC 7239) ────────────────────────────────────
+
+
+def test_parse_forwarded_quoted_comma_does_not_fake_hop():
+    mw = ProxyFix(x_for=1, x_host=1)
+    result = mw._parse_forwarded(
+        'for=192.0.2.1; host="a,b"', x_for=1, x_proto=0, x_host=1, x_prefix=0
+    )
+    assert result == {"for": "192.0.2.1", "host": "a,b"}
+
+
+def test_parse_forwarded_quoted_comma_multi_hop():
+    mw = ProxyFix(x_for=1, x_host=1)
+    # Two real hops; the rightmost (trusted) carries a quoted comma in host.
+    result = mw._parse_forwarded(
+        'for=10.0.0.1, for=192.0.2.1; host="a,b"', x_for=1, x_proto=0, x_host=1, x_prefix=0
+    )
+    assert result["for"] == "192.0.2.1"
+    assert result["host"] == "a,b"
+
+
+def test_forwarded_quoted_comma_integration():
+    app = Veloce(openapi_url=None)
+    app.add_middleware(ProxyFix(x_for=1, x_host=1))
+
+    @app.get("/info")
+    async def info(request):
+        return {"client": request.client_host}
+
+    client = TestClient(app)
+    resp = client.get("/info", headers={"Forwarded": 'for=192.0.2.1; host="a,b"'})
+    assert resp.json()["client"] == "192.0.2.1"

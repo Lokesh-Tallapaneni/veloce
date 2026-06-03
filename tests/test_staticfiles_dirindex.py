@@ -96,6 +96,48 @@ async def test_directory_index_symlinked_dir_not_marked_as_dir(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_directory_index_hides_external_symlink(tmp_path):
+    """Symlinks whose target escapes the served root are dropped from the listing."""
+    import os
+
+    served = tmp_path / "served"
+    served.mkdir()
+    (served / "in_root.txt").write_text("ok")
+    # Out-of-root targets, parallel to (not under) the served directory.
+    (tmp_path / "secret.txt").write_text("secret")
+    (tmp_path / "secret_dir").mkdir()
+    try:
+        os.symlink(str(tmp_path / "secret.txt"), str(served / "esc_file"))
+        os.symlink(str(tmp_path / "secret_dir"), str(served / "esc_dir"))
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform / user")
+    sf = StaticFiles(directory=str(served), prefix="/s", directory_index=True)
+    resp = await sf.handle(_req("/s/"))
+    body = resp.body.decode()
+    assert "in_root.txt" in body
+    assert "esc_file" not in body
+    assert "esc_dir" not in body
+
+
+@pytest.mark.asyncio
+async def test_directory_index_keeps_internal_symlink(tmp_path):
+    """A symlink pointing to another entry UNDER the served root stays listed."""
+    import os
+
+    served = tmp_path / "served"
+    served.mkdir()
+    (served / "real").mkdir()
+    try:
+        os.symlink(str(served / "real"), str(served / "internal_link"))
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform / user")
+    sf = StaticFiles(directory=str(served), prefix="/s", directory_index=True)
+    resp = await sf.handle(_req("/s/"))
+    body = resp.body.decode()
+    assert "internal_link" in body
+
+
+@pytest.mark.asyncio
 async def test_directory_index_does_not_supersede_index_html(tmp_path):
     """If `html=True` and `index.html` exists, the file is served, not a listing."""
     (tmp_path / "index.html").write_text("HELLO")

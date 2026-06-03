@@ -170,3 +170,34 @@ def test_non_mime_explicit_beats_wildcard():
     h = AcceptHeader.parse("*;q=0.3, en;q=0.9")
     assert h.quality("en") == 0.9
     assert h.quality("fr") == 0.3
+
+
+# ── RFC 9110 §8.4.1: content-coding tokens are case-insensitive ───────
+
+
+def test_quality_explicit_matches_coding_case_insensitively():
+    """`BR` must resolve to an explicit `br` entry (RFC 9110 §8.4.1)."""
+    h = AcceptHeader.parse("br;q=0.7, *;q=1.0")
+    assert h.quality_explicit("BR") == 0.7
+    assert h.quality_explicit("br") == 0.7
+
+
+def test_quality_explicit_honours_case_insensitive_rejection():
+    """`Br;q=0` is an explicit rejection of `br` and must beat the wildcard."""
+    h = AcceptHeader.parse("Br;q=0, *;q=1.0")
+    # Without case folding this falls through to `*` and reports 1.0, serving a
+    # coding the client explicitly rejected.
+    assert h.quality_explicit("br") == 0.0
+
+
+def test_quality_matches_coding_case_insensitively():
+    h = AcceptHeader.parse("GZIP;q=0.4")
+    assert h.quality("gzip") == 0.4
+    assert h.quality("GzIp") == 0.4
+
+
+def test_quality_matches_mime_type_case_insensitively():
+    """Media type/subtype are case-insensitive (RFC 9110 §8.3.1)."""
+    h = AcceptHeader.parse("TEXT/HTML;q=0.6, Application/*;q=0.3", mime=True)
+    assert h.quality("text/html") == 0.6
+    assert h.quality("application/json") == 0.3

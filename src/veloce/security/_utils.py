@@ -14,6 +14,29 @@ _BEARER_PREFIX_LOWER = _BEARER_PREFIX.lower()
 _BEARER_PREFIX_LEN = len(_BEARER_PREFIX)
 
 
+def _quote_header_value(value: str) -> str:
+    """Escape a string for an HTTP quoted-string (RFC 7230 Sec. 3.2.6).
+
+    Backslash must be escaped before the double-quote, or a literal
+    backslash preceding a quote would be mis-escaped. This is the correct
+    transform for a `realm` and other WWW-Authenticate quoted params -
+    not `urllib.parse.quote`, which percent-encodes and mangles `@`/space.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _validate_realm(realm: str) -> None:
+    """Reject control characters in a realm at construction (fail fast).
+
+    CR / LF / NUL and other control characters cannot appear in an HTTP
+    quoted-string and would corrupt the WWW-Authenticate header, so an
+    invalid realm is a configuration error, surfaced when the scheme is
+    built rather than on every 401.
+    """
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in realm):
+        raise ValueError("realm must not contain control characters")
+
+
 def _extract_bearer_token(
     request: Any, scheme: str = AUTH_SCHEME_BEARER, auto_error: bool = True
 ) -> str | None:
@@ -50,11 +73,21 @@ def _extract_bearer_token(
     return token
 
 
-def _extract_api_key(source: Any, name: str, auto_error: bool = True) -> str | None:
-    """Extract an API key from a dict-like source (headers, query, cookies)."""
+def _extract_api_key(
+    source: Any,
+    name: str,
+    auto_error: bool = True,
+    challenge: dict[str, str] | None = None,
+) -> str | None:
+    """Extract an API key from a dict-like source (headers, query, cookies).
+
+    `challenge` is the precomputed WWW-Authenticate header dict (or `None`
+    for no header); passing it straight through to `HTTPException` keeps
+    the missing-key path a single branch with no per-request header build.
+    """
     key = source.get(name)
     if not key or not key.strip():
         if auto_error:
-            raise HTTPException(HTTP_401_UNAUTHORIZED, MSG_NOT_AUTHENTICATED)
+            raise HTTPException(HTTP_401_UNAUTHORIZED, MSG_NOT_AUTHENTICATED, headers=challenge)
         return None
     return key

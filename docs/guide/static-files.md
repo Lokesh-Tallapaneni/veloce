@@ -57,9 +57,10 @@ app.mount("/assets", StaticFiles(directory="static"))
 ```
 
 The constructor signature is `StaticFiles(directory, prefix="/static",
-html=False, directory_index=False, must_exist=True)`. `directory` is required
-and resolved to an absolute path; it must exist and be readable unless
-`must_exist=False` is passed. The other options are covered below.
+html=False, directory_index=False, must_exist=True, precompressed=False)`.
+`directory` is required and resolved to an absolute path; it must exist and be
+readable unless `must_exist=False` is passed. The other options are covered
+below.
 
 !!! note
     `mount_static` and `mount` register a static handler; they do **not** create
@@ -100,7 +101,32 @@ app.mount("/files", StaticFiles(directory="downloads", directory_index=True))
     Directory listings expose the names of every file in the folder, which is an
     information-disclosure risk. It is off by default for that reason — only
     enable it for directories whose contents are meant to be browsable. Hidden
-    entries (names beginning with `.`) are always omitted from the listing.
+    entries (names beginning with `.`) are always omitted from the listing. An
+    entry whose target resolves outside the served root through a symlink is
+    also omitted, so a listing never links to a file the server would refuse to
+    serve.
+
+## Precompressed variants
+
+Set `precompressed=True` to serve a precompressed sibling when the client
+advertises a matching `Accept-Encoding`. With `app.css` on disk alongside
+`app.css.br` and/or `app.css.gz`, a request for `/static/app.css` from a client
+that accepts `br` (or `gzip`) is answered with the compressed file and the
+appropriate `Content-Encoding`, while the `Content-Type` stays that of the
+original (`text/css`):
+
+```python title="app.py"
+from veloce import StaticFiles, Veloce
+
+app = Veloce()
+app.mount("/static", StaticFiles(directory="dist", precompressed=True))
+```
+
+The variants must be generated ahead of time (this is a serve-only feature; it
+never compresses on the fly). `br` is preferred over `gzip` when the client's
+quality values tie. ETag, conditional requests, and range requests all key off
+the bytes actually sent. The feature is off by default because it adds one
+`stat` per request to probe for the sibling.
 
 ## Caching and conditional requests
 

@@ -45,6 +45,43 @@ no public re-export.
 from __future__ import annotations
 
 
+def split_outside_quotes(value: str, delimiter: str) -> list[str]:
+    """Split `value` on `delimiter`, but never inside a double-quoted string.
+
+    Walks `value` once tracking an `in_quotes` flag; a `\\<char>` escape is
+    skipped so an escaped quote or delimiter never terminates a token. Returns
+    the raw (still-quoted) substrings WITHOUT stripping quotes or whitespace -
+    callers do that. Mirrors `parse_header_params`' inner escape handling so the
+    two walkers stay consistent.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    in_quotes = False
+    i = 0
+    n = len(value)
+    while i < n:
+        ch = value[i]
+        if ch == "\\" and i + 1 < n:
+            buf.append(ch)
+            buf.append(value[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            in_quotes = not in_quotes
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == delimiter and not in_quotes:
+            parts.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return parts
+
+
 def parse_header_params(
     value: str,
     *,

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import contextvars
 import inspect
+from collections.abc import Sequence
 from typing import Any
 
+from veloce.background import BackgroundTask
 from veloce.helpers import _current_app_var, current_app, g
-from veloce.http.response import HTMLResponse
+from veloce.http.response import HTMLResponse, Response
 from veloce.status import HTTP_200_OK
 
 # Sentinel attribute name written onto each Jinja Environment to memoize
@@ -141,6 +143,24 @@ def _context_preserving_iter(iterator: Any) -> Any:
         yield chunk
 
 
+def _coerce_background(background: Any) -> Any:
+    """Normalize a `TemplateResponse(background=...)` value to a task.
+
+    Accepts `None`, an existing `BackgroundTask` / `BackgroundTasks`
+    (duck-typed via `run` / `run_all`), or a bare callable wrapped in a
+    no-arg `BackgroundTask`. Anything else is rejected.
+    """
+    if background is None:
+        return None
+    if hasattr(background, "run") or hasattr(background, "run_all"):
+        return background
+    if callable(background):
+        return BackgroundTask(background)
+    raise TypeError(
+        "background must be a callable, BackgroundTask, BackgroundTasks, or None"
+    ) from None
+
+
 class Jinja2Templates:
     """Jinja2 template engine integration.
 
@@ -197,6 +217,11 @@ class Jinja2Templates:
         self._async_auto_reload = initial_reload
         self._async_autoescape = autoescape
         self._async_env: Any = None
+        # Memoizes the winning name of a resolved fallback list per
+        # `(id(env), candidates)` when `env.auto_reload` is False, so a
+        # production render of a candidate sequence skips Jinja's
+        # `select_template` stat walk after the first resolution.
+        self._resolved_cache: dict[tuple[int, tuple[str, ...]], str] = {}
 
     def _apply_auto_reload(self, env: Any) -> None:
         """When `auto_reload` was left unset, track the bound app's
@@ -208,22 +233,61 @@ class Jinja2Templates:
         if app is not None:
             env.auto_reload = bool(getattr(app, "debug", False))
 
+    def _resolve_template(self, env: Any, name: str | Sequence[str]) -> Any:
+        """Load `name`, or the first existing template when `name` is a list.
+
+        A plain `str` takes Jinja's `get_template` fast path unchanged. A
+        sequence of candidates resolves to the first one that exists via
+        `select_template`; in production (`auto_reload` False) the winning
+        name is memoized so repeat renders skip the filesystem walk, while
+        dev (`auto_reload` True) re-resolves every call so newly-added
+        override templates are picked up.
+        """
+        if isinstance(name, str):
+            return env.get_template(name)
+        candidates = tuple(name)
+        if env.auto_reload:
+            return env.select_template(list(candidates))
+        key = (id(env), candidates)
+        winner = self._resolved_cache.get(key)
+        if winner is None:
+            tpl = env.select_template(list(candidates))
+            self._resolved_cache[key] = tpl.name
+            return tpl
+        return env.get_template(winner)
+
     def TemplateResponse(
         self,
-        name: str,
+        name: str | Sequence[str],
         context: dict[str, Any],
         status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
-    ) -> HTMLResponse:
-        """Render a template and return as HTMLResponse."""
+        *,
+        media_type: str | None = None,
+        background: Any = None,
+    ) -> Response:
+        """Render a template and return a response, optionally overriding the
+        content type and attaching a background task."""
         self._apply_auto_reload(self.env)
         _sync_app_jinja_helpers(self.env)
-        template = self.env.get_template(name)
+        template = self._resolve_template(self.env, name)
         merged = _gather_context_processors(context)
         html = template.render(merged)
-        return HTMLResponse(content=html, status_code=status_code, headers=headers)
+        if media_type is None:
+            response: Response = HTMLResponse(
+                content=html, status_code=status_code, headers=headers
+            )
+        else:
+            response = Response(
+                status_code=status_code,
+                body=html.encode("utf-8"),
+                content_type=media_type,
+                headers=headers,
+            )
+        response.background = _coerce_background(background)
+        return response
 
-    def render(self, name: str, context: dict[str, Any] | None = None) -> str:
+    def render(self, name: str | Sequence[str], context: dict[str, Any] | None = None) -> str:
         """Render a named template to a string (no Response wrapping).
 
         Mirrors `TemplateResponse` but stops at the string stage so the
@@ -232,11 +296,11 @@ class Jinja2Templates:
         """
         self._apply_auto_reload(self.env)
         _sync_app_jinja_helpers(self.env)
-        template = self.env.get_template(name)
+        template = self._resolve_template(self.env, name)
         merged = _gather_context_processors(context or {})
         return template.render(merged)
 
-    def stream(self, name: str, context: dict[str, Any] | None = None) -> Any:
+    def stream(self, name: str | Sequence[str], context: dict[str, Any] | None = None) -> Any:
         """Render a named template incrementally, yielding `str` chunks.
 
         Mirrors `render` but returns a synchronous iterator of `str` chunks
@@ -254,7 +318,7 @@ class Jinja2Templates:
         """
         self._apply_auto_reload(self.env)
         _sync_app_jinja_helpers(self.env)
-        template = self.env.get_template(name)
+        template = self._resolve_template(self.env, name)
         merged = _gather_context_processors(context or {})
         return _context_preserving_iter(template.generate(merged))
 
@@ -266,7 +330,9 @@ class Jinja2Templates:
         merged = _gather_context_processors(context)
         return template.render(merged)
 
-    async def render_async(self, name: str, context: dict[str, Any] | None = None) -> str:
+    async def render_async(
+        self, name: str | Sequence[str], context: dict[str, Any] | None = None
+    ) -> str:
         """Asynchronously render a named template - Jinja `enable_async`.
 
         Uses a separate async-enabled `Environment` (built lazily) so
@@ -285,19 +351,20 @@ class Jinja2Templates:
             )
         self._apply_auto_reload(self._async_env)
         _sync_app_jinja_helpers(self._async_env)
-        template = self._async_env.get_template(name)
+        template = self._resolve_template(self._async_env, name)
         merged = await _gather_context_processors_async(context or {})
         return await template.render_async(merged)
 
-    def get_template(self, name: str):
-        """Get a raw Jinja2 template object."""
-        return self.env.get_template(name)
+    def get_template(self, name: str | Sequence[str]):
+        """Get a raw Jinja2 template object, resolving a fallback list to the
+        first existing template."""
+        return self._resolve_template(self.env, name)
 
 
 # -- Module-level helpers ---------------------------------------------
 
 
-def render_template(template_name: str, **context: Any) -> str:
+def render_template(template_name: str | Sequence[str], **context: Any) -> str:
     """Render a named template against the current app.
 
     Pulls the `Jinja2Templates` instance off `current_app._templates`
@@ -321,7 +388,7 @@ def render_template(template_name: str, **context: Any) -> str:
     return templates.render(template_name, context)
 
 
-def stream_template(template_name: str, **context: Any) -> Any:
+def stream_template(template_name: str | Sequence[str], **context: Any) -> Any:
     """Stream a named template against the current app, chunk by chunk.
 
     Mirrors `render_template` but returns an iterator of `str` chunks

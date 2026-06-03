@@ -32,6 +32,33 @@ def test_event_retry():
     assert b"retry: 5000" in encoded
 
 
+# ── Comment field ────────────────────────────────────────────────────
+
+
+def test_comment_field_emits_colon_line():
+    encoded = ServerSentEvent(data="x", comment="hello").encode()
+    assert b": hello" in encoded
+    assert b"data: x" in encoded
+    # The comment line precedes the data line.
+    assert encoded.index(b": hello") < encoded.index(b"data: x")
+
+
+def test_comment_only_event():
+    assert ServerSentEvent(comment="connected").encode() == b": connected\n\n"
+
+
+def test_multiline_comment_split():
+    encoded = ServerSentEvent(data="x", comment="a\nb").encode()
+    assert b": a" in encoded
+    assert b": b" in encoded
+
+
+def test_comment_crlf_normalized():
+    encoded = ServerSentEvent(comment="a\r\nb").encode()
+    # CRLF is normalised to two separate `: ` lines, not one mangled line.
+    assert encoded == b": a\n: b\n\n"
+
+
 # ── Field validation (WHATWG SSE) ────────────────────────────────────
 
 
@@ -221,3 +248,46 @@ def test_ping_none_and_positive_are_accepted():
     EventSourceResponse(gen(), ping=None)
     EventSourceResponse(gen(), ping=0.01)
     EventSourceResponse(gen(), ping=5)
+
+
+# ── Configurable ping comment ────────────────────────────────────────
+
+
+def test_default_ping_frame_unchanged():
+    """The default keep-alive frame stays byte-for-byte `: ping\\r\\n\\r\\n`."""
+
+    async def gen():
+        yield ServerSentEvent(data="x")
+
+    resp = EventSourceResponse(gen(), ping=0.01)
+    assert resp._ping_frame == b": ping\r\n\r\n"
+
+
+async def test_configurable_ping_comment():
+    """A custom ping_comment is emitted as the keep-alive frame on idle."""
+
+    async def gen():
+        await asyncio.sleep(0.05)
+        yield ServerSentEvent(data="late")
+
+    resp = EventSourceResponse(gen(), ping=0.01, ping_comment="keepalive")
+    chunks = await _drain(resp)
+    pings = [c for c in chunks if c.startswith(b":")]
+    assert pings
+    assert pings[0] == b": keepalive\r\n\r\n"
+
+
+def test_ping_comment_without_ping_raises():
+    async def gen():
+        yield ServerSentEvent(data="x")
+
+    with pytest.raises(ValueError, match="ping"):
+        EventSourceResponse(gen(), ping_comment="x")
+
+
+def test_ping_comment_multiline_rejected():
+    async def gen():
+        yield ServerSentEvent(data="x")
+
+    with pytest.raises(ValueError, match="newline"):
+        EventSourceResponse(gen(), ping=1, ping_comment="a\nb")

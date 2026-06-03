@@ -54,6 +54,23 @@ client.delete("/items/1")
 
 Cookies set by the application persist across calls on the same client.
 
+### Streaming a request body
+
+`post`, `put`, `patch`, and `delete` accept `stream=...` to feed the request
+body as multiple ASGI `http.request` chunks instead of a single frame, which
+exercises handlers that consume the body incrementally. Pass a sync
+`Iterable` or an `AsyncIterable` of `bytes`/`str` chunks; when given, `stream`
+takes precedence over `json`/`data`/`content`/`files`:
+
+```python
+def chunks():
+    yield b"first "
+    yield b"second"
+
+
+client.post("/ingest", stream=chunks())
+```
+
 ## Lifespan startup and shutdown
 
 Use the client as a context manager to run `startup` / `shutdown`

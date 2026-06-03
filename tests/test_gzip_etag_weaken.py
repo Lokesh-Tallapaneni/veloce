@@ -79,6 +79,21 @@ async def test_lowercase_etag_key_is_weakened():
 
 
 @pytest.mark.asyncio
+async def test_mixedcase_etag_key_is_weakened():
+    # Field names are case-insensitive (RFC 9110 Sec. 5.1): a handler-set
+    # `Etag` (any casing) must be located and weakened in place under that
+    # same key after the wire bytes change.
+    mw = GZipMiddleware(minimum_size=10)
+    resp = Response(status_code=200, body=_big_json(), content_type="application/json")
+    resp.headers["Etag"] = '"deadbeef"'  # mixed-case spelling
+    out = await mw.process_response(_req(), resp)
+    assert out.headers["Content-Encoding"] == "gzip"
+    assert out.headers["Etag"] == 'W/"deadbeef"'
+    # No duplicate canonical key was introduced.
+    assert "ETag" not in out.headers
+
+
+@pytest.mark.asyncio
 async def test_malformed_unquoted_etag_left_untouched():
     mw = GZipMiddleware(minimum_size=10)
     resp = Response(status_code=200, body=_big_json(), content_type="application/json")

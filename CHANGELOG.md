@@ -8,6 +8,153 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `encode_jwt` and `decode_jwt` sign and verify compact JSON Web Tokens using
+  the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external dependency.
+  The `algorithms` allow-list passed to `decode_jwt` is required - there is no
+  default - and `alg: "none"` is rejected unconditionally; the signature is
+  always verified before the payload JSON is decoded. `decode_jwt` validates
+  `exp` and `nbf` (with optional `leeway`) and can additionally check
+  `audience`, `issuer`, and a `require` list of claim names, returning a
+  read-only `Claims` mapping. Each failure raises a distinct subclass of
+  `JWTError`: `ExpiredSignatureError`, `ImmatureSignatureError`,
+  `InvalidSignatureError`, `InvalidAudienceError`, `InvalidIssuerError`,
+  `MissingClaimError`, `UnsupportedAlgorithmError`, and `InvalidTokenError`.
+  All are importable from the top-level `veloce` package. RSA/EC algorithms are
+  out of scope.
+
+- `make_reset_token` and `check_reset_token` issue storage-free,
+  self-invalidating password-reset links. They bind an opaque caller-supplied
+  state fingerprint (typically user id plus password hash) into a signed,
+  expiring token built on `Signer`; when the fingerprint changes - the password
+  is reset or the user logs in - the old token stops validating, so no
+  server-side record of issued tokens is needed. `check_reset_token` returns
+  `False` for an invalid, expired, or no-longer-bound token and raises
+  `BadResetToken` only on programmer misuse, and accepts `fallback_secrets=[...]`
+  to keep honouring tokens signed with a rotated previous secret.
+
+- `Secret` wraps a `str`/`bytes` secret so it resists accidental disclosure:
+  `repr`, `str`, f-strings, and `%` interpolation all render `***`, and the
+  plaintext only escapes through an explicit `.reveal()`. Equality is
+  constant-time, the wrapper is unhashable, and the JSON encoders refuse to
+  serialize it (raising `TypeError`). Importable from the top-level `veloce`
+  package.
+
+- `CSPMiddleware` emits a `Content-Security-Policy` (and/or
+  `Content-Security-Policy-Report-Only`) header with an optional fresh
+  per-request nonce. `policy` and `report_only_policy` each accept a string
+  template containing the literal `{nonce}` placeholder, or a directive mapping
+  where the `'nonce'` source is substituted with the generated nonce. Read the
+  nonce inside a handler or template with `csp_nonce(request)`; it is
+  materialized lazily on first read, so a request that never embeds one pays no
+  extra cost. `CSPMiddleware` and `csp_nonce` are importable from the top-level
+  `veloce` package.
+
+- `ConditionalGetMiddleware` evaluates `If-None-Match` / `If-Modified-Since`
+  against a buffered `GET`/`HEAD` response and downgrades a matching request to
+  `304 Not Modified` with an empty body (RFC 9110 Sec. 13). With `auto_etag`
+  (the default) it also synthesizes a weak `ETag` for a buffered, non-empty
+  `200` that lacks one. Register it after `GZipMiddleware` so a synthesized
+  ETag reflects the compressed bytes; `StreamingResponse` bodies are not
+  buffered for synthesis. Importable from the top-level `veloce` package.
+
+- `instrument_access_log` registers an instrumentation hook that emits one
+  access-log record per finished request - text or JSON (`json=True`) - sourced
+  from the same low-cardinality `RequestMetrics` record the tracing bridge uses,
+  so logs aggregate on the route template rather than the concrete path. It
+  bootstraps a default handler on the `veloce.access` logger, gates on
+  `logger.isEnabledFor` so a muted log does zero serialization work, and is
+  registered instead of `LoggingMiddleware`. Importable from the top-level
+  `veloce` package.
+
+- `veloce.metrics.instrument_with_prometheus` exports a request counter
+  (`{prefix}_requests_total`, labelled by method, route template, and status)
+  and a request-duration histogram (`{prefix}_request_duration_seconds`) from
+  the app's instrumentation hook. The route label is always the matched
+  template; an unmatched 404/405 collapses to a constant `"<unmatched>"` label,
+  so an attacker-controlled path cannot explode cardinality. The exporter is
+  registry-agnostic (pass `registry=...` to isolate apps) and records series
+  only - serving `/metrics` stays the application's job. It is an optional
+  integration installed with `pip install veloceframework[metrics]`, and
+  raises an `ImportError` with an install hint when `prometheus_client` is
+  absent.
+
+- Path converters for temporal and decimal types: `{x:date}`, `{x:time}`,
+  `{x:datetime}`, `{x:timedelta}`, and `{x:decimal}` coerce the matched segment
+  to `datetime.date` / `datetime.time` / `datetime.datetime` /
+  `datetime.timedelta` / `decimal.Decimal` respectively. A `Z` suffix on a
+  datetime/time is accepted (normalized to `+00:00`); `timedelta` accepts a
+  full ISO 8601 duration with at least one component (`P1DT2H`) as well as
+  Python's `str(timedelta)` form (`1:00:00`, `1 day, 2:00:00`) so a real
+  `timedelta` round-trips through `url_for`, while a bare number is a route
+  miss. A value the converter rejects is a 404, consistent with the existing
+  converters.
+
+- `StaticFiles(precompressed=True)` serves a precompressed sibling
+  (`app.css.br` / `app.css.gz`) when the client advertises a matching
+  `Accept-Encoding`, setting the appropriate `Content-Encoding` while keeping
+  the original file's `Content-Type`. The variants must be generated ahead of
+  time (serve-only; never compresses on the fly), `br` is preferred over `gzip`
+  on a quality tie, and ETag/conditional/range handling keys off the bytes
+  actually sent. Off by default, as it adds one `stat` per request when
+  enabled.
+
+- API-key schemes (`APIKeyHeader`, `APIKeyQuery`, `APIKeyCookie`) now send a
+  `WWW-Authenticate` challenge on the `401` raised for a missing credential
+  (when `auto_error` is on). The bare `APIKey` token is emitted by default;
+  pass `realm="..."` to emit `WWW-Authenticate: APIKey realm="..."`
+  (RFC 9110 Sec. 11.6.1).
+
+- `dump_cookie` and `Response.set_cookie` / `Response.delete_cookie` accept
+  `prefix="host"` or `prefix="secure"` to add the RFC 6265bis Sec. 4.1.3
+  cookie-name prefix (`__Host-` / `__Secure-`) and enforce its invariants:
+  both require `secure=True`, and `"host"` also requires `path="/"` and no
+  `domain`. `Response.delete_cookie` also gains `partitioned=` so a
+  CHIPS-partitioned cookie can be deleted under matching attributes.
+
+- `SessionMiddleware` and `ServerSessionMiddleware` accept `domain=`,
+  `cookie_prefix=` (`"host"`/`"secure"`), and `partitioned=` (CHIPS) to scope,
+  name-prefix, and partition the session cookie. The middlewares validate the
+  prefix and CHIPS preconditions at construction (`partitioned=True` requires
+  `secure=True` and `samesite="none"`), raising `ValueError` on a
+  misconfiguration.
+
+- `GZipMiddleware` compresses streaming responses chunk-by-chunk through a
+  single deflate stream, so a streamed body no longer has to be buffered to be
+  compressed. Chunks at or above `min_stream_chunk_offload` bytes (32 KiB by
+  default) are offloaded to the thread pool; latency-sensitive types
+  (`text/event-stream` by default, via `latency_sensitive_types`) are passed
+  through uncompressed so server-sent events are not merged or delayed.
+
+- `ServerSentEvent` gains a `comment` field for SSE comment lines (colon-
+  prefixed lines the client ignores). `data` is now optional, so a
+  comment-only event can be emitted; a multi-line comment is split into one
+  `: ` line per segment. `EventSourceResponse` accepts `ping_comment=...` to
+  set the text of the keep-alive heartbeat frame.
+
+- The `TestClient` request methods (`post`, `put`, `patch`, `delete`, and
+  `request`) accept `stream=...` to feed the request body as multiple ASGI
+  `http.request` chunks instead of a single frame, exercising handlers that
+  consume the body incrementally. `stream` accepts a sync `Iterable` or an
+  `AsyncIterable` of `bytes`/`str` chunks and takes precedence over
+  `json`/`data`/`content`/`files`.
+
+- `Signal.asend` dispatches a signal asynchronously, the async counterpart of
+  `send`. Both `asend` and `send_robust_async` now await coroutine-returning
+  receivers concurrently rather than one after another, while sync receivers
+  still run inline.
+
+- `TemplateResponse`, `render_template`, `stream_template`, and `get_template`
+  accept a list of candidate template names and render the first one that
+  exists on disk, so a specific template can fall back to a generic one.
+  `TemplateResponse` also accepts `media_type=...` to override the response
+  `Content-Type` and `background=...` (a callable, `BackgroundTask`, or
+  `BackgroundTasks`) to attach a background task.
+
+- `jsonable_encoder` and the orjson default now serialize `re.Pattern`,
+  `ipaddress` address/interface/network objects, `collections.deque`, and
+  generators. Other final-type scalars encode through a dedicated table
+  instead of leaking internals through the `vars(obj)` fallback.
+
 - Model Context Protocol integration under `veloce.contrib.mcp`, exposing a
   Veloce app's handlers as MCP tools callable by an AI agent over JSON-RPC 2.0.
   Register an MCP-only tool with `@app.mcp_tool(description=...)`, or expose an
@@ -179,6 +326,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The unknown-object fallback in `jsonable_encoder` and the orjson default now
+  drops private (underscore-prefixed) attributes from the structurally-derived
+  `vars(obj)` namespace, so an object encoded by reflection no longer leaks
+  library/ORM bookkeeping such as `_sa_instance_state`. A class may opt back in
+  to including private attributes by setting `__json_include_private__ = True`.
+
+- A request carrying multiple `Cookie` headers (permitted by RFC 6265) now has
+  them merged with `; ` before parsing, so every cookie is read. The
+  single-header fast path is unchanged.
+
+- `ProxyFix` splits `Forwarded` / `X-Forwarded-*` element and pair lists on
+  delimiters outside quoted strings, so a quoted comma or semicolon in a
+  directive value (e.g. `host="a,b"`) no longer fakes an extra hop.
+
+- `Response.content_disposition` (and `send_file`/`FileResponse` filenames)
+  now emit an ASCII quotable name verbatim as `filename="..."` - spaces and
+  punctuation preserved, only `\` and `"` escaped per RFC 9110 Sec. 5.6.4 - and
+  emit a non-ASCII or non-quotable name only as the RFC 5987
+  `filename*=UTF-8''...` form, with no lossy legacy `filename=` slot. A CR/LF in
+  the name is rejected.
+
+- The OpenAPI schema and Swagger UI page now document a header parameter under
+  its hyphenated wire name when the parameter marker converts underscores
+  (e.g. a `x_request_id` header is documented as `x-request-id`), matching the
+  name the resolver reads. The Swagger UI config object is HTML-safe escaped
+  before being embedded inline in the page's `<script>` block.
+
 - `url_for` / `url_path_for` now validate each substituted path parameter
   through the converter declared on the route before building the URL. A value
   the radix matcher would never accept - `url_for('item', id='abc')` on
@@ -257,6 +431,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any handler-set `Content-Type` are preserved.
 
 ### Fixed
+
+- `Signal.asend()` now waits for every async receiver to finish before it
+  returns or raises. When several async receivers were dispatched and one raised
+  early, the non-robust gather re-raised the first failure immediately while the
+  other already-scheduled tasks kept running in the background, so `await
+  asend(...)` could return before dispatch actually completed and a later
+  receiver could touch request-scoped state after teardown. All async receivers
+  now run to completion and the first exception, in receiver order, is re-raised
+  afterwards. `send_robust_async`'s per-receiver result contract is unchanged.
+
+- `StaticFiles(precompressed=True)` now returns `406 Not Acceptable` instead of
+  the uncompressed asset when no acceptable compressed sibling exists and the
+  client rejected the identity coding (for example `Accept-Encoding: identity;q=0,
+  br;q=0, gzip;q=0`). Per RFC 9110 Sec. 12.5.3 identity is acceptable by default
+  unless excluded by `identity;q=0`, or by `*;q=0` without a more specific
+  identity entry re-enabling it. Requests that leave identity acceptable, and
+  handlers with `precompressed=False`, are unaffected.
+
+- `CSPMiddleware` now suppresses its default policy when a route already set a
+  `Content-Security-Policy` (or `-Report-Only`) header under any letter case.
+  Header field names are case-insensitive (RFC 9110 Sec. 5.1) but `Response`
+  headers are a plain dict, so a lowercase route override previously failed the
+  existence check and a second CSP header shipped; browsers intersect multiple
+  CSP headers, silently narrowing the route's intended policy.
+
+- `instrument_with_prometheus(group_status=True)` (the default) now collapses
+  the status code into its class bucket - `200` -> `"2xx"`, `404` -> `"4xx"`,
+  `503` -> `"5xx"` - as the `status` label, instead of always recording the
+  concrete code. The option was previously a no-op. Pass `group_status=False`
+  to keep the concrete code.
+
+- `decode_jwt` now rejects an empty `str`/`bytes` secret with `ValueError`,
+  symmetric with `encode_jwt`. An empty HMAC key would otherwise verify tokens
+  signed with the empty secret (for example when a secret environment variable
+  is unset). The check runs before any token parsing and raises a loud
+  `ValueError` - a configuration error - rather than a `JWTError` that an auth
+  dependency would translate into a `401`.
+
+- `ConditionalGetMiddleware` no longer downgrades a `StreamingResponse` to
+  `304 Not Modified` on a satisfied `If-None-Match` / `If-Modified-Since`. The
+  downgrade cleared the buffered body but not the stream, so the 304 would still
+  emit the original chunks, which is invalid per RFC 9110. Streamed responses
+  now pass through unchanged.
+
+- `StaticFiles` precompressed selection now honours an explicit `q=0` coding
+  over an `Accept-Encoding` wildcard (RFC 9110 Sec. 12.5.3). Previously
+  `Accept-Encoding: br;q=0, *;q=1` served the `.br` sibling even though Brotli
+  was explicitly rejected; an explicit `q=0` now excludes the coding, with the
+  wildcard q-value used only for codings not explicitly listed. A new
+  `AcceptHeader.quality_explicit` method exposes this explicit-over-wildcard
+  q-value resolution. Coding tokens are compared case-insensitively (RFC 9110
+  Sec. 8.4.1), so `Accept-Encoding: BR` matches an explicit `br` entry and
+  `Br;q=0` rejects it; `AcceptHeader.quality` matches media types and codings
+  case-insensitively for the same reason.
+
+- A `WebSocket.send_text` / `send_bytes` to a peer that has gone away under an
+  ASGI server now raises `WebSocketDisconnect` instead of a raw transport
+  `OSError` / `ConnectionError` (broken pipe, connection reset), so handlers
+  catch the same disconnect exception on every transport.
 
 - `jsonable_encoder(..., exclude_none=True)` now drops `None`-valued keys from
   plain dicts, lists/tuples/sets of dicts, and dict-typed fields nested inside a

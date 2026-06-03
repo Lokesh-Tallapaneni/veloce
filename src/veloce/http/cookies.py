@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from datetime import datetime, timedelta
+from typing import Literal
 from urllib.parse import quote, unquote
 
 from veloce._internal import _reject_header_crlf
@@ -72,6 +73,7 @@ def dump_cookie(
     secure: bool = False,
     httponly: bool = False,
     samesite: str | None = None,
+    prefix: Literal["host", "secure"] | None = None,
 ) -> str:
     """Build a `Set-Cookie:` header value - RFC 6265 Sec. 4.1.
 
@@ -83,7 +85,32 @@ def dump_cookie(
     - `expires` accepts a POSIX timestamp or `datetime`; rendered as an
       IMF-fixdate via `http_date`.
     - `samesite` must be one of `Strict` / `Lax` / `None` (case-insensitive).
+    - `prefix` adds an RFC 6265bis Sec. 4.1.3 cookie-name prefix and enforces
+      its invariants: `"secure"` requires `secure=True` and emits the wire name
+      `__Secure-<key>`; `"host"` additionally requires `path="/"` and no
+      `domain`, emitting `__Host-<key>`. The bare `key` is validated; the
+      framework-controlled prefix is prepended to the wire name afterwards.
     """
+    if prefix is not None:
+        # RFC 6265bis Sec. 4.1.3 - validate against the BARE key, then derive
+        # the wire name. The `__Host-`/`__Secure-` literal is framework-owned
+        # and already conforms, so it skips the token/reserved-name checks.
+        if prefix == "secure":
+            if secure is not True:
+                raise ValueError("__Secure- cookie prefix requires secure=True")
+            wire_key = f"__Secure-{key}"
+        elif prefix == "host":
+            if secure is not True:
+                raise ValueError("__Host- cookie prefix requires secure=True")
+            if path != "/":
+                raise ValueError("__Host- cookie prefix requires path='/'")
+            if domain is not None:
+                raise ValueError("__Host- cookie prefix requires domain=None")
+            wire_key = f"__Host-{key}"
+        else:
+            raise ValueError("cookie prefix must be 'host', 'secure', or None")
+    else:
+        wire_key = key
     _reject_header_crlf(key, "cookie name")
     # The name must be a valid RFC 6265 token (no spaces/separators/CTLs) and
     # must not collide with a cookie-attribute keyword - both prevent a
@@ -97,7 +124,7 @@ def dump_cookie(
         raise ValueError(f"cookie name {key!r} collides with a reserved cookie-attribute keyword")
     _reject_header_crlf(value, "cookie value")
     quoted = quote(value, safe="!#$%&'()*+/:<=>?@[]^`{|}~")
-    parts: list[str] = [f"{key}={quoted}"]
+    parts: list[str] = [f"{wire_key}={quoted}"]
 
     if max_age is not None:
         secs = int(max_age.total_seconds()) if isinstance(max_age, timedelta) else int(max_age)

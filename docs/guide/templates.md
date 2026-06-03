@@ -49,6 +49,20 @@ async def hello(request: Request, name: str):
 The context is a plain dictionary — every variable the template uses must be a
 key in it.
 
+`name` may also be a list of candidate template names; the first one that
+exists on disk is rendered, so you can fall back from a specific template to a
+generic one. The same applies to `render_template`, `stream_template`, and
+`get_template`:
+
+```python
+templates.TemplateResponse(["user_dashboard.html", "dashboard.html"], context)
+```
+
+`TemplateResponse` also accepts `media_type=...` to override the
+`Content-Type` (it defaults to `text/html`) and `background=...` to attach a
+[background task](background-tasks.md) — a callable, a `BackgroundTask`, or a
+`BackgroundTasks` — that runs after the response is sent.
+
 !!! note
     Pass the `request` object in the context (`{"request": request, ...}`) as
     shown above. This mirrors the convention used throughout Veloce's own

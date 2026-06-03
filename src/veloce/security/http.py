@@ -12,34 +12,14 @@ from veloce._header_parsing import parse_header_params
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER, AUTH_SCHEME_DIGEST
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
-from veloce.security._utils import _extract_bearer_token
+from veloce.security._utils import _extract_bearer_token, _quote_header_value, _validate_realm
 from veloce.status import HTTP_401_UNAUTHORIZED
 
+# `_quote_header_value` / `_validate_realm` now live in `_utils` so the
+# API-key schemes can share them without an import cycle; they remain
+# importable from `veloce.security.http` and are used by the schemes below.
 _BASIC_PREFIX = (AUTH_SCHEME_BASIC + " ").lower()
 _DIGEST_PREFIX = (AUTH_SCHEME_DIGEST + " ").lower()
-
-
-def _quote_header_value(value: str) -> str:
-    """Escape a string for an HTTP quoted-string (RFC 7230 Sec. 3.2.6).
-
-    Backslash must be escaped before the double-quote, or a literal
-    backslash preceding a quote would be mis-escaped. This is the correct
-    transform for a `realm` and other WWW-Authenticate quoted params -
-    not `urllib.parse.quote`, which percent-encodes and mangles `@`/space.
-    """
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _validate_realm(realm: str) -> None:
-    """Reject control characters in a realm at construction (fail fast).
-
-    CR / LF / NUL and other control characters cannot appear in an HTTP
-    quoted-string and would corrupt the WWW-Authenticate header, so an
-    invalid realm is a configuration error, surfaced when the scheme is
-    built rather than on every 401.
-    """
-    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in realm):
-        raise ValueError("realm must not contain control characters")
 
 
 class HTTPBasicCredentials:

@@ -81,3 +81,56 @@ def test_session_round_trip_via_signed_cookie():
     client.get("/set")
     resp = client.get("/get")
     assert resp.json() == {"count": 7}
+
+
+# ── Cookie Domain attribute ───────────────────────────────────────────
+
+
+def _set_cookie_line(resp) -> str:
+    for k, v in resp.headers.items():
+        if k.lower() == "set-cookie":
+            return v
+    return ""
+
+
+def _domain_app(**mw_kwargs) -> Veloce:
+    app = Veloce(debug=False, openapi_url=None)
+    app.add_middleware(SessionMiddleware(secret_key="x" * 32, **mw_kwargs))
+
+    @app.get("/write")
+    async def write(request: Request):
+        request.session["user"] = "alice"
+        return {"ok": True}
+
+    @app.get("/clear")
+    async def clear(request: Request):
+        request.session.clear()
+        return {"ok": True}
+
+    return app
+
+
+def test_session_cookie_includes_domain():
+    client = _domain_app(domain=".example.com").test_client()
+    resp = client.get("/write")
+    assert "Domain=.example.com" in _set_cookie_line(resp)
+
+
+def test_session_delete_cookie_includes_domain():
+    client = _domain_app(domain=".example.com").test_client()
+    client.get("/write")
+    resp = client.get("/clear")
+    line = _set_cookie_line(resp)
+    assert "Domain=.example.com" in line
+    assert "Max-Age=0" in line
+
+
+def test_session_domain_insecure_samesite_none_warns():
+    with pytest.warns(UserWarning):
+        SessionMiddleware(secret_key="x" * 32, domain=".example.com", secure=False, samesite="none")
+
+
+def test_session_no_domain_by_default():
+    client = _domain_app().test_client()
+    resp = client.get("/write")
+    assert "Domain=" not in _set_cookie_line(resp)

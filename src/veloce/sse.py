@@ -34,14 +34,15 @@ _PING_FRAME = b": ping\r\n\r\n"
 class ServerSentEvent:
     """A single SSE event."""
 
-    __slots__ = ("data", "event", "id", "retry")
+    __slots__ = ("comment", "data", "event", "id", "retry")
 
     def __init__(
         self,
-        data: str,
+        data: str | None = None,
         event: str | None = None,
         id: str | None = None,
         retry: int | None = None,
+        comment: str | None = None,
     ) -> None:
         # WHATWG SSE: `event` and `id` are single-line fields - a CR/LF would
         # silently split or truncate them on the wire. A NUL in `id` makes the
@@ -49,7 +50,8 @@ class ServerSentEvent:
         # Reject these at construction rather than silently stripping, so the
         # bug surfaces at the source. Non-str values are coerced first (an int
         # id stays valid, as before), then validated. `data` stays permissive
-        # (it is line-split into multiple `data:` fields by `encode`).
+        # (it is line-split into multiple `data:` fields by `encode`). `data`
+        # may be None to emit a comment-only event (no `data:` lines).
         if event is not None:
             event = str(event)
             if "\n" in event or "\r" in event:
@@ -62,6 +64,10 @@ class ServerSentEvent:
         self.event = event
         self.id = id
         self.retry = retry
+        # WHATWG SSE: a line beginning with `:` is a comment the client
+        # ignores. Multi-line comments are line-split like `data`, so the
+        # field stays permissive (no newline rejection).
+        self.comment = comment
 
     @classmethod
     def json(
@@ -92,6 +98,16 @@ class ServerSentEvent:
     def encode(self) -> bytes:
         """Encode the event as an SSE-formatted byte string."""
         lines = []
+        if self.comment is not None:
+            # Comments precede the event fields so clients (and proxies) see
+            # them first. Line-split like `data` so an embedded newline emits
+            # one `: ` line per segment instead of a mangled single line.
+            c = self.comment.replace("\r\n", "\n").replace("\r", "\n")
+            if "\n" not in c:
+                lines.append(f": {c}")
+            else:
+                for line in c.split("\n"):
+                    lines.append(f": {line}")
         if self.id is not None:
             # `id`/`event` were validated single-line at construction, so emit
             # them directly without a per-encode strip.
@@ -100,14 +116,15 @@ class ServerSentEvent:
             lines.append(f"event: {self.event}")
         if self.retry is not None:
             lines.append(f"retry: {self.retry}")
-        data = self.data.replace("\r\n", "\n").replace("\r", "\n")
-        # Single-line payloads - by far the common case - skip the
-        # `split("\n")` allocation and emit the field directly.
-        if "\n" not in data:
-            lines.append(f"data: {data}")
-        else:
-            for line in data.split("\n"):
-                lines.append(f"data: {line}")
+        if self.data is not None:
+            data = self.data.replace("\r\n", "\n").replace("\r", "\n")
+            # Single-line payloads - by far the common case - skip the
+            # `split("\n")` allocation and emit the field directly.
+            if "\n" not in data:
+                lines.append(f"data: {data}")
+            else:
+                for line in data.split("\n"):
+                    lines.append(f"data: {line}")
         lines.append("")
         lines.append("")
         return "\n".join(lines).encode("utf-8")
@@ -132,7 +149,7 @@ class EventSourceResponse(Response):
 
     is_event_source = True
 
-    __slots__ = ("ping",)
+    __slots__ = ("_ping_frame", "ping")
 
     def __init__(
         self,
@@ -140,6 +157,7 @@ class EventSourceResponse(Response):
         status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
         ping: float | None = None,
+        ping_comment: str | None = None,
     ) -> None:
         if ping is not None and not (math.isfinite(ping) and ping > 0):
             # `not finite` rejects NaN (fails every comparison, so `<= 0` lets
@@ -148,6 +166,19 @@ class EventSourceResponse(Response):
             raise ValueError(
                 f"ping interval must be a finite positive number of seconds, got {ping!r}"
             )
+        if ping_comment is not None:
+            if ping is None:
+                raise ValueError("ping_comment is only meaningful when ping is set")
+            # Reuse the event-field single-line rule: the keep-alive frame is a
+            # single comment line, so a CR/LF would split it on the wire.
+            if "\n" in ping_comment or "\r" in ping_comment:
+                raise ValueError("ping_comment must not contain a newline")
+            # Precompute the keep-alive frame once. Build it directly (not via
+            # ServerSentEvent.encode) to preserve the CRLF framing the default
+            # `_PING_FRAME` constant uses.
+            self._ping_frame = f": {ping_comment}\r\n\r\n".encode()
+        else:
+            self._ping_frame = _PING_FRAME
         hdrs = dict(headers) if headers else {}
         hdrs.update(
             {
@@ -223,6 +254,10 @@ class EventSourceResponse(Response):
             return self._encode_plain(content)
         return self._encode_with_ping(content, self.ping)
 
+    # `_encode_with_ping` is an instance method so it can read the precomputed
+    # `self._ping_frame` (default or custom token); `_encode_plain` stays a
+    # classmethod since it needs no per-response state.
+
     @staticmethod
     def _encode_event(item: ServerSentEvent | str | bytes) -> bytes:
         if isinstance(item, ServerSentEvent):
@@ -239,9 +274,8 @@ class EventSourceResponse(Response):
         async for item in content:
             yield cls._encode_event(item)
 
-    @classmethod
     async def _encode_with_ping(
-        cls,
+        self,
         content: AsyncIterator[ServerSentEvent | str | bytes],
         ping: float,
     ) -> AsyncIterator[bytes]:
@@ -258,7 +292,7 @@ class EventSourceResponse(Response):
                 done, _ = await asyncio.wait((pending,), timeout=ping)
                 if not done:
                     # No event within the window - keep the connection warm.
-                    yield _PING_FRAME
+                    yield self._ping_frame
                     continue
                 task = pending
                 pending = None
@@ -266,7 +300,7 @@ class EventSourceResponse(Response):
                     item = task.result()
                 except StopAsyncIteration:
                     return
-                yield cls._encode_event(item)
+                yield self._encode_event(item)
         finally:
             if pending is not None:
                 pending.cancel()

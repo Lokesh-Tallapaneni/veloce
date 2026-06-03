@@ -49,6 +49,8 @@ Veloce ships the following middleware, all importable from the top-level
 | `TrustedHostMiddleware`     | Host-header allow-list                                        |
 | `HTTPSRedirectMiddleware`   | Redirect plain HTTP to HTTPS                                  |
 | `SecurityHeadersMiddleware` | Attach common hardening response headers to every response    |
+| `CSPMiddleware`             | Content-Security-Policy with a per-request nonce and report-only support |
+| `ConditionalGetMiddleware`  | Emit `304 Not Modified` for satisfied GET/HEAD preconditions  |
 | `RateLimitMiddleware`       | In-process token-bucket rate limiter                          |
 | `WebSocketOriginMiddleware` | Reject cross-site WebSocket handshakes (CSWSH)                |
 | `LoggingMiddleware`         | Structured request/response access logging                    |
@@ -62,6 +64,61 @@ are also exported, along with the `rotate_csrf_token` helper used with
 `SessionMiddleware` and `ServerSessionMiddleware` have a dedicated guide —
 see [Sessions](sessions.md). For configuring cookie attributes through
 `app.config`, see [Configuration](configuration.md#built-in-defaults).
+
+### Content-Security-Policy with a nonce
+
+`CSPMiddleware` emits a `Content-Security-Policy` (and/or
+`Content-Security-Policy-Report-Only`) header, optionally with a fresh
+per-request nonce. Pass `policy` as a string template containing the
+literal `{nonce}` placeholder, or as a directive mapping where the
+`'nonce'` source is substituted with the generated nonce:
+
+```python
+from veloce import CSPMiddleware
+
+app.add_middleware(
+    CSPMiddleware(
+        policy={"default-src": "'self'", "script-src": ["'self'", "'nonce'"]},
+        report_only_policy="default-src 'self'",
+    )
+)
+```
+
+Read the nonce inside a handler or template with
+[`csp_nonce(request)`](../reference.md#veloce.csp_nonce) and place it on the
+matching `<script>`/`<style>` tags as `nonce="..."`. The nonce is
+materialised lazily on first read, so a request that never embeds one pays
+no extra cost. A static, nonce-free policy can stay on
+`SecurityHeadersMiddleware`; use `CSPMiddleware` when you need a nonce or a
+report-only policy.
+
+### Conditional GET
+
+`ConditionalGetMiddleware` evaluates `If-None-Match` / `If-Modified-Since`
+against a buffered `GET`/`HEAD` response and downgrades a matching request
+to `304 Not Modified` with an empty body (RFC 9110 Sec. 13). With
+`auto_etag` (the default) it also synthesises a weak `ETag` for a buffered,
+non-empty `200` that lacks one. Register it **after** `GZipMiddleware` so a
+synthesised ETag reflects the compressed bytes:
+
+```python
+from veloce import ConditionalGetMiddleware, GZipMiddleware
+
+app.add_middleware(GZipMiddleware())
+app.add_middleware(ConditionalGetMiddleware())
+```
+
+`StreamingResponse` bodies are not buffered for ETag synthesis.
+
+### Streaming compression
+
+`GZipMiddleware` also compresses streaming responses chunk-by-chunk
+through a single deflate stream, so a long-running streamed body no longer
+has to be buffered to be compressed. Chunks at or above
+`min_stream_chunk_offload` bytes (32 KiB by default) are offloaded to the
+thread pool; latency-sensitive types (`text/event-stream` by default, via
+`latency_sensitive_types`) are passed through uncompressed so server-sent
+events are never merged or delayed.
 
 ## Function middleware
 

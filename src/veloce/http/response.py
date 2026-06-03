@@ -6,9 +6,9 @@ import asyncio
 import hashlib
 import mimetypes
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import orjson
@@ -67,6 +67,43 @@ from veloce.status import (
     HTTP_307_TEMPORARY_REDIRECT,
     status_permits_body,
 )
+
+# ── Case-insensitive response-header access ──────────────────────────
+# `Response.headers` is a plain `dict` (case-SENSITIVE), not a CIMultiDict.
+# HTTP field names are case-insensitive (RFC 9110 Sec. 5.1), so a handler or
+# upstream middleware that sets `cache-control`, `Etag`, or any other header
+# in non-canonical casing would be missed by an exact-key lookup. These
+# helpers fold the lookup case-insensitively without allocating a new dict on
+# the hot path - they fast-path the canonical key, then fall back to a single
+# linear scan only when it is absent.
+
+
+def header_key(headers: Mapping[str, str], name: str) -> str | None:
+    """Return the actual stored key matching `name` case-insensitively, or None.
+
+    `name` should be passed in its canonical casing; the common case (the
+    header is stored under that exact key) returns without scanning. Use the
+    returned key to rewrite a value in place under whatever casing the caller
+    originally stored.
+    """
+    if name in headers:
+        return name
+    lowered = name.lower()
+    for key in headers:
+        if key.lower() == lowered:
+            return key
+    return None
+
+
+def header_get(headers: Mapping[str, str], name: str) -> str | None:
+    """Return the value stored under `name` case-insensitively, or None."""
+    key = header_key(headers, name)
+    return None if key is None else headers[key]
+
+
+def header_present(headers: Mapping[str, str], name: str) -> bool:
+    """Return True when a header named `name` exists under any casing."""
+    return header_key(headers, name) is not None
 
 
 class Response:
@@ -253,6 +290,7 @@ class Response:
         httponly: bool = False,
         samesite: str | None = "Lax",
         partitioned: bool = False,
+        prefix: Literal["host", "secure"] | None = None,
     ) -> None:
         """Build a `Set-Cookie` header per RFC 6265.
 
@@ -276,6 +314,11 @@ class Response:
         cookie is keyed to the top-level site, so embedded third-party
         contexts each get an isolated jar. `Partitioned` requires
         `Secure`, so it is only emitted when `secure=True`.
+
+        `prefix="host"` / `prefix="secure"` add the RFC 6265bis Sec. 4.1.3
+        name prefix (`__Host-` / `__Secure-`) and enforce its invariants:
+        `"secure"` requires `secure=True`; `"host"` also requires `path="/"`
+        and no `domain`. A violation raises `ValueError`.
 
         The cookie name and value are rejected if they contain CR, LF, or
         NUL - untrusted data must not be able to inject additional cookies
@@ -307,6 +350,7 @@ class Response:
             secure=secure,
             httponly=httponly,
             samesite=samesite,
+            prefix=prefix,
         )
         if expires_str is not None:
             cookie += f"; Expires={expires_str}"
@@ -908,8 +952,10 @@ class Response:
                 for chunk in it:
                     ...
 
-        This dual return shape is preserved for backwards compatibility
-        and will be unified to a single `AsyncIterator[bytes]` in v0.2.0.
+        The return shape is mode-dependent: a buffered response yields a
+        synchronous iterator of `bytes`, a streaming response yields the
+        underlying `AsyncIterator[bytes]`. Branch on `response.is_streamed`
+        to drain with the right loop.
         """
         stream = self._stream
         if stream is not None:
@@ -940,9 +986,8 @@ class Response:
                 for chunk in it:
                     ...
 
-        `size` must be positive. This dual return shape is preserved for
-        backwards compatibility and will be unified to a single
-        `AsyncIterator[bytes]` in v0.2.0.
+        `size` must be positive. The return shape is mode-dependent: branch
+        on `response.is_streamed` to drain with the right loop.
         """
         if size <= 0:
             raise ValueError("iter_chunked size must be positive")
@@ -984,8 +1029,9 @@ class Response:
         of the resource) and the weak/strong ETag comparison rules.
         """
         # If-None-Match: any token (or `*`) that equals the response's
-        # ETag returns 304.
-        ours_etag = self.headers.get(HEADER_ETAG, "")
+        # ETag returns 304. Field names are case-insensitive (RFC 9110
+        # Sec. 5.1), so a handler-set `Etag`/`etag` is honored too.
+        ours_etag = header_get(self.headers, HEADER_ETAG) or ""
         inm = getattr(request, "if_none_match", ())
         if inm and ours_etag:
             if "*" in inm:
@@ -1000,7 +1046,7 @@ class Response:
             return self
 
         # If-Modified-Since (only consulted when If-None-Match absent).
-        ours_lm = self.headers.get(HEADER_LAST_MODIFIED, "")
+        ours_lm = header_get(self.headers, HEADER_LAST_MODIFIED) or ""
         ims = getattr(request, "if_modified_since", None)
         if ims is not None and ours_lm:
             ours_dt = parse_date(ours_lm)
@@ -1059,9 +1105,10 @@ class Response:
         """Write a `Content-Disposition` header - RFC 6266.
 
         `disposition` is `"attachment"` (force download) or `"inline"`
-        (render in-browser). When `filename` is given it is added as
-        the `filename` parameter; non-ASCII names also get the
-        RFC 5987 `filename*=UTF-8''...` form for modern browsers.
+        (render in-browser). When `filename` is given, an ASCII quotable
+        name uses `filename="..."` (spaces and punctuation preserved, only
+        `\\` and `"` escaped); a non-ASCII or non-quotable name uses only
+        the RFC 5987 `filename*=UTF-8''...` form, with no lossy legacy slot.
         Returns the header value written.
         """
         value = _format_content_disposition(disposition, filename) if filename else disposition
@@ -1077,15 +1124,19 @@ class Response:
         secure: bool = False,
         httponly: bool = False,
         samesite: str | None = None,
+        partitioned: bool = False,
+        prefix: Literal["host", "secure"] | None = None,
     ) -> None:
         """Delete a cookie by overwriting it with an empty value + Max-Age=0.
 
         The browser only treats the new cookie as a replacement for the
         existing one if `Path`, `Domain`, **and the `Secure` / `SameSite`
-        attributes match** - otherwise it stores both. So a session
-        cookie originally set with `Secure; SameSite=None` will not be
-        deleted by a plain `delete_cookie(key)` call. Pass the same
-        flags here.
+        / `Partitioned` attributes match** - otherwise it stores both. So a
+        session cookie originally set with `Secure; SameSite=None` (or with
+        `Partitioned`) will not be deleted by a plain `delete_cookie(key)`
+        call. Pass the same flags here. `prefix` deletes the cookie under
+        its true `__Host-`/`__Secure-` wire name and enforces the same
+        invariants on the deletion's attributes.
         """
         self.set_cookie(
             key,
@@ -1096,6 +1147,8 @@ class Response:
             secure=secure,
             httponly=httponly,
             samesite=samesite,
+            partitioned=partitioned,
+            prefix=prefix,
         )
 
 
@@ -1360,18 +1413,27 @@ class StreamingResponse(Response):
 def _format_content_disposition(disposition: str, filename: str) -> str:
     """Build a safe RFC 6266 ``Content-Disposition`` header value.
 
-    The filename is reduced to a quoted ASCII ``filename="..."`` form with
-    backslashes, double-quotes, and control characters neutralised, so a
-    crafted filename cannot break out of the header. When the original
-    name had non-ASCII characters, an RFC 5987 ``filename*=UTF-8''...``
-    parameter is appended for modern browsers.
+    An ASCII name whose characters are all RFC 9110 quoted-string members
+    (HTAB, SP, and the printable range 0x21-0x7E) is emitted verbatim as
+    ``filename="..."`` with spaces and punctuation preserved - only ``\\``
+    and ``"`` are escaped (backslash first). A non-ASCII name, or one that
+    holds a control character, is emitted only as the RFC 5987
+    ``filename*=UTF-8''...`` form; there is no lossy legacy ``filename=``
+    slot. A CR/LF in the name is rejected outright so it cannot inject a
+    header.
     """
-    ascii_name = filename.encode("ascii", "replace").decode("ascii")
-    safe_ascii = "".join("_" if (c in '"\\' or c < " " or c == "\x7f") else c for c in ascii_name)
-    value = f'{disposition}; filename="{safe_ascii}"'
-    if ascii_name != filename:  # the original had non-ASCII characters
-        value += f"; filename*=UTF-8''{quote(filename, safe='')}"
-    return value
+    _reject_header_crlf(filename, "filename")
+    quotable = filename.isascii() and all(
+        c == "\t" or c == " " or "\x21" <= c <= "\x7e" for c in filename
+    )
+    if quotable:
+        # RFC 9110 Sec. 5.6.4 quoted-string escape: backslash first so an
+        # original backslash is not doubled again when escaping the quote.
+        escaped = filename.replace("\\", "\\\\").replace('"', '\\"')
+        param = f'filename="{escaped}"'
+    else:
+        param = f"filename*=UTF-8''{quote(filename, safe='')}"
+    return f"{disposition}; {param}"
 
 
 class FileResponse(Response):

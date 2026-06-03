@@ -67,11 +67,17 @@ gunicorn = ["gunicorn>=21.0; sys_platform != 'win32'"]
 # TracerProvider, and exporter. Kept optional so a plain install carries no
 # tracing dependency. Install with `pip install veloceframework[otel]`.
 otel = ["opentelemetry-api>=1.20"]
+# Prometheus metrics exporter for `veloce.metrics.instrument_with_prometheus`.
+# Pulls in `prometheus_client`; the application owns serving `/metrics`. Kept
+# optional so a plain install carries no metrics dependency. Install with
+# `pip install veloceframework[metrics]`.
+metrics = ["prometheus_client>=0.17"]
 # Everything optional in one shot.
 all = [
     "websockets>=12",
     "gunicorn>=21.0; sys_platform != 'win32'",
     "opentelemetry-api>=1.20",
+    "prometheus_client>=0.17",
 ]
 
 [project.scripts]
@@ -165,5 +171,12 @@ check_untyped_defs = true
 exclude = ["build", "dist", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["uvloop", "httptools", "multipart.*", "gunicorn.*", "opentelemetry.*"]
+module = [
+    "uvloop",
+    "httptools",
+    "multipart.*",
+    "gunicorn.*",
+    "opentelemetry.*",
+    "prometheus_client",
+]
 ignore_missing_imports = true

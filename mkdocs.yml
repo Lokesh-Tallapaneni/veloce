@@ -150,6 +150,7 @@ nav:
       - Background Tasks: guide/background-tasks.md
       - Server-Sent Events: guide/sse.md
       - Signals: guide/signals.md
+      - Observability: guide/observability.md
       - WebSockets: guide/websockets.md
       - MCP (AI Tools): guide/mcp.md
       - Testing: guide/testing.md

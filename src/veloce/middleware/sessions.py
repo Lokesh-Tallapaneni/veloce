@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import logging
 import secrets
+import warnings
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from veloce._constants import HEADER_COOKIE
 from veloce.http.cookies import dump_cookie
@@ -45,6 +46,45 @@ def _session_accessed(session: Any) -> bool:
     )
 
 
+def _validate_cookie_security(
+    *,
+    cookie_prefix: Literal["host", "secure"] | None,
+    partitioned: bool,
+    domain: str | None,
+    path: str,
+    secure: bool,
+    samesite: str | None,
+) -> None:
+    """Fail-fast validation of the cookie security config at construction time.
+
+    Enforces, once for both middlewares, the RFC 6265bis name-prefix invariants
+    and the CHIPS (`Partitioned`) preconditions so a misconfiguration surfaces
+    at app wiring rather than being silently dropped at response time.
+    """
+    if cookie_prefix is not None:
+        if cookie_prefix not in ("host", "secure"):
+            raise ValueError("cookie_prefix must be 'host', 'secure', or None")
+        if not secure:
+            raise ValueError(f"cookie_prefix={cookie_prefix!r} requires secure=True")
+        if cookie_prefix == "host":
+            if path != "/":
+                raise ValueError("cookie_prefix='host' requires path='/'")
+            if domain is not None:
+                raise ValueError("cookie_prefix='host' requires domain=None")
+    if partitioned and (not secure or (samesite or "").lower() != "none"):
+        raise ValueError("partitioned=True (CHIPS) requires secure=True and samesite='none'")
+    # A non-Secure SameSite=None cross-subdomain cookie is dropped by modern
+    # browsers (RFC 6265bis same-site rules / Chrome). Warn at construction.
+    if domain is not None and not secure and (samesite or "").lower() == "none":
+        warnings.warn(
+            "A SameSite=None cookie without Secure is rejected by modern "
+            "browsers; a cross-subdomain Domain cookie set this way will be "
+            "dropped. Set secure=True.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
 class SessionMiddleware(Middleware):
     """Server-side session stored in a signed, timestamped cookie."""
 
@@ -57,14 +97,25 @@ class SessionMiddleware(Middleware):
         httponly: bool = True,
         secure: bool = False,
         samesite: str = "lax",
+        domain: str | None = None,
         permanent_lifetime: int = 86400 * 31,
         max_cookie_size: int = _DEFAULT_MAX_COOKIE_SIZE,
         vary_on_cookie: bool = True,
         persist_on_status: Callable[[int], bool] | None = None,
+        cookie_prefix: Literal["host", "secure"] | None = None,
+        partitioned: bool = False,
     ) -> None:
         keys = [secret_key] if isinstance(secret_key, str) else list(secret_key)
         if not keys:
             raise ValueError("secret_key must be a non-empty string or list of strings")
+        _validate_cookie_security(
+            cookie_prefix=cookie_prefix,
+            partitioned=partitioned,
+            domain=domain,
+            path=path,
+            secure=secure,
+            samesite=samesite,
+        )
         self._signer = Signer(keys[0], salt="veloce.session")
         for fallback in keys[1:]:
             self._signer.add_fallback_secret(fallback, salt="veloce.session")
@@ -74,7 +125,19 @@ class SessionMiddleware(Middleware):
         self.httponly = httponly
         self.secure = secure
         self.samesite = samesite
+        self.domain = domain
+        self.cookie_prefix = cookie_prefix
+        self.partitioned = partitioned
         self._samesite_cap = self.samesite.capitalize() if self.samesite else None
+        # The wire name carries the RFC 6265bis prefix; the request side must
+        # read under the same name. `__init__`-time derivation keeps the
+        # per-request read off the hot path.
+        if cookie_prefix == "host":
+            self._wire_cookie_name = f"__Host-{cookie_name}"
+        elif cookie_prefix == "secure":
+            self._wire_cookie_name = f"__Secure-{cookie_name}"
+        else:
+            self._wire_cookie_name = cookie_name
         # `PERMANENT_SESSION_LIFETIME` analog - used for the cookie
         # `Max-Age` when `session.permanent` is set. Defaults to 31 days.
         self.permanent_lifetime = permanent_lifetime
@@ -92,7 +155,7 @@ class SessionMiddleware(Middleware):
         """Load the session from the signed cookie into request state."""
         session_data: dict[str, Any] = {}
         is_new = True
-        cookie_val = request.cookies.get(self.cookie_name)
+        cookie_val = request.cookies.get(self._wire_cookie_name)
         if cookie_val:
             try:
                 # Read with the longer window so a permanent cookie is
@@ -140,9 +203,12 @@ class SessionMiddleware(Middleware):
             response.delete_cookie(
                 self.cookie_name,
                 path=self.path,
+                domain=self.domain,
                 secure=self.secure,
                 httponly=self.httponly,
                 samesite=self.samesite,
+                partitioned=self.partitioned,
+                prefix=self.cookie_prefix,
             )
             return response
 
@@ -159,10 +225,18 @@ class SessionMiddleware(Middleware):
             cookie_value,
             max_age=lifetime,
             path=self.path,
+            domain=self.domain,
             httponly=self.httponly,
             secure=self.secure,
             samesite=self._samesite_cap,
+            prefix=self.cookie_prefix,
         )
+        # `dump_cookie` has no `partitioned` arg, so append the CHIPS attribute
+        # here - the constructor guard guarantees `secure=True` when set, so it
+        # is always valid. Append before the size measurement so the 4093-byte
+        # guard counts it.
+        if self.partitioned:
+            rendered += "; Partitioned"
         # Measure the on-the-wire byte length, not the character count: a
         # non-ASCII cookie_name/path/domain would otherwise under-count and
         # let the Set-Cookie line exceed the browser's ~4 KB truncation limit
@@ -218,9 +292,20 @@ class ServerSessionMiddleware(Middleware):
         httponly: bool = True,
         secure: bool = False,
         samesite: str = "lax",
+        domain: str | None = None,
         vary_on_cookie: bool = True,
         persist_on_status: Callable[[int], bool] | None = None,
+        cookie_prefix: Literal["host", "secure"] | None = None,
+        partitioned: bool = False,
     ) -> None:
+        _validate_cookie_security(
+            cookie_prefix=cookie_prefix,
+            partitioned=partitioned,
+            domain=domain,
+            path=path,
+            secure=secure,
+            samesite=samesite,
+        )
         self.store = store if store is not None else InMemorySessionStore()
         self.cookie_name = cookie_name
         self.max_age = max_age
@@ -228,15 +313,25 @@ class ServerSessionMiddleware(Middleware):
         self.httponly = httponly
         self.secure = secure
         self.samesite = samesite
+        self.domain = domain
+        self.cookie_prefix = cookie_prefix
+        self.partitioned = partitioned
         # See SessionMiddleware: emit `Vary: Cookie` on session-cookie writes,
         # and skip persistence on 5xx by default. Same semantics here.
         self.vary_on_cookie = vary_on_cookie
         self._persist_on_status = persist_on_status
+        # Read/write must share the prefixed wire name (see SessionMiddleware).
+        if cookie_prefix == "host":
+            self._wire_cookie_name = f"__Host-{cookie_name}"
+        elif cookie_prefix == "secure":
+            self._wire_cookie_name = f"__Secure-{cookie_name}"
+        else:
+            self._wire_cookie_name = cookie_name
 
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the server-side store by cookie id."""
         data: dict[str, Any] | None = None
-        session_id = request.cookies.get(self.cookie_name)
+        session_id = request.cookies.get(self._wire_cookie_name)
         if session_id:
             data = await self.store.read(session_id)
         if data is not None:
@@ -298,9 +393,12 @@ class ServerSessionMiddleware(Middleware):
             session_id,
             max_age=self.max_age,
             path=self.path,
+            domain=self.domain,
             httponly=self.httponly,
             secure=self.secure,
             samesite=self.samesite,
+            partitioned=self.partitioned,
+            prefix=self.cookie_prefix,
         )
         return response
 
@@ -316,7 +414,10 @@ class ServerSessionMiddleware(Middleware):
         response.delete_cookie(
             self.cookie_name,
             path=self.path,
+            domain=self.domain,
             secure=self.secure,
             httponly=self.httponly,
             samesite=self.samesite,
+            partitioned=self.partitioned,
+            prefix=self.cookie_prefix,
         )

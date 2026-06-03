@@ -160,8 +160,18 @@ keyword arguments:
 | `httponly`           | `True`         | Set the `HttpOnly` attribute.                                 |
 | `secure`             | `False`        | Set the `Secure` attribute (HTTPS-only cookie).               |
 | `samesite`           | `"lax"`        | `SameSite` attribute — `"lax"`, `"strict"`, or `"none"`.       |
+| `domain`             | `None`         | Cookie `Domain` attribute (scope the cookie to a host/subdomains). |
+| `cookie_prefix`      | `None`         | `"host"` or `"secure"` — add the `__Host-`/`__Secure-` name prefix. |
+| `partitioned`        | `False`        | Set the `Partitioned` (CHIPS) attribute for partitioned storage. |
 | `permanent_lifetime` | `86400 * 31`   | Cookie lifetime when `session.permanent` is set.              |
 | `max_cookie_size`    | `4093`         | Largest rendered `Set-Cookie` before the cookie is dropped.   |
+
+`cookie_prefix` enforces the [RFC 6265bis](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis)
+name-prefix invariants: both prefixes require `secure=True`, and `"host"`
+additionally requires `path="/"` and `domain=None`. `partitioned=True`
+(CHIPS) requires `secure=True` and `samesite="none"`. A violation raises
+`ValueError` at construction. `ServerSessionMiddleware` accepts the same
+`domain`, `cookie_prefix`, and `partitioned` arguments.
 
 !!! warning "Set secure=True behind HTTPS"
     `secure=False` is the development default. In production, serve over
