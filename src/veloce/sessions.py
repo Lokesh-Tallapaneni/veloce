@@ -113,6 +113,13 @@ class Session(dict[str, Any]):
         self.accessed = True
         return super().items()
 
+    def copy(self) -> dict[Any, Any]:
+        # Copying reads the whole session, so a handler that builds a
+        # personalized response from `session.copy()` must still trigger the
+        # `Vary: Cookie` guard.
+        self.accessed = True
+        return super().copy()
+
     # -- Mutation tracking --------------------------------------
     # Every mutating dict operation is overridden to flip `modified`,
     # so the cookie middleware can cheaply tell when a re-write is due.

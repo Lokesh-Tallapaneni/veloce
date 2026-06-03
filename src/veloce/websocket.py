@@ -1111,6 +1111,7 @@ class WebSocket:
             self._send_frame((WS_1009_MESSAGE_TOO_BIG).to_bytes(2, "big"), opcode=0x8)  # Close
         self._cancel_heartbeat()
         self._closed = True
+        self._wake_raw_receiver()
         with contextlib.suppress(Exception):
             if self.transport is not None:
                 self.transport.close()
@@ -1127,6 +1128,7 @@ class WebSocket:
             self._send_frame((WS_1002_PROTOCOL_ERROR).to_bytes(2, "big"), opcode=0x8)  # Close
         self._cancel_heartbeat()
         self._closed = True
+        self._wake_raw_receiver()
         with contextlib.suppress(Exception):
             if self.transport is not None:
                 self.transport.close()
@@ -1143,6 +1145,7 @@ class WebSocket:
             self._send_frame((WS_1007_INVALID_FRAME_PAYLOAD_DATA).to_bytes(2, "big"), opcode=0x8)
         self._cancel_heartbeat()
         self._closed = True
+        self._wake_raw_receiver()
         with contextlib.suppress(Exception):
             if self.transport is not None:
                 self.transport.close()
@@ -1191,6 +1194,7 @@ class WebSocket:
             self._send_frame(code.to_bytes(2, "big"), opcode=0x8)
         self._cancel_heartbeat()
         self._closed = True
+        self._wake_raw_receiver()
         with contextlib.suppress(Exception):
             if self.transport is not None:
                 self.transport.close()
@@ -1330,15 +1334,25 @@ class WebSocket:
         self._cancel_heartbeat()
         self._closed = True
         self.close_code = WS_1006_ABNORMAL_CLOSURE
-        # Wake a handler parked in `receive_*()`: a silent peer leaves the
-        # queue empty, so the reader is blocked there - without this the
-        # dead-peer detection would close the transport yet hang the handler.
-        if self._receive_queue is not None:
-            with contextlib.suppress(asyncio.QueueFull):
-                self._receive_queue.put_nowait(_RAW_DISCONNECT)
+        self._wake_raw_receiver()
         with contextlib.suppress(Exception):
             if self.transport is not None:
                 self.transport.close()
+
+    def _wake_raw_receiver(self) -> None:
+        """Wake a handler parked in `receive_*()` on a terminal raw close.
+
+        Any synchronous parser-side close (protocol error, invalid UTF-8,
+        too-big, peer Close echo) or a heartbeat timeout sets `_closed` and
+        drops the transport, but a coroutine already blocked on the receive
+        queue would otherwise hang until its own timeout. Deliver the terminal
+        sentinel so it unwinds with a `WebSocketDisconnect` carrying
+        `close_code`. Raw-transport mode only (ASGI has no receive queue); a
+        silent peer leaves the queue empty so the parked getter is woken.
+        """
+        if self._receive_queue is not None:
+            with contextlib.suppress(asyncio.QueueFull):
+                self._receive_queue.put_nowait(_RAW_DISCONNECT)
 
     def _send_frame(self, data: bytes, opcode: int) -> None:
         """Send a WebSocket frame.

@@ -345,8 +345,12 @@ def _response_pydantic_to_schema(model: type[BaseModel], registry: dict[str, dic
         return {"$ref": f"#/components/schemas/{out_name}"}
 
     try:
-        serialization = model.model_json_schema(mode="serialization")
-        validation = model.model_json_schema()
+        # Use a components/schemas ref template so that when we hoist `$defs`
+        # into `components.schemas` below, the inner `$ref`s already resolve
+        # there (Pydantic's default `#/$defs/...` would dangle once hoisted).
+        ref_tmpl = "#/components/schemas/{model}"
+        serialization = model.model_json_schema(mode="serialization", ref_template=ref_tmpl)
+        validation = model.model_json_schema(ref_template=ref_tmpl)
     except Exception:
         # Fall back to the validation-mode path, which carries its own
         # degraded-schema logging and never raises.

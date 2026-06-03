@@ -104,7 +104,11 @@ async def test_invalid_utf8_text_frame_closes_with_1007():
     assert ws._closed is True
     assert transport.closed is True
     assert _last_close_code(transport) == 1007
-    # The bad bytes never reached the receive queue.
+    # The bad bytes never reached the receive queue as data; the only thing
+    # queued is the terminal disconnect sentinel that wakes a parked receiver.
+    from veloce.websocket import _RAW_DISCONNECT
+
+    assert ws._receive_queue.get_nowait() is _RAW_DISCONNECT
     assert ws._receive_queue.empty()
 
 
