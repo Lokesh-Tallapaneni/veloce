@@ -72,6 +72,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `url_for` / `url_path_for` now validate each substituted path parameter
+  through the converter declared on the route before building the URL. A value
+  the radix matcher would never accept - `url_for('item', id='abc')` on
+  `/items/{id:int}` - raises at call time (`ValueError` from the router, wrapped
+  in `BuildError` by `Veloce.url_for`) instead of returning a dead
+  `/items/abc`. Validation reuses the route's existing converter `match()` in
+  O(1) per parameter, derived from the route template on first reverse and
+  cached, so reverse and forward stay symmetric with no regex re-execution.
+  Parameters with no typed converter (bare `{name}` or a raw-regex segment such
+  as `{id:[0-9]+}`) keep accepting any stringifiable value.
 - `WebSocket.receive_text()` / `receive_bytes()` skip the `asyncio.wait_for`
   wrapper when neither a per-call `timeout` nor a connection `idle_timeout` is
   set (the common case), awaiting the ASGI receive directly. Measured on uvloop,
