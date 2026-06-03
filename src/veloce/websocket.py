@@ -604,7 +604,7 @@ class WebSocket:
         if self._closed:
             raise WebSocketDisconnect()
         if self._is_asgi:
-            await self._asgi_send({"type": ASGI_EVENT_WS_SEND, "text": data})
+            await self._asgi_send_safe({"type": ASGI_EVENT_WS_SEND, "text": data})
             return
         self._send_frame(data.encode("utf-8"), opcode=0x1)
 
@@ -629,9 +629,24 @@ class WebSocket:
         if self._closed:
             raise WebSocketDisconnect()
         if self._is_asgi:
-            await self._asgi_send({"type": ASGI_EVENT_WS_SEND, "bytes": data})
+            await self._asgi_send_safe({"type": ASGI_EVENT_WS_SEND, "bytes": data})
             return
         self._send_frame(data, opcode=0x2)
+
+    async def _asgi_send_safe(self, message: dict) -> None:
+        """Forward an ASGI send, normalizing a dead-peer OSError to a disconnect.
+
+        Under an ASGI server a send to a peer that has gone away surfaces as an
+        ``OSError`` / ``ConnectionError`` (broken pipe, connection reset) from
+        the transport. Normalize it to ``WebSocketDisconnect`` so handlers catch
+        the same exception on every transport instead of a raw socket error, and
+        mark the socket closed so subsequent sends short-circuit.
+        """
+        try:
+            await self._asgi_send(message)
+        except (ConnectionError, OSError) as exc:
+            self._closed = True
+            raise WebSocketDisconnect(WS_1006_ABNORMAL_CLOSURE) from exc
 
     async def _asgi_recv_msg(self) -> dict:
         msg = await self._asgi_receive()
@@ -694,7 +709,7 @@ class WebSocket:
                 "WebSocket.send() is ASGI-mode only; use send_text/send_bytes "
                 "for raw asyncio-transport connections"
             )
-        await self._asgi_send(message)
+        await self._asgi_send_safe(message)
 
     def _check_can_receive(self, method: str) -> None:
         """Enforce the handshake state machine for receive operations.

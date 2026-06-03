@@ -124,3 +124,29 @@ def test_trailing_backslash_does_not_index_past_end():
 def test_empty_key_dropped():
     _, params = parse_header_params("=value; name=ok", delimiter=";", unescape=True)
     assert params == {"name": "ok"}
+
+
+# --- split_outside_quotes ---------------------------------------------------
+
+from veloce._header_parsing import split_outside_quotes  # noqa: E402
+
+
+def test_split_outside_quotes_plain():
+    assert split_outside_quotes("a,b", ",") == ["a", "b"]
+
+
+def test_split_outside_quotes_comma_in_quotes_not_split():
+    assert split_outside_quotes('host="a,b"', ",") == ['host="a,b"']
+
+
+def test_split_outside_quotes_mixed():
+    assert split_outside_quotes('for=x; host="a,b"', ",") == ['for=x; host="a,b"']
+
+
+def test_split_outside_quotes_escaped_quote():
+    assert split_outside_quotes(r'k="a\",b"', ",") == [r'k="a\",b"']
+
+
+def test_split_outside_quotes_empty_and_trailing():
+    assert split_outside_quotes("", ",") == [""]
+    assert split_outside_quotes("a,", ",") == ["a", ""]

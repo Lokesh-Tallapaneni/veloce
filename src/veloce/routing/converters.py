@@ -18,6 +18,8 @@ candidate (next param or wildcard) - which means a typed mismatch is a
 
 from __future__ import annotations
 
+import datetime
+import decimal
 import math
 import re
 import uuid
@@ -54,6 +56,13 @@ _BUILTIN_REGEX: dict[str, str] = {
     "float": r"-?\d+\.\d+",
     "uuid": _UUID_PATTERN,
     "path": r".+",
+    # Single-segment (no slash) fragments for the regex fallback; the
+    # converter re-validates the matched group, so these stay permissive.
+    "date": r"\d{4}-\d{2}-\d{2}",
+    "datetime": r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:[+-][\d:]+|Z)?",
+    "time": r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?",
+    "timedelta": r"P(?:\d+D)?(?:T(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?",
+    "decimal": r"[+-]?\d+(?:\.\d+)?",
 }
 
 # Cap int-parse input length to bound adversarial parse cost. The converter
@@ -153,6 +162,105 @@ class PathConverter(_Converter):
         return True, value
 
 
+# Anchored prefilters keep the try/except parse off the hot path for the
+# common reject. The actual validation is delegated to the stdlib
+# `fromisoformat` parsers (3.10-compatible after Z normalization).
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}$")
+_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:[+-][\d:]+|Z)?$")
+_TIME_RE = re.compile(r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?$")
+# ISO 8601 duration: at least one component required.
+_TIMEDELTA_RE = re.compile(
+    r"P(?=\d|T)(?:(\d+)D)?(?:T(?=\d)(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$"
+)
+_DECIMAL_RE = re.compile(r"[+-]?\d+(?:\.\d+)?$")
+_MAX_DECIMAL_CHARS = 40
+
+
+def _normalize_z(value: str) -> str:
+    """Replace a trailing `Z` with `+00:00` (3.10 fromisoformat rejects Z)."""
+    if value.endswith("Z"):
+        return value[:-1] + "+00:00"
+    return value
+
+
+class DateConverter(_Converter):
+    """Matches an ISO 8601 date; coerces to datetime.date."""
+
+    __slots__ = ()
+
+    def match(self, value: str) -> tuple[bool, Any]:
+        if not _DATE_RE.match(value):
+            return False, None
+        try:
+            return True, datetime.date.fromisoformat(value)
+        except ValueError:
+            return False, None
+
+
+class DateTimeConverter(_Converter):
+    """Matches an ISO 8601 datetime; coerces to datetime.datetime."""
+
+    __slots__ = ()
+
+    def match(self, value: str) -> tuple[bool, Any]:
+        if not _DATETIME_RE.match(value):
+            return False, None
+        try:
+            return True, datetime.datetime.fromisoformat(_normalize_z(value))
+        except ValueError:
+            return False, None
+
+
+class TimeConverter(_Converter):
+    """Matches an ISO 8601 time; coerces to datetime.time."""
+
+    __slots__ = ()
+
+    def match(self, value: str) -> tuple[bool, Any]:
+        if not _TIME_RE.match(value):
+            return False, None
+        try:
+            return True, datetime.time.fromisoformat(_normalize_z(value))
+        except ValueError:
+            return False, None
+
+
+class TimeDeltaConverter(_Converter):
+    """Matches an ISO 8601 duration; coerces to datetime.timedelta.
+
+    Stricter than Litestar: a bare number such as `60` is rejected - only
+    an ISO duration (`P1DT2H`) with at least one component is accepted.
+    """
+
+    __slots__ = ()
+
+    def match(self, value: str) -> tuple[bool, Any]:
+        m = _TIMEDELTA_RE.match(value)
+        if not m:
+            return False, None
+        days, hours, minutes, seconds = m.groups()
+        return True, datetime.timedelta(
+            days=int(days) if days else 0,
+            hours=int(hours) if hours else 0,
+            minutes=int(minutes) if minutes else 0,
+            seconds=float(seconds) if seconds else 0,
+        )
+
+
+class DecimalConverter(_Converter):
+    """Matches a decimal literal; coerces to decimal.Decimal."""
+
+    __slots__ = ()
+
+    def match(self, value: str) -> tuple[bool, Any]:
+        if not value or len(value) > _MAX_DECIMAL_CHARS or not _DECIMAL_RE.match(value):
+            return False, None
+        try:
+            return True, decimal.Decimal(value)
+        except decimal.InvalidOperation:
+            return False, None
+
+
 class AnyConverter(_Converter):
     """Matches one of a fixed set of literal values: `{x:any(red,blue)}`."""
 
@@ -178,6 +286,11 @@ _BUILTIN = {
     "float": FloatConverter,
     "uuid": UUIDConverter,
     "path": PathConverter,
+    "date": DateConverter,
+    "datetime": DateTimeConverter,
+    "time": TimeConverter,
+    "timedelta": TimeDeltaConverter,
+    "decimal": DecimalConverter,
 }
 
 # User-registered converters - `register_converter(name, cls)` populates

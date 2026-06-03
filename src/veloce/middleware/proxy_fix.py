@@ -28,6 +28,7 @@ from veloce._constants import (
     HEADER_X_FORWARDED_PREFIX,
     HEADER_X_FORWARDED_PROTO,
 )
+from veloce._header_parsing import split_outside_quotes
 from veloce._internal import _reject_header_crlf
 from veloce.http.request import Request
 from veloce.http.response import Response
@@ -144,7 +145,9 @@ class ProxyFix(Middleware):
         position ``len(elements) - hop_count`` -- the same logic as
         ``_pick_hop``.
         """
-        elements = [e.strip() for e in value.split(",") if e.strip()]
+        # Split on commas OUTSIDE quoted strings so a quoted comma in a
+        # directive value (e.g. `host="a,b"`) does not fake an extra hop.
+        elements = [e for e in split_outside_quotes(value, ",") if e.strip()]
         parsed = [self._parse_forwarded_element(e) for e in elements]
 
         result: dict[str, str] = {}
@@ -169,7 +172,7 @@ class ProxyFix(Middleware):
         brackets are stripped.
         """
         result: dict[str, str] = {}
-        for pair in element.split(";"):
+        for pair in split_outside_quotes(element, ";"):
             pair = pair.strip()
             if "=" not in pair:
                 continue

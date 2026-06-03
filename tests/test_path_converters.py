@@ -313,3 +313,107 @@ def test_module_int_digit_cap_not_in_public_surface():
 
     assert "_MAX_INT_DIGITS" not in dir(_routing)
     assert _conv._MAX_INT_DIGITS == 20
+
+
+# ── Temporal / decimal converters ───────────────────────────────────────
+
+import datetime as _dt  # noqa: E402
+import decimal as _dec  # noqa: E402
+
+from veloce.routing.converters import (  # noqa: E402
+    DateConverter,
+    DateTimeConverter,
+    DecimalConverter,
+    TimeConverter,
+    TimeDeltaConverter,
+    extract_regex_converters,
+)
+
+
+def test_date_converter():
+    c = DateConverter()
+    ok, val = c.match("2024-01-15")
+    assert ok and val == _dt.date(2024, 1, 15)
+    assert c.match("2024-13-01") == (False, None)
+    assert c.match("notadate") == (False, None)
+    assert c.match("") == (False, None)
+
+
+def test_datetime_converter():
+    c = DateTimeConverter()
+    ok, val = c.match("2024-01-15T12:30:00")
+    assert ok and val == _dt.datetime(2024, 1, 15, 12, 30, 0)
+    ok2, val2 = c.match("2024-01-15T12:30:00Z")
+    assert ok2 and val2.tzinfo is not None
+    assert c.match("garbage") == (False, None)
+
+
+def test_time_converter():
+    c = TimeConverter()
+    ok, val = c.match("12:30")
+    assert ok and val == _dt.time(12, 30)
+    ok2, val2 = c.match("12:30:45.500")
+    assert ok2 and val2 == _dt.time(12, 30, 45, 500000)
+    assert c.match("25:00") == (False, None)
+
+
+def test_timedelta_converter_strict():
+    c = TimeDeltaConverter()
+    ok, val = c.match("P1DT2H")
+    assert ok and val == _dt.timedelta(days=1, hours=2)
+    # Bare number rejected (strict vs Litestar).
+    assert c.match("60") == (False, None)
+    assert c.match("") == (False, None)
+
+
+def test_decimal_converter():
+    c = DecimalConverter()
+    ok, val = c.match("3.14")
+    assert ok and val == _dec.Decimal("3.14")
+    ok2, val2 = c.match("-42")
+    assert ok2 and val2 == _dec.Decimal("-42")
+    assert c.match("nan") == (False, None)
+    assert c.match("1e5") == (False, None)
+    assert c.match("abc") == (False, None)
+    assert c.match("9" * 50) == (False, None)
+
+
+def test_parse_converter_temporal():
+    assert isinstance(parse_converter("date"), DateConverter)
+    assert isinstance(parse_converter("datetime"), DateTimeConverter)
+    assert isinstance(parse_converter("time"), TimeConverter)
+    assert isinstance(parse_converter("timedelta"), TimeDeltaConverter)
+    assert isinstance(parse_converter("decimal"), DecimalConverter)
+
+
+def test_router_date_param():
+    r = Router()
+
+    @r.get("/d/{when:date}")
+    async def h(when):
+        return when
+
+    m = r.match("GET", "/d/2024-01-15")
+    assert m is not None
+    assert m.path_params["when"] == _dt.date(2024, 1, 15)
+    assert r.match("GET", "/d/2024-13-99") is None
+
+
+def test_regex_fallback_date_coercion():
+    # A partial-segment placeholder forces the regex path.
+    convs = extract_regex_converters("/v{ver:int}/d/{when:date}")
+    assert isinstance(convs["when"], DateConverter)
+
+
+def test_app_date_route_e2e():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/d/{when:date}")
+    async def h(request, when):
+        return {"when": when.isoformat()}
+
+    client = app.test_client()
+    r = client.get("/d/2024-01-15")
+    assert r.status_code == 200
+    assert r.json()["when"] == "2024-01-15"
+    assert client.get("/d/bad").status_code == 404

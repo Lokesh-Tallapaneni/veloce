@@ -89,3 +89,50 @@ def test_swagger_ui_with_both_params_and_oauth():
     html = TestClient(app).get("/docs").text
     assert '"persistAuthorization":true' in html
     assert "ui.initOAuth(" in html
+
+
+# -- HTML-safe embedding (script breakout / line separators) -----------
+
+
+def test_swagger_ui_parameters_escape_script_breakout():
+    app = Veloce(
+        debug=True,
+        swagger_ui_parameters={"docExpansion": "</script><script>alert(1)</script>"},
+    )
+
+    @app.get("/x")
+    async def x():
+        return {}
+
+    html = TestClient(app).get("/docs").text
+    assert "</script><script>" not in html
+    assert "\u003c" in html
+
+
+def test_swagger_ui_init_oauth_escapes_breakout():
+    app = Veloce(debug=True, swagger_ui_init_oauth={"clientId": "</script>"})
+
+    @app.get("/x")
+    async def x():
+        return {}
+
+    html = TestClient(app).get("/docs").text
+    _, _, after = html.partition("ui.initOAuth(")
+    call = after.split(")", 1)[0]
+    assert "</script>" not in call
+    assert "\\u003c" in call
+
+
+def test_swagger_ui_parameters_escape_line_separators():
+    sep = "a" + " " + "b" + " " + "c"
+    app = Veloce(debug=True, swagger_ui_parameters={"docExpansion": sep})
+
+    @app.get("/x")
+    async def x():
+        return {}
+
+    html = TestClient(app).get("/docs").text
+    assert " " not in html
+    assert " " not in html
+    assert "\\u2028" in html
+    assert "\\u2029" in html

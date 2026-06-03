@@ -411,7 +411,15 @@ def _extract_parameters(
         # Determine parameter location.
         if marker and isinstance(marker, HeaderParam):
             param_location = "header"
-            param_alias = marker.alias or pname
+            if marker.alias:
+                param_alias = marker.alias
+            elif getattr(marker, "convert_underscores", True):
+                # Mirror the runtime header lookup in _handler_plan: an
+                # un-aliased header param's `_` is read off the wire as `-`,
+                # so document the hyphenated name the resolver matches.
+                param_alias = pname.replace("_", "-")
+            else:
+                param_alias = pname
         elif marker and isinstance(marker, CookieParam):
             param_location = "cookie"
             param_alias = marker.alias or pname
@@ -857,6 +865,29 @@ def get_openapi_schema(app: Any) -> dict:
 # -- Swagger UI / ReDoc templates ----------------------------
 
 
+# Byte-level escapes applied to orjson output before it is embedded inline in
+# a <script> block: the close-script breakout (`<`/`>`/`&`) and the U+2028 /
+# U+2029 line separators (valid in JSON, but break JS string literals). The
+# escapes are JSON-valid `\uXXXX` forms, so SwaggerUIBundle / JSON.parse read
+# them identically.
+_SCRIPT_ESCAPES = (
+    (b"<", b"\\u003c"),
+    (b">", b"\\u003e"),
+    (b"&", b"\\u0026"),
+    (b"\xe2\x80\xa8", b"\\u2028"),
+    (b"\xe2\x80\xa9", b"\\u2029"),
+)
+
+
+def _html_safe_orjson(value: Any) -> str:
+    """Serialise `value` to JSON safe to embed inline in a <script> block."""
+    raw = orjson.dumps(value)
+    for needle, repl in _SCRIPT_ESCAPES:
+        if needle in raw:
+            raw = raw.replace(needle, repl)
+    return raw.decode()
+
+
 SWAGGER_HTML = (
     """<!DOCTYPE html>
 <html>
@@ -945,13 +976,13 @@ def setup_openapi_routes(
             # without spaces, so the outer separator stays spaceless to
             # keep the rendered literal consistent throughout.
             ui_params = ",".join(
-                f"{orjson.dumps(k).decode()}:{orjson.dumps(v).decode()}" for k, v in params.items()
+                f"{_html_safe_orjson(k)}:{_html_safe_orjson(v)}" for k, v in params.items()
             )
         else:
             ui_params = ""
 
         oauth_init = getattr(app, "swagger_ui_init_oauth", None)
-        init_oauth = f"ui.initOAuth({orjson.dumps(oauth_init).decode()});" if oauth_init else ""
+        init_oauth = f"ui.initOAuth({_html_safe_orjson(oauth_init)});" if oauth_init else ""
 
         html_page = SWAGGER_HTML.format(
             title=html.escape(app.title),

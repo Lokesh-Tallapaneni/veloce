@@ -12,16 +12,19 @@ from __future__ import annotations
 
 from veloce.middleware.base import BaseHTTPMiddleware, Middleware
 from veloce.middleware.compression import GZipMiddleware
+from veloce.middleware.conditional import ConditionalGetMiddleware
 from veloce.middleware.cors import CORSMiddleware
 from veloce.middleware.csrf import CSRFMiddleware, rotate_csrf_token
 from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
 from veloce.middleware.proxy_fix import ProxyFix
 from veloce.middleware.security import (
+    CSPMiddleware,
     HTTPSRedirectMiddleware,
     RateLimitMiddleware,
     SecurityHeadersMiddleware,
     TrustedHostMiddleware,
     WebSocketOriginMiddleware,
+    csp_nonce,
 )
 from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
 
@@ -31,11 +34,14 @@ __all__ = [
     "CORSMiddleware",
     "CSRFMiddleware",
     "rotate_csrf_token",
+    "ConditionalGetMiddleware",
     "GZipMiddleware",
     "TrustedHostMiddleware",
     "RateLimitMiddleware",
     "HTTPSRedirectMiddleware",
     "SecurityHeadersMiddleware",
+    "CSPMiddleware",
+    "csp_nonce",
     "WebSocketOriginMiddleware",
     "LoggingMiddleware",
     "RequestIDMiddleware",

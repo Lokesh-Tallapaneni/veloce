@@ -6,13 +6,19 @@ import dataclasses
 import datetime
 import decimal
 import enum
+import ipaddress
 import math
+import re
 import uuid
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
+from types import GeneratorType
 from typing import Any
 
 from pydantic import BaseModel
+
+from veloce.secret import Secret
 
 # orjson serializes a Python int only within the signed/unsigned 64-bit
 # window; outside `-(2**63) <= i < 2**64` it raises "Integer exceeds 64-bit
@@ -72,6 +78,37 @@ _LEAF_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
 }
 
 
+# Exact-type table for scalars that are effectively final (never subclassed
+# in practice) and would otherwise leak internals via the `vars(obj)`
+# fallback (e.g. `ipaddress` networks carry a `_prefixlen` dict). Consulted
+# only after the leaf-table miss so the hot path stays zero-cost.
+_SCALAR_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
+    re.Pattern: lambda p: p.pattern,
+    ipaddress.IPv4Address: str,
+    ipaddress.IPv6Address: str,
+    ipaddress.IPv4Interface: str,
+    ipaddress.IPv6Interface: str,
+    ipaddress.IPv4Network: str,
+    ipaddress.IPv6Network: str,
+}
+
+
+def _public_vars(obj: Any) -> dict[str, Any]:
+    """Return an object's `__dict__` minus private (underscore) attributes.
+
+    Confines the filter to the structurally-derived namespace so the
+    unknown-object fallback never leaks ORM/library bookkeeping such as
+    `_sa_instance_state`. An object may opt back in to including private
+    attributes by setting `__json_include_private__ = True` on its class.
+    Re-raises `TypeError` for slots-only objects so the caller's
+    `str(obj)` fallback still fires.
+    """
+    ns = vars(obj)
+    if getattr(obj, "__json_include_private__", False):
+        return ns
+    return {k: v for k, v in ns.items() if not (isinstance(k, str) and k.startswith("_"))}
+
+
 def jsonable_encoder(
     obj: Any,
     include: set[str] | None = None,
@@ -101,6 +138,11 @@ def jsonable_encoder(
     Usage:
         data = jsonable_encoder(my_pydantic_model, exclude={"password"})
     """
+    # A Secret must never be serialised to JSON; require an explicit
+    # `.reveal()` at the call site.
+    if isinstance(obj, Secret):
+        raise TypeError("Secret must not be serialized to JSON; call .reveal() explicitly")
+
     # Exact-type leaf encoder (covers None, str, int, float, bool, UUID,
     # Decimal, datetime/date/time/timedelta in one hash lookup).
     encoder = _LEAF_TYPE_ENCODERS.get(type(obj))
@@ -123,6 +165,10 @@ def jsonable_encoder(
         return _decimal_to_json(obj)
     if isinstance(obj, uuid.UUID):
         return str(obj)
+
+    encoder = _SCALAR_TYPE_ENCODERS.get(type(obj))
+    if encoder is not None:
+        return encoder(obj)
 
     # Cycle detection - only matters for container types that recurse
     # back through `jsonable_encoder`. Allocate the seen-set lazily so
@@ -196,9 +242,27 @@ def jsonable_encoder(
                 for item in sorted(obj, key=str)
             ]
 
+        if isinstance(obj, deque):
+            return [
+                jsonable_encoder(
+                    item, include=include, exclude=exclude, exclude_none=exclude_none, _seen=_seen
+                )
+                for item in obj
+            ]
+
+        if isinstance(obj, GeneratorType):
+            return [
+                jsonable_encoder(
+                    item, include=include, exclude=exclude, exclude_none=exclude_none, _seen=_seen
+                )
+                for item in obj
+            ]
+
         # Fallback: try to convert to dict
         try:
-            return jsonable_encoder(vars(obj), include=include, exclude=exclude, _seen=_seen)
+            return jsonable_encoder(
+                _public_vars(obj), include=include, exclude=exclude, _seen=_seen
+            )
         except TypeError:
             return str(obj)
     finally:
@@ -222,6 +286,8 @@ def orjson_default(obj: Any) -> Any:
     then `str(obj)` - matching `jsonable_encoder`'s last-resort behaviour so the
     two paths agree on the same conversions.
     """
+    if isinstance(obj, Secret):
+        raise TypeError("Secret must not be serialized to JSON; call .reveal() explicitly")
     if isinstance(obj, (set, frozenset)):
         return sorted(obj, key=str)
     if isinstance(obj, Path):
@@ -232,8 +298,15 @@ def orjson_default(obj: Any) -> Any:
         return obj.total_seconds()
     if isinstance(obj, (bytes, bytearray)):
         return bytes(obj).decode("utf-8", errors="replace")
+    encoder = _SCALAR_TYPE_ENCODERS.get(type(obj))
+    if encoder is not None:
+        return encoder(obj)
+    if isinstance(obj, deque):
+        return list(obj)
+    if isinstance(obj, GeneratorType):
+        return list(obj)
     try:
-        return vars(obj)
+        return _public_vars(obj)
     except TypeError:
         pass
     return str(obj)

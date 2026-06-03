@@ -679,7 +679,17 @@ class Request:
         repeats (rare but valid per RFC 6265).
         """
         if self._cookies is None:
-            self._cookies = Cookies.from_cookie_header(self.headers.get(HEADER_COOKIE, ""))
+            # A client may legitimately send multiple `Cookie` headers
+            # (RFC 6265). Merge them with the `; ` delimiter so every
+            # cookie parses; keep the single-header fast path index-only.
+            parts = self.headers.getlist(HEADER_COOKIE)
+            if not parts:
+                header = ""
+            elif len(parts) == 1:
+                header = parts[0]
+            else:
+                header = "; ".join(parts)
+            self._cookies = Cookies.from_cookie_header(header)
         return self._cookies
 
     # -- URL and routing ------------------------------------------------

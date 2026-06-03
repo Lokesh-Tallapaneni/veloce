@@ -50,6 +50,7 @@ from typing import Any
 import orjson
 
 from veloce._internal import _b64decode, _b64encode
+from veloce.secret import Secret
 
 # -- Exceptions ---------------------------------------------------
 
@@ -89,6 +90,8 @@ class Signer:
         secret: str | bytes,
         salt: str | bytes = "veloce.signing",
     ) -> None:
+        if isinstance(secret, Secret):
+            secret = secret.reveal()
         if isinstance(secret, str):
             secret = secret.encode("utf-8")
         if isinstance(salt, str):
@@ -114,6 +117,8 @@ class Signer:
         keep the old one as a fallback for the rotation window. Tokens
         signed with the fallback still verify; new tokens use the primary.
         """
+        if isinstance(secret, Secret):
+            secret = secret.reveal()
         if isinstance(secret, str):
             secret = secret.encode("utf-8")
         if isinstance(salt, str):

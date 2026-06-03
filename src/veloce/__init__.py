@@ -117,7 +117,9 @@ from veloce.markup import Markup, escape
 # Middleware
 from veloce.middleware import (
     BaseHTTPMiddleware,
+    ConditionalGetMiddleware,
     CORSMiddleware,
+    CSPMiddleware,
     CSRFMiddleware,
     GZipMiddleware,
     HTTPSRedirectMiddleware,
@@ -131,8 +133,12 @@ from veloce.middleware import (
     SessionMiddleware,
     TrustedHostMiddleware,
     WebSocketOriginMiddleware,
+    csp_nonce,
     rotate_csrf_token,
 )
+
+# Observability
+from veloce.observability import instrument_access_log
 
 # Password hashing helpers
 from veloce.passwords import (
@@ -151,21 +157,38 @@ from veloce.routing.router import Router
 # Filesystem-safety helpers
 from veloce.safe import constant_time_compare, safe_join, secure_filename
 
+# Secret wrapper
+from veloce.secret import Secret
+
 # Security
 from veloce.security import (
     APIKeyCookie,
     APIKeyHeader,
     APIKeyQuery,
+    Claims,
+    ExpiredSignatureError,
     HTTPBasic,
     HTTPBasicCredentials,
     HTTPBearer,
     HTTPDigest,
     HTTPDigestCredentials,
+    ImmatureSignatureError,
+    InvalidAudienceError,
+    InvalidIssuerError,
+    InvalidSignatureError,
+    InvalidTokenError,
+    JWTError,
+    MissingClaimError,
     OAuth2AuthorizationCodeBearer,
     OAuth2PasswordBearer,
     OAuth2PasswordRequestForm,
     OAuth2PasswordRequestFormStrict,
     OpenIdConnect,
+    UnsupportedAlgorithmError,
+    check_reset_token,
+    decode_jwt,
+    encode_jwt,
+    make_reset_token,
 )
 
 # Sessions
@@ -228,11 +251,14 @@ __all__ = [
     "BaseHTTPMiddleware",
     "CORSMiddleware",
     "CSRFMiddleware",
+    "ConditionalGetMiddleware",
     "GZipMiddleware",
     "TrustedHostMiddleware",
     "RateLimitMiddleware",
     "HTTPSRedirectMiddleware",
     "SecurityHeadersMiddleware",
+    "CSPMiddleware",
+    "csp_nonce",
     "WebSocketOriginMiddleware",
     "LoggingMiddleware",
     "RequestIDMiddleware",
@@ -289,6 +315,22 @@ __all__ = [
     "OAuth2PasswordRequestFormStrict",
     "OAuth2AuthorizationCodeBearer",
     "OpenIdConnect",
+    # JWT
+    "Claims",
+    "JWTError",
+    "InvalidTokenError",
+    "InvalidSignatureError",
+    "UnsupportedAlgorithmError",
+    "ExpiredSignatureError",
+    "ImmatureSignatureError",
+    "InvalidAudienceError",
+    "InvalidIssuerError",
+    "MissingClaimError",
+    "encode_jwt",
+    "decode_jwt",
+    # Reset tokens
+    "make_reset_token",
+    "check_reset_token",
     # SSE
     "ServerSentEvent",
     # Testing
@@ -328,11 +370,14 @@ __all__ = [
     "jsonable_encoder",
     # Observability
     "RequestMetrics",
+    "instrument_access_log",
     "EventLoopWatchdog",
     # Filesystem-safety
     "secure_filename",
     "safe_join",
     "constant_time_compare",
+    # Secrets
+    "Secret",
     # Signing
     "Signer",
     "BadSignature",

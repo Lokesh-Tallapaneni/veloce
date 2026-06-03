@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import secrets
 import time
 import uuid
 from collections import deque
+from collections.abc import Mapping, Sequence
 
 from veloce import status
 from veloce._constants import (
     HEADER_CONTENT_SECURITY_POLICY,
+    HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY,
     HEADER_HOST,
     HEADER_PERMISSIONS_POLICY,
     HEADER_REFERRER_POLICY,
@@ -43,6 +46,106 @@ from veloce.middleware.base import Middleware
 # Stash key used to thread bucket state from process_request -> process_response
 # so the response path can emit X-RateLimit-* without recomputing.
 _RL_STATE_KEY = "rate_limit_state"
+
+# request.state slot holding the per-request CSP nonce (materialized lazily).
+CSP_NONCE_STATE_KEY = "csp_nonce"
+
+
+def csp_nonce(request: Request) -> str | None:
+    """Return the per-request CSP nonce, materializing it on first access.
+
+    Templating helpers and handlers embed this on `<script>`/`<style>` tags
+    as `nonce="..."`. Returns None when CSPMiddleware did not arm a nonce
+    for this request.
+    """
+    cached = request._state.get(CSP_NONCE_STATE_KEY)
+    if cached is None:
+        return None
+    if isinstance(cached, str):
+        return cached
+    # A factory closure was stored: materialize, cache, return.
+    value = cached()
+    request._state[CSP_NONCE_STATE_KEY] = value
+    return value
+
+
+def _normalize_csp(policy: str | Mapping[str, str | Sequence[str]]) -> str:
+    """Normalize a CSP policy (str template or directive dict) to a template.
+
+    A dict maps `directive -> source(s)`; the `'nonce'` sentinel source is
+    replaced with the runtime `{nonce}` placeholder.
+    """
+    if isinstance(policy, str):
+        return policy
+    if isinstance(policy, Mapping):
+        segments: list[str] = []
+        for directive, sources in policy.items():
+            src_list = [sources] if isinstance(sources, str) else list(sources)
+            rendered = [("{nonce}" if s == "'nonce'" else s) for s in src_list]
+            segments.append(" ".join([directive, *rendered]))
+        return "; ".join(segments)
+    raise TypeError("CSP policy must be a str template or a directive mapping")
+
+
+class CSPMiddleware(Middleware):
+    """Emit Content-Security-Policy with optional per-request nonce.
+
+    `policy` and `report_only_policy` each accept a str template containing
+    the literal `{nonce}` placeholder, or a directive mapping where the
+    `'nonce'` source is substituted with a fresh per-request nonce.
+
+    Usage::
+
+        app.add_middleware(
+            CSPMiddleware(
+                policy={"default-src": "'self'", "script-src": ["'self'", "'nonce'"]},
+                report_only_policy="default-src 'self'",
+            )
+        )
+
+    Static (no-nonce) policies can stay on SecurityHeadersMiddleware; use
+    this when a per-request nonce or a report-only policy is needed.
+    """
+
+    def __init__(
+        self,
+        policy: str | Mapping[str, str | Sequence[str]] | None = None,
+        *,
+        report_only_policy: str | Mapping[str, str | Sequence[str]] | None = None,
+        nonce: bool = True,
+    ) -> None:
+        assert policy is not None or report_only_policy is not None, (
+            "CSPMiddleware requires at least one of policy or report_only_policy"
+        )
+        self._enforce_template = _normalize_csp(policy) if policy is not None else None
+        self._report_template = (
+            _normalize_csp(report_only_policy) if report_only_policy is not None else None
+        )
+        self._needs_nonce = nonce and (
+            (self._enforce_template is not None and "{nonce}" in self._enforce_template)
+            or (self._report_template is not None and "{nonce}" in self._report_template)
+        )
+
+    async def process_request(self, request: Request) -> Response | None:
+        if self._needs_nonce:
+            # Store a one-shot factory; csp_nonce() materializes on first read
+            # so a request that never embeds a nonce pays only the store.
+            request._state[CSP_NONCE_STATE_KEY] = lambda: secrets.token_urlsafe(16)
+        return None
+
+    async def process_response(self, request: Request, response: Response) -> Response:
+        for header, template in (
+            (HEADER_CONTENT_SECURITY_POLICY, self._enforce_template),
+            (HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY, self._report_template),
+        ):
+            if template is None or header in response.headers:
+                continue
+            if "{nonce}" in template:
+                value = template.replace("{nonce}", f"'nonce-{csp_nonce(request)}'")
+            else:
+                value = template
+            response.headers[header] = value
+        return response
 
 
 class TrustedHostMiddleware(Middleware):

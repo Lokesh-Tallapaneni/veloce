@@ -118,3 +118,42 @@ def test_parse_cookie_round_trip():
     name, _, attrs = raw.partition(";")
     parsed = parse_cookie(name)
     assert parsed == {"session": "hello world"}
+
+
+# -- Multiple / merged Cookie headers (RFC 6265) ----------------------
+
+
+def _req(headers):
+    from veloce.http.request import Request
+
+    return Request(method="GET", path="/", query_string="", headers=headers, body=b"")
+
+
+def test_two_cookie_headers_both_parse():
+    req = _req([(b"cookie", b"a=1"), (b"cookie", b"b=2")])
+    cookies = req.cookies
+    assert cookies["a"] == "1"
+    assert cookies["b"] == "2"
+
+
+def test_single_combined_cookie_header():
+    req = _req([(b"cookie", b"a=1; b=2")])
+    cookies = req.cookies
+    assert cookies["a"] == "1"
+    assert cookies["b"] == "2"
+
+
+def test_no_cookie_header_empty():
+    req = _req([(b"host", b"x")])
+    assert len(req.cookies) == 0
+
+
+def test_duplicate_cookie_name_first_wins():
+    req = _req([(b"cookie", b"a=1"), (b"cookie", b"a=2")])
+    assert req.cookies["a"] == "1"
+
+
+def test_cookies_cached():
+    req = _req([(b"cookie", b"a=1")])
+    first = req.cookies
+    assert req.cookies is first
