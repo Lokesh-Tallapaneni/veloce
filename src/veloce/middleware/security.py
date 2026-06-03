@@ -121,10 +121,22 @@ class CSPMiddleware(Middleware):
         self._report_template = (
             _normalize_csp(report_only_policy) if report_only_policy is not None else None
         )
-        self._needs_nonce = nonce and (
-            (self._enforce_template is not None and "{nonce}" in self._enforce_template)
-            or (self._report_template is not None and "{nonce}" in self._report_template)
-        )
+        references_nonce = (
+            self._enforce_template is not None and "{nonce}" in self._enforce_template
+        ) or (self._report_template is not None and "{nonce}" in self._report_template)
+        # Fail fast on a contradictory config: a template that references a
+        # nonce (a `{nonce}` placeholder, or a `'nonce'` source already
+        # normalized to `{nonce}`) while nonce generation is disabled would
+        # render `'nonce-None'` at response time, which browsers parse as a
+        # real - and wrong - nonce, silently breaking the policy. Refuse the
+        # construction rather than emit a misleading header.
+        if not nonce and references_nonce:
+            raise ValueError(
+                "CSPMiddleware was constructed with nonce=False but a policy "
+                "references a nonce ('{nonce}' placeholder or 'nonce' source); "
+                "enable nonce=True or remove the nonce reference"
+            )
+        self._needs_nonce = nonce and references_nonce
 
     async def process_request(self, request: Request) -> Response | None:
         if self._needs_nonce:

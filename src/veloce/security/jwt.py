@@ -214,7 +214,17 @@ def decode_jwt(
         claim_aud = payload.get("aud")
         if claim_aud is None:
             raise InvalidAudienceError("audience claim is missing")
-        present = {claim_aud} if isinstance(claim_aud, str) else set(claim_aud)
+        # RFC 7519 Sec. 4.1.3: `aud` is either a single StringOrURI or an array
+        # of them. A malformed claim (number, object, list of non-strings) must
+        # fail as a clean auth error, not crash `set(...)` with a raw TypeError
+        # that would surface as a 500 in an auth dependency. Validate the shape
+        # before coercion.
+        if isinstance(claim_aud, str):
+            present = {claim_aud}
+        elif isinstance(claim_aud, Sequence) and all(isinstance(a, str) for a in claim_aud):
+            present = set(claim_aud)
+        else:
+            raise InvalidAudienceError("audience claim is not a string or list of strings")
         if accepted.isdisjoint(present):
             raise InvalidAudienceError("audience mismatch")
 

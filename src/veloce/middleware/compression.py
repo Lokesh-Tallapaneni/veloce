@@ -229,14 +229,30 @@ class GZipMiddleware(Middleware):
         self._weaken_strong_etag(response)
         return response
 
+    @staticmethod
+    def _compress_frame(co: Any, b: bytes) -> bytes:
+        """Compress one input chunk into a self-contained, deliverable frame.
+
+        zlib/DEFLATE buffers internally (RFC 1951): `compress()` alone may
+        return nothing until enough input accumulates, so a long-lived chunked
+        stream (NDJSON, log tails) would stall at the gzip header until EOF.
+        `flush(Z_SYNC_FLUSH)` forces the codec to emit everything buffered so
+        far, terminated by an empty stored block, without resetting the
+        compression context - so each input chunk yields output the client can
+        decode incrementally while later chunks still benefit from the shared
+        dictionary. Run as one unit so an offloaded chunk does both steps in
+        the executor.
+        """
+        return co.compress(b) + co.flush(zlib.Z_SYNC_FLUSH)
+
     async def _compress_stream(self, stream: Any, request: Request) -> AsyncIterator[bytes]:
         """Gzip a chunk stream lazily, reusing one `compressobj` across chunks.
 
         `wbits = MAX_WBITS | 16` selects gzip framing (header + CRC trailer) so
         the emitted bytes match `Content-Encoding: gzip`, like the buffered
-        path's `gzip.compress`. Compression is deferred (no per-chunk flush) so
-        the stream stays well-compressed; the gzip trailer is written by the
-        final `Z_FINISH` flush.
+        path's `gzip.compress`. Each input chunk is sync-flushed into its own
+        deliverable frame (see `_compress_frame`); the gzip trailer is written
+        by the final `Z_FINISH` flush.
         """
         co = zlib.compressobj(self.compresslevel, zlib.DEFLATED, zlib.MAX_WBITS | 16)
         loop = asyncio.get_running_loop()
@@ -245,11 +261,11 @@ class GZipMiddleware(Middleware):
             # yield str (see `StreamingResponse._aiter_sync`).
             b = chunk.encode("utf-8") if isinstance(chunk, str) else chunk
             if len(b) < self.min_stream_chunk_offload:
-                out = co.compress(b)
+                out = self._compress_frame(co, b)
             else:
                 # Offload large frames to the executor, preserving ContextVars.
                 ctx = contextvars.copy_context()
-                out = await loop.run_in_executor(None, ctx.run, co.compress, b)
+                out = await loop.run_in_executor(None, ctx.run, self._compress_frame, co, b)
             if out:
                 yield out
         # `Z_FINISH` emits any buffered output plus the gzip CRC/length trailer.

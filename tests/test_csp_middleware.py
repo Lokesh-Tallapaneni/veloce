@@ -127,5 +127,21 @@ def test_init_misuse():
         CSPMiddleware(policy=123)  # type: ignore[arg-type]
 
 
+def test_nonce_disabled_with_placeholder_rejected():
+    # A template still referencing a nonce while nonce generation is off would
+    # render 'nonce-None' (a real but wrong nonce to browsers). Construction
+    # must fail fast instead of emitting the misleading header.
+    with pytest.raises(ValueError):
+        CSPMiddleware(policy="script-src 'self' {nonce}", nonce=False)
+    # Same guard for a directive mapping whose 'nonce' source normalizes to
+    # {nonce}, and for a report-only template.
+    with pytest.raises(ValueError):
+        CSPMiddleware(policy={"script-src": ["'self'", "'nonce'"]}, nonce=False)
+    with pytest.raises(ValueError):
+        CSPMiddleware(report_only_policy="script-src {nonce}", nonce=False)
+    # A nonce-free policy with nonce=False is fine.
+    CSPMiddleware(policy="default-src 'self'", nonce=False)
+
+
 def test_public_import():
     from veloce import CSPMiddleware, csp_nonce  # noqa: F401

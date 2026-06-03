@@ -200,31 +200,43 @@ class StaticFiles:
     ) -> tuple[str, str, os.stat_result] | None:
         """Pick a precompressed sibling for `file_path`, or None.
 
-        Returns `(variant_path, encoding, stat_result)` when the client
-        accepts an encoding whose sibling exists on disk as a regular file,
-        otherwise None. The quality gate is load-bearing: `best_match`
-        returns the first candidate on an empty `Accept-Encoding` header, so
-        a request with no preference would otherwise falsely select `br`.
+        Returns `(variant_path, encoding, stat_result)` for the highest-quality
+        accepted encoding whose sibling exists on disk as a regular file,
+        otherwise None. The client's preference is honoured in descending
+        q-value order: if the top encoding has no variant on disk we fall
+        through to the next accepted one (RFC 9110 Sec. 12.5.3 - a server may
+        serve any acceptable representation), so `br;q=1, gzip;q=0.5` with only
+        `app.css.gz` present serves gzip rather than the uncompressed asset.
+        The q>0 gate is load-bearing: a missing `Accept-Encoding` header
+        expresses no preference and must not falsely select a variant.
         Permission errors on the sibling propagate as 403 (via the caller's
         sentinel) to match the read policy on the original file.
         """
         if not self.precompressed:
             return None
-        candidates = list(self.PRECOMPRESSED_VARIANTS)
-        chosen = request.accept_encodings.best_match(candidates)
-        # Require q>0: `best_match` falls back to `candidates[0]` on a missing
-        # header, so an explicit positive quality is needed to confirm the
-        # client actually asked for this encoding.
-        if chosen is None or request.accept_encodings.quality(chosen) <= 0:
+        # Score each on-disk-capable variant by the client's q-value, then
+        # probe in descending quality. `PRECOMPRESSED_VARIANTS` insertion order
+        # (br before gzip) breaks exact q ties toward the denser codec. The
+        # negated index keeps the sort stable on that order without reversing.
+        accept = request.accept_encodings
+        order = list(self.PRECOMPRESSED_VARIANTS)
+        scored = [
+            (accept.quality(enc), -idx, enc)
+            for idx, enc in enumerate(order)
+            if accept.quality(enc) > 0
+        ]
+        if not scored:
             return None
-        variant_path = file_path + self.PRECOMPRESSED_VARIANTS[chosen]
-        variant_stat, denied = await loop.run_in_executor(None, try_stat, variant_path)
-        if denied:
-            # Surface as 403 by returning the denial to the caller via a raise.
-            raise PermissionError(variant_path)
-        if variant_stat is None or not stat.S_ISREG(variant_stat.st_mode):
-            return None
-        return (variant_path, chosen, variant_stat)
+        scored.sort(reverse=True)
+        for _q, _tie, enc in scored:
+            variant_path = file_path + self.PRECOMPRESSED_VARIANTS[enc]
+            variant_stat, denied = await loop.run_in_executor(None, try_stat, variant_path)
+            if denied:
+                # Surface as 403 by returning the denial to the caller via a raise.
+                raise PermissionError(variant_path)
+            if variant_stat is not None and stat.S_ISREG(variant_stat.st_mode):
+                return (variant_path, enc, variant_stat)
+        return None
 
     async def handle(self, request: Request) -> Response | None:
         """Handle a static file request - file I/O offloaded to thread pool."""

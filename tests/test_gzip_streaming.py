@@ -9,6 +9,7 @@ the final flush, while leaving latency-sensitive streams (SSE) untouched.
 from __future__ import annotations
 
 import gzip
+import zlib
 
 from veloce import EventSourceResponse, GZipMiddleware, Request, Veloce
 from veloce.http.response import StreamingResponse
@@ -166,6 +167,48 @@ async def test_streaming_already_encoded_passthrough():
     # Exactly one gzip encoding, and the bytes are the untouched pre-gzip body.
     assert encodings == [b"gzip"]
     assert _body(messages) == pre
+
+
+async def test_streaming_delivers_decodable_frame_per_chunk():
+    # zlib buffers internally, so without a per-chunk Z_SYNC_FLUSH a long-lived
+    # chunked stream would emit only the gzip header until EOF. Drive the
+    # compressor directly and assert each yielded output advances a streaming
+    # decompressor by the corresponding plaintext chunk - i.e. data is
+    # deliverable before the final Z_FINISH trailer is written.
+    request = Request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers=[(b"accept-encoding", b"gzip")],
+        body=b"",
+    )
+
+    chunks = [b'{"line": %d}\n' % i for i in range(8)]
+
+    async def gen():
+        for chunk in chunks:
+            yield chunk
+
+    # `application/json` is in the default compressible set; a chunked JSON
+    # stream is the canonical NDJSON-style case this fix targets.
+    response = StreamingResponse(gen(), content_type="application/json")
+    mw = GZipMiddleware(minimum_size=0)
+    response = await mw.process_response(request, response)
+
+    decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
+    delivered = bytearray()
+    frames = 0
+    async for out in response._stream:
+        assert out, "every yielded frame must carry bytes"
+        delivered += decompressor.decompress(out)
+        frames += 1
+        # Before the stream ends, each input chunk's plaintext is recoverable
+        # from the frames seen so far - proving incremental delivery.
+        if frames <= len(chunks):
+            assert delivered == b"".join(chunks[:frames])
+
+    # The final frame carries the gzip trailer; the full plaintext round-trips.
+    assert delivered == b"".join(chunks)
 
 
 async def test_streaming_chunked_native_gzip():

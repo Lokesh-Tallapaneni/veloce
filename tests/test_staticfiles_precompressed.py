@@ -45,6 +45,21 @@ async def test_qvalue_picks_gzip_over_br(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_falls_back_to_next_accepted_variant(tmp_path):
+    # The highest-q encoding (br) has no sibling on disk, but a lower-q accepted
+    # one (gzip) does. The server must fall through to gzip rather than serve
+    # the uncompressed asset (RFC 9110 Sec. 12.5.3).
+    (tmp_path / "app.css").write_bytes(b"body{color:red}")
+    (tmp_path / "app.css.gz").write_bytes(b"GZIP")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=1, gzip;q=0.5"}))
+    assert resp.status_code == 200
+    assert resp.headers["Content-Encoding"] == "gzip"
+    assert resp.headers["Vary"] == "Accept-Encoding"
+    assert resp.body == b"GZIP"
+
+
+@pytest.mark.asyncio
 async def test_qzero_rejects_encoding(tmp_path):
     (tmp_path / "app.css").write_bytes(b"RAW")
     (tmp_path / "app.css.br").write_bytes(b"BR")

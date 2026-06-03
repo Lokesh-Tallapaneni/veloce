@@ -119,6 +119,27 @@ def test_audience():
         decode_jwt(token3, SECRET, algorithms=["HS256"], audience="api")
 
 
+def test_malformed_audience_claim_is_jwt_error():
+    # A non-string, non-sequence `aud` (RFC 7519 Sec. 4.1.3 allows only a
+    # StringOrURI or an array thereof) must normalize to a clean auth failure,
+    # not a raw TypeError from set(...) that would surface as a 500.
+    token = encode_jwt({"aud": 123}, SECRET)
+    with pytest.raises(InvalidAudienceError):
+        decode_jwt(token, SECRET, algorithms=["HS256"], audience="api")
+    # A list containing a non-string is equally malformed.
+    token2 = encode_jwt({"aud": ["api", 7]}, SECRET)
+    with pytest.raises(InvalidAudienceError):
+        decode_jwt(token2, SECRET, algorithms=["HS256"], audience="api")
+    # Valid shapes still behave exactly as before.
+    decode_jwt(encode_jwt({"aud": "api"}, SECRET), SECRET, algorithms=["HS256"], audience="api")
+    decode_jwt(
+        encode_jwt({"aud": ["api", "web"]}, SECRET),
+        SECRET,
+        algorithms=["HS256"],
+        audience="web",
+    )
+
+
 def test_issuer():
     token = encode_jwt({"iss": "veloce"}, SECRET)
     with pytest.raises(InvalidIssuerError):
