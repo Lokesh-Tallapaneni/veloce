@@ -310,6 +310,7 @@ class DependencyResolver:
         "_override_subplans",
         "_teardowns",
         "_scope_stack",
+        "_mcp_context",
     )
 
     def __init__(self) -> None:
@@ -330,6 +331,12 @@ class DependencyResolver:
         # Pushed before a Security sub-plan resolves, popped after. A
         # `SecurityScopes` parameter inside the chain reads this stack.
         self._scope_stack: list[str] = []
+        # The MCP tool-call context to inject into any sub-dependency that
+        # declares a parameter typed `MCPContext` (set by the MCP bridge before
+        # resolution; `None` on the HTTP / WebSocket paths). It is bound the way
+        # a WebSocket is bound into a sub-dep - by the slot's declared TYPE -
+        # so a `MCPContext`-typed slot anywhere in the graph receives it.
+        self._mcp_context: Any = None
 
     def reset(self) -> None:
         """Clear the per-request resolver state.
@@ -570,6 +577,17 @@ class DependencyResolver:
                 continue
 
             if kind == K_QUERY:
+                # An MCP `MCPContext`-typed parameter lands on a K_QUERY slot
+                # (it is neither `Request` nor a model). When the resolver is
+                # driving an MCP tool call, bind the context here so a
+                # sub-dependency typed `MCPContext` receives it - mirroring how
+                # a WebSocket is injected into sub-deps by declared type. The
+                # type identity check keeps a plain `ctx: str` query parameter
+                # an ordinary agent input.
+                if self._mcp_context is not None and slot.target_type is type(self._mcp_context):
+                    kwargs[name] = self._mcp_context
+                    i += 1
+                    continue
                 # Path-or-query: a handler param that wasn't otherwise tagged.
                 # Path bindings win if the route's matched params include this
                 # name; else fall back to query string.

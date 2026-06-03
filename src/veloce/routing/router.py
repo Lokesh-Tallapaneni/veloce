@@ -188,6 +188,8 @@ class RouteInfo:
         "is_request_only_plan",
         "subdomain",
         "host",
+        "expose_as_mcp_tool",
+        "mcp_description",
     )
 
     def __init__(
@@ -219,6 +221,8 @@ class RouteInfo:
         callbacks: dict[str, Any] | None = None,
         subdomain: str | None = None,
         host: str | None = None,
+        expose_as_mcp_tool: bool = False,
+        mcp_description: str | None = None,
     ) -> None:
         self.handler = handler
         self.param_names = param_names
@@ -283,6 +287,12 @@ class RouteInfo:
         # Set by `add_route` once the plans are built.
         self.is_trivial_plan = False
         self.is_request_only_plan = False
+        # MCP exposure (contrib.mcp). `expose_as_mcp_tool` opts this route
+        # into the MCP tool registry; `mcp_description` is the LLM-facing
+        # description (separate from the docstring), required by the MCP
+        # safety policy at registry-build time.
+        self.expose_as_mcp_tool = expose_as_mcp_tool
+        self.mcp_description = mcp_description
 
 
 class RouteMatch:
@@ -492,6 +502,8 @@ class Router:
         strict_slashes: bool | None = None,
         subdomain: str | None = None,
         host: str | None = None,
+        expose_as_mcp_tool: bool = False,
+        mcp_description: str | None = None,
     ) -> None:
         """Register a route in the radix tree.
 
@@ -577,6 +589,8 @@ class Router:
             callbacks=callbacks,
             subdomain=subdomain,
             host=host,
+            expose_as_mcp_tool=expose_as_mcp_tool,
+            mcp_description=mcp_description,
         )
 
         # Register named route for url_for. Drop any stale reverse-converter
@@ -895,6 +909,8 @@ class Router:
         strict_slashes: bool | None = None,
         subdomain: str | None = None,
         host: str | None = None,
+        expose_as_mcp_tool: bool = False,
+        mcp_description: str | None = None,
     ) -> Callable:
         """Generic route decorator."""
 
@@ -928,6 +944,8 @@ class Router:
                 strict_slashes=strict_slashes,
                 subdomain=subdomain,
                 host=host,
+                expose_as_mcp_tool=expose_as_mcp_tool,
+                mcp_description=mcp_description,
             )
             return func
 
@@ -1243,6 +1261,8 @@ class Router:
                     callbacks=info.callbacks,
                     subdomain=info.subdomain,
                     host=info.host,
+                    expose_as_mcp_tool=info.expose_as_mcp_tool,
+                    mcp_description=info.mcp_description,
                 )
                 route_info.handler_plan = info.handler_plan
                 is_ws = method.upper() == ROUTE_METHOD_WEBSOCKET
@@ -1311,6 +1331,8 @@ class Router:
                     callbacks=info.callbacks,
                     subdomain=info.subdomain,
                     host=info.host,
+                    expose_as_mcp_tool=info.expose_as_mcp_tool,
+                    mcp_description=info.mcp_description,
                 )
                 # Reuse the parent's pre-computed handler plan.
                 route_info.handler_plan = info.handler_plan

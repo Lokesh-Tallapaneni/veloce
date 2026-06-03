@@ -8,6 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Model Context Protocol integration under `veloce.contrib.mcp`, exposing a
+  Veloce app's handlers as MCP tools callable by an AI agent over JSON-RPC 2.0.
+  Register an MCP-only tool with `@app.mcp_tool(description=...)`, or expose an
+  existing route by passing `expose_as_mcp_tool=True` and `mcp_description=...`
+  on `@app.get` / `@app.post` / etc. Each tool's input JSON Schema is derived
+  from the handler signature, reusing the OpenAPI schema generation; `Depends()`
+  parameters resolve through the same dependency machinery routes use, with an
+  `MCPContext` standing in for the HTTP `Request` (mirroring WebSocket DI),
+  including `yield`-style teardown and `Security` support. `app.mount_mcp(
+  transport="stdio")` serves the registered tools over stdin/stdout for
+  subprocess use, handling the `initialize`, `tools/list`, and `tools/call`
+  methods. Mutating verbs (`POST`/`PUT`/`DELETE`/`PATCH`) are never
+  auto-exposed - they require the explicit `expose_as_mcp_tool=True` opt-in -
+  and every exposed handler must carry a non-empty `mcp_description`, enforced
+  at registration. Blueprint-exposed routes are namespaced by the blueprint
+  name, and per-tool calls fire the existing `app.add_instrumentation` hooks.
+  `MCPContext` is importable from the top-level `veloce` package; the server
+  and transport classes live under `veloce.contrib.mcp`. The implementation is
+  a from-spec minimal JSON-RPC handshake with no new hard dependency.
+  `mount_mcp` serves inside the app's lifespan, so `on_startup` handlers and the
+  lifespan context manager run before the first tool is served and the matching
+  shutdown runs after. An exposed route runs inside the normal request context
+  (`current_app`, `g`, and the `request` proxy are bound); the app's request
+  middleware (`process_request`) and `before_request` hooks run first, in the
+  HTTP order, and a middleware or hook that returns a response short-circuits
+  the call (running `teardown_request`) and becomes the tool result, surfaced as
+  an error for a `4xx`/`5xx` status. The synthetic request carries the wrapped
+  route's real HTTP method and rule path, so handler/dependency/hook branching
+  on `request.method` / `request.path` matches the HTTP path; a client-supplied
+  parameter declared inside a `Depends` dependency (including a body model) is
+  advertised in the tool's input schema; and the route's rule `defaults=` fill
+  any unsupplied handler argument. Per-call instrumentation records the call's
+  real status code (the shaped response's status, `500` for an unhandled error,
+  `200` only on success). A dependency typed `MCPContext` receives the per-call
+  context. A handler that returns `Response(background=...)` has those background
+  tasks run, mirroring the HTTP path. A route returning a streaming/SSE response
+  is rejected with a clear error result rather than empty output (a v1
+  limitation).
+
 - `ServerSentEvent.json` builds an event whose `data` field is a
   JSON-serialized payload. Pass any JSON-encodable value (`dict`, `list`,
   string, number) and it is serialized once at construction with the

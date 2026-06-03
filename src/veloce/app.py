@@ -484,6 +484,11 @@ class Veloce(Router):
         # finished HTTP request with a `RequestMetrics` record. Empty by
         # default, so an un-instrumented app pays nothing.
         self._instrumentation: list[Callable] = []
+        # MCP-only tool registrations (contrib.mcp). Each entry is
+        # `(handler, name, description, namespace)`, recorded by
+        # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
+        # tool registry is assembled.
+        self._mcp_tools: list[tuple[Callable, str | None, str | None, str | None]] = []
         # Dev-mode event-loop blocking watchdog - armed during startup only
         # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
         # (and free) for every other app.
@@ -1630,6 +1635,40 @@ class Veloce(Router):
         self._teardown_appcontext_hooks.append(func)
         return func
 
+    async def _run_request_teardown(self, exc: BaseException | None, bp_name: str | None) -> None:
+        """Run `teardown_request` + `teardown_appcontext` for one request.
+
+        Selects the matched blueprint's `teardown_request` bucket (app-level
+        hooks first, then the blueprint's) and then fires the app-level
+        `teardown_appcontext` hooks. Hooks always run - even on an exception -
+        and receive `exc` (the failing exception or `None`). Shared by the HTTP
+        dispatch `finally` and the MCP tool-call path so a route exposed as an
+        MCP tool gets the same cleanup an HTTP request gets.
+        """
+        if self._teardown_request_hooks or self._bp_teardown_hooks:
+            if (
+                self._bp_teardown_hooks
+                and bp_name is not None
+                and bp_name in self._bp_teardown_hooks
+            ):
+                td_hooks: list[Callable] = list(self._teardown_request_hooks)
+                td_hooks.extend(self._bp_teardown_hooks[bp_name])
+            else:
+                td_hooks = list(self._teardown_request_hooks)
+        else:
+            td_hooks = ()  # type: ignore[assignment]
+        if td_hooks:
+            await self._run_teardown_hooks(td_hooks, exc, "teardown_request")
+
+        # `teardown_appcontext` fires when the app context pops; in veloce that
+        # happens at the end of each request (no separate app/request context
+        # split). Hooks receive the exception or None. Errors are logged, never
+        # re-raised.
+        if self._teardown_appcontext_hooks:
+            await self._run_teardown_hooks(
+                self._teardown_appcontext_hooks, exc, "teardown_appcontext"
+            )
+
     async def _run_teardown_hooks(
         self, hooks: list[Callable], exc: BaseException | None, label: str
     ) -> None:
@@ -1861,6 +1900,8 @@ class Veloce(Router):
                 callbacks=info.callbacks,
                 subdomain=info.subdomain,
                 host=info.host,
+                expose_as_mcp_tool=info.expose_as_mcp_tool,
+                mcp_description=info.mcp_description,
             )
 
         # Bucket the blueprint's hooks under its name so dispatch can
@@ -2143,6 +2184,72 @@ class Veloce(Router):
             StaticFiles(directory=directory, prefix=prefix, html=html, must_exist=must_exist)
         )
 
+    # -- MCP (Model Context Protocol) -----------------------------
+
+    def mcp_tool(
+        self,
+        description: str,
+        *,
+        name: str | None = None,
+        namespace: str | None = None,
+    ) -> Callable:
+        """Register an MCP-only tool callable by an AI agent (contrib.mcp).
+
+        The decorated coroutine (or sync function) becomes an MCP tool whose
+        input JSON Schema is derived from its signature; `Depends()` params
+        resolve through the same dependency machinery routes use, with an
+        `MCPContext` standing in for the HTTP `Request`. `description` is the
+        required LLM-facing text (separate from the docstring). `namespace`
+        prefixes the tool name (`<namespace>_<name>`), mirroring how a
+        blueprint namespaces an exposed route.
+
+        Usage::
+
+            @app.mcp_tool(description="Add two integers")
+            async def add(a: int, b: int) -> int:
+                return a + b
+        """
+        from veloce.contrib.mcp.safety import require_mcp_description
+
+        def decorator(func: Callable) -> Callable:
+            require_mcp_description(name or func.__name__, description)
+            self._mcp_tools.append((func, name, description, namespace))
+            return func
+
+        return decorator
+
+    def mount_mcp(self, transport: str = "stdio") -> Any:
+        """Build the MCP server and serve the registered tools.
+
+        Assembles the tool registry from `@app.mcp_tool` registrations plus
+        every route flagged `expose_as_mcp_tool=True`, then serves it over the
+        chosen transport. v1 supports `transport="stdio"` only (JSON-RPC 2.0
+        on stdin/stdout, for subprocess use); the coroutine runs until stdin
+        closes. Returns the awaitable serve coroutine so a caller may schedule
+        it explicitly (`asyncio.run(app.mount_mcp())`).
+
+        The serve loop runs inside the app's `lifespan_context()`, so the same
+        startup sequence an ASGI server enters - the lifespan context manager
+        plus every `on_startup` handler (DB pools, `app.state`, caches) - runs
+        before the first tool is served, and the matching shutdown sequence
+        runs after stdin closes.
+        """
+        from veloce.contrib.mcp.server import MCPServer
+        from veloce.contrib.mcp.transports.stdio import serve_stdio
+
+        if transport != "stdio":
+            raise ValueError(
+                f"Unsupported MCP transport {transport!r}; v1 supports 'stdio' only "
+                "(HTTP / SSE transports are planned for v2)."
+            )
+        server = MCPServer(self)
+
+        async def _serve() -> None:
+            async with self.lifespan_context():
+                await serve_stdio(server)
+
+        return _serve()
+
     # -- Request handling -----------------------------------------
 
     async def handle_request(self, request: Request) -> Response:
@@ -2311,7 +2418,10 @@ class Veloce(Router):
         # (matches the per-connection resolver the WebSocket path uses).
         resolver: DependencyResolver | None = None
         try:
-            # Run middleware (request phase)
+            # Run middleware (request phase). Kept inline (rather than calling
+            # `_run_request_middleware`) so an app with no middleware pays zero
+            # extra coroutine awaits on the dispatch hot path; the MCP tool
+            # path replays the identical chain via that helper.
             for mw in self._middlewares:
                 early_response = await mw.process_request(request)
                 if early_response is not None:
@@ -2467,7 +2577,10 @@ class Veloce(Router):
                 except Exception:
                     self.logger.exception("yield-dependency teardown raised")
 
-            # Teardown hooks - always run, even on exceptions.
+            # Teardown hooks - always run, even on exceptions. Kept inline
+            # (rather than calling `_run_request_teardown`) so a request with no
+            # teardown hooks pays zero extra coroutine awaits on the hot path;
+            # the MCP tool path replays the identical teardown via that helper.
             if self._teardown_request_hooks or self._bp_teardown_hooks:
                 if (
                     self._bp_teardown_hooks
@@ -2656,14 +2769,32 @@ class Veloce(Router):
         request.endpoint = match.route_info.name
         request._state["url_rule"] = match.route_info.path_template
 
-        # URL value preprocessors: mutate path_params in place
-        # before the handler sees them. Endpoint is the route name.
+        # URL value preprocessors: mutate path_params in place before the
+        # handler sees them. Endpoint is the route name. Kept inline (rather
+        # than calling `_run_url_value_preprocessors`) so a route with no
+        # preprocessors pays zero extra call frames on the match hot path; the
+        # MCP tool path runs the identical chain via that helper.
         if self._url_value_preprocessors:
             endpoint = match.route_info.name
             for proc in self._url_value_preprocessors:
                 proc(endpoint, request.path_params)
 
         return match
+
+    def _run_url_value_preprocessors(
+        self, endpoint: str | None, path_params: dict[str, Any]
+    ) -> None:
+        """Run every registered `url_value_preprocessor` against `path_params`.
+
+        Each processor receives `(endpoint, path_params)` and may mutate
+        `path_params` in place (e.g. pop a locale segment into `g`). App-level
+        processors plus the blueprint-gated ones merged into the single list
+        run in registration order. Shared by HTTP dispatch and the MCP
+        route-backed tool path so a processor sees the same call on both.
+        """
+        if self._url_value_preprocessors:
+            for proc in self._url_value_preprocessors:
+                proc(endpoint, path_params)
 
     async def _resolve_dependencies(
         self, request: Request, match: Any
@@ -3046,6 +3177,22 @@ class Veloce(Router):
                 resp._encoded = None
                 return resp
         return JSONResponse(result)
+
+    async def _run_request_middleware(self, request: Request) -> Response | None:
+        """Run the middleware request phase in registration order.
+
+        Each `Middleware.process_request` runs in turn; the first to return a
+        `Response` short-circuits the chain (the caller is responsible for
+        running that response back through the response phase). Returns `None`
+        when no middleware short-circuits. Extracted so the MCP dispatch path
+        can replay the identical request-phase chain a route-backed tool call
+        would see on the HTTP path.
+        """
+        for mw in self._middlewares:
+            early_response = await mw.process_request(request)
+            if early_response is not None:
+                return early_response
+        return None
 
     async def _run_response_middleware(self, request: Request, response: Response) -> Response:
         """Run middleware response phase in reverse order."""
