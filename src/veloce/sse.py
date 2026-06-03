@@ -21,6 +21,7 @@ from veloce._constants import (
     MIME_TEXT_EVENT_STREAM,
 )
 from veloce._internal import _encode_response_head
+from veloce.encoders import orjson_default
 from veloce.http.response import Response
 from veloce.status import HTTP_200_OK
 
@@ -64,7 +65,10 @@ class ServerSentEvent:
         constructor when the payload is already a formatted string.
         """
         return cls(
-            data=orjson.dumps(payload).decode("utf-8"),
+            # Use the same orjson fallback the JSON response stack uses, so a
+            # payload that serialises in `JSONResponse`/`app.json` also works
+            # when streamed over SSE (e.g. Decimal, set, Path).
+            data=orjson.dumps(payload, default=orjson_default).decode("utf-8"),
             event=event,
             id=id,
             retry=retry,
