@@ -961,7 +961,14 @@ class Request:
                 "(`app.add_middleware(SessionMiddleware(secret_key=...))`) "
                 "to enable session storage."
             )
-        return self._state["session"]
+        session = self._state["session"]
+        # Mark the session accessed so the middleware emits `Vary: Cookie`
+        # only when a handler actually touched session contents (read or
+        # write), keeping session-independent responses cacheable. A plain
+        # dict placed here by other code has no `accessed` slot, so guard it.
+        if hasattr(session, "accessed"):
+            session.accessed = True
+        return session
 
     # -- Body access ----------------------------------------------------
     @property

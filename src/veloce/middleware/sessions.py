@@ -37,6 +37,14 @@ _logger = logging.getLogger("veloce.sessions")
 _DEFAULT_MAX_COOKIE_SIZE = 4093
 
 
+def _session_accessed(session: Any) -> bool:
+    """Whether a handler touched the session (read via `Request.session`, or
+    mutated it). Drives the `Vary: Cookie` decision for both middlewares."""
+    return session is not None and (
+        getattr(session, "accessed", False) or getattr(session, "modified", False)
+    )
+
+
 class SessionMiddleware(Middleware):
     """Server-side session stored in a signed, timestamped cookie."""
 
@@ -106,16 +114,16 @@ class SessionMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back into the signed cookie."""
-        # A request that arrived carrying the session cookie may have had its
-        # response personalized from session contents even without mutating it
-        # (read-only access). Emit `Vary: Cookie` before the modified-check
-        # early return so such cacheable bodies are not shared across users by
-        # a URL-keyed cache. Idempotent with the write-path call (HeaderSet
-        # de-dups). `request.cookies` is cached, so this is cheap.
-        if self.vary_on_cookie and request.cookies.get(self.cookie_name):
+        session = request._state.get("session")
+        # Emit `Vary: Cookie` when a handler actually accessed the session
+        # (read or write - `Request.session` sets `accessed`, mutation sets
+        # `modified`), so a response personalized from session contents is not
+        # shared across users by a URL-keyed cache. A session-independent
+        # response (handler never touched `request.session`) stays cacheable,
+        # even for a logged-in client. `add_vary` de-dups via HeaderSet.
+        if self.vary_on_cookie and _session_accessed(session):
             response.add_vary(HEADER_COOKIE)
 
-        session = request._state.get("session")
         # `Session` flips `.modified` on any mutating operation, so we can
         # skip the re-sign + Set-Cookie when the handler never touched it.
         # No session attached (handler bypassed middleware?) -> nothing to do.
@@ -136,8 +144,6 @@ class SessionMiddleware(Middleware):
                 httponly=self.httponly,
                 samesite=self.samesite,
             )
-            if self.vary_on_cookie:
-                response.add_vary(HEADER_COOKIE)
             return response
 
         cookie_value = self._signer.dumps(session)
@@ -179,8 +185,6 @@ class SessionMiddleware(Middleware):
         # from this middleware's own (validated) `__init__` parameters, so it
         # is appended directly rather than re-serialised through set_cookie.
         response._append_set_cookie_header(rendered)
-        if self.vary_on_cookie:
-            response.add_vary(HEADER_COOKIE)
         response._encoded = None
         return response
 
@@ -248,13 +252,13 @@ class ServerSessionMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back to the server-side store."""
-        # See SessionMiddleware: a read-only session (cookie present, not
-        # mutated) can still have personalized the response, so emit
-        # `Vary: Cookie` before the modified-check early return.
-        if self.vary_on_cookie and request.cookies.get(self.cookie_name):
+        session = request._state.get("session")
+        # See SessionMiddleware: emit `Vary: Cookie` only when a handler
+        # accessed the session (read or write), so session-independent
+        # responses stay cacheable.
+        if self.vary_on_cookie and _session_accessed(session):
             response.add_vary(HEADER_COOKIE)
 
-        session = request._state.get("session")
         if session is None or not getattr(session, "modified", False):
             return response
 
@@ -298,8 +302,6 @@ class ServerSessionMiddleware(Middleware):
             secure=self.secure,
             samesite=self.samesite,
         )
-        if self.vary_on_cookie:
-            response.add_vary(HEADER_COOKIE)
         return response
 
     def _should_persist(self, status_code: int) -> bool:
@@ -318,5 +320,3 @@ class ServerSessionMiddleware(Middleware):
             httponly=self.httponly,
             samesite=self.samesite,
         )
-        if self.vary_on_cookie:
-            response.add_vary(HEADER_COOKIE)

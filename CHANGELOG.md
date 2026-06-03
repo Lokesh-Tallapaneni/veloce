@@ -175,10 +175,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP Bearer and OAuth2/OpenID authenticated paths. A custom scheme name is
   unaffected.
 - The session middlewares now emit `Vary: Cookie` (RFC 9110 Sec. 12.5.5) on
-  responses that set or delete the session cookie, so a shared proxy/CDN keyed
-  on URL alone cannot serve one user's session-personalized body to another.
-  Anonymous responses that do not touch the session stay cacheable. Pass
-  `vary_on_cookie=False` to opt out.
+  any response whose handler accessed the session (read via `request.session`
+  or mutated it), so a shared proxy/CDN keyed on URL alone cannot serve one
+  user's session-personalized body to another. A session-independent response
+  - one whose handler never touched `request.session` - stays cacheable even
+  for a logged-in client. Pass `vary_on_cookie=False` to opt out. `Session`
+  gains an `accessed` flag, set by `request.session`, to drive this.
 - The session middlewares no longer persist a modified session on a 5xx
   response by default - a failed request should not write a half-mutated
   session (neither the signed Set-Cookie nor the server-store write/delete).

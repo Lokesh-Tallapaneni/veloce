@@ -45,6 +45,11 @@ def _cookie_app(**mw_kwargs) -> Veloce:
     async def read(request: Request):
         return {"user": request.session.get("user")}
 
+    @app.get("/notouch")
+    async def notouch(request: Request):
+        # Never touches request.session -> session-independent, cacheable.
+        return {"ok": True}
+
     @app.get("/clear")
     async def clear(request: Request):
         request.session.clear()
@@ -72,20 +77,36 @@ def test_session_clear_emits_vary_cookie():
     assert "cookie" in _vary_values(resp)
 
 
-def test_anonymous_read_only_has_no_vary_cookie():
-    # No inbound session cookie, handler doesn't mutate -> stays cacheable.
+def test_session_independent_route_stays_cacheable_for_logged_in_user():
+    # A logged-in client (carries the session cookie) hitting a route that
+    # never touches request.session must NOT get Vary: Cookie - it stays
+    # cacheable. Gating is on session ACCESS, not cookie presence.
     client = _cookie_app().test_client()
-    resp = client.get("/read")
+    client.get("/write")  # establishes the session cookie on the client
+    resp = client.get("/notouch")
     assert "cookie" not in _vary_values(resp)
 
 
-def test_cookie_bearing_read_only_emits_vary_cookie():
-    # A request carrying the session cookie that only READS the session still
-    # gets Vary: Cookie (the response may be personalized from session data),
-    # so a shared cache can't serve it to another user.
+def test_anonymous_notouch_has_no_vary_cookie():
+    client = _cookie_app().test_client()
+    resp = client.get("/notouch")
+    assert "cookie" not in _vary_values(resp)
+
+
+def test_read_access_emits_vary_cookie():
+    # A handler that READS request.session gets Vary: Cookie (the response may
+    # be personalized from session data), with or without an inbound cookie.
     client = _cookie_app().test_client()
     client.get("/write")  # establishes the session cookie on the client
     resp = client.get("/read")  # read-only handler, modified stays False
+    assert "cookie" in _vary_values(resp)
+
+
+def test_anonymous_read_access_still_varies():
+    # Even anonymously, accessing the session marks the response as varying;
+    # it is cached under the no-Cookie key, so anonymous clients still share it.
+    client = _cookie_app().test_client()
+    resp = client.get("/read")
     assert "cookie" in _vary_values(resp)
 
 
@@ -158,12 +179,24 @@ def _server_app(**mw_kwargs) -> tuple[Veloce, InMemorySessionStore]:
         request.session.clear()
         return {"ok": True}
 
+    @app.get("/notouch")
+    async def notouch(request: Request):
+        return {"ok": True}
+
     @app.get("/boom")
     async def boom(request: Request):
         request.session["user"] = "alice"
         return Response(500, b"err")
 
     return app, store
+
+
+def test_server_session_independent_route_stays_cacheable():
+    app, _ = _server_app()
+    client = app.test_client()
+    client.get("/write")  # establishes the session cookie
+    resp = client.get("/notouch")
+    assert "cookie" not in _vary_values(resp)
 
 
 def test_server_session_write_emits_vary_cookie():
