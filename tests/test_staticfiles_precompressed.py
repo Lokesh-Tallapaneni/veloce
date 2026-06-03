@@ -1,0 +1,113 @@
+"""StaticFiles precompressed sibling serving (br/gz)."""
+
+from __future__ import annotations
+
+import pytest
+
+from veloce import Request
+from veloce.contrib.staticfiles import StaticFiles
+
+
+def _req(path: str, headers: dict | None = None) -> Request:
+    return Request(
+        method="GET",
+        path=path,
+        query_string="",
+        headers=headers or {},
+        body=b"",
+    )
+
+
+@pytest.mark.asyncio
+async def test_serves_br_when_accepted(tmp_path):
+    (tmp_path / "app.css").write_bytes(b"body{color:red}")
+    (tmp_path / "app.css.br").write_bytes(b"BR-COMPRESSED")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br, gzip"}))
+    assert resp.status_code == 200
+    assert resp.headers["Content-Encoding"] == "br"
+    assert resp.headers["Vary"] == "Accept-Encoding"
+    assert resp.body == b"BR-COMPRESSED"
+    # Media type stays that of the original asset, not the compressed wrapper.
+    assert resp.content_type.startswith("text/css")
+
+
+@pytest.mark.asyncio
+async def test_qvalue_picks_gzip_over_br(tmp_path):
+    (tmp_path / "app.css").write_bytes(b"body{color:red}")
+    (tmp_path / "app.css.br").write_bytes(b"BR")
+    (tmp_path / "app.css.gz").write_bytes(b"GZIP")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=0.1, gzip;q=0.9"}))
+    assert resp.status_code == 200
+    assert resp.headers["Content-Encoding"] == "gzip"
+    assert resp.body == b"GZIP"
+
+
+@pytest.mark.asyncio
+async def test_qzero_rejects_encoding(tmp_path):
+    (tmp_path / "app.css").write_bytes(b"RAW")
+    (tmp_path / "app.css.br").write_bytes(b"BR")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=0"}))
+    assert resp.status_code == 200
+    assert "Content-Encoding" not in resp.headers
+    assert resp.body == b"RAW"
+
+
+@pytest.mark.asyncio
+async def test_no_sibling_falls_through(tmp_path):
+    (tmp_path / "app.css").write_bytes(b"RAW")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br, gzip"}))
+    assert resp.status_code == 200
+    assert "Content-Encoding" not in resp.headers
+    assert resp.body == b"RAW"
+
+
+@pytest.mark.asyncio
+async def test_disabled_by_default(tmp_path):
+    (tmp_path / "app.css").write_bytes(b"RAW")
+    (tmp_path / "app.css.br").write_bytes(b"BR")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s")
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br, gzip"}))
+    assert resp.status_code == 200
+    assert "Content-Encoding" not in resp.headers
+    assert resp.body == b"RAW"
+
+
+@pytest.mark.asyncio
+async def test_etag_matches_compressed_bytes(tmp_path):
+    (tmp_path / "app.css").write_bytes(b"RAW")
+    (tmp_path / "app.css.br").write_bytes(b"BR-COMPRESSED")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    first = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br"}))
+    etag = first.headers["ETag"]
+    second = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br", "If-None-Match": etag}))
+    assert second.status_code == 304
+
+
+@pytest.mark.asyncio
+async def test_range_over_precompressed(tmp_path):
+    (tmp_path / "app.css").write_bytes(b"RAW")
+    (tmp_path / "app.css.br").write_bytes(b"BRCOMPRESSEDBYTES")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br", "Range": "bytes=0-3"}))
+    assert resp.status_code == 206
+    assert resp.headers["Content-Encoding"] == "br"
+    assert resp.headers["Vary"] == "Accept-Encoding"
+    # Range is over the compressed length (len("BRCOMPRESSEDBYTES") == 17).
+    assert resp.headers["Content-Range"] == "bytes 0-3/17"
+    assert resp.body == b"BRCO"
+
+
+@pytest.mark.asyncio
+async def test_missing_accept_encoding_serves_raw(tmp_path):
+    (tmp_path / "app.css").write_bytes(b"RAW")
+    (tmp_path / "app.css.br").write_bytes(b"BR")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    # No Accept-Encoding header at all: the quality>0 gate must reject br.
+    resp = await sf.handle(_req("/s/app.css"))
+    assert resp.status_code == 200
+    assert "Content-Encoding" not in resp.headers
+    assert resp.body == b"RAW"

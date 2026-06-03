@@ -27,14 +27,17 @@ from functools import lru_cache
 from typing import Any
 
 from veloce._constants import (
+    HEADER_ACCEPT_ENCODING,
     HEADER_ACCEPT_RANGES,
     HEADER_CACHE_CONTROL,
+    HEADER_CONTENT_ENCODING,
     HEADER_CONTENT_RANGE,
     HEADER_ETAG,
     HEADER_IF_MODIFIED_SINCE,
     HEADER_IF_NONE_MATCH,
     HEADER_LAST_MODIFIED,
     HEADER_VALUE_BYTES,
+    HEADER_VARY,
     MIME_OCTET_STREAM,
     MIME_TEXT_HTML_UTF8,
 )
@@ -107,6 +110,12 @@ class StaticFiles:
     # default transport write-buffer high-water mark, so chunks ride
     # the wire without rebuffering.
     STREAM_CHUNK_SIZE = 64 * 1024
+    # Content-Encoding token -> precompressed sibling suffix. Probed in
+    # this order only to break q-value ties; the actual selection is
+    # driven by the client's `Accept-Encoding` q-values (see
+    # `_select_precompressed`). `br` precedes `gzip` because it is the
+    # denser codec and the conventional preference when quality is equal.
+    PRECOMPRESSED_VARIANTS = {"br": ".br", "gzip": ".gz"}
 
     def __init__(
         self,
@@ -115,6 +124,7 @@ class StaticFiles:
         html: bool = False,
         directory_index: bool = False,
         must_exist: bool = True,
+        precompressed: bool = False,
     ) -> None:
         self.directory = os.path.abspath(directory)
         # Validate the configured directory once at construction (a setup-time
@@ -154,6 +164,11 @@ class StaticFiles:
         # directory listings are an information-disclosure risk and
         # most production deployments don't want them.
         self.directory_index = directory_index
+        # Serve a precompressed sibling (`app.css.br` / `app.css.gz`) when
+        # the client advertises a matching `Accept-Encoding`. Off by default:
+        # the variants must be generated ahead of time and the feature adds
+        # one extra `stat` per request when enabled, so it is opt-in.
+        self.precompressed = precompressed
         # Bounded LRU: insertion order doubles as recency; the oldest
         # entry is dropped when the cap is hit. Capacity is per-instance
         # so a deployment with many static handlers stays bounded.
@@ -175,6 +190,41 @@ class StaticFiles:
         self._etag_cache.move_to_end(key)
         while len(self._etag_cache) > self.ETAG_CACHE_MAX:
             self._etag_cache.popitem(last=False)
+
+    async def _select_precompressed(
+        self,
+        request: Request,
+        file_path: str,
+        loop: Any,
+        try_stat: Any,
+    ) -> tuple[str, str, os.stat_result] | None:
+        """Pick a precompressed sibling for `file_path`, or None.
+
+        Returns `(variant_path, encoding, stat_result)` when the client
+        accepts an encoding whose sibling exists on disk as a regular file,
+        otherwise None. The quality gate is load-bearing: `best_match`
+        returns the first candidate on an empty `Accept-Encoding` header, so
+        a request with no preference would otherwise falsely select `br`.
+        Permission errors on the sibling propagate as 403 (via the caller's
+        sentinel) to match the read policy on the original file.
+        """
+        if not self.precompressed:
+            return None
+        candidates = list(self.PRECOMPRESSED_VARIANTS)
+        chosen = request.accept_encodings.best_match(candidates)
+        # Require q>0: `best_match` falls back to `candidates[0]` on a missing
+        # header, so an explicit positive quality is needed to confirm the
+        # client actually asked for this encoding.
+        if chosen is None or request.accept_encodings.quality(chosen) <= 0:
+            return None
+        variant_path = file_path + self.PRECOMPRESSED_VARIANTS[chosen]
+        variant_stat, denied = await loop.run_in_executor(None, try_stat, variant_path)
+        if denied:
+            # Surface as 403 by returning the denial to the caller via a raise.
+            raise PermissionError(variant_path)
+        if variant_stat is None or not stat.S_ISREG(variant_stat.st_mode):
+            return None
+        return (variant_path, chosen, variant_stat)
 
     async def handle(self, request: Request) -> Response | None:
         """Handle a static file request - file I/O offloaded to thread pool."""
@@ -248,6 +298,28 @@ class StaticFiles:
         if not self._is_under_root(real_path):
             return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
 
+        # Derive the media type from the ORIGINAL path before any
+        # precompressed swap, so `app.css.br` keeps `text/css` rather than
+        # mislabelling as `application/gzip`.
+        content_type = _guess_content_type(file_path)
+
+        # Precompressed sibling serving (opt-in). On a hit, switch all
+        # downstream bookkeeping (ETag, 304/412, Range, body) to the
+        # compressed file so revalidation keys off the bytes actually sent.
+        content_encoding: str | None = None
+        try:
+            variant = await self._select_precompressed(request, file_path, loop, _try_stat)
+        except PermissionError:
+            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+        if variant is not None:
+            variant_path, content_encoding, variant_stat = variant
+            # A planted `.br`/`.gz` symlink must not escape the served root.
+            variant_real = await loop.run_in_executor(None, os.path.realpath, variant_path)
+            if not self._is_under_root(variant_real):
+                return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+            file_path = variant_path
+            stat_result = variant_stat
+
         # stat_result was populated by the existence check above; reuse it.
         assert stat_result is not None  # narrowed by the `not is_file` returns
         mtime = stat_result.st_mtime
@@ -310,8 +382,6 @@ class StaticFiles:
                     body=b"",
                     headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
                 )
-
-        content_type = _guess_content_type(file_path)
 
         # Range request - RFC 9110 Sec. 14.2. Single-range only; multi-range
         # would require multipart/byteranges which we don't ship yet.
@@ -378,17 +448,24 @@ class StaticFiles:
                     return f.read(length)
 
             body = await loop.run_in_executor(None, _read_range)
+            range_headers = {
+                HEADER_CONTENT_RANGE: f"bytes {r_start}-{r_end}/{size}",
+                HEADER_ETAG: etag,
+                HEADER_LAST_MODIFIED: last_modified,
+                HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
+                HEADER_CACHE_CONTROL: "public, max-age=3600",
+            }
+            if content_encoding is not None:
+                # The range is over the compressed bytes; advertise the
+                # encoding and Vary so a shared cache never serves these
+                # bytes to a client that did not ask for them.
+                range_headers[HEADER_CONTENT_ENCODING] = content_encoding
+                range_headers[HEADER_VARY] = HEADER_ACCEPT_ENCODING
             return Response(
                 status_code=HTTP_206_PARTIAL_CONTENT,
                 body=body,
                 content_type=content_type,
-                headers={
-                    HEADER_CONTENT_RANGE: f"bytes {r_start}-{r_end}/{size}",
-                    HEADER_ETAG: etag,
-                    HEADER_LAST_MODIFIED: last_modified,
-                    HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
-                    HEADER_CACHE_CONTROL: "public, max-age=3600",
-                },
+                headers=range_headers,
             )
 
         common_headers = {
@@ -397,6 +474,9 @@ class StaticFiles:
             HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
             HEADER_CACHE_CONTROL: "public, max-age=3600",
         }
+        if content_encoding is not None:
+            common_headers[HEADER_CONTENT_ENCODING] = content_encoding
+            common_headers[HEADER_VARY] = HEADER_ACCEPT_ENCODING
 
         # Files at or above `STREAM_THRESHOLD` use chunked streaming so
         # the whole file never sits in memory at once - a single large
@@ -477,18 +557,26 @@ class StaticFiles:
             same syscall that produced the entry, so we don't need a
             second `os.path.isdir` per item.
             """
+            out: list[tuple[str, bool]] = []
             try:
                 with os.scandir(dir_path) as it:
-                    return sorted(
-                        (
-                            (e.name, e.is_dir(follow_symlinks=False))
-                            for e in it
-                            if not e.name.startswith(".")
-                        ),
-                        key=lambda t: t[0],
-                    )
+                    for e in it:
+                        if e.name.startswith("."):
+                            continue
+                        # Per-entry symlink containment. A symlink whose target
+                        # resolves OUTSIDE the served root is dropped so the
+                        # index never leaks out-of-root names, mirroring the
+                        # per-file 403 at handle(). realpath is best-effort
+                        # (never raises; broken/escaping links resolve outside
+                        # root) and commonpath in _is_under_root rejects them.
+                        # is_symlink() short-circuits so non-links pay no cost.
+                        if e.is_symlink() and not self._is_under_root(os.path.realpath(e.path)):
+                            continue
+                        out.append((e.name, e.is_dir(follow_symlinks=False)))
             except OSError:
                 return []
+            out.sort(key=lambda t: t[0])
+            return out
 
         entries = await loop.run_in_executor(None, _list_dir)
         base = url_path if url_path.endswith("/") else url_path + "/"
