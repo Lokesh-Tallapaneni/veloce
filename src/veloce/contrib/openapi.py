@@ -28,9 +28,41 @@ from veloce.routing.params import Form as FormParam
 from veloce.routing.params import Header as HeaderParam
 from veloce.routing.params import ParamBase
 from veloce.routing.params import Path as PathParam
-from veloce.status import HTTP_200_OK
+from veloce.status import HTTP_200_OK, HTTP_422_UNPROCESSABLE_ENTITY
 
 _logger = logging.getLogger(__name__)
+
+# Name of the canonical 422 body schema registered into
+# `components.schemas`. It mirrors the exact shape the runtime emits from
+# `request_validation_exception_handler` (`{"detail": [{loc, msg, type}]}`),
+# so the generated spec and the actual error response never drift.
+_VALIDATION_PROBLEM_NAME = "ValidationProblem"
+
+# A non-body parameter that the resolver can only ever receive as a raw,
+# unconstrained string never fails coercion, so it never produces a 422.
+# A 422 is advertised only when at least one input carries one of these
+# JSON Schema validation keywords (a richer `type`, a constraint, or a
+# branch set) or a request body / form field is present.
+_VALIDATION_SCHEMA_KEYS = frozenset(
+    {
+        "format",
+        "enum",
+        "pattern",
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minItems",
+        "maxItems",
+        "anyOf",
+        "allOf",
+        "oneOf",
+        "$ref",
+    }
+)
 
 # Per-handler memoization of `inspect.signature` + `get_type_hints`. The
 # OpenAPI generator visits each handler from four sites (operation
@@ -515,7 +547,77 @@ def _extract_request_body(
     }
 
 
-def _extract_responses(info: Any, schemas_registry: dict[str, dict]) -> dict[str, dict]:
+def _param_can_validate(param: dict[str, Any]) -> bool:
+    """Return True when a parameter object can fail validation (i.e. 422).
+
+    A bare unconstrained `{"type": "string"}` value taken straight from the
+    wire never fails coercion. Any richer type, constraint keyword, or
+    branch set means the resolver may reject a string input with a 422.
+    """
+    schema = param.get("schema")
+    if not isinstance(schema, dict):
+        return False
+    if schema.get("type") not in (None, "string"):
+        return True
+    return not _VALIDATION_SCHEMA_KEYS.isdisjoint(schema.keys())
+
+
+def _route_has_validatable_input(
+    parameters: list[dict],
+    request_body_schema: dict | None,
+    form_fields: list[tuple[str, dict, bool, bool]],
+) -> bool:
+    """Return True when the route has input that can produce a runtime 422.
+
+    A JSON request body or any form / file field is always validated. A
+    non-body parameter only counts when it carries a richer-than-string
+    schema (see `_param_can_validate`), so a pure path-string param that
+    never 422s does not cause a 422 response to be advertised.
+    """
+    if request_body_schema is not None or form_fields:
+        return True
+    return any(_param_can_validate(p) for p in parameters)
+
+
+def _register_validation_problem(schemas_registry: dict[str, dict]) -> dict[str, str]:
+    """Lazily register the canonical 422 body schema and return a `$ref`.
+
+    The schema documents the `{"detail": [{loc, msg, type}]}` shape the
+    runtime returns, sourced once so docs and handler cannot diverge.
+    """
+    if _VALIDATION_PROBLEM_NAME not in schemas_registry:
+        schemas_registry[_VALIDATION_PROBLEM_NAME] = {
+            "type": "object",
+            "title": _VALIDATION_PROBLEM_NAME,
+            "properties": {
+                "detail": {
+                    "type": "array",
+                    "title": "Detail",
+                    "items": {
+                        "type": "object",
+                        "title": "ValidationProblemItem",
+                        "properties": {
+                            "loc": {
+                                "type": "array",
+                                "title": "Location",
+                                "items": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+                            },
+                            "msg": {"type": "string", "title": "Message"},
+                            "type": {"type": "string", "title": "Error Type"},
+                        },
+                        "required": ["loc", "msg", "type"],
+                    },
+                }
+            },
+        }
+    return {"$ref": f"#/components/schemas/{_VALIDATION_PROBLEM_NAME}"}
+
+
+def _extract_responses(
+    info: Any,
+    schemas_registry: dict[str, dict],
+    has_validatable_input: bool = False,
+) -> dict[str, dict]:
     """Build the operation `responses` map.
 
     Seeds with the success response (re-keyed to `info.status_code` when
@@ -555,6 +657,18 @@ def _extract_responses(info: Any, schemas_registry: dict[str, dict]) -> dict[str
             if k in ("model", "description"):
                 continue
             existing[k] = v
+
+    # Advertise the 422 the runtime genuinely returns on validation failure,
+    # but only when the route has validatable input and the user has not
+    # already declared a 422 / 4XX / default response of their own.
+    if has_validatable_input and not (
+        responses.keys() & {str(HTTP_422_UNPROCESSABLE_ENTITY), "4XX", "default"}
+    ):
+        problem_ref = _register_validation_problem(schemas_registry)
+        responses[str(HTTP_422_UNPROCESSABLE_ENTITY)] = {
+            "description": "Validation Error",
+            "content": {MIME_JSON: {"schema": problem_ref}},
+        }
 
     return responses
 
@@ -749,7 +863,10 @@ def _build_operation(
     if security_requirements:
         operation["security"] = security_requirements
 
-    operation["responses"] = _extract_responses(info, schemas_registry)
+    has_validatable_input = _route_has_validatable_input(
+        parameters, request_body_schema, form_fields
+    )
+    operation["responses"] = _extract_responses(info, schemas_registry, has_validatable_input)
 
     # `openapi_extra` - deep-merge the user-supplied dict over the
     # generated operation. Nested dicts merge key-by-key; scalars and

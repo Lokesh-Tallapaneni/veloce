@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The generated OpenAPI document now advertises the `422` validation-error
+  response that the runtime actually returns. A route that has validatable
+  input - a JSON request body, a form/file field, or a non-body parameter
+  with a richer-than-string schema (a typed/constrained query, path, header,
+  or cookie value) - gains a `422` response referencing a canonical
+  `ValidationProblem` schema whose shape (`{"detail": [{loc, msg, type}]}`)
+  matches the framework's validation handler. A plain unconstrained string
+  parameter, which never fails coercion, does not advertise a `422`. The
+  injection is skipped when the route already declares a `422`, `4XX`, or
+  `default` response, so explicit error contracts are left untouched.
+
 - `Depends(..., offload=True)` (and the matching `Security(..., offload=True)`)
   routes a blocking sync dependency through the thread pool instead of calling
   it inline on the event loop, so a dependency that does blocking I/O (a DB
