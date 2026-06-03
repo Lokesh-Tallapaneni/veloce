@@ -337,3 +337,53 @@ def test_modifying_a_live_session_still_writes_back():
     assert client.post("/bump").json() == {"hits": 3}
     # Still exactly one live session entry.
     assert len(store._entries) == 1
+
+
+# ── Cookie Domain attribute ───────────────────────────────────────────
+
+
+def _domain_server_app(**mw_kwargs) -> Veloce:
+    store = InMemorySessionStore()
+    app = Veloce(debug=False, openapi_url=None)
+    app.add_middleware(ServerSessionMiddleware(store=store, **mw_kwargs))
+
+    @app.get("/write")
+    async def write(request: Request):
+        request.session["user"] = "alice"
+        return {"ok": True}
+
+    @app.get("/clear")
+    async def clear(request: Request):
+        request.session.clear()
+        return {"ok": True}
+
+    return app
+
+
+def _set_cookie_line(resp) -> str:
+    for k, v in resp.headers.items():
+        if k.lower() == "set-cookie":
+            return v
+    return ""
+
+
+def test_server_session_cookie_includes_domain():
+    client = _domain_server_app(domain=".example.com").test_client()
+    resp = client.get("/write")
+    assert "Domain=.example.com" in _set_cookie_line(resp)
+
+
+def test_server_session_clear_includes_domain():
+    client = _domain_server_app(domain=".example.com").test_client()
+    client.get("/write")
+    resp = client.get("/clear")
+    line = _set_cookie_line(resp)
+    assert "Domain=.example.com" in line
+    assert "Max-Age=0" in line
+
+
+def test_server_session_domain_insecure_samesite_none_warns():
+    import pytest
+
+    with pytest.warns(UserWarning):
+        ServerSessionMiddleware(domain=".example.com", secure=False, samesite="none")

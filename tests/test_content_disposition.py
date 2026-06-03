@@ -30,9 +30,46 @@ def test_non_ascii_filename_gets_rfc5987_form():
     resp = Response()
     resp.set_content_disposition("attachment", filename="résumé.pdf")
     cd = resp.headers["Content-Disposition"]
-    # Both the ASCII fallback and the UTF-8 extended form are present.
-    assert "filename=" in cd
-    assert "filename*=UTF-8''" in cd
+    # Only the RFC 5987 extended form is emitted - no lossy legacy slot.
+    assert cd == "attachment; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf"
+    assert 'filename="' not in cd
+    assert cd.count("filename") == 1
+
+
+def test_ascii_name_with_spaces_and_punctuation_preserved():
+    resp = Response()
+    resp.set_content_disposition("attachment", filename="my report (final).txt")
+    cd = resp.headers["Content-Disposition"]
+    # Spaces and parens are quoted-string members, so they survive verbatim
+    # with no `_`/`?` mangling.
+    assert cd == 'attachment; filename="my report (final).txt"'
+
+
+def test_quote_and_backslash_escaped():
+    resp = Response()
+    resp.set_content_disposition("attachment", filename='a"b\\c.txt')
+    cd = resp.headers["Content-Disposition"]
+    # Backslash escaped first, then the double-quote (RFC 9110 escape order).
+    assert cd == 'attachment; filename="a\\"b\\\\c.txt"'
+
+
+def test_tab_is_quotable():
+    resp = Response()
+    resp.set_content_disposition("attachment", filename="a\tb.txt")
+    cd = resp.headers["Content-Disposition"]
+    # HTAB is a quoted-string member, so the name stays in the quoted slot.
+    assert cd == 'attachment; filename="a\tb.txt"'
+    assert "filename*=" not in cd
+
+
+def test_pure_ascii_control_char_routes_to_extended():
+    resp = Response()
+    resp.set_content_disposition("attachment", filename="a\x01b.txt")
+    cd = resp.headers["Content-Disposition"]
+    # A non-CR/LF control char is not quotable, so the name routes to the
+    # RFC 5987 extended form.
+    assert cd == "attachment; filename*=UTF-8''a%01b.txt"
+    assert 'filename="' not in cd
 
 
 def test_returns_header_value():
@@ -41,13 +78,14 @@ def test_returns_header_value():
     assert returned == resp.headers["Content-Disposition"]
 
 
-def test_file_response_neutralises_unsafe_filename(tmp_path):
+def test_file_response_rejects_crlf_filename(tmp_path):
+    import pytest
+
     from veloce import FileResponse
 
     f = tmp_path / "d.bin"
     f.write_bytes(b"x")
-    resp = FileResponse(str(f), filename='a"\r\nX-Injected: 1.txt')
-    cd = resp.headers["Content-Disposition"]
-    assert "\r" not in cd and "\n" not in cd
-    # The embedded double-quote is neutralised — only the wrapping quotes remain.
-    assert cd.count('"') == 2
+    # An embedded CR/LF in the filename is a header-injection attempt and is
+    # rejected at the call site rather than silently sanitised.
+    with pytest.raises(ValueError):
+        FileResponse(str(f), filename='a"\r\nX-Injected: 1.txt')

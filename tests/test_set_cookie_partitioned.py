@@ -43,3 +43,17 @@ def test_partitioned_with_other_attributes():
     assert "Partitioned" in c
     assert "HttpOnly" in c
     assert "SameSite=None" in c
+
+
+def test_delete_cookie_partitioned_forwarded():
+    resp = Response()
+    resp.delete_cookie("sid", secure=True, samesite="None", partitioned=True)
+    c = _cookie(resp)
+    assert "Partitioned" in c
+    assert "Max-Age=0" in c
+
+
+def test_delete_cookie_partitioned_default_absent():
+    resp = Response()
+    resp.delete_cookie("sid", secure=True)
+    assert "Partitioned" not in _cookie(resp)
