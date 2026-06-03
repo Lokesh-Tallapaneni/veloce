@@ -168,11 +168,12 @@ def test_check_preconditions_wildcard_passes_when_etag_present():
     assert resp.check_preconditions(req) is resp
 
 
-def test_check_preconditions_wildcard_raises_when_no_etag():
+def test_check_preconditions_wildcard_passes_without_etag():
+    # `If-Match: *` is an existence precondition - a concrete response
+    # satisfies it even when no ETag was attached (RFC 9110 Sec. 13.1.1).
     resp = Response(body=b"hello")
     req = _req({"if-match": "*"})
-    with pytest.raises(PreconditionFailed):
-        resp.check_preconditions(req)
+    assert resp.check_preconditions(req) is resp
 
 
 def test_check_preconditions_absent_header_returns_self():

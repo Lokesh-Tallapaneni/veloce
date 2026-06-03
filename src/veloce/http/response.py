@@ -1010,15 +1010,16 @@ class Response:
         if_match = getattr(request, "if_match", ())
         if not if_match:
             return self
+        # `If-Match: *` is an existence precondition (RFC 9110 Sec. 13.1.1):
+        # the handler producing this response means the resource exists, so it
+        # is satisfied regardless of whether an ETag was attached.
+        if if_match == ("*",):
+            return self
         # `headers` is a plain dict; accept either spelling, as other helpers do.
         ours_etag = self.headers.get(HEADER_ETAG) or self.headers.get("etag") or ""
-        if if_match == ("*",):
-            if ours_etag:
+        for tag in if_match:
+            if _etag_matches_strong(ours_etag, tag):
                 return self
-        else:
-            for tag in if_match:
-                if _etag_matches_strong(ours_etag, tag):
-                    return self
         from veloce.exceptions import PreconditionFailed  # avoids response <-> exceptions cycle
 
         raise PreconditionFailed
