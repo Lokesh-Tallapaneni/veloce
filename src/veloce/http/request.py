@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from urllib.parse import parse_qsl
 
@@ -42,6 +43,7 @@ from veloce._constants import (
     MIME_JSON,
     MIME_MULTIPART_FORM_DATA,
 )
+from veloce._internal import _coerce_bool
 from veloce._protocol_constants import URL_SCHEME_HTTPS
 from veloce.exceptions import RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
@@ -62,6 +64,8 @@ from veloce.http.datastructures import (
     parse_multipart_form,
 )
 from veloce.http.dates import parse_date
+
+_logger = logging.getLogger(__name__)
 
 # Sentinel for "this conditional-header property has not been read yet"
 # on properties whose legitimate parsed value can be `None` (`if_modified_since`,
@@ -1052,14 +1056,38 @@ class Request:
         return parsed
 
     def on_json_loading_failed(self, error: Exception) -> Any:
-        """Hook invoked when `get_json()` fails to parse a non-silent body.
+        """Hook invoked when JSON parsing fails on a non-silent body.
 
-        Override on a `Request` subclass to customise the
-        failure behaviour (e.g. raise a `BadRequest` with a friendly
-        message, or return a sentinel). The default re-raises the
-        original decode error so malformed JSON surfaces loudly.
+        Raises `BadRequest` (400) with a stable, body-independent message so a
+        malformed body cannot leak decoder internals (byte offsets derived from
+        attacker-controlled input) into the production response. The verbose
+        decoder reason is always logged and attached as `BadRequest.debug_detail`
+        for operators, and is surfaced in the response only when debug mode or
+        the `JSON_ERRORS_VERBOSE` config flag is set. Override on a `Request`
+        subclass to customise.
         """
-        raise error
+        from veloce.exceptions import BadRequest  # noqa: I001 - breaks cycle: exceptions -> app -> request
+
+        _logger.warning("JSON parse error: %s", error)
+        cfg = getattr(self.app, "config", None) if self.app is not None else None
+        # Surface the verbose reason when explicitly enabled OR in debug mode.
+        # An explicit OR (not a dict-default fallback) is required because the
+        # `JSON_ERRORS_VERBOSE` key is seeded into the default config, so it is
+        # never "absent" for the fallback to consult `DEBUG`. `_coerce_bool`
+        # interprets dotenv-style string flags (`DEBUG=false`) correctly.
+        verbose = (
+            _coerce_bool(cfg.get("JSON_ERRORS_VERBOSE", False))
+            or _coerce_bool(cfg.get("DEBUG", False))
+            if cfg
+            else False
+        )
+        detail = f"Invalid JSON body: {error}" if verbose else "Invalid JSON body"
+        exc = BadRequest(detail)
+        # Informational only - never read by the error renderer, so it cannot
+        # leak into the response body. `HTTPException` is unslotted, so this
+        # dynamic attribute is set via `setattr` (not a declared field).
+        setattr(exc, "debug_detail", str(error))  # noqa: B010
+        raise exc from error
 
     async def _drain_body(self) -> bytes:
         """Pull the body source to EOF once and cache the assembled bytes.
@@ -1104,9 +1132,8 @@ class Request:
                 try:
                     self._json = orjson.loads(body)
                 except (orjson.JSONDecodeError, ValueError) as exc:
-                    from veloce.exceptions import BadRequest  # noqa: I001 - breaks cycle: exceptions -> app -> request
-
-                    raise BadRequest(f"Failed to decode JSON body: {exc}") from exc
+                    # Share the single masking policy with the sync `get_json`.
+                    return self.on_json_loading_failed(exc)
         return self._json
 
     async def get_data(self, as_text: bool = False, cache: bool = True) -> bytes | str:

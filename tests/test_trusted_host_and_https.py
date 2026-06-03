@@ -169,6 +169,56 @@ def test_redirects_when_neither_scope_nor_header_says_https():
     assert resp.status_code == 308
 
 
+# ── Exempt paths (ACME default + custom prefixes) ────────────────────
+
+
+def _make_exempt_app(**mw_kwargs) -> Veloce:
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(HTTPSRedirectMiddleware(**mw_kwargs))
+
+    @app.get("/.well-known/acme-challenge/{token}")
+    async def acme(token: str):
+        return {"token": token}
+
+    @app.get("/health/{sub}")
+    async def health(sub: str):
+        return {"ok": True}
+
+    @app.get("/x")
+    async def x():
+        return {"ok": True}
+
+    return app
+
+
+def test_acme_challenge_exempt_by_default():
+    client = TestClient(_make_exempt_app())
+    resp = client.get("/.well-known/acme-challenge/abc", headers={"host": "example.com"})
+    assert resp.status_code == 200
+
+
+def test_non_exempt_path_still_redirected():
+    client = TestClient(_make_exempt_app())
+    assert client.get("/x", headers={"host": "example.com"}).status_code == 308
+
+
+def test_acme_exempt_can_be_disabled():
+    client = TestClient(_make_exempt_app(exempt_acme_challenge=False))
+    resp = client.get("/.well-known/acme-challenge/abc", headers={"host": "example.com"})
+    assert resp.status_code == 308
+
+
+def test_custom_exempt_prefix_match():
+    client = TestClient(_make_exempt_app(exempt_paths=("/health/",)))
+    assert client.get("/health/live", headers={"host": "example.com"}).status_code == 200
+    assert client.get("/x", headers={"host": "example.com"}).status_code == 308
+
+
+def test_default_exempt_paths_tuple():
+    mw = HTTPSRedirectMiddleware()
+    assert mw._exempt_paths == ("/.well-known/acme-challenge/",)
+
+
 def test_trusted_host_middleware_rejects_websocket_from_bad_host():
     app = Veloce(openapi_url=None)
     app.add_middleware(TrustedHostMiddleware(allowed_hosts=["good.example"]))

@@ -78,3 +78,67 @@ def test_mount_still_accepts_plain_asgi_callable():
     resp = TestClient(app).get("/asgi/anything")
     assert resp.status_code == 200
     assert resp.body == b"asgi-ok"
+
+
+# ── must_exist startup validation ────────────────────────────────────
+
+
+def test_staticfiles_missing_directory_raises(tmp_path):
+    missing = str(tmp_path / "does_not_exist")
+    with pytest.raises(ValueError, match="does not exist"):
+        StaticFiles(directory=missing)
+
+
+def test_staticfiles_missing_directory_warns_when_opt_out(tmp_path):
+    missing = str(tmp_path / "nope")
+    with pytest.warns(UserWarning, match="does not exist"):
+        sf = StaticFiles(directory=missing, prefix="/static", must_exist=False)
+    assert sf.directory.endswith("nope")
+
+
+def test_staticfiles_existing_directory_ok(tmp_path):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        StaticFiles(directory=str(tmp_path))  # no raise, no warning
+
+
+def test_mount_static_missing_directory_raises():
+    app = Veloce(openapi_url=None)
+    with pytest.raises(ValueError, match="does not exist"):
+        app.mount_static(directory="definitely_missing_dir_xyz")
+
+
+def test_mount_static_missing_directory_opt_out_warns():
+    app = Veloce(openapi_url=None)
+    with pytest.warns(UserWarning, match="does not exist"):
+        app.mount_static(directory="still_missing_dir_xyz", must_exist=False)
+
+
+def test_staticfiles_checks_search_perm_not_read_by_default(tmp_path, monkeypatch):
+    # Serving a known file needs X_OK (search); R_OK (read) is only for listing.
+    import os
+
+    from veloce.contrib import staticfiles
+
+    seen = {}
+
+    def _spy(path, mode):
+        seen["mode"] = mode
+        return True
+
+    monkeypatch.setattr(staticfiles.os, "access", _spy)
+    StaticFiles(directory=str(tmp_path))  # directory_index=False
+    assert seen["mode"] == os.X_OK
+
+
+def test_staticfiles_directory_index_requires_read_and_search(tmp_path, monkeypatch):
+    import os
+
+    from veloce.contrib import staticfiles
+
+    seen = {}
+    monkeypatch.setattr(staticfiles.os, "access", lambda p, m: seen.update(mode=m) or True)
+    StaticFiles(directory=str(tmp_path), directory_index=True)
+    assert seen["mode"] == os.R_OK | os.X_OK

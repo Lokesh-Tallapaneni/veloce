@@ -248,7 +248,26 @@ class HTTPSRedirectMiddleware(Middleware):
     Uses 308 Permanent Redirect (RFC 9110 Sec. 15.4.9) so non-GET methods
     preserve their method and body. The earlier `301` form was wrong
     for `POST`/`PUT` callers - those would silently become `GET`.
+
+    Pass `exempt_paths=("/health/", ...)` to serve some paths over plain HTTP
+    (prefix match - use a trailing slash to scope to a segment). By default
+    `/.well-known/acme-challenge/` is exempt (RFC 8555 Sec. 8.3: the HTTP-01
+    challenge MUST be reachable over plain HTTP for certificate issuance and
+    renewal); pass `exempt_acme_challenge=False` to drop that default.
     """
+
+    def __init__(
+        self,
+        *,
+        exempt_paths: tuple[str, ...] = (),
+        exempt_acme_challenge: bool = True,
+    ) -> None:
+        paths = list(exempt_paths)
+        if exempt_acme_challenge:
+            paths.append("/.well-known/acme-challenge/")
+        # Precompute the tuple so the per-request check is a single
+        # `str.startswith` over it - no regex, no ReDoS surface.
+        self._exempt_paths: tuple[str, ...] = tuple(paths)
 
     async def process_request(self, request: Request) -> Response | None:
         """Redirect HTTP requests to HTTPS with a 308 status."""
@@ -261,6 +280,11 @@ class HTTPSRedirectMiddleware(Middleware):
         # TLS-terminating proxy that doesn't set scope correctly.
         fwd_proto = request.headers.get(HEADER_X_FORWARDED_PROTO, "").lower()
         if fwd_proto == URL_SCHEME_HTTPS:
+            return None
+
+        # Exempt configured prefixes (e.g. ACME HTTP-01) from the redirect,
+        # after the scheme short-circuits so HTTPS traffic is never affected.
+        if self._exempt_paths and request.path.startswith(self._exempt_paths):
             return None
 
         host = request.headers.get(HEADER_HOST, "localhost")

@@ -172,3 +172,41 @@ class TestGreedyPathConverter:
         main = Router()
         with pytest.raises(ValueError, match="greedy converter"):
             main.include_router(sub)
+
+
+# ── Duplicate path-parameter detection ───────────────────────────────
+
+
+def test_duplicate_param_on_tree_path_raises():
+    r = Router()
+
+    async def handler(request):
+        return "x"
+
+    with pytest.raises(ValueError, match="duplicate path parameter"):
+        r.add_route("/{id}/x/{id}", handler, ["GET"])
+
+
+def test_duplicate_param_on_regex_path_raises():
+    r = Router()
+
+    async def handler(request):
+        return "x"
+
+    # Partial-segment params force the regex branch; a clean ValueError must
+    # replace the opaque re.PatternError ("redefinition of group name").
+    with pytest.raises(ValueError, match="duplicate path parameter"):
+        r.add_route("/files/{name}.{name}", handler, ["GET"])
+
+
+def test_distinct_params_still_register():
+    r = Router()
+
+    async def handler(request):
+        return "x"
+
+    r.add_route("/{user_id}/posts/{post_id}", handler, ["GET"])
+    # A valid route still registers fine after a rejected one on the same router.
+    with pytest.raises(ValueError):
+        r.add_route("/a/{k}/b/{k}", handler, ["GET"])
+    r.add_route("/{only}", handler, ["GET"])

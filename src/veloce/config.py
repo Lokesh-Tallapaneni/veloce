@@ -148,6 +148,10 @@ class Config(dict[str, Any]):
             "PERMANENT_SESSION_LIFETIME": 2678400,
             "JSON_SORT_KEYS": True,
             "JSONIFY_PRETTYPRINT_REGULAR": False,
+            # Surface the verbose JSON decoder reason in the 400 response body.
+            # Off in production so a malformed body can't leak decoder internals;
+            # falls back to DEBUG when this key is unset.
+            "JSON_ERRORS_VERBOSE": False,
             "PROPAGATE_EXCEPTIONS": None,
             "SEND_FILE_MAX_AGE_DEFAULT": None,
             "REQUEST_HANDLER_TIMEOUT": 30,

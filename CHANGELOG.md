@@ -122,6 +122,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controls the new `Vary: Cookie` emission (below); the latter is a
   `(status_code) -> bool` policy that overrides the default 5xx no-persist
   rule (below).
+- `HTTPSRedirectMiddleware` accepts `exempt_paths` and `exempt_acme_challenge`
+  constructor keywords. `/.well-known/acme-challenge/` is exempt by default
+  (RFC 8555 Sec. 8.3: the HTTP-01 challenge must be reachable over plain HTTP
+  for certificate issuance/renewal); pass `exempt_acme_challenge=False` to drop
+  that default, or `exempt_paths=("/health/", ...)` to exempt other prefixes.
+- `StaticFiles` and `Veloce.mount_static` accept a `must_exist` keyword
+  (default `True`) that validates the served directory exists and is readable
+  at construction, raising `ValueError` instead of silently 404-ing every
+  asset. Pass `must_exist=False` to downgrade the check to a warning for the
+  dev flow that creates the directory after wiring the app.
+- `UploadFile.headers` is now populated from the part's MIME headers (a
+  case-insensitive `Headers` view) instead of always being empty, so a handler
+  can read e.g. `upload.headers["Content-Transfer-Encoding"]`.
+- `JSON_ERRORS_VERBOSE` config key (default `False`): surfaces the verbose JSON
+  decoder reason in the 400 response body; falls back to `DEBUG` when unset.
 
 ### Changed
 
@@ -186,6 +201,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session (neither the signed Set-Cookie nor the server-store write/delete).
   Pass `persist_on_status=<callable>` to override (e.g. `lambda s: s != 503`).
   Persistence on 2xx/3xx/4xx is unchanged.
+- `app.debug` is now a property bound to `config["DEBUG"]`, so the attribute and
+  the config key are a single source of truth - setting either (including after
+  construction) is reflected by every debug-gated code path.
+- Malformed-JSON request bodies now produce a stable `400 Invalid JSON body`
+  instead of leaking the verbose orjson decoder reason (byte offsets derived
+  from attacker-controlled input). The verbose reason is logged and available
+  on `BadRequest.debug_detail`, and is returned in the body only under `DEBUG`
+  or `JSON_ERRORS_VERBOSE`. The synchronous `get_json()` path now raises
+  `BadRequest` (400) like the async `json()` path, rather than the raw decoder
+  error (which surfaced as a 500).
+- Responses with a bodiless status (1xx, 204, 205, 304) no longer advertise the
+  framework-default `Content-Type` over an empty body, and the body is stripped
+  on both the ASGI and native (`Response.encode`) emit paths (the native path
+  previously emitted the full body for these statuses). `Content-Length: 0` and
+  any handler-set `Content-Type` are preserved.
 
 ### Fixed
 
@@ -245,8 +275,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A raw-transport WebSocket `receive_*()` called after the peer closed between
   messages now raises `WebSocketDisconnect` carrying the recorded close code
   (e.g. `1001`/`1006`) instead of a default `1000`.
+- ETag generation (`Response.add_etag`, file/StaticFiles ETags) passes
+  `usedforsecurity=False` to `hashlib.md5`, so it no longer raises on FIPS
+  Python builds. The ETag bytes are unchanged.
+- Integer-valued `Decimal` values now serialize as JSON integers rather than
+  floats (`Decimal('1')` is `1`, not `1.0`), preserving exact digits for large
+  whole numbers; values outside orjson's 64-bit integer window fall back to a
+  string instead of losing precision.
+- `ServerSentEvent` rejects a CR/LF in the `event` field and a CR/LF/NUL in the
+  `id` field at construction (a NUL in `id` silently breaks Last-Event-ID
+  reconnection per the WHATWG SSE spec), instead of silently stripping them.
+- The router rejects a path that binds one parameter name twice
+  (`/{id}/x/{id}`) with a clear `ValueError` at registration, replacing a silent
+  capture clobber on the radix path and an opaque `re` error on the regex path.
 
 ### Security
+
+- HTTP Basic authentication rejects an RFC 7617-malformed credential that lacks
+  the `username:password` colon (previously accepted as an empty-password
+  login).
+- `dump_cookie` rejects a cookie name that is not a valid RFC 6265 token (e.g.
+  containing a space or `;`) or that collides with a cookie-attribute keyword
+  (`Path`, `Max-Age`, ...), preventing malformed or attribute-injecting
+  `Set-Cookie` headers.
 
 - `safe_join` now rejects any path segment that names a Windows reserved device
   (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, `CONIN$`,

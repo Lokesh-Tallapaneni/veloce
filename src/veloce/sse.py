@@ -43,6 +43,21 @@ class ServerSentEvent:
         id: str | None = None,
         retry: int | None = None,
     ) -> None:
+        # WHATWG SSE: `event` and `id` are single-line fields - a CR/LF would
+        # silently split or truncate them on the wire. A NUL in `id` makes the
+        # client ignore the id entirely, breaking Last-Event-ID reconnection.
+        # Reject these at construction rather than silently stripping, so the
+        # bug surfaces at the source. Non-str values are coerced first (an int
+        # id stays valid, as before), then validated. `data` stays permissive
+        # (it is line-split into multiple `data:` fields by `encode`).
+        if event is not None:
+            event = str(event)
+            if "\n" in event or "\r" in event:
+                raise ValueError("SSE event field must not contain a newline")
+        if id is not None:
+            id = str(id)
+            if "\n" in id or "\r" in id or "\x00" in id:
+                raise ValueError("SSE id field must not contain a newline or NUL byte")
         self.data = data
         self.event = event
         self.id = id
@@ -78,11 +93,11 @@ class ServerSentEvent:
         """Encode the event as an SSE-formatted byte string."""
         lines = []
         if self.id is not None:
-            clean_id = str(self.id).replace("\n", "").replace("\r", "")
-            lines.append(f"id: {clean_id}")
+            # `id`/`event` were validated single-line at construction, so emit
+            # them directly without a per-encode strip.
+            lines.append(f"id: {self.id}")
         if self.event is not None:
-            clean_event = self.event.replace("\n", "").replace("\r", "")
-            lines.append(f"event: {clean_event}")
+            lines.append(f"event: {self.event}")
         if self.retry is not None:
             lines.append(f"retry: {self.retry}")
         data = self.data.replace("\r\n", "\n").replace("\r", "\n")

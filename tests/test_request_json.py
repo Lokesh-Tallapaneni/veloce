@@ -56,10 +56,14 @@ def test_force_still_returns_none_for_empty_body():
 
 
 def test_default_raises_on_malformed_json():
-    import orjson
+    # Malformed JSON now raises BadRequest (400) with a stable, body-independent
+    # message instead of the raw decoder error - the sync path matches the async
+    # one and no decoder internals leak into the production response.
+    from veloce.exceptions import BadRequest
 
-    with pytest.raises(orjson.JSONDecodeError):
+    with pytest.raises(BadRequest) as exc:
         _req(b"not-json").get_json()
+    assert exc.value.detail == "Invalid JSON body"
 
 
 def test_silent_swallows_parse_error():

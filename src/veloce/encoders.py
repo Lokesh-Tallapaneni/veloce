@@ -14,16 +14,37 @@ from typing import Any
 
 from pydantic import BaseModel
 
+# orjson serializes a Python int only within the signed/unsigned 64-bit
+# window; outside `-(2**63) <= i < 2**64` it raises "Integer exceeds 64-bit
+# range". An integer-valued Decimal beyond this is emitted as a string.
+_ORJSON_INT_MIN = -(2**63)
+_ORJSON_INT_MAX = 2**64
 
-def _decimal_to_json(obj: decimal.Decimal) -> float | str:
-    """Encode a Decimal as a float, or as a string when out of float range.
 
-    `float(Decimal)` overflows to `inf` for very large magnitudes and yields
-    `nan` for `Decimal('NaN')`; orjson serializes both as JSON `null`, silently
-    dropping the value. Falling back to `str` for any non-finite result keeps
-    the number representable (as a JSON string) instead of corrupting it. Finite
-    decimals - the overwhelmingly common case - stay JSON numbers.
+def _decimal_to_json(obj: decimal.Decimal) -> int | float | str:
+    """Encode a Decimal preserving integer-valued ones as JSON integers.
+
+    An integer-valued Decimal (`as_tuple().exponent >= 0`) is emitted as an
+    `int`, so `Decimal('1')` is `1` not `1.0` and a large whole number keeps
+    its exact digits instead of losing precision through IEEE-754. Integers
+    outside orjson's 64-bit window fall back to `str` (lossless and dumpable).
+    Fractional decimals encode as `float`; `NaN`/`Infinity` and out-of-range
+    fractional magnitudes (whose `float` is non-finite) fall back to `str`.
     """
+    parts = obj.as_tuple()
+    exponent = parts.exponent
+    # `exponent` is an int for finite decimals, or 'n'/'N'/'F' for NaN/sNaN/Inf.
+    if isinstance(exponent, int) and exponent >= 0:
+        # The integer has `len(digits) + exponent` decimal digits. orjson's
+        # 64-bit window tops out at 2**64 (20 digits), so anything wider is
+        # certainly out of range - return `str` WITHOUT materializing the int,
+        # so an attacker-supplied `1E1000000` can't force a million-digit alloc.
+        if len(parts.digits) + exponent > 20:
+            return str(obj)
+        i = int(obj)
+        if _ORJSON_INT_MIN <= i < _ORJSON_INT_MAX:
+            return i
+        return str(obj)
     try:
         f = float(obj)
     except (ValueError, OverflowError):

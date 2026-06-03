@@ -60,16 +60,24 @@ class HTTPBasic:
         self.auto_error = auto_error
         self.realm = realm
 
+    def _challenge_headers(self) -> dict[str, str]:
+        """The `WWW-Authenticate: Basic realm="..."` challenge, or `{}` when no
+        realm is configured. Shared by every 401 path so they stay uniform."""
+        if self.realm:
+            return {
+                HEADER_WWW_AUTHENTICATE: f'{AUTH_SCHEME_BASIC} realm="{_quote_header_value(self.realm)}"'
+            }
+        return {}
+
     def __call__(self, request: Request) -> HTTPBasicCredentials | None:
         auth = request.headers.get(HEADER_AUTHORIZATION, "")
         if auth[: len(_BASIC_PREFIX)].lower() != _BASIC_PREFIX:
             if self.auto_error:
-                headers: dict[str, str] = {}
-                if self.realm:
-                    headers[HEADER_WWW_AUTHENTICATE] = (
-                        f'{AUTH_SCHEME_BASIC} realm="{_quote_header_value(self.realm)}"'
-                    )
-                raise HTTPException(HTTP_401_UNAUTHORIZED, MSG_NOT_AUTHENTICATED, headers=headers)
+                raise HTTPException(
+                    HTTP_401_UNAUTHORIZED,
+                    MSG_NOT_AUTHENTICATED,
+                    headers=self._challenge_headers(),
+                )
             return None
 
         # Catch only the exceptions that `b64decode(validate=True)` and
@@ -81,17 +89,21 @@ class HTTPBasic:
         try:
             decoded = base64.b64decode(auth[len(_BASIC_PREFIX) :], validate=True).decode("utf-8")
         except (binascii.Error, ValueError, UnicodeDecodeError) as err:
-            headers = (
-                {
-                    HEADER_WWW_AUTHENTICATE: f'{AUTH_SCHEME_BASIC} realm="{_quote_header_value(self.realm)}"'
-                }
-                if self.realm
-                else {}
-            )
             raise HTTPException(
-                HTTP_401_UNAUTHORIZED, "Invalid authentication credentials", headers=headers
+                HTTP_401_UNAUTHORIZED,
+                "Invalid authentication credentials",
+                headers=self._challenge_headers(),
             ) from err
-        username, _, password = decoded.partition(":")
+        # RFC 7617 Sec. 2: the credentials are `userid ":" password`; the colon
+        # is mandatory. A colon-less payload is malformed and must not
+        # authenticate (it would otherwise pass as an empty-password login).
+        username, sep, password = decoded.partition(":")
+        if not sep:
+            raise HTTPException(
+                HTTP_401_UNAUTHORIZED,
+                "Invalid authentication credentials",
+                headers=self._challenge_headers(),
+            )
         return HTTPBasicCredentials(username=username, password=password)
 
 

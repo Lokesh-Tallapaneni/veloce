@@ -13,7 +13,7 @@ from python_multipart.exceptions import FormParserError
 from veloce._constants import MIME_TEXT_PLAIN
 from veloce._header_parsing import parse_header_params
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
-from veloce.http.datastructures import FormData, UploadFile
+from veloce.http.datastructures import FormData, Headers, UploadFile
 
 _logger = logging.getLogger(__name__)
 
@@ -144,6 +144,9 @@ def parse_multipart_form(
                     content_type=state["headers"].get("content-type", MIME_TEXT_PLAIN),
                     file=spool,
                     size=state["part_size"],
+                    # Snapshot the per-part headers so the UploadFile owns its
+                    # own copy, decoupled from the reused parser state dict.
+                    headers=Headers(state["headers"]),
                 ),
             )
         else:

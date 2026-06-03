@@ -65,6 +65,7 @@ from veloce.status import (
     HTTP_200_OK,
     HTTP_304_NOT_MODIFIED,
     HTTP_307_TEMPORARY_REDIRECT,
+    status_permits_body,
 )
 
 
@@ -218,15 +219,26 @@ class Response:
         if self._encoded is not None:
             return self._encoded
 
+        # Bodiless statuses (1xx/204/205/304) carry no payload and no default
+        # content-type - matching the ASGI emit path (single source of truth
+        # via `status_permits_body`). A handler-set content-type in `self.headers`
+        # still wins; only the framework default is suppressed. A 304 (like
+        # HEAD) may advertise the would-be-200 Content-Length while sending no
+        # body (RFC 9110 Sec. 8.6); 1xx/204/205 advertise 0.
+        body_allowed = status_permits_body(self.status_code)
+        is_304 = self.status_code == HTTP_304_NOT_MODIFIED
+        body = self.body if body_allowed else b""
+        advertised_length = len(self.body) if (body_allowed or is_304) else 0
         default_headers = {
-            HEADER_CONTENT_TYPE: self.content_type,
-            HEADER_CONTENT_LENGTH: str(len(self.body)),
+            HEADER_CONTENT_LENGTH: str(advertised_length),
             HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
         }
+        if body_allowed:
+            default_headers = {HEADER_CONTENT_TYPE: self.content_type, **default_headers}
         parts = _encode_response_head(self.status_code, default_headers, self.headers)
         parts.append("\r\n")
 
-        self._encoded = "".join(parts).encode("latin-1") + self.body
+        self._encoded = "".join(parts).encode("latin-1") + body
         return self._encoded
 
     def set_cookie(
@@ -243,6 +255,10 @@ class Response:
         partitioned: bool = False,
     ) -> None:
         """Build a `Set-Cookie` header per RFC 6265.
+
+        The cookie name must be a valid RFC 6265 token (no spaces, separators,
+        or control characters) and must not collide with a cookie-attribute
+        keyword (`Path`, `Max-Age`, ...); a violation raises `ValueError`.
 
         `samesite` defaults to `"Lax"` - a CSRF-resistant default that
         matches modern browser behaviour. Pass `samesite="None"` (with
@@ -946,7 +962,10 @@ class Response:
         the explicit ETag in `__init__(headers=...)` to skip this.
         Returns the value set.
         """
-        digest = hashlib.md5(self.body).hexdigest()
+        # `usedforsecurity=False` (CPython 3.9+): this MD5 is an opaque cache
+        # validator, not a security primitive, so it must not raise on FIPS
+        # builds where MD5 is otherwise disabled. The digest bytes are unchanged.
+        digest = hashlib.md5(self.body, usedforsecurity=False).hexdigest()
         etag = f'"{digest}"' if not weak else f'W/"{digest}"'
         self.headers[HEADER_ETAG] = etag
         self._encoded = None

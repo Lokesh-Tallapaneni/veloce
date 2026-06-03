@@ -82,13 +82,17 @@ class UploadFile:
         content_type: str = MIME_OCTET_STREAM,
         file: BinaryIO | None = None,
         size: int = 0,
-        headers: dict[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         self.filename = filename
         self.content_type = content_type
         self.file = file or io.BytesIO()
         self.size = size
-        self.headers = headers or {}
+        # Expose the part's headers as a case-insensitive `Headers` view, so a
+        # handler can read `upload.headers["Content-Transfer-Encoding"]` even
+        # though the parser stores keys lowercased. A plain dict passed by a
+        # caller is normalised the same way.
+        self.headers = headers if isinstance(headers, Headers) else Headers(headers or {})
 
     @property
     def content(self) -> bytes:

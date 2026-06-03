@@ -24,6 +24,24 @@ def test_add_etag_sets_strong_quoted_etag():
     assert resp.headers["ETag"] == tag
 
 
+def test_add_etag_passes_usedforsecurity_false(monkeypatch):
+    """The cache-validator MD5 must be flagged non-security so it does not
+    raise on FIPS Python builds."""
+    import hashlib
+
+    seen = {}
+    real_md5 = hashlib.md5
+
+    def _spy(data=b"", *, usedforsecurity=True):
+        seen["flag"] = usedforsecurity
+        return real_md5(data, usedforsecurity=usedforsecurity)
+
+    monkeypatch.setattr(hashlib, "md5", _spy)
+    resp = Response(body=b"hello world")
+    assert resp.add_etag() == '"5eb63bbbe01eeed093cb22bb8f5acdc3"'  # digest unchanged
+    assert seen["flag"] is False
+
+
 def test_add_etag_weak_prefix():
     resp = Response(body=b"hello")
     tag = resp.add_etag(weak=True)

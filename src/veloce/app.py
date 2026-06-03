@@ -37,6 +37,7 @@ from veloce._internal import (
     MIME_HTML,
     MIME_JSON,
     MIME_OCTET,
+    _coerce_bool,
     _encode_header_value,
     _extract_host,
     _is_async_callable,
@@ -433,7 +434,6 @@ class Veloce(Router):
         # OpenAPI 3.1 Sec. 4.8.2 `info.summary` - a short one-line summary
         # of the API, distinct from the longer `description`.
         self.summary = summary
-        self.debug = debug
         self._docs_url = docs_url
         self._redoc_url = redoc_url
         self._openapi_url = openapi_url
@@ -458,6 +458,10 @@ class Veloce(Router):
         # Seeded with the documented default keys so `app.config[k]`
         # returns a value rather than raising `KeyError`.
         self.config: Config = Config(Config.default_config())
+        # `debug` is a property bound to `config["DEBUG"]` (below), so seed the
+        # config key from the constructor arg - this is the single source of
+        # truth, keeping `app.debug` and `config["DEBUG"]` from drifting apart.
+        self.config["DEBUG"] = debug
         self.secret_key: str | None = None  # Secret key
         self.extensions: dict[str, Any] = {}  # Extensions registry
         self._lifespan = lifespan
@@ -615,6 +619,21 @@ class Veloce(Router):
     # -- Middleware ------------------------------------------------
 
     # -- Properties ---------------------------------------------
+
+    @property
+    def debug(self) -> bool:
+        """Whether debug mode is enabled; bound to `config['DEBUG']`.
+
+        Interprets a dotenv-style string (`DEBUG=false`) correctly rather than
+        treating any non-empty string as truthy.
+        """
+        return _coerce_bool(self.config.get("DEBUG", False))
+
+    @debug.setter
+    def debug(self, value: bool) -> None:
+        # Coerce the same way the getter does, so `app.debug = "false"` (a
+        # string from an env source) stores False rather than a truthy string.
+        self.config["DEBUG"] = _coerce_bool(value)
 
     @property
     def url_map(self) -> _URLMap:
@@ -795,7 +814,7 @@ class Veloce(Router):
         from veloce.middleware.sessions import SessionMiddleware
 
         warnings: list[str] = []
-        if self.debug or self.config.get("DEBUG"):
+        if self.debug:
             warnings.append("DEBUG is enabled - disable it before deploying to production.")
         if not self.config.get("SECRET_KEY"):
             warnings.append("SECRET_KEY is not set - session signing falls back to weak defaults.")
@@ -1264,7 +1283,7 @@ class Veloce(Router):
         explicit = self.config.get("PROPAGATE_EXCEPTIONS")
         if explicit is not None:
             return bool(explicit)
-        return bool(self.config.get("DEBUG")) and bool(self.config.get("TESTING"))
+        return self.debug and _coerce_bool(self.config.get("TESTING"))
 
     def _find_exception_handler(self, exc_type: type) -> Callable | None:
         """Walk `exc_type`'s MRO looking for a registered handler.
@@ -2111,9 +2130,18 @@ class Veloce(Router):
         prefix: str = "/static",
         directory: str = "static",
         html: bool = False,
+        must_exist: bool = True,
     ) -> None:
-        """Mount a static file directory."""
-        self._static_handlers.append(StaticFiles(directory=directory, prefix=prefix, html=html))
+        """Mount a static file directory.
+
+        The directory must exist and be readable at wiring time (a typo
+        otherwise 404s every asset silently); pass ``must_exist=False`` to
+        downgrade the check to a warning when the directory is created after
+        the app is constructed.
+        """
+        self._static_handlers.append(
+            StaticFiles(directory=directory, prefix=prefix, html=html, must_exist=must_exist)
+        )
 
     # -- Request handling -----------------------------------------
 
@@ -3505,26 +3533,27 @@ class Veloce(Router):
                 await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": b"", "more_body": False})
                 return
 
-            # RFC 9110 Sec. 15.3.5 (204), Sec. 15.4.5 (304), Sec. 15.3.6 (205 - must
-            # contain no body either): responses with these status codes
-            # MUST NOT include a payload. Strip the body before sending so
-            # buggy handlers can't violate the spec.
-            body_out = response.body
-            if response.status_code in (
-                status.HTTP_204_NO_CONTENT,
-                status.HTTP_304_NOT_MODIFIED,
-                status.HTTP_205_RESET_CONTENT,
-            ):
-                body_out = b""
+            # Bodiless statuses (1xx interim, 204, 205, 304) MUST NOT carry a
+            # payload (RFC 9110 Sec. 15.2 / 15.3.5 / 15.3.6 / 15.4.5). Strip the
+            # body before sending and, below, suppress the framework-default
+            # content-type so a `JSONResponse(204)` does not advertise
+            # `application/json` over zero bytes.
+            body_allowed = status.status_permits_body(response.status_code)
+            # A 304 (like HEAD) may carry the would-be-200 Content-Length while
+            # sending no body (RFC 9110 Sec. 8.6 / 15.4.5); 1xx/204/205 have no
+            # representation, so their length is 0.
+            is_304 = response.status_code == status.HTTP_304_NOT_MODIFIED
+            advertised_length = len(response.body) if (body_allowed or is_304) else 0
+            body_out = response.body if body_allowed else b""
 
             # RFC 9110 Sec. 9.3.2: HEAD responses must not include a payload
-            # body, but `Content-Length` (and other content-related
-            # headers) should still reflect the size the equivalent GET
-            # would have produced. Capture the real length first, then
-            # blank the body - preserves HEAD's "probe for size" use case.
+            # body, but `Content-Length` (and other content-related headers)
+            # should still reflect the size the equivalent GET would have
+            # produced. Blank the body but keep the advertised length, same as
+            # the 304 case above.
             head_content_length: int | None = None
-            if scope["method"] == HTTP_METHOD_HEAD:
-                head_content_length = len(body_out)
+            if scope["method"] == HTTP_METHOD_HEAD or is_304:
+                head_content_length = advertised_length
                 body_out = b""
 
             # Build the ASGI header list. Each header MUST be its own
@@ -3590,7 +3619,9 @@ class Veloce(Router):
             # default too would put a duplicate header on the wire.
             if not has_cl:
                 asgi_headers.insert(0, (RAW_HEADER_CONTENT_LENGTH, _cl_bytes))
-            if not has_ct:
+            # Never default a content-type onto a bodiless response (an explicit
+            # handler-set content-type still survives via has_ct).
+            if not has_ct and body_allowed:
                 asgi_headers.insert(0, (RAW_HEADER_CONTENT_TYPE, _ct_bytes))
 
             await send(

@@ -186,5 +186,57 @@ def test_decimal_nan_encodes_as_string_not_null():
     assert orjson_default(nan) == str(nan)
 
 
+def test_integer_valued_decimal_encodes_as_int():
+    import decimal
+
+    from veloce.encoders import jsonable_encoder
+
+    out = jsonable_encoder(decimal.Decimal("1"))
+    assert out == 1 and type(out) is int
+
+
+def test_large_in_range_integer_decimal_keeps_exact_digits():
+    import decimal
+
+    from veloce.http.response import JSONResponse
+
+    # < 2**64, so exact int round-trip with no e+19 precision loss.
+    resp = JSONResponse({"v": decimal.Decimal("12345678901234567890")})
+    assert resp.body == b'{"v":12345678901234567890}'
+
+
+def test_huge_integer_decimal_falls_back_to_string():
+    import decimal
+
+    from veloce.encoders import jsonable_encoder, orjson_default
+    from veloce.http.response import JSONResponse
+
+    big = decimal.Decimal("1E10000")  # exponent 10000 >= 0, int out of 64-bit window
+    assert orjson_default(big) == str(big)
+    assert jsonable_encoder(big) == str(big)
+    # And the full dump path does not raise orjson's 64-bit TypeError.
+    assert b"1E+10000" in JSONResponse({"v": big}).body
+
+
+def test_fractional_decimal_still_float():
+    import decimal
+
+    from veloce.encoders import jsonable_encoder
+
+    assert jsonable_encoder(decimal.Decimal("9.99")) == 9.99
+    out = jsonable_encoder(decimal.Decimal("1.0"))  # negative exponent -> float
+    assert out == 1.0 and type(out) is float
+
+
 # Add `Any` import for the type-checker.
 from typing import Any  # noqa: E402
+
+
+def test_huge_exponent_decimal_fast_string_no_int_materialization():
+    import decimal
+
+    from veloce.encoders import orjson_default
+
+    # Must NOT materialize a million-digit int; returns str directly.
+    big = decimal.Decimal("1E1000000")
+    assert orjson_default(big) == str(big)

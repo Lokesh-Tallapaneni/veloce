@@ -55,6 +55,19 @@ MIME_OCTET = MIME_OCTET_STREAM
 _STATUS_PHRASES: dict[int, str] = {s.value: s.phrase for s in HTTPStatus}
 
 
+def _coerce_bool(value: Any) -> bool:
+    """Interpret a config flag as a bool, including dotenv-style strings.
+
+    `from_env_file` stores values as plain strings, so `DEBUG=false` arrives as
+    the string `"false"` - which `bool(...)` would treat as truthy. Strings are
+    matched case-insensitively against the common truthy tokens; everything else
+    (real bools, ints, `None`) falls back to `bool`.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
 def _reject_header_crlf(value: str, what: str) -> str:
     """Reject CR, LF, or NUL in a header field name or value.
 
@@ -149,7 +162,9 @@ def _file_etag(path: str, size: int, mtime: float) -> str:
     revalidation; strict `If-Match` correctly refuses these tags.
     """
     key = f"{path}:{size}:{mtime}".encode()
-    return f'W/"{hashlib.md5(key).hexdigest()}"'
+    # `usedforsecurity=False` so the cache validator does not raise on FIPS
+    # builds (the hash is an opaque tag, not a security primitive).
+    return f'W/"{hashlib.md5(key, usedforsecurity=False).hexdigest()}"'
 
 
 def _etag_matches_weak(server_etag: str, client_token: str) -> bool:
