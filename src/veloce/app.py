@@ -2418,11 +2418,14 @@ class Veloce(Router):
         # (matches the per-connection resolver the WebSocket path uses).
         resolver: DependencyResolver | None = None
         try:
-            # Run middleware (request phase). A short-circuit response is run
-            # back through the response phase before returning.
-            early_response = await self._run_request_middleware(request)
-            if early_response is not None:
-                return await self._run_response_middleware(request, early_response)
+            # Run middleware (request phase). Kept inline (rather than calling
+            # `_run_request_middleware`) so an app with no middleware pays zero
+            # extra coroutine awaits on the dispatch hot path; the MCP tool
+            # path replays the identical chain via that helper.
+            for mw in self._middlewares:
+                early_response = await mw.process_request(request)
+                if early_response is not None:
+                    return await self._run_response_middleware(request, early_response)
 
             # Match the route once. `request.endpoint` is populated here so
             # before_request hooks can gate on the route name; the same
@@ -2574,10 +2577,33 @@ class Veloce(Router):
                 except Exception:
                     self.logger.exception("yield-dependency teardown raised")
 
-            # Teardown hooks - always run, even on exceptions. The bucket
-            # selection + both hook lists live in a shared helper so the MCP
-            # tool path can replay the identical teardown.
-            await self._run_request_teardown(_exc, _bp_name)
+            # Teardown hooks - always run, even on exceptions. Kept inline
+            # (rather than calling `_run_request_teardown`) so a request with no
+            # teardown hooks pays zero extra coroutine awaits on the hot path;
+            # the MCP tool path replays the identical teardown via that helper.
+            if self._teardown_request_hooks or self._bp_teardown_hooks:
+                if (
+                    self._bp_teardown_hooks
+                    and _bp_name is not None
+                    and _bp_name in self._bp_teardown_hooks
+                ):
+                    _td_hooks: list[Callable] = list(self._teardown_request_hooks)
+                    _td_hooks.extend(self._bp_teardown_hooks[_bp_name])
+                else:
+                    _td_hooks = list(self._teardown_request_hooks)
+            else:
+                _td_hooks = ()  # type: ignore[assignment]
+            if _td_hooks:
+                await self._run_teardown_hooks(_td_hooks, _exc, "teardown_request")
+
+            # `teardown_appcontext` fires when the app context pops; in
+            # veloce that happens at the end of each request (no separate
+            # app/request context split). Hooks receive the exception or
+            # None. Errors are logged, never re-raised.
+            if self._teardown_appcontext_hooks:
+                await self._run_teardown_hooks(
+                    self._teardown_appcontext_hooks, _exc, "teardown_appcontext"
+                )
 
             # Signals: fire `got_request_exception` first when an exc bubbled
             # up, then always fire `request_tearing_down`. Receivers may
@@ -2743,9 +2769,15 @@ class Veloce(Router):
         request.endpoint = match.route_info.name
         request._state["url_rule"] = match.route_info.path_template
 
-        # URL value preprocessors: mutate path_params in place
-        # before the handler sees them. Endpoint is the route name.
-        self._run_url_value_preprocessors(match.route_info.name, request.path_params)
+        # URL value preprocessors: mutate path_params in place before the
+        # handler sees them. Endpoint is the route name. Kept inline (rather
+        # than calling `_run_url_value_preprocessors`) so a route with no
+        # preprocessors pays zero extra call frames on the match hot path; the
+        # MCP tool path runs the identical chain via that helper.
+        if self._url_value_preprocessors:
+            endpoint = match.route_info.name
+            for proc in self._url_value_preprocessors:
+                proc(endpoint, request.path_params)
 
         return match
 
