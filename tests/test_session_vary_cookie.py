@@ -79,6 +79,16 @@ def test_anonymous_read_only_has_no_vary_cookie():
     assert "cookie" not in _vary_values(resp)
 
 
+def test_cookie_bearing_read_only_emits_vary_cookie():
+    # A request carrying the session cookie that only READS the session still
+    # gets Vary: Cookie (the response may be personalized from session data),
+    # so a shared cache can't serve it to another user.
+    client = _cookie_app().test_client()
+    client.get("/write")  # establishes the session cookie on the client
+    resp = client.get("/read")  # read-only handler, modified stays False
+    assert "cookie" in _vary_values(resp)
+
+
 def test_vary_on_cookie_opt_out():
     client = _cookie_app(vary_on_cookie=False).test_client()
     resp = client.get("/write")

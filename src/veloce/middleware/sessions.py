@@ -106,6 +106,15 @@ class SessionMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back into the signed cookie."""
+        # A request that arrived carrying the session cookie may have had its
+        # response personalized from session contents even without mutating it
+        # (read-only access). Emit `Vary: Cookie` before the modified-check
+        # early return so such cacheable bodies are not shared across users by
+        # a URL-keyed cache. Idempotent with the write-path call (HeaderSet
+        # de-dups). `request.cookies` is cached, so this is cheap.
+        if self.vary_on_cookie and request.cookies.get(self.cookie_name):
+            response.add_vary(HEADER_COOKIE)
+
         session = request._state.get("session")
         # `Session` flips `.modified` on any mutating operation, so we can
         # skip the re-sign + Set-Cookie when the handler never touched it.
@@ -239,6 +248,12 @@ class ServerSessionMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back to the server-side store."""
+        # See SessionMiddleware: a read-only session (cookie present, not
+        # mutated) can still have personalized the response, so emit
+        # `Vary: Cookie` before the modified-check early return.
+        if self.vary_on_cookie and request.cookies.get(self.cookie_name):
+            response.add_vary(HEADER_COOKIE)
+
         session = request._state.get("session")
         if session is None or not getattr(session, "modified", False):
             return response
