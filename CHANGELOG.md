@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Depends(..., offload=True)` (and the matching `Security(..., offload=True)`)
+  routes a blocking sync dependency through the thread pool instead of calling
+  it inline on the event loop, so a dependency that does blocking I/O (a DB
+  driver call, `requests.get`) cannot stall other in-flight requests. The
+  current context is snapshotted before the executor hop, so request-scoped
+  state (`request`, `g`, `flash()`) stays readable inside the worker thread.
+  This closes an internal inconsistency in which sync route handlers were
+  already offloaded but sync dependencies were not. The flag defaults off, so
+  trivial pure-function dependencies keep their zero-overhead inline call, and
+  it is ignored for coroutine, sync-generator, and async-generator
+  dependencies, which already have their own execution model.
+
 - `CSRFMiddleware(trusted_origins=...)` adds an Origin-first verification
   stage that runs before the double-submit check on state-changing
   requests. The request's own origin (`scheme://host[:port]`, sourced

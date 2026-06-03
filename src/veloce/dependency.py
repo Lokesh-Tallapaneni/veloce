@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import functools
 import inspect
 import logging
@@ -234,11 +235,23 @@ class Depends:
     `x: SomeClass = Depends()`.
     """
 
-    __slots__ = ("dependency", "use_cache")
+    __slots__ = ("dependency", "use_cache", "offload")
 
-    def __init__(self, dependency: Callable | None = None, use_cache: bool = True) -> None:
+    def __init__(
+        self,
+        dependency: Callable | None = None,
+        use_cache: bool = True,
+        offload: bool = False,
+    ) -> None:
         self.dependency = dependency
         self.use_cache = use_cache
+        # When a sync dependency does blocking work (a DB driver call, a
+        # `requests.get`), running it inline on the event loop stalls every
+        # other in-flight request on this worker. `offload=True` opts that
+        # one dependency into the thread pool, mirroring how sync route
+        # handlers are already offloaded. Defaults off so trivial pure
+        # functions keep their zero-overhead inline call.
+        self.offload = offload
 
 
 class Security(Depends):
@@ -251,8 +264,9 @@ class Security(Depends):
         dependency: Callable | None = None,
         scopes: list[str] | None = None,
         use_cache: bool = True,
+        offload: bool = False,
     ) -> None:
-        super().__init__(dependency=dependency, use_cache=use_cache)
+        super().__init__(dependency=dependency, use_cache=use_cache, offload=offload)
         self.scopes = scopes or []
 
 
@@ -807,6 +821,19 @@ class DependencyResolver:
             self._teardowns.append(("async", agen))
         elif is_coro:
             result = await actual(**sub_kwargs)
+        elif slot.dep_offload:
+            # Opt-in: a blocking sync dependency runs in the thread pool so it
+            # cannot stall the event loop. The current context is snapshotted
+            # so request-scoped `ContextVar`s (the `request` proxy, `g`'s
+            # store, `flash()`) stay readable inside the worker thread - the
+            # same pattern the dispatcher uses for sync route handlers. A
+            # `ContextVar.set(...)` inside the dependency does not propagate
+            # back to the caller.
+            loop = asyncio.get_running_loop()
+            ctx = contextvars.copy_context()
+            result = await loop.run_in_executor(
+                None, ctx.run, functools.partial(actual, **sub_kwargs)
+            )
         else:
             result = actual(**sub_kwargs)
 

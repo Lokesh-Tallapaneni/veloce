@@ -48,6 +48,33 @@ async def me(user=Depends(get_current_user)):
     return user
 ```
 
+## Offloading blocking dependencies
+
+A sync dependency runs inline on the event loop by default, which is ideal for
+trivial pure functions. When a sync dependency does **blocking** work — a
+synchronous database driver call, `requests.get`, a slow file read — running it
+inline stalls every other request handled by the same worker. Pass
+`offload=True` to route that one dependency through the thread pool instead:
+
+```python
+import requests
+
+
+def fetch_profile() -> dict:
+    # Blocking network call - runs in the thread pool, off the event loop.
+    return requests.get("https://example.com/profile").json()
+
+
+@app.get("/me")
+async def me(profile: dict = Depends(fetch_profile, offload=True)):
+    return profile
+```
+
+Request-scoped state (`request`, `g`, `flash()`) stays readable inside the
+offloaded call. The flag is ignored for coroutine, `yield`, and async-generator
+dependencies, which already have their own execution model. `Security` accepts
+the same `offload=True` argument.
+
 ## Route-level dependencies
 
 When a dependency is needed for its **side effect** (an auth check, say)
