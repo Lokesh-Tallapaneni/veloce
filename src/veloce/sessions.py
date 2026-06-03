@@ -25,7 +25,7 @@ _SWEEP_PROBABILITY = 1.0 / 32
 class Session(dict[str, Any]):
     """The request session - a dict that knows when it has changed."""
 
-    __slots__ = ("new", "modified", "regenerate")
+    __slots__ = ("new", "modified", "regenerate", "accessed")
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         # dict's C-level init populates without routing through our
@@ -37,6 +37,12 @@ class Session(dict[str, Any]):
         # Set by `regenerate_id()` - asks a server-side session backend to
         # mint a fresh id for this session on the next response.
         self.regenerate = False
+        # Flips to `True` the first time the handler *reads* any session
+        # value. A read (not a write) of session-personalised data means
+        # the response varies by the request `Cookie`, so the middleware
+        # emits `Vary: Cookie` to stop a shared/CDN cache from serving one
+        # user's personalised body to another. RFC 9110 Sec. 12.5.5.
+        self.accessed = False
 
     @property
     def permanent(self) -> bool:
@@ -64,6 +70,40 @@ class Session(dict[str, Any]):
         """
         self.regenerate = True
         self.modified = True
+
+    # -- Read tracking ------------------------------------------
+    # Every read accessor flips `accessed` (a single boolean - no
+    # per-key bookkeeping) so the cookie middleware can emit
+    # `Vary: Cookie`. A bare attribute write is cheaper than a branch,
+    # so these set unconditionally rather than testing the flag first.
+
+    def __getitem__(self, key: Any) -> Any:
+        self.accessed = True
+        return super().__getitem__(key)
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        self.accessed = True
+        return super().get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        self.accessed = True
+        return super().__contains__(key)
+
+    def __iter__(self) -> Any:
+        self.accessed = True
+        return super().__iter__()
+
+    def keys(self) -> Any:
+        self.accessed = True
+        return super().keys()
+
+    def values(self) -> Any:
+        self.accessed = True
+        return super().values()
+
+    def items(self) -> Any:
+        self.accessed = True
+        return super().items()
 
     # -- Mutation tracking --------------------------------------
     # Every mutating dict operation is overridden to flip `modified`,

@@ -128,6 +128,7 @@ from veloce.middleware import (
     TrustedHostMiddleware,
     WebSocketOriginMiddleware,
     rotate_csrf_token,
+    suppress_session_vary,
 )
 
 # Password hashing helpers
@@ -236,6 +237,7 @@ __all__ = [
     "RequestIDMiddleware",
     "SessionMiddleware",
     "ServerSessionMiddleware",
+    "suppress_session_vary",
     "ProxyFix",
     "rotate_csrf_token",
     # Sessions

@@ -54,6 +54,10 @@ own state. Two attributes drive the middleware:
 - `session.modified` — flips to `True` the first time any mutating
   operation runs. The middleware skips the re-sign and `Set-Cookie`
   entirely when the handler never touched the session.
+- `session.accessed` — flips to `True` the first time the handler
+  *reads* a session value (`session["k"]`, `session.get(...)`,
+  `"k" in session`, iteration). It drives the `Vary: Cookie` header
+  (see [Caching and `Vary: Cookie`](#caching-and-vary-cookie)).
 
 Every mutating dict operation is tracked, including `clear()`, `pop()`,
 `setdefault()`, `update()`, and the `|=` merge:
@@ -85,6 +89,34 @@ cookie on the response.
     of a value you already stored — `session["items"].append(x)` does not
     flip `modified`. Re-assign the key, or set `session.modified = True`
     yourself.
+
+## Caching and `Vary: Cookie`
+
+A response built from session state is personalised per user, so a shared
+cache (a CDN, a reverse proxy) must not serve one user's body to another.
+When a handler reads or writes the session, the middleware adds
+`Vary: Cookie` to the response (merging with any existing `Vary` value),
+which tells caches that the response varies by the request `Cookie` header.
+A handler that never touches the session gets no extra `Vary`.
+
+Occasionally a handler reads the session but returns a body that is *not*
+personalised by it — a static asset reached through the session middleware,
+say. Call `suppress_session_vary(request)` to skip the automatic header for
+that one response so a shared cache may still store it:
+
+```python
+from veloce import Request, suppress_session_vary
+
+
+@app.get("/public-asset")
+async def public_asset(request: Request):
+    if request.session.get("user_id"):
+        ...  # body does not depend on the session
+    suppress_session_vary(request)
+    return {"public": True}
+```
+
+Use it sparingly — varying on `Cookie` is the safe default.
 
 ## Permanent sessions
 

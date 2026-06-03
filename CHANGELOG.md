@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Session middleware now emits `Vary: Cookie` whenever a handler reads or
+  writes the session, so a shared/CDN cache cannot serve one user's
+  session-personalised response body to another (RFC 9110 Sec. 12.5.5).
+  `Session` gained an `accessed` flag that flips on any read accessor
+  (`__getitem__`, `get`, `__contains__`, `__iter__`, `keys`, `values`,
+  `items`) - a single boolean, no per-key bookkeeping - and both
+  `SessionMiddleware` and `ServerSessionMiddleware` add the `Vary` token
+  (merging with any existing value) when `accessed` or `modified` is set.
+  The new `suppress_session_vary(request)` helper opts a single response
+  out of the automatic header for handlers that read the session but know
+  the body is not personalised by it.
+
 - `ServerSentEvent.json` builds an event whose `data` field is a
   JSON-serialized payload. Pass any JSON-encodable value (`dict`, `list`,
   string, number) and it is serialized once at construction with the

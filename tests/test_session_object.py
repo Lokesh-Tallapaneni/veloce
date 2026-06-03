@@ -78,6 +78,52 @@ def test_clear_marks_modified():
     assert s.modified is True
 
 
+def test_fresh_session_not_accessed():
+    s = Session({"a": 1})
+    assert s.accessed is False
+
+
+def test_getitem_marks_accessed_not_modified():
+    s = Session({"a": 1})
+    assert s["a"] == 1
+    assert s.accessed is True
+    assert s.modified is False
+
+
+def test_get_marks_accessed():
+    s = Session({"a": 1})
+    assert s.get("a") == 1
+    assert s.accessed is True
+    assert s.modified is False
+
+
+def test_contains_marks_accessed():
+    s = Session({"a": 1})
+    assert "a" in s
+    assert s.accessed is True
+    assert s.modified is False
+
+
+def test_iter_marks_accessed():
+    s = Session({"a": 1})
+    assert list(s) == ["a"]
+    assert s.accessed is True
+    assert s.modified is False
+
+
+def test_items_marks_accessed():
+    s = Session({"a": 1})
+    assert list(s.items()) == [("a", 1)]
+    assert s.accessed is True
+
+
+def test_write_only_does_not_mark_accessed():
+    s = Session()
+    s["k"] = 1
+    assert s.modified is True
+    assert s.accessed is False
+
+
 def test_middleware_marks_session_new_without_cookie():
     app = Veloce()
     app.add_middleware(SessionMiddleware, secret_key="k" * 32)
