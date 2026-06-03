@@ -108,6 +108,49 @@ def test_no_clobber():
     assert r.headers.get("Content-Security-Policy") == "custom"
 
 
+def test_no_clobber_lowercase_override():
+    """A lowercase route override must suppress the default (RFC 9110 §5.1).
+
+    Header field names are case-insensitive; emitting a second CSP header would
+    make browsers intersect the two policies, silently narrowing the route's
+    intended policy.
+    """
+    app = Veloce(openapi_url=None)
+    app.add_middleware(CSPMiddleware(policy="default-src 'self'"))
+
+    @app.get("/")
+    async def index(request):
+        return Response(body=b"x", headers={"content-security-policy": "custom"})
+
+    r = TestClient(app).get("/")
+    csp_headers = [
+        v.decode("latin-1")
+        for k, v in r.raw_headers
+        if k.decode("latin-1").lower() == "content-security-policy"
+    ]
+    assert csp_headers == ["custom"]
+
+
+def test_report_only_no_clobber_lowercase_override():
+    app = Veloce(openapi_url=None)
+    app.add_middleware(CSPMiddleware(report_only_policy="default-src 'self'"))
+
+    @app.get("/")
+    async def index(request):
+        return Response(
+            body=b"x",
+            headers={"content-security-policy-report-only": "custom"},
+        )
+
+    r = TestClient(app).get("/")
+    csp_headers = [
+        v.decode("latin-1")
+        for k, v in r.raw_headers
+        if k.decode("latin-1").lower() == "content-security-policy-report-only"
+    ]
+    assert csp_headers == ["custom"]
+
+
 def test_lazy_materialization_without_handler_read():
     app = Veloce(openapi_url=None)
     app.add_middleware(CSPMiddleware(policy="script-src {nonce}"))

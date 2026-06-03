@@ -430,6 +430,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `CSPMiddleware` now suppresses its default policy when a route already set a
+  `Content-Security-Policy` (or `-Report-Only`) header under any letter case.
+  Header field names are case-insensitive (RFC 9110 Sec. 5.1) but `Response`
+  headers are a plain dict, so a lowercase route override previously failed the
+  existence check and a second CSP header shipped; browsers intersect multiple
+  CSP headers, silently narrowing the route's intended policy.
+
+- `instrument_with_prometheus(group_status=True)` (the default) now collapses
+  the status code into its class bucket - `200` -> `"2xx"`, `404` -> `"4xx"`,
+  `503` -> `"5xx"` - as the `status` label, instead of always recording the
+  concrete code. The option was previously a no-op. Pass `group_status=False`
+  to keep the concrete code.
+
 - `decode_jwt` now rejects an empty `str`/`bytes` secret with `ValueError`,
   symmetric with `encode_jwt`. An empty HMAC key would otherwise verify tokens
   signed with the empty secret (for example when a secret environment variable
@@ -449,7 +462,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was explicitly rejected; an explicit `q=0` now excludes the coding, with the
   wildcard q-value used only for codings not explicitly listed. A new
   `AcceptHeader.quality_explicit` method exposes this explicit-over-wildcard
-  q-value resolution.
+  q-value resolution. Coding tokens are compared case-insensitively (RFC 9110
+  Sec. 8.4.1), so `Accept-Encoding: BR` matches an explicit `br` entry and
+  `Br;q=0` rejects it; `AcceptHeader.quality` matches media types and codings
+  case-insensitively for the same reason.
 
 - A `WebSocket.send_text` / `send_bytes` to a peer that has gone away under an
   ASGI server now raises `WebSocketDisconnect` instead of a raw transport

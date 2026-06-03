@@ -513,8 +513,13 @@ class AcceptHeader:
         precompressed static selection where honoring an explicit rejection
         matters; non-MIME (Accept-Encoding) semantics.
         """
+        # RFC 9110 Sec. 12.5.3 / Sec. 8.4.1: content-coding tokens are
+        # case-insensitive, so `BR` must match an explicit `br` entry and an
+        # explicit `Br;q=0` must reject `br`. Fold both sides to lowercase
+        # before the exact compare; the `*` wildcard fallback is unaffected.
+        folded = value.lower()
         for opt, q in self._options:
-            if opt == value:
+            if opt.lower() == folded:
                 return q
         for opt, q in self._options:
             if opt == "*":
@@ -541,6 +546,12 @@ class AcceptHeader:
         return best_opt
 
     def _matches(self, opt: str, value: str) -> bool:
+        # RFC 9110 Sec. 8.4.1 (content codings) and Sec. 8.3.1 (media type
+        # type/subtype) are case-insensitive, so token comparison folds case;
+        # `Accept-Encoding: BR` matches `br` and `Accept: TEXT/HTML` matches
+        # `text/html`.
+        opt = opt.lower()
+        value = value.lower()
         if opt == value:
             return True
         if not self._mime:

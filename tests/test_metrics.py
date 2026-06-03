@@ -101,7 +101,8 @@ def test_records_total_and_duration_with_template_route_labels() -> None:
 
     app = _app()
     registry = CollectorRegistry()
-    instrument_with_prometheus(app, registry=registry)
+    # Keep concrete status codes so the per-code assertions below hold.
+    instrument_with_prometheus(app, registry=registry, group_status=False)
 
     client = app.test_client()
     assert client.get("/items/5").status_code == 200
@@ -149,6 +150,55 @@ def test_records_total_and_duration_with_template_route_labels() -> None:
     )
 
 
+def test_group_status_collapses_codes_into_class_buckets() -> None:
+    # group_status=True (the default) must fold the concrete code into its
+    # class bucket, so two different 2xx codes share a single status="2xx"
+    # series instead of one series per code.
+    pytest.importorskip("prometheus_client")
+
+    from prometheus_client import CollectorRegistry
+
+    from veloce import Response
+    from veloce.metrics import instrument_with_prometheus
+
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/ok")
+    async def ok():
+        return Response(body=b"ok", status_code=200)
+
+    @app.get("/created")
+    async def created():
+        return Response(body=b"made", status_code=201)
+
+    registry = CollectorRegistry()
+    instrument_with_prometheus(app, registry=registry, group_status=True)
+
+    client = app.test_client()
+    assert client.get("/ok").status_code == 200
+    assert client.get("/created").status_code == 201
+
+    # Both 2xx responses collapse to one status="2xx" series; one hit per route.
+    assert (
+        registry.get_sample_value(
+            "http_requests_total",
+            {"method": "GET", "route": "/ok", "status": "2xx"},
+        )
+        == 1.0
+    )
+    assert (
+        registry.get_sample_value(
+            "http_requests_total",
+            {"method": "GET", "route": "/created", "status": "2xx"},
+        )
+        == 1.0
+    )
+    # The concrete codes must NOT appear as label values when grouping is on.
+    for metric in registry.collect():
+        for sample in metric.samples:
+            assert sample.labels.get("status") not in {"200", "201"}
+
+
 def test_returns_registered_hook() -> None:
     pytest.importorskip("prometheus_client")
 
@@ -172,7 +222,7 @@ def test_custom_prefix() -> None:
 
     app = _app()
     registry = CollectorRegistry()
-    instrument_with_prometheus(app, prefix="api", registry=registry)
+    instrument_with_prometheus(app, prefix="api", registry=registry, group_status=False)
 
     app.test_client().get("/items/5")
     assert (

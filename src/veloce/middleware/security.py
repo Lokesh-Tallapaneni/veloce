@@ -146,11 +146,18 @@ class CSPMiddleware(Middleware):
         return None
 
     async def process_response(self, request: Request, response: Response) -> Response:
+        # `Response.headers` is a plain dict, so membership is case-sensitive.
+        # HTTP field names are case-insensitive (RFC 9110 Sec. 5.1), and
+        # browsers INTERSECT multiple CSP headers, so a route-level override
+        # spelled `content-security-policy` (lowercase) must still suppress
+        # the default - otherwise both headers ship and the route's intended
+        # policy is silently narrowed. Compare against the lowercased keys.
+        present = {key.lower() for key in response.headers}
         for header, template in (
             (HEADER_CONTENT_SECURITY_POLICY, self._enforce_template),
             (HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY, self._report_template),
         ):
-            if template is None or header in response.headers:
+            if template is None or header.lower() in present:
                 continue
             if "{nonce}" in template:
                 value = template.replace("{nonce}", f"'nonce-{csp_nonce(request)}'")

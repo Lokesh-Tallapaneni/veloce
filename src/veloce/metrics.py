@@ -128,9 +128,11 @@ def instrument_with_prometheus(
 
     ``prefix`` names the metrics (``http`` -> ``http_requests_total``);
     ``buckets`` overrides the histogram's second-valued buckets, defaulting to
-    prometheus_client's conventional set. ``group_status`` keeps the concrete
-    status code as the ``status`` label (the default) - the code is bounded, so
-    it is safe to keep concrete.
+    prometheus_client's conventional set. ``group_status`` (default ``True``)
+    collapses the status code into its class bucket - ``200`` -> ``"2xx"``,
+    ``404`` -> ``"4xx"``, ``503`` -> ``"5xx"`` - as the ``status`` label, so the
+    counter holds at most one series per status class; set it ``False`` to keep
+    the concrete code (it is itself bounded, so that stays safe too).
 
     Raise :class:`ImportError` with an install hint when ``prometheus_client``
     is not installed. Return the registered hook (the value
@@ -160,10 +162,16 @@ def instrument_with_prometheus(
         # Always label by the route template, never the concrete path: an
         # unmatched request (route is None for both 404 and 405) carries an
         # attacker-controlled, high-cardinality path. Collapse it to a single
-        # constant so label cardinality stays bounded. The status code is itself
-        # bounded, so it is kept concrete.
+        # constant so label cardinality stays bounded.
         route_label = metrics.route if metrics.route is not None else _UNMATCHED_ROUTE
-        status_label = str(metrics.status_code)
+        # `group_status` collapses the concrete code into its class bucket
+        # (200 -> "2xx", 404 -> "4xx") so a noisy app emits at most five status
+        # series instead of one per distinct code; when False the concrete code
+        # is kept (it is already bounded).
+        if group_status:
+            status_label = f"{metrics.status_code // 100}xx"
+        else:
+            status_label = str(metrics.status_code)
         requests_total.labels(metrics.method, route_label, status_label).inc()
         request_duration.labels(metrics.method, route_label).observe(metrics.duration_ms / 1000.0)
 
