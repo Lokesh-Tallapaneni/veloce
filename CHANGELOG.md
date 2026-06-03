@@ -187,6 +187,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `jsonable_encoder(..., exclude_none=True)` now drops `None`-valued keys from
+  plain dicts, lists/tuples/sets of dicts, and dict-typed fields nested inside a
+  Pydantic model, at every depth. Previously `exclude_none` was honoured only
+  for a top-level `BaseModel`'s own fields and silently ignored for any plain
+  mapping, so `jsonable_encoder({"a": None, "b": 1}, exclude_none=True)` returned
+  `{"a": None, "b": 1}` instead of `{"b": 1}`. The flag is now threaded through
+  the dict, sequence, set, dataclass, and model re-encode branches consistently.
 - JSON response serialisation now handles `set`/`frozenset`, `pathlib.Path`,
   `decimal.Decimal`, `bytes`, and arbitrary objects instead of raising
   `TypeError`. `DefaultJSONProvider.dumps`, `JSONResponse`, and `jsonify`

@@ -5,6 +5,7 @@ import datetime
 import enum
 import uuid
 from decimal import Decimal
+from typing import Any
 
 import orjson
 import pytest
@@ -156,6 +157,40 @@ class TestJsonableEncoder:
         result = jsonable_encoder(item, exclude_unset=True)
         assert "name" in result
         assert "description" not in result
+
+    def test_exclude_none_plain_dict(self):
+        """`exclude_none` drops None-valued keys from a plain dict, not
+        only from a BaseModel."""
+        result = jsonable_encoder({"a": None, "b": 1}, exclude_none=True)
+        assert result == {"b": 1}
+
+    def test_exclude_none_recurses_into_nested_dicts(self):
+        """`exclude_none` applies at every depth of a plain structure."""
+        payload = {
+            "a": None,
+            "b": {"c": None, "d": 2},
+            "e": [{"f": None, "g": 3}],
+        }
+        result = jsonable_encoder(payload, exclude_none=True)
+        assert result == {"b": {"d": 2}, "e": [{"g": 3}]}
+
+    def test_exclude_none_nested_dict_field_in_model(self):
+        """A model field that is a plain dict has `exclude_none` applied
+        during re-encoding, not just the model's own scalar fields."""
+
+        class Wrapper(BaseModel):
+            top: str | None = None
+            meta: dict[str, Any]
+
+        wrapper = Wrapper(top=None, meta={"x": None, "y": 1})
+        result = jsonable_encoder(wrapper, exclude_none=True)
+        assert "top" not in result
+        assert result["meta"] == {"y": 1}
+
+    def test_exclude_none_off_keeps_none(self):
+        """Default behaviour is unchanged: None values are preserved."""
+        result = jsonable_encoder({"a": None, "b": 1})
+        assert result == {"a": None, "b": 1}
 
 
 # ═══════════════════════════════════════════════════════════════

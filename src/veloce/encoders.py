@@ -50,7 +50,9 @@ def jsonable_encoder(
 
     `include` / `exclude` apply to dict keys at **every depth** - passing
     `exclude={"password"}` strips a `password` key wherever it appears
-    in the structure, not only at the top level.
+    in the structure, not only at the top level. `exclude_none` likewise
+    drops `None`-valued keys from plain dicts at every depth, not only from
+    a top-level model's own fields.
 
     Raises `ValueError` on a self-referential object graph (a container
     that transitively contains itself) instead of recursing until the
@@ -105,16 +107,28 @@ def jsonable_encoder(
                 kwargs["exclude_defaults"] = True
             if exclude_none:
                 kwargs["exclude_none"] = True
-            return jsonable_encoder(obj.model_dump(**kwargs), _seen=_seen)
+            # model_dump already honours the filters for the model's own
+            # fields, but a field whose value is itself a plain dict must
+            # still have `exclude_none` applied during re-encoding, so the
+            # filter is forwarded rather than dropped.
+            return jsonable_encoder(
+                obj.model_dump(**kwargs), exclude_none=exclude_none, _seen=_seen
+            )
 
         if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
             return jsonable_encoder(
-                dataclasses.asdict(obj), include=include, exclude=exclude, _seen=_seen
+                dataclasses.asdict(obj),
+                include=include,
+                exclude=exclude,
+                exclude_none=exclude_none,
+                _seen=_seen,
             )
 
         if isinstance(obj, dict):
             result = {}
             for key, value in obj.items():
+                if exclude_none and value is None:
+                    continue
                 str_key = str(key)
                 if include and str_key not in include:
                     continue
@@ -123,19 +137,23 @@ def jsonable_encoder(
                 # Forward the filters into the recursion so nested dicts
                 # honour them too - matches the dataclass branch above.
                 result[str_key] = jsonable_encoder(
-                    value, include=include, exclude=exclude, _seen=_seen
+                    value, include=include, exclude=exclude, exclude_none=exclude_none, _seen=_seen
                 )
             return result
 
         if isinstance(obj, (list, tuple)):
             return [
-                jsonable_encoder(item, include=include, exclude=exclude, _seen=_seen)
+                jsonable_encoder(
+                    item, include=include, exclude=exclude, exclude_none=exclude_none, _seen=_seen
+                )
                 for item in obj
             ]
 
         if isinstance(obj, (set, frozenset)):
             return [
-                jsonable_encoder(item, include=include, exclude=exclude, _seen=_seen)
+                jsonable_encoder(
+                    item, include=include, exclude=exclude, exclude_none=exclude_none, _seen=_seen
+                )
                 for item in sorted(obj, key=str)
             ]
 
