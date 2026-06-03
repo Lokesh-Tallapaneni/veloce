@@ -7,6 +7,8 @@ import math
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+import orjson
+
 from veloce._constants import (
     HEADER_CACHE_CONTROL,
     HEADER_CONNECTION,
@@ -44,6 +46,29 @@ class ServerSentEvent:
         self.event = event
         self.id = id
         self.retry = retry
+
+    @classmethod
+    def json(
+        cls,
+        payload: Any,
+        *,
+        event: str | None = None,
+        id: str | None = None,
+        retry: int | None = None,
+    ) -> ServerSentEvent:
+        """Build an event whose `data` field is `payload` serialized to JSON.
+
+        Serialization runs once here, off the per-event stream loop, and the
+        result is stored in the plain `data` field - so `encode()` stays the
+        same branch-free path it is for a raw `data=` string. Use the regular
+        constructor when the payload is already a formatted string.
+        """
+        return cls(
+            data=orjson.dumps(payload).decode("utf-8"),
+            event=event,
+            id=id,
+            retry=retry,
+        )
 
     def encode(self) -> bytes:
         """Encode the event as an SSE-formatted byte string."""

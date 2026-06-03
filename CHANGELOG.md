@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ServerSentEvent.json` builds an event whose `data` field is a
+  JSON-serialized payload. Pass any JSON-encodable value (`dict`, `list`,
+  string, number) and it is serialized once at construction with the
+  optional `event`/`id`/`retry` fields forwarded unchanged, so structured
+  SSE payloads no longer require a manual `json.dumps` per event. The plain
+  `ServerSentEvent(data=...)` constructor is unchanged and remains the raw
+  string escape hatch.
+
 - The generated OpenAPI document now documents container-shaped
   `response_model` annotations instead of dropping them. A response model of
   `dict[str, Item]` emits an object with `additionalProperties` referencing the
