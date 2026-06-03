@@ -18,10 +18,30 @@ def test_no_header_raises_with_digest_challenge():
     assert exc.value.status_code == 401
     wwwa = exc.value.headers["WWW-Authenticate"]
     assert wwwa.startswith("Digest ")
-    assert 'realm="testrealm%40example.com"' in wwwa  # URL-encoded
+    # RFC 7235 quoted-string: the realm is emitted literally, NOT percent-encoded.
+    assert 'realm="testrealm@example.com"' in wwwa
     assert "algorithm=SHA-256" in wwwa
     assert 'qop="auth"' in wwwa
     assert 'nonce="' in wwwa
+
+
+def test_realm_with_quote_is_backslash_escaped():
+    scheme = HTTPDigest(realm='My "App"')
+    with pytest.raises(HTTPException) as exc:
+        scheme(_req())
+    assert r'realm="My \"App\""' in exc.value.headers["WWW-Authenticate"]
+
+
+def test_realm_with_backslash_is_escaped():
+    scheme = HTTPDigest(realm="c:\\x")
+    with pytest.raises(HTTPException) as exc:
+        scheme(_req())
+    assert r'realm="c:\\x"' in exc.value.headers["WWW-Authenticate"]
+
+
+def test_realm_with_control_chars_raises_at_construction():
+    with pytest.raises(ValueError):
+        HTTPDigest(realm="bad\r\nInjected: 1")
 
 
 def test_default_algorithm_is_sha256():

@@ -6,7 +6,6 @@ import base64
 import binascii
 import secrets
 from typing import Any
-from urllib.parse import quote
 
 from veloce._constants import HEADER_AUTHORIZATION, HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
 from veloce._header_parsing import parse_header_params
@@ -18,6 +17,29 @@ from veloce.status import HTTP_401_UNAUTHORIZED
 
 _BASIC_PREFIX = (AUTH_SCHEME_BASIC + " ").lower()
 _DIGEST_PREFIX = (AUTH_SCHEME_DIGEST + " ").lower()
+
+
+def _quote_header_value(value: str) -> str:
+    """Escape a string for an HTTP quoted-string (RFC 7230 Sec. 3.2.6).
+
+    Backslash must be escaped before the double-quote, or a literal
+    backslash preceding a quote would be mis-escaped. This is the correct
+    transform for a `realm` and other WWW-Authenticate quoted params -
+    not `urllib.parse.quote`, which percent-encodes and mangles `@`/space.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _validate_realm(realm: str) -> None:
+    """Reject control characters in a realm at construction (fail fast).
+
+    CR / LF / NUL and other control characters cannot appear in an HTTP
+    quoted-string and would corrupt the WWW-Authenticate header, so an
+    invalid realm is a configuration error, surfaced when the scheme is
+    built rather than on every 401.
+    """
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in realm):
+        raise ValueError("realm must not contain control characters")
 
 
 class HTTPBasicCredentials:
@@ -34,6 +56,7 @@ class HTTPBasic:
     """HTTP Basic authentication - extracts username:password from Authorization header."""
 
     def __init__(self, auto_error: bool = True, realm: str = "") -> None:
+        _validate_realm(realm)
         self.auto_error = auto_error
         self.realm = realm
 
@@ -44,7 +67,7 @@ class HTTPBasic:
                 headers: dict[str, str] = {}
                 if self.realm:
                     headers[HEADER_WWW_AUTHENTICATE] = (
-                        f'{AUTH_SCHEME_BASIC} realm="{quote(self.realm)}"'
+                        f'{AUTH_SCHEME_BASIC} realm="{_quote_header_value(self.realm)}"'
                     )
                 raise HTTPException(HTTP_401_UNAUTHORIZED, MSG_NOT_AUTHENTICATED, headers=headers)
             return None
@@ -59,7 +82,9 @@ class HTTPBasic:
             decoded = base64.b64decode(auth[len(_BASIC_PREFIX) :], validate=True).decode("utf-8")
         except (binascii.Error, ValueError, UnicodeDecodeError) as err:
             headers = (
-                {HEADER_WWW_AUTHENTICATE: f'{AUTH_SCHEME_BASIC} realm="{quote(self.realm)}"'}
+                {
+                    HEADER_WWW_AUTHENTICATE: f'{AUTH_SCHEME_BASIC} realm="{_quote_header_value(self.realm)}"'
+                }
                 if self.realm
                 else {}
             )
@@ -136,6 +161,7 @@ class HTTPDigest:
     ) -> None:
         # RFC 7616 Sec. 3.2 prefers SHA-256; MD5 remains accepted for back-compat
         # with RFC 2617 clients but should not be the default for new servers.
+        _validate_realm(realm)
         self.realm = realm
         self.qop = qop
         self.algorithm = algorithm
@@ -148,7 +174,7 @@ class HTTPDigest:
         # the quoted-string values must be exact. Build the header
         # rigorously; clients in the wild reject malformed challenges.
         parts = [
-            f'realm="{quote(self.realm)}"',
+            f'realm="{_quote_header_value(self.realm)}"',
             f'qop="{self.qop}"',
             f'nonce="{nonce}"',
             f"algorithm={self.algorithm}",
