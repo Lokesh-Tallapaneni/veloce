@@ -77,6 +77,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- JSON response serialisation now handles `set`/`frozenset`, `pathlib.Path`,
+  `decimal.Decimal`, `bytes`, and arbitrary objects instead of raising
+  `TypeError`. `DefaultJSONProvider.dumps`, `JSONResponse`, and `jsonify`
+  pass a single-object fallback as orjson's `default=` hook, so the common
+  path keeps orjson's native C-speed encoding while unsupported leaves are
+  converted (sets become sorted lists, `Path`/`Decimal` map to their scalar
+  form, `bytes` decode UTF-8 with replacement, other objects use `vars()`
+  then `str()`). The hook is also exported as `veloce.encoders.orjson_default`.
 - The raw HTTP/1.1 server's early request-size guard now uses the **first**
   `Content-Length` value when a malformed request carries duplicate
   `Content-Length` headers, matching the previous header-scan behaviour.

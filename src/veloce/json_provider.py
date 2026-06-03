@@ -16,6 +16,7 @@ from typing import Any
 
 import orjson
 
+from veloce.encoders import orjson_default
 from veloce.http.response import JSONResponse
 from veloce.status import HTTP_200_OK
 
@@ -91,7 +92,13 @@ class DefaultJSONProvider(JSONProvider):
             opts |= orjson.OPT_SORT_KEYS
         if kwargs.get("indent"):
             opts |= orjson.OPT_INDENT_2
-        return orjson.dumps(obj, option=opts) if opts else orjson.dumps(obj)
+        # `default=` is only invoked by orjson for leaf types it cannot encode
+        # itself, so the common path keeps orjson's C-speed traversal at zero
+        # added cost while set/Path/Decimal/custom objects serialise instead of
+        # raising `TypeError`.
+        if opts:
+            return orjson.dumps(obj, option=opts, default=orjson_default)
+        return orjson.dumps(obj, default=orjson_default)
 
     def loads(self, data: bytes | str) -> Any:
         return orjson.loads(data)

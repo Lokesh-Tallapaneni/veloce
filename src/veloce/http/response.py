@@ -56,6 +56,7 @@ from veloce._internal import (
     _reject_header_crlf,
 )
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
+from veloce.encoders import orjson_default
 from veloce.http.cache_control import CacheControl
 from veloce.http.dates import http_date, parse_date
 from veloce.http.header_set import HeaderSet
@@ -1067,7 +1068,7 @@ class JSONResponse(Response):
         headers: dict[str, str] | None = None,
     ) -> None:
         try:
-            body = orjson.dumps(data)
+            body = orjson.dumps(data, default=orjson_default)
         except TypeError as exc:
             raise ValueError(f"JSONResponse data is not JSON-serializable: {exc}") from exc
         super().__init__(

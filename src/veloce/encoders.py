@@ -146,3 +146,37 @@ def jsonable_encoder(
             return str(obj)
     finally:
         _seen.discard(obj_id)
+
+
+def orjson_default(obj: Any) -> Any:
+    """Single-object fallback for orjson's `default=` hook.
+
+    orjson natively encodes the common leaf types (str/int/float/bool/None,
+    dict/list, datetime/date/time, UUID, Enum, dataclass) at C speed and only
+    calls this hook for a leaf it cannot handle itself. So this converts ONE
+    object and lets orjson recurse into whatever it returns - it deliberately
+    does NOT walk the whole graph the way `jsonable_encoder` does, keeping the
+    fast path untouched.
+
+    Containers (set/frozenset) become a list of their raw items; orjson then
+    re-enters this hook for any non-native members. Path/Decimal/timedelta map
+    to their scalar form. bytes/bytearray decode UTF-8 with replacement to stay
+    consistent with `jsonable_encoder`. Anything else falls back to `vars(obj)`,
+    then `str(obj)` - matching `jsonable_encoder`'s last-resort behaviour so the
+    two paths agree on the same conversions.
+    """
+    if isinstance(obj, (set, frozenset)):
+        return sorted(obj, key=str)
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    if isinstance(obj, datetime.timedelta):
+        return obj.total_seconds()
+    if isinstance(obj, (bytes, bytearray)):
+        return bytes(obj).decode("utf-8", errors="replace")
+    try:
+        return vars(obj)
+    except TypeError:
+        pass
+    return str(obj)

@@ -196,6 +196,8 @@ def test_coerce_response_does_not_treat_duck_model_dump_as_pydantic():
     built from `result.model_dump()`, silently masking real bugs.
     """
 
+    from veloce.http.response import JSONResponse
+
     app = Veloce(openapi_url=None)
 
     class DuckTyped:
@@ -203,15 +205,16 @@ def test_coerce_response_does_not_treat_duck_model_dump_as_pydantic():
         def model_dump(self):  # pragma: no cover - must not be called
             raise AssertionError("should not be treated as Pydantic")
 
-    import pytest
-
     obj = DuckTyped()
     # The Pydantic branch must NOT be taken — `.model_dump` (which would
     # raise AssertionError) must not be called. Instead the object falls
-    # through to the final `JSONResponse(result)` branch and the JSON
-    # encoder raises a serialization error.
-    with pytest.raises(ValueError, match="not JSON-serializable"):
-        app._coerce_response(obj)
+    # through to the final `JSONResponse(result)` branch. The JSON encoder's
+    # `default=` fallback serialises the plain object via `vars()` (no public
+    # attributes here, so an empty object), confirming the Pydantic path was
+    # skipped — had it been taken, the AssertionError above would surface.
+    resp = app._coerce_response(obj)
+    assert isinstance(resp, JSONResponse)
+    assert resp.body == b"{}"
 
 
 def test_coerce_response_handles_real_pydantic_model():
