@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Request, Response
+from veloce._internal import _etag_matches_strong
+from veloce.exceptions import PreconditionFailed
 
 
 def _req(headers: dict | None = None) -> Request:
@@ -108,3 +112,78 @@ def test_if_none_match_supersedes_if_modified_since():
     resp.make_conditional(req)
     # INM didn't match → no 304, even though IMS would have triggered one.
     assert resp.status_code == 200
+
+
+# ── _etag_matches_strong (RFC 9110 §8.8.3.1) ─────────────────────────
+
+
+def test_strong_compare_matches_identical_strong_tags():
+    assert _etag_matches_strong('"abc"', '"abc"') is True
+
+
+def test_strong_compare_rejects_weak_on_either_side():
+    assert _etag_matches_strong('W/"abc"', '"abc"') is False
+    assert _etag_matches_strong('"abc"', 'W/"abc"') is False
+    assert _etag_matches_strong('W/"abc"', 'W/"abc"') is False
+
+
+def test_strong_compare_handles_surrounding_whitespace():
+    assert _etag_matches_strong('"abc"', '  "abc" ') is True
+    assert _etag_matches_strong('"abc"', '"xyz"') is False
+
+
+# ── check_preconditions: If-Match (RFC 9110 §13.1.1) ─────────────────
+
+
+def test_check_preconditions_strong_match_returns_self():
+    resp = Response(body=b"hello")
+    resp.add_etag()
+    req = _req({"if-match": resp.headers["ETag"]})
+    assert resp.check_preconditions(req) is resp
+
+
+def test_check_preconditions_strong_mismatch_raises_412():
+    resp = Response(body=b"hello")
+    resp.add_etag()
+    req = _req({"if-match": '"nope"'})
+    with pytest.raises(PreconditionFailed):
+        resp.check_preconditions(req)
+
+
+def test_check_preconditions_weak_validator_never_satisfies_if_match():
+    """A weak ETag on the response can never satisfy If-Match (§8.8.3.1)."""
+    resp = Response(body=b"hello")
+    resp.add_etag(weak=True)
+    # Both the weak form and the bare opaque form must fail.
+    for token in (resp.headers["ETag"], '"' + resp.headers["ETag"][3:].strip('"') + '"'):
+        req = _req({"if-match": token})
+        with pytest.raises(PreconditionFailed):
+            resp.check_preconditions(req)
+
+
+def test_check_preconditions_wildcard_passes_when_etag_present():
+    resp = Response(body=b"hello")
+    resp.add_etag()
+    req = _req({"if-match": "*"})
+    assert resp.check_preconditions(req) is resp
+
+
+def test_check_preconditions_wildcard_raises_when_no_etag():
+    resp = Response(body=b"hello")
+    req = _req({"if-match": "*"})
+    with pytest.raises(PreconditionFailed):
+        resp.check_preconditions(req)
+
+
+def test_check_preconditions_absent_header_returns_self():
+    resp = Response(body=b"hello")
+    resp.add_etag()
+    req = _req()
+    assert resp.check_preconditions(req) is resp
+
+
+def test_check_preconditions_multiple_tags_one_strong_match_passes():
+    resp = Response(body=b"hello")
+    tag = resp.add_etag()
+    req = _req({"if-match": f'"other", {tag}'})
+    assert resp.check_preconditions(req) is resp

@@ -6,8 +6,11 @@ Conditional GET responses follow RFC 9110 Sec. 13.1.
 Spec anchors:
 - RFC 9110 Sec. 8.8.2 - Last-Modified header
 - RFC 9110 Sec. 8.8.3 - ETag header
+- RFC 9110 Sec. 13.1.1 - If-Match
 - RFC 9110 Sec. 13.1.3 - If-Modified-Since
 - RFC 9110 Sec. 13.1.4 - If-None-Match
+- RFC 9110 Sec. 13.1.4 - If-Unmodified-Since
+- RFC 9110 Sec. 13.2.2 - precondition precedence
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from veloce._constants import (
     MIME_OCTET_STREAM,
     MIME_TEXT_HTML_UTF8,
 )
-from veloce._internal import _etag_matches_weak, _file_etag
+from veloce._internal import _etag_matches_strong, _etag_matches_weak, _file_etag
 from veloce.http.dates import http_date, parse_date
 from veloce.http.request import Request
 from veloce.http.response import Response, StreamingResponse
@@ -44,8 +47,34 @@ from veloce.status import (
     HTTP_206_PARTIAL_CONTENT,
     HTTP_304_NOT_MODIFIED,
     HTTP_403_FORBIDDEN,
+    HTTP_412_PRECONDITION_FAILED,
     HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
 )
+
+
+def _precondition_failed(
+    if_match: tuple[str, ...],
+    if_unmodified_since: float | None,
+    etag: str,
+    mtime: float,
+) -> bool:
+    """RFC 9110 Sec. 13.1.1 / 13.1.4 write-side preconditions for a static GET.
+
+    Returns True when the request must be rejected with 412. `If-Match`
+    takes precedence; `If-Unmodified-Since` is evaluated only when `If-Match`
+    is absent (Sec. 13.2.2). Veloce emits weak file ETags and `If-Match`
+    mandates the strong comparison (Sec. 8.8.3.1), so any concrete `If-Match`
+    list fails closed to 412; `*` matches because the representation exists.
+    """
+    if if_match:
+        if if_match == ("*",):
+            return False
+        # No strong match across the list -> precondition fails (412).
+        return all(not _etag_matches_strong(etag, token) for token in if_match)
+    if if_unmodified_since is not None:
+        # HTTP-dates carry second resolution - floor mtime to compare.
+        return int(mtime) > int(if_unmodified_since)
+    return False
 
 
 @lru_cache(maxsize=512)
@@ -211,6 +240,17 @@ class StaticFiles:
             self._remember_etag(cache_key, etag, mtime)
 
         last_modified = http_date(mtime)
+
+        # Write-side preconditions first (RFC 9110 Sec. 13.2.2): If-Match,
+        # then If-Unmodified-Since, both ahead of the read-side 304 checks.
+        # Veloce emits weak file ETags, so a concrete If-Match always fails
+        # closed (only `*` succeeds); document this for static assets.
+        if _precondition_failed(request.if_match, request.if_unmodified_since, etag, mtime):
+            return Response(
+                status_code=HTTP_412_PRECONDITION_FAILED,
+                body=b"",
+                headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
+            )
 
         # Conditional GET. Per RFC 9110 Sec. 13.2 precedence: If-None-Match
         # supersedes If-Modified-Since when both are present.

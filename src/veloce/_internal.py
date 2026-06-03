@@ -139,6 +139,22 @@ def _etag_matches_weak(server_etag: str, client_token: str) -> bool:
     return a == b
 
 
+def _etag_matches_strong(server_etag: str, client_token: str) -> bool:
+    """Strong comparison of two ETag tokens per RFC 9110 Sec. 8.8.3.1.
+
+    Required for `If-Match` (Sec. 13.1.1): two validators match only when
+    both are strong - neither carries the `W/` weak marker - and their
+    opaque quoted forms are byte-identical. A weak validator on either
+    side never satisfies a strong comparison, so a weak server ETag can
+    never match an `If-Match` precondition.
+    """
+    a = server_etag.strip()
+    b = client_token.strip()
+    if a.startswith("W/") or b.startswith("W/"):
+        return False
+    return a == b
+
+
 def _b64encode(data: bytes) -> str:
     """URL-safe base64 with `=` padding stripped."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")

@@ -51,6 +51,7 @@ from veloce._internal import (
     MIME_OCTET,
     MIME_PLAIN,
     _encode_response_head,
+    _etag_matches_strong,
     _etag_matches_weak,
     _file_etag,
     _reject_header_crlf,
@@ -991,6 +992,35 @@ class Response:
             if int(ours_ts) <= int(ims):
                 self._downgrade_to_304()
         return self
+
+    def check_preconditions(self, request: Any) -> Response:
+        """Enforce the write-side `If-Match` precondition (RFC 9110 Sec. 13.1.1).
+
+        Raises `PreconditionFailed` (412) when the request carries an
+        `If-Match` header that the response's current ETag does not satisfy
+        under the strong comparison (Sec. 8.8.3.1) - the lost-update guard.
+        `If-Match: *` is satisfied whenever a current representation exists,
+        approximated here by the presence of an ETag header. With no
+        `If-Match` header the response is returned unchanged. Returns `self`
+        so it can be chained: `return resp.check_preconditions(request)`.
+
+        Invoke this inside a handler (where `HTTPException` is converted to a
+        response); it raises rather than mutating the status.
+        """
+        if_match = getattr(request, "if_match", ())
+        if not if_match:
+            return self
+        ours_etag = self.headers.get(HEADER_ETAG, "")
+        if if_match == ("*",):
+            if ours_etag:
+                return self
+        else:
+            for tag in if_match:
+                if _etag_matches_strong(ours_etag, tag):
+                    return self
+        from veloce.exceptions import PreconditionFailed  # avoids response <-> exceptions cycle
+
+        raise PreconditionFailed
 
     def _downgrade_to_304(self) -> None:
         """Strip body + flip status to 304. Used by `make_conditional`."""
