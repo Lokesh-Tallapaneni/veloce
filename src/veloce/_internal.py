@@ -27,8 +27,10 @@ import base64
 import contextlib
 import hashlib
 import inspect
+import sys
 import weakref
 from collections.abc import Callable
+from email.header import Header
 from http import HTTPStatus
 from typing import Any
 
@@ -65,6 +67,30 @@ def _reject_header_crlf(value: str, what: str) -> str:
     return value
 
 
+def _encode_header_value(value: str) -> str:
+    """Return a latin-1-encodable form of a header value.
+
+    HTTP header values are emitted as latin-1 (the HTTP/1.1 wire encoding
+    and the ASGI header contract). The common case is ASCII, which is
+    latin-1-safe and returned as-is on the fast path. Values with non-ASCII
+    but latin-1-representable characters pass through unchanged. Anything
+    outside latin-1 is RFC 2047 MIME-encoded to an ASCII `=?utf-8?b?...?=`
+    token rather than raising (HTTP/1.1) or emitting raw UTF-8 (ASGI).
+
+    The caller must have already cleared `_reject_header_crlf`. `maxlinelen`
+    is `sys.maxsize` so `Header.encode()` never folds a long value onto
+    multiple CRLF-separated lines - which would re-introduce newlines into
+    the header bytes.
+    """
+    if value.isascii():
+        return value
+    try:
+        value.encode("latin-1")
+    except UnicodeEncodeError:
+        return Header(value, "utf-8", maxlinelen=sys.maxsize).encode()
+    return value
+
+
 def _encode_response_head(
     status_code: int,
     default_headers: dict[str, str],
@@ -95,7 +121,7 @@ def _encode_response_head(
     for name, value in default_headers.items():
         if name.lower() not in user_keys_lc:
             _reject_header_crlf(value, f"{name} header value")
-            parts.append(f"{name}: {value}\r\n")
+            parts.append(f"{name}: {_encode_header_value(value)}\r\n")
 
     for key, value in headers.items():
         if key.lower() == "set-cookie":
@@ -103,11 +129,12 @@ def _encode_response_head(
             # by the internal separator; emit and CRLF-validate each line.
             for line in str(value).split(SET_COOKIE_JOINER):
                 _reject_header_crlf(line, MSG_LABEL_SET_COOKIE_VALUE)
-                parts.append(f"Set-Cookie: {line}\r\n")
+                parts.append(f"Set-Cookie: {_encode_header_value(line)}\r\n")
         else:
             _reject_header_crlf(str(key), MSG_LABEL_HEADER_NAME)
-            _reject_header_crlf(str(value), f"{key} header value")
-            parts.append(f"{key}: {value}\r\n")
+            sval = str(value)
+            _reject_header_crlf(sval, f"{key} header value")
+            parts.append(f"{key}: {_encode_header_value(sval)}\r\n")
     return parts
 
 

@@ -37,6 +37,7 @@ from veloce._internal import (
     MIME_HTML,
     MIME_JSON,
     MIME_OCTET,
+    _encode_header_value,
     _extract_host,
     _is_async_callable,
     _reject_header_crlf,
@@ -3473,11 +3474,18 @@ class Veloce(Router):
                         for piece in sv.split("\r\nSet-Cookie:"):
                             cookie = piece.strip()
                             _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
-                            stream_headers.append((RAW_HEADER_SET_COOKIE, cookie.encode()))
+                            stream_headers.append(
+                                (
+                                    RAW_HEADER_SET_COOKIE,
+                                    _encode_header_value(cookie).encode("latin-1"),
+                                )
+                            )
                     else:
                         _reject_header_crlf(sk, MSG_LABEL_HEADER_NAME)
                         _reject_header_crlf(sv, f"{sk} header value")
-                        stream_headers.append((sk_lower.encode(), sv.encode()))
+                        stream_headers.append(
+                            (sk_lower.encode(), _encode_header_value(sv).encode("latin-1"))
+                        )
                 await send(
                     {
                         "type": ASGI_EVENT_HTTP_RESPONSE_START,
@@ -3559,7 +3567,12 @@ class Veloce(Router):
                         for piece in v.split("\r\nSet-Cookie:"):
                             cookie = piece.strip()
                             _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
-                            asgi_headers.append((RAW_HEADER_SET_COOKIE, cookie.encode()))
+                            asgi_headers.append(
+                                (
+                                    RAW_HEADER_SET_COOKIE,
+                                    _encode_header_value(cookie).encode("latin-1"),
+                                )
+                            )
                     else:
                         if k_lower == "content-type":
                             has_ct = True
@@ -3567,7 +3580,9 @@ class Veloce(Router):
                             has_cl = True
                         _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
                         _reject_header_crlf(v, f"{k} header value")
-                        asgi_headers.append((k_lower.encode(), v.encode()))
+                        asgi_headers.append(
+                            (k_lower.encode(), _encode_header_value(v).encode("latin-1"))
+                        )
             # Prepend the framework default content-type/content-length only
             # when the response does not already carry that header. A user or
             # middleware value (e.g. the compressed length from
