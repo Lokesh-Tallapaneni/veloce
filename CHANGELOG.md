@@ -230,6 +230,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   negotiates no extension) or a stray continuation frame with no message in
   progress (Sec. 5.4) are now rejected with a `1002` protocol-error close,
   instead of being silently accepted / dropped.
+- A raw-transport WebSocket `receive_*()` called after the peer closed between
+  messages now raises `WebSocketDisconnect` carrying the recorded close code
+  (e.g. `1001`/`1006`) instead of a default `1000`.
 
 ### Security
 
