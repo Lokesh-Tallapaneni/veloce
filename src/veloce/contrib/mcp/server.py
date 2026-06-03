@@ -21,10 +21,11 @@ from typing import TYPE_CHECKING, Any
 
 from veloce._internal import _is_async_callable
 from veloce.contrib.mcp.context import MCPContext
-from veloce.contrib.mcp.plan_bridge import bind_arguments
+from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import RequestValidationError
+from veloce.helpers import _current_app_var, _current_request_var, g
 from veloce.http.response import Response
 from veloce.instrumentation import RequestMetrics
 
@@ -149,7 +150,25 @@ class MCPServer:
                 "isError": True,
             }
         await self._instrument(tool, started)
-        shaped = self._shape_result(tool, result)
+
+        # A `before_request` hook short-circuited the call (e.g. an auth 401)
+        # before the handler ran. The hook's `Response` is the tool result;
+        # surface a 4xx/5xx as an in-band error so the agent reads the denial.
+        if isinstance(result, _ShortCircuit):
+            shaped = self._shape_result(tool, result.response)
+            text = _stringify(shaped)
+            content: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
+            if result.response.status_code >= 400:
+                content["isError"] = True
+            return content
+
+        try:
+            shaped = self._shape_result(tool, result)
+        except _StreamingNotSupported as exc:
+            # A streamed / SSE response carries no buffered body for v1 to
+            # serialise; surface the limitation in-band rather than returning
+            # an empty result.
+            return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
         return {"content": [{"type": "text", "text": _stringify(shaped)}]}
 
     def _shape_result(self, tool: MCPTool, result: Any) -> Any:
@@ -180,11 +199,44 @@ class MCPServer:
     # -- Invocation -------------------------------------------------
 
     async def _invoke(self, tool: MCPTool, arguments: dict[str, Any]) -> Any:
-        """Resolve DI and call the handler, draining teardowns afterwards."""
+        """Resolve DI and call the handler, draining teardowns afterwards.
+
+        The handler runs inside the same request-context binding the HTTP path
+        uses: `current_app` and `request` are bound onto their contextvars and
+        `g` is reset, so a handler or dependency that reads `current_app` / `g`
+        works. For a route-derived tool the app's `before_request` hook chain
+        runs first (after `request.endpoint` is set so a hook can gate on the
+        route name); a hook that returns a `Response` short-circuits the call -
+        the handler is not invoked and that response becomes the tool result.
+        """
         context = MCPContext(tool.name, arguments)
         resolver = DependencyResolver()
         resolver._overrides = self.app._dependency_overrides
         resolver._override_subplans = self.app._override_subplans
+
+        route_info = tool.route_info
+        request = _build_request(tool.name)
+        request.app = self.app
+
+        # Bind the request context exactly as `handle_request` does: the
+        # `current_app` / `request` contextvars plus a fresh `g`. Letting the
+        # contextvars fall through when the call ends is intentional - stdio
+        # calls run sequentially, each rebinding before it reads.
+        _current_app_var.set(self.app)
+        _current_request_var.set(request)
+        g._reset()
+
+        # For a route-derived tool, run the app's `before_request` hooks (and
+        # the matched blueprint's), mirroring HTTP dispatch. `request.endpoint`
+        # is set first so a hook can gate on the route name and the blueprint
+        # bucket resolves. A short-circuit response is the tool result.
+        if route_info is not None:
+            request.endpoint = route_info.name
+            request._state["url_rule"] = route_info.path_template
+            early, _bp_name = await self.app._run_before_hooks(request)
+            if early is not None:
+                return _ShortCircuit(early)
+
         exc: BaseException | None = None
         try:
             # Only the argument-binding boundary maps a malformed argument to an
@@ -197,7 +249,12 @@ class MCPServer:
             # `_tools_call`, never leaked onto the JSON-RPC error channel.
             try:
                 kwargs, request = await bind_arguments(
-                    tool.plan, arguments, context, resolver, tool.route_dep_plans
+                    tool.plan,
+                    arguments,
+                    context,
+                    resolver,
+                    tool.route_dep_plans,
+                    request=request,
                 )
             except (TypeError, ValueError, RequestValidationError) as err:
                 raise _ToolInputError(str(err)) from err
@@ -208,7 +265,8 @@ class MCPServer:
             else:
                 # A sync handler runs in the thread pool so it cannot block the
                 # event loop - the same offload the HTTP path applies, with the
-                # current context copied so contextvars stay readable.
+                # current context copied so contextvars (`current_app` / `g` /
+                # the `request` proxy) stay readable in the worker thread.
                 loop = asyncio.get_running_loop()
                 ctx = contextvars.copy_context()
                 result = await loop.run_in_executor(
@@ -225,12 +283,38 @@ class MCPServer:
                     await tasks.run_all()
                 except Exception:
                     _logger.exception("MCP background task failed")
+
+            # A handler that built its own `Response(background=...)` carries
+            # side effects the HTTP path schedules in addition to the injected
+            # queue. Run them here too so those effects are not lost over MCP.
+            await self._run_response_background(result)
             return result
         except BaseException as err:  # noqa: BLE001 - re-raised after teardown
             exc = err
             raise
         finally:
             await resolver.run_teardowns(exc)
+
+    @staticmethod
+    async def _run_response_background(result: Any) -> None:
+        """Run a returned `Response`'s `background` task, mirroring the HTTP path.
+
+        The HTTP path schedules `response.background` (a `BackgroundTask` or a
+        `BackgroundTasks` collection) in addition to the DI-injected queue.
+        A task error is logged, never allowed to fail the produced tool result.
+        """
+        if not isinstance(result, Response):
+            return
+        background = result.background
+        if background is None:
+            return
+        try:
+            if hasattr(background, "run_all"):
+                await background.run_all()
+            elif hasattr(background, "run"):
+                await background.run()
+        except Exception:
+            _logger.exception("MCP response background task failed")
 
     async def _instrument(self, tool: MCPTool, started: float) -> None:
         """Fire the app instrumentation hooks for a finished tool call.
@@ -266,6 +350,19 @@ class _ToolInputError(Exception):
     """A malformed tool call - reported as a JSON-RPC invalid-params error."""
 
 
+class _StreamingNotSupported(Exception):
+    """A route returned a streaming/SSE response, unsupported as an MCP tool (v1)."""
+
+
+class _ShortCircuit:
+    """A `before_request` hook's `Response`, returned in place of the handler call."""
+
+    __slots__ = ("response",)
+
+    def __init__(self, response: Response) -> None:
+        self.response = response
+
+
 def _error(msg_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
 
@@ -277,7 +374,13 @@ def _response_body_value(response: Response) -> Any:
     carries the same JSON the HTTP client would receive; any other body decodes
     to its text. The body bytes are the already-rendered response body, so no
     further response-model work is needed.
+
+    A streaming / SSE response carries its payload on `_stream`, not `.body`, so
+    v1 cannot serialise it; rather than silently yielding an empty result, this
+    raises `_StreamingNotSupported`, surfaced as an in-band tool error.
     """
+    if response.is_streamed:
+        raise _StreamingNotSupported("streaming responses are not supported as MCP tools (v1)")
     body = response.body
     if not body:
         return ""

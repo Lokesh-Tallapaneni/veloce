@@ -57,6 +57,20 @@ async def create_user(user: User):
 Every exposed handler must carry a non-empty `mcp_description`. A missing
 description raises at registration time, before the server starts.
 
+An exposed route is invoked inside the same request context an HTTP request
+runs in: `current_app`, `g`, and the `request` proxy are bound, and the app's
+`@app.before_request` hooks run before the handler. A hook that returns a
+response (an auth `401`, for example) short-circuits the call - the handler is
+not invoked and the response becomes the tool result, surfaced as an error when
+its status is `4xx`/`5xx`.
+
+### Streaming responses (v1 limitation)
+
+A route returning a `StreamingResponse` or server-sent events has no buffered
+body, so v1 cannot serialise it as a tool result. Such a call returns a clear
+error result rather than empty output. Expose a buffered-response variant of
+the endpoint if an agent needs the data.
+
 ## The MCP context
 
 A tool handler (or one of its dependencies) may declare a parameter typed
@@ -129,6 +143,11 @@ if __name__ == "__main__":
 
 Point your MCP client at this script as a subprocess command; it will receive
 `initialize`, `tools/list`, and `tools/call` and respond on stdout.
+
+The serve loop runs inside the app's lifespan, so every `@app.on_startup`
+handler (database pools, `app.state`, caches) and the lifespan context manager
+run before the first tool is served, and the matching shutdown runs after the
+input closes - exactly as when the app is served by an ASGI server.
 
 ## Instrumentation
 

@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MCPContext` is importable from the top-level `veloce` package; the server
   and transport classes live under `veloce.contrib.mcp`. The implementation is
   a from-spec minimal JSON-RPC handshake with no new hard dependency.
+  `mount_mcp` serves inside the app's lifespan, so `on_startup` handlers and the
+  lifespan context manager run before the first tool is served and the matching
+  shutdown runs after. An exposed route runs inside the normal request context
+  (`current_app`, `g`, and the `request` proxy are bound and `before_request`
+  hooks run first); a hook that returns a response short-circuits the call and
+  becomes the tool result, surfaced as an error for a `4xx`/`5xx` status. A
+  dependency typed `MCPContext` receives the per-call context. A handler that
+  returns `Response(background=...)` has those background tasks run, mirroring
+  the HTTP path. A route returning a streaming/SSE response is rejected with a
+  clear error result rather than empty output (a v1 limitation).
 
 - `ServerSentEvent.json` builds an event whose `data` field is a
   JSON-serialized payload. Pass any JSON-encodable value (`dict`, `list`,

@@ -2193,6 +2193,12 @@ class Veloce(Router):
         on stdin/stdout, for subprocess use); the coroutine runs until stdin
         closes. Returns the awaitable serve coroutine so a caller may schedule
         it explicitly (`asyncio.run(app.mount_mcp())`).
+
+        The serve loop runs inside the app's `lifespan_context()`, so the same
+        startup sequence an ASGI server enters - the lifespan context manager
+        plus every `on_startup` handler (DB pools, `app.state`, caches) - runs
+        before the first tool is served, and the matching shutdown sequence
+        runs after stdin closes.
         """
         from veloce.contrib.mcp.server import MCPServer
         from veloce.contrib.mcp.transports.stdio import serve_stdio
@@ -2203,7 +2209,12 @@ class Veloce(Router):
                 "(HTTP / SSE transports are planned for v2)."
             )
         server = MCPServer(self)
-        return serve_stdio(server)
+
+        async def _serve() -> None:
+            async with self.lifespan_context():
+                await serve_stdio(server)
+
+        return _serve()
 
     # -- Request handling -----------------------------------------
 

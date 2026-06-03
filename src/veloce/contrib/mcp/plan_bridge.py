@@ -281,6 +281,7 @@ async def bind_arguments(
     context: MCPContext,
     resolver: DependencyResolver,
     route_dep_plans: list[Any] | None = None,
+    request: Request | None = None,
 ) -> tuple[dict[str, Any], Request]:
     """Resolve handler kwargs for a tool call from the JSON `arguments`.
 
@@ -303,6 +304,12 @@ async def bind_arguments(
     """
     resolver.reset()
 
+    # Expose the MCPContext to the resolver so a sub-dependency that declares a
+    # parameter typed `MCPContext` receives it. The top-level handler's context
+    # slot is bound below directly; this covers the same type appearing inside
+    # any `Depends` sub-plan, which the resolver binds by declared type.
+    resolver._mcp_context = context
+
     # A real, minimal Request stands in for the HTTP request the resolver and
     # handler expect (mirroring WS DI, which passes a WebSocket). The JSON
     # `arguments` map is handed to the resolver where the HTTP path hands
@@ -310,8 +317,11 @@ async def bind_arguments(
     # like a tool argument then sources its value from `arguments`, with the
     # same string coercion the HTTP path applies to a path parameter. Tools have
     # no URL path, so this is the only place an agent-supplied value can enter
-    # the DI graph. Built once per call and reused for every Request slot.
-    request = _build_request(context.tool_name)
+    # the DI graph. Built once per call and reused for every Request slot. A
+    # caller that already bound this request onto the request context (the
+    # route-derived path, which runs `before_request` first) passes it in.
+    if request is None:
+        request = _build_request(context.tool_name)
 
     # Route-level dependencies run before the handler graph (RFC-equivalent to
     # the HTTP/WS paths), so an auth/permission guard fires even though the
