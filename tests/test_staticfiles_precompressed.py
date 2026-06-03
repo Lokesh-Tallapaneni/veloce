@@ -201,3 +201,53 @@ async def test_identity_precompressed_range_carries_vary(tmp_path):
     assert "Content-Encoding" not in resp.headers
     assert resp.headers["Vary"] == "Accept-Encoding"
     assert resp.body == b"RAW"
+
+
+@pytest.mark.asyncio
+async def test_406_when_identity_rejected_and_no_variant(tmp_path):
+    # No usable compressed sibling exists, and the client explicitly rejected
+    # identity along with every coding (`identity;q=0, br;q=0, gzip;q=0`). Per
+    # RFC 9110 Sec. 12.5.3 the raw asset is unacceptable, so respond 406 rather
+    # than serving the uncompressed bytes the client refused.
+    (tmp_path / "app.css").write_bytes(b"body{color:red}")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(
+        _req("/s/app.css", {"Accept-Encoding": "identity;q=0, br;q=0, gzip;q=0"})
+    )
+    assert resp.status_code == 406
+
+
+@pytest.mark.asyncio
+async def test_identity_served_when_no_accept_encoding(tmp_path):
+    # A missing Accept-Encoding expresses no preference, so identity stays
+    # acceptable and the uncompressed asset is served with 200.
+    (tmp_path / "app.css").write_bytes(b"body{color:red}")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css"))
+    assert resp.status_code == 200
+    assert resp.body == b"body{color:red}"
+    assert "Content-Encoding" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_identity_served_when_only_compression_rejected(tmp_path):
+    # The client rejects br/gzip but does not exclude identity, so the
+    # uncompressed asset is still acceptable (200), not 406.
+    (tmp_path / "app.css").write_bytes(b"body{color:red}")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "br;q=0, gzip;q=0"}))
+    assert resp.status_code == 200
+    assert resp.body == b"body{color:red}"
+    assert "Content-Encoding" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_precompressed_false_ignores_identity_rejection(tmp_path):
+    # With precompressed=False the handler does not content-negotiate encoding,
+    # so an `identity;q=0` rejection must not trigger 406 - behavior is
+    # unchanged from a plain static handler.
+    (tmp_path / "app.css").write_bytes(b"body{color:red}")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=False)
+    resp = await sf.handle(_req("/s/app.css", {"Accept-Encoding": "identity;q=0"}))
+    assert resp.status_code == 200
+    assert resp.body == b"body{color:red}"

@@ -432,6 +432,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Signal.asend()` now waits for every async receiver to finish before it
+  returns or raises. When several async receivers were dispatched and one raised
+  early, the non-robust gather re-raised the first failure immediately while the
+  other already-scheduled tasks kept running in the background, so `await
+  asend(...)` could return before dispatch actually completed and a later
+  receiver could touch request-scoped state after teardown. All async receivers
+  now run to completion and the first exception, in receiver order, is re-raised
+  afterwards. `send_robust_async`'s per-receiver result contract is unchanged.
+
+- `StaticFiles(precompressed=True)` now returns `406 Not Acceptable` instead of
+  the uncompressed asset when no acceptable compressed sibling exists and the
+  client rejected the identity coding (for example `Accept-Encoding: identity;q=0,
+  br;q=0, gzip;q=0`). Per RFC 9110 Sec. 12.5.3 identity is acceptable by default
+  unless excluded by `identity;q=0`, or by `*;q=0` without a more specific
+  identity entry re-enabling it. Requests that leave identity acceptable, and
+  handlers with `precompressed=False`, are unaffected.
+
 - `CSPMiddleware` now suppresses its default policy when a route already set a
   `Content-Security-Policy` (or `-Report-Only`) header under any letter case.
   Header field names are case-insensitive (RFC 9110 Sec. 5.1) but `Response`

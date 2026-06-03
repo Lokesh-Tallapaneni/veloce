@@ -381,6 +381,38 @@ async def test_asend_propagates_first_exception():
         await sig.asend("s")
 
 
+async def test_asend_runs_all_async_receivers_before_raising():
+    """asend must not leave async receivers running after it raises.
+
+    The FIRST async receiver raises, but the SECOND must still run to
+    completion before asend re-raises. A `return_exceptions=False` gather
+    would re-raise immediately and let the second receiver finish in the
+    background after teardown.
+    """
+    sig = Signal("asend-wait-all")
+    ran: list[str] = []
+
+    async def first(sender, **kwargs):
+        # Yield once so both receivers are concurrently scheduled, then fail.
+        await asyncio.sleep(0)
+        raise RuntimeError("first-failed")
+
+    async def second(sender, **kwargs):
+        # Outlives `first`; must complete before asend returns/raises.
+        await asyncio.sleep(0.05)
+        ran.append("second")
+
+    sig.connect(first, weak=False)
+    sig.connect(second, weak=False)
+
+    with pytest.raises(RuntimeError, match="first-failed"):
+        await sig.asend("s")
+
+    # The second receiver finished before asend raised - nothing is left
+    # running in the background.
+    assert ran == ["second"]
+
+
 async def test_send_robust_async_concurrent_and_robust():
     sig = Signal("robust-concurrent")
 

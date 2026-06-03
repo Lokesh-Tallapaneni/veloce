@@ -51,6 +51,7 @@ from veloce.status import (
     HTTP_206_PARTIAL_CONTENT,
     HTTP_304_NOT_MODIFIED,
     HTTP_403_FORBIDDEN,
+    HTTP_406_NOT_ACCEPTABLE,
     HTTP_412_PRECONDITION_FAILED,
     HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
 )
@@ -336,6 +337,15 @@ class StaticFiles:
                 return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
             file_path = variant_path
             stat_result = variant_stat
+        elif self.precompressed and not request.accept_encodings.accepts_identity():
+            # No acceptable compressed sibling was found, and the client
+            # explicitly rejected the identity (uncompressed) coding - e.g.
+            # `Accept-Encoding: identity;q=0, br;q=0, gzip;q=0`. RFC 9110
+            # Sec. 12.5.3: serving the raw asset here would return a coding the
+            # client said is not acceptable, so respond 406 instead. Only the
+            # precompressed path content-negotiates encoding, so this never
+            # affects a `precompressed=False` handler.
+            return Response(status_code=HTTP_406_NOT_ACCEPTABLE, body=b"Not Acceptable")
 
         # stat_result was populated by the existence check above; reuse it.
         assert stat_result is not None  # narrowed by the `not is_file` returns

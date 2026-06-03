@@ -74,7 +74,6 @@ def _matches(subscribed: Any, sent: Any) -> bool:
 async def _run_async_concurrently(
     coros: list[Coroutine[Any, Any, Any]],
     *,
-    robust: bool,
     context: contextvars.Context,
 ) -> list[Any]:
     """Run `coros` concurrently, each inside a copy of `context`.
@@ -84,11 +83,15 @@ async def _run_async_concurrently(
     request-local context rather than any value a sync receiver mutated.
     Results are returned positionally, matching the order of `coros`.
 
-    With `robust=False` the first failing coroutine propagates its
-    exception (non-robust contract, like `send`). With `robust=True`
-    every coroutine runs to completion and a failing one yields its
-    `Exception` instance in place of a return value; cancellation of one
-    receiver never cancels the others.
+    Every coroutine always runs to completion - `gather` is driven with
+    `return_exceptions=True`, so a failing receiver yields its `Exception`
+    instance in place of a return value and never cancels the others. This
+    holds for BOTH the robust and non-robust callers: the non-robust
+    `asend` re-raises the first exception itself AFTER this function
+    returns, so by the time it raises no receiver is still running. Using
+    `return_exceptions=False` here would re-raise the first failure
+    immediately while the other already-scheduled tasks keep executing in
+    the background, leaking receivers past the point `asend` returns.
     """
     if not coros:
         return []
@@ -96,12 +99,11 @@ async def _run_async_concurrently(
         # `Task.__init__` gained a per-task `context=` in 3.11, so each
         # receiver can run under its own copy of the dispatch-time
         # snapshot. Drive the tasks through `gather`, which preserves
-        # positional ordering and - with `return_exceptions=False` -
-        # propagates the first failure directly (non-robust contract),
-        # never an ExceptionGroup.
+        # positional ordering and, with `return_exceptions=True`, waits
+        # for every task to finish (no ExceptionGroup, no early cancel).
         loop = asyncio.get_running_loop()
         tasks = [loop.create_task(coro, context=context.copy()) for coro in coros]
-        return await asyncio.gather(*tasks, return_exceptions=robust)
+        return await asyncio.gather(*tasks, return_exceptions=True)
 
     # 3.10 fallback: neither `asyncio.gather` nor `Task.__init__` accept a
     # per-task `context=` before 3.11. A bare `gather` would create the
@@ -110,7 +112,7 @@ async def _run_async_concurrently(
     # inside the dispatch-time snapshot so they capture it instead; the
     # only 3.10 difference from 3.11 is that the tasks share that context
     # rather than each getting an isolated copy.
-    return await context.run(lambda: asyncio.gather(*coros, return_exceptions=robust))
+    return await context.run(lambda: asyncio.gather(*coros, return_exceptions=True))
 
 
 # -- Signal ----------------------------------------------------------
@@ -303,6 +305,15 @@ class Signal:
         copy of the dispatch-time context. Like `send`, the first failing
         receiver propagates its exception (non-robust contract); use
         `send_robust_async` to capture per-receiver failures instead.
+
+        Even on the non-robust path every async receiver runs to
+        completion before this coroutine returns OR raises: the concurrent
+        run collects all results (failures included), and only afterwards
+        is the first exception, in receiver order, re-raised. This
+        guarantees no receiver is still touching request-scoped state once
+        `asend` has returned - a `return_exceptions=False` gather would
+        instead re-raise the first failure while later receivers kept
+        running in the background past teardown.
         """
         # Snapshot the dispatch-time context BEFORE any sync receiver runs.
         # Sync receivers run inline below and may mutate ContextVars; async
@@ -321,10 +332,18 @@ class Signal:
                 targets.append((target, None, True))
             else:
                 targets.append((target, value, False))
-        awaited = await _run_async_concurrently(coros, robust=False, context=dispatch_context)
+        awaited = await _run_async_concurrently(coros, context=dispatch_context)
+        # All async receivers have now finished. Fill in their results, and
+        # remember the first one (in receiver/registration order) that raised
+        # so it can be re-raised below - after every task has completed.
+        first_exc: BaseException | None = None
         for slot, result in zip(coro_slots, awaited, strict=True):
             target, _, _ = targets[slot]
             targets[slot] = (target, result, True)
+            if first_exc is None and isinstance(result, BaseException):
+                first_exc = result
+        if first_exc is not None:
+            raise first_exc
         return [(target, value) for target, value, _ in targets]
 
     async def send_robust_async(self, sender: Any = None, **kwargs: Any) -> SignalResult:
@@ -360,7 +379,7 @@ class Signal:
                 targets.append((target, None))
             else:
                 targets.append((target, value))
-        awaited = await _run_async_concurrently(coros, robust=True, context=dispatch_context)
+        awaited = await _run_async_concurrently(coros, context=dispatch_context)
         for slot, result in zip(coro_slots, awaited, strict=True):
             target = targets[slot][0]
             if isinstance(result, Exception):

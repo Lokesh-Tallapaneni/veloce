@@ -526,6 +526,29 @@ class AcceptHeader:
                 return q
         return 0.0
 
+    def accepts_identity(self) -> bool:
+        """Whether the `identity` (no-encoding) coding is acceptable per RFC 9110.
+
+        RFC 9110 Sec. 12.5.3: `identity` is acceptable by default unless it is
+        explicitly excluded. It is UNacceptable only when an explicit `identity`
+        entry carries `q=0`, OR when `identity` is not explicitly listed and a
+        `*` wildcard entry carries `q=0` (the wildcard rejects every coding not
+        named, including identity). A missing header, or any header that does
+        not exclude identity, leaves identity acceptable. Token comparison is
+        case-insensitive (Sec. 8.4.1). Used by precompressed static selection to
+        decide between serving the uncompressed asset and returning 406.
+        """
+        for opt, q in self._options:
+            if opt.lower() == "identity":
+                # Explicit entry wins: identity is acceptable iff its q > 0.
+                return q > 0
+        for opt, q in self._options:
+            if opt == "*":
+                # Identity not named; the wildcard's q decides it.
+                return q > 0
+        # Neither identity nor `*` listed - identity stays acceptable by default.
+        return True
+
     def best_match(self, options: list[str], default: str | None = None) -> str | None:
         """Return the option the client accepts with the highest q-value.
 
