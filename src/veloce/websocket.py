@@ -961,6 +961,14 @@ class WebSocket:
         masked = bool(buf[start + 1] & 0x80)
         payload_len = buf[start + 1] & 0x7F
 
+        # RFC 6455 Sec. 5.2: RSV1-3 (mask 0x70) MUST be zero unless an
+        # extension that defines them was negotiated. Veloce negotiates no
+        # permessage-deflate / extension, so any reserved bit set is a 1002
+        # protocol error. Rejected before length resolution / allocation.
+        if buf[start] & 0x70:
+            self._close_protocol_error()
+            return 0
+
         offset = 2
         if payload_len == 126:
             if n < 4:
@@ -1067,9 +1075,10 @@ class WebSocket:
                     return 0
         elif opcode == 0x0:  # Continuation frame.
             if self._frag_opcode is None:
-                # A continuation with no message in progress is a protocol
-                # error - drop the stray frame rather than corrupt state.
-                return frame_len
+                # RFC 6455 Sec. 5.4: a continuation frame with no message in
+                # progress is a protocol error - close with 1002.
+                self._close_protocol_error()
+                return 0
             # Validate continuation bytes against the in-progress message's
             # UTF-8 state (a no-op for a binary message, whose validator is
             # None) before appending.

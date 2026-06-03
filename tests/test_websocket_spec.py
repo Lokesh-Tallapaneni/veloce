@@ -281,26 +281,31 @@ async def test_websocket_control_frame_interleaved_in_fragmented_message():
     assert ws._receive_queue.get_nowait() == b"AAAABBBB"
 
 
-async def test_websocket_stray_continuation_frame_is_ignored():
-    """A continuation frame with no message in progress is dropped rather
-    than corrupting reassembly state."""
-    ws, _ = _make_ws()
+async def test_websocket_stray_continuation_frame_is_protocol_error():
+    """A continuation frame with no message in progress is a protocol error
+    (RFC 6455 §5.4) - the connection closes with 1002."""
+    ws, transport = _make_ws()
     ws.feed_data(_client_frame(0x0, b"orphan", fin=True))
-    assert ws._receive_queue.empty()
+    assert ws._closed is True
+    close = [w for w in transport.writes if w[0] & 0x0F == 0x8]
+    assert close and struct.unpack("!H", close[-1][2:4])[0] == 1002
 
 
 async def test_websocket_data_frame_clears_abandoned_fragment_state():
     """A complete data frame arriving mid-fragmentation (a peer protocol
     error) discards the abandoned partial and clears reassembly state, so
-    a later continuation does not append to a stale buffer."""
-    ws, _ = _make_ws()
+    a later continuation finds no message in progress."""
+    ws, transport = _make_ws()
     ws.feed_data(_client_frame(0x1, b"abandoned-", fin=False))  # opens a fragment
     ws.feed_data(_client_frame(0x1, b"complete", fin=True))  # interrupts it
     assert ws._receive_queue.get_nowait() == b"complete"
     # State was cleared — a stray continuation now finds no message in
-    # progress and is dropped, rather than appending to "abandoned-".
+    # progress and is a 1002 protocol error rather than appending to the
+    # abandoned buffer (RFC 6455 §5.4).
     ws.feed_data(_client_frame(0x0, b"stale", fin=True))
-    assert ws._receive_queue.empty()
+    assert ws._closed is True
+    close = [w for w in transport.writes if w[0] & 0x0F == 0x8]
+    assert close and struct.unpack("!H", close[-1][2:4])[0] == 1002
 
 
 # ── C3 — receive-side state-machine guards ─────────────────────────

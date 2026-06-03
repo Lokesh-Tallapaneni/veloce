@@ -212,6 +212,48 @@ async def test_application_close_code_above_3000_accepted():
     assert ws.close_code == 4000
 
 
+# ── RSV-bit + stray-continuation framing (RFC 6455 §5.2 / §5.4) ─────────
+
+
+def _with_rsv(frame: bytes, rsv_mask: int) -> bytes:
+    """Set reserved bit(s) on an existing frame's first byte."""
+    return bytes([frame[0] | rsv_mask]) + frame[1:]
+
+
+async def test_rsv1_bit_set_closes_with_1002():
+    ws, transport = _make_ws()
+    ws.feed_data(_with_rsv(_client_frame(0x1, b"hi", fin=True), 0x40))
+    assert ws._closed is True
+    assert transport.closed is True
+    assert _last_close_code(transport) == 1002
+    # Payload never reached the application queue.
+    from veloce.websocket import _RAW_DISCONNECT
+
+    assert ws._receive_queue.get_nowait() is _RAW_DISCONNECT
+
+
+@pytest.mark.parametrize("rsv_mask", [0x20, 0x10])
+async def test_rsv2_and_rsv3_bits_rejected(rsv_mask):
+    ws, transport = _make_ws()
+    ws.feed_data(_with_rsv(_client_frame(0x2, b"\x00\x01", fin=True), rsv_mask))
+    assert ws._closed is True
+    assert _last_close_code(transport) == 1002
+
+
+async def test_stray_continuation_without_message_closes_with_1002():
+    ws, transport = _make_ws()
+    ws.feed_data(_client_frame(0x0, b"orphan", fin=True))
+    assert ws._closed is True
+    assert _last_close_code(transport) == 1002
+
+
+async def test_clean_frame_with_zero_rsv_still_delivered():
+    """The 0x70 mask must not false-positive on FIN/opcode bits."""
+    ws, _ = _make_ws()
+    ws.feed_data(_client_frame(0x1, b"hello", fin=True))
+    assert ws._receive_queue.get_nowait().decode("utf-8") == "hello"
+
+
 async def test_close_frame_with_invalid_utf8_reason_closes_with_1007():
     ws, transport = _make_ws()
     body = struct.pack("!H", 1000) + b"\xff\xfe"
