@@ -159,9 +159,19 @@ class MCPServer:
         resolver._override_subplans = self.app._override_subplans
         exc: BaseException | None = None
         try:
-            kwargs = await bind_arguments(
-                tool.plan, arguments, context, resolver, tool.route_dep_plans
-            )
+            # Only the argument-binding boundary maps a TypeError (a missing or
+            # mis-typed argument) to an invalid-params transport error. The
+            # handler call lives outside this guard so any exception raised in
+            # the handler body - including a genuine TypeError - propagates and
+            # is surfaced as an in-band isError result by `_tools_call`, never
+            # leaked onto the JSON-RPC error channel.
+            try:
+                kwargs = await bind_arguments(
+                    tool.plan, arguments, context, resolver, tool.route_dep_plans
+                )
+            except TypeError as err:
+                raise _ToolInputError(str(err)) from err
+
             handler = tool.handler
             if _is_async_callable(handler):
                 return await handler(**kwargs)
@@ -171,10 +181,6 @@ class MCPServer:
             loop = asyncio.get_running_loop()
             ctx = contextvars.copy_context()
             return await loop.run_in_executor(None, ctx.run, functools.partial(handler, **kwargs))
-        except TypeError as err:
-            # A missing required argument surfaces here as a TypeError from the
-            # call; report it as an input error the agent can correct.
-            raise _ToolInputError(str(err)) from err
         except BaseException as err:  # noqa: BLE001 - re-raised after teardown
             exc = err
             raise

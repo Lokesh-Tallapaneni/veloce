@@ -42,6 +42,11 @@ if TYPE_CHECKING:  # pragma: no cover
 # schema build; bound to the MCPContext or resolved at call time.
 _SKIP_INPUT_KINDS = frozenset({K_REQUEST, K_DEPENDS})
 
+# Slot kinds an agent supplies as a JSON argument (the kinds `_slot_schema`
+# turns into a declared input property). A required slot of one of these kinds
+# that is absent from `arguments` is a binding error, not a handler error.
+_INPUT_KINDS = frozenset({K_BODY_MODEL, K_QUERY_LIST, K_PARAM_MARKER, K_QUERY})
+
 
 def _is_context_slot(slot: _Slot) -> bool:
     """Whether `slot` binds the MCPContext rather than an agent input.
@@ -120,14 +125,24 @@ def _collect_defs(schema: dict[str, Any], schemas_registry: dict[str, dict]) -> 
 
 
 def _rewrite_refs(node: Any) -> set[str]:
-    """Rewrite OpenAPI refs to `$defs` refs in place; return referenced names."""
+    """Rewrite OpenAPI refs to `$defs` refs in place; return referenced names.
+
+    Pydantic stores a nested model's inner refs in their native `#/$defs/<Name>`
+    form (only the top-level wrapper is rewritten to the OpenAPI prefix), and
+    the referenced component lives in `schemas_registry` under its bare name.
+    Such refs are already in the local MCP form, so they need no rewrite, but
+    the name must still be collected so the component is inlined.
+    """
     names: set[str] = set()
     if isinstance(node, dict):
         ref = node.get("$ref")
-        if isinstance(ref, str) and ref.startswith(_OPENAPI_REF_PREFIX):
-            name = ref[len(_OPENAPI_REF_PREFIX) :]
-            node["$ref"] = _MCP_REF_PREFIX + name
-            names.add(name)
+        if isinstance(ref, str):
+            if ref.startswith(_OPENAPI_REF_PREFIX):
+                name = ref[len(_OPENAPI_REF_PREFIX) :]
+                node["$ref"] = _MCP_REF_PREFIX + name
+                names.add(name)
+            elif ref.startswith(_MCP_REF_PREFIX):
+                names.add(ref[len(_MCP_REF_PREFIX) :])
         for value in node.values():
             names |= _rewrite_refs(value)
     elif isinstance(node, list):
@@ -286,7 +301,11 @@ async def bind_arguments(
             kwargs[name] = slot.default
         elif slot.is_optional:
             kwargs[name] = None
-        # A required input that is absent is left unset so the handler raises
-        # a clear TypeError; the server surfaces it as an error result.
+        elif kind in _INPUT_KINDS:
+            # A required agent input is absent. Raise at the binding boundary
+            # (not by leaving the kwarg unset for the handler to trip over) so
+            # the server maps it to an invalid-params error the agent can
+            # correct, never confusing it with a handler-body failure.
+            raise TypeError(f"missing required argument: {name!r}")
 
     return kwargs

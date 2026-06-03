@@ -51,6 +51,16 @@ class Item(BaseModel):
     qty: int
 
 
+class Address(BaseModel):
+    city: str
+    zip: str
+
+
+class Customer(BaseModel):
+    name: str
+    address: Address
+
+
 # -- Registration -----------------------------------------------------
 
 
@@ -143,6 +153,30 @@ def test_pydantic_input_schema_is_self_contained():
     assert set(schema["$defs"][name]["properties"]) == {"name", "qty"}
 
 
+def test_nested_pydantic_input_schema_is_self_contained():
+    """A model that embeds another model must inline both into `$defs`.
+
+    Pydantic keeps the inner model's ref in its native `#/$defs/<Name>` form
+    inside the outer component; the bridge must still pull that component out
+    of the shared registry so the tool schema has no dangling ref.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Create a customer")
+    async def create_customer(customer: Customer) -> dict:
+        return customer.model_dump()
+
+    registry = build_registry(app)
+    schema = registry.tools["create_customer"].input_schema
+    defs = schema["$defs"]
+    # Both the outer and the nested model are present, with no dangling ref.
+    assert "Customer" in defs
+    assert "Address" in defs
+    inner_ref = defs["Customer"]["properties"]["address"]["$ref"]
+    assert inner_ref == "#/$defs/Address"
+    assert set(defs["Address"]["properties"]) == {"city", "zip"}
+
+
 def test_context_param_excluded_from_schema():
     app = Veloce(openapi_url=None)
 
@@ -225,6 +259,56 @@ def test_call_pydantic_body_model():
     )
     out = asyncio.run(pipe.run())
     assert out[0]["result"]["content"][0]["text"] == "3x widget"
+
+
+def test_missing_required_argument_is_invalid_params():
+    """A missing required argument is an invalid-params transport error."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "add", "arguments": {"a": 1}},
+        }
+    )
+    out = asyncio.run(pipe.run())
+    # Argument-binding failure routes to the JSON-RPC error channel, not an
+    # in-band result, so the agent learns its call was malformed.
+    assert "result" not in out[0]
+    assert out[0]["error"]["code"] == -32602
+
+
+def test_handler_internal_type_error_is_in_band():
+    """A TypeError raised inside the handler body is an in-band tool error."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Trip on a bad operand inside the body")
+    async def buggy(n: int) -> int:
+        # A genuine handler bug raises TypeError; it must not be misread as an
+        # invalid-params transport error.
+        return n + "x"  # type: ignore[operator]
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "buggy", "arguments": {"n": 1}},
+        }
+    )
+    out = asyncio.run(pipe.run())
+    # The handler error is surfaced in-band (isError=true), never on the
+    # JSON-RPC error channel.
+    assert "error" not in out[0]
+    assert out[0]["result"]["isError"] is True
 
 
 def test_unknown_method_returns_method_not_found():
