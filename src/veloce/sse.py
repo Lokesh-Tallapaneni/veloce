@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
+
+import orjson
 
 from veloce._constants import (
     HEADER_CACHE_CONTROL,
@@ -19,6 +21,7 @@ from veloce._constants import (
     MIME_TEXT_EVENT_STREAM,
 )
 from veloce._internal import _encode_response_head
+from veloce.encoders import orjson_default
 from veloce.http.response import Response
 from veloce.status import HTTP_200_OK
 
@@ -44,6 +47,32 @@ class ServerSentEvent:
         self.event = event
         self.id = id
         self.retry = retry
+
+    @classmethod
+    def json(
+        cls,
+        payload: Any,
+        *,
+        event: str | None = None,
+        id: str | None = None,
+        retry: int | None = None,
+    ) -> ServerSentEvent:
+        """Build an event whose `data` field is `payload` serialized to JSON.
+
+        Serialization runs once here, off the per-event stream loop, and the
+        result is stored in the plain `data` field - so `encode()` stays the
+        same branch-free path it is for a raw `data=` string. Use the regular
+        constructor when the payload is already a formatted string.
+        """
+        return cls(
+            # Use the same orjson fallback the JSON response stack uses, so a
+            # payload that serialises in `JSONResponse`/`app.json` also works
+            # when streamed over SSE (e.g. Decimal, set, Path).
+            data=orjson.dumps(payload, default=orjson_default).decode("utf-8"),
+            event=event,
+            id=id,
+            retry=retry,
+        )
 
     def encode(self) -> bytes:
         """Encode the event as an SSE-formatted byte string."""
@@ -124,8 +153,19 @@ class EventSourceResponse(Response):
         # `bytes` stream - see `_encode_stream`.
         self._stream = self._encode_stream(content)
 
-    async def stream_to(self, transport: Any) -> None:
-        """Stream SSE events to transport."""
+    async def stream_to(
+        self,
+        transport: Any,
+        drain: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        """Stream SSE events to transport.
+
+        When `drain` is supplied (the raw serving protocol passes its write-side
+        flow-control awaitable) it is awaited after each event, so a fast event
+        producer feeding a slow client is throttled at the transport buffer
+        instead of growing it without bound. It is a no-op until the buffer
+        crosses the high-water mark.
+        """
         default_headers = {
             HEADER_CONTENT_TYPE: self.content_type,
             HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
@@ -143,6 +183,8 @@ class EventSourceResponse(Response):
             # bytes object per chunk.
             size = format(len(chunk), "x").encode("ascii")
             transport.writelines((size, b"\r\n", chunk, b"\r\n"))
+            if drain is not None:
+                await drain()
 
         transport.write(b"0\r\n\r\n")
 

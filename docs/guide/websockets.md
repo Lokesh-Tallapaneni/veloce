@@ -56,6 +56,33 @@ async def chat(ws):
         await ws.send_text(f"you said: {message}")
 ```
 
+## Inbound validation and close codes
+
+Incoming text frames are validated as UTF-8 at the parser boundary (RFC 6455
+§8.1). A frame carrying invalid UTF-8 closes the connection with
+`1007 Invalid Frame Payload Data` rather than surfacing a raw
+`UnicodeDecodeError` from `receive_text()`. Binary frames are not validated.
+
+When the peer closes, the close code and reason are exposed on the connection,
+and the raised `WebSocketDisconnect` carries the peer's close code:
+
+```python
+@app.websocket("/chat")
+async def chat(ws: WebSocket):
+    await ws.accept()
+    try:
+        async for message in ws.iter_text():
+            await ws.send_text(message)
+    except WebSocketDisconnect as exc:
+        # exc.code, ws.close_code and ws.close_reason describe the peer close.
+        log.info("closed %s: %s", ws.close_code, ws.close_reason)
+```
+
+`close_code` is `None` until the peer closes; an empty close payload records
+`1005` ("no status received"). A malformed close code (below 1000, a reserved
+code such as 1006, or an unassigned code below 3000) closes with
+`1002 Protocol Error`, and a non-UTF-8 reason closes with `1007`.
+
 ## Idle-receive timeout
 
 A peer that opens a connection and then goes silent ties up server resources
@@ -98,6 +125,34 @@ connection open, while the idle window closing raises `WebSocketDisconnect`.
     seconds. It can also be supplied at construction via
     `WebSocket(..., idle_timeout=...)` and `WebSocket.from_asgi(...,
     idle_timeout=...)`.
+
+## Proactive heartbeat
+
+`idle_timeout` only fires while a receive is in flight, and a peer that
+vanishes without sending a TCP FIN/RST (common behind NAT and load balancers)
+can leave a connection half-open indefinitely. On the raw-transport serving
+path, pass `heartbeat=<seconds>` to actively probe the peer:
+
+```python
+@app.websocket("/chat")
+async def chat(ws: WebSocket):
+    ws = WebSocket(transport, headers, heartbeat=20)
+    await ws.accept()
+    ...
+```
+
+After `accept()` a timer sends an application PING carrying a token every
+`heartbeat` seconds. The peer must answer with a PONG (or send any other
+frame) before the next tick; any inbound byte defers the probe, so a busy
+connection never pays for needless pings. Two consecutive idle windows with no
+matching PONG drop the connection and record `1006` on `ws.close_code` (the
+reserved abnormal-closure code is recorded but never sent on the wire). Call
+`ws.start_heartbeat()` to arm the timer for a connection you build by hand.
+
+!!! note "Added in version 0.4"
+    `heartbeat` is opt-in and raw-transport only. The default `None` preserves
+    the previous behaviour, and the value is inert under ASGI, where the server
+    owns ping/pong. The value must be a finite positive number of seconds.
 
 ## Subprotocol negotiation
 

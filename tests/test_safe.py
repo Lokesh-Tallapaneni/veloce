@@ -91,6 +91,10 @@ def test_secure_filename_blocks_windows_reserved_names():
     assert secure_filename("CON.txt") == "_CON.txt"
     # Case-insensitive.
     assert secure_filename("con") == "_con"
+    # `secure_filename` sanitises `$` to `_` and strips the trailing `_`,
+    # so the console aliases never reach the device check here - they are
+    # covered by `safe_join` below, which inspects raw segments.
+    assert secure_filename("CONIN$") == "CONIN"
 
 
 def test_secure_filename_preserves_hyphen_underscore_dot():
@@ -201,3 +205,33 @@ def test_safe_join_equality_branch_with_no_components(monkeypatch):
 
     base = os.path.abspath("/srv/uploads")
     assert safe_join("/srv/uploads") == base
+
+
+# ── safe_join Windows device-name rejection ──────────────────────────
+
+
+@pytest.mark.parametrize(
+    "segment",
+    ["COM1", "com1", "LPT9", "NUL", "CONIN$", "sub/COM1", "COM1.txt", "COM1.", "COM1 "],
+)
+def test_safe_join_rejects_windows_device_names(monkeypatch, segment):
+    # Force the NT-only guard on so the rejection is exercised on any OS.
+    monkeypatch.setattr("veloce.safe._IS_NT", True)
+    assert safe_join("/srv/static", segment) is None
+
+
+@pytest.mark.parametrize("segment", ["com10", "report.txt", "config.ini", "CONfig"])
+def test_safe_join_allows_non_device_lookalikes(monkeypatch, segment):
+    # Names that merely start with a device token are ordinary files.
+    monkeypatch.setattr("veloce.safe._IS_NT", True)
+    assert safe_join("/srv/static", segment) is not None
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows abspath maps device names to \\\\.\\COM1 regardless of the guard",
+)
+def test_safe_join_device_guard_is_noop_off_windows(monkeypatch):
+    # On POSIX (_IS_NT False) device names are passed through untouched.
+    monkeypatch.setattr("veloce.safe._IS_NT", False)
+    assert safe_join("/srv/static", "COM1") is not None

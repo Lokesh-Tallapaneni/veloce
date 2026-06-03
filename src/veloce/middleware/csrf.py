@@ -44,16 +44,33 @@ Veloce-specific knobs:
   stays replayable.
 - `token_factory` - overridable for tests; default
   `secrets.token_urlsafe(32)`.
+- `trusted_origins` - when set, an Origin-first verification stage runs
+  **before** the double-submit check on state-changing requests. The
+  request's own origin (`scheme://host[:port]`, sourced from the ASGI
+  scope rather than spoofable headers) is always trusted; additional
+  cross-origin callers are listed here as full origins
+  (`"https://app.example.com"`). A leading-dot host wildcard
+  (`"https://.example.com"`) trusts that host and any subdomain of it.
+  A present-but-mismatched `Origin` header is a hard 403. When `Origin`
+  is absent the stage falls back to `Referer` only on https requests
+  (where browsers always send one); plain-HTTP requests with no Origin -
+  typical of non-browser API clients - skip straight to double-submit.
+  Double-submit always still runs, so a single Origin bypass is not
+  sufficient. This closes the cookie-injection / related-domain CSRF
+  class that pure double-submit cannot defend.
 """
 
 from __future__ import annotations
 
 import secrets
 from typing import Any
+from urllib.parse import urlsplit
 
 from veloce import status
 from veloce._constants import (
     HEADER_CONTENT_TYPE,
+    HEADER_ORIGIN,
+    HEADER_REFERER,
     HEADER_X_CSRF_TOKEN,
     MIME_FORM_URLENCODED,
     MIME_MULTIPART_FORM_DATA,
@@ -63,6 +80,7 @@ from veloce._protocol_constants import (
     HTTP_METHOD_HEAD,
     HTTP_METHOD_OPTIONS,
     HTTP_METHOD_TRACE,
+    URL_SCHEME_HTTPS,
 )
 from veloce.http.request import Request
 from veloce.http.response import JSONResponse, Response
@@ -90,6 +108,7 @@ class CSRFMiddleware(Middleware):
         token_factory: Any = None,
         secret: str | None = None,
         max_age: int | None = None,
+        trusted_origins: tuple[str, ...] | None = None,
     ) -> None:
         self.cookie_name = cookie_name
         self.header_name = header_name
@@ -99,6 +118,29 @@ class CSRFMiddleware(Middleware):
         self.cookie_httponly = cookie_httponly
         self.cookie_samesite = cookie_samesite
         self.token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
+        # Origin allow-list. An empty list keeps the legacy pure
+        # double-submit behaviour; a non-empty list activates the
+        # Origin-first stage. Each entry is split once at construction
+        # into (scheme, exact-host-or-None, suffix-or-None) so the
+        # per-request comparison is a couple of cheap string equalities
+        # rather than a parse. A leading-dot host such as
+        # ``https://.example.com`` matches the bare host and any
+        # subdomain via a suffix test.
+        self._trusted: tuple[tuple[str, str | None, str | None], ...] = ()
+        if trusted_origins:
+            parsed: list[tuple[str, str | None, str | None]] = []
+            for origin in trusted_origins:
+                split = urlsplit(origin)
+                scheme = split.scheme.lower()
+                # Drop a default port here too, so a configured wildcard or
+                # exact origin written with `:443`/`:80` still matches a
+                # browser Origin/Referer that omits it.
+                host = self._strip_default_port(scheme, split.netloc.lower())
+                if host.startswith("."):
+                    parsed.append((scheme, None, host[1:]))
+                else:
+                    parsed.append((scheme, host, None))
+            self._trusted = tuple(parsed)
         # When a `secret` is supplied the cookie token is HMAC-signed: a
         # value carrying no valid server signature fails verification
         # even when the attacker also echoes it in the header.
@@ -117,6 +159,16 @@ class CSRFMiddleware(Middleware):
 
         if request.method.upper() in self.safe_methods:
             return None
+
+        # Origin-first stage (active only when `trusted_origins` is set):
+        # confirm the request was issued from a trusted origin before the
+        # double-submit equality is even consulted. This rests on the
+        # transport-derived scheme/host, which an attacker who can only
+        # plant a cookie cannot forge.
+        if self._trusted:
+            denied = self._verify_origin(request)
+            if denied is not None:
+                return denied
 
         # Verification: cookie value must match header OR form field.
         cookie_val = existing
@@ -171,6 +223,76 @@ class CSRFMiddleware(Middleware):
             samesite=self.cookie_samesite,
         )
         return response
+
+    def _verify_origin(self, request: Request) -> Response | None:
+        """Return a 403 Response if the request's origin is untrusted, else None."""
+        scheme = request.scheme.lower()
+        # `request.host` is the Host header verbatim (with port); the
+        # Origin/Referer netloc carries the port too, so compare on the
+        # full authority rather than the port-stripped host.
+        host = request.host.lower()
+        own_scheme = scheme
+        own_host = host
+
+        origin = request.headers.get(HEADER_ORIGIN)
+        if origin is not None:
+            # A present Origin is authoritative: it must match. The
+            # browser sets it on every cross-origin and every unsafe
+            # same-origin request, so a mismatch here is a forgery.
+            if self._origin_allowed(origin, own_scheme, own_host):
+                return None
+            return self._forbidden("CSRF origin mismatch")
+
+        # No Origin header. On https a browser still sends Referer, so a
+        # missing/foreign one is suspicious enough to reject. On plain
+        # http we cannot distinguish a stripped Referer from a non-browser
+        # API client, so we defer to the double-submit factor instead.
+        if scheme != URL_SCHEME_HTTPS:
+            return None
+
+        referer = request.headers.get(HEADER_REFERER)
+        if not referer:
+            return self._forbidden("CSRF referer missing")
+        split = urlsplit(referer)
+        if not split.scheme or not split.netloc:
+            return self._forbidden("CSRF referer malformed")
+        if split.scheme.lower() != URL_SCHEME_HTTPS:
+            return self._forbidden("CSRF referer insecure")
+        referer_origin = f"{split.scheme.lower()}://{split.netloc.lower()}"
+        if self._origin_allowed(referer_origin, own_scheme, own_host):
+            return None
+        return self._forbidden("CSRF referer mismatch")
+
+    @staticmethod
+    def _strip_default_port(scheme: str, netloc: str) -> str:
+        """Drop the scheme's default port so `host` and `host:default` match.
+
+        Browsers omit `:443`/`:80` from `Origin`/`Referer` for default-port
+        requests, but a configured trusted origin may carry an explicit default
+        port; both forms denote the same origin (RFC 6454 Sec. 4).
+        """
+        default = {"https": ":443", "http": ":80", "wss": ":443", "ws": ":80"}.get(scheme)
+        if default and netloc.endswith(default):
+            return netloc[: -len(default)]
+        return netloc
+
+    def _origin_allowed(self, origin: str, own_scheme: str, own_host: str) -> bool:
+        """True if `origin` is the request's own origin or a trusted entry."""
+        split = urlsplit(origin)
+        o_scheme = split.scheme.lower()
+        o_host = self._strip_default_port(o_scheme, split.netloc.lower())
+        if not o_scheme or not o_host:
+            return False
+        if o_scheme == own_scheme and o_host == self._strip_default_port(own_scheme, own_host):
+            return True
+        for t_scheme, t_host, t_suffix in self._trusted:
+            if o_scheme != t_scheme:
+                continue
+            if t_host is not None and o_host == self._strip_default_port(t_scheme, t_host):
+                return True
+            if t_suffix is not None and (o_host == t_suffix or o_host.endswith("." + t_suffix)):
+                return True
+        return False
 
     @staticmethod
     def _matches(candidate: object, cookie_val: str) -> bool:

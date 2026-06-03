@@ -25,7 +25,7 @@ _SWEEP_PROBABILITY = 1.0 / 32
 class Session(dict[str, Any]):
     """The request session - a dict that knows when it has changed."""
 
-    __slots__ = ("new", "modified", "regenerate")
+    __slots__ = ("new", "modified", "regenerate", "accessed")
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         # dict's C-level init populates without routing through our
@@ -37,6 +37,12 @@ class Session(dict[str, Any]):
         # Set by `regenerate_id()` - asks a server-side session backend to
         # mint a fresh id for this session on the next response.
         self.regenerate = False
+        # Flipped True by `Request.session` when a handler reads or writes the
+        # session, so the middleware emits `Vary: Cookie` only on responses
+        # that actually depend on session contents - not merely because an
+        # (even stale) session cookie was present. The initial load does not
+        # set it; only handler-side access does.
+        self.accessed = False
 
     @property
     def permanent(self) -> bool:

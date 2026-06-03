@@ -88,5 +88,103 @@ def test_subclassable_with_pure_dict_loads():
     assert app.json.loads(body) == {"a": 1}
 
 
+def test_dumps_serialises_set_via_default_hook():
+    app = Veloce(openapi_url=None)
+    body = app.json.dumps({"ids": {3, 1, 2}})
+    # Sets are emitted as a sorted list rather than raising TypeError.
+    assert app.json.loads(body) == {"ids": [1, 2, 3]}
+
+
+def test_dumps_serialises_path_decimal_and_bytes():
+    import decimal
+    from pathlib import PurePosixPath
+
+    app = Veloce(openapi_url=None)
+    body = app.json.dumps({"p": PurePosixPath("a/b"), "d": decimal.Decimal("1.5"), "b": b"hi"})
+    assert app.json.loads(body) == {"p": "a/b", "d": 1.5, "b": "hi"}
+
+
+def test_dumps_serialises_arbitrary_object_via_vars():
+    class Point:
+        def __init__(self) -> None:
+            self.x = 1
+            self.y = 2
+
+    app = Veloce(openapi_url=None)
+    body = app.json.dumps({"pt": Point()})
+    assert app.json.loads(body) == {"pt": {"x": 1, "y": 2}}
+
+
+def test_default_hook_recurses_into_nested_unsupported_leaves():
+    import decimal
+
+    class Wrap:
+        def __init__(self) -> None:
+            self.amount = decimal.Decimal("2.5")
+            self.tags = {"b", "a"}
+
+    app = Veloce(openapi_url=None)
+    body = app.json.dumps(Wrap())
+    # The custom object converts via vars(), then orjson re-enters the hook
+    # for the nested Decimal and set members.
+    assert app.json.loads(body) == {"amount": 2.5, "tags": ["a", "b"]}
+
+
+def test_default_hook_applies_with_sort_keys_option():
+    app = Veloce(openapi_url=None)
+    body = app.json.dumps({"b": {2, 1}, "a": 0}, sort_keys=True)
+    assert body == b'{"a":0,"b":[1,2]}'
+
+
+def test_jsonresponse_serialises_set():
+    from veloce.http.response import JSONResponse
+
+    resp = JSONResponse({"vals": {1, 2}})
+    assert resp.body == b'{"vals":[1,2]}'
+
+
+def test_orjson_default_falls_back_to_str_for_slotted_object():
+    from veloce.encoders import orjson_default
+
+    # A slotted object has no __dict__, so vars() fails and the hook returns
+    # str(obj) as a last resort - matching jsonable_encoder's behaviour.
+    class Slotted:
+        __slots__ = ()
+
+    out = orjson_default(Slotted())
+    assert isinstance(out, str)
+
+
+def test_finite_decimal_encodes_as_json_number():
+    import decimal
+
+    from veloce.http.response import JSONResponse
+
+    resp = JSONResponse({"price": decimal.Decimal("1.5")})
+    assert resp.body == b'{"price":1.5}'
+
+
+def test_out_of_float_range_decimal_encodes_as_string_not_null():
+    import decimal
+
+    from veloce.encoders import jsonable_encoder, orjson_default
+
+    # float(Decimal('1E10000')) overflows to inf, which orjson would emit as
+    # JSON null - silently dropping the value. The hook must preserve it as a
+    # string instead. Both encode paths agree.
+    big = decimal.Decimal("1E10000")
+    assert orjson_default(big) == str(big)
+    assert jsonable_encoder(big) == str(big)
+
+
+def test_decimal_nan_encodes_as_string_not_null():
+    import decimal
+
+    from veloce.encoders import orjson_default
+
+    nan = decimal.Decimal("NaN")
+    assert orjson_default(nan) == str(nan)
+
+
 # Add `Any` import for the type-checker.
 from typing import Any  # noqa: E402

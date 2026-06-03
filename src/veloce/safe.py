@@ -28,17 +28,37 @@ _VALID_FILENAME_CHAR = re.compile(r"[^A-Za-z0-9_.\-]")
 _UNDERSCORE_RUN = re.compile(r"_+")
 
 # Windows reserved device names - case-insensitive. Even on POSIX, blocking
-# these prevents subtle cross-platform breakage in mounted Windows shares.
+# these in `secure_filename` prevents subtle cross-platform breakage in
+# mounted Windows shares. `CONIN$`/`CONOUT$` are the console device aliases.
 _WIN_RESERVED = frozenset(
     {
         "CON",
         "PRN",
         "AUX",
         "NUL",
+        "CONIN$",
+        "CONOUT$",
         *(f"COM{i}" for i in range(1, 10)),
         *(f"LPT{i}" for i in range(1, 10)),
     }
 )
+
+# `safe_join`'s device-name guard only matters on Windows, where opening a
+# path whose segment names a device (e.g. `static/COM1`) can hang a worker
+# at `os.stat`. Computed once so POSIX deployments pay no per-request cost.
+_IS_NT = os.name == "nt"
+
+
+def _is_reserved_device(segment: str) -> bool:
+    """Whether a single path segment names a Windows reserved device.
+
+    Windows resolves a device by the name's stem, ignoring any extension and
+    trailing dots/spaces - so `COM1`, `COM1.txt`, `COM1.` and `COM1 ` all hit
+    the `COM1` device. A longer name that merely starts with a device token
+    (`COM10`, `CONfig`) is a normal file and is not matched.
+    """
+    stem = segment.partition(".")[0].rstrip(" .").upper()
+    return stem in _WIN_RESERVED
 
 
 def constant_time_compare(a: str | bytes, b: str | bytes) -> bool:
@@ -89,8 +109,7 @@ def secure_filename(name: str) -> str:
         return ""
 
     # Prefix Windows reserved names so they can never resolve to a device.
-    stem = name.split(".", 1)[0].upper()
-    if stem in _WIN_RESERVED:
+    if _is_reserved_device(name):
         name = "_" + name
 
     return name
@@ -103,6 +122,7 @@ def safe_join(directory: str, *paths: str) -> str | None:
     descendant. Returns `None` if:
     - any component in `paths` is an absolute path,
     - any component contains a NUL byte,
+    - on Windows, any segment names a reserved device (`COM1`, `NUL`, ...),
     - the resolved path is outside `directory`.
 
     The check is performed via `os.path.abspath`, which collapses `..`
@@ -123,6 +143,12 @@ def safe_join(directory: str, *paths: str) -> str | None:
         # silently discard `base` if a later argument is absolute.
         if os.path.isabs(component):
             return None
+        # On Windows, refuse any segment that names a reserved device, so a
+        # request like `static/COM1` can never reach `os.stat` and hang.
+        if _IS_NT:
+            for segment in component.replace("/", os.sep).split(os.sep):
+                if segment and _is_reserved_device(segment):
+                    return None
 
     joined = os.path.abspath(os.path.join(base, *paths))
 

@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import mimetypes
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
@@ -51,11 +51,13 @@ from veloce._internal import (
     MIME_OCTET,
     MIME_PLAIN,
     _encode_response_head,
+    _etag_matches_strong,
     _etag_matches_weak,
     _file_etag,
     _reject_header_crlf,
 )
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
+from veloce.encoders import orjson_default
 from veloce.http.cache_control import CacheControl
 from veloce.http.dates import http_date, parse_date
 from veloce.http.header_set import HeaderSet
@@ -991,6 +993,37 @@ class Response:
                 self._downgrade_to_304()
         return self
 
+    def check_preconditions(self, request: Any) -> Response:
+        """Enforce the write-side `If-Match` precondition (RFC 9110 Sec. 13.1.1).
+
+        Raises `PreconditionFailed` (412) when the request carries an
+        `If-Match` header that the response's current ETag does not satisfy
+        under the strong comparison (Sec. 8.8.3.1) - the lost-update guard.
+        `If-Match: *` is satisfied whenever a current representation exists,
+        approximated here by the presence of an ETag header. With no
+        `If-Match` header the response is returned unchanged. Returns `self`
+        so it can be chained: `return resp.check_preconditions(request)`.
+
+        Invoke this inside a handler (where `HTTPException` is converted to a
+        response); it raises rather than mutating the status.
+        """
+        if_match = getattr(request, "if_match", ())
+        if not if_match:
+            return self
+        # `If-Match: *` is an existence precondition (RFC 9110 Sec. 13.1.1):
+        # the handler producing this response means the resource exists, so it
+        # is satisfied regardless of whether an ETag was attached.
+        if if_match == ("*",):
+            return self
+        # `headers` is a plain dict; accept either spelling, as other helpers do.
+        ours_etag = self.headers.get(HEADER_ETAG) or self.headers.get("etag") or ""
+        for tag in if_match:
+            if _etag_matches_strong(ours_etag, tag):
+                return self
+        from veloce.exceptions import PreconditionFailed  # avoids response <-> exceptions cycle
+
+        raise PreconditionFailed
+
     def _downgrade_to_304(self) -> None:
         """Strip body + flip status to 304. Used by `make_conditional`."""
         self.status_code = HTTP_304_NOT_MODIFIED
@@ -1067,7 +1100,7 @@ class JSONResponse(Response):
         headers: dict[str, str] | None = None,
     ) -> None:
         try:
-            body = orjson.dumps(data)
+            body = orjson.dumps(data, default=orjson_default)
         except TypeError as exc:
             raise ValueError(f"JSONResponse data is not JSON-serializable: {exc}") from exc
         super().__init__(
@@ -1283,12 +1316,25 @@ class StreamingResponse(Response):
         parts.append("\r\n")
         return "".join(parts).encode("latin-1")
 
-    async def stream_to(self, transport: Any) -> None:
-        """Stream chunks to transport."""
+    async def stream_to(
+        self,
+        transport: Any,
+        drain: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        """Stream chunks to transport.
+
+        When `drain` is supplied (the raw serving protocol passes its write-side
+        flow-control awaitable) it is awaited after each chunk, so a producer
+        outrunning a slow client is throttled instead of growing the transport
+        write buffer without bound. `drain` is a no-op until the buffer crosses
+        the high-water mark, so the fast path pays one already-set check.
+        """
         transport.write(self.encode())
         async for chunk in self._stream:
             size = format(len(chunk), "x")
             transport.write(f"{size}\r\n".encode() + chunk + b"\r\n")
+            if drain is not None:
+                await drain()
         transport.write(b"0\r\n\r\n")
 
 

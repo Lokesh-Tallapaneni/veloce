@@ -124,6 +124,7 @@ class _Slot:
         "dep_is_coro",
         "dep_is_gen",
         "dep_is_async_gen",
+        "dep_offload",
     )
 
     def __init__(self, kind: int, name: str) -> None:
@@ -147,6 +148,9 @@ class _Slot:
         # the dependency result, and runs teardown after the response.
         self.dep_is_gen = False
         self.dep_is_async_gen = False
+        # Opt-in: route a blocking sync dependency through the thread pool
+        # instead of calling it inline on the event loop.
+        self.dep_offload = False
 
 
 # -- Parallel-dependency grouping ---------------------------
@@ -283,6 +287,12 @@ def _build_depends_slot(
     slot.dep_is_coro = _is_async_callable(callable_)
     slot.dep_is_gen = inspect.isgeneratorfunction(callable_)
     slot.dep_is_async_gen = inspect.isasyncgenfunction(callable_)
+    # `offload` only has meaning for a plain sync callable - a coroutine,
+    # async generator, or sync generator already has its own execution
+    # model, so the flag is recorded only when it can take effect.
+    slot.dep_offload = bool(getattr(dep, "offload", False)) and not (
+        slot.dep_is_coro or slot.dep_is_gen or slot.dep_is_async_gen
+    )
     slot.sub_plan = build_plan(callable_, websocket=websocket, _seen=_seen)
     # Security() scopes flow down the chain so a `SecurityScopes`
     # parameter anywhere below sees the union. Plain `Depends` has no

@@ -11,6 +11,7 @@ from veloce._constants import (
     HEADER_CONTENT_ENCODING,
     HEADER_CONTENT_LENGTH,
     HEADER_CONTENT_RANGE,
+    HEADER_ETAG,
     HEADER_VALUE_GZIP,
     MIME_APPLICATION_JAVASCRIPT,
     MIME_APPLICATION_X_YAML,
@@ -153,6 +154,17 @@ class GZipMiddleware(Middleware):
             response.headers[HEADER_CONTENT_LENGTH] = str(len(compressed))
             response.add_vary(HEADER_ACCEPT_ENCODING)
             response._encoded = None
+            # Compression changes the bytes on the wire, so a STRONG ETag
+            # (RFC 9110 Sec. 8.8.1 - byte-identical representations) no longer
+            # describes them. Weaken it to `W/...`. Already-weak or malformed
+            # (non-quoted) tags are left untouched so we never fabricate a
+            # validator. `headers` is a plain dict, so accept either spelling
+            # and rewrite whichever key actually holds the tag.
+            for etag_key in (HEADER_ETAG, "etag"):
+                etag = response.headers.get(etag_key)
+                if etag and etag[:1] == '"':
+                    response.headers[etag_key] = "W/" + etag
+                    break
 
         return response
 

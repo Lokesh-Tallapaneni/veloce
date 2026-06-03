@@ -94,15 +94,21 @@ source.addEventListener("close", () => source.close());
 
 Multi-line `data` is handled for you — a string containing newlines is split
 into one `data:` field per line, which the browser rejoins, so JSON or
-multi-line text streams correctly:
+multi-line text streams correctly.
+
+For structured payloads, `ServerSentEvent.json` serializes any JSON-encodable
+value into the `data` field for you, so you do not have to call `json.dumps`
+yourself. The `event`/`id`/`retry` fields are forwarded unchanged:
 
 ```python
-import json
-
 from veloce import ServerSentEvent
 
-event = ServerSentEvent(data=json.dumps({"x": 1, "y": 2}))
+event = ServerSentEvent.json({"x": 1, "y": 2}, event="update")
 ```
+
+The plain `data=` constructor remains the raw escape hatch — it sends the
+string through verbatim (no JSON quoting), which is what you want for
+pre-formatted text, HTML fragments, or CSV lines.
 
 ## What the generator may yield
 

@@ -29,6 +29,7 @@ from veloce.routing.converters import (
     UUIDConverter,
     _Converter,
     _iter_placeholders,
+    _looks_like_regex,
     build_route_regex,
     extract_regex_converters,
     is_regex_path,
@@ -52,6 +53,28 @@ def _path_shape(path: str) -> str:
 @functools.lru_cache(maxsize=512)
 def _cached_split_path(path: str) -> tuple[str, ...]:
     return tuple(s for s in path.split("/") if s)
+
+
+def _reverse_converters_for(template: str) -> dict[str, _Converter]:
+    """Map each typed placeholder in `template` to its converter for url_for.
+
+    A bare `{name}` (no spec) and a raw-regex placeholder (`{id:[0-9]+}`) have
+    no single coercing converter, so they are omitted - those params accept any
+    stringifiable value during reverse. Built-in, custom, and `any(...)` specs
+    map to the same converter the radix matcher applies, so url_for can reject a
+    value the matcher would never accept. `any(...)` is whitelisted explicitly
+    because it carries parentheses that the bare-identifier test reads as regex.
+    """
+    converters: dict[str, _Converter] = {}
+    for ph in _iter_placeholders(template):
+        spec = ph.spec
+        if not spec:
+            continue
+        is_any = spec.startswith("any(") and spec.endswith(")")
+        if not is_any and _looks_like_regex(spec):
+            continue
+        converters[ph.name] = parse_converter(spec)
+    return converters
 
 
 class RadixNode:
@@ -336,6 +359,12 @@ class Router:
         self._root = RadixNode()
         # Route name -> (path_template, param_names), for url_for reverse lookup.
         self._named_routes: dict[str, tuple[str, list[str]]] = {}
+        # Route name -> {param_name: converter}, derived from the template on the
+        # first url_for call and cached. Lets url_for validate each substituted
+        # value through the same converter the matcher applies, so a reversed URL
+        # is guaranteed to resolve. A param with no typed converter (bare
+        # `{name}` or a raw-regex segment) is omitted and skips validation.
+        self._reverse_converters: dict[str, dict[str, _Converter]] = {}
         # Regex fallback routes, in registration order. Empty for the common
         # case; `match()` guards on `if self._regex_routes:` so the radix
         # fast path pays nothing when no regex route is registered.
@@ -531,8 +560,10 @@ class Router:
             host=host,
         )
 
-        # Register named route for url_for
+        # Register named route for url_for. Drop any stale reverse-converter
+        # cache so a re-registered name re-derives from its new template.
         self._named_routes[route_name] = (full_path, param_names)
+        self._reverse_converters.pop(route_name, None)
 
         # Pre-compute the handler resolution plan once, here at registration.
         # Falls back to None if the handler isn't introspectable; the resolver
@@ -996,6 +1027,22 @@ class Router:
                 raise ValueError(f"Missing path parameter {pname!r} for route {name!r}")
             consumed.add(pname)
 
+        # Validate each typed param through its converter so a reversed URL is
+        # guaranteed to resolve. `url_for('item', id='abc')` on `/items/{id:int}`
+        # raises here instead of emitting a dead `/items/abc`. Bare `{name}` and
+        # raw-regex params have no validating converter and are skipped.
+        converters = self._reverse_converters.get(name)
+        if converters is None:
+            converters = _reverse_converters_for(template)
+            self._reverse_converters[name] = converters
+        for pname, converter in converters.items():
+            ok, _ = converter.match(str(path_params[pname]))
+            if not ok:
+                raise ValueError(
+                    f"Value {path_params[pname]!r} for path parameter {pname!r} "
+                    f"is invalid for route {name!r}"
+                )
+
         # Single-pass substitution built from template segments prevents
         # injection: a parameter value containing `{other_param}` cannot
         # corrupt later placeholders. Balance-aware so a spec with its own
@@ -1194,6 +1241,7 @@ class Router:
                 )
                 target.handlers[method] = route_info
                 self._named_routes[info.name] = (full_path, param_names)
+                self._reverse_converters.pop(info.name, None)
 
     def _merge_node(self, node: RadixNode, prefix: str, path_segments: list[str]) -> None:
         """Recursively merge nodes from another router's tree."""
@@ -1280,6 +1328,7 @@ class Router:
 
                 # Update named routes
                 self._named_routes[info.name] = (full_path, param_names)
+                self._reverse_converters.pop(info.name, None)
 
         for child in node.static_children.values():
             self._merge_node(child, prefix, path_segments + [child.segment])

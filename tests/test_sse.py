@@ -32,6 +32,41 @@ def test_event_retry():
     assert b"retry: 5000" in encoded
 
 
+# ── ServerSentEvent.json ─────────────────────────────────────────────
+
+
+def test_json_serializes_dict_payload():
+    event = ServerSentEvent.json({"a": 1, "b": "x"})
+    assert event.data == '{"a":1,"b":"x"}'
+    assert b'data: {"a":1,"b":"x"}' in event.encode()
+
+
+def test_json_serializes_list_payload():
+    event = ServerSentEvent.json([1, 2, 3])
+    assert event.data == "[1,2,3]"
+    assert b"data: [1,2,3]" in event.encode()
+
+
+def test_json_quotes_string_payload():
+    """A bare string is JSON-quoted, unlike the raw data= constructor."""
+    event = ServerSentEvent.json("hello")
+    assert event.data == '"hello"'
+    assert b'data: "hello"' in event.encode()
+
+
+def test_json_forwards_metadata_fields():
+    event = ServerSentEvent.json({"n": 1}, event="update", id="7", retry=3000)
+    encoded = event.encode()
+    assert b"event: update" in encoded
+    assert b"id: 7" in encoded
+    assert b"retry: 3000" in encoded
+
+
+def test_json_raw_constructor_stays_unescaped():
+    """The plain constructor is the raw escape hatch - no JSON quoting."""
+    assert ServerSentEvent(data="hello").data == "hello"
+
+
 # ── ASGI streaming ───────────────────────────────────────────────────
 
 

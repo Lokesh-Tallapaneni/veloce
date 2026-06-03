@@ -118,6 +118,23 @@ async def user_detail(user_id: int):
 url = app.url_for("user-detail", user_id=7)   # "/users/7"
 ```
 
+When a route parameter declares a converter, `url_for` validates the value
+against that converter before building the URL, so a reversed URL is guaranteed
+to resolve. A value the matcher would reject raises rather than producing a dead
+link:
+
+```python
+@app.get("/items/{id:int}", name="item")
+async def item(id: int):
+    ...
+
+app.url_for("item", id=42)      # "/items/42"
+app.url_for("item", id="abc")   # raises - "abc" is not a valid int segment
+```
+
+Parameters without a typed converter (a bare `{name}` or a raw-regex segment
+like `{id:[0-9]+}`) accept any stringifiable value.
+
 ## See also
 
 - [Requests & responses](requests-responses.md)

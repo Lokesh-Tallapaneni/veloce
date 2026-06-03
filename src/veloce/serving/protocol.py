@@ -44,6 +44,15 @@ MAX_TOTAL_HEADERS_SIZE = 65536
 # can exhaust RAM by opening sockets faster than dispatch can drain them.
 DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
 
+# Write-side flow-control watermarks (bytes). When a streaming/SSE producer
+# outruns a slow client the event loop's transport write buffer grows; left
+# unbounded that is a per-connection memory-exhaustion vector. Handing these
+# to `transport.set_write_buffer_limits()` makes asyncio invoke
+# `pause_writing`/`resume_writing` once the buffer crosses the high/low mark,
+# which the streaming path awaits on. The low mark is left to asyncio's
+# default (a quarter of high) when only the high mark is supplied.
+WRITE_BUFFER_HIGH_WATER = 256 * 1024
+
 
 class HttpProtocol(asyncio.Protocol):
     """Raw asyncio protocol - bypasses ASGI overhead entirely."""
@@ -66,6 +75,7 @@ class HttpProtocol(asyncio.Protocol):
         "_current_source",
         "_raw_content_length",
         "_has_expect_continue",
+        "_can_write",
     )
 
     # Class-level set: prevents GC of in-flight tasks across all connections.
@@ -144,6 +154,13 @@ class HttpProtocol(asyncio.Protocol):
         # from a clean slate.
         self._raw_content_length: bytes | None = None
         self._has_expect_continue: bool = False
+        # Write-side backpressure gate. Set (writable) by default; cleared by
+        # `pause_writing` when the transport buffer crosses the high-water mark
+        # and re-set by `resume_writing` once it drains below the low mark. The
+        # streaming/SSE path awaits `drain()`, which only blocks while cleared,
+        # so the common keep-alive path pays a single already-set `Event` check.
+        self._can_write: asyncio.Event = asyncio.Event()
+        self._can_write.set()
 
     # -- httptools callbacks --------------------------------------
 
@@ -330,6 +347,15 @@ class HttpProtocol(asyncio.Protocol):
                 transport.close()
             return
 
+        # Arm write-side flow control: asyncio fires `pause_writing` once the
+        # buffer exceeds the high mark and `resume_writing` when it drains below
+        # the low mark, which the streaming path awaits via `drain()`. Without a
+        # set high mark the proactor/selector defaults can be large, so set it
+        # explicitly. Wrapped because some transports do not implement it.
+        high = self.app.config.get("WRITE_BUFFER_HIGH_WATER", WRITE_BUFFER_HIGH_WATER)
+        with contextlib.suppress(NotImplementedError, AttributeError):
+            transport.set_write_buffer_limits(high=high)
+
         self._start_keep_alive_timer()
 
     def connection_lost(self, exc: Exception | None) -> None:
@@ -340,6 +366,9 @@ class HttpProtocol(asyncio.Protocol):
         # Stop the server loop from dispatching further queued requests and
         # drop any not-yet-served pipelined work; the client is gone.
         self._closing = True
+        # Release a stream parked in `drain()`; with the transport gone the
+        # streaming loop's next write fails fast instead of hanging forever.
+        self._can_write.set()
         self._request_queue.clear()
         # Unblock any consumer awaiting more body on the in-flight source -
         # the client is gone, so its body will never complete. The server
@@ -384,6 +413,38 @@ class HttpProtocol(asyncio.Protocol):
         transport = self.transport
         if transport is not None and not transport.is_closing():
             transport.resume_reading()
+
+    # -- write-side flow control ----------------------------------
+
+    def pause_writing(self) -> None:
+        """asyncio callback: the transport write buffer crossed the high mark.
+
+        Clearing the gate makes the next `drain()` block, throttling a
+        producer that is outrunning a slow client. Idempotent - asyncio
+        guarantees paired pause/resume, but tolerating a repeat avoids the
+        crash-on-double-pause assert aiohttp carries.
+        """
+        self._can_write.clear()
+
+    def resume_writing(self) -> None:
+        """asyncio callback: the write buffer drained below the low mark."""
+        self._can_write.set()
+
+    async def drain(self) -> None:
+        """Block while the transport write buffer is over the high mark.
+
+        Returns immediately on the common path (gate set). The streaming and
+        SSE response paths await this after writing each chunk so a fast
+        producer cannot grow the event loop's write buffer without bound. A
+        closing/absent transport returns at once so a torn-down connection
+        does not park the producer.
+        """
+        if self._can_write.is_set():
+            return
+        transport = self.transport
+        if transport is None or transport.is_closing():
+            return
+        await self._can_write.wait()
 
     def _reject_oversized(self, status_code: int, reason: bytes) -> None:
         """Emit a minimal HTTP/1.1 error response and close the connection.
@@ -649,11 +710,11 @@ class HttpProtocol(asyncio.Protocol):
 
         try:
             if getattr(response, "is_event_source", False):
-                await response.stream_to(self.transport)  # type: ignore[attr-defined]
+                await response.stream_to(self.transport, drain=self.drain)  # type: ignore[attr-defined]
                 self.transport.close()
                 return False
             if isinstance(response, StreamingResponse):
-                await response.stream_to(self.transport)
+                await response.stream_to(self.transport, drain=self.drain)
             else:
                 self.transport.write(response.encode())
         except Exception:

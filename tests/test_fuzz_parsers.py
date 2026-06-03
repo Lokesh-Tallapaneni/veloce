@@ -163,11 +163,14 @@ def _feed(ws: WebSocket, chunk: bytes) -> None:
         ws.feed_data(chunk)
 
 
-def _client_text_frame(payload: bytes, mask: bytes) -> bytes:
-    """Encode a FIN=1 masked client text frame (RFC 6455 §5.2)."""
+def _client_data_frame(payload: bytes, mask: bytes, opcode: int) -> bytes:
+    """Encode a FIN=1 masked client data frame (RFC 6455 §5.2).
+
+    `opcode` selects the data frame type - `0x1` for text, `0x2` for binary.
+    """
     n = len(payload)
     header = bytearray()
-    header.append(0x80 | 0x1)  # FIN + text opcode
+    header.append(0x80 | opcode)  # FIN + opcode
     if n < 126:
         header.append(0x80 | n)  # MASK bit + 7-bit length
     elif n < 65536:
@@ -179,6 +182,21 @@ def _client_text_frame(payload: bytes, mask: bytes) -> bytes:
     header.extend(mask)
     masked = bytes(b ^ mask[i & 3] for i, b in enumerate(payload))
     return bytes(header) + masked
+
+
+def _client_text_frame(payload: bytes, mask: bytes) -> bytes:
+    """Encode a FIN=1 masked client text frame (opcode 0x1)."""
+    return _client_data_frame(payload, mask, 0x1)
+
+
+def _client_binary_frame(payload: bytes, mask: bytes) -> bytes:
+    """Encode a FIN=1 masked client binary frame (opcode 0x2).
+
+    Binary frames carry arbitrary octets with no UTF-8 constraint
+    (RFC 6455 §5.6), so they are the right vehicle for feeding random
+    bytes through the parser without tripping the TEXT UTF-8 check.
+    """
+    return _client_data_frame(payload, mask, 0x2)
 
 
 def test_fuzz_ws_parser_arbitrary_bytes_never_crash():
@@ -201,12 +219,19 @@ def test_fuzz_ws_parser_arbitrary_bytes_never_crash():
 
 def test_fuzz_ws_parser_split_frames_never_crash():
     """A well-formed frame fed one byte at a time, or in random splits,
-    reassembles without crashing and exercises the partial-read returns."""
+    reassembles without crashing and exercises the partial-read returns.
+
+    Uses a binary frame: the random payload bytes are mostly not valid
+    UTF-8, and a TEXT frame would (correctly, per RFC 6455 §8.1) trip the
+    parser's incremental UTF-8 check and close with 1007 before the final
+    byte landed. This test is about the framing-level partial-read paths,
+    not text semantics, so a binary frame carries the arbitrary octets.
+    """
     rnd = random.Random(_SEED + 7)
     for _ in range(500):
         payload = bytes(rnd.randint(0, 255) for _ in range(rnd.randint(0, 130)))
         mask = bytes(rnd.randint(0, 255) for _ in range(4))
-        frame = _client_text_frame(payload, mask)
+        frame = _client_binary_frame(payload, mask)
 
         # One byte at a time — every early-return-0 branch (n<2, n<4,
         # n<offset+4, n<frame_len) fires before the final byte completes.

@@ -8,6 +8,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ServerSentEvent.json` builds an event whose `data` field is a
+  JSON-serialized payload. Pass any JSON-encodable value (`dict`, `list`,
+  string, number) and it is serialized once at construction with the
+  optional `event`/`id`/`retry` fields forwarded unchanged, so structured
+  SSE payloads no longer require a manual `json.dumps` per event. The plain
+  `ServerSentEvent(data=...)` constructor is unchanged and remains the raw
+  string escape hatch.
+
+- `Depends(..., offload=True)` (and the matching `Security(..., offload=True)`)
+  routes a blocking sync dependency through the thread pool instead of calling
+  it inline on the event loop, so a dependency that does blocking I/O (a DB
+  driver call, `requests.get`) cannot stall other in-flight requests. The
+  current context is snapshotted before the executor hop, so request-scoped
+  state (`request`, `g`, `flash()`) stays readable inside the worker thread.
+  This closes an internal inconsistency in which sync route handlers were
+  already offloaded but sync dependencies were not. The flag defaults off, so
+  trivial pure-function dependencies keep their zero-overhead inline call, and
+  it is ignored for coroutine, sync-generator, and async-generator
+  dependencies, which already have their own execution model.
+
+- `CSRFMiddleware(trusted_origins=...)` adds an Origin-first verification
+  stage that runs before the double-submit check on state-changing
+  requests. The request's own origin (`scheme://host[:port]`, sourced
+  from the ASGI scope rather than spoofable headers) is always trusted;
+  additional callers are listed as full origins, with a leading-dot host
+  (`"https://.example.com"`) matching that host and any subdomain. A
+  present-but-mismatched `Origin` header is a hard 403; when `Origin` is
+  absent the stage falls back to `Referer` on https requests only, while
+  plain-HTTP requests with no Origin defer to double-submit. Double-submit
+  still always runs as a second factor. This closes the cookie-injection /
+  related-domain CSRF class that pure double-submit cannot defend.
+  Omitting `trusted_origins` keeps the previous double-submit-only
+  behaviour unchanged.
+
+- Write-side backpressure on the built-in serving path. The native
+  `HttpProtocol` now implements `pause_writing`/`resume_writing` and arms the
+  transport's write-buffer high-water mark in `connection_made`, exposing an
+  `await protocol.drain()` that the streaming and SSE response paths await after
+  each chunk. A producer outrunning a slow client is throttled at the transport
+  buffer instead of growing the event loop's write buffer without bound. The
+  high-water mark defaults to 256 KiB and is configurable via the
+  `WRITE_BUFFER_HIGH_WATER` config key. `drain()` is a no-op until the buffer
+  crosses the mark, so the common keep-alive path is unaffected; the ASGI path
+  (where the server owns flow control) is unchanged.
 - `async_send_file` top-level helper - the async counterpart of `send_file`.
   It takes the same arguments but reads the file in an executor (via
   `FileResponse.from_path`), so it never blocks the event loop. Prefer it
@@ -32,9 +76,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window bounds each complete message (under ASGI the server delivers complete
   messages and owns ping/pong; the raw-transport path measures it the same way).
   The value must be a finite positive number of seconds or `None`.
+- Inbound WebSocket TEXT frames are now validated as UTF-8 at the raw-transport
+  parser boundary (RFC 6455 Sec. 8.1) using an incremental validator that
+  catches a bad byte on the first offending fragment of a fragmented message.
+  An invalid payload closes the connection with `1007 Invalid Frame Payload
+  Data` instead of surfacing a raw `UnicodeDecodeError` at `receive_text()`
+  time. Binary frames are unaffected.
+- Received WebSocket Close frames are parsed and validated (RFC 6455 Sec. 5.5.1
+  / Sec. 7.4): the status code is range-checked (a code below 1000, a reserved
+  code such as 1004/1005/1006, or an unassigned code below 3000 closes with
+  `1002 Protocol Error`) and the reason is UTF-8-validated (`1007` on failure).
+  The peer's close code and reason are exposed on `WebSocket.close_code`
+  (`int | None`) and `WebSocket.close_reason` (`str`), populated on both the
+  raw-transport and ASGI paths, and the raised `WebSocketDisconnect` now carries
+  the peer's close code. An empty Close payload records `1005` ("no status
+  received") without putting it on the wire.
+- Proactive WebSocket heartbeat for the raw-transport path.
+  `WebSocket(..., heartbeat=<seconds>)` and `WebSocket.from_asgi(..., heartbeat=)`
+  accept an opt-in liveness interval; after `accept()` a timer sends an
+  application PING carrying a monotonically increasing token every interval and
+  expects the peer to answer with a PONG (or send any other frame) before the
+  next tick. Any inbound byte defers the next probe, so busy connections send no
+  needless pings. Two consecutive idle windows with no matching PONG drop a
+  silently-dead peer (NAT/load-balancer black-hole) and record `1006` on
+  `WebSocket.close_code` without putting the reserved code on the wire. The
+  public `WebSocket.start_heartbeat()` arms the timer for hand-built
+  connections. Opt-in; the default `None` preserves the previous behaviour, and
+  the value is inert in ASGI mode where the server owns ping/pong.
+- `Response.check_preconditions(request)` enforces the write-side `If-Match`
+  precondition (RFC 9110 Sec. 13.1.1), raising `PreconditionFailed` (412) when
+  the request's `If-Match` does not match the response's ETag under the strong
+  comparison (Sec. 8.8.3.1) - the lost-update guard. `If-Match: *` is satisfied
+  when a current representation exists (an ETag is present); with no `If-Match`
+  header the response is returned unchanged. Opt-in and separate from
+  `make_conditional`, so existing read-side 304 flows are unaffected.
+- `StaticFiles` now honours the write-side preconditions `If-Match` and
+  `If-Unmodified-Since`, returning `412 Precondition Failed` per RFC 9110
+  Sec. 13.1.1 / 13.1.4 (precedence per Sec. 13.2.2: `If-Match` first). Because
+  Veloce serves weak file ETags, a concrete `If-Match` against a static file
+  fails closed (only `*` succeeds); clients needing optimistic concurrency on
+  static assets should use `If-Unmodified-Since`. The read-side `If-None-Match`
+  / `If-Modified-Since` 304 behaviour is unchanged.
+- `SessionMiddleware` and `ServerSessionMiddleware` accept `vary_on_cookie`
+  (default `True`) and `persist_on_status` constructor keywords. The former
+  controls the new `Vary: Cookie` emission (below); the latter is a
+  `(status_code) -> bool` policy that overrides the default 5xx no-persist
+  rule (below).
 
 ### Changed
 
+- `url_for` / `url_path_for` now validate each substituted path parameter
+  through the converter declared on the route before building the URL. A value
+  the radix matcher would never accept - `url_for('item', id='abc')` on
+  `/items/{id:int}` - raises at call time (`ValueError` from the router, wrapped
+  in `BuildError` by `Veloce.url_for`) instead of returning a dead
+  `/items/abc`. Validation reuses the route's existing converter `match()` in
+  O(1) per parameter, derived from the route template on first reverse and
+  cached, so reverse and forward stay symmetric with no regex re-execution.
+  Parameters with no typed converter (bare `{name}` or a raw-regex segment such
+  as `{id:[0-9]+}`) keep accepting any stringifiable value.
 - `WebSocket.receive_text()` / `receive_bytes()` skip the `asyncio.wait_for`
   wrapper when neither a per-call `timeout` nor a connection `idle_timeout` is
   set (the common case), awaiting the ASGI receive directly. Measured on uvloop,
@@ -74,9 +174,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default `Bearer` scheme, removing a per-request string construction on
   HTTP Bearer and OAuth2/OpenID authenticated paths. A custom scheme name is
   unaffected.
+- The session middlewares now emit `Vary: Cookie` (RFC 9110 Sec. 12.5.5) on
+  any response whose handler accessed the session (read via `request.session`
+  or mutated it), so a shared proxy/CDN keyed on URL alone cannot serve one
+  user's session-personalized body to another. A session-independent response
+  - one whose handler never touched `request.session` - stays cacheable even
+  for a logged-in client. Pass `vary_on_cookie=False` to opt out. `Session`
+  gains an `accessed` flag, set by `request.session`, to drive this.
+- The session middlewares no longer persist a modified session on a 5xx
+  response by default - a failed request should not write a half-mutated
+  session (neither the signed Set-Cookie nor the server-store write/delete).
+  Pass `persist_on_status=<callable>` to override (e.g. `lambda s: s != 503`).
+  Persistence on 2xx/3xx/4xx is unchanged.
 
 ### Fixed
 
+- `jsonable_encoder(..., exclude_none=True)` now drops `None`-valued keys from
+  plain dicts, lists/tuples/sets of dicts, and dict-typed fields nested inside a
+  Pydantic model, at every depth. Previously `exclude_none` was honoured only
+  for a top-level `BaseModel`'s own fields and silently ignored for any plain
+  mapping, so `jsonable_encoder({"a": None, "b": 1}, exclude_none=True)` returned
+  `{"a": None, "b": 1}` instead of `{"b": 1}`. The flag is now threaded through
+  the dict, sequence, set, dataclass, and model re-encode branches consistently.
+- JSON response serialisation now handles `set`/`frozenset`, `pathlib.Path`,
+  `decimal.Decimal`, `bytes`, and arbitrary objects instead of raising
+  `TypeError`. `DefaultJSONProvider.dumps`, `JSONResponse`, and `jsonify`
+  pass a single-object fallback as orjson's `default=` hook, so the common
+  path keeps orjson's native C-speed encoding while unsupported leaves are
+  converted (sets become sorted lists, `Path`/`Decimal` map to their scalar
+  form, `bytes` decode UTF-8 with replacement, other objects use `vars()`
+  then `str()`). The hook is also exported as `veloce.encoders.orjson_default`.
 - The WebSocket handshake now uses the correct RFC 6455 magic GUID
   (`258EAFA5-E914-47DA-95CA-C5AB0DC85B11`) when computing
   `Sec-WebSocket-Accept`. The previous value produced an accept token no
@@ -96,6 +223,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (its bound-method owner garbage-collected) is no longer stranded in the
   subscriber list. Because the previous `has_receivers_for()` guard never pruned,
   such entries accumulated; dispatching `send()` directly now drops them.
+- `HTTPBasic` / `HTTPDigest` now escape the `realm` in the `WWW-Authenticate`
+  challenge as an RFC 7235 / RFC 7230 Sec. 3.2.6 quoted-string (backslash-escaping
+  `"` and `\`) instead of percent-encoding it with `urllib.parse.quote`. A realm
+  such as `testrealm@example.com` is emitted literally rather than as
+  `testrealm%40example.com`. A realm containing CR/LF/NUL or other control
+  characters now raises `ValueError` at construction.
+- Non-latin-1 response header values are now RFC 2047 MIME-encoded (an ASCII
+  `=?utf-8?b?...?=` token) on both the HTTP/1.1 (`Response.encode`) and ASGI
+  emit paths, instead of raising `UnicodeEncodeError` on the HTTP/1.1 path and
+  emitting raw UTF-8 (mojibake once re-decoded as latin-1) on the ASGI path.
+  ASCII and latin-1-representable values are emitted verbatim.
+- `GZipMiddleware` weakens a strong `ETag` to `W/...` after compressing the
+  body, since compression changes the bytes on the wire and a strong validator
+  (RFC 9110 Sec. 8.8.1) must denote byte-identical representations. Already-weak,
+  absent, or malformed (non-quoted) tags are left untouched.
+- WebSocket frames with a non-zero RSV bit (RFC 6455 Sec. 5.2 - Veloce
+  negotiates no extension) or a stray continuation frame with no message in
+  progress (Sec. 5.4) are now rejected with a `1002` protocol-error close,
+  instead of being silently accepted / dropped.
+- A raw-transport WebSocket `receive_*()` called after the peer closed between
+  messages now raises `WebSocketDisconnect` carrying the recorded close code
+  (e.g. `1001`/`1006`) instead of a default `1000`.
+
+### Security
+
+- `safe_join` now rejects any path segment that names a Windows reserved device
+  (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, `CONIN$`,
+  `CONOUT$`, including extension/trailing-dot/space aliases such as `COM1.txt`
+  and `COM1.`) when running on Windows, so a request like `static/COM1` can no
+  longer reach `os.stat` and hang a worker on a device handle. The check is
+  gated on `os.name == "nt"`, so POSIX deployments are unaffected and pay no
+  per-request cost. `secure_filename` gains the `CONIN$`/`CONOUT$` aliases for
+  consistency.
 
 ## [0.3.0] - 2026-06-01
 
