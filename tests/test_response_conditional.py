@@ -187,3 +187,13 @@ def test_check_preconditions_multiple_tags_one_strong_match_passes():
     tag = resp.add_etag()
     req = _req({"if-match": f'"other", {tag}'})
     assert resp.check_preconditions(req) is resp
+
+
+def test_check_preconditions_accepts_lowercase_etag_key():
+    # A response whose validator was set under the lowercase "etag" spelling
+    # must still satisfy a matching If-Match (headers is a plain dict).
+    resp = Response(body=b"hello")
+    resp.headers["etag"] = '"abc"'
+    assert resp.check_preconditions(_req({"if-match": '"abc"'})) is resp
+    with pytest.raises(PreconditionFailed):
+        resp.check_preconditions(_req({"if-match": '"nope"'}))

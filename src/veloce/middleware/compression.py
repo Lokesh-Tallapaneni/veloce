@@ -158,10 +158,13 @@ class GZipMiddleware(Middleware):
             # (RFC 9110 Sec. 8.8.1 - byte-identical representations) no longer
             # describes them. Weaken it to `W/...`. Already-weak or malformed
             # (non-quoted) tags are left untouched so we never fabricate a
-            # validator.
-            etag = response.headers.get(HEADER_ETAG)
-            if etag and etag[:1] == '"':
-                response.headers[HEADER_ETAG] = "W/" + etag
+            # validator. `headers` is a plain dict, so accept either spelling
+            # and rewrite whichever key actually holds the tag.
+            for etag_key in (HEADER_ETAG, "etag"):
+                etag = response.headers.get(etag_key)
+                if etag and etag[:1] == '"':
+                    response.headers[etag_key] = "W/" + etag
+                    break
 
         return response
 

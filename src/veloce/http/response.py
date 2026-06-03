@@ -1010,7 +1010,8 @@ class Response:
         if_match = getattr(request, "if_match", ())
         if not if_match:
             return self
-        ours_etag = self.headers.get(HEADER_ETAG, "")
+        # `headers` is a plain dict; accept either spelling, as other helpers do.
+        ours_etag = self.headers.get(HEADER_ETAG) or self.headers.get("etag") or ""
         if if_match == ("*",):
             if ours_etag:
                 return self

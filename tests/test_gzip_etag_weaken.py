@@ -69,6 +69,16 @@ async def test_strong_etag_left_strong_when_not_compressed():
 
 
 @pytest.mark.asyncio
+async def test_lowercase_etag_key_is_weakened():
+    mw = GZipMiddleware(minimum_size=10)
+    resp = Response(status_code=200, body=_big_json(), content_type="application/json")
+    resp.headers["etag"] = '"deadbeef"'  # lowercase spelling
+    out = await mw.process_response(_req(), resp)
+    assert out.headers["Content-Encoding"] == "gzip"
+    assert out.headers["etag"] == 'W/"deadbeef"'
+
+
+@pytest.mark.asyncio
 async def test_malformed_unquoted_etag_left_untouched():
     mw = GZipMiddleware(minimum_size=10)
     resp = Response(status_code=200, body=_big_json(), content_type="application/json")
