@@ -99,16 +99,17 @@ def test_heartbeat_sends_tokened_ping() -> None:
 def test_heartbeat_pong_match_keeps_alive() -> None:
     async def go() -> None:
         ws, transport = _make_ws(heartbeat=0.02)
-        ws.start_heartbeat()
-        await asyncio.sleep(0.03)
+        # Drive the windows manually (no `await` between ticks, so the real
+        # timers never fire) - deterministic, unlike sleeping across windows.
+        ws._heartbeat_tick()  # window 1: sends a tokened PING, arms _hb_token
         pings = _ping_frames(transport)
         assert len(pings) == 1
         token = pings[0][2:6]
-        # Answer with a matching PONG; the connection must survive the next
-        # window and issue a fresh PING.
+        # A matching PONG answers the probe; the token clears and the inbound
+        # frame marks the peer alive for the next window.
         ws.feed_data(_client_frame(0xA, token))
         assert ws._hb_token is None
-        await asyncio.sleep(0.05)
+        ws._heartbeat_tick()  # window 2: peer was seen alive -> no drop
         assert not ws._closed
         assert not transport.closed
         await ws.close()
