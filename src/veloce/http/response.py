@@ -915,8 +915,10 @@ class Response:
                 for chunk in it:
                     ...
 
-        This dual return shape is preserved for backwards compatibility
-        and will be unified to a single `AsyncIterator[bytes]` in v0.2.0.
+        The return shape is mode-dependent: a buffered response yields a
+        synchronous iterator of `bytes`, a streaming response yields the
+        underlying `AsyncIterator[bytes]`. Branch on `response.is_streamed`
+        to drain with the right loop.
         """
         stream = self._stream
         if stream is not None:
@@ -947,9 +949,8 @@ class Response:
                 for chunk in it:
                     ...
 
-        `size` must be positive. This dual return shape is preserved for
-        backwards compatibility and will be unified to a single
-        `AsyncIterator[bytes]` in v0.2.0.
+        `size` must be positive. The return shape is mode-dependent: branch
+        on `response.is_streamed` to drain with the right loop.
         """
         if size <= 0:
             raise ValueError("iter_chunked size must be positive")

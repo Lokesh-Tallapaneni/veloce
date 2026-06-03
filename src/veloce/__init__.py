@@ -165,6 +165,7 @@ from veloce.security import (
     APIKeyCookie,
     APIKeyHeader,
     APIKeyQuery,
+    BadResetToken,
     Claims,
     ExpiredSignatureError,
     HTTPBasic,
@@ -331,6 +332,7 @@ __all__ = [
     # Reset tokens
     "make_reset_token",
     "check_reset_token",
+    "BadResetToken",
     # SSE
     "ServerSentEvent",
     # Testing

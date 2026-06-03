@@ -56,11 +56,30 @@ A converter can be declared inline. A segment the converter rejects is a
 | `{key:uuid}`             | a canonical RFC 4122 UUID        |
 | `{rest:path}`            | the remainder of the URL (greedy)|
 | `{c:any(red,green)}`     | one of a fixed set of values     |
+| `{d:date}`               | an ISO 8601 date → `datetime.date` |
+| `{t:time}`               | an ISO 8601 time → `datetime.time` |
+| `{ts:datetime}`          | an ISO 8601 datetime → `datetime.datetime` |
+| `{dur:timedelta}`        | an ISO 8601 duration → `datetime.timedelta` |
+| `{amount:decimal}`       | a decimal literal → `decimal.Decimal` |
 
 ```python
 @app.get("/files/{rest:path}")
 async def serve(rest: str):
     return {"path": rest}   # "/files/a/b/c.txt" -> rest == "a/b/c.txt"
+```
+
+The temporal and decimal converters coerce the matched segment to the
+corresponding Python type, so the handler receives a `datetime.date`,
+`datetime.datetime`, `datetime.time`, `datetime.timedelta`, or
+`decimal.Decimal` rather than a string. A `Z` suffix on a datetime/time is
+accepted (normalised to `+00:00`). `timedelta` requires a full ISO 8601
+duration with at least one component (`P1DT2H`); a bare number is a route
+miss.
+
+```python
+@app.get("/reports/{day:date}")
+async def report(day):
+    return {"weekday": day.weekday()}   # "/reports/2026-06-03" -> date(2026, 6, 3)
 ```
 
 Use `register_converter` to add your own.

@@ -276,11 +276,14 @@ for receiver, value in results:
         print("receiver failed:", value)
 ```
 
-!!! note "Async receivers need `send_robust_async`"
+!!! note "Async receivers need an async send"
     `send` and `send_robust` are synchronous — they do not await
-    coroutines. If a receiver may be `async def`, use `send_robust_async`,
-    which awaits coroutine-returning receivers and applies the same
-    per-receiver error handling. Under plain `send_robust`, an async
+    coroutines. If a receiver may be `async def`, use `asend` (the async
+    counterpart of `send`) or `send_robust_async` (the async counterpart of
+    `send_robust`, which applies the same per-receiver error handling).
+    Both await coroutine-returning receivers **concurrently** — async
+    receivers run together rather than one after another — while sync
+    receivers still run inline. Under plain `send_robust`, an async
     receiver's coroutine is closed and a `TypeError` is recorded in its
     result slot.
 

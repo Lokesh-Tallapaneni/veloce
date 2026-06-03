@@ -61,8 +61,14 @@ event = ServerSentEvent(
     event="greeting",   # a named event type the client can listen for
     id="42",            # last-event id, echoed back on reconnect
     retry=5000,         # client reconnection delay, in milliseconds
+    comment="trace-id 7f3a",  # a colon-prefixed comment line clients ignore
 )
 ```
+
+`data` is now optional: pass `comment=...` with no `data` to emit a
+comment-only event (a stream the client ignores but proxies can see). A
+multi-line comment is split into one `: ` line per segment, matching the way
+`data` is split.
 
 Named events let the client subscribe to specific types instead of the
 default `message`:
@@ -159,6 +165,13 @@ async def slow(request: Request):
 
     # send a heartbeat every 15s of silence
     return EventSourceResponse(generate(), ping=15)
+```
+
+Pass `ping_comment="..."` to set the text of the keep-alive frame (it must be
+a single line and is only meaningful alongside `ping`):
+
+```python
+    return EventSourceResponse(generate(), ping=15, ping_comment="keepalive")
 
 
 async def wait_for_next_update() -> str:
