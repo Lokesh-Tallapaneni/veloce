@@ -119,22 +119,29 @@ def build_registry(app: Any) -> ToolRegistry:
     # Routes flagged for exposure. Walk every route (including those hidden
     # from the OpenAPI schema) so an exposed-but-unlisted route still becomes
     # a tool; skip WebSocket routes, which have no request/response tool shape.
-    seen_handlers: set[int] = set()
+    #
+    # A route declared with several methods (`methods=["GET", "POST"]`) shares a
+    # single `RouteInfo` object across its method entries, so the walk yields it
+    # once per method. Deduplicate by `RouteInfo` identity to expose that one
+    # route a single time - never by the handler callable, which would silently
+    # drop a function intentionally mounted as two distinct named routes (or on
+    # two blueprints). Two distinct routes that derive the same tool name still
+    # collide at `registry.add`, preserving duplicate-tool-name detection.
+    seen_routes: set[int] = set()
     for method, _path, info in app._collect_all_routes(include_hidden=True):
         if method == ROUTE_METHOD_WEBSOCKET or not info.expose_as_mcp_tool:
             continue
-        # The same handler can be registered under several methods; expose it
-        # once. The mutating-verb gate still applies per method, so a handler
+        # The mutating-verb gate still applies per method, so a handler
         # reachable only via POST must opt in explicitly (it did, to be here).
         if not is_safe_to_auto_expose(method):
             # An exposed mutating route is allowed, but only because the
             # author set expose_as_mcp_tool=True; the gate exists to block
             # *auto*-exposure, which this is not. Continue to register it.
             pass
-        handler_id = id(info.handler)
-        if handler_id in seen_handlers:
+        route_id = id(info)
+        if route_id in seen_routes:
             continue
-        seen_handlers.add(handler_id)
+        seen_routes.add(route_id)
 
         tool_name = _tool_name_from_route_name(info.name)
         desc = require_mcp_description(tool_name, info.mcp_description)

@@ -26,11 +26,12 @@ from veloce._handler_plan import (
     K_QUERY,
     K_QUERY_LIST,
     K_REQUEST,
+    K_SECURITY_SCOPES,
     MK_BODY,
 )
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.openapi import _pydantic_to_schema, _python_type_to_schema
-from veloce.dependency import _coerce_value
+from veloce.dependency import SecurityScopes, _coerce_value
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan, _Slot
@@ -271,12 +272,21 @@ async def bind_arguments(
     """
     resolver.reset()
 
+    # The MCPContext stands in for the Request (mirroring WS DI, which passes a
+    # WebSocket where the resolver expects a Request). The JSON `arguments` map
+    # is handed to the resolver where the HTTP path hands `path_params`: a
+    # sub-dependency that declares a scalar parameter named like a tool argument
+    # then sources its value from `arguments`, with the same string coercion the
+    # HTTP path applies to a path parameter. Tools have no URL path, so this is
+    # the only place an agent-supplied value can enter the DI graph.
+    request = cast("Any", context)
+
     # Route-level dependencies run before the handler graph (RFC-equivalent to
     # the HTTP/WS paths), so an auth/permission guard fires even though the
     # call arrived over MCP rather than HTTP.
     if route_dep_plans:
         for slot in route_dep_plans:
-            await resolver._exec_depends(slot, cast("Any", context), {})
+            await resolver._exec_depends(slot, request, arguments)
 
     kwargs: dict[str, Any] = {}
 
@@ -288,11 +298,16 @@ async def bind_arguments(
             kwargs[name] = context
             continue
 
+        if kind == K_SECURITY_SCOPES:
+            # A handler may declare `scopes: SecurityScopes` directly, as on the
+            # HTTP/DI path. An MCP tool call has no enclosing Security() chain,
+            # so the correct value is an empty SecurityScopes - the same value a
+            # route with no scopes receives.
+            kwargs[name] = SecurityScopes(list(resolver._scope_stack))
+            continue
+
         if kind == K_DEPENDS:
-            # The MCPContext stands in for the Request (mirroring WS DI, which
-            # passes a WebSocket where the resolver expects a Request); an
-            # empty path-params map - tools have no URL path.
-            kwargs[name] = await resolver._exec_depends(slot, cast("Any", context), {})
+            kwargs[name] = await resolver._exec_depends(slot, request, arguments)
             continue
 
         if name in arguments:

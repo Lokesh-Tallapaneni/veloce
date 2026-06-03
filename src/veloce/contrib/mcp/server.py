@@ -24,6 +24,7 @@ from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.plan_bridge import bind_arguments
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
 from veloce.dependency import DependencyResolver
+from veloce.exceptions import RequestValidationError
 from veloce.instrumentation import RequestMetrics
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -159,17 +160,19 @@ class MCPServer:
         resolver._override_subplans = self.app._override_subplans
         exc: BaseException | None = None
         try:
-            # Only the argument-binding boundary maps a TypeError (a missing or
-            # mis-typed argument) to an invalid-params transport error. The
+            # Only the argument-binding boundary maps a malformed argument to an
+            # invalid-params transport error: a missing argument (TypeError), a
+            # failed type coercion (RequestValidationError, raised by the shared
+            # coercion helper) or a failed model validation (ValueError). The
             # handler call lives outside this guard so any exception raised in
-            # the handler body - including a genuine TypeError - propagates and
-            # is surfaced as an in-band isError result by `_tools_call`, never
-            # leaked onto the JSON-RPC error channel.
+            # the handler body - including a genuine TypeError / ValueError -
+            # propagates and is surfaced as an in-band isError result by
+            # `_tools_call`, never leaked onto the JSON-RPC error channel.
             try:
                 kwargs = await bind_arguments(
                     tool.plan, arguments, context, resolver, tool.route_dep_plans
                 )
-            except TypeError as err:
+            except (TypeError, ValueError, RequestValidationError) as err:
                 raise _ToolInputError(str(err)) from err
 
             handler = tool.handler

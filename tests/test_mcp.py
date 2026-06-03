@@ -8,7 +8,7 @@ import orjson
 import pytest
 from pydantic import BaseModel
 
-from veloce import Blueprint, Depends, HTTPException, MCPContext, Veloce
+from veloce import Blueprint, Depends, HTTPException, MCPContext, SecurityScopes, Veloce
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
@@ -87,6 +87,41 @@ def test_expose_existing_get_route():
     registry = build_registry(app)
     assert "ping" in registry.tools
     assert registry.tools["ping"].description == "Health probe"
+
+
+def test_shared_handler_two_routes_become_two_tools():
+    """One handler mounted as two distinct named routes yields two tools.
+
+    Deduplication is by route, not by the handler callable, so a function
+    intentionally mounted twice is not silently collapsed into a single tool.
+    """
+    app = Veloce(openapi_url=None)
+
+    async def health():
+        return {"ok": True}
+
+    app.add_route(
+        "/ping",
+        health,
+        methods=["GET"],
+        name="ping",
+        expose_as_mcp_tool=True,
+        mcp_description="Ping",
+    )
+    app.add_route(
+        "/healthz",
+        health,
+        methods=["GET"],
+        name="healthz",
+        expose_as_mcp_tool=True,
+        mcp_description="Healthz",
+    )
+
+    registry = build_registry(app)
+    assert "ping" in registry.tools
+    assert "healthz" in registry.tools
+    # Both tools wrap the same callable but are independently callable.
+    assert registry.tools["ping"].handler is registry.tools["healthz"].handler
 
 
 # -- Schema generation ------------------------------------------------
@@ -476,6 +511,112 @@ def test_context_is_injected():
     )
     out = asyncio.run(pipe.run())
     assert out[0]["result"]["content"][0]["text"] == "whoami"
+
+
+def test_dependency_consumes_tool_argument():
+    """A `Depends()` sub-dependency resolves a parameter named like a tool
+    argument from the agent-supplied arguments, mirroring how the HTTP path
+    feeds path/query params into sub-dependencies."""
+    app = Veloce(openapi_url=None)
+
+    def get_user_id(user_id: int) -> int:
+        # The sub-dependency declares the same name the agent supplies; it must
+        # receive the coerced argument value, not fall over looking for an HTTP
+        # request attribute.
+        return user_id
+
+    @app.mcp_tool(description="Echo the resolved user id")
+    async def lookup(resolved: int = Depends(get_user_id)) -> int:
+        return resolved
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "lookup", "arguments": {"user_id": "42"}},
+        }
+    )
+    out = asyncio.run(pipe.run())
+    assert out[0]["result"]["content"][0]["text"] == "42"
+
+
+def test_malformed_argument_type_is_invalid_params():
+    """A value that fails coercion onto the parameter type is an invalid-params
+    transport error, not an in-band handler failure."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Double an integer")
+    async def double(n: int) -> int:
+        return n * 2
+
+    pipe = _Pipe(_server(app))
+    # `"abc"` cannot coerce to int; this is a malformed call, so it routes to
+    # the JSON-RPC error channel rather than isError=true.
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "double", "arguments": {"n": "abc"}},
+        }
+    )
+    out = asyncio.run(pipe.run())
+    assert "result" not in out[0]
+    assert out[0]["error"]["code"] == -32602
+
+
+def test_malformed_model_argument_is_invalid_params():
+    """A body model that fails validation is an invalid-params transport error."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Summarise an item")
+    async def summarise(item: Item) -> str:
+        return f"{item.qty}x {item.name}"
+
+    pipe = _Pipe(_server(app))
+    # `qty` is not an integer; model validation fails at the binding boundary.
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "summarise", "arguments": {"item": {"name": "x", "qty": "no"}}},
+        }
+    )
+    out = asyncio.run(pipe.run())
+    assert "result" not in out[0]
+    assert out[0]["error"]["code"] == -32602
+
+
+def test_security_scopes_param_injected():
+    """A handler declaring `scopes: SecurityScopes` is callable over MCP and
+    receives an empty SecurityScopes (no enclosing Security() chain)."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Report the security scopes")
+    async def whatscopes(scopes: SecurityScopes) -> str:
+        # An MCP call has no Security() chain, so the scope list is empty.
+        assert isinstance(scopes, SecurityScopes)
+        return ",".join(scopes.scopes)
+
+    # The SecurityScopes slot is not an agent input.
+    registry = build_registry(app)
+    assert "scopes" not in registry.tools["whatscopes"].input_schema["properties"]
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "whatscopes", "arguments": {}},
+        }
+    )
+    out = asyncio.run(pipe.run())
+    assert "error" not in out[0]
+    assert out[0]["result"]["content"][0]["text"] == ""
 
 
 def test_sync_handler_offloaded():
