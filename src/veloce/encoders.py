@@ -6,12 +6,30 @@ import dataclasses
 import datetime
 import decimal
 import enum
+import math
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
+
+
+def _decimal_to_json(obj: decimal.Decimal) -> float | str:
+    """Encode a Decimal as a float, or as a string when out of float range.
+
+    `float(Decimal)` overflows to `inf` for very large magnitudes and yields
+    `nan` for `Decimal('NaN')`; orjson serializes both as JSON `null`, silently
+    dropping the value. Falling back to `str` for any non-finite result keeps
+    the number representable (as a JSON string) instead of corrupting it. Finite
+    decimals - the overwhelmingly common case - stay JSON numbers.
+    """
+    try:
+        f = float(obj)
+    except (ValueError, OverflowError):
+        return str(obj)
+    return f if math.isfinite(f) else str(obj)
+
 
 # Exact-type fast-path for leaf scalars. `dict.get(type(obj))` is a
 # single hash lookup; an `isinstance` cascade on the same cases is
@@ -25,7 +43,7 @@ _LEAF_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
     float: lambda v: v,
     bool: lambda v: v,
     uuid.UUID: str,
-    decimal.Decimal: float,
+    decimal.Decimal: _decimal_to_json,
     datetime.datetime: lambda v: v.isoformat(),
     datetime.date: lambda v: v.isoformat(),
     datetime.time: lambda v: v.isoformat(),
@@ -81,7 +99,7 @@ def jsonable_encoder(
     if isinstance(obj, datetime.timedelta):
         return obj.total_seconds()
     if isinstance(obj, decimal.Decimal):
-        return float(obj)
+        return _decimal_to_json(obj)
     if isinstance(obj, uuid.UUID):
         return str(obj)
 
@@ -188,7 +206,7 @@ def orjson_default(obj: Any) -> Any:
     if isinstance(obj, Path):
         return str(obj)
     if isinstance(obj, decimal.Decimal):
-        return float(obj)
+        return _decimal_to_json(obj)
     if isinstance(obj, datetime.timedelta):
         return obj.total_seconds()
     if isinstance(obj, (bytes, bytearray)):

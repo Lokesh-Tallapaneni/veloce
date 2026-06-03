@@ -155,5 +155,36 @@ def test_orjson_default_falls_back_to_str_for_slotted_object():
     assert isinstance(out, str)
 
 
+def test_finite_decimal_encodes_as_json_number():
+    import decimal
+
+    from veloce.http.response import JSONResponse
+
+    resp = JSONResponse({"price": decimal.Decimal("1.5")})
+    assert resp.body == b'{"price":1.5}'
+
+
+def test_out_of_float_range_decimal_encodes_as_string_not_null():
+    import decimal
+
+    from veloce.encoders import jsonable_encoder, orjson_default
+
+    # float(Decimal('1E10000')) overflows to inf, which orjson would emit as
+    # JSON null - silently dropping the value. The hook must preserve it as a
+    # string instead. Both encode paths agree.
+    big = decimal.Decimal("1E10000")
+    assert orjson_default(big) == str(big)
+    assert jsonable_encoder(big) == str(big)
+
+
+def test_decimal_nan_encodes_as_string_not_null():
+    import decimal
+
+    from veloce.encoders import orjson_default
+
+    nan = decimal.Decimal("NaN")
+    assert orjson_default(nan) == str(nan)
+
+
 # Add `Any` import for the type-checker.
 from typing import Any  # noqa: E402
