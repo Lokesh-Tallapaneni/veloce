@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The generated OpenAPI document now documents container-shaped
+  `response_model` annotations instead of dropping them. A response model of
+  `dict[str, Item]` emits an object with `additionalProperties` referencing the
+  item schema, `Item | None` emits an `anyOf` over the model and `{"type":
+  "null"}`, `set[Item]` / `frozenset[Item]` / `tuple[Item, ...]` emit typed
+  arrays, a fixed `tuple[A, B]` emits positional `prefixItems`, and a union of
+  models emits an `anyOf`; these compose for nested shapes such as
+  `list[dict[str, Item]]`. Previously only a bare model or `list[Model]` was
+  rendered and every other shape produced no documented response body. Response
+  schemas are now taken from the model's serialization shape
+  (`model_json_schema(mode="serialization")`); a distinct `<Name>Output` entry
+  is registered only when the serialization and validation shapes actually
+  differ (for example a computed field that appears only on output), so the
+  components map is not padded when input and output coincide.
+
 - The generated OpenAPI document now advertises the `422` validation-error
   response that the runtime actually returns. A route that has validatable
   input - a JSON request body, a form/file field, or a non-body parameter
