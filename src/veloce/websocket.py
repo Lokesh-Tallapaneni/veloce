@@ -34,6 +34,8 @@ from veloce.status import (
     WS_1000_NORMAL_CLOSURE,
     WS_1001_GOING_AWAY,
     WS_1002_PROTOCOL_ERROR,
+    WS_1005_NO_STATUS_RCVD,
+    WS_1007_INVALID_FRAME_PAYLOAD_DATA,
     WS_1009_MESSAGE_TOO_BIG,
 )
 
@@ -53,6 +55,79 @@ def _validate_idle_timeout(idle_timeout: float | None) -> None:
         raise ValueError(
             f"idle_timeout must be a finite positive number of seconds, got {idle_timeout!r}"
         )
+
+
+# Close codes a peer is permitted to send in a Close frame body (RFC 6455
+# Sec. 7.4). 1005/1006/1015 are reserved status codes the protocol never
+# puts on the wire, and 1004 is undefined; receiving any of them - or any
+# code below 1000 or an unassigned code in the 1016-2999 range - is a
+# protocol error answered with 1002. Codes >=3000 are application/registry
+# defined and accepted without a registry check.
+_PEER_CLOSE_CODES_OK = frozenset({1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011})
+
+
+class _Utf8Validator:
+    """Incremental UTF-8 validator for streamed TEXT payloads.
+
+    RFC 6455 Sec. 8.1 requires TEXT message payloads to be valid UTF-8 and
+    Sec. 5.6 lets a message arrive as several continuation fragments. Rather
+    than buffer the whole message and decode once at the end, this consumes
+    each fragment as it lands and remembers the partial multi-byte sequence
+    that straddles a fragment boundary, so a bad byte is rejected on the
+    first offending fragment.
+
+    The decoder is a compact form of the Unicode UTF-8 acceptance automaton:
+    `_need` counts the continuation bytes still expected for the codepoint in
+    progress, and `_lo`/`_hi` bound the immediately-next byte so overlong
+    encodings, surrogate halves (U+D800-U+DFFF) and values past U+10FFFF are
+    rejected without decoding to an `str`. `feed` returns False on the first
+    invalid byte; `done` is True only at a codepoint boundary.
+    """
+
+    __slots__ = ("_need", "_lo", "_hi")
+
+    def __init__(self) -> None:
+        self._need = 0
+        self._lo = 0x80
+        self._hi = 0xBF
+
+    @property
+    def done(self) -> bool:
+        return self._need == 0
+
+    def feed(self, chunk: bytes | bytearray) -> bool:
+        need = self._need
+        lo = self._lo
+        hi = self._hi
+        for byte in chunk:
+            if need == 0:
+                if byte < 0x80:
+                    continue
+                if 0xC2 <= byte <= 0xDF:
+                    need, lo, hi = 1, 0x80, 0xBF
+                elif byte == 0xE0:
+                    need, lo, hi = 2, 0xA0, 0xBF
+                elif 0xE1 <= byte <= 0xEC or byte in (0xEE, 0xEF):
+                    need, lo, hi = 2, 0x80, 0xBF
+                elif byte == 0xED:
+                    need, lo, hi = 2, 0x80, 0x9F
+                elif byte == 0xF0:
+                    need, lo, hi = 3, 0x90, 0xBF
+                elif 0xF1 <= byte <= 0xF3:
+                    need, lo, hi = 3, 0x80, 0xBF
+                elif byte == 0xF4:
+                    need, lo, hi = 3, 0x80, 0x8F
+                else:
+                    return False
+            else:
+                if byte < lo or byte > hi:
+                    return False
+                need -= 1
+                lo, hi = 0x80, 0xBF
+        self._need = need
+        self._lo = lo
+        self._hi = hi
+        return True
 
 
 class WebSocketState(enum.IntEnum):
@@ -156,6 +231,14 @@ class WebSocket:
         # `None` when no fragmented message is in progress.
         self._frag_opcode: int | None = None
         self._frag_buffer: bytearray = bytearray()
+        # Incremental UTF-8 validator for the TEXT message currently being
+        # reassembled (`None` for a binary message); see `_Utf8Validator`.
+        self._frag_validator: _Utf8Validator | None = None
+        # Peer-supplied close code/reason, populated when a Close frame is
+        # received (raw-transport mode). `close_code` stays `None` until the
+        # peer closes; `close_reason` is the decoded UTF-8 reason or "".
+        self.close_code: int | None = None
+        self.close_reason: str = ""
         # Persistent receive buffer for incremental frame parsing. The
         # transport hands `feed_data` arbitrary byte runs that do not line up
         # with frame boundaries - bytes accumulate here until a whole frame
@@ -206,6 +289,9 @@ class WebSocket:
         ws._receive_queue = None  # type: ignore[assignment]
         ws._frag_opcode = None  # unused in ASGI mode (no raw frame parsing)
         ws._frag_buffer = bytearray()
+        ws._frag_validator = None  # unused in ASGI mode (server validates UTF-8)
+        ws.close_code = None
+        ws.close_reason = ""
         ws._recv_buffer = bytearray()  # unused in ASGI mode (no raw frame parsing)
         ws._asgi_receive = receive
         ws._asgi_send = send
@@ -500,7 +586,13 @@ class WebSocket:
         msg = await self._asgi_receive()
         if msg["type"] == ASGI_EVENT_WS_DISCONNECT:
             self._closed = True
-            raise WebSocketDisconnect()
+            # The ASGI server reports the peer's close code (and, on newer
+            # servers, the reason). Expose them via the same accessors the
+            # raw-transport path populates so handlers see one API.
+            code = msg.get("code", WS_1005_NO_STATUS_RCVD)
+            self.close_code = code
+            self.close_reason = msg.get("reason", "") or ""
+            raise WebSocketDisconnect(code)
         return msg
 
     async def receive(self) -> dict:
@@ -862,8 +954,8 @@ class WebSocket:
         # Control frames (close / ping / pong) - never fragmented; handled
         # independently of any fragmented message in progress.
         if opcode == 0x8:  # Close
-            self._closed = True
-            raise WebSocketDisconnect()
+            self._handle_close_frame(payload)
+            raise WebSocketDisconnect(self.close_code or WS_1000_NORMAL_CLOSURE)
         if opcode == 0x9:  # Ping
             self._send_frame(bytes(payload), opcode=0xA)  # Pong
             return frame_len
@@ -877,16 +969,32 @@ class WebSocket:
             # frame. If a peer sends one anyway, discard the abandoned
             # partial and clear the reassembly state cleanly so a later
             # continuation cannot append to a stale buffer.
+            if opcode == 0x1:
+                # TEXT payloads must be valid UTF-8 (RFC 6455 Sec. 8.1).
+                # Validate this opening/whole frame's bytes incrementally so
+                # a bad byte trips here, not at receive_text() decode time.
+                validator = _Utf8Validator()
+                if not validator.feed(payload):
+                    self._close_invalid_payload()
+                    return 0
+            else:
+                validator = None
             if fin:
-                # Unfragmented message - deliver immediately.
+                # Unfragmented message - deliver immediately. A TEXT frame
+                # must end on a codepoint boundary.
+                if validator is not None and not validator.done:
+                    self._close_invalid_payload()
+                    return 0
                 self._frag_opcode = None
                 self._frag_buffer = bytearray()
+                self._frag_validator = None
                 self._enqueue_or_close(bytes(payload))
             else:
                 # Opening frame of a fragmented message - start buffering
                 # (supersedes any abandoned partial).
                 self._frag_opcode = opcode
                 self._frag_buffer = bytearray(payload)
+                self._frag_validator = validator
                 if len(self._frag_buffer) > self.MAX_MESSAGE_SIZE:
                     self._close_too_big()
                     return 0
@@ -895,6 +1003,12 @@ class WebSocket:
                 # A continuation with no message in progress is a protocol
                 # error - drop the stray frame rather than corrupt state.
                 return frame_len
+            # Validate continuation bytes against the in-progress message's
+            # UTF-8 state (a no-op for a binary message, whose validator is
+            # None) before appending.
+            if self._frag_validator is not None and not self._frag_validator.feed(payload):
+                self._close_invalid_payload()
+                return 0
             self._frag_buffer += payload
             # Cap the cumulative reassembled size: the per-frame cap bounds
             # one frame, but a stream of continuation frames could otherwise
@@ -903,10 +1017,15 @@ class WebSocket:
                 self._close_too_big()
                 return 0
             if fin:
-                # Final fragment - the reassembled message is complete.
+                # Final fragment - the reassembled message is complete. A
+                # TEXT message must end on a codepoint boundary.
+                if self._frag_validator is not None and not self._frag_validator.done:
+                    self._close_invalid_payload()
+                    return 0
                 self._enqueue_or_close(bytes(self._frag_buffer))
                 self._frag_opcode = None
                 self._frag_buffer = bytearray()
+                self._frag_validator = None
 
         # The frame was fully consumed regardless of opcode-specific
         # handling - report its length so the caller drops it and looks
@@ -938,6 +1057,68 @@ class WebSocket:
         """
         with contextlib.suppress(Exception):
             self._send_frame((WS_1002_PROTOCOL_ERROR).to_bytes(2, "big"), opcode=0x8)  # Close
+        self._closed = True
+        with contextlib.suppress(Exception):
+            if self.transport is not None:
+                self.transport.close()
+
+    def _close_invalid_payload(self) -> None:
+        """Close the connection with `1007 Invalid Frame Payload Data`.
+
+        Used when a TEXT message (whole or reassembled from fragments) is
+        not valid UTF-8 (RFC 6455 Sec. 8.1). Like the other parser-side
+        closers the close is synchronous - no `await` is available from
+        inside the Protocol callback that drives `feed_data`.
+        """
+        with contextlib.suppress(Exception):
+            self._send_frame((WS_1007_INVALID_FRAME_PAYLOAD_DATA).to_bytes(2, "big"), opcode=0x8)
+        self._closed = True
+        with contextlib.suppress(Exception):
+            if self.transport is not None:
+                self.transport.close()
+
+    def _handle_close_frame(self, payload: bytes | bytearray) -> None:
+        """Process a received Close frame: validate, echo, and record state.
+
+        Per RFC 6455 Sec. 5.5.1 a Close payload is either empty or a 2-byte
+        big-endian status code optionally followed by a UTF-8 reason. An
+        empty payload means "no status" (recorded as 1005, the reserved
+        "no status received" code, without putting it on the wire). A
+        1-byte payload, a status code the peer is not allowed to send, or a
+        non-UTF-8 reason is a protocol error answered with a 1002 close.
+        Otherwise the connection is closed by echoing a normal 1000 close
+        and `close_code`/`close_reason` are exposed to the handler.
+        """
+        n = len(payload)
+        if n == 0:
+            self.close_code = WS_1005_NO_STATUS_RCVD
+            self._echo_close(WS_1000_NORMAL_CLOSURE)
+            return
+        if n == 1:
+            self._close_protocol_error()
+            return
+        code = struct.unpack("!H", payload[:2])[0]
+        if code < 3000 and code not in _PEER_CLOSE_CODES_OK:
+            self._close_protocol_error()
+            return
+        try:
+            reason = payload[2:].decode("utf-8") if n > 2 else ""
+        except UnicodeDecodeError:
+            self._close_invalid_payload()
+            return
+        self.close_code = code
+        self.close_reason = reason
+        self._echo_close(WS_1000_NORMAL_CLOSURE)
+
+    def _echo_close(self, code: int) -> None:
+        """Send a Close frame in reply to a peer close and tear down.
+
+        The reply carries `code` (a 2-byte status) and no reason. Both the
+        frame write and the transport close are best-effort - the peer may
+        already be gone - so each is suppressed independently.
+        """
+        with contextlib.suppress(Exception):
+            self._send_frame(code.to_bytes(2, "big"), opcode=0x8)
         self._closed = True
         with contextlib.suppress(Exception):
             if self.transport is not None:

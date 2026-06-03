@@ -42,6 +42,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window bounds each complete message (under ASGI the server delivers complete
   messages and owns ping/pong; the raw-transport path measures it the same way).
   The value must be a finite positive number of seconds or `None`.
+- Inbound WebSocket TEXT frames are now validated as UTF-8 at the raw-transport
+  parser boundary (RFC 6455 Sec. 8.1) using an incremental validator that
+  catches a bad byte on the first offending fragment of a fragmented message.
+  An invalid payload closes the connection with `1007 Invalid Frame Payload
+  Data` instead of surfacing a raw `UnicodeDecodeError` at `receive_text()`
+  time. Binary frames are unaffected.
+- Received WebSocket Close frames are parsed and validated (RFC 6455 Sec. 5.5.1
+  / Sec. 7.4): the status code is range-checked (a code below 1000, a reserved
+  code such as 1004/1005/1006, or an unassigned code below 3000 closes with
+  `1002 Protocol Error`) and the reason is UTF-8-validated (`1007` on failure).
+  The peer's close code and reason are exposed on `WebSocket.close_code`
+  (`int | None`) and `WebSocket.close_reason` (`str`), populated on both the
+  raw-transport and ASGI paths, and the raised `WebSocketDisconnect` now carries
+  the peer's close code. An empty Close payload records `1005` ("no status
+  received") without putting it on the wire.
 
 ### Changed
 
