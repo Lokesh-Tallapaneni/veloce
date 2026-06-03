@@ -1188,7 +1188,9 @@ class WebSocket:
             return
         self.close_code = code
         self.close_reason = reason
-        self._echo_close(WS_1000_NORMAL_CLOSURE)
+        # RFC 6455 Sec. 5.5.1: the reply Close SHOULD echo the peer's status
+        # code (a private/registered code the peer is allowed to send).
+        self._echo_close(code)
 
     def _echo_close(self, code: int) -> None:
         """Send a Close frame in reply to a peer close and tear down.

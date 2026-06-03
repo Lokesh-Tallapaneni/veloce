@@ -131,11 +131,15 @@ class CSRFMiddleware(Middleware):
             parsed: list[tuple[str, str | None, str | None]] = []
             for origin in trusted_origins:
                 split = urlsplit(origin)
-                host = split.netloc.lower()
+                scheme = split.scheme.lower()
+                # Drop a default port here too, so a configured wildcard or
+                # exact origin written with `:443`/`:80` still matches a
+                # browser Origin/Referer that omits it.
+                host = self._strip_default_port(scheme, split.netloc.lower())
                 if host.startswith("."):
-                    parsed.append((split.scheme.lower(), None, host[1:]))
+                    parsed.append((scheme, None, host[1:]))
                 else:
-                    parsed.append((split.scheme.lower(), host, None))
+                    parsed.append((scheme, host, None))
             self._trusted = tuple(parsed)
         # When a `secret` is supplied the cookie token is HMAC-signed: a
         # value carrying no valid server signature fails verification

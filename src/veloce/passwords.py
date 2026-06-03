@@ -125,67 +125,6 @@ def hash_password(
     raise ValueError(f"unknown password hashing method: {method!r}")
 
 
-def _parse_stored(stored: str) -> tuple[str, bytes, bytes] | None:
-    """Decode a verifier string into `(method, salt, expected)`.
-
-    Returns None for any structurally invalid input - the same gate
-    `verify_password` applies before deciding whether to run a KDF.
-    """
-    try:
-        method, _, salt_b64, hash_b64 = stored.split("$", 3)
-        return method, _b64decode(salt_b64), _b64decode(hash_b64)
-    except (ValueError, OSError):
-        return None
-
-
-def _scrypt_params(raw: str) -> tuple[int, int, int] | None:
-    """Parse and bounds-check stored scrypt `n:r:p`; None if out of range."""
-    try:
-        n_str, r_str, p_str = raw.split(":")
-        n, r, p = int(n_str), int(r_str), int(p_str)
-    except ValueError:
-        return None
-    # Refuse attacker-controlled cost parameters outside the documented
-    # window. Below the floor (e.g. `N=2`) a tampered hash verifies in
-    # microseconds, defeating scrypt's work floor; above the cap the
-    # `maxmem = 128*n*r*p*2` request becomes a verify-time DoS. The floor
-    # is hardcoded (not tied to the live `_SCRYPT_N` default) so a future
-    # tune-up of the default does not retroactively invalidate legacy
-    # hashes.
-    if n < _MIN_SCRYPT_N or r < _MIN_SCRYPT_R or p < _MIN_SCRYPT_P:
-        return None
-    if n > _MAX_SCRYPT_N or r > _MAX_SCRYPT_R or p > _MAX_SCRYPT_P:
-        return None
-    return n, r, p
-
-
-def _verifiable(stored: str | None) -> bool:
-    """Report whether `stored` is a shape `verify_password` would run a KDF on.
-
-    True means a verify call pays the full KDF cost regardless of match;
-    False means it short-circuits before any hashing. `verify_password_or_dummy`
-    uses this to decide when to spend decoy work on the no-KDF path.
-    """
-    if not stored:
-        return False
-    parsed = _parse_stored(stored)
-    if parsed is None:
-        return False
-    method, _, expected = parsed
-    params = stored.split("$", 3)[1]
-    if method == "scrypt":
-        return len(expected) == _SCRYPT_DKLEN and _scrypt_params(params) is not None
-    if method == "pbkdf2:sha256":
-        if len(expected) != _PBKDF2_DKLEN:
-            return False
-        try:
-            iterations = int(params)
-        except ValueError:
-            return False
-        return _MIN_PBKDF2_ITERATIONS <= iterations <= _MAX_PBKDF2_ITERATIONS
-    return False
-
-
 def verify_password(stored: str, candidate: str | bytes) -> bool:
     """Compare `candidate` against a `stored` verifier string.
 
@@ -197,11 +136,16 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
         return False
     if isinstance(candidate, str):
         candidate = candidate.encode("utf-8")
-    parsed = _parse_stored(stored)
-    if parsed is None:
+    try:
+        method, params, salt_b64, hash_b64 = stored.split("$", 3)
+    except ValueError:
         return False
-    method, salt, expected = parsed
-    params = stored.split("$", 3)[1]
+
+    try:
+        salt = _b64decode(salt_b64)
+        expected = _b64decode(hash_b64)
+    except (ValueError, OSError):
+        return False
 
     if method == "scrypt":
         # Reject hashes whose length isn't the canonical derive length -
@@ -209,10 +153,25 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
         # match of a re-derive at that shorter length.
         if len(expected) != _SCRYPT_DKLEN:
             return False
-        cost = _scrypt_params(params)
-        if cost is None:
+        try:
+            n_str, r_str, p_str = params.split(":")
+            n, r, p = int(n_str), int(r_str), int(p_str)
+        except ValueError:
             return False
-        n, r, p = cost
+        # Refuse to verify against attacker-controlled cost parameters
+        # below the documented security floor. A tampered hash with
+        # `N=2` would otherwise verify in microseconds, defeating
+        # scrypt's work floor and turning a database leak into a
+        # free-credentials oracle. The floor is hardcoded (not tied to
+        # the live `_SCRYPT_N` default) so a future tune-up of the
+        # default does not retroactively invalidate legacy hashes.
+        if n < _MIN_SCRYPT_N or r < _MIN_SCRYPT_R or p < _MIN_SCRYPT_P:
+            return False
+        # Upper cap: refuse before calling scrypt, since `maxmem = 128*n*r*p*2`
+        # would otherwise demand absurd allocations the kernel may grant
+        # partially before failing.
+        if n > _MAX_SCRYPT_N or r > _MAX_SCRYPT_R or p > _MAX_SCRYPT_P:
+            return False
         try:
             # Size maxmem based on the stored parameters so verifying a
             # legacy hash with different N/r/p still works.
@@ -242,49 +201,6 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
     return False
 
 
-# A throwaway verifier for the no-such-hash timing-equalisation path, derived
-# from a random secret using the *current* default cost parameters and cached
-# for the process lifetime. Computed lazily on first use, NOT at import: the
-# default KDF is scrypt, which is absent on some Python builds, and importing
-# veloce must never require it (callers using `pbkdf2:sha256` still work).
-# Pinning it to the live defaults means the decoy cost tracks any future bump
-# of `_SCRYPT_N`.
-_DUMMY_HASH: str | None = None
-
-
-def _dummy_verifier() -> str:
-    global _DUMMY_HASH
-    if _DUMMY_HASH is None:
-        _DUMMY_HASH = hash_password(secrets.token_bytes(_SALT_BYTES))
-    return _DUMMY_HASH
-
-
-def verify_password_or_dummy(stored: str | None, candidate: str | bytes) -> bool:
-    """Verify against `stored`, equalising the no-such-hash timing.
-
-    Use this as the login entry point. When `stored` is None, empty, or
-    malformed - the shape an attacker probing for valid usernames sees on
-    the no-such-user path - a plain `verify_password` would short-circuit
-    before any KDF and return in microseconds, while a real wrong-password
-    verify costs ~100 ms. That gap leaks which usernames exist. This
-    helper runs one real KDF against a cached process-lifetime dummy
-    verifier on the no-KDF path so both paths cost the same.
-
-    Returns True only when `stored` is a valid verifier and `candidate`
-    matches it; False in every other case.
-    """
-    if _verifiable(stored):
-        # `verify_password` will pay the full KDF cost here whether or not
-        # the candidate matches, so the timing is already equalised - no
-        # decoy needed. `stored` is non-None given `_verifiable`.
-        return verify_password(stored, candidate)  # type: ignore[arg-type]
-    # No usable verifier: `verify_password` would have returned in
-    # microseconds. Burn an equivalent KDF against the cached dummy so a
-    # timing observer cannot distinguish this from a wrong-password verify.
-    verify_password(_dummy_verifier(), candidate)
-    return False
-
-
 async def hash_password_async(
     password: str | bytes,
     method: str = "scrypt",
@@ -310,16 +226,6 @@ async def verify_password_async(stored: str, candidate: str | bytes) -> bool:
     blocks the event loop. Offload it.
     """
     return await asyncio.to_thread(verify_password, stored, candidate)
-
-
-async def verify_password_or_dummy_async(stored: str | None, candidate: str | bytes) -> bool:
-    """Async-safe wrapper for `verify_password_or_dummy` - runs on a thread.
-
-    Same rationale as `verify_password_async`, plus the enumeration-defence
-    dummy KDF runs off-loop too. Use this as the login entry point from
-    `async def` handlers.
-    """
-    return await asyncio.to_thread(verify_password_or_dummy, stored, candidate)
 
 
 def is_strong_password(password: str, *, min_length: int = 8) -> bool:

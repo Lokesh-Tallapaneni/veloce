@@ -42,17 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Omitting `trusted_origins` keeps the previous double-submit-only
   behaviour unchanged.
 
-- `verify_password_or_dummy(stored, candidate)` and its async counterpart
-  `verify_password_or_dummy_async` - login-oriented password checks that
-  equalise timing across the no-such-user and wrong-password paths. When
-  `stored` is `None`, empty, or malformed, the helper runs one real KDF
-  against a cached process-lifetime dummy verifier (derived at import from
-  a random secret using the current default cost parameters) before
-  returning `False`, so an attacker timing the login endpoint cannot
-  distinguish a missing account from a wrong password and enumerate valid
-  usernames. A genuine wrong-password check pays exactly one KDF, not a
-  decoy on top. Both are exported from the top-level `veloce` package.
-
 - Write-side backpressure on the built-in serving path. The native
   `HttpProtocol` now implements `pause_writing`/`resume_writing` and arms the
   transport's write-buffer high-water mark in `connection_made`, exposing an

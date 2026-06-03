@@ -4,13 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import (
-    hash_password,
-    is_strong_password,
-    verify_password,
-    verify_password_or_dummy,
-    verify_password_or_dummy_async,
-)
+from veloce import hash_password, is_strong_password, verify_password
 from veloce._internal import _b64encode
 
 # ── Round-trip ────────────────────────────────────────────────────────
@@ -195,75 +189,3 @@ def test_verify_rejects_excessive_pbkdf2_iterations():
 def test_verify_pbkdf2_default_iterations_still_succeeds():
     stored = hash_password("hunter2", method="pbkdf2:sha256")
     assert verify_password(stored, "hunter2") is True
-
-
-# ── Timing-attack mitigation: verify_password_or_dummy ──
-
-
-def test_or_dummy_correct_password_accepted():
-    stored = hash_password("hunter2")
-    assert verify_password_or_dummy(stored, "hunter2") is True
-
-
-def test_or_dummy_wrong_password_rejected():
-    stored = hash_password("hunter2")
-    assert verify_password_or_dummy(stored, "nope") is False
-
-
-def test_or_dummy_none_stored_returns_false():
-    assert verify_password_or_dummy(None, "anything") is False
-
-
-def test_or_dummy_empty_stored_returns_false():
-    assert verify_password_or_dummy("", "anything") is False
-
-
-def test_or_dummy_malformed_stored_returns_false():
-    assert verify_password_or_dummy("not-a-hash", "anything") is False
-
-
-def test_or_dummy_runs_kdf_on_no_user_path():
-    """No-such-hash path must still invoke a KDF (closes the timing oracle)."""
-    import veloce.passwords as pw
-
-    calls = []
-    real = pw.verify_password
-
-    def spy(stored, candidate):
-        calls.append(stored)
-        return real(stored, candidate)
-
-    pw.verify_password = spy
-    try:
-        assert pw.verify_password_or_dummy(None, "anything") is False
-    finally:
-        pw.verify_password = real
-    # The dummy verifier was exercised on the no-user path.
-    assert pw._DUMMY_HASH in calls
-
-
-def test_or_dummy_does_not_double_hash_real_mismatch():
-    """A real wrong-password must pay exactly one KDF, not a decoy on top."""
-    import veloce.passwords as pw
-
-    calls = []
-    real = pw.verify_password
-
-    def spy(stored, candidate):
-        calls.append(stored)
-        return real(stored, candidate)
-
-    pw.verify_password = spy
-    stored = hash_password("hunter2")
-    try:
-        assert pw.verify_password_or_dummy(stored, "wrong") is False
-    finally:
-        pw.verify_password = real
-    assert calls == [stored]
-
-
-async def test_or_dummy_async_matches_sync():
-    stored = hash_password("hunter2")
-    assert await verify_password_or_dummy_async(stored, "hunter2") is True
-    assert await verify_password_or_dummy_async(stored, "wrong") is False
-    assert await verify_password_or_dummy_async(None, "x") is False
