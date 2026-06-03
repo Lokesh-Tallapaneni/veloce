@@ -88,7 +88,7 @@ from veloce import (
     Request,
     Veloce,
     hash_password_async,
-    verify_password_async,
+    verify_password_or_dummy_async,
 )
 
 app = Veloce()
@@ -108,7 +108,9 @@ async def signup(request: Request):
 async def login(request: Request):
     body = await request.json()
     stored = _USERS.get(body["username"])
-    if stored is None or not await verify_password_async(stored, body["password"]):
+    # `verify_password_or_dummy_async` runs a KDF even when `stored` is
+    # None, so an unknown username and a wrong password take the same time.
+    if not await verify_password_or_dummy_async(stored, body["password"]):
         raise HTTPException(401, "Incorrect username or password")
     return {"ok": True}
 ```
@@ -118,12 +120,17 @@ and return the same values. Keep the sync `hash_password` /
 `verify_password` for sync handlers, scripts, and CLI tools, where there
 is no event loop to protect.
 
-!!! tip "Constant-time username comparison"
-    `verify_password` already compares the derived hash in constant time.
-    To avoid leaking which usernames exist through response timing,
-    consider verifying against a dummy hash when the username is unknown,
-    or compare with `secrets.compare_digest` (imported above) where a
-    fixed-string comparison is needed.
+!!! tip "Defeating username enumeration"
+    `verify_password` returns immediately — before any KDF — when the
+    stored hash is missing or malformed, so a plain
+    `stored is None or verify_password(...)` login leaks which usernames
+    exist: an unknown account answers in microseconds while a wrong
+    password takes ~100 ms. Use
+    [`verify_password_or_dummy`](../reference.md#veloce.verify_password_or_dummy)
+    (or `verify_password_or_dummy_async`) as the login entry point: it
+    runs one real KDF against a cached dummy verifier on the no-such-user
+    path so both cases cost the same. A genuine wrong-password check still
+    pays exactly one KDF.
 
 ## Password strength policy
 

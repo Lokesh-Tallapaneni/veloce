@@ -137,6 +137,8 @@ from veloce.passwords import (
     is_strong_password,
     verify_password,
     verify_password_async,
+    verify_password_or_dummy,
+    verify_password_or_dummy_async,
 )
 from veloce.routing.converters import Converter, register_converter
 from veloce.routing.params import Body, Cookie, File, Form, Header, Path, Query
@@ -337,6 +339,8 @@ __all__ = [
     "hash_password_async",
     "verify_password",
     "verify_password_async",
+    "verify_password_or_dummy",
+    "verify_password_or_dummy_async",
     "is_strong_password",
     # Status
     "status",
