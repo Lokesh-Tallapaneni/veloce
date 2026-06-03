@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import mimetypes
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from urllib.parse import quote
@@ -67,6 +67,43 @@ from veloce.status import (
     HTTP_307_TEMPORARY_REDIRECT,
     status_permits_body,
 )
+
+# ── Case-insensitive response-header access ──────────────────────────
+# `Response.headers` is a plain `dict` (case-SENSITIVE), not a CIMultiDict.
+# HTTP field names are case-insensitive (RFC 9110 Sec. 5.1), so a handler or
+# upstream middleware that sets `cache-control`, `Etag`, or any other header
+# in non-canonical casing would be missed by an exact-key lookup. These
+# helpers fold the lookup case-insensitively without allocating a new dict on
+# the hot path - they fast-path the canonical key, then fall back to a single
+# linear scan only when it is absent.
+
+
+def header_key(headers: Mapping[str, str], name: str) -> str | None:
+    """Return the actual stored key matching `name` case-insensitively, or None.
+
+    `name` should be passed in its canonical casing; the common case (the
+    header is stored under that exact key) returns without scanning. Use the
+    returned key to rewrite a value in place under whatever casing the caller
+    originally stored.
+    """
+    if name in headers:
+        return name
+    lowered = name.lower()
+    for key in headers:
+        if key.lower() == lowered:
+            return key
+    return None
+
+
+def header_get(headers: Mapping[str, str], name: str) -> str | None:
+    """Return the value stored under `name` case-insensitively, or None."""
+    key = header_key(headers, name)
+    return None if key is None else headers[key]
+
+
+def header_present(headers: Mapping[str, str], name: str) -> bool:
+    """Return True when a header named `name` exists under any casing."""
+    return header_key(headers, name) is not None
 
 
 class Response:
@@ -992,8 +1029,9 @@ class Response:
         of the resource) and the weak/strong ETag comparison rules.
         """
         # If-None-Match: any token (or `*`) that equals the response's
-        # ETag returns 304.
-        ours_etag = self.headers.get(HEADER_ETAG, "")
+        # ETag returns 304. Field names are case-insensitive (RFC 9110
+        # Sec. 5.1), so a handler-set `Etag`/`etag` is honored too.
+        ours_etag = header_get(self.headers, HEADER_ETAG) or ""
         inm = getattr(request, "if_none_match", ())
         if inm and ours_etag:
             if "*" in inm:
@@ -1008,7 +1046,7 @@ class Response:
             return self
 
         # If-Modified-Since (only consulted when If-None-Match absent).
-        ours_lm = self.headers.get(HEADER_LAST_MODIFIED, "")
+        ours_lm = header_get(self.headers, HEADER_LAST_MODIFIED) or ""
         ims = getattr(request, "if_modified_since", None)
         if ims is not None and ours_lm:
             ours_dt = parse_date(ours_lm)

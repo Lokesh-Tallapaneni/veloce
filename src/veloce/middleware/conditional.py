@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from veloce._constants import HEADER_CACHE_CONTROL, HEADER_ETAG, HEADER_LAST_MODIFIED
 from veloce.http.request import Request
-from veloce.http.response import Response, StreamingResponse
+from veloce.http.response import Response, StreamingResponse, header_get, header_present
 from veloce.middleware.base import Middleware
 from veloce.status import HTTP_200_OK
 
@@ -38,14 +38,18 @@ class ConditionalGetMiddleware(Middleware):
         if request.method not in ("GET", "HEAD"):
             return response
 
-        existing_etag = response.headers.get(HEADER_ETAG) or response.headers.get("etag")
+        # Field names are case-insensitive (RFC 9110 Sec. 5.1): a handler that
+        # set `etag`/`Etag` or `cache-control: no-store` in any casing must be
+        # honored, so probe the plain-dict headers case-insensitively.
+        existing_etag = header_present(response.headers, HEADER_ETAG)
+        cache_control = header_get(response.headers, HEADER_CACHE_CONTROL) or ""
         if (
             self.auto_etag
             and not existing_etag
             and response.status_code == HTTP_200_OK
             and not isinstance(response, StreamingResponse)
             and response.body
-            and "no-store" not in (response.headers.get(HEADER_CACHE_CONTROL, "") or "").lower()
+            and "no-store" not in cache_control.lower()
         ):
             response.add_etag(weak=True)
 
@@ -55,9 +59,8 @@ class ConditionalGetMiddleware(Middleware):
         # carries no content). Skip the downgrade for streamed responses; they
         # pass through unchanged (the stream is never buffered for revalidation).
         if not response.is_streamed and (
-            response.headers.get(HEADER_ETAG)
-            or response.headers.get("etag")
-            or response.headers.get(HEADER_LAST_MODIFIED)
+            header_present(response.headers, HEADER_ETAG)
+            or header_present(response.headers, HEADER_LAST_MODIFIED)
         ):
             return response.make_conditional(request)
         return response

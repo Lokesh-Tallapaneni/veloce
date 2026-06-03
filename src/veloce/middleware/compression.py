@@ -23,7 +23,7 @@ from veloce._constants import (
     MIME_TEXT_EVENT_STREAM,
 )
 from veloce.http.request import Request
-from veloce.http.response import Response
+from veloce.http.response import Response, header_get, header_key, header_present
 from veloce.middleware.base import Middleware
 from veloce.status import HTTP_206_PARTIAL_CONTENT
 
@@ -147,9 +147,8 @@ class GZipMiddleware(Middleware):
         # Content-Range / Accept-Ranges / ETag keep describing the
         # uncompressed representation, producing a protocol-invalid response
         # (RFC 9110 Sec. 14). Range responses are served whole, uncompressed.
-        if (
-            response.status_code == HTTP_206_PARTIAL_CONTENT
-            or HEADER_CONTENT_RANGE in response.headers
+        if response.status_code == HTTP_206_PARTIAL_CONTENT or header_present(
+            response.headers, HEADER_CONTENT_RANGE
         ):
             return response
 
@@ -160,8 +159,9 @@ class GZipMiddleware(Middleware):
         # (e.g. it was returned pre-gzipped, or an upstream layer encoded it).
         # Stacking encodings produces a payload no client will decode, and
         # violates RFC 9110 Sec. 8.4 (each Content-Encoding identifies one
-        # transformation; doubling them silently is a bug).
-        existing_encoding = response.headers.get(HEADER_CONTENT_ENCODING)
+        # transformation; doubling them silently is a bug). Field names are
+        # case-insensitive (RFC 9110 Sec. 5.1), so honor any casing.
+        existing_encoding = header_get(response.headers, HEADER_CONTENT_ENCODING)
         if existing_encoding and existing_encoding.strip().lower() not in ("", "identity"):
             return response
 
@@ -205,15 +205,15 @@ class GZipMiddleware(Middleware):
             return response
 
         # Don't re-encode a response that already declares a Content-Encoding.
-        existing_encoding = response.headers.get(HEADER_CONTENT_ENCODING)
+        # Field names are case-insensitive (RFC 9110 Sec. 5.1), so honor any casing.
+        existing_encoding = header_get(response.headers, HEADER_CONTENT_ENCODING)
         if existing_encoding and existing_encoding.strip().lower() not in ("", "identity"):
             return response
 
         # Range responses are served whole and uncompressed (see the buffered
         # path for the RFC 9110 Sec. 14 rationale).
-        if (
-            response.status_code == HTTP_206_PARTIAL_CONTENT
-            or HEADER_CONTENT_RANGE in response.headers
+        if response.status_code == HTTP_206_PARTIAL_CONTENT or header_present(
+            response.headers, HEADER_CONTENT_RANGE
         ):
             return response
 
@@ -282,11 +282,14 @@ class GZipMiddleware(Middleware):
         untouched so we never fabricate a validator. `headers` is a plain dict,
         so accept either spelling and rewrite whichever key holds the tag.
         """
-        for etag_key in (HEADER_ETAG, "etag"):
-            etag = response.headers.get(etag_key)
+        # Find the actual stored key (RFC 9110 Sec. 5.1 - field names are
+        # case-insensitive, so a handler-set `Etag`/`ETAG` must be located)
+        # and rewrite the strong validator weak in place under that same key.
+        etag_key = header_key(response.headers, HEADER_ETAG)
+        if etag_key is not None:
+            etag = response.headers[etag_key]
             if etag and etag[:1] == '"':
                 response.headers[etag_key] = "W/" + etag
-                break
 
     def _should_compress_type(self, content_type: str) -> bool:
         ct = (content_type or "").split(";", 1)[0].strip().lower()

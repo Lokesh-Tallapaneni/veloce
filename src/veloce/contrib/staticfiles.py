@@ -474,9 +474,15 @@ class StaticFiles:
             }
             if content_encoding is not None:
                 # The range is over the compressed bytes; advertise the
-                # encoding and Vary so a shared cache never serves these
-                # bytes to a client that did not ask for them.
+                # encoding so a shared cache never serves these bytes to a
+                # client that did not ask for them.
                 range_headers[HEADER_CONTENT_ENCODING] = content_encoding
+            if self.precompressed:
+                # The asset is content-negotiated on Accept-Encoding, so even
+                # the identity slice (client sent no / `q=0` Accept-Encoding)
+                # must carry `Vary: Accept-Encoding` - otherwise a shared cache
+                # may replay this uncompressed range to a compression-capable
+                # client (RFC 9110 Sec. 12.5.5).
                 range_headers[HEADER_VARY] = HEADER_ACCEPT_ENCODING
             return Response(
                 status_code=HTTP_206_PARTIAL_CONTENT,
@@ -493,6 +499,13 @@ class StaticFiles:
         }
         if content_encoding is not None:
             common_headers[HEADER_CONTENT_ENCODING] = content_encoding
+        if self.precompressed:
+            # `Vary: Accept-Encoding` on every response for a precompressed-
+            # enabled asset - including the identity body served when the
+            # client sent no acceptable encoding - so a shared cache keys this
+            # uncompressed representation separately from the br/gz variants
+            # and never replays it to a compression-capable client
+            # (RFC 9110 Sec. 12.5.5).
             common_headers[HEADER_VARY] = HEADER_ACCEPT_ENCODING
 
         # Files at or above `STREAM_THRESHOLD` use chunked streaming so

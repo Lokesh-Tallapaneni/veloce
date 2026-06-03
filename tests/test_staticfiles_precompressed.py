@@ -170,3 +170,34 @@ async def test_missing_accept_encoding_serves_raw(tmp_path):
     assert resp.status_code == 200
     assert "Content-Encoding" not in resp.headers
     assert resp.body == b"RAW"
+
+
+@pytest.mark.asyncio
+async def test_identity_precompressed_carries_vary(tmp_path):
+    # An asset with precompressed enabled is content-negotiated on
+    # Accept-Encoding even when the identity body is served (no acceptable
+    # encoding). The identity response must still carry `Vary: Accept-Encoding`
+    # so a shared cache does not replay it to a compression-capable client
+    # (RFC 9110 Sec. 12.5.5).
+    (tmp_path / "app.css").write_bytes(b"RAW")
+    (tmp_path / "app.css.br").write_bytes(b"BR")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css"))
+    assert resp.status_code == 200
+    assert "Content-Encoding" not in resp.headers
+    assert resp.headers["Vary"] == "Accept-Encoding"
+    assert resp.body == b"RAW"
+
+
+@pytest.mark.asyncio
+async def test_identity_precompressed_range_carries_vary(tmp_path):
+    # The identity range slice (client sent no acceptable encoding) for a
+    # precompressed-enabled asset also carries `Vary: Accept-Encoding`.
+    (tmp_path / "app.css").write_bytes(b"RAWBYTES")
+    (tmp_path / "app.css.br").write_bytes(b"BR")
+    sf = StaticFiles(directory=str(tmp_path), prefix="/s", precompressed=True)
+    resp = await sf.handle(_req("/s/app.css", {"Range": "bytes=0-2"}))
+    assert resp.status_code == 206
+    assert "Content-Encoding" not in resp.headers
+    assert resp.headers["Vary"] == "Accept-Encoding"
+    assert resp.body == b"RAW"

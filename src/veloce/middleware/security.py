@@ -40,7 +40,7 @@ from veloce._constants import (
 from veloce._internal import _extract_host
 from veloce._protocol_constants import URL_SCHEME_HTTPS, URL_SCHEME_WSS
 from veloce.http.request import Request
-from veloce.http.response import RedirectResponse, Response
+from veloce.http.response import RedirectResponse, Response, header_present
 from veloce.middleware.base import Middleware
 
 # Stash key used to thread bucket state from process_request -> process_response
@@ -151,13 +151,12 @@ class CSPMiddleware(Middleware):
         # browsers INTERSECT multiple CSP headers, so a route-level override
         # spelled `content-security-policy` (lowercase) must still suppress
         # the default - otherwise both headers ship and the route's intended
-        # policy is silently narrowed. Compare against the lowercased keys.
-        present = {key.lower() for key in response.headers}
+        # policy is silently narrowed. Probe case-insensitively.
         for header, template in (
             (HEADER_CONTENT_SECURITY_POLICY, self._enforce_template),
             (HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY, self._report_template),
         ):
-            if template is None or header.lower() in present:
+            if template is None or header_present(response.headers, header):
                 continue
             if "{nonce}" in template:
                 value = template.replace("{nonce}", f"'nonce-{csp_nonce(request)}'")

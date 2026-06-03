@@ -84,6 +84,38 @@ def test_auto_etag_false_still_forwards_handler_etag():
     assert not (r3.headers.get("ETag") or r3.headers.get("etag"))
 
 
+def test_mixedcase_no_store_skips_synthesis():
+    # Field names are case-insensitive (RFC 9110 Sec. 5.1): a handler that set
+    # `cache-control: no-store` in non-canonical casing must still suppress
+    # auto-ETag synthesis.
+    app = Veloce(openapi_url=None)
+    app.add_middleware(ConditionalGetMiddleware())
+
+    @app.get("/")
+    async def index(request):
+        return Response(body=b"x", headers={"cache-control": "no-store"})
+
+    client = TestClient(app)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert not (r.headers.get("ETag") or r.headers.get("etag"))
+
+
+def test_mixedcase_etag_honored_for_304():
+    # A handler-set `Etag` (non-canonical casing) must drive the 304 downgrade
+    # on a matching If-None-Match, just as a canonical `ETag` would.
+    app = Veloce(openapi_url=None)
+    app.add_middleware(ConditionalGetMiddleware())
+
+    @app.get("/")
+    async def index(request):
+        return Response(body=b"x", headers={"Etag": '"abc"'})
+
+    client = TestClient(app)
+    r = client.get("/", headers={"If-None-Match": '"abc"'})
+    assert r.status_code == 304
+
+
 def test_post_untouched():
     app = Veloce(openapi_url=None)
     app.add_middleware(ConditionalGetMiddleware())
