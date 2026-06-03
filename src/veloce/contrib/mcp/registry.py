@@ -43,6 +43,13 @@ class MCPTool:
     # protects the agent-facing call too. Empty for `@app.mcp_tool` tools,
     # which have no route.
     route_dep_plans: list[Any] = field(default_factory=list)
+    # The `RouteInfo` this tool was derived from, or `None` for a pure
+    # `@app.mcp_tool`. When present the server runs the handler return through
+    # the same response shaping the HTTP path applies for that route - the
+    # route `response_model` filtering (so excluded fields never leak over MCP)
+    # and `Response`/`JSONResponse` body extraction (so a returned response
+    # object yields its decoded body, not an object repr).
+    route_info: Any = None
 
 
 @dataclass(slots=True)
@@ -155,6 +162,7 @@ def build_registry(app: Any) -> ToolRegistry:
                 plan=plan,
                 input_schema=schema,
                 route_dep_plans=info.route_dep_plans,
+                route_info=info,
             )
         )
 

@@ -2,8 +2,10 @@
 
 One `MCPContext` is constructed per `tools/call`, mirroring how a `Request`
 is constructed per HTTP request. A tool handler (or one of its `Depends`)
-may declare a parameter typed `MCPContext` (or named ``ctx`` / ``context``)
-to receive it. The context carries the calling tool name, the raw argument
+may declare a parameter typed `MCPContext` to receive it (detected by that
+type annotation, never by parameter name, so a plain argument named ``ctx`` /
+``context`` stays a normal tool input). The context carries the calling tool
+name, the raw argument
 mapping, and placeholder hooks for the cancellation / progress / logging
 channels the MCP protocol defines for v2; in v1 those are inert no-ops so
 handlers written against them keep working once the channels are wired.

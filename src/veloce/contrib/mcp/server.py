@@ -25,6 +25,7 @@ from veloce.contrib.mcp.plan_bridge import bind_arguments
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import RequestValidationError
+from veloce.http.response import Response
 from veloce.instrumentation import RequestMetrics
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -148,7 +149,33 @@ class MCPServer:
                 "isError": True,
             }
         await self._instrument(tool, started)
-        return {"content": [{"type": "text", "text": _stringify(result)}]}
+        shaped = self._shape_result(tool, result)
+        return {"content": [{"type": "text", "text": _stringify(shaped)}]}
+
+    def _shape_result(self, tool: MCPTool, result: Any) -> Any:
+        """Run a route-derived tool's return through the HTTP response shaping.
+
+        A pure `@app.mcp_tool` (no route) returns its value unchanged. For a
+        tool exposed from an HTTP route the handler return is shaped exactly as
+        the HTTP path shapes it: the route `response_model` filtering runs first
+        (so fields hidden on the HTTP response cannot leak over MCP), and a
+        returned `Response`/`JSONResponse` is unwrapped to its actual body - a
+        JSON body decoded back to a value, any other body to its text - rather
+        than serialised as an object repr.
+        """
+        route_info = tool.route_info
+        if route_info is None:
+            return result
+
+        # `response_model` reshapes only a non-`Response` return, mirroring
+        # `app._build_response`: a handler that built its own Response already
+        # chose its body.
+        if route_info.response_model is not None and not isinstance(result, Response):
+            result = self.app._apply_response_model(result, route_info)
+
+        if isinstance(result, Response):
+            return _response_body_value(result)
+        return result
 
     # -- Invocation -------------------------------------------------
 
@@ -169,7 +196,7 @@ class MCPServer:
             # propagates and is surfaced as an in-band isError result by
             # `_tools_call`, never leaked onto the JSON-RPC error channel.
             try:
-                kwargs = await bind_arguments(
+                kwargs, request = await bind_arguments(
                     tool.plan, arguments, context, resolver, tool.route_dep_plans
                 )
             except (TypeError, ValueError, RequestValidationError) as err:
@@ -177,13 +204,28 @@ class MCPServer:
 
             handler = tool.handler
             if _is_async_callable(handler):
-                return await handler(**kwargs)
-            # A sync handler runs in the thread pool so it cannot block the
-            # event loop - the same offload the HTTP path applies, with the
-            # current context copied so contextvars stay readable.
-            loop = asyncio.get_running_loop()
-            ctx = contextvars.copy_context()
-            return await loop.run_in_executor(None, ctx.run, functools.partial(handler, **kwargs))
+                result = await handler(**kwargs)
+            else:
+                # A sync handler runs in the thread pool so it cannot block the
+                # event loop - the same offload the HTTP path applies, with the
+                # current context copied so contextvars stay readable.
+                loop = asyncio.get_running_loop()
+                ctx = contextvars.copy_context()
+                result = await loop.run_in_executor(
+                    None, ctx.run, functools.partial(handler, **kwargs)
+                )
+
+            # Run any background tasks the handler scheduled, mirroring the HTTP
+            # path's post-handler execution. The stdio path has no response to
+            # return to first, so they are awaited inline; a task error is
+            # logged, never allowed to fail the (already-produced) tool result.
+            tasks = request._background_tasks
+            if tasks is not None:
+                try:
+                    await tasks.run_all()
+                except Exception:
+                    _logger.exception("MCP background task failed")
+            return result
         except BaseException as err:  # noqa: BLE001 - re-raised after teardown
             exc = err
             raise
@@ -226,6 +268,27 @@ class _ToolInputError(Exception):
 
 def _error(msg_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
+
+
+def _response_body_value(response: Response) -> Any:
+    """Unwrap a Response into the value `_stringify` should serialise.
+
+    A JSON-typed body is decoded back to a Python value so the tool result
+    carries the same JSON the HTTP client would receive; any other body decodes
+    to its text. The body bytes are the already-rendered response body, so no
+    further response-model work is needed.
+    """
+    body = response.body
+    if not body:
+        return ""
+    if response.mimetype.endswith("json"):
+        import orjson
+
+        try:
+            return orjson.loads(body)
+        except orjson.JSONDecodeError:
+            pass
+    return body.decode("utf-8", "replace")
 
 
 def _stringify(result: Any) -> str:

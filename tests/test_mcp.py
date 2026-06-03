@@ -8,7 +8,17 @@ import orjson
 import pytest
 from pydantic import BaseModel
 
-from veloce import Blueprint, Depends, HTTPException, MCPContext, SecurityScopes, Veloce
+from veloce import (
+    BackgroundTasks,
+    Blueprint,
+    Depends,
+    HTTPException,
+    JSONResponse,
+    MCPContext,
+    Response,
+    SecurityScopes,
+    Veloce,
+)
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
@@ -59,6 +69,17 @@ class Address(BaseModel):
 class Customer(BaseModel):
     name: str
     address: Address
+
+
+class PublicUser(BaseModel):
+    id: int
+    name: str
+
+
+class FullUser(BaseModel):
+    id: int
+    name: str
+    password: str
 
 
 # -- Registration -----------------------------------------------------
@@ -760,3 +781,218 @@ def test_duplicate_tool_name_raises():
     app._mcp_tools.append((dup, "dup", "Two", None))
     with pytest.raises(ValueError, match="Duplicate"):
         build_registry(app)
+
+
+# -- Response shaping for exposed routes ------------------------------
+
+
+def _call(app: Veloce, name: str, arguments: dict) -> dict:
+    """Drive one `tools/call` and return the single response object."""
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        }
+    )
+    return asyncio.run(pipe.run())[0]
+
+
+def test_exposed_route_response_model_filters_excluded_fields():
+    """An exposed route's `response_model` filters the handler return over MCP,
+    so a field absent from the response model never leaks to the agent."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/me",
+        expose_as_mcp_tool=True,
+        mcp_description="Current user",
+        response_model=PublicUser,
+    )
+    async def me() -> dict:
+        # The handler returns a password, but `response_model=PublicUser` has no
+        # such field, so it must be dropped before the value reaches the agent.
+        return {"id": 1, "name": "ada", "password": "s3cret"}
+
+    out = _call(app, "me", {})
+    assert "error" not in out
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"id": 1, "name": "ada"}
+    assert "password" not in payload
+
+
+def test_exposed_route_response_model_exclude_filters_field():
+    """`response_model_exclude` hides a declared field over MCP as it does on HTTP."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/full",
+        expose_as_mcp_tool=True,
+        mcp_description="Full user",
+        response_model=FullUser,
+        response_model_exclude={"password"},
+    )
+    async def full() -> FullUser:
+        return FullUser(id=2, name="grace", password="hunter2")
+
+    out = _call(app, "full", {})
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"id": 2, "name": "grace"}
+
+
+def test_exposed_route_returning_jsonresponse_yields_decoded_body():
+    """A handler returning a JSONResponse yields its decoded body, not a repr."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/data", expose_as_mcp_tool=True, mcp_description="Raw data")
+    async def data() -> JSONResponse:
+        return JSONResponse({"value": 42, "items": [1, 2, 3]})
+
+    out = _call(app, "data", {})
+    text = out["result"]["content"][0]["text"]
+    assert "JSONResponse" not in text
+    assert orjson.loads(text) == {"value": 42, "items": [1, 2, 3]}
+
+
+def test_exposed_route_returning_plain_response_yields_body_text():
+    """A handler returning a plain Response yields the body text, not a repr."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/txt", expose_as_mcp_tool=True, mcp_description="Plain text")
+    async def txt() -> Response:
+        return Response(body=b"hello world", content_type="text/plain")
+
+    out = _call(app, "txt", {})
+    assert out["result"]["content"][0]["text"] == "hello world"
+
+
+# -- Request injection ------------------------------------------------
+
+
+def test_request_slot_receives_real_request():
+    """A handler declaring `request: Request` receives a real, empty Request:
+    `request.headers.get(...)` returns nothing and `request.state` is usable."""
+    app = Veloce(openapi_url=None)
+
+    from veloce import Request
+
+    @app.mcp_tool(description="Read request state and a header")
+    async def probe(request: Request) -> dict:
+        request.state.touched = True
+        return {
+            "auth": request.headers.get("authorization"),
+            "touched": request.state.touched,
+        }
+
+    out = _call(app, "probe", {})
+    assert "error" not in out
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"auth": None, "touched": True}
+
+
+def test_dependency_reading_request_state_works():
+    """A dependency that reads/writes `request.state` works over MCP (it gets a
+    real Request, not a bare MCPContext) - no AttributeError."""
+    app = Veloce(openapi_url=None)
+
+    from veloce import Request
+
+    def stamp(request: Request) -> int:
+        # Would raise AttributeError if a bare MCPContext were substituted here.
+        request.state.x = 7
+        return request.state.x
+
+    @app.mcp_tool(description="Use a request-reading dependency")
+    async def use_stamp(value: int = Depends(stamp)) -> int:
+        return value
+
+    out = _call(app, "use_stamp", {})
+    assert "error" not in out
+    assert out["result"]["content"][0]["text"] == "7"
+
+
+# -- Response / BackgroundTasks injection -----------------------------
+
+
+def test_response_slot_injected():
+    """A handler declaring `response: Response` is callable; it gets a fresh
+    Response to mutate without a missing-argument TypeError."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Mutate the injected response")
+    async def with_response(response: Response) -> str:
+        response.status_code = 201
+        return "ok"
+
+    # The Response slot is framework-injected, never an agent input.
+    registry = build_registry(app)
+    assert "response" not in registry.tools["with_response"].input_schema["properties"]
+
+    out = _call(app, "with_response", {})
+    assert "error" not in out
+    assert out["result"]["content"][0]["text"] == "ok"
+
+
+def test_background_tasks_slot_injected_and_runs():
+    """A handler declaring `tasks: BackgroundTasks` is callable and the
+    scheduled task actually runs after the handler returns."""
+    app = Veloce(openapi_url=None)
+    ran: list[str] = []
+
+    async def record() -> None:
+        ran.append("done")
+
+    @app.mcp_tool(description="Schedule a background task")
+    async def schedule(tasks: BackgroundTasks) -> str:
+        tasks.add_task(record)
+        return "queued"
+
+    # The BackgroundTasks slot is framework-injected, never an agent input.
+    registry = build_registry(app)
+    assert "tasks" not in registry.tools["schedule"].input_schema["properties"]
+
+    out = _call(app, "schedule", {})
+    assert "error" not in out
+    assert out["result"]["content"][0]["text"] == "queued"
+    # The background task ran after the handler returned, mirroring HTTP.
+    assert ran == ["done"]
+
+
+# -- Type-based context detection -------------------------------------
+
+
+def test_plain_argument_named_context_is_an_input():
+    """A tool argument named `context` but typed `str` stays a normal input -
+    detection of the MCPContext is by TYPE, never by parameter name."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Echo a string named context")
+    async def echo(context: str) -> str:
+        return context
+
+    # `context` is a real, required agent input - it appears in the schema.
+    registry = build_registry(app)
+    props = registry.tools["echo"].input_schema["properties"]
+    assert "context" in props
+
+    out = _call(app, "echo", {"context": "hi"})
+    assert "error" not in out
+    assert out["result"]["content"][0]["text"] == "hi"
+
+
+def test_typed_context_still_injected():
+    """A parameter typed `MCPContext` still receives the injected context even
+    when named `ctx`, and is not an agent input."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Return the tool name from a typed context")
+    async def named(ctx: MCPContext) -> str:
+        return ctx.tool_name
+
+    registry = build_registry(app)
+    assert "ctx" not in registry.tools["named"].input_schema["properties"]
+
+    out = _call(app, "named", {})
+    assert out["result"]["content"][0]["text"] == "named"

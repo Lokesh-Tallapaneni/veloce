@@ -14,24 +14,29 @@ resolves a plan without an HTTP `Request`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
 from veloce._handler_plan import (
+    K_BG_TASKS,
     K_BODY_MODEL,
     K_DEPENDS,
     K_PARAM_MARKER,
     K_QUERY,
     K_QUERY_LIST,
     K_REQUEST,
+    K_RESPONSE,
     K_SECURITY_SCOPES,
     MK_BODY,
 )
+from veloce.background import BackgroundTasks
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.openapi import _pydantic_to_schema, _python_type_to_schema
 from veloce.dependency import SecurityScopes, _coerce_value
+from veloce.http.request import Request
+from veloce.http.response import Response
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan, _Slot
@@ -52,14 +57,14 @@ _INPUT_KINDS = frozenset({K_BODY_MODEL, K_QUERY_LIST, K_PARAM_MARKER, K_QUERY})
 def _is_context_slot(slot: _Slot) -> bool:
     """Whether `slot` binds the MCPContext rather than an agent input.
 
-    A parameter typed `MCPContext` lands on a K_QUERY slot (it is neither
-    `Request` nor a model), so it is detected by its target type; the `ctx` /
-    `context` parameter names are honoured the same way the WS path honours
-    `ws` / `websocket`.
+    Detected purely by the parameter's TYPE annotation being `MCPContext` (the
+    way `HandlerPlan` classifies every other typed slot), never by name. A
+    parameter merely *named* `ctx` / `context` but typed as a normal value
+    (`context: str`) stays an agent input. A parameter typed `MCPContext` lands
+    on a K_QUERY slot - it is neither `Request` nor a model - so the K_QUERY
+    guard scopes the check.
     """
-    if slot.kind != K_QUERY:
-        return False
-    return slot.target_type is MCPContext or slot.name in ("ctx", "context")
+    return slot.kind == K_QUERY and slot.target_type is MCPContext
 
 
 # OpenAPI component ref prefix `_pydantic_to_schema` emits; an MCP input
@@ -250,21 +255,47 @@ def _validate_model(value: Any, model: type[BaseModel]) -> Any:
         raise ValueError(str(exc)) from exc
 
 
+def _build_request(tool_name: str) -> Request:
+    """Construct the minimal `Request` injected for a tool call's `Request` slots.
+
+    A tool call has no HTTP request, but a handler or dependency may still read
+    `request.headers` / `request.state` (built-in auth deps such as
+    `HTTPBearer` / `APIKeyHeader` do). Binding the `MCPContext` there would
+    raise `AttributeError`; instead a real, empty `Request` is supplied. Its
+    headers are empty (so an auth dep that needs one fails closed - surfaced
+    in-band as `isError` - rather than crashing) and `request.state` is a fresh,
+    usable store. The synthetic method/path mark the call's MCP origin.
+    """
+    return Request(
+        method="MCP",
+        path=f"/mcp/{tool_name}",
+        query_string="",
+        headers=[],
+        body=b"",
+    )
+
+
 async def bind_arguments(
     plan: HandlerPlan,
     arguments: dict[str, Any],
     context: MCPContext,
     resolver: DependencyResolver,
     route_dep_plans: list[Any] | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], Request]:
     """Resolve handler kwargs for a tool call from the JSON `arguments`.
 
+    Returns `(kwargs, request)`; the returned `Request` carries any
+    `BackgroundTasks` the handler scheduled (on `request._background_tasks`),
+    which the caller runs after the handler, mirroring the HTTP path.
+
     Scalar / model parameters are read from `arguments` and coerced through
-    Pydantic; `Depends` graphs resolve through `resolver` (the `MCPContext`
-    occupies the `Request` slot, as a WebSocket does on the WS path); an
-    `MCPContext`-typed parameter receives `context`. Run
-    `resolver.run_teardowns()` after the handler returns to drain any
-    `yield`-style dependency teardowns.
+    Pydantic; `Depends` graphs resolve through `resolver` against a minimal
+    `Request` (so a dependency that reads `request.headers` / `request.state`
+    works); a parameter typed `Request` receives that same request, and one
+    typed `MCPContext` receives `context`. Framework slots a handler may
+    declare - `Response`, `BackgroundTasks`, `SecurityScopes` - are injected
+    just as the HTTP path injects them. Run `resolver.run_teardowns()` after the
+    handler returns to drain any `yield`-style dependency teardowns.
 
     Route-level dependencies (`route_dep_plans`) run first, before any handler
     slot is bound, mirroring `resolve_plan` / `resolve_ws_plan`; a guard that
@@ -272,14 +303,15 @@ async def bind_arguments(
     """
     resolver.reset()
 
-    # The MCPContext stands in for the Request (mirroring WS DI, which passes a
-    # WebSocket where the resolver expects a Request). The JSON `arguments` map
-    # is handed to the resolver where the HTTP path hands `path_params`: a
-    # sub-dependency that declares a scalar parameter named like a tool argument
-    # then sources its value from `arguments`, with the same string coercion the
-    # HTTP path applies to a path parameter. Tools have no URL path, so this is
-    # the only place an agent-supplied value can enter the DI graph.
-    request = cast("Any", context)
+    # A real, minimal Request stands in for the HTTP request the resolver and
+    # handler expect (mirroring WS DI, which passes a WebSocket). The JSON
+    # `arguments` map is handed to the resolver where the HTTP path hands
+    # `path_params`: a sub-dependency that declares a scalar parameter named
+    # like a tool argument then sources its value from `arguments`, with the
+    # same string coercion the HTTP path applies to a path parameter. Tools have
+    # no URL path, so this is the only place an agent-supplied value can enter
+    # the DI graph. Built once per call and reused for every Request slot.
+    request = _build_request(context.tool_name)
 
     # Route-level dependencies run before the handler graph (RFC-equivalent to
     # the HTTP/WS paths), so an auth/permission guard fires even though the
@@ -294,8 +326,28 @@ async def bind_arguments(
         kind = slot.kind
         name = slot.name
 
-        if kind == K_REQUEST or _is_context_slot(slot):
+        if kind == K_REQUEST:
+            kwargs[name] = request
+            continue
+
+        if _is_context_slot(slot):
             kwargs[name] = context
+            continue
+
+        # A handler may declare `response: Response`; supply a fresh one it can
+        # mutate, exactly as the HTTP path does. There is no final HTTP response
+        # to merge it onto over MCP, but the handler must still receive it.
+        if kind == K_RESPONSE:
+            kwargs[name] = Response()
+            continue
+
+        # A handler may declare `tasks: BackgroundTasks`; supply a fresh queue
+        # and stash it on the request so the caller can run it after the handler
+        # returns, mirroring the HTTP path's deferred execution.
+        if kind == K_BG_TASKS:
+            tasks = BackgroundTasks()
+            request._background_tasks = tasks
+            kwargs[name] = tasks
             continue
 
         if kind == K_SECURITY_SCOPES:
@@ -323,4 +375,4 @@ async def bind_arguments(
             # correct, never confusing it with a handler-body failure.
             raise TypeError(f"missing required argument: {name!r}")
 
-    return kwargs
+    return kwargs, request
