@@ -159,7 +159,9 @@ class MCPServer:
         resolver._override_subplans = self.app._override_subplans
         exc: BaseException | None = None
         try:
-            kwargs = await bind_arguments(tool.plan, arguments, context, resolver)
+            kwargs = await bind_arguments(
+                tool.plan, arguments, context, resolver, tool.route_dep_plans
+            )
             handler = tool.handler
             if _is_async_callable(handler):
                 return await handler(**kwargs)

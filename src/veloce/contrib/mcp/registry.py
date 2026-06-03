@@ -37,6 +37,12 @@ class MCPTool:
     handler: Callable
     plan: HandlerPlan
     input_schema: dict[str, Any]
+    # Route-level dependencies (`dependencies=[...]` on the route / router /
+    # blueprint). These run before the handler's own `Depends` graph, exactly
+    # as the HTTP and WebSocket dispatch paths run them, so a route-level guard
+    # protects the agent-facing call too. Empty for `@app.mcp_tool` tools,
+    # which have no route.
+    route_dep_plans: list[Any] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -141,6 +147,7 @@ def build_registry(app: Any) -> ToolRegistry:
                 handler=info.handler,
                 plan=plan,
                 input_schema=schema,
+                route_dep_plans=info.route_dep_plans,
             )
         )
 

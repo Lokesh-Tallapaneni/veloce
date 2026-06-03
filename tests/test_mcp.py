@@ -8,7 +8,7 @@ import orjson
 import pytest
 from pydantic import BaseModel
 
-from veloce import Blueprint, Depends, MCPContext, Veloce
+from veloce import Blueprint, Depends, HTTPException, MCPContext, Veloce
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
@@ -110,8 +110,37 @@ def test_input_schema_with_pydantic_model():
     registry = build_registry(app)
     schema = registry.tools["create"].input_schema
     assert "item" in schema["properties"]
-    assert schema["properties"]["item"]["$ref"].endswith("/Item")
-    assert "Item" in registry.schemas
+    # The ref is local to this standalone schema, and the model's fields are
+    # resolvable from `$defs` without any external component envelope.
+    ref = schema["properties"]["item"]["$ref"]
+    assert ref == "#/$defs/Item"
+    assert "Item" in schema["$defs"]
+    item_props = schema["$defs"]["Item"]["properties"]
+    assert set(item_props) == {"name", "qty"}
+
+
+def test_pydantic_input_schema_is_self_contained():
+    """tools/list inputSchema must resolve model fields with no external lookup."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Create an item")
+    async def create(item: Item) -> dict:
+        return item.model_dump()
+
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+    out = asyncio.run(pipe.run())
+
+    tool = next(t for t in out[0]["result"]["tools"] if t["name"] == "create")
+    schema = tool["inputSchema"]
+    ref = schema["properties"]["item"]["$ref"]
+    # No dangling OpenAPI component ref: the ref points into the schema's own
+    # `$defs`, and that def is present in the same tools/list payload.
+    assert ref.startswith("#/$defs/")
+    name = ref.split("/")[-1]
+    assert name in schema["$defs"]
+    assert "components" not in schema
+    assert set(schema["$defs"][name]["properties"]) == {"name", "qty"}
 
 
 def test_context_param_excluded_from_schema():
@@ -251,6 +280,71 @@ def test_dependency_injection_on_tool_call():
     )
     out = asyncio.run(pipe.run())
     assert out[0]["result"]["content"][0]["text"] == "40"
+
+
+def test_route_level_dependency_runs_on_tool_call():
+    app = Veloce(openapi_url=None)
+    events: list[str] = []
+
+    def audit() -> None:
+        events.append("guard")
+
+    @app.get(
+        "/report",
+        expose_as_mcp_tool=True,
+        mcp_description="Fetch the report",
+        dependencies=[Depends(audit)],
+    )
+    async def report() -> dict:
+        events.append("handler")
+        return {"ok": True}
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "report", "arguments": {}},
+        }
+    )
+    asyncio.run(pipe.run())
+    # The route-level dependency runs before the handler, exactly as on the
+    # HTTP/WS paths.
+    assert events == ["guard", "handler"]
+
+
+def test_route_level_dependency_can_reject_tool_call():
+    app = Veloce(openapi_url=None)
+    reached: list[str] = []
+
+    def deny() -> None:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    @app.get(
+        "/secret",
+        expose_as_mcp_tool=True,
+        mcp_description="Read the secret",
+        dependencies=[Depends(deny)],
+    )
+    async def secret() -> dict:
+        reached.append("handler")
+        return {"secret": 42}
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "secret", "arguments": {}},
+        }
+    )
+    out = asyncio.run(pipe.run())
+    # A rejecting route guard aborts the call: the handler never runs and the
+    # result is an in-band tool error.
+    assert reached == []
+    assert out[0]["result"]["isError"] is True
 
 
 def test_yield_dependency_teardown_runs():

@@ -56,14 +56,22 @@ def _is_context_slot(slot: _Slot) -> bool:
     return slot.target_type is MCPContext or slot.name in ("ctx", "context")
 
 
+# OpenAPI component ref prefix `_pydantic_to_schema` emits; an MCP input
+# schema must be standalone, so refs are rewritten under this local prefix and
+# the referenced defs inlined into the per-tool schema.
+_OPENAPI_REF_PREFIX = "#/components/schemas/"
+_MCP_REF_PREFIX = "#/$defs/"
+
+
 def build_input_schema(plan: HandlerPlan, schemas_registry: dict[str, dict]) -> dict[str, Any]:
     """Build the MCP tool input JSON Schema from a handler plan.
 
     Each handler parameter an agent supplies becomes a property; a parameter
     with no default is required. `Depends`, the `MCPContext`, and
     `Request`/`Response` slots are not agent inputs and are omitted. Nested
-    Pydantic body models are emitted as `$ref`s into `schemas_registry`,
-    matching the OpenAPI component layout.
+    Pydantic body models are referenced by `$ref` and inlined under a `$defs`
+    key, so each tool's input schema is standalone and resolvable by a client
+    with no external component envelope.
     """
     properties: dict[str, Any] = {}
     required: list[str] = []
@@ -81,7 +89,61 @@ def build_input_schema(plan: HandlerPlan, schemas_registry: dict[str, dict]) -> 
     schema: dict[str, Any] = {"type": "object", "properties": properties}
     if required:
         schema["required"] = required
+
+    defs = _collect_defs(schema, schemas_registry)
+    if defs:
+        schema["$defs"] = defs
     return schema
+
+
+def _collect_defs(schema: dict[str, Any], schemas_registry: dict[str, dict]) -> dict[str, dict]:
+    """Inline every component this schema references into a `$defs` map.
+
+    Walks the built schema for `#/components/schemas/<Name>` refs, pulls each
+    referenced component out of `schemas_registry`, follows nested refs
+    transitively, rewrites all refs to the local `#/$defs/<Name>` form (in
+    place, including inside the collected defs), and returns the `$defs` map.
+    """
+    collected: dict[str, dict] = {}
+    pending = _rewrite_refs(schema)
+    while pending:
+        name = pending.pop()
+        if name in collected:
+            continue
+        component = schemas_registry.get(name)
+        if component is None:
+            continue
+        component = _deepcopy_schema(component)
+        collected[name] = component
+        pending |= _rewrite_refs(component)
+    return collected
+
+
+def _rewrite_refs(node: Any) -> set[str]:
+    """Rewrite OpenAPI refs to `$defs` refs in place; return referenced names."""
+    names: set[str] = set()
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith(_OPENAPI_REF_PREFIX):
+            name = ref[len(_OPENAPI_REF_PREFIX) :]
+            node["$ref"] = _MCP_REF_PREFIX + name
+            names.add(name)
+        for value in node.values():
+            names |= _rewrite_refs(value)
+    elif isinstance(node, list):
+        for item in node:
+            names |= _rewrite_refs(item)
+    return names
+
+
+def _deepcopy_schema(node: Any) -> Any:
+    """Copy a JSON-Schema fragment so in-place ref rewriting never mutates the
+    shared component registry."""
+    if isinstance(node, dict):
+        return {key: _deepcopy_schema(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_deepcopy_schema(item) for item in node]
+    return node
 
 
 def _slot_schema(
@@ -177,6 +239,7 @@ async def bind_arguments(
     arguments: dict[str, Any],
     context: MCPContext,
     resolver: DependencyResolver,
+    route_dep_plans: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve handler kwargs for a tool call from the JSON `arguments`.
 
@@ -186,8 +249,20 @@ async def bind_arguments(
     `MCPContext`-typed parameter receives `context`. Run
     `resolver.run_teardowns()` after the handler returns to drain any
     `yield`-style dependency teardowns.
+
+    Route-level dependencies (`route_dep_plans`) run first, before any handler
+    slot is bound, mirroring `resolve_plan` / `resolve_ws_plan`; a guard that
+    raises here aborts the call before the handler sees an argument.
     """
     resolver.reset()
+
+    # Route-level dependencies run before the handler graph (RFC-equivalent to
+    # the HTTP/WS paths), so an auth/permission guard fires even though the
+    # call arrived over MCP rather than HTTP.
+    if route_dep_plans:
+        for slot in route_dep_plans:
+            await resolver._exec_depends(slot, cast("Any", context), {})
+
     kwargs: dict[str, Any] = {}
 
     for slot in plan.slots:
