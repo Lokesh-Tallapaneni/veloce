@@ -35,6 +35,7 @@ from veloce.status import (
     WS_1001_GOING_AWAY,
     WS_1002_PROTOCOL_ERROR,
     WS_1005_NO_STATUS_RCVD,
+    WS_1006_ABNORMAL_CLOSURE,
     WS_1007_INVALID_FRAME_PAYLOAD_DATA,
     WS_1009_MESSAGE_TOO_BIG,
 )
@@ -43,18 +44,26 @@ if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable
 
 
-def _validate_idle_timeout(idle_timeout: float | None) -> None:
-    """Reject a non-finite or non-positive idle timeout.
+def _validate_positive_seconds(value: float | None, name: str) -> None:
+    """Reject a non-finite or non-positive duration in seconds.
 
     Mirrors `EventSourceResponse.ping` validation: `None` disables the
     feature, otherwise the value must be a finite positive number of
     seconds. NaN fails `> 0` and Infinity passes `> 0` but is meaningless
     as a deadline, so both are rejected via `math.isfinite`.
     """
-    if idle_timeout is not None and not (math.isfinite(idle_timeout) and idle_timeout > 0):
-        raise ValueError(
-            f"idle_timeout must be a finite positive number of seconds, got {idle_timeout!r}"
-        )
+    if value is not None and not (math.isfinite(value) and value > 0):
+        raise ValueError(f"{name} must be a finite positive number of seconds, got {value!r}")
+
+
+def _validate_idle_timeout(idle_timeout: float | None) -> None:
+    """Reject a non-finite or non-positive idle timeout."""
+    _validate_positive_seconds(idle_timeout, "idle_timeout")
+
+
+def _validate_heartbeat(heartbeat: float | None) -> None:
+    """Reject a non-finite or non-positive heartbeat interval."""
+    _validate_positive_seconds(heartbeat, "heartbeat")
 
 
 # Close codes a peer is permitted to send in a Close frame body (RFC 6455
@@ -178,6 +187,16 @@ class WebSocket:
     inside the handler with ``set_idle_timeout``. The window bounds each
     complete message (in production, ASGI delivers complete messages and
     owns ping/pong; the raw-transport path measures it the same way).
+
+    Pass ``heartbeat=<seconds>`` (raw-transport mode only, default ``None``
+    -> disabled) to proactively probe a silent peer. After ``accept()`` a
+    timer sends an application PING carrying a token every ``heartbeat``
+    seconds; the peer must answer with a PONG (or send any other frame)
+    before the next tick, otherwise the connection is dropped with a
+    ``1006`` close code recorded on ``ws.close_code``. Any inbound byte
+    defers the next probe, so busy connections send no needless pings. In
+    ASGI mode the server owns ping/pong, so the value is accepted for API
+    symmetry but never starts a timer.
     """
 
     GUID = "258EAFA5-E914-47DA-95CA-5AB5DC525D63"
@@ -207,19 +226,31 @@ class WebSocket:
     # connection with `1009 Message Too Big`.
     MAX_MESSAGE_SIZE = 16 * 1024 * 1024
 
+    # Heartbeat state (raw-transport liveness). Declared here so the type is
+    # known to readers like `_parse_frame`'s PONG branch that run before the
+    # `_init_heartbeat` assignments are seen; populated by `_init_heartbeat`.
+    _heartbeat: float | None
+    _hb_handle: asyncio.TimerHandle | None
+    _hb_token: int | None
+    _hb_next_token: int
+    _hb_saw_inbound: bool
+
     def __init__(
         self,
         transport: asyncio.Transport,
         headers: dict[str, str],
         recv_queue_maxsize: int | None = None,
         idle_timeout: float | None = None,
+        heartbeat: float | None = None,
     ) -> None:
         _validate_idle_timeout(idle_timeout)
+        _validate_heartbeat(heartbeat)
         self.transport = transport
         self.headers = headers
         self._accepted = False
         self._closed = False
         self._idle_timeout = idle_timeout
+        self._init_heartbeat(heartbeat)
         maxsize = (
             recv_queue_maxsize
             if recv_queue_maxsize is not None
@@ -262,6 +293,7 @@ class WebSocket:
         receive: Any,
         send: Any,
         idle_timeout: float | None = None,
+        heartbeat: float | None = None,
     ) -> WebSocket:
         """Construct an ASGI-driven WebSocket (no asyncio.Transport).
 
@@ -273,9 +305,12 @@ class WebSocket:
 
         `idle_timeout` (default `None` -> disabled) bounds how long a
         blocking receive waits for the next frame before performing a
-        clean `1001 Going Away` close; see the class docstring.
+        clean `1001 Going Away` close; see the class docstring. `heartbeat`
+        is accepted for signature symmetry with the raw-transport
+        constructor but is inert here - the ASGI server owns ping/pong.
         """
         _validate_idle_timeout(idle_timeout)
+        _validate_heartbeat(heartbeat)
         headers: dict[str, str] = {}
         for k, v in scope.get("headers", []):
             headers[k.decode("latin-1").lower()] = v.decode("latin-1")
@@ -286,6 +321,9 @@ class WebSocket:
         ws._accepted = False
         ws._closed = False
         ws._idle_timeout = idle_timeout
+        # A heartbeat passed in ASGI mode is accepted for API symmetry but
+        # never drives a timer: the ASGI server owns ping/pong on this path.
+        ws._init_heartbeat(None)
         ws._receive_queue = None  # type: ignore[assignment]
         ws._frag_opcode = None  # unused in ASGI mode (no raw frame parsing)
         ws._frag_buffer = bytearray()
@@ -545,6 +583,9 @@ class WebSocket:
         response = "\r\n".join(lines) + "\r\n\r\n"
         self.transport.write(response.encode())
         self._accepted = True
+        # Arm the liveness probe now the connection is live (no-op unless a
+        # heartbeat was configured for this raw-transport connection).
+        self.start_heartbeat()
 
     async def send_text(self, data: str) -> None:
         """Send a text frame."""
@@ -823,6 +864,7 @@ class WebSocket:
         if self._closed:
             return
         self._closed = True
+        self._cancel_heartbeat()
         if self._is_asgi:
             await self._asgi_send(
                 {"type": ASGI_EVENT_WS_CLOSE, "code": code, "reason": reason or ""}
@@ -861,6 +903,9 @@ class WebSocket:
         """
         if not data:
             return
+        # Any inbound byte proves the socket is alive; defer the next
+        # heartbeat probe (no-op when heartbeat is disabled).
+        self._note_heartbeat_inbound()
         self._recv_buffer += data
         # Parse as many whole frames as the buffer now holds. `_parse_frame`
         # returns the number of bytes it consumed (0 when the buffer does
@@ -959,7 +1004,14 @@ class WebSocket:
         if opcode == 0x9:  # Ping
             self._send_frame(bytes(payload), opcode=0xA)  # Pong
             return frame_len
-        if opcode == 0xA:  # Pong - no application-level action.
+        if opcode == 0xA:  # Pong
+            # A PONG echoing the outstanding heartbeat token confirms the
+            # peer answered this window's probe; clear the token so the next
+            # idle window issues a fresh PING instead of faulting the peer.
+            # (Any inbound frame already defers the probe via `feed_data`;
+            # the token match is the precise confirmation.)
+            if self._hb_token is not None and bytes(payload) == self._hb_token.to_bytes(4, "big"):
+                self._hb_token = None
             return frame_len
 
         # Data frames (text / binary) and continuation frames.
@@ -1042,6 +1094,7 @@ class WebSocket:
         """
         with contextlib.suppress(Exception):
             self._send_frame((WS_1009_MESSAGE_TOO_BIG).to_bytes(2, "big"), opcode=0x8)  # Close
+        self._cancel_heartbeat()
         self._closed = True
         with contextlib.suppress(Exception):
             if self.transport is not None:
@@ -1057,6 +1110,7 @@ class WebSocket:
         """
         with contextlib.suppress(Exception):
             self._send_frame((WS_1002_PROTOCOL_ERROR).to_bytes(2, "big"), opcode=0x8)  # Close
+        self._cancel_heartbeat()
         self._closed = True
         with contextlib.suppress(Exception):
             if self.transport is not None:
@@ -1072,6 +1126,7 @@ class WebSocket:
         """
         with contextlib.suppress(Exception):
             self._send_frame((WS_1007_INVALID_FRAME_PAYLOAD_DATA).to_bytes(2, "big"), opcode=0x8)
+        self._cancel_heartbeat()
         self._closed = True
         with contextlib.suppress(Exception):
             if self.transport is not None:
@@ -1119,6 +1174,7 @@ class WebSocket:
         """
         with contextlib.suppress(Exception):
             self._send_frame(code.to_bytes(2, "big"), opcode=0x8)
+        self._cancel_heartbeat()
         self._closed = True
         with contextlib.suppress(Exception):
             if self.transport is not None:
@@ -1142,6 +1198,126 @@ class WebSocket:
             # `feed_data`. The frame writer is synchronous and only
             # needs the transport.
             self._close_too_big()
+
+    # ── Heartbeat (raw-transport liveness) ──
+    #
+    # An opt-in proactive liveness probe for the raw-transport path. A
+    # black-holed TCP connection (peer vanished without FIN/RST - common
+    # behind NAT/load balancers) otherwise parks a handler in `receive_*`
+    # forever. When `heartbeat` is set, a timer periodically sends an
+    # application PING carrying a monotonically increasing token; the peer's
+    # PONG must echo that token within the next window. ANY inbound byte
+    # (proof the socket is alive) defers the next probe, so a busy connection
+    # never pays for needless pings. Two consecutive windows with no inbound
+    # traffic and no matching PONG mark the peer dead and tear the connection
+    # down. ASGI deployments leave ping/pong to the server, so the timer is
+    # inert there.
+
+    def _init_heartbeat(self, heartbeat: float | None) -> None:
+        """Initialise heartbeat state; called from every constructor path."""
+        self._heartbeat = heartbeat
+        # The `call_later` handle for the next probe tick, or `None` when no
+        # heartbeat is armed.
+        self._hb_handle = None
+        # Token written into the most recent outstanding PING body; `None`
+        # when no PING is awaiting a PONG. A PONG echoing this exact token
+        # (or any other inbound frame) proves liveness.
+        self._hb_token = None
+        # Monotonic source for the next PING token.
+        self._hb_next_token = 0
+        # Set by `feed_data` when inbound bytes arrive between ticks; the next
+        # tick treats this as proof of life and skips the dead-peer teardown.
+        self._hb_saw_inbound = False
+
+    def start_heartbeat(self) -> None:
+        """Arm the heartbeat timer for a raw-transport connection.
+
+        Idempotent and a no-op in ASGI mode or when `heartbeat` was not
+        configured. `accept()` calls this automatically once the raw
+        handshake completes, so handlers rarely call it directly; it is
+        public so a handler that builds a `WebSocket` by hand can start the
+        probe after wiring its own transport.
+        """
+        if self._heartbeat is None or self._is_asgi or self._closed:
+            return
+        if self._hb_handle is not None:
+            return
+        self._schedule_heartbeat()
+
+    def _schedule_heartbeat(self) -> None:
+        """Schedule the next heartbeat tick `heartbeat` seconds out.
+
+        Only reached with a configured (non-`None`) heartbeat - callers gate
+        on `self._heartbeat is None` first.
+        """
+        interval = self._heartbeat
+        assert interval is not None
+        loop = asyncio.get_event_loop()
+        self._hb_handle = loop.call_later(interval, self._heartbeat_tick)
+
+    def _heartbeat_tick(self) -> None:
+        """Run one heartbeat window: detect a dead peer or send a probe.
+
+        Three outcomes per tick:
+        - inbound traffic was seen since the last tick -> the peer is alive;
+          clear any outstanding PING and re-arm.
+        - a PING is still outstanding from the previous window with no
+          inbound traffic -> the peer is silent; tear down with 1006.
+        - the connection is idle and live -> send a fresh tokened PING and
+          re-arm to check for its PONG next window.
+        """
+        self._hb_handle = None
+        if self._closed:
+            return
+        if self._hb_saw_inbound:
+            self._hb_saw_inbound = False
+            self._hb_token = None
+            self._schedule_heartbeat()
+            return
+        if self._hb_token is not None:
+            # A PING from the previous window went unanswered and nothing
+            # else arrived: treat the peer as gone.
+            self._close_heartbeat_timeout()
+            return
+        token = self._hb_next_token
+        self._hb_next_token = (token + 1) & 0xFFFFFFFF
+        self._hb_token = token
+        with contextlib.suppress(Exception):
+            self._send_frame(token.to_bytes(4, "big"), opcode=0x9)  # Ping
+        self._schedule_heartbeat()
+
+    def _note_heartbeat_inbound(self) -> None:
+        """Record that inbound bytes arrived (called from `feed_data`).
+
+        Any inbound frame proves the socket is alive, so the next tick should
+        not fault the peer. Coalesced to a single flag - no per-byte timer
+        churn - and consulted lazily when the timer next fires.
+        """
+        if self._heartbeat is not None and self._hb_handle is not None:
+            self._hb_saw_inbound = True
+
+    def _cancel_heartbeat(self) -> None:
+        """Cancel the heartbeat timer (called from every close path)."""
+        if self._hb_handle is not None:
+            self._hb_handle.cancel()
+            self._hb_handle = None
+        self._hb_token = None
+        self._hb_saw_inbound = False
+
+    def _close_heartbeat_timeout(self) -> None:
+        """Tear down a connection whose peer stopped answering heartbeats.
+
+        1006 is a reserved code that must never appear on the wire
+        (RFC 6455 Sec. 7.4.1), and the peer is presumed gone, so no Close
+        frame is sent - the transport is simply dropped and `close_code` is
+        recorded as 1006 for the handler to observe.
+        """
+        self._cancel_heartbeat()
+        self._closed = True
+        self.close_code = WS_1006_ABNORMAL_CLOSURE
+        with contextlib.suppress(Exception):
+            if self.transport is not None:
+                self.transport.close()
 
     def _send_frame(self, data: bytes, opcode: int) -> None:
         """Send a WebSocket frame.

@@ -57,6 +57,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raw-transport and ASGI paths, and the raised `WebSocketDisconnect` now carries
   the peer's close code. An empty Close payload records `1005` ("no status
   received") without putting it on the wire.
+- Proactive WebSocket heartbeat for the raw-transport path.
+  `WebSocket(..., heartbeat=<seconds>)` and `WebSocket.from_asgi(..., heartbeat=)`
+  accept an opt-in liveness interval; after `accept()` a timer sends an
+  application PING carrying a monotonically increasing token every interval and
+  expects the peer to answer with a PONG (or send any other frame) before the
+  next tick. Any inbound byte defers the next probe, so busy connections send no
+  needless pings. Two consecutive idle windows with no matching PONG drop a
+  silently-dead peer (NAT/load-balancer black-hole) and record `1006` on
+  `WebSocket.close_code` without putting the reserved code on the wire. The
+  public `WebSocket.start_heartbeat()` arms the timer for hand-built
+  connections. Opt-in; the default `None` preserves the previous behaviour, and
+  the value is inert in ASGI mode where the server owns ping/pong.
 
 ### Changed
 

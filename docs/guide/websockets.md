@@ -126,6 +126,34 @@ connection open, while the idle window closing raises `WebSocketDisconnect`.
     `WebSocket(..., idle_timeout=...)` and `WebSocket.from_asgi(...,
     idle_timeout=...)`.
 
+## Proactive heartbeat
+
+`idle_timeout` only fires while a receive is in flight, and a peer that
+vanishes without sending a TCP FIN/RST (common behind NAT and load balancers)
+can leave a connection half-open indefinitely. On the raw-transport serving
+path, pass `heartbeat=<seconds>` to actively probe the peer:
+
+```python
+@app.websocket("/chat")
+async def chat(ws: WebSocket):
+    ws = WebSocket(transport, headers, heartbeat=20)
+    await ws.accept()
+    ...
+```
+
+After `accept()` a timer sends an application PING carrying a token every
+`heartbeat` seconds. The peer must answer with a PONG (or send any other
+frame) before the next tick; any inbound byte defers the probe, so a busy
+connection never pays for needless pings. Two consecutive idle windows with no
+matching PONG drop the connection and record `1006` on `ws.close_code` (the
+reserved abnormal-closure code is recorded but never sent on the wire). Call
+`ws.start_heartbeat()` to arm the timer for a connection you build by hand.
+
+!!! note "Added in version 0.4"
+    `heartbeat` is opt-in and raw-transport only. The default `None` preserves
+    the previous behaviour, and the value is inert under ASGI, where the server
+    owns ping/pong. The value must be a finite positive number of seconds.
+
 ## Subprotocol negotiation
 
 Pick a subprotocol the client offered and confirm it during `accept`:
