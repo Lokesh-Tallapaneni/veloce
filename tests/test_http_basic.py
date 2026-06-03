@@ -1,6 +1,8 @@
-"""HTTPBasic scheme — WWW-Authenticate realm escaping (RFC 7235)."""
+"""HTTPBasic scheme — WWW-Authenticate realm escaping (RFC 7235) + credential parsing."""
 
 from __future__ import annotations
+
+import base64
 
 import pytest
 
@@ -9,6 +11,44 @@ from veloce import HTTPBasic, HTTPException, Request
 
 def _req(headers: dict | None = None) -> Request:
     return Request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
+
+
+def _basic(raw: str) -> dict:
+    return {"authorization": "Basic " + base64.b64encode(raw.encode()).decode()}
+
+
+# ── RFC 7617 credential grammar ──────────────────────────────────────
+
+
+def test_missing_colon_rejected():
+    scheme = HTTPBasic()
+    with pytest.raises(HTTPException) as exc:
+        scheme(_req({"authorization": "Basic " + base64.b64encode(b"user").decode()}))
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Invalid authentication credentials"
+
+
+def test_missing_colon_emits_realm_challenge():
+    scheme = HTTPBasic(realm="api")
+    with pytest.raises(HTTPException) as exc:
+        scheme(_req({"authorization": "Basic " + base64.b64encode(b"user").decode()}))
+    wwwa = exc.value.headers["WWW-Authenticate"]
+    assert wwwa.startswith("Basic ") and 'realm="api"' in wwwa
+
+
+def test_colon_with_empty_password_still_accepted():
+    creds = HTTPBasic()(_req(_basic("user:")))
+    assert creds.username == "user" and creds.password == ""
+
+
+def test_empty_username_with_colon_accepted():
+    creds = HTTPBasic()(_req(_basic(":pass")))
+    assert creds.username == "" and creds.password == "pass"
+
+
+def test_normal_credentials_accepted():
+    creds = HTTPBasic()(_req(_basic("alice:s3cret")))
+    assert creds.username == "alice" and creds.password == "s3cret"
 
 
 def test_missing_auth_emits_quoted_realm_challenge():

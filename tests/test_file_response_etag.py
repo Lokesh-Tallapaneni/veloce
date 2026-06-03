@@ -92,6 +92,25 @@ async def test_async_etag_matches_sync_for_same_file(tmp_path):
     assert sync_e == async_e
 
 
+def test_file_etag_passes_usedforsecurity_false(tmp_path, monkeypatch):
+    """The file ETag MD5 must be flagged non-security so it is FIPS-safe."""
+    import hashlib
+
+    seen = {}
+    real_md5 = hashlib.md5
+
+    def _spy(data=b"", *, usedforsecurity=True):
+        seen["flag"] = usedforsecurity
+        return real_md5(data, usedforsecurity=usedforsecurity)
+
+    monkeypatch.setattr(hashlib, "md5", _spy)
+    p = tmp_path / "a.txt"
+    p.write_bytes(b"hello")
+    resp = FileResponse(str(p))
+    assert resp.headers["ETag"].startswith('W/"')
+    assert seen["flag"] is False
+
+
 # ── Coexists with Last-Modified ──────────────────────────────────────
 
 

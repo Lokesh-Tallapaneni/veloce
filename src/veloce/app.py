@@ -433,7 +433,6 @@ class Veloce(Router):
         # OpenAPI 3.1 Sec. 4.8.2 `info.summary` - a short one-line summary
         # of the API, distinct from the longer `description`.
         self.summary = summary
-        self.debug = debug
         self._docs_url = docs_url
         self._redoc_url = redoc_url
         self._openapi_url = openapi_url
@@ -458,6 +457,10 @@ class Veloce(Router):
         # Seeded with the documented default keys so `app.config[k]`
         # returns a value rather than raising `KeyError`.
         self.config: Config = Config(Config.default_config())
+        # `debug` is a property bound to `config["DEBUG"]` (below), so seed the
+        # config key from the constructor arg - this is the single source of
+        # truth, keeping `app.debug` and `config["DEBUG"]` from drifting apart.
+        self.config["DEBUG"] = debug
         self.secret_key: str | None = None  # Secret key
         self.extensions: dict[str, Any] = {}  # Extensions registry
         self._lifespan = lifespan
@@ -615,6 +618,15 @@ class Veloce(Router):
     # -- Middleware ------------------------------------------------
 
     # -- Properties ---------------------------------------------
+
+    @property
+    def debug(self) -> bool:
+        """Whether debug mode is enabled; bound to `config['DEBUG']`."""
+        return bool(self.config.get("DEBUG", False))
+
+    @debug.setter
+    def debug(self, value: bool) -> None:
+        self.config["DEBUG"] = bool(value)
 
     @property
     def url_map(self) -> _URLMap:
@@ -795,7 +807,7 @@ class Veloce(Router):
         from veloce.middleware.sessions import SessionMiddleware
 
         warnings: list[str] = []
-        if self.debug or self.config.get("DEBUG"):
+        if self.config.get("DEBUG"):
             warnings.append("DEBUG is enabled - disable it before deploying to production.")
         if not self.config.get("SECRET_KEY"):
             warnings.append("SECRET_KEY is not set - session signing falls back to weak defaults.")
@@ -2111,9 +2123,18 @@ class Veloce(Router):
         prefix: str = "/static",
         directory: str = "static",
         html: bool = False,
+        must_exist: bool = True,
     ) -> None:
-        """Mount a static file directory."""
-        self._static_handlers.append(StaticFiles(directory=directory, prefix=prefix, html=html))
+        """Mount a static file directory.
+
+        The directory must exist and be readable at wiring time (a typo
+        otherwise 404s every asset silently); pass ``must_exist=False`` to
+        downgrade the check to a warning when the directory is created after
+        the app is constructed.
+        """
+        self._static_handlers.append(
+            StaticFiles(directory=directory, prefix=prefix, html=html, must_exist=must_exist)
+        )
 
     # -- Request handling -----------------------------------------
 
@@ -3505,17 +3526,14 @@ class Veloce(Router):
                 await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": b"", "more_body": False})
                 return
 
-            # RFC 9110 Sec. 15.3.5 (204), Sec. 15.4.5 (304), Sec. 15.3.6 (205 - must
-            # contain no body either): responses with these status codes
-            # MUST NOT include a payload. Strip the body before sending so
-            # buggy handlers can't violate the spec.
-            body_out = response.body
-            if response.status_code in (
-                status.HTTP_204_NO_CONTENT,
-                status.HTTP_304_NOT_MODIFIED,
-                status.HTTP_205_RESET_CONTENT,
-            ):
-                body_out = b""
+            # Bodiless statuses (1xx interim, 204, 205, 304) MUST NOT carry a
+            # payload (RFC 9110 Sec. 15.2 / 15.3.5 / 15.3.6 / 15.4.5). Strip the
+            # body before sending and, below, suppress the framework-default
+            # content-type so a `JSONResponse(204)` does not advertise
+            # `application/json` over zero bytes. The default Content-Length:0
+            # is kept (valid and intermediary-safe on 204/205).
+            body_allowed = status.status_permits_body(response.status_code)
+            body_out = response.body if body_allowed else b""
 
             # RFC 9110 Sec. 9.3.2: HEAD responses must not include a payload
             # body, but `Content-Length` (and other content-related
@@ -3590,7 +3608,9 @@ class Veloce(Router):
             # default too would put a duplicate header on the wire.
             if not has_cl:
                 asgi_headers.insert(0, (RAW_HEADER_CONTENT_LENGTH, _cl_bytes))
-            if not has_ct:
+            # Never default a content-type onto a bodiless response (an explicit
+            # handler-set content-type still survives via has_ct).
+            if not has_ct and body_allowed:
                 asgi_headers.insert(0, (RAW_HEADER_CONTENT_TYPE, _ct_bytes))
 
             await send(

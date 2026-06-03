@@ -63,6 +63,31 @@ def test_dump_cookie_rejects_nul_in_key():
         dump_cookie("ab\x00cd", "v")
 
 
+@pytest.mark.parametrize("bad", ["a b", "foo;bar", "foo=bar", 'foo"bar', ""])
+def test_dump_cookie_rejects_non_token_name(bad):
+    with pytest.raises(ValueError, match="cookie name"):
+        dump_cookie(bad, "v")
+
+
+@pytest.mark.parametrize("reserved", ["Path", "path", "Max-Age", "SameSite", "Secure"])
+def test_dump_cookie_rejects_reserved_name(reserved):
+    with pytest.raises(ValueError, match="reserved"):
+        dump_cookie(reserved, "v")
+
+
+@pytest.mark.parametrize("good", ["session", "__Host-session", "__Secure-id", "my.cookie_name-1"])
+def test_dump_cookie_accepts_valid_token_names(good):
+    out = dump_cookie(good, "abc")
+    assert out.startswith(f"{good}=")
+
+
+def test_set_cookie_propagates_name_validation():
+    from veloce import Response
+
+    with pytest.raises(ValueError, match="cookie name"):
+        Response().set_cookie("bad name", "v")
+
+
 def test_dump_cookie_rejects_crlf_in_value():
     with pytest.raises(ValueError, match="cookie value"):
         dump_cookie("ab", "v\r\nattack")

@@ -33,6 +33,16 @@ is resolved, traversal-safely, under `directory`. Both arguments have defaults
 (`prefix="/static"`, `directory="static"`), so `app.mount_static()` with no
 arguments serves `./static` at `/static`.
 
+The directory must exist and be readable when the handler is constructed —
+otherwise a typo would silently 404 every asset. By default a missing or
+unreadable directory raises `ValueError` at wiring time. If you create the
+directory after constructing the app (a build/deploy step), pass
+`must_exist=False` to downgrade the check to a warning:
+
+```python title="app.py"
+app.mount_static(directory="build/static", must_exist=False)
+```
+
 ## Using the StaticFiles class directly
 
 You can also construct [`StaticFiles`](../reference.md#veloce.StaticFiles)
@@ -47,8 +57,9 @@ app.mount("/assets", StaticFiles(directory="static"))
 ```
 
 The constructor signature is `StaticFiles(directory, prefix="/static",
-html=False, directory_index=False)`. `directory` is required and resolved to an
-absolute path. The other options are covered below.
+html=False, directory_index=False, must_exist=True)`. `directory` is required
+and resolved to an absolute path; it must exist and be readable unless
+`must_exist=False` is passed. The other options are covered below.
 
 !!! note
     `mount_static` and `mount` register a static handler; they do **not** create

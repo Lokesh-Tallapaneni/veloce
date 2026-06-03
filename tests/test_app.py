@@ -432,3 +432,50 @@ async def test_paramless_route_under_app_level_dependency_is_not_trivial():
     resp = await app.handle_request(make_request(path="/d"))
     assert resp.status_code == 200
     assert ran == [True]  # the app-level dependency actually executed
+
+
+# ── debug bound to config["DEBUG"] (single source of truth) ──────────
+
+
+def test_debug_attr_writes_config():
+    from veloce import Veloce
+
+    app = Veloce(openapi_url=None)
+    app.debug = True
+    assert app.config["DEBUG"] is True
+
+
+def test_config_debug_reflected_in_attr():
+    from veloce import Veloce
+
+    app = Veloce(openapi_url=None)
+    app.config["DEBUG"] = True
+    assert app.debug is True
+
+
+def test_debug_constructor_seeds_config():
+    from veloce import Veloce
+
+    assert Veloce(debug=True, openapi_url=None).config["DEBUG"] is True
+    assert Veloce(openapi_url=None).config["DEBUG"] is False
+
+
+def test_post_construction_debug_enables_html_traceback():
+    from veloce import Veloce
+    from veloce.testclient import TestClient
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/boom")
+    async def boom():
+        raise RuntimeError("kaboom")
+
+    app.config["DEBUG"] = True  # flip AFTER construction
+    with TestClient(app) as client:
+        resp = client.get("/boom", headers={"accept": "text/html"})
+    # Flipping config["DEBUG"] after construction now serves the HTML debug
+    # traceback page (the path that reads self.debug, now bound to the config
+    # key) instead of the production JSON error.
+    assert resp.status_code == 500
+    assert "text/html" in resp.content_type
+    assert "RuntimeError" in resp.text

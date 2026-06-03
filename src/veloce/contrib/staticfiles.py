@@ -20,6 +20,7 @@ import html
 import mimetypes
 import os
 import stat
+import warnings
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from functools import lru_cache
@@ -113,8 +114,30 @@ class StaticFiles:
         prefix: str = "/static",
         html: bool = False,
         directory_index: bool = False,
+        must_exist: bool = True,
     ) -> None:
         self.directory = os.path.abspath(directory)
+        # Validate the configured directory once at construction (a setup-time
+        # context, not an async request path). A typo otherwise builds a
+        # handler that silently 404s every asset, discoverable only by hitting
+        # a URL. `must_exist=False` downgrades the failure to a warning for the
+        # dev flow that creates the directory after wiring the app.
+        if not os.path.isdir(self.directory):
+            problem = (
+                f"StaticFiles directory {directory!r} (resolved to "
+                f"{self.directory!r}) does not exist or is not a directory"
+            )
+            if must_exist:
+                raise ValueError(problem)
+            warnings.warn(problem, stacklevel=2)
+        elif not os.access(self.directory, os.R_OK):
+            problem = (
+                f"StaticFiles directory {directory!r} (resolved to "
+                f"{self.directory!r}) exists but is not readable"
+            )
+            if must_exist:
+                raise ValueError(problem)
+            warnings.warn(problem, stacklevel=2)
         # The served root's real (symlink-resolved) path. Constant for the
         # life of the handler, so resolve it once here rather than calling
         # realpath on it per request in the containment check.

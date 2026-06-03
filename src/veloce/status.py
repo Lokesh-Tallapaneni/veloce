@@ -96,3 +96,19 @@ WS_1012_SERVICE_RESTART = 1012
 WS_1013_TRY_AGAIN_LATER = 1013
 WS_1014_BAD_GATEWAY = 1014
 WS_1015_TLS_HANDSHAKE = 1015
+
+
+def status_permits_body(code: int | None) -> bool:
+    """Whether a response with this status may carry a payload body.
+
+    False for 1xx interim responses (RFC 9110 Sec. 15.2), 204 No Content
+    (Sec. 15.3.5), 205 Reset Content (Sec. 15.3.6), and 304 Not Modified
+    (Sec. 15.4.5); True otherwise. `None` (unknown) allows a body.
+    """
+    return not (
+        code is not None
+        and (
+            code < HTTP_200_OK
+            or code in (HTTP_204_NO_CONTENT, HTTP_205_RESET_CONTENT, HTTP_304_NOT_MODIFIED)
+        )
+    )

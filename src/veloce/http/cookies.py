@@ -7,12 +7,24 @@ name/value pair plus the standard attributes. Both are derived from RFC 6265.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from urllib.parse import quote, unquote
 
 from veloce._internal import _reject_header_crlf
 from veloce.http.dates import http_date
+
+# RFC 6265 Sec. 4.1.1: cookie-name = token (RFC 7230 Sec. 3.2.6) - the VCHAR set
+# minus CTLs and the separators ()<>@,;:\"/[]?={} plus SP/HT. One-or-more, so an
+# empty name fails. Written from the spec, not from any framework's char table.
+_COOKIE_NAME_TOKEN = re.compile(r"[!#$%&'*+\-.0-9A-Z^_`a-z|~]+").fullmatch
+
+# Cookie-attribute keywords (lowercased). A cookie name equal to one of these
+# can be misread as a Set-Cookie attribute by a lenient parser, so reject it.
+_RESERVED_COOKIE_NAMES = frozenset(
+    {"expires", "max-age", "domain", "path", "secure", "httponly", "samesite", "partitioned"}
+)
 
 
 def iter_cookies(header: str | None) -> Iterator[tuple[str, str]]:
@@ -73,6 +85,16 @@ def dump_cookie(
     - `samesite` must be one of `Strict` / `Lax` / `None` (case-insensitive).
     """
     _reject_header_crlf(key, "cookie name")
+    # The name must be a valid RFC 6265 token (no spaces/separators/CTLs) and
+    # must not collide with a cookie-attribute keyword - both prevent a
+    # malformed or attribute-injecting Set-Cookie header.
+    if not _COOKIE_NAME_TOKEN(key):
+        raise ValueError(
+            f"cookie name {key!r} is not a valid RFC 6265 token "
+            "(must avoid spaces, separators, and control characters)"
+        )
+    if key.lower() in _RESERVED_COOKIE_NAMES:
+        raise ValueError(f"cookie name {key!r} collides with a reserved cookie-attribute keyword")
     _reject_header_crlf(value, "cookie value")
     quoted = quote(value, safe="!#$%&'()*+/:<=>?@[]^`{|}~")
     parts: list[str] = [f"{key}={quoted}"]

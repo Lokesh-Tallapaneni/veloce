@@ -78,3 +78,39 @@ def test_mount_still_accepts_plain_asgi_callable():
     resp = TestClient(app).get("/asgi/anything")
     assert resp.status_code == 200
     assert resp.body == b"asgi-ok"
+
+
+# ── must_exist startup validation ────────────────────────────────────
+
+
+def test_staticfiles_missing_directory_raises(tmp_path):
+    missing = str(tmp_path / "does_not_exist")
+    with pytest.raises(ValueError, match="does not exist"):
+        StaticFiles(directory=missing)
+
+
+def test_staticfiles_missing_directory_warns_when_opt_out(tmp_path):
+    missing = str(tmp_path / "nope")
+    with pytest.warns(UserWarning, match="does not exist"):
+        sf = StaticFiles(directory=missing, prefix="/static", must_exist=False)
+    assert sf.directory.endswith("nope")
+
+
+def test_staticfiles_existing_directory_ok(tmp_path):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        StaticFiles(directory=str(tmp_path))  # no raise, no warning
+
+
+def test_mount_static_missing_directory_raises():
+    app = Veloce(openapi_url=None)
+    with pytest.raises(ValueError, match="does not exist"):
+        app.mount_static(directory="definitely_missing_dir_xyz")
+
+
+def test_mount_static_missing_directory_opt_out_warns():
+    app = Veloce(openapi_url=None)
+    with pytest.warns(UserWarning, match="does not exist"):
+        app.mount_static(directory="still_missing_dir_xyz", must_exist=False)

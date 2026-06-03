@@ -149,7 +149,9 @@ def _file_etag(path: str, size: int, mtime: float) -> str:
     revalidation; strict `If-Match` correctly refuses these tags.
     """
     key = f"{path}:{size}:{mtime}".encode()
-    return f'W/"{hashlib.md5(key).hexdigest()}"'
+    # `usedforsecurity=False` so the cache validator does not raise on FIPS
+    # builds (the hash is an opaque tag, not a security primitive).
+    return f'W/"{hashlib.md5(key, usedforsecurity=False).hexdigest()}"'
 
 
 def _etag_matches_weak(server_etag: str, client_token: str) -> bool:

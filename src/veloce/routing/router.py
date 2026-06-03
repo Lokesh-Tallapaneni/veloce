@@ -77,6 +77,22 @@ def _reverse_converters_for(template: str) -> dict[str, _Converter]:
     return converters
 
 
+def _check_duplicate_params(full_path: str) -> None:
+    """Reject a path that binds one parameter name twice.
+
+    A duplicate is always a bug: on the radix path the second capture silently
+    clobbers the first at match time; on the regex path `re.compile` raises an
+    opaque "redefinition of group name" error. Catch both at registration with
+    one clear, path-scoped error, using the same placeholder scanner both
+    branches consume so the names checked are exactly the names bound.
+    """
+    seen: set[str] = set()
+    for ph in _iter_placeholders(full_path):
+        if ph.name in seen:
+            raise ValueError(f"Route {full_path!r}: duplicate path parameter {ph.name!r}")
+        seen.add(ph.name)
+
+
 class RadixNode:
     """A node in the radix tree."""
 
@@ -490,6 +506,9 @@ class Router:
         handler.
         """
         full_path = self.prefix + path
+        # Reject a duplicate path parameter before building any tree node or
+        # regex, so both the radix and regex branches get one clear error.
+        _check_duplicate_params(full_path)
         has_trailing_slash = full_path.endswith("/") and full_path != "/"
 
         # Classify once, at registration. A path the radix tree cannot

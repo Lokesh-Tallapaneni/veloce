@@ -32,6 +32,42 @@ def test_event_retry():
     assert b"retry: 5000" in encoded
 
 
+# ── Field validation (WHATWG SSE) ────────────────────────────────────
+
+
+@pytest.mark.parametrize("bad_id", ["a\nb", "a\rb", "a\x00b"])
+def test_invalid_id_rejected(bad_id):
+    with pytest.raises(ValueError):
+        ServerSentEvent(data="x", id=bad_id)
+
+
+@pytest.mark.parametrize("bad_event", ["a\nb", "a\rb"])
+def test_newline_in_event_rejected(bad_event):
+    with pytest.raises(ValueError):
+        ServerSentEvent(data="x", event=bad_event)
+
+
+def test_valid_id_and_event_encode():
+    encoded = ServerSentEvent(data="x", event="msg", id="42").encode()
+    assert b"id: 42" in encoded and b"event: msg" in encoded
+
+
+def test_multiline_data_still_permitted():
+    encoded = ServerSentEvent(data="l1\nl2").encode()
+    assert b"data: l1" in encoded and b"data: l2" in encoded
+
+
+def test_json_with_nul_id_raises():
+    with pytest.raises(ValueError):
+        ServerSentEvent.json({"a": 1}, id="x\x00y")
+
+
+def test_int_id_is_coerced_not_rejected():
+    # An int id (off-contract but historically accepted) is coerced to str,
+    # not crashed on the membership-test gate.
+    assert b"id: 7" in ServerSentEvent(data="x", id=7).encode()
+
+
 # ── ServerSentEvent.json ─────────────────────────────────────────────
 
 
