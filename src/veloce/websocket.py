@@ -1110,6 +1110,7 @@ class WebSocket:
         with contextlib.suppress(Exception):
             self._send_frame((WS_1009_MESSAGE_TOO_BIG).to_bytes(2, "big"), opcode=0x8)  # Close
         self._cancel_heartbeat()
+        self.close_code = WS_1009_MESSAGE_TOO_BIG
         self._closed = True
         self._wake_raw_receiver()
         with contextlib.suppress(Exception):
@@ -1127,6 +1128,7 @@ class WebSocket:
         with contextlib.suppress(Exception):
             self._send_frame((WS_1002_PROTOCOL_ERROR).to_bytes(2, "big"), opcode=0x8)  # Close
         self._cancel_heartbeat()
+        self.close_code = WS_1002_PROTOCOL_ERROR
         self._closed = True
         self._wake_raw_receiver()
         with contextlib.suppress(Exception):
@@ -1144,6 +1146,7 @@ class WebSocket:
         with contextlib.suppress(Exception):
             self._send_frame((WS_1007_INVALID_FRAME_PAYLOAD_DATA).to_bytes(2, "big"), opcode=0x8)
         self._cancel_heartbeat()
+        self.close_code = WS_1007_INVALID_FRAME_PAYLOAD_DATA
         self._closed = True
         self._wake_raw_receiver()
         with contextlib.suppress(Exception):

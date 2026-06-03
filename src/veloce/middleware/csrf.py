@@ -259,19 +259,32 @@ class CSRFMiddleware(Middleware):
             return None
         return self._forbidden("CSRF referer mismatch")
 
+    @staticmethod
+    def _strip_default_port(scheme: str, netloc: str) -> str:
+        """Drop the scheme's default port so `host` and `host:default` match.
+
+        Browsers omit `:443`/`:80` from `Origin`/`Referer` for default-port
+        requests, but a configured trusted origin may carry an explicit default
+        port; both forms denote the same origin (RFC 6454 Sec. 4).
+        """
+        default = {"https": ":443", "http": ":80", "wss": ":443", "ws": ":80"}.get(scheme)
+        if default and netloc.endswith(default):
+            return netloc[: -len(default)]
+        return netloc
+
     def _origin_allowed(self, origin: str, own_scheme: str, own_host: str) -> bool:
         """True if `origin` is the request's own origin or a trusted entry."""
         split = urlsplit(origin)
         o_scheme = split.scheme.lower()
-        o_host = split.netloc.lower()
+        o_host = self._strip_default_port(o_scheme, split.netloc.lower())
         if not o_scheme or not o_host:
             return False
-        if o_scheme == own_scheme and o_host == own_host:
+        if o_scheme == own_scheme and o_host == self._strip_default_port(own_scheme, own_host):
             return True
         for t_scheme, t_host, t_suffix in self._trusted:
             if o_scheme != t_scheme:
                 continue
-            if t_host is not None and o_host == t_host:
+            if t_host is not None and o_host == self._strip_default_port(t_scheme, t_host):
                 return True
             if t_suffix is not None and (o_host == t_suffix or o_host.endswith("." + t_suffix)):
                 return True

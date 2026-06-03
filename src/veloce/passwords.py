@@ -242,14 +242,21 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
     return False
 
 
-# A throwaway verifier derived once, at import, from a random secret using
-# the *current* default cost parameters. `verify_password_or_dummy` runs a
-# real KDF against this hash on the no-such-hash path so an absent or
-# malformed stored verifier costs the same as a genuine wrong-password
-# verify (~100 ms). Pinning it to the live defaults means the decoy cost
-# tracks any future bump of `_SCRYPT_N`; computing it once keeps the
-# enumeration-defence path allocation-free per call.
-_DUMMY_HASH = hash_password(secrets.token_bytes(_SALT_BYTES))
+# A throwaway verifier for the no-such-hash timing-equalisation path, derived
+# from a random secret using the *current* default cost parameters and cached
+# for the process lifetime. Computed lazily on first use, NOT at import: the
+# default KDF is scrypt, which is absent on some Python builds, and importing
+# veloce must never require it (callers using `pbkdf2:sha256` still work).
+# Pinning it to the live defaults means the decoy cost tracks any future bump
+# of `_SCRYPT_N`.
+_DUMMY_HASH: str | None = None
+
+
+def _dummy_verifier() -> str:
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = hash_password(secrets.token_bytes(_SALT_BYTES))
+    return _DUMMY_HASH
 
 
 def verify_password_or_dummy(stored: str | None, candidate: str | bytes) -> bool:
@@ -274,7 +281,7 @@ def verify_password_or_dummy(stored: str | None, candidate: str | bytes) -> bool
     # No usable verifier: `verify_password` would have returned in
     # microseconds. Burn an equivalent KDF against the cached dummy so a
     # timing observer cannot distinguish this from a wrong-password verify.
-    verify_password(_DUMMY_HASH, candidate)
+    verify_password(_dummy_verifier(), candidate)
     return False
 
 
