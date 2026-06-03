@@ -222,11 +222,15 @@ class Response:
         # Bodiless statuses (1xx/204/205/304) carry no payload and no default
         # content-type - matching the ASGI emit path (single source of truth
         # via `status_permits_body`). A handler-set content-type in `self.headers`
-        # still wins; only the framework default is suppressed.
+        # still wins; only the framework default is suppressed. A 304 (like
+        # HEAD) may advertise the would-be-200 Content-Length while sending no
+        # body (RFC 9110 Sec. 8.6); 1xx/204/205 advertise 0.
         body_allowed = status_permits_body(self.status_code)
+        is_304 = self.status_code == HTTP_304_NOT_MODIFIED
         body = self.body if body_allowed else b""
+        advertised_length = len(self.body) if (body_allowed or is_304) else 0
         default_headers = {
-            HEADER_CONTENT_LENGTH: str(len(body)),
+            HEADER_CONTENT_LENGTH: str(advertised_length),
             HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
         }
         if body_allowed:

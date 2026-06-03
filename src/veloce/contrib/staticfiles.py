@@ -130,12 +130,12 @@ class StaticFiles:
             if must_exist:
                 raise ValueError(problem)
             warnings.warn(problem, stacklevel=2)
-        elif not os.access(self.directory, os.R_OK if directory_index else os.X_OK):
-            # Serving a known file needs SEARCH (X_OK) on the directory; READ
-            # (R_OK) is only needed to enumerate it for a directory listing.
-            # Match what `handle()` actually requires so the check neither
-            # false-rejects a search-only dir nor passes a list-only one.
-            need = "readable" if directory_index else "searchable"
+        elif not os.access(self.directory, (os.R_OK | os.X_OK) if directory_index else os.X_OK):
+            # Serving a known file needs SEARCH (X_OK) on the directory; a
+            # directory listing additionally needs READ (R_OK). Require exactly
+            # what `handle()` will use, so the check neither false-rejects a
+            # search-only dir nor passes a (listing) dir that can't serve files.
+            need = "readable and searchable" if directory_index else "searchable"
             problem = (
                 f"StaticFiles directory {directory!r} (resolved to "
                 f"{self.directory!r}) exists but is not {need}"

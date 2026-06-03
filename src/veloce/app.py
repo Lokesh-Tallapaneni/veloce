@@ -3537,19 +3537,23 @@ class Veloce(Router):
             # payload (RFC 9110 Sec. 15.2 / 15.3.5 / 15.3.6 / 15.4.5). Strip the
             # body before sending and, below, suppress the framework-default
             # content-type so a `JSONResponse(204)` does not advertise
-            # `application/json` over zero bytes. The default Content-Length:0
-            # is kept (valid and intermediary-safe on 204/205).
+            # `application/json` over zero bytes.
             body_allowed = status.status_permits_body(response.status_code)
+            # A 304 (like HEAD) may carry the would-be-200 Content-Length while
+            # sending no body (RFC 9110 Sec. 8.6 / 15.4.5); 1xx/204/205 have no
+            # representation, so their length is 0.
+            is_304 = response.status_code == status.HTTP_304_NOT_MODIFIED
+            advertised_length = len(response.body) if (body_allowed or is_304) else 0
             body_out = response.body if body_allowed else b""
 
             # RFC 9110 Sec. 9.3.2: HEAD responses must not include a payload
-            # body, but `Content-Length` (and other content-related
-            # headers) should still reflect the size the equivalent GET
-            # would have produced. Capture the real length first, then
-            # blank the body - preserves HEAD's "probe for size" use case.
+            # body, but `Content-Length` (and other content-related headers)
+            # should still reflect the size the equivalent GET would have
+            # produced. Blank the body but keep the advertised length, same as
+            # the 304 case above.
             head_content_length: int | None = None
-            if scope["method"] == HTTP_METHOD_HEAD:
-                head_content_length = len(body_out)
+            if scope["method"] == HTTP_METHOD_HEAD or is_304:
+                head_content_length = advertised_length
                 body_out = b""
 
             # Build the ASGI header list. Each header MUST be its own

@@ -53,7 +53,7 @@ def test_single_set_cookie_still_emits_one_header():
 # ── Q47: 204 / 304 / 205 strip body ───────────────────────────────────
 
 
-@pytest.mark.parametrize("code", [204, 304, 205])
+@pytest.mark.parametrize("code", [204, 205])
 def test_no_body_status_codes_strip_body(code):
     app = Veloce(debug=True, openapi_url=None)
 
@@ -65,10 +65,26 @@ def test_no_body_status_codes_strip_body(code):
     resp = client.get("/x")
     assert resp.status_code == code
     assert resp.body == b""
-    # And content-length MUST reflect the empty body (HTTP intermediaries
-    # treat content-length: 23 with empty body as malformed).
+    # 204/205 have no representation, so Content-Length is 0 (an intermediary
+    # treats content-length: N with an empty body as malformed).
     cl = next((v.decode() for k, v in resp.raw_headers if k == b"content-length"), None)
     assert cl == "0"
+
+
+def test_304_strips_body_but_advertises_representation_length():
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/x", status_code=304)
+    async def h():
+        return {"this": "cached"}
+
+    resp = TestClient(app).get("/x")
+    assert resp.status_code == 304
+    assert resp.body == b""
+    # A 304 (like HEAD) may advertise the would-be-200 Content-Length while
+    # sending no body (RFC 9110 Sec. 8.6 / 15.4.5).
+    cl = next((v.decode() for k, v in resp.raw_headers if k == b"content-length"), None)
+    assert cl == str(len(b'{"this":"cached"}'))
 
 
 def test_200_response_body_unchanged():

@@ -2,8 +2,9 @@
 
 RFC 9110: 1xx (Sec. 15.2), 204 (15.3.5), 205 (15.3.6), 304 (15.4.5) MUST NOT
 include a payload. Veloce strips the body and suppresses the framework-default
-content-type on both the ASGI and native (`Response.encode`) emit paths, while
-keeping `Content-Length: 0` (valid and intermediary-safe).
+content-type on both the ASGI and native (`Response.encode`) emit paths.
+1xx/204/205 advertise `Content-Length: 0`; a 304 may advertise the would-be-200
+length (RFC 9110 Sec. 8.6), like a HEAD response.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ def test_status_permits_body_true(code):
 
 
 @pytest.mark.parametrize("code", [204, 205, 304])
-def test_bodiless_suppresses_content_type_keeps_cl_zero(code):
+def test_bodiless_suppresses_content_type_and_body(code):
     app = Veloce(openapi_url=None)
 
     @app.get("/x", status_code=code)
@@ -50,8 +51,19 @@ def test_bodiless_suppresses_content_type_keeps_cl_zero(code):
     assert resp.status_code == code
     assert resp.body == b""
     assert _ct(resp) is None  # no application/json over zero bytes
+
+
+@pytest.mark.parametrize("code", [204, 205])
+def test_204_205_content_length_zero(code):
+    app = Veloce(openapi_url=None)
+
+    @app.get("/x", status_code=code)
+    async def h():
+        return {"stripped": True}
+
+    resp = TestClient(app).get("/x")
     cl = next((v.decode() for k, v in resp.raw_headers if k == b"content-length"), None)
-    assert cl == "0"
+    assert cl == "0"  # no representation
 
 
 def test_200_keeps_content_type_and_body():
@@ -96,3 +108,27 @@ def test_native_encode_200_keeps_content_type_and_body():
 def test_native_encode_handler_content_type_survives_bodiless():
     enc = Response(status_code=304, headers={"Content-Type": "text/plain"}).encode()
     assert b"Content-Type: text/plain" in enc
+
+
+def test_native_encode_304_advertises_representation_length():
+    enc = Response(status_code=304, body=b"hello").encode()
+    assert b"Content-Length: 5" in enc  # would-be-200 length
+    assert enc.endswith(b"\r\n\r\n")  # but no body sent
+
+
+def test_make_conditional_304_has_no_content_length():
+    # The normal 304 path (downgrade) clears the body and CL; advertised len 0.
+    from veloce import Request
+
+    resp = Response(status_code=200, body=b"hello")
+    resp.add_etag()
+    req = Request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers={"if-none-match": resp.headers["ETag"]},
+        body=b"",
+    )
+    resp.make_conditional(req)
+    assert resp.status_code == 304
+    assert b"Content-Length: 0" in resp.encode()

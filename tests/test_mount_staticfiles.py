@@ -133,7 +133,7 @@ def test_staticfiles_checks_search_perm_not_read_by_default(tmp_path, monkeypatc
     assert seen["mode"] == os.X_OK
 
 
-def test_staticfiles_checks_read_perm_when_listing(tmp_path, monkeypatch):
+def test_staticfiles_directory_index_requires_read_and_search(tmp_path, monkeypatch):
     import os
 
     from veloce.contrib import staticfiles
@@ -141,4 +141,4 @@ def test_staticfiles_checks_read_perm_when_listing(tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr(staticfiles.os, "access", lambda p, m: seen.update(mode=m) or True)
     StaticFiles(directory=str(tmp_path), directory_index=True)
-    assert seen["mode"] == os.R_OK
+    assert seen["mode"] == os.R_OK | os.X_OK
