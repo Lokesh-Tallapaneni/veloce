@@ -177,6 +177,13 @@ class GZipMiddleware(Middleware):
 
         if len(compressed) < len(response.body):
             response.body = compressed
+            # Field names are case-insensitive (RFC 9110 Sec. 5.1): a handler may
+            # have stored Content-Encoding / Content-Length under any casing
+            # (e.g. `Content-length`). Drop every existing spelling first so the
+            # canonical key we set below is the only one on the wire - otherwise a
+            # stale mixed-case length would describe the uncompressed body.
+            self._drop_header(response, HEADER_CONTENT_ENCODING)
+            self._drop_header(response, HEADER_CONTENT_LENGTH)
             response.headers[HEADER_CONTENT_ENCODING] = HEADER_VALUE_GZIP
             response.headers[HEADER_CONTENT_LENGTH] = str(len(compressed))
             response.add_vary(HEADER_ACCEPT_ENCODING)
@@ -218,16 +225,33 @@ class GZipMiddleware(Middleware):
             return response
 
         response._stream = self._compress_stream(response._stream, request)
+        # Field names are case-insensitive (RFC 9110 Sec. 5.1): drop any existing
+        # Content-Encoding under whatever casing a handler set before writing the
+        # canonical one, so only a single gzip encoding ends up on the response.
+        self._drop_header(response, HEADER_CONTENT_ENCODING)
         response.headers[HEADER_CONTENT_ENCODING] = HEADER_VALUE_GZIP
         # A streamed gzip body is chunked / `more_body`-framed; any declared
         # length describes the uncompressed representation and must go (the
         # native chunked path relies on Transfer-Encoding, not Content-Length).
-        response.headers.pop(HEADER_CONTENT_LENGTH, None)
-        response.headers.pop("content-length", None)
+        # Pop every casing (`Content-Length`, `content-length`, `Content-length`)
+        # so no stale uncompressed length survives.
+        self._drop_header(response, HEADER_CONTENT_LENGTH)
         response.add_vary(HEADER_ACCEPT_ENCODING)
         response._encoded = None
         self._weaken_strong_etag(response)
         return response
+
+    @staticmethod
+    def _drop_header(response: Response, name: str) -> None:
+        """Remove every casing of `name` from the response headers.
+
+        Field names are case-insensitive (RFC 9110 Sec. 5.1), so a handler may
+        have stored the header under any spelling. `header_key` resolves the
+        actual stored key; loop until none remain to also clear accidental
+        duplicates before the compression path writes its canonical value.
+        """
+        while (key := header_key(response.headers, name)) is not None:
+            del response.headers[key]
 
     @staticmethod
     def _compress_frame(co: Any, b: bytes) -> bytes:

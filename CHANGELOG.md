@@ -82,10 +82,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{x:datetime}`, `{x:timedelta}`, and `{x:decimal}` coerce the matched segment
   to `datetime.date` / `datetime.time` / `datetime.datetime` /
   `datetime.timedelta` / `decimal.Decimal` respectively. A `Z` suffix on a
-  datetime/time is accepted (normalized to `+00:00`); `timedelta` requires a
-  full ISO 8601 duration with at least one component (`P1DT2H`), so a bare
-  number is a route miss. A value the converter rejects is a 404, consistent
-  with the existing converters.
+  datetime/time is accepted (normalized to `+00:00`); `timedelta` accepts a
+  full ISO 8601 duration with at least one component (`P1DT2H`) as well as
+  Python's `str(timedelta)` form (`1:00:00`, `1 day, 2:00:00`) so a real
+  `timedelta` round-trips through `url_for`, while a bare number is a route
+  miss. A value the converter rejects is a 404, consistent with the existing
+  converters.
 
 - `StaticFiles(precompressed=True)` serves a precompressed sibling
   (`app.css.br` / `app.css.gz`) when the client advertises a matching

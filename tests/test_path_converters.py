@@ -366,6 +366,38 @@ def test_timedelta_converter_strict():
     assert c.match("") == (False, None)
 
 
+def test_timedelta_converter_accepts_str_repr():
+    # Python's `str(timedelta)` form must round-trip (see url_for test below).
+    c = TimeDeltaConverter()
+    ok, val = c.match("1:00:00")
+    assert ok and val == _dt.timedelta(hours=1)
+    ok2, val2 = c.match("1 day, 2:00:00")
+    assert ok2 and val2 == _dt.timedelta(days=1, hours=2)
+    ok3, val3 = c.match("2 days, 3:04:05.500000")
+    assert ok3 and val3 == _dt.timedelta(days=2, hours=3, minutes=4, seconds=5.5)
+    # Negative timedelta repr (`-1 day, 23:00:00` == -1 hour) round-trips.
+    neg = _dt.timedelta(hours=-1)
+    ok4, val4 = c.match(str(neg))
+    assert ok4 and val4 == neg
+
+
+def test_timedelta_url_for_roundtrip():
+    # url_for reverse-validates via converter.match(str(value)); a real
+    # timedelta must build a URL that matches back to the same value.
+    app = Veloce(openapi_url=None)
+
+    @app.get("/wait/{delay:timedelta}", name="wait")
+    async def h(request, delay):
+        return {"delay": str(delay)}
+
+    delay = _dt.timedelta(hours=1)
+    url = app.url_for("wait", delay=delay)
+    assert url == "/wait/1:00:00"
+    m = app.match("GET", url)
+    assert m is not None
+    assert m.path_params["delay"] == delay
+
+
 def test_decimal_converter():
     c = DecimalConverter()
     ok, val = c.match("3.14")

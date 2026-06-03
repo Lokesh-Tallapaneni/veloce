@@ -435,6 +435,57 @@ async def test_asend_propagates_contextvars_snapshot():
     assert [value for _, value in results] == ["snapshot", "snapshot"]
 
 
+async def test_asend_async_receiver_sees_pre_sync_mutation_context():
+    # The dispatch-time snapshot is taken BEFORE sync receivers run, so a sync
+    # receiver mutating a ContextVar must not be observed by async receivers.
+    var: contextvars.ContextVar[str] = contextvars.ContextVar("cv-mut", default="unset")
+    sig = Signal("ctx-mut")
+    seen: list[str] = []
+
+    def sync_mutator(sender, **kwargs):
+        var.set("mutated")
+        return "sync"
+
+    async def async_reader(sender, **kwargs):
+        await asyncio.sleep(0.01)
+        seen.append(var.get())
+        return var.get()
+
+    sig.connect(sync_mutator, weak=False)
+    sig.connect(async_reader, weak=False)
+
+    var.set("original")
+    results = await sig.asend("s")
+
+    # Async receiver observes the caller's original value, not "mutated".
+    assert seen == ["original"]
+    assert dict(results)[async_reader] == "original"
+
+
+async def test_send_robust_async_async_receiver_sees_pre_sync_mutation_context():
+    var: contextvars.ContextVar[str] = contextvars.ContextVar("cv-mut-r", default="unset")
+    sig = Signal("ctx-mut-robust")
+    seen: list[str] = []
+
+    def sync_mutator(sender, **kwargs):
+        var.set("mutated")
+        return "sync"
+
+    async def async_reader(sender, **kwargs):
+        await asyncio.sleep(0.01)
+        seen.append(var.get())
+        return var.get()
+
+    sig.connect(sync_mutator, weak=False)
+    sig.connect(async_reader, weak=False)
+
+    var.set("original")
+    results = await sig.send_robust_async("s")
+
+    assert seen == ["original"]
+    assert dict(results)[async_reader] == "original"
+
+
 def test_connect_is_async_classification_does_not_break_sync_paths():
     """The 4-tuple `_subs` change leaves sync send/send_robust unchanged."""
     import warnings

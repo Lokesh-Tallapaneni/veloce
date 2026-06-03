@@ -172,6 +172,14 @@ _TIME_RE = re.compile(r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?$")
 _TIMEDELTA_RE = re.compile(
     r"P(?=\d|T)(?:(\d+)D)?(?:T(?=\d)(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$"
 )
+# Python's `str(timedelta)` form: `[D day[s], ]H:MM:SS[.ffffff]`. Accepting it
+# lets a real `timedelta` round-trip through `url_for`, which reverse-validates
+# the reversed value via `converter.match(str(value))`. The day count and the
+# hour field are unbounded/variable-width because `timedelta` normalizes only
+# minutes/seconds (RFC 8601 covers the ISO form above; this covers stdlib repr).
+_TIMEDELTA_STR_RE = re.compile(
+    r"(?:(?P<days>-?\d+) days?, )?(?P<hours>\d+):(?P<minutes>\d{2}):(?P<seconds>\d{2}(?:\.\d{1,6})?)$"
+)
 _DECIMAL_RE = re.compile(r"[+-]?\d+(?:\.\d+)?$")
 _MAX_DECIMAL_CHARS = 40
 
@@ -226,24 +234,39 @@ class TimeConverter(_Converter):
 
 
 class TimeDeltaConverter(_Converter):
-    """Matches an ISO 8601 duration; coerces to datetime.timedelta.
+    """Matches an ISO 8601 duration or `str(timedelta)`; coerces to timedelta.
 
-    Stricter than Litestar: a bare number such as `60` is rejected - only
-    an ISO duration (`P1DT2H`) with at least one component is accepted.
+    Stricter than Litestar: a bare number such as `60` is rejected. An ISO
+    duration (`P1DT2H`, at least one component) is accepted, as is Python's
+    own `str(timedelta)` form (`1:00:00`, `1 day, 2:00:00`) so a real
+    `timedelta` round-trips through `url_for`, which reverse-validates the
+    reversed value via `converter.match(str(value))`.
     """
 
     __slots__ = ()
 
     def match(self, value: str) -> tuple[bool, Any]:
         m = _TIMEDELTA_RE.match(value)
-        if not m:
+        if m is not None:
+            days, hours, minutes, seconds = m.groups()
+            return True, datetime.timedelta(
+                days=int(days) if days else 0,
+                hours=int(hours) if hours else 0,
+                minutes=int(minutes) if minutes else 0,
+                seconds=float(seconds) if seconds else 0,
+            )
+        # `str(timedelta)` repr: `[D day[s], ]H:MM:SS[.ffffff]`. A negative
+        # timedelta renders as e.g. `-1 day, 23:00:00`, so days may be signed
+        # while the clock fields stay non-negative; reconstruct via the same
+        # constructor, which re-normalizes to the canonical representation.
+        sm = _TIMEDELTA_STR_RE.match(value)
+        if sm is None:
             return False, None
-        days, hours, minutes, seconds = m.groups()
         return True, datetime.timedelta(
-            days=int(days) if days else 0,
-            hours=int(hours) if hours else 0,
-            minutes=int(minutes) if minutes else 0,
-            seconds=float(seconds) if seconds else 0,
+            days=int(sm["days"]) if sm["days"] else 0,
+            hours=int(sm["hours"]),
+            minutes=int(sm["minutes"]),
+            seconds=float(sm["seconds"]),
         )
 
 

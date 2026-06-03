@@ -72,14 +72,17 @@ def _matches(subscribed: Any, sent: Any) -> bool:
 
 
 async def _run_async_concurrently(
-    coros: list[Coroutine[Any, Any, Any]], *, robust: bool
+    coros: list[Coroutine[Any, Any, Any]],
+    *,
+    robust: bool,
+    context: contextvars.Context,
 ) -> list[Any]:
-    """Run `coros` concurrently, each inside a fresh copy of the caller's context.
+    """Run `coros` concurrently, each inside a copy of `context`.
 
-    Snapshots `contextvars.copy_context()` once and applies the same
-    snapshot to every task so async receivers observe the context that
-    was current at dispatch time. Results are returned positionally,
-    matching the order of `coros`.
+    `context` is the dispatch-time snapshot captured by the caller BEFORE
+    any sync receiver ran, so async receivers observe the original
+    request-local context rather than any value a sync receiver mutated.
+    Results are returned positionally, matching the order of `coros`.
 
     With `robust=False` the first failing coroutine propagates its
     exception (non-robust contract, like `send`). With `robust=True`
@@ -96,18 +99,18 @@ async def _run_async_concurrently(
         # positional ordering and - with `return_exceptions=False` -
         # propagates the first failure directly (non-robust contract),
         # never an ExceptionGroup.
-        context = contextvars.copy_context()
         loop = asyncio.get_running_loop()
         tasks = [loop.create_task(coro, context=context.copy()) for coro in coros]
         return await asyncio.gather(*tasks, return_exceptions=robust)
 
     # 3.10 fallback: neither `asyncio.gather` nor `Task.__init__` accept a
-    # per-task `context=` before 3.11. `gather` schedules each coroutine
-    # as a Task that captures the caller's current context at creation
-    # time, so receivers still observe the dispatch-time context values;
-    # the only 3.10 difference is that the tasks share that context rather
-    # than each getting an isolated copy.
-    return await asyncio.gather(*coros, return_exceptions=robust)
+    # per-task `context=` before 3.11. A bare `gather` would create the
+    # tasks under whatever context is current now - which, after the sync
+    # receivers ran, may carry their mutations. Create the tasks from
+    # inside the dispatch-time snapshot so they capture it instead; the
+    # only 3.10 difference from 3.11 is that the tasks share that context
+    # rather than each getting an isolated copy.
+    return await context.run(lambda: asyncio.gather(*coros, return_exceptions=robust))
 
 
 # -- Signal ----------------------------------------------------------
@@ -301,6 +304,11 @@ class Signal:
         receiver propagates its exception (non-robust contract); use
         `send_robust_async` to capture per-receiver failures instead.
         """
+        # Snapshot the dispatch-time context BEFORE any sync receiver runs.
+        # Sync receivers run inline below and may mutate ContextVars; async
+        # receivers must still observe the caller's original request-local
+        # context, so they run under this pre-mutation snapshot.
+        dispatch_context = contextvars.copy_context()
         targets: list[tuple[Callable, Any, bool]] = []
         coros: list[Coroutine[Any, Any, Any]] = []
         coro_slots: list[int] = []
@@ -313,7 +321,7 @@ class Signal:
                 targets.append((target, None, True))
             else:
                 targets.append((target, value, False))
-        awaited = await _run_async_concurrently(coros, robust=False)
+        awaited = await _run_async_concurrently(coros, robust=False, context=dispatch_context)
         for slot, result in zip(coro_slots, awaited, strict=True):
             target, _, _ = targets[slot]
             targets[slot] = (target, result, True)
@@ -332,6 +340,10 @@ class Signal:
         exceptions, raised either at call time or while awaiting, are
         logged at WARNING and substituted into the result list.
         """
+        # Snapshot the dispatch-time context BEFORE any sync receiver runs, so
+        # async receivers observe the caller's original context even if a sync
+        # receiver mutated a ContextVar (see `asend`).
+        dispatch_context = contextvars.copy_context()
         targets: list[tuple[Callable, Any]] = []
         coros: list[Coroutine[Any, Any, Any]] = []
         coro_slots: list[int] = []
@@ -348,7 +360,7 @@ class Signal:
                 targets.append((target, None))
             else:
                 targets.append((target, value))
-        awaited = await _run_async_concurrently(coros, robust=True)
+        awaited = await _run_async_concurrently(coros, robust=True, context=dispatch_context)
         for slot, result in zip(coro_slots, awaited, strict=True):
             target = targets[slot][0]
             if isinstance(result, Exception):
