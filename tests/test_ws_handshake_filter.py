@@ -99,6 +99,40 @@ def test_no_middleware_skips_gate():
         assert ws.receive_text() == "hi"
 
 
+# ── Stale-cache recompile on the consumed runtime path ───────────────
+
+
+def test_handshake_recompiles_after_late_middleware():
+    """Compile the `ws_handshake` slot via a first connect with no gate, THEN
+    register a host gate, THEN connect again - the late middleware MUST be
+    enforced. This is the end-to-end stale-cache guard on the only runtime slot
+    this change consumes: a missing `_gen` bump in `_register_middleware` or a
+    broken `cp.gen` recheck would leave the stale (`None`) slot in place and
+    wrongly admit the second connect. `debug=True` keeps the setup lock open so
+    the late registration is permitted."""
+    app = _ws_app()
+    client = app.test_client()
+
+    # First connect with no host/origin middleware: slot compiles to `None`,
+    # so even a mismatched host is admitted.
+    with client.websocket_connect("/ws", headers={"host": "evil.example"}) as ws:
+        assert ws.receive_text() == "hi"
+
+    # Late-register a host gate after the pipeline was already compiled.
+    app.add_middleware(TrustedHostMiddleware(allowed_hosts=["good.example"]))
+
+    # The recompile must now enforce the gate - a disallowed host is refused.
+    with (
+        pytest.raises(RuntimeError, match="1008"),
+        client.websocket_connect("/ws", headers={"host": "evil.example"}),
+    ):
+        pass
+
+    # ...and the allowed host still passes through the recompiled slot.
+    with client.websocket_connect("/ws", headers={"host": "good.example"}) as ws:
+        assert ws.receive_text() == "hi"
+
+
 # ── build_ws_handshake_checks unit equivalence ───────────────────────
 
 

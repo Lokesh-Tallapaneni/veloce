@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from veloce import TrustedHostMiddleware, Veloce
 from veloce.middleware.base import Middleware
 from veloce.testclient import TestClient
 
@@ -105,6 +105,49 @@ def test_late_registration_recompiles_pipeline(observe, tmp_path):
     assert app._gen == gen0 + 1
 
     _assert_observed(observe, app, client)
+
+
+def test_already_built_pipeline_recompiles_on_registration(tmp_path):
+    """An ALREADY-compiled pipeline is refreshed when `_gen` advances.
+
+    This is the stale-cache guard the table-driven test above does not reach:
+    HTTP dispatch does not build `_pipeline`, so this compiles it explicitly via
+    `_ensure_pipeline()` first, then registers a feature, then recompiles and
+    asserts a fresh artifact reflecting the new state. With a broken `cp.gen`
+    check (e.g. `if cp is None:`) the stale object would be returned and the new
+    assertions would fail.
+    """
+    app = _make_app()
+    cp0 = app._ensure_pipeline()
+    assert cp0.has_static_handlers is False
+
+    static_dir = tmp_path / "assets"
+    static_dir.mkdir()
+    (static_dir / "hello.txt").write_text("served", encoding="utf-8")
+    app.mount_static("/s", str(static_dir))
+
+    cp1 = app._ensure_pipeline()
+    assert cp1 is not cp0  # recompiled, not the stale cached object
+    assert cp1.gen == cp0.gen + 1
+    assert cp1.has_static_handlers is True  # reflects the late registration
+    assert cp0.has_static_handlers is False  # the prior artifact is untouched
+
+
+def test_ws_handshake_slot_recompiles_when_middleware_added():
+    """The only runtime-consumed slot recompiles after a `_register_middleware`
+    bump: an empty (`None`) handshake slot becomes a populated tuple once a
+    host-check middleware is registered. Guards the `_gen` bump in
+    `_register_middleware` against the compiled `ws_handshake` slot directly."""
+    app = _make_app()
+    cp0 = app._ensure_pipeline()
+    assert cp0.ws_handshake is None  # no middleware yet
+
+    app.add_middleware(TrustedHostMiddleware(allowed_hosts=["good.example"]))
+
+    cp1 = app._ensure_pipeline()
+    assert cp1 is not cp0
+    assert cp1.gen == cp0.gen + 1
+    assert cp1.ws_handshake is not None  # the new host check is compiled in
 
 
 def test_feature_free_pipeline_is_all_none(tmp_path):
