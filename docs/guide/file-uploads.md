@@ -80,6 +80,20 @@ async def attachments(request: Request):
     return {"count": len(files), "names": [f.filename for f in files.values()]}
 ```
 
+!!! tip "Debug-mode diagnostics"
+
+    The most common upload mistake is submitting the form without
+    `enctype="multipart/form-data"`, so the field arrives as plain text and is
+    absent from `request.files()`. When the application runs with `debug=True`,
+    a missing-key lookup such as `files["avatar"]` raises
+    [`FilesKeyError`](../reference.md#veloce.FilesKeyError) — a `KeyError`
+    subclass whose message names the cause (missing `enctype`, a JSON body, or
+    no multipart body at all). In production the lookup raises a plain
+    `KeyError`. Use `files.get("avatar")` or `files.get_upload("avatar")` to
+    avoid the exception entirely.
+
+    !!! note "Added in version 0.4.0"
+
 ## The UploadFile object
 
 [`UploadFile`](../reference.md#veloce.UploadFile) wraps the uploaded

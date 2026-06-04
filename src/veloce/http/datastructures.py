@@ -17,10 +17,15 @@ from urllib.parse import parse_qsl
 
 from multidict import CIMultiDict, MultiDict
 
-from veloce._constants import HEADER_HOST, HEADER_X_FORWARDED_PROTO, MIME_OCTET_STREAM
+from veloce._constants import (
+    HEADER_HOST,
+    HEADER_X_FORWARDED_PROTO,
+    MIME_JSON,
+    MIME_OCTET_STREAM,
+)
 from veloce._header_parsing import parse_header_params
 from veloce._protocol_constants import URL_SCHEME_HTTP, URL_SCHEME_HTTPS
-from veloce.exceptions import RequestURITooLong
+from veloce.exceptions import FilesKeyError, RequestURITooLong
 from veloce.http.cookies import iter_cookies
 
 # Cap on number of query-string fields parsed per request to bound CPU
@@ -312,6 +317,34 @@ class URL:
 
 
 # -- Multidict-backed collections ------------------------------------
+def _files_key_hint(key: str, mimetype: str, form_keys: frozenset[str]) -> str:
+    """Build the debug message for a missing `request.files` key.
+
+    Branches on what the request actually carried so the message names the
+    real root cause of the most common upload mistakes.
+    """
+    if key in form_keys:
+        return (
+            f"No uploaded file named {key!r}. A form field with that name was "
+            "received as a plain text value, not a file. The form was submitted "
+            'without enctype="multipart/form-data", so no file contents were '
+            f"transmitted (request mimetype: {mimetype!r}). Add that enctype to "
+            "the form to upload files."
+        )
+    if mimetype == MIME_JSON:
+        return (
+            f"No uploaded file named {key!r}. This is a JSON request "
+            f"({mimetype!r}); uploaded files only exist on "
+            "multipart/form-data bodies. Read the value from the JSON body, or "
+            "submit the file as multipart/form-data."
+        )
+    return (
+        f"No uploaded file named {key!r}. The request did not include a "
+        f"multipart/form-data body (request mimetype: {mimetype!r}), so no "
+        "uploaded files are available."
+    )
+
+
 class FormData(MultiDict):
     """Multi-value form-field collection (text fields + file uploads).
 
@@ -320,6 +353,22 @@ class FormData(MultiDict):
     preserve every value; single-value access `form["a"]` returns the first.
     `getlist("a")` returns the full list.
     """
+
+    # Debug-only diagnostic recorded by `Request.files` when the app runs
+    # with `debug=True`: `(request_mimetype, frozenset_of_form_field_names)`.
+    # When set, a missing-key lookup raises a descriptive `FilesKeyError`
+    # instead of a bare `KeyError`. `None` (the default) keeps plain
+    # multidict semantics, so production lookups pay nothing.
+    _files_diagnostic: tuple[str, frozenset[str]] | None = None
+
+    def __getitem__(self, key: str) -> Any:
+        try:
+            return super().__getitem__(key)
+        except KeyError:
+            diag = self._files_diagnostic
+            if diag is None:
+                raise
+            raise FilesKeyError(_files_key_hint(key, diag[0], diag[1])) from None
 
     def getlist(self, key: str) -> list:
         """Return all values for the given key as a list."""

@@ -53,6 +53,7 @@ from veloce.encoders import jsonable_encoder
 # Exceptions
 from veloce.exceptions import (
     BuildError,
+    FilesKeyError,
     HTTPException,
     RequestValidationError,
     ValidationError,
@@ -282,6 +283,7 @@ __all__ = [
     "SecurityScopes",
     # Exceptions
     "HTTPException",
+    "FilesKeyError",
     "ValidationError",
     "RequestValidationError",
     "BuildError",
