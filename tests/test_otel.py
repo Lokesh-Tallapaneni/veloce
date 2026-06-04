@@ -592,3 +592,213 @@ def test_traceparent_continued_even_when_a_before_hook_short_circuits() -> None:
     assert format(span.context.trace_id, "032x") == trace_id_hex
     assert span.parent is not None
     assert format(span.parent.span_id, "016x") == span_id_hex
+
+
+# ── idempotency: a second instrument_with_otel is a no-op ──────────────
+
+
+def test_re_instrument_warns_and_does_not_register_twice() -> None:
+    """Calling the bridge twice on one app must not register a second hook —
+    that would emit two server spans per request. The redundant call warns and
+    returns the existing hook."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from veloce.otel import instrument_with_otel
+
+    app = Veloce(openapi_url=None)
+    first = instrument_with_otel(app)
+    assert len(app._instrumentation) == 1
+
+    with pytest.warns(RuntimeWarning, match="already called"):
+        second = instrument_with_otel(app)
+
+    # No duplicate hook, and the existing one is handed back unchanged.
+    assert len(app._instrumentation) == 1
+    assert second is first
+
+
+def test_re_instrument_emits_a_single_span_per_request() -> None:
+    """End-to-end proof of the idempotency guard: even after a redundant
+    instrument call, exactly one span is exported per request."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    app = _app()
+    instrument_with_otel(app, tracer_provider=provider)
+    with pytest.warns(RuntimeWarning):
+        instrument_with_otel(app, tracer_provider=provider)
+
+    app.test_client().get("/items/7")
+    assert len(exporter.get_finished_spans()) == 1
+
+
+def test_two_apps_in_one_process_each_get_a_bridge() -> None:
+    """The dedup state lives on the app, not a module global, so two distinct
+    apps in one process each register their own bridge."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from veloce.otel import instrument_with_otel
+
+    app_a = Veloce(openapi_url=None)
+    app_b = Veloce(openapi_url=None)
+    instrument_with_otel(app_a)
+    instrument_with_otel(app_b)
+
+    assert len(app_a._instrumentation) == 1
+    assert len(app_b._instrumentation) == 1
+
+
+# ── on_span enrichment callback ───────────────────────────────────────
+
+
+def test_on_span_enriches_every_emitted_span() -> None:
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    seen_routes: list[str | None] = []
+
+    def enrich(span, metrics):
+        seen_routes.append(metrics.route)
+        span.set_attribute("app.tenant", "acme")
+
+    app = _app()
+    instrument_with_otel(app, tracer_provider=provider, on_span=enrich)
+
+    app.test_client().get("/items/7")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].attributes["app.tenant"] == "acme"
+    assert seen_routes == ["/items/{item_id}"]
+
+
+def test_on_span_exception_is_suppressed_and_span_still_ends() -> None:
+    """An on_span that raises must not break the response nor leak through the
+    instrumentation hook; the span still ends and is exported."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    def boom(span, metrics):
+        raise RuntimeError("enrichment is broken")
+
+    app = _app()
+    instrument_with_otel(app, tracer_provider=provider, on_span=boom)
+
+    resp = app.test_client().get("/items/7")
+    assert resp.status_code == 200
+    # The span was still emitted with its built-in attributes intact.
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].attributes["http.route"] == "/items/{item_id}"
+
+
+# ── error.type attribute on raised 5xx ────────────────────────────────
+
+
+def test_error_type_attribute_set_for_unhandled_exception() -> None:
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry.trace import StatusCode
+
+    exporter, app = _exporter_and_app()
+    app.test_client().get("/crash")  # raises ValueError -> 500
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.attributes["http.response.status_code"] == 500
+    assert span.status.status_code == StatusCode.ERROR
+    # The low-cardinality class name is exported, never the message.
+    assert span.attributes["error.type"] == "ValueError"
+    for value in span.attributes.values():
+        assert "kaboom" not in str(value)
+
+
+def test_no_error_type_attribute_for_success() -> None:
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, app = _exporter_and_app()
+    app.test_client().get("/items/7")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert "error.type" not in spans[0].attributes
+
+
+# ── route-template exclusion threaded into the bridge ─────────────────
+
+
+def test_exclude_routes_suppresses_spans_for_noisy_routes() -> None:
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/health")
+    async def health():
+        return {"ok": True}
+
+    @app.get("/work")
+    async def work():
+        return {"done": True}
+
+    instrument_with_otel(app, tracer_provider=provider, exclude_routes={"/health"})
+
+    app.test_client().get("/health")
+    app.test_client().get("/work")
+
+    spans = exporter.get_finished_spans()
+    names = [s.name for s in spans]
+    assert names == ["/work"]

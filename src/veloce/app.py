@@ -12,7 +12,7 @@ import time
 import traceback
 import warnings
 import weakref
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic import BaseModel as _PydanticBaseModel
@@ -484,6 +484,11 @@ class Veloce(Router):
         # finished HTTP request with a `RequestMetrics` record. Empty by
         # default, so an un-instrumented app pays nothing.
         self._instrumentation: list[Callable] = []
+        # Per-hook route-template exclusions, populated only when a hook is
+        # registered with `exclude_routes`. Sparse on purpose: the common case
+        # (no exclusions) leaves this empty so the dispatch loop skips the
+        # membership test entirely and a hook with no exclusion pays nothing.
+        self._instrumentation_excludes: dict[Callable, frozenset[str]] = {}
         # MCP-only tool registrations (contrib.mcp). Each entry is
         # `(handler, name, description, namespace)`, recorded by
         # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
@@ -764,7 +769,12 @@ class Veloce(Router):
                 "Register a BaseHTTPMiddleware via add_http_middleware()."
             )
 
-    def add_instrumentation(self, hook: Callable) -> Callable:
+    def add_instrumentation(
+        self,
+        hook: Callable,
+        *,
+        exclude_routes: Iterable[str] | None = None,
+    ) -> Callable:
         """Register an observability instrumentation hook.
 
         `hook` is called once per finished HTTP request with a
@@ -780,10 +790,26 @@ class Veloce(Router):
             def export(metrics):
                 statsd.timing(metrics.route or "unmatched", metrics.duration_ms)
 
+        Pass `exclude_routes` to suppress this hook for noisy routes - a set
+        of matched route *templates* (e.g. `{"/health", "/metrics"}`). When a
+        finished request's route template is in the set the hook is skipped,
+        so health checks and scrape endpoints never pollute traces or metric
+        series. Matching is on the low-cardinality template resolved during
+        routing (never the concrete, attacker-controlled path), so there is
+        no per-request regex and no path-normalisation bypass. The filter is
+        applied in the core delivery loop, so every consumer of this hook -
+        tracing, metrics, access logs, custom - honours the same exclusion.
+        An unmatched request (route template `None`) is never excluded by a
+        named-route set.
+
         With no hook registered the request path carries no instrumentation
         cost - not even a clock read.
         """
         self._instrumentation.append(hook)
+        if exclude_routes is not None:
+            excluded = frozenset(exclude_routes)
+            if excluded:
+                self._instrumentation_excludes[hook] = excluded
         return hook
 
     def use_secure_defaults(self) -> None:
@@ -2332,11 +2358,17 @@ class Veloce(Router):
                 response = await self._run_http_middleware_chain(request)
             else:
                 response = await self._dispatch_request(request)
-        except Exception:
+        except Exception as exc:
             # Dispatch propagated an exception (e.g. PROPAGATE_EXCEPTIONS is
             # set). Record a `500` metric before the exception continues
             # out, so error requests are never dropped from observability.
             if instrument:
+                # `_dispatch_request` records the originating exception's class
+                # name on request state before re-raising; an exception raised
+                # outside it (e.g. in `@app.middleware("http")`) leaves it
+                # unset, so fall back to the caught exception here. Either way
+                # only the low-cardinality class name reaches the metric.
+                request._state.setdefault("_error_type", type(exc).__qualname__)
                 with contextlib.suppress(Exception):
                     await self._run_instrumentation(
                         request,
@@ -2525,6 +2557,13 @@ class Veloce(Router):
                 if self._middlewares:
                     response = await self._run_response_middleware(request, response)
                 return response
+
+            # This exception was not handled by any registered handler and is
+            # becoming a server error. Record its low-cardinality class name
+            # (never the message) on request state so the post-dispatch
+            # instrumentation hook can surface it as `RequestMetrics.error_type`
+            # without the exception object reaching the observability layer.
+            request._state["_error_type"] = type(exc).__qualname__
 
             # PROPAGATE_EXCEPTIONS: when set (or implicitly
             # when both DEBUG and TESTING are on), let the exception
@@ -3218,6 +3257,15 @@ class Veloce(Router):
         production, not stream completion. See `RequestMetrics.streamed`.
         `end_time_ns` is the wall-clock end captured before any hook runs.
         """
+        # Surface the originating exception's class name (set on request state
+        # by the dispatch error paths) only for a server error, so a handler
+        # that deliberately returns a 5xx without raising is not mislabelled.
+        # The class name only is carried - never the message or the instance.
+        error_type = (
+            request._state.get("_error_type")
+            if status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR
+            else None
+        )
         metrics = RequestMetrics(
             method=request.method,
             path=request.path,
@@ -3226,6 +3274,7 @@ class Veloce(Router):
             duration_ms=duration_ms,
             streamed=streamed,
             end_time_ns=end_time_ns,
+            error_type=error_type,
             # Inbound distributed-trace headers, carried verbatim so a tracing
             # bridge (e.g. veloce.otel) can extract a parent context and
             # continue the trace. Built on every dispatch path here - never via
@@ -3233,7 +3282,17 @@ class Veloce(Router):
             # `None` when the request carries no trace headers.
             parent_context=_trace_carrier(request),
         )
+        # Per-hook route-template exclusions are sparse: when none are
+        # configured the membership test is skipped entirely so the common path
+        # is unchanged. A hook with an exclusion set is suppressed for a request
+        # whose matched route template is in that set (health/metrics/etc).
+        excludes = self._instrumentation_excludes
+        route = metrics.route
         for hook in self._instrumentation:
+            if excludes and route is not None:
+                excluded = excludes.get(hook)
+                if excluded is not None and route in excluded:
+                    continue
             try:
                 result = hook(metrics)
                 if inspect.isawaitable(result):
