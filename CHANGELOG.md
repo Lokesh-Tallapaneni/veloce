@@ -72,6 +72,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   response a few percent faster; the saved work is the redundant `Vary` lookups
   and the repeated session-state reads.
 
+- App-level features (middleware, instrumentation hooks, `@app.middleware("http")`
+  functions, mounts, and static handlers) are now tracked through a single
+  generation counter and compiled into a per-app pipeline artifact that is rebuilt
+  only when a registration changes. The WebSocket handshake host/origin allow-list
+  gate now reads its checks from this compiled artifact instead of probing every
+  registered middleware on each connect; allow/deny behavior and the `1008` close
+  code are unchanged. Registration verbs that previously appended directly
+  (`add_http_middleware`, `@app.middleware("http")`, `add_instrumentation`, `mount`,
+  `mount_static`) now route through one internal sink that preserves each call
+  site's existing setup-lock contract exactly.
+
 - `CORSMiddleware` preflight requests now validate the requested method.
   An `OPTIONS` preflight whose `Access-Control-Request-Method` is not in
   `allow_methods` returns a diagnostic `400` (`Disallowed CORS method`)
