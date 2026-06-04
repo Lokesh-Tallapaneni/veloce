@@ -118,3 +118,196 @@ def test_uploadfile_accepts_plain_dict_headers():
 
     up = UploadFile(filename="x", headers={"X-A": "1"})
     assert up.headers["x-a"] == "1"
+
+
+# ── Helpers shared by the limit / boundary / charset tests ───────────
+
+import pytest  # noqa: E402
+
+from veloce.exceptions import BadRequest, RequestEntityTooLarge  # noqa: E402
+from veloce.http.formparsers import parse_multipart_form  # noqa: E402
+
+_BOUNDARY = "veloceboundary123"
+
+
+def _field(name: str, value: str, *, content_type: str | None = None) -> list[str]:
+    lines = [f"--{_BOUNDARY}", f'Content-Disposition: form-data; name="{name}"']
+    if content_type is not None:
+        lines.append(f"Content-Type: {content_type}")
+    lines.append("")
+    lines.append(value)
+    return lines
+
+
+def _file(name: str, filename: str, payload: str) -> list[str]:
+    return [
+        f"--{_BOUNDARY}",
+        f'Content-Disposition: form-data; name="{name}"; filename="{filename}"',
+        "Content-Type: application/octet-stream",
+        "",
+        payload,
+    ]
+
+
+def _assemble(*parts: list[str]) -> bytes:
+    lines: list[str] = []
+    for part in parts:
+        lines.extend(part)
+    lines.append(f"--{_BOUNDARY}--")
+    lines.append("")
+    return "\r\n".join(lines).encode()
+
+
+def _ct() -> str:
+    return f"multipart/form-data; boundary={_BOUNDARY}"
+
+
+# ── Finding: missing / malformed boundary handling (Django) ──────────
+
+
+def test_missing_boundary_raises_bad_request():
+    body = b"--x--\r\n"
+    with pytest.raises(BadRequest):
+        parse_multipart_form(body, "multipart/form-data")
+
+
+def test_malformed_boundary_too_long_raises_bad_request():
+    long_boundary = "a" * 71
+    body = b"--y--\r\n"
+    with pytest.raises(BadRequest):
+        parse_multipart_form(body, f"multipart/form-data; boundary={long_boundary}")
+
+
+def test_malformed_boundary_illegal_char_raises_bad_request():
+    with pytest.raises(BadRequest):
+        parse_multipart_form(b"--z--\r\n", 'multipart/form-data; boundary="a\x01b"')
+
+
+def test_valid_boundary_with_special_chars_parses():
+    boundary = "a+b/c:d=e"
+    body = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="x"\r\n\r\nv\r\n--{boundary}--\r\n'
+    ).encode()
+    form = parse_multipart_form(body, f"multipart/form-data; boundary={boundary}")
+    assert form["x"] == "v"
+
+
+# ── Finding: separate field/file limits + field memory (Django/Quart) ─
+
+
+def test_max_fields_caps_text_field_count():
+    body = _assemble(_field("a", "1"), _field("b", "2"), _field("c", "3"))
+    with pytest.raises(RequestEntityTooLarge):
+        parse_multipart_form(body, _ct(), max_fields=2)
+
+
+def test_max_files_caps_file_count_only():
+    body = _assemble(
+        _field("t1", "x"),
+        _field("t2", "y"),
+        _file("f1", "a.bin", "AAAA"),
+        _file("f2", "b.bin", "BBBB"),
+    )
+    # Two files exceed max_files=1 even though there are also two text fields.
+    with pytest.raises(RequestEntityTooLarge):
+        parse_multipart_form(body, _ct(), max_files=1)
+
+
+def test_field_and_file_counts_are_independent():
+    body = _assemble(
+        _field("t1", "x"),
+        _field("t2", "y"),
+        _file("f1", "a.bin", "AAAA"),
+    )
+    # 2 fields / 1 file: allowed when each cap is generous enough.
+    form = parse_multipart_form(body, _ct(), max_fields=2, max_files=1)
+    assert form["t1"] == "x"
+    assert form["f1"].filename == "a.bin"
+
+
+def test_max_field_size_caps_text_not_files():
+    body = _assemble(_field("small", "ok"), _file("big", "big.bin", "X" * 5000))
+    # A 2-byte field passes while a 5000-byte file is permitted by a larger
+    # file cap, proving the two size limits are independent.
+    form = parse_multipart_form(body, _ct(), max_field_size=10, max_file_size=10000)
+    assert form["small"] == "ok"
+    assert form["big"].size == 5000
+
+
+def test_max_field_size_rejects_oversized_field():
+    body = _assemble(_field("f", "X" * 100))
+    with pytest.raises(RequestEntityTooLarge):
+        parse_multipart_form(body, _ct(), max_field_size=10)
+
+
+def test_max_field_memory_caps_cumulative_text_bytes():
+    body = _assemble(_field("a", "X" * 30), _field("b", "Y" * 30))
+    # Each field is under any per-field cap, but their sum exceeds the
+    # cumulative resident-memory ceiling.
+    with pytest.raises(RequestEntityTooLarge):
+        parse_multipart_form(body, _ct(), max_field_memory=40)
+
+
+def test_max_field_memory_excludes_files():
+    body = _assemble(_field("a", "X" * 10), _file("f", "f.bin", "Z" * 1000))
+    # File bytes do not count toward the field-memory ceiling.
+    form = parse_multipart_form(body, _ct(), max_field_memory=100)
+    assert form["a"] == "X" * 10
+    assert form["f"].size == 1000
+
+
+def test_part_size_alias_still_applies_to_both():
+    body = _assemble(_field("f", "X" * 100))
+    with pytest.raises(RequestEntityTooLarge):
+        parse_multipart_form(body, _ct(), max_part_size=10)
+
+
+# ── Finding: per-part Content-Type charset (Werkzeug) ────────────────
+
+
+def test_part_charset_iso_8859_1_decodes_field():
+    boundary = _BOUNDARY
+    head = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="name"\r\n'
+        "Content-Type: text/plain; charset=iso-8859-1\r\n"
+        "\r\n"
+    ).encode("ascii")
+    tail = f"\r\n--{boundary}--\r\n".encode("ascii")
+    body = head + b"\xe9" + tail
+    form = parse_multipart_form(body, _ct())
+    assert form["name"] == "\xe9"
+
+
+def test_part_charset_overrides_global_fallback():
+    boundary = _BOUNDARY
+    head = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="name"\r\n'
+        "Content-Type: text/plain; charset=iso-8859-1\r\n"
+        "\r\n"
+    ).encode("ascii")
+    tail = f"\r\n--{boundary}--\r\n".encode("ascii")
+    body = head + b"\xe9" + tail
+    # Even with no global fallback, the part's own charset is honored.
+    form = parse_multipart_form(body, _ct(), charset_fallback=None)
+    assert form["name"] == "\xe9"
+
+
+def test_unsupported_part_charset_raises_bad_request():
+    body = _assemble(_field("n", "v", content_type="text/plain; charset=shift_jis"))
+    with pytest.raises(BadRequest):
+        parse_multipart_form(body, _ct())
+
+
+def test_no_part_charset_falls_back_to_global():
+    boundary = _BOUNDARY
+    head = (f'--{boundary}\r\nContent-Disposition: form-data; name="name"\r\n\r\n').encode("ascii")
+    tail = f"\r\n--{boundary}--\r\n".encode("ascii")
+    body = head + b"\xe9" + tail
+    # No part charset declared: non-UTF-8 bytes are rejected by default.
+    with pytest.raises(BadRequest):
+        parse_multipart_form(body, _ct())
+    # ...but the global latin-1 fallback still applies.
+    form = parse_multipart_form(body, _ct(), charset_fallback="latin-1")
+    assert form["name"] == "\xe9"

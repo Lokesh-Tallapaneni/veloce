@@ -54,7 +54,12 @@ The defaults are:
 | `PREFERRED_URL_SCHEME` | `"http"` | Scheme used when generating external URLs. |
 | `MAX_CONTENT_LENGTH` | `None` | Maximum request body size in bytes (`None` = unlimited). |
 | `MAX_FORM_PARTS` | `1000` | Maximum number of multipart form parts. |
-| `MAX_FORM_PART_SIZE` | `10485760` | Maximum size of a single form part in bytes. |
+| `MAX_FORM_PART_SIZE` | `10485760` | Maximum size of a single form part in bytes (applies to both file and text parts unless overridden below). |
+| `MAX_FORM_FILES` | `None` | Maximum number of file parts (`None` = only bounded by `MAX_FORM_PARTS`). |
+| `MAX_FORM_FIELDS` | `None` | Maximum number of text-field parts (`None` = only bounded by `MAX_FORM_PARTS`). |
+| `MAX_FORM_FILE_SIZE` | `None` | Per-file size limit in bytes; overrides `MAX_FORM_PART_SIZE` for file parts. |
+| `MAX_FORM_FIELD_SIZE` | `None` | Per-text-field size limit in bytes; overrides `MAX_FORM_PART_SIZE` for text parts. |
+| `MAX_FORM_FIELD_MEMORY` | `None` | Cumulative resident-memory ceiling (bytes) across all text fields, including field-name bytes. |
 | `MAX_COOKIE_SIZE` | `4093` | Warning threshold for emitted cookie size. |
 | `SESSION_COOKIE_NAME` | `"session"` | Name of the session cookie. |
 | `SESSION_COOKIE_HTTPONLY` | `True` | Set `HttpOnly` on the session cookie. |
