@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Constrained route syntax: path converters now accept arguments in the brace
+  form, so bounds participate in matching instead of only producing a
+  handler-layer error. `{n:int(min=1,max=100)}` and `{x:float(min=0.0)}` bound
+  the numeric value (`signed=False` forbids a leading `-`), and
+  `{code:str(length=2)}` / `{slug:str(minlength=3,maxlength=64)}` bound the
+  segment length. A bound violation is a route miss (404), not a 422. The
+  constraints are enforced on both the radix fast path and the regex fallback,
+  and `url_for` rejects an out-of-bounds value. Zero-argument converters keep
+  their previous behaviour.
+
+- Duplicate-route detection: registering a second handler for the same path and
+  HTTP method now raises `DuplicateRouteError` (exported from the top-level
+  `veloce` package) at registration time, catching silent route shadowing at
+  startup. The policy is configurable with the `on_duplicate` argument on
+  `Veloce(...)` and `Router(...)`: `"error"` (default), `"warn"` (log and
+  replace), or `"override"` (replace silently). Registering the same handler on
+  the same path and method again - as happens when a router is included twice -
+  is an idempotent re-mount and never reported as a conflict.
+
 - `encode_jwt` and `decode_jwt` sign and verify compact JSON Web Tokens using
   the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external dependency.
   The `algorithms` allow-list passed to `decode_jwt` is required - there is no

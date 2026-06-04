@@ -86,36 +86,114 @@ class _Converter:
 
 
 class StringConverter(_Converter):
-    """Default. Accepts any single non-empty segment (slashes excluded)."""
+    """Default. Accepts a single non-empty segment (slashes excluded).
 
-    __slots__ = ()
+    Optional constraints bound the segment length so a violation is a route
+    miss, not a handler-layer error: `{code:str(length=2)}` fixes the length,
+    while `{slug:str(minlength=3,maxlength=64)}` sets an inclusive range.
+    `length` is shorthand for an exact length (sets both bounds). Zero-arg use
+    keeps the unbounded fast path.
+    """
+
+    __slots__ = ("_minlength", "_maxlength")
+
+    _minlength: int
+    _maxlength: int | None
+
+    def __init__(
+        self,
+        length: int | None = None,
+        minlength: int | None = None,
+        maxlength: int | None = None,
+    ) -> None:
+        if length is not None:
+            if minlength is not None or maxlength is not None:
+                raise ValueError("str converter: length cannot combine with minlength/maxlength")
+            if length < 1:
+                raise ValueError("str converter: length must be >= 1")
+            self._minlength = self._maxlength = length
+            return
+        lo = 1 if minlength is None else minlength
+        if lo < 1:
+            raise ValueError("str converter: minlength must be >= 1")
+        if maxlength is not None and maxlength < lo:
+            raise ValueError("str converter: maxlength must be >= minlength")
+        self._minlength = lo
+        self._maxlength = maxlength
 
     def match(self, value: str) -> tuple[bool, Any]:
         # Empty path segments cannot match a {param}; the splitter strips
         # them out, so reaching here with an empty value is unexpected.
-        if not value:
+        length = len(value)
+        if length < self._minlength:
+            return False, None
+        if self._maxlength is not None and length > self._maxlength:
             return False, None
         return True, value
 
 
 class IntConverter(_Converter):
-    """Matches a decimal integer; coerces to Python int."""
+    """Matches a decimal integer; coerces to Python int.
 
-    __slots__ = ()
+    Optional constraints participate in matching rather than the handler
+    layer: `{page:int(min=1)}` rejects `0`/negatives as a route miss, and
+    `{n:int(min=1,max=100)}` bounds both ends. `signed=False` forbids the
+    leading `-` outright. Zero-arg use keeps the unbounded fast path.
+    """
+
+    __slots__ = ("_min", "_max", "_signed")
+
+    def __init__(
+        self,
+        min: int | None = None,
+        max: int | None = None,
+        signed: bool = True,
+    ) -> None:
+        if min is not None and max is not None and max < min:
+            raise ValueError("int converter: max must be >= min")
+        self._min = min
+        self._max = max
+        self._signed = signed
 
     def match(self, value: str) -> tuple[bool, Any]:
         if not value or len(value) > _MAX_INT_DIGITS:
             return False, None
-        check = value[1:] if value[0] == "-" else value
+        if value[0] == "-":
+            if not self._signed:
+                return False, None
+            check = value[1:]
+        else:
+            check = value
         if not check or not check.isdigit():
             return False, None
-        return True, int(value)
+        coerced = int(value)
+        if self._min is not None and coerced < self._min:
+            return False, None
+        if self._max is not None and coerced > self._max:
+            return False, None
+        return True, coerced
 
 
 class FloatConverter(_Converter):
-    """Matches a decimal float (no scientific notation)."""
+    """Matches a decimal float (no scientific notation); coerces to float.
 
-    __slots__ = ()
+    Optional `min`/`max` bound the value during matching and `signed=False`
+    forbids the leading `-`. Zero-arg use keeps the unbounded fast path.
+    """
+
+    __slots__ = ("_min", "_max", "_signed")
+
+    def __init__(
+        self,
+        min: float | None = None,
+        max: float | None = None,
+        signed: bool = True,
+    ) -> None:
+        if min is not None and max is not None and max < min:
+            raise ValueError("float converter: max must be >= min")
+        self._min = min
+        self._max = max
+        self._signed = signed
 
     def match(self, value: str) -> tuple[bool, Any]:
         if not value:
@@ -126,11 +204,17 @@ class FloatConverter(_Converter):
             return False, None
         if "e" in value or "E" in value:
             return False, None
+        if not self._signed and value[0] == "-":
+            return False, None
         try:
             f = float(value)
         except ValueError:
             return False, None
         if math.isnan(f) or math.isinf(f):
+            return False, None
+        if self._min is not None and f < self._min:
+            return False, None
+        if self._max is not None and f > self._max:
             return False, None
         return True, f
 
@@ -320,6 +404,80 @@ _BUILTIN = {
 # this; `parse_converter` consults it after the built-ins.
 _CUSTOM: dict[str, type[_Converter]] = {}
 
+# Converter names that accept the `name(args)` constraint grammar. `any(...)`
+# is handled separately because its arguments are a literal value list, not
+# keyword constraints. A spec like `{n:bogus(min=1)}` for an unknown name
+# raises rather than silently dropping the constraints.
+_PARAMETRIZED = frozenset({"str", "string", "int", "float"})
+
+# A `name(args)` spec, e.g. `int(min=1,max=100)` or `str(length=2)`. The name
+# is captured separately from the parenthesised argument body so the body can
+# be split independently. Whitespace around the parenthesis is tolerated.
+_PARAM_SPEC_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)$", re.DOTALL)
+
+
+def _coerce_arg(raw: str) -> Any:
+    """Coerce one converter-argument token to int, float, bool, or str.
+
+    The brace grammar carries no type annotations, so a bare token is parsed
+    the way a literal would be: an integer where possible, then a float, then
+    the booleans `true`/`false`, otherwise the unquoted string. This keeps the
+    argument syntax declarative (`int(min=1)`, `str(length=2)`) without forcing
+    quotes around the common numeric case.
+    """
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    low = raw.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    if len(raw) >= 2 and raw[0] in "\"'" and raw[-1] == raw[0]:
+        return raw[1:-1]
+    return raw
+
+
+def _parse_converter_args(body: str) -> tuple[list[Any], dict[str, Any]]:
+    """Split the `(...)` body of a converter spec into positional/keyword args.
+
+    Arguments are comma-separated; a `key=value` token is a keyword argument
+    and a bare token is positional. Each value is coerced by `_coerce_arg`. An
+    empty body yields no arguments. This is a deliberately small grammar - no
+    nested parentheses or quoted commas - matching what the brace placeholders
+    need; richer specs belong in a custom converter.
+    """
+    args: list[Any] = []
+    kwargs: dict[str, Any] = {}
+    body = body.strip()
+    if not body:
+        return args, kwargs
+    for token in body.split(","):
+        token = token.strip()
+        if not token:
+            raise ValueError("converter argument list has an empty element")
+        name, sep, raw = token.partition("=")
+        if sep:
+            key = name.strip()
+            raw = raw.strip()
+            if not key.isidentifier():
+                raise ValueError(f"invalid converter argument name: {name.strip()!r}")
+            if not raw:
+                raise ValueError(f"converter argument {key!r} has an empty value")
+            if key in kwargs:
+                raise ValueError(f"duplicate converter argument: {key!r}")
+            kwargs[key] = _coerce_arg(raw)
+        else:
+            if kwargs:
+                raise ValueError("positional converter argument after a keyword argument")
+            args.append(_coerce_arg(token))
+    return args, kwargs
+
 
 def register_converter(name: str, converter_cls: type[_Converter]) -> None:
     """Register a custom path converter.
@@ -354,6 +512,21 @@ def parse_converter(spec: str | None) -> _Converter:
             raise ValueError("any() converter requires at least one value")
         choices = tuple(c.strip() for c in body.split(","))
         return AnyConverter(choices)
+
+    # `name(args)` form: a parametrized built-in converter such as
+    # `int(min=1,max=100)` or `str(length=2)`. The constructor validates the
+    # parsed kwargs, so a bad bound raises at registration time.
+    pm = _PARAM_SPEC_RE.match(spec)
+    if pm is not None:
+        conv_name, body = pm.group(1), pm.group(2)
+        if conv_name not in _PARAMETRIZED:
+            raise ValueError(f"converter {conv_name!r} does not accept arguments")
+        args, kwargs = _parse_converter_args(body)
+        param_cls = _BUILTIN[conv_name]
+        try:
+            return param_cls(*args, **kwargs)
+        except TypeError as exc:
+            raise ValueError(f"invalid arguments for {conv_name!r} converter: {exc}") from exc
 
     cls = _BUILTIN.get(spec) or _CUSTOM.get(spec)
     if cls is None:
@@ -425,13 +598,24 @@ def _iter_placeholders(text: str) -> list[_Placeholder]:
     return out
 
 
+def _is_parametrized_spec(spec: str) -> bool:
+    """Return True when `spec` is a parametrized built-in (`int(min=1)`)."""
+    pm = _PARAM_SPEC_RE.match(spec)
+    return pm is not None and pm.group(1) in _PARAMETRIZED
+
+
 def _is_tree_expressible_spec(spec: str) -> bool:
     """Return True when `spec` (the `:...` of a placeholder) is radix-native."""
     if not spec:
         return True
     if spec.startswith("any(") and spec.endswith(")"):
         return True
-    return spec in _TREE_EXPRESSIBLE or spec in _CUSTOM
+    if spec in _TREE_EXPRESSIBLE or spec in _CUSTOM:
+        return True
+    # A parametrized built-in (`int(min=1)`, `str(length=2)`) stays on the
+    # radix path: the node holds the constrained converter and applies it
+    # during traversal, so a bound violation is a converter miss, not regex.
+    return _is_parametrized_spec(spec)
 
 
 # A bare-identifier spec (`{id:bogus}`) is an unknown-converter typo, not a raw
@@ -542,7 +726,11 @@ def extract_regex_converters(path: str) -> dict[str, _Converter]:
         spec = ph.spec
         if not spec:
             continue
-        is_named = spec in _BUILTIN or (spec.startswith("any(") and spec.endswith(")"))
+        pm = _PARAM_SPEC_RE.match(spec)
+        is_parametrized = pm is not None and pm.group(1) in _PARAMETRIZED
+        is_named = (
+            spec in _BUILTIN or is_parametrized or (spec.startswith("any(") and spec.endswith(")"))
+        )
         if is_named:
             converters[ph.name] = parse_converter(spec)
     return converters
@@ -568,6 +756,13 @@ def build_route_regex(path: str) -> re.Pattern[str]:
             body = conv[4:-1]
             choices = "|".join(re.escape(c.strip()) for c in body.split(","))
             return f"(?P<{name}>{choices})"
+        # Parametrized built-in (`int(min=1)`, `str(length=2)`): emit the base
+        # converter's permissive fragment; the constrained converter from
+        # `extract_regex_converters` re-validates the matched group, so bounds
+        # are enforced even on the regex fallback.
+        pm = _PARAM_SPEC_RE.match(conv)
+        if pm is not None and pm.group(1) in _PARAMETRIZED:
+            return f"(?P<{name}>{_BUILTIN_REGEX[pm.group(1)]})"
         # Raw regex converter: the spec after the colon is the pattern itself.
         return f"(?P<{name}>{conv})"
 

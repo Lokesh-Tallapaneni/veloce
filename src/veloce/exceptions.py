@@ -329,6 +329,33 @@ class BuildError(LookupError):
         super().__init__(f"Could not build URL for endpoint {endpoint!r}")
 
 
+class DuplicateRouteError(ValueError):
+    """Two handlers were registered for the same path and HTTP method.
+
+    Raised at registration time when a route would silently overwrite an
+    existing handler. Carries the conflicting path, method, and both handler
+    qualified names so the message points at the exact collision. Configure
+    the policy per router with `on_duplicate="error"|"warn"|"override"`.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        method: str,
+        existing: str,
+        incoming: str,
+    ) -> None:
+        self.path = path
+        self.method = method
+        self.existing = existing
+        self.incoming = incoming
+        super().__init__(
+            f"Duplicate route: {method} {path} is already handled by {existing!r}; "
+            f"{incoming!r} would overwrite it. Pass on_duplicate='override' to allow "
+            "replacement or rename one of the routes."
+        )
+
+
 # -- Lookup table - status code -> subclass ----------------------------
 
 _BY_CODE: dict[int, type[HTTPException]] = {

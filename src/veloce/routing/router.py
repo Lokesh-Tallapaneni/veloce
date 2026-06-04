@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import re
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -28,6 +29,7 @@ from veloce.routing.converters import (
     StringConverter,
     UUIDConverter,
     _Converter,
+    _is_parametrized_spec,
     _iter_placeholders,
     _looks_like_regex,
     build_route_regex,
@@ -38,6 +40,12 @@ from veloce.routing.converters import (
 from veloce.status import HTTP_200_OK
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
+
+_logger = logging.getLogger(__name__)
+
+# Valid `on_duplicate` policies for a router. `"error"` raises, `"warn"` logs
+# and replaces, `"override"` replaces silently.
+_DUPLICATE_POLICIES = frozenset({"error", "warn", "override"})
 
 # Normalize an OpenAPI-style path to its parameter-name-agnostic shape:
 # `/items/{slug}` and `/items/{id}` both become `/items/{}`. Used to detect
@@ -71,7 +79,10 @@ def _reverse_converters_for(template: str) -> dict[str, _Converter]:
         if not spec:
             continue
         is_any = spec.startswith("any(") and spec.endswith(")")
-        if not is_any and _looks_like_regex(spec):
+        # A parametrized built-in (`int(min=1)`, `str(length=2)`) carries
+        # parens that read as regex, but it maps to a real coercing converter,
+        # so reverse it too and let url_for reject an out-of-bounds value.
+        if not is_any and not _is_parametrized_spec(spec) and _looks_like_regex(spec):
             continue
         converters[ph.name] = parse_converter(spec)
     return converters
@@ -118,9 +129,11 @@ class RadixNode:
         # own small containers and are scanned only after a static miss.
         self.static_children: dict[str, RadixNode] = {}
         self.param_children: list[RadixNode] = []
-        # O(1) registration-time lookup keyed by (param_name, converter_type).
-        # The ordered list above is still the source of truth at match time.
-        self._param_index: dict[tuple[str, type], RadixNode] = {}
+        # O(1) registration-time lookup keyed by (param_name, converter_type,
+        # constraint), where `constraint` is the parametrized spec text (e.g.
+        # `int(min=1)`) or None for an unparametrized converter. The ordered
+        # list above is still the source of truth at match time.
+        self._param_index: dict[tuple[str, type, str | None], RadixNode] = {}
         self.wildcard_child: RadixNode | None = None
         # Method name (uppercase) -> RouteInfo.
         self.handlers: dict[str, RouteInfo] = {}
@@ -364,8 +377,18 @@ class Router:
         default_response_class: Any = None,
         dependencies: list | None = None,
         responses: dict[int, dict[str, Any]] | None = None,
+        on_duplicate: str = "error",
     ) -> None:
         self.prefix = prefix.rstrip("/")
+        # Policy for a second handler registered on the same path+method:
+        # `"error"` (default) raises `DuplicateRouteError`, `"warn"` logs and
+        # replaces, `"override"` replaces silently. Catches accidental route
+        # shadowing at startup instead of a wrong handler firing in production.
+        if on_duplicate not in _DUPLICATE_POLICIES:
+            raise ValueError(
+                f"on_duplicate must be one of {sorted(_DUPLICATE_POLICIES)}, got {on_duplicate!r}"
+            )
+        self.on_duplicate = on_duplicate
         self.tags = tags or []
         # a Response subclass used when a registered route
         # doesn't pick its own `response_class=`. Routes still override
@@ -433,8 +456,14 @@ class Router:
 
                 # Reuse an existing param child with the same name AND matching
                 # converter type; otherwise add a new one. Different converters
-                # for the same name on the same slot would be ambiguous.
-                key = (param_name, type(converter))
+                # for the same name on the same slot would be ambiguous. A
+                # parametrized converter (`int(min=1)` vs `int(min=5)`) keeps
+                # its constraint text in the key so distinct bounds get their
+                # own node instead of silently reusing the first registered one.
+                constraint = (
+                    conv_spec if "(" in conv_spec and not conv_spec.startswith("any(") else None
+                )
+                key = (param_name, type(converter), constraint)
                 child = node._param_index.get(key)
                 if child is None:
                     child = RadixNode(seg)
@@ -471,6 +500,54 @@ class Router:
                     node.static_children[seg] = child
                 node = child
         return node, param_names
+
+    @staticmethod
+    def _handler_qualname(info: RouteInfo) -> str:
+        """Best-effort qualified name of a route's handler for error messages."""
+        handler = info.handler
+        module = getattr(handler, "__module__", None)
+        qualname = getattr(handler, "__qualname__", None) or getattr(handler, "__name__", None)
+        if qualname is None:
+            return repr(handler)
+        return f"{module}.{qualname}" if module else qualname
+
+    @staticmethod
+    def _allow_duplicate(existing: RouteInfo, incoming: RouteInfo) -> bool:
+        """Return True when re-registering `incoming` over `existing` is benign.
+
+        An idempotent re-mount - the same handler callable landing on the same
+        path+method again, as happens when a router is included twice - is not
+        a conflict regardless of policy, so legitimate blueprint merges never
+        false-positive. Only a genuinely different handler is subject to the
+        `on_duplicate` policy.
+        """
+        return existing.handler is incoming.handler
+
+    def _on_duplicate_route(
+        self, path: str, method: str, existing: RouteInfo, incoming: RouteInfo
+    ) -> None:
+        """Apply the router's `on_duplicate` policy to a route collision."""
+        policy = self.on_duplicate
+        if policy == "override":
+            return
+        existing_name = self._handler_qualname(existing)
+        incoming_name = self._handler_qualname(incoming)
+        if policy == "warn":
+            _logger.warning(
+                "Duplicate route: %s %s, replacing %s with %s",
+                method,
+                path,
+                existing_name,
+                incoming_name,
+            )
+            return
+        # Deferred import: veloce.exceptions pulls in the http response stack,
+        # which transitively imports exceptions again; importing it at module
+        # top would create a routing<->http import cycle. This path runs only
+        # on an actual collision, never on the registration hot path.
+        from veloce.exceptions import DuplicateRouteError
+
+        raise DuplicateRouteError(path, method, existing_name, incoming_name)
 
     def add_route(
         self,
@@ -637,7 +714,11 @@ class Router:
             assert node is not None
             handler_table = node.handlers
         for method in methods:
-            handler_table[method.upper()] = route_info
+            mkey = method.upper()
+            existing = handler_table.get(mkey)
+            if existing is not None and not self._allow_duplicate(existing, route_info):
+                self._on_duplicate_route(full_path, mkey, existing, route_info)
+            handler_table[mkey] = route_info
 
     # -- Matching -------------------------------------------------
 
@@ -1278,6 +1359,9 @@ class Router:
                     and hp.slots[0].kind == K_REQUEST
                     and not route_info.route_dep_plans
                 )
+                existing = target.handlers.get(method)
+                if existing is not None and not self._allow_duplicate(existing, route_info):
+                    self._on_duplicate_route(full_path, method, existing, route_info)
                 target.handlers[method] = route_info
                 self._named_routes[info.name] = (full_path, param_names)
                 self._reverse_converters.pop(info.name, None)
@@ -1355,6 +1439,9 @@ class Router:
                     and hp.slots[0].kind == K_REQUEST
                     and not route_info.route_dep_plans
                 )
+                existing = cur.handlers.get(method)
+                if existing is not None and not self._allow_duplicate(existing, route_info):
+                    self._on_duplicate_route(full_path, method, existing, route_info)
                 cur.handlers[method] = route_info
 
                 # Propagate slash-handling flags from the source node so a

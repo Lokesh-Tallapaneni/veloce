@@ -53,6 +53,7 @@ from veloce.encoders import jsonable_encoder
 # Exceptions
 from veloce.exceptions import (
     BuildError,
+    DuplicateRouteError,
     HTTPException,
     RequestValidationError,
     ValidationError,
@@ -285,6 +286,7 @@ __all__ = [
     "ValidationError",
     "RequestValidationError",
     "BuildError",
+    "DuplicateRouteError",
     "http_exception_handler",
     "request_validation_exception_handler",
     # Background

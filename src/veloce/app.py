@@ -402,16 +402,19 @@ class Veloce(Router):
         import_name: str | None = None,
         template_folder: str | None = None,
         instance_path: str | None = None,
+        on_duplicate: str = "error",
         **extra: Any,
     ) -> None:
         # App-level `dependencies` / `responses` - applied
         # to every route registered on the app (per-route entries are
-        # appended / overlaid on top).
+        # appended / overlaid on top). `on_duplicate` controls what happens
+        # when two handlers claim the same path+method (default: raise).
         super().__init__(
             prefix=prefix,
             default_response_class=default_response_class,
             dependencies=dependencies,
             responses=responses,
+            on_duplicate=on_duplicate,
         )
         # arbitrary `**extra` ctor kwargs are stashed on
         # `app.extra` for extensions / OpenAPI customisation to read.
