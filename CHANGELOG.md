@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same path and method again - as happens when a router is included twice -
   is an idempotent re-mount and never reported as a conflict.
 
+- Multipart form parsing gains independent file/field limits. `MAX_FORM_FILES`
+  and `MAX_FORM_FIELDS` cap the number of file parts and text-field parts
+  separately, `MAX_FORM_FILE_SIZE` and `MAX_FORM_FIELD_SIZE` override the
+  shared `MAX_FORM_PART_SIZE` for files and text fields respectively, and
+  `MAX_FORM_FIELD_MEMORY` bounds the cumulative resident bytes of all text
+  fields (value plus field-name bytes). All default to `None`, so only the
+  existing `MAX_FORM_PARTS` / `MAX_FORM_PART_SIZE` caps apply unless set.
+  `parse_multipart_form` accepts matching `max_files`, `max_fields`,
+  `max_file_size`, `max_field_size`, and `max_field_memory` keyword arguments.
+  Each limit raises `413 Request Entity Too Large` when exceeded.
+
+- A multipart text field that declares its own `Content-Type` charset (one of
+  `ascii`, `us-ascii`, `utf-8`, or `iso-8859-1`) is now decoded with that
+  charset per RFC 7578, instead of always assuming UTF-8. An unsupported
+  declared charset is rejected with `400 Bad Request`; the global
+  `charset_fallback` still applies when a part declares no charset.
+
 - `encode_jwt` and `decode_jwt` sign and verify compact JSON Web Tokens using
   the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external dependency.
   The `algorithms` allow-list passed to `decode_jwt` is required - there is no
@@ -367,6 +384,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute.
 
 ### Changed
+
+- A `multipart/form-data` request with a missing `boundary` parameter, or a
+  boundary that violates the RFC 2046 grammar (empty, longer than 70
+  characters, illegal characters, or a trailing space), now raises `400 Bad
+  Request` instead of silently parsing to an empty form.
 
 - The unknown-object fallback in `jsonable_encoder` and the orjson default now
   drops private (underscore-prefixed) attributes from the structurally-derived
