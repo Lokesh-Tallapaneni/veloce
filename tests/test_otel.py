@@ -1035,7 +1035,11 @@ def test_live_is_idempotent_no_duplicate_wrapper_or_hook() -> None:
         instrument_with_otel(app, tracer_provider=provider, live=True)
 
     assert len(app._instrumentation) == 1
-    assert len(app._asgi_middleware) == 1
+    # The live span wrapper is a single PH_ASGI_WRAP feature, not an entry in the
+    # raw `_asgi_middleware` list; a second install must not register a duplicate.
+    otel_specs = [spec for spec in app._features if spec.name == "otel.live_span"]
+    assert len(otel_specs) == 1
+    assert app._asgi_middleware == []
 
     app.test_client().get("/items/7")
     request_spans = [s for s in exporter.get_finished_spans() if s.name == "/items/{item_id}"]
@@ -1081,11 +1085,84 @@ def test_live_span_middleware_installed_outermost() -> None:
         async def __call__(self, scope, receive, send):
             await self.app(scope, receive, send)
 
+    from veloce._pipeline import flatten_asgi_wrap
+
     app = _app()
     app.add_middleware(_ProbeASGI)  # user ASGI middleware registered first
     instrument_with_otel(app, tracer_provider=TracerProvider(), live=True)
 
-    # Index 0 of the ASGI middleware list is outermost (it is wrapped in reverse).
-    classes = [cls for cls, _opts in app._asgi_middleware]
+    # The compiled PH_ASGI_WRAP slot orders the live span ahead of any standard
+    # ASGI middleware (it carries the higher `order`), so it leads the flattened
+    # chain - index 0 is wrapped last and therefore outermost.
+    cp = app._ensure_pipeline()
+    classes = [cls for cls, _opts in flatten_asgi_wrap(cp.asgi_wrap)]
     assert classes[0].__name__ == "_LiveSpanMiddleware"
     assert _ProbeASGI in classes
+
+
+def test_live_span_strictly_nests_entire_request() -> None:
+    """Step 5 regression: the live server span must wrap the ENTIRE request.
+
+    With the live wrapper routed through PH_ASGI_WRAP it must still compose
+    outermost - its span must open before any inner ASGI middleware and the
+    dispatch run, and close only after they finish. An inner marker ASGI
+    middleware records the wall-clock instants it enters and exits around the
+    dispatch; the exported server span's start must precede the marker's enter
+    and its end must follow the marker's exit, proving strict nesting.
+    """
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    import time
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce.otel import instrument_with_otel
+
+    events: dict[str, int] = {}
+
+    class _MarkerASGI:
+        """Inner ASGI middleware that timestamps its own enter/exit."""
+
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            events["marker_enter"] = time.time_ns()
+            await self.app(scope, receive, send)
+            events["marker_exit"] = time.time_ns()
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    app = _app()
+    # Register the inner marker BEFORE the live span: under correct PH_ASGI_WRAP
+    # ordering the live span must still end up outermost regardless.
+    app.add_middleware(_MarkerASGI)
+    instrument_with_otel(app, tracer_provider=provider, live=True)
+
+    @app.get("/nested", name="nested")
+    async def nested():
+        events["dispatch"] = time.time_ns()
+        return {"ok": True}
+
+    resp = app.test_client().get("/nested")
+    assert resp.status_code == 200
+
+    # The marker and the dispatch all ran, and the dispatch ran between the
+    # marker's enter and exit (the marker is inside the live span, around dispatch).
+    assert {"marker_enter", "dispatch", "marker_exit"} <= set(events)
+    assert events["marker_enter"] <= events["dispatch"] <= events["marker_exit"]
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    # Strict nesting: the live span opened before the inner marker entered and
+    # closed only after the marker exited - so it wraps the whole request.
+    assert span.start_time <= events["marker_enter"]
+    assert span.end_time >= events["marker_exit"]

@@ -21,7 +21,7 @@ exactly once.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable
@@ -32,6 +32,10 @@ if TYPE_CHECKING:  # pragma: no cover
     # either a bound `(str) -> bool` check or `None` when that middleware lacks it.
     WsCheck = Callable[[str], bool] | None
     WsHandshakeChecks = tuple[tuple[WsCheck, WsCheck], ...]
+
+    # One ASGI wrapper registration: `(middleware_class, options)`. The class is
+    # instantiated as `cls(app, **options)` when the stack is assembled.
+    AsgiWrapPair = tuple[Any, dict[str, Any]]
 
 # -- Phase ids ------------------------------------------------
 # Bare integers (not IntEnum) for cheap branching, mirroring the `K_*` slot-kind
@@ -96,13 +100,16 @@ class CompiledPipeline:
         "has_asgi_mounts",
     )
 
-    # Slot annotations (no runtime cost - `__slots__` owns storage). Phase slots
-    # hold `None`, a bare artifact, or a tuple; the flags are precomputed booleans.
+    # Slot annotations (no runtime cost - `__slots__` owns storage). Each HTTP
+    # phase carries exactly one spec, so its slot is the bare built tuple (the
+    # `process_request` / `process_response` / func / hook chain) or `None`. The
+    # ASGI-wrap slot may hold several specs' lists, so it stays `object` and is
+    # normalised by `flatten_asgi_wrap`. The flags are precomputed booleans.
     gen: int
-    http_pre: object
-    http_post: object
-    http_around: object
-    http_finish: object
+    http_pre: tuple[Callable, ...] | None
+    http_post: tuple[Callable, ...] | None
+    http_around: tuple[Callable, ...] | None
+    http_finish: tuple[Callable, ...] | None
     ws_handshake: WsHandshakeChecks | None
     asgi_wrap: object
     has_mounted_apps: bool
@@ -160,6 +167,54 @@ def compile_pipeline(app: Veloce) -> CompiledPipeline:
     cp.has_static_handlers = bool(app._static_handlers)
     cp.has_asgi_mounts = bool(app._asgi_mounts)
     return cp
+
+
+# `order` for the live-otel ASGI wrapper - larger than the default `order` of
+# the standard `_asgi_middleware` spec so it sorts first within PH_ASGI_WRAP and
+# composes OUTERMOST, mirroring the historical `_asgi_middleware.insert(0, ...)`.
+WRAP_ORDER_OTEL = 100
+
+
+def flatten_asgi_wrap(slot: object) -> list[AsgiWrapPair]:
+    """Flatten the PH_ASGI_WRAP slot into one ordered `(cls, options)` list.
+
+    Each PH_ASGI_WRAP spec builds a list of wrapper pairs; the compiler fuses
+    them by descending `order` into a bare list (one spec) or a tuple of lists
+    (several). This concatenates them into a single registration-order chain the
+    ASGI stack builder wraps from the inside out, so the highest-`order` spec
+    (the live-otel span) ends up outermost.
+    """
+    if slot is None:
+        return []
+    # One spec: `_fuse` returned the bare list it built.
+    if isinstance(slot, list):
+        return slot
+    # Several specs: a tuple of per-spec lists, already in descending `order`.
+    flat: list[AsgiWrapPair] = []
+    for part in slot:  # type: ignore[attr-defined]
+        flat.extend(part)
+    return flat
+
+
+def build_response_middleware(app: Veloce) -> tuple[Callable, ...]:
+    """Build the response-phase chain: `process_response` bound methods, reversed.
+
+    The reverse of registration order is computed ONCE here at compile time, so
+    the response phase no longer allocates `reversed(self._middlewares)` per
+    response. Used only when a request carries no per-route exclusion chain; a
+    route with `exclude_middleware` falls back to the dynamic filtered walk.
+    """
+    return tuple(mw.process_response for mw in reversed(app._middlewares))
+
+
+def build_request_middleware(app: Veloce) -> tuple[Callable, ...]:
+    """Build the request-phase chain: `process_request` bound methods, forward.
+
+    Registration order is preserved (forward) so `process_request` runs in the
+    same sequence as before. Used only when a request carries no per-route
+    exclusion chain; an excluded route uses the dynamic filtered chain.
+    """
+    return tuple(mw.process_request for mw in app._middlewares)
 
 
 def build_ws_handshake_checks(app: Veloce) -> WsHandshakeChecks:
