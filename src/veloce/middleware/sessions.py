@@ -49,14 +49,6 @@ _DEFAULT_MAX_COOKIE_CHUNKS = 8
 _CHUNK_SEP = "."
 
 
-def _session_accessed(session: Any) -> bool:
-    """Whether a handler touched the session (read via `Request.session`, or
-    mutated it). Drives the `Vary: Cookie` decision for both middlewares."""
-    return session is not None and (
-        getattr(session, "accessed", False) or getattr(session, "modified", False)
-    )
-
-
 def _validate_cookie_security(
     *,
     cookie_prefix: Literal["host", "secure"] | None,
@@ -252,31 +244,28 @@ class SessionMiddleware(Middleware):
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back into the signed cookie."""
         session = request._state.get("session")
-        # Emit `Vary: Cookie` when a handler actually accessed the session
-        # (read or write - `Request.session` sets `accessed`, mutation sets
-        # `modified`), so a response personalized from session contents is not
-        # shared across users by a URL-keyed cache. A session-independent
-        # response (handler never touched `request.session`) stays cacheable,
-        # even for a logged-in client. `add_vary` de-dups via HeaderSet.
-        if self.vary_on_cookie and _session_accessed(session):
-            response.add_vary(HEADER_COOKIE)
-
         # No session attached (handler bypassed middleware?) -> nothing to do.
         if session is None:
             return response
 
-        # `Session` flips `.modified` on any mutating operation, so the re-sign
-        # + Set-Cookie is normally skipped when the handler never touched it.
-        # With `renew_on_access`, an existing session that was only *read*
-        # (accessed, non-empty, not new) is also re-signed so its server-side
-        # timestamp and `Max-Age` slide forward - the idle-timeout reset.
-        modified = getattr(session, "modified", False)
-        if not modified and not (
-            self.renew_on_access
-            and getattr(session, "accessed", False)
-            and not getattr(session, "new", False)
-            and session
-        ):
+        # `Session` is slotted: `.accessed` (any read via `Request.session`) and
+        # `.modified` (any mutation) always exist, so read them directly, once,
+        # and reuse for both the `Vary` and the persist decisions.
+        accessed = session.accessed
+        modified = session.modified
+
+        # Emit `Vary: Cookie` when a handler actually accessed the session, so a
+        # response personalized from session contents is not shared across users
+        # by a URL-keyed cache (RFC 9110 Sec. 12.5.5). A session-independent
+        # response (handler never touched `request.session`) stays cacheable.
+        if self.vary_on_cookie and (accessed or modified):
+            response.add_vary(HEADER_COOKIE)
+
+        # The re-sign + Set-Cookie is normally skipped when the session was never
+        # mutated. With `renew_on_access`, an existing session that was only
+        # *read* (accessed, non-empty, not new) is also re-signed so its
+        # server-side timestamp and `Max-Age` slide forward - the idle reset.
+        if not modified and not (self.renew_on_access and accessed and not session.new and session):
             return response
 
         # A 5xx response should not persist a half-mutated session - neither a
@@ -554,23 +543,27 @@ class ServerSessionMiddleware(Middleware):
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back to the server-side store."""
         session = request._state.get("session")
-        # See SessionMiddleware: emit `Vary: Cookie` only when a handler
-        # accessed the session (read or write), so session-independent
-        # responses stay cacheable.
-        if self.vary_on_cookie and _session_accessed(session):
-            response.add_vary(HEADER_COOKIE)
-
         if session is None:
             return response
 
-        if not getattr(session, "modified", False):
+        # `Session` is slotted: read `.accessed` / `.modified` directly, once.
+        accessed = session.accessed
+        modified = session.modified
+
+        # See SessionMiddleware: emit `Vary: Cookie` only when a handler accessed
+        # the session (read or write), so session-independent responses stay
+        # cacheable.
+        if self.vary_on_cookie and (accessed or modified):
+            response.add_vary(HEADER_COOKIE)
+
+        if not modified:
             # Sliding expiry: an existing session that was only read (accessed,
             # not new) has its store TTL and cookie `Max-Age` refreshed, then
             # we are done - the payload is unchanged so there is no store write.
             if (
                 self.renew_on_access
-                and getattr(session, "accessed", False)
-                and not getattr(session, "new", False)
+                and accessed
+                and not session.new
                 and self._should_persist(response.status_code)
             ):
                 await self._renew(request, response)

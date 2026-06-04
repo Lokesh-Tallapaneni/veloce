@@ -618,18 +618,20 @@ class Response:
         depends on the named request headers" without clobbering
         existing entries.
         """
-        existing = self.headers.get(HEADER_VARY, "") or self.headers.get("vary", "")
+        headers = self.headers
         # Fast path - the common case (no existing `Vary`, one name, e.g. a
         # middleware adding `Vary: Cookie` per response) needs no parse/merge:
         # a single clean token round-trips through `HeaderSet` unchanged, so set
-        # it directly and skip the list+set allocation. This runs on every
-        # session-touched response, so the saved allocation matters.
-        if not existing and len(header_names) == 1:
+        # it directly and skip the list+set allocation. Two membership tests
+        # beat two `.get` lookups plus a defensive `.pop`; a (vanishingly rare)
+        # empty-valued lower-case `vary` key falls through to the merge path,
+        # which still clears it. This runs on every session-touched response.
+        if len(header_names) == 1 and HEADER_VARY not in headers and "vary" not in headers:
             value = header_names[0]
-            self.headers.pop("vary", None)
-            self.headers[HEADER_VARY] = value
+            headers[HEADER_VARY] = value
             self._encoded = None
             return value
+        existing = headers.get(HEADER_VARY, "") or headers.get("vary", "")
         # Delegate dedup + ordering to `HeaderSet` so the same
         # case-insensitive merge logic doesn't drift between this method
         # and the `vary` property's own datastructure.
@@ -638,8 +640,8 @@ class Response:
         value = merged.to_header()
         # Always write under `Vary` (canonical case) and clear any
         # lower-case duplicate.
-        self.headers.pop("vary", None)
-        self.headers[HEADER_VARY] = value
+        headers.pop("vary", None)
+        headers[HEADER_VARY] = value
         self._encoded = None
         return value
 
