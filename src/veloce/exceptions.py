@@ -103,6 +103,25 @@ class BadRequest(HTTPException):
     description = "Bad Request"
 
 
+class FilesKeyError(KeyError):
+    """Descriptive miss on ``request.files`` raised in debug mode.
+
+    Subclasses ``KeyError`` so handlers that already catch the bare lookup
+    miss keep working, while the message explains the most common cause:
+    the field was submitted as a plain form value (missing
+    ``enctype="multipart/form-data"``) or the body was JSON rather than a
+    multipart upload. Only raised when ``app.debug`` is set; production
+    keeps the plain ``KeyError`` semantics.
+    """
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        return self._message
+
+
 class Unauthorized(HTTPException):
     code = HTTP_401_UNAUTHORIZED
     description = "Unauthorized"
@@ -327,6 +346,45 @@ class BuildError(LookupError):
         self.values = values
         self.method = method
         super().__init__(f"Could not build URL for endpoint {endpoint!r}")
+
+
+class DuplicateRouteError(ValueError):
+    """Two handlers were registered for the same path and HTTP method.
+
+    Raised at registration time when a route would silently overwrite an
+    existing handler. Carries the conflicting path, method, and both handler
+    qualified names so the message points at the exact collision. Configure
+    the policy per router with `on_duplicate="error"|"warn"|"override"`.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        method: str,
+        existing: str,
+        incoming: str,
+    ) -> None:
+        self.path = path
+        self.method = method
+        self.existing = existing
+        self.incoming = incoming
+        super().__init__(
+            f"Duplicate route: {method} {path} is already handled by {existing!r}; "
+            f"{incoming!r} would overwrite it. Pass on_duplicate='override' to allow "
+            "replacement or rename one of the routes."
+        )
+
+
+class SetupError(RuntimeError):
+    """A registration ran after the application started serving.
+
+    Routes, hooks, blueprints, middleware, and similar setup must be wired
+    before the first request is dispatched. Once serving begins the route
+    table and hook lists are frozen, so a late mutation - which would race
+    in-flight requests under concurrent ASGI dispatch - raises this instead
+    of silently corrupting the live application. The lock is relaxed in
+    `DEBUG`/`TESTING` so hot-reload and test monkeypatching stay ergonomic.
+    """
 
 
 # -- Lookup table - status code -> subclass ----------------------------

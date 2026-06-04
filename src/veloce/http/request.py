@@ -699,8 +699,16 @@ class Request:
         if self._url is None:
             scope = getattr(self, "scope", None)
             scope_scheme = scope.get("scheme") if isinstance(scope, dict) else None
+            # A trusted ProxyFix hop stashes the public port here when the
+            # forwarded Host carries none (e.g. proxy sends X-Forwarded-Host
+            # without a port plus a separate X-Forwarded-Port: 8443).
+            forwarded_port = self._state.get("proxy_fix_port") if self._state else None
             self._url = URL.from_request(
-                self.headers, self.path, self.query_string, scope_scheme=scope_scheme
+                self.headers,
+                self.path,
+                self.query_string,
+                scope_scheme=scope_scheme,
+                forwarded_port=forwarded_port,
             )
         return self._url
 
@@ -1202,6 +1210,11 @@ class Request:
                 # bound; otherwise the module defaults apply.
                 max_parts = DEFAULT_MAX_MULTIPART_PARTS
                 max_part_size = DEFAULT_MAX_MULTIPART_PART_SIZE
+                mp_max_files: int | None = None
+                mp_max_fields: int | None = None
+                mp_max_file_size: int | None = None
+                mp_max_field_size: int | None = None
+                mp_max_field_memory: int | None = None
                 cfg = getattr(self.app, "config", None) if self.app is not None else None
                 if cfg is not None:
                     cfg_parts = cfg.get("MAX_FORM_PARTS", max_parts)
@@ -1210,12 +1223,22 @@ class Request:
                     cfg_part_size = cfg.get("MAX_FORM_PART_SIZE", max_part_size)
                     if cfg_part_size is not None:
                         max_part_size = cfg_part_size
+                    mp_max_files = cfg.get("MAX_FORM_FILES")
+                    mp_max_fields = cfg.get("MAX_FORM_FIELDS")
+                    mp_max_file_size = cfg.get("MAX_FORM_FILE_SIZE")
+                    mp_max_field_size = cfg.get("MAX_FORM_FIELD_SIZE")
+                    mp_max_field_memory = cfg.get("MAX_FORM_FIELD_MEMORY")
                 multipart_body = await self._drain_body()
                 self._form = parse_multipart_form(
                     multipart_body,
                     self.content_type,
                     max_parts=max_parts,
+                    max_files=mp_max_files,
+                    max_fields=mp_max_fields,
                     max_part_size=max_part_size,
+                    max_file_size=mp_max_file_size,
+                    max_field_size=mp_max_field_size,
+                    max_field_memory=mp_max_field_memory,
                 )
             else:
                 self._form = FormData()
@@ -1233,9 +1256,19 @@ class Request:
             return self._files
         form = await self.form()
         files = FormData()
+        non_file_keys: set[str] = set()
         for key, value in form.items():
             if isinstance(value, UploadFile):
                 files.add(key, value)
+            else:
+                non_file_keys.add(key)
+        # In debug mode, record what the request actually carried so a
+        # missing-key lookup on `request.files` raises a descriptive
+        # `FilesKeyError` (e.g. "submitted as a plain form field, add
+        # enctype=multipart/form-data") instead of a bare `KeyError`.
+        # Gated on `app.debug` so production lookups keep plain semantics.
+        if self.app is not None and getattr(self.app, "debug", False):
+            files._files_diagnostic = (self.mimetype, frozenset(non_file_keys))
         self._files = files
         return self._files
 

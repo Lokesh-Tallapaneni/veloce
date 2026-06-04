@@ -233,6 +233,175 @@ def test_request_metrics_streamed_defaults_false():
     assert "streamed=False" in repr(m)
 
 
+# ── error_type attribution ────────────────────────────────────────────
+
+
+def test_error_type_set_for_unhandled_exception():
+    """A 5xx produced by an unhandled raised exception carries the exception
+    class name (never the message) so a tracing bridge can attribute it."""
+    app = _app()
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append)
+
+    app.test_client().get("/crash")
+    assert seen[0].status_code == 500
+    assert seen[0].error_type == "ValueError"
+
+
+def test_error_type_set_on_propagated_exception():
+    """error_type is recorded even when PROPAGATE_EXCEPTIONS lets the
+    exception escape dispatch (the state is set before the re-raise)."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["PROPAGATE_EXCEPTIONS"] = True
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append)
+
+    @app.get("/explode")
+    async def explode():
+        raise KeyError("boom")
+
+    with pytest.raises(KeyError):
+        app.test_client().get("/explode")
+
+    assert len(seen) == 1
+    assert seen[0].status_code == 500
+    assert seen[0].error_type == "KeyError"
+
+
+def test_error_type_none_for_success():
+    app = _app()
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append)
+
+    app.test_client().get("/items/7")
+    assert seen[0].error_type is None
+
+
+def test_error_type_none_for_handled_5xx():
+    """A 5xx deliberately returned by a handler (raised HTTPException, no
+    unhandled error) is not mislabelled with an error_type."""
+    app = _app()
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append)
+
+    app.test_client().get("/boom")
+    assert seen[0].status_code == 503
+    assert seen[0].error_type is None
+
+
+def test_error_type_none_for_4xx():
+    app = _app()
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append)
+
+    app.test_client().get("/no-such-path")
+    assert seen[0].status_code == 404
+    assert seen[0].error_type is None
+
+
+def test_request_metrics_error_type_defaults_none_and_in_repr():
+    m = RequestMetrics(method="GET", path="/x", route="/x", status_code=200, duration_ms=1.0)
+    assert m.error_type is None
+    assert "error_type=None" in repr(m)
+
+
+# ── per-hook route-template exclusion ──────────────────────────────────
+
+
+def test_exclude_routes_skips_matching_hook():
+    """A hook registered with exclude_routes is not invoked for a request
+    whose matched route template is in the excluded set."""
+    app = _app()
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append, exclude_routes={"/items/{item_id}"})
+
+    app.test_client().get("/items/7")
+    app.test_client().get("/boom")
+
+    routes = [m.route for m in seen]
+    assert routes == ["/boom"]
+
+
+def test_exclude_routes_is_per_hook():
+    """Exclusion is scoped to the hook that declared it; other hooks still
+    see every request."""
+    app = _app()
+    excluded: list[RequestMetrics] = []
+    everything: list[RequestMetrics] = []
+    app.add_instrumentation(excluded.append, exclude_routes={"/items/{item_id}"})
+    app.add_instrumentation(everything.append)
+
+    app.test_client().get("/items/7")
+
+    assert excluded == []
+    assert len(everything) == 1
+    assert everything[0].route == "/items/{item_id}"
+
+
+def test_exclude_routes_does_not_skip_unmatched_request():
+    """A 404/405 has route template None; a named-route exclusion set never
+    matches None, so unmatched requests are still delivered."""
+    app = _app()
+    seen: list[RequestMetrics] = []
+    app.add_instrumentation(seen.append, exclude_routes={"/items/{item_id}"})
+
+    app.test_client().get("/no-such-path")
+    assert len(seen) == 1
+    assert seen[0].route is None
+    assert seen[0].status_code == 404
+
+
+def test_exclude_routes_empty_set_is_inert():
+    """An empty exclusion set registers no exclusion entry, leaving the hot
+    path free of the membership test."""
+    app = _app()
+    app.add_instrumentation(lambda m: None, exclude_routes=set())
+    assert app._instrumentation_excludes == {}
+
+
+def test_no_exclude_routes_leaves_excludes_empty():
+    app = _app()
+    app.add_instrumentation(lambda m: None)
+    assert app._instrumentation_excludes == {}
+
+
+# ── decorator form with arguments ─────────────────────────────────────
+
+
+def test_add_instrumentation_decorator_with_exclude_routes():
+    # `@app.add_instrumentation(exclude_routes=...)` registers the wrapped
+    # function and applies the exclusion - the hook fires for an unexcluded
+    # route but is skipped for the excluded one.
+    app = _app()
+    seen: list[RequestMetrics] = []
+
+    @app.add_instrumentation(exclude_routes={"/items/{item_id}"})
+    def record(metrics):
+        seen.append(metrics)
+
+    # The decorator returns the original function unchanged.
+    assert callable(record)
+    assert app._instrumentation == [record]
+    assert app._instrumentation_excludes[record] == frozenset({"/items/{item_id}"})
+
+    client = app.test_client()
+    client.get("/items/9")
+    assert seen == []
+    client.get("/stream")
+    assert len(seen) == 1
+
+
+def test_add_instrumentation_imperative_with_exclude_routes_still_works():
+    # The plain imperative call form is preserved alongside the decorator form.
+    app = _app()
+    seen: list[RequestMetrics] = []
+    hook = seen.append
+    returned = app.add_instrumentation(hook, exclude_routes={"/items/{item_id}"})
+    assert returned is hook
+    app.test_client().get("/items/4")
+    assert seen == []
+
+
 # ── lifecycle signals carry the request ───────────────────────────────
 
 

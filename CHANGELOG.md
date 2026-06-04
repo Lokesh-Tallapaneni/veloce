@@ -8,6 +8,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Constrained route syntax: path converters now accept arguments in the brace
+  form, so bounds participate in matching instead of only producing a
+  handler-layer error. `{n:int(min=1,max=100)}` and `{x:float(min=0.0)}` bound
+  the numeric value (`signed=False` forbids a leading `-`), and
+  `{code:str(length=2)}` / `{slug:str(minlength=3,maxlength=64)}` bound the
+  segment length. A bound violation is a route miss (404), not a 422. The
+  constraints are enforced on both the radix fast path and the regex fallback,
+  and `url_for` rejects an out-of-bounds value. Zero-argument converters keep
+  their previous behaviour.
+
+- Duplicate-route detection: registering a second handler for the same path and
+  HTTP method now raises `DuplicateRouteError` (exported from the top-level
+  `veloce` package) at registration time, catching silent route shadowing at
+  startup. The policy is configurable with the `on_duplicate` argument on
+  `Veloce(...)` and `Router(...)`: `"error"` (default), `"warn"` (log and
+  replace), or `"override"` (replace silently). Registering the same handler on
+  the same path and method again - as happens when a router is included twice -
+  is an idempotent re-mount and never reported as a conflict.
+
+- Multipart form parsing gains independent file/field limits. `MAX_FORM_FILES`
+  and `MAX_FORM_FIELDS` cap the number of file parts and text-field parts
+  separately, `MAX_FORM_FILE_SIZE` and `MAX_FORM_FIELD_SIZE` override the
+  shared `MAX_FORM_PART_SIZE` for files and text fields respectively, and
+  `MAX_FORM_FIELD_MEMORY` bounds the cumulative resident bytes of all text
+  fields (value plus field-name bytes). All default to `None`, so only the
+  existing `MAX_FORM_PARTS` / `MAX_FORM_PART_SIZE` caps apply unless set.
+  `parse_multipart_form` accepts matching `max_files`, `max_fields`,
+  `max_file_size`, `max_field_size`, and `max_field_memory` keyword arguments.
+  Each limit raises `413 Request Entity Too Large` when exceeded.
+
+- A multipart text field that declares its own `Content-Type` charset (one of
+  `ascii`, `us-ascii`, `utf-8`, or `iso-8859-1`) is now decoded with that
+  charset per RFC 7578, instead of always assuming UTF-8. An unsupported
+  declared charset is rejected with `400 Bad Request`; the global
+  `charset_fallback` still applies when a part declares no charset.
+- `ProxyFix` accepts an `x_port` hop count and trusts `X-Forwarded-Port`. The
+  resolved public port fills in `request.url` (and therefore `base_url`,
+  redirects, and absolute URLs) when the forwarded Host carries no port of its
+  own, so a reverse proxy on a non-default port such as 8443 is preserved. A
+  port embedded in the Host / `X-Forwarded-Host` always wins, and a
+  non-numeric or out-of-range value is dropped rather than trusted. RFC 7239
+  carries the port inside `Forwarded host=...:port`, which already flows
+  through `x_host`.
+- The OpenAPI generator now keys component schemas on the model class identity
+  instead of the bare `__name__`. Two distinct models that share a name (for
+  example `schemas.User` and `db.User`) no longer overwrite each other: each
+  keeps its own component, qualified by the diverging module segment
+  (`User__schemas` / `User__db`) when names would otherwise collide, with every
+  `$ref` pointing at the correct schema. Nested-model references are rewritten
+  from Pydantic's `#/$defs/...` form to `#/components/schemas/...` so they
+  resolve in the assembled document.
+
+- Request bodies and response models now use separate JSON Schemas — the
+  validation schema for input and the serialization schema for output — so
+  computed and read-only fields are documented as clients actually receive
+  them. The two are emitted as a single component when byte-identical and split
+  into `Name` / `Name-Output` only when they diverge. Set
+  `separate_input_output_schemas=False` on `Veloce(...)` to reuse the
+  validation schema for both.
+
+- Auto-generated `operationId`s that collide are now disambiguated
+  deterministically with a stable path-derived suffix, keeping the emitted
+  document valid for client code generation; a single aggregated warning lists
+  every collision and its resolution. Explicit `operation_id=` values are left
+  untouched, and the behaviour can be disabled with
+  `disambiguate_operation_ids=False` on `Veloce(...)`.
+
+- A `validate_openapi` flag on `Veloce(...)` enables a lightweight structural
+  check of the assembled document (operations declare responses, parameters
+  carry `name` and `in`, every schema `$ref` resolves), raising a precise error
+  that names the offending path and method. It defaults to `app.debug`, so the
+  check runs in development and costs nothing in production unless explicitly
+  enabled.
+- `app.spawn(coro, *, name=None)` schedules a long-lived, app-scoped background
+  task that is tracked with a strong reference and cancelled-and-drained on
+  shutdown within the `GRACEFUL_TASK_TIMEOUT` budget (default 10 seconds). Named
+  tasks are retrievable via `app.get_spawned_task(name)` and cancellable via
+  `app.cancel_spawned_task(name)`; a duplicate name raises `ValueError`.
+  Failures surface through the same logging path as request-scoped background
+  tasks. Calling `spawn` without a running event loop raises `RuntimeError`.
+
+- `SetupError` (a `RuntimeError` subclass, importable from the top-level
+  `veloce` package) is raised when routes, hooks, blueprints, middleware, or
+  error handlers are registered after the application has started serving
+  requests. The lock latches on the first dispatch and is relaxed under
+  `DEBUG`/`TESTING` and inside the in-memory `TestClient`, so hot-reload and
+  test monkeypatching are unaffected.
+- Routes can opt out of named middleware with `exclude_middleware=[...]` on
+  any route decorator (`@app.get(...)`, `@app.route(...)`, `add_api_route`,
+  and the same on `Blueprint`/`Router`). Each entry is matched against a
+  middleware's `name` (a new optional `Middleware(name=...)` argument that
+  defaults to the class name), and the opt-out applies symmetrically to both
+  the request and response phases. A route that declares no exclusions pays no
+  extra per-request cost; for a route that does, the filtered chain is computed
+  once and reused until the registered middleware set changes. Useful for
+  skipping CSRF on webhooks or auth/rate limiting on health and metrics
+  endpoints without forking the middleware.
+- Parameter markers (`Query`, `Path`, `Body`, `Form`, `File`, `Header`,
+  `Cookie`) accept `default_factory`, a zero-argument callable invoked on every
+  request the parameter is absent, so each request receives its own value. Use
+  it for mutable defaults - `Query(default_factory=list)` - in place of a
+  shared `Query(default=[])`, which is constructed once and aliased across all
+  requests. `default` and `default_factory` are mutually exclusive. Veloce also
+  emits a startup warning when a marker's static default is a `list`, `dict`,
+  or `set`, pointing at `default_factory`.
+- `FilesKeyError` gives a descriptive message when a missing key is looked up
+  on `request.files` while the application runs with `debug=True`. The message
+  names the most common cause: a field submitted as a plain form value because
+  the form lacked `enctype="multipart/form-data"`, a JSON request body where no
+  uploaded files exist, or a request with no multipart body at all. It
+  subclasses `KeyError`, so existing handlers that catch the lookup miss keep
+  working unchanged, and it is only raised in debug mode - production lookups
+  keep the plain `KeyError`. Importable from the top-level `veloce` package.
+
 - `encode_jwt` and `decode_jwt` sign and verify compact JSON Web Tokens using
   the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external dependency.
   The `algorithms` allow-list passed to `decode_jwt` is required - there is no
@@ -324,7 +438,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `JSON_ERRORS_VERBOSE` config key (default `False`): surfaces the verbose JSON
   decoder reason in the 400 response body; falls back to `DEBUG` when unset.
 
+- `Veloce.add_instrumentation` accepts an optional `exclude_routes` set of
+  matched route *templates* (e.g. `{"/health", "/metrics"}`); a request whose
+  route template is in the set skips that hook. The filter is applied in the
+  core delivery loop on the low-cardinality template, so every consumer -
+  tracing, metrics, access logs, custom - honours the same exclusion with no
+  per-request regex and no path-normalisation bypass. `instrument_with_otel`
+  and `instrument_with_prometheus` thread the same `exclude_routes` parameter
+  through. With no exclusions configured the dispatch path is unchanged.
+
+- `RequestMetrics` gains an `error_type` field carrying the class name of the
+  exception that produced a `5xx` when an *unhandled* raised exception turned
+  into a server error (the debug traceback, the generic `500`, or a propagated
+  exception); it is `None` for every other outcome, including a `5xx`
+  deliberately returned without raising. Only the class name is carried - never
+  the message or the exception instance.
+
+- `instrument_with_otel` accepts an optional `on_span(span, metrics)` callback
+  to enrich each emitted span with custom attributes or events; it runs inside
+  the bridge's `try`/`finally` and a raised callback is suppressed so it cannot
+  break the response. When a `5xx` came from a raised exception the bridge now
+  records `RequestMetrics.error_type` as the OpenTelemetry `error.type` span
+  attribute.
+
 ### Changed
+
+- A `multipart/form-data` request with a missing `boundary` parameter, or a
+  boundary that violates the RFC 2046 grammar (empty, longer than 70
+  characters, illegal characters, or a trailing space), now raises `400 Bad
+  Request` instead of silently parsing to an empty form.
+- Application startup now drives the lifespan context manager and the dev
+  event-loop watchdog through a single `AsyncExitStack`, so a startup handler
+  that raises unwinds exactly the resources already acquired (in reverse) rather
+  than leaving a partially-started app with an un-exited lifespan CM or a running
+  watchdog. Shutdown runs every `on_shutdown` handler even when one raises and
+  re-raises all teardown failures together as a `BaseExceptionGroup`
+  (Python 3.11+; a single failure is re-raised as-is, with older versions
+  attaching the rest as notes), instead of stopping at the first failure.
+
+- `app.got_first_request` now flips to `True` on the first dispatch regardless of
+  whether any `before_first_request` hooks are registered, so it faithfully
+  reports whether a request has been handled. Previously the flag only flipped
+  when such hooks existed.
+
+- `Veloce.run()` and the gunicorn worker now perform a two-phase graceful
+  shutdown: every live connection is first quiesced - it finishes the request it
+  is already dispatching and then closes at the request boundary rather than
+  being cancelled mid-pipeline - before the existing bulk task wait/cancel runs
+  as a hard-timeout fallback. Accepted requests are no longer abruptly cut off
+  during drain.
+
+- The ASGI lifespan shutdown branch now reports teardown failures to the server
+  via the spec's `lifespan.shutdown.failed` message (with a full traceback)
+  instead of letting the exception escape `__call__`, mirroring the existing
+  `lifespan.startup.failed` handling.
+- A user-registered exception handler that itself raises no longer escapes
+  request dispatch uncaught. The secondary failure is logged with the handler's
+  name and the request path, and a standard 500 response is returned, so a buggy
+  error handler degrades gracefully in production. When `PROPAGATE_EXCEPTIONS`
+  is in effect (or implicitly under `DEBUG` + `TESTING`), the handler exception
+  is re-raised as before so the bug remains visible in tests and development.
+- Independent dependencies now resolve concurrently regardless of their
+  position in the handler signature. The resolver batches every parallel-safe
+  `Depends()` into topological waves computed once at registration, so two
+  independent dependencies separated by an ordinary parameter - for example
+  `a = Depends(...)`, `q: int = Query(...)`, `b = Depends(...)` - run together
+  instead of one after the other. Dependencies sharing a cached callable are
+  placed in successive waves so the cache is filled once and reused, never
+  raced; `Security()`-scope dependencies and `yield` dependencies continue to
+  resolve inline in declaration order, preserving scope and teardown semantics.
 
 - The unknown-object fallback in `jsonable_encoder` and the orjson default now
   drops private (underscore-prefixed) attributes from the structurally-derived
@@ -339,6 +521,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ProxyFix` splits `Forwarded` / `X-Forwarded-*` element and pair lists on
   delimiters outside quoted strings, so a quoted comma or semicolon in a
   directive value (e.g. `host="a,b"`) no longer fakes an extra hop.
+
+- `Accept` content negotiation now honours media-type parameters (RFC 9110
+  Sec. 12.5.1). A parameterized media range such as `application/json;profile=x`
+  only matches a value carrying that parameter, a bare range still matches a
+  parameterized value, and `best_match` ranks candidates by `(q-value,
+  specificity)` so a parameterized or fully-specified match beats a wildcard at
+  equal quality and a more specific `q=0` range overrides a broader accept.
+  Each option's type/subtype/parameters are decomposed once at parse time. The
+  `q` parameter separates the q-value from media-type parameters; accept
+  extensions after `q` are ignored. Non-MIME `Accept-*` headers are unchanged.
 
 - `Response.content_disposition` (and `send_file`/`FileResponse` filenames)
   now emit an ASCII quotable name verbatim as `filename="..."` - spaces and
@@ -431,6 +623,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any handler-set `Content-Type` are preserved.
 
 ### Fixed
+
+- `add_middleware(MiddlewareClass, name="...")` now applies the exclusion-name
+  override after construction instead of forwarding `name` into the subclass
+  constructor. A user `Middleware` subclass whose `__init__` does not accept a
+  `name` keyword previously raised `TypeError` when registered with `name=`;
+  it can now be named and targeted by `exclude_middleware=[...]` like any
+  built-in. The override is set on the built instance, so passing `name=` to a
+  built-in (which still accepts the keyword) yields the same final name.
+
+- `Veloce.add_instrumentation` works as a decorator with arguments:
+  `@app.add_instrumentation(exclude_routes={"/health"})`. `hook` is now
+  optional; when omitted the call returns a decorator that registers the
+  wrapped function with the captured `exclude_routes`. The plain
+  `add_instrumentation(hook, ...)` call and the no-parenthesis
+  `@app.add_instrumentation` decorator are unchanged.
+
+- `Veloce.add_instrumentation` now enforces the setup lock: registering an
+  instrumentation hook after the app has started serving raises `SetupError`
+  (relaxed under DEBUG/TESTING and the in-memory `TestClient`), consistent with
+  route and hook registration. The per-request `_instrumentation` list is
+  iterated by concurrent dispatch, so late registration could otherwise race
+  in-flight requests. `instrument_with_otel` / `instrument_with_prometheus`,
+  which register during setup, are unaffected.
+
+- Per-route middleware exclusion (`exclude_middleware`) is now symmetric across
+  the request and response phases. The exclusion set is keyed on the route
+  matched at dispatch entry - the same route the request phase uses - so the
+  exact set of middleware that ran `process_request` is the set that runs
+  `process_response`. A `before_request` hook that rewrites the path to a route
+  with a different `exclude_middleware` no longer changes which middleware run
+  for that request, preventing an unbalanced chain where a middleware's
+  per-request setup ran without its teardown.
+
+- OpenAPI dual-schema generation now compares the full schema, including every
+  nested `$defs` entry, before folding a serialization variant onto its
+  validation twin. Previously only the top-level root was compared, so a parent
+  model with an identical root but a nested model carrying serialization-only
+  fields (a `computed_field`, a read-only alias) lost its distinct `-Output`
+  response schema even with `separate_input_output_schemas=True`.
+
+- A duplicate-route replace under the `warn` or `override` policy now removes the
+  replaced route's reverse (`url_for`) entry when the winning route uses a
+  different `name=`. Previously `url_for(old_name)` kept resolving to a route no
+  longer present in the dispatch table.
+
+- `instrument_with_otel` is now idempotent. Calling it more than once on the
+  same app (a re-imported factory, a test fixture, a per-worker bootstrap)
+  previously registered a second span-emit hook, so every request produced two
+  `SpanKind.SERVER` spans - over-counted traces and doubled export cost. A
+  redundant call now emits a `RuntimeWarning` and returns the already-registered
+  hook instead of appending a duplicate. The dedup state lives on the app's hook
+  list, so two apps in one process each get their own bridge.
 
 - `Signal.asend()` now waits for every async receiver to finish before it
   returns or raises. When several async receivers were dispatched and one raised

@@ -4,12 +4,32 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request
+from veloce import FilesKeyError, Request
 
 
-def _req(query: str = "", body: bytes = b"", content_type: str = "") -> Request:
+class _AppStub:
+    """Minimal app stand-in exposing the fields `Request.files` reads."""
+
+    def __init__(self, debug: bool) -> None:
+        self.debug = debug
+        self.config: dict[str, object] = {}
+
+
+def _req(
+    query: str = "",
+    body: bytes = b"",
+    content_type: str = "",
+    app: object | None = None,
+) -> Request:
     headers = {"content-type": content_type} if content_type else {}
-    return Request(method="GET", path="/", query_string=query, headers=headers, body=body)
+    return Request(
+        method="GET",
+        path="/",
+        query_string=query,
+        headers=headers,
+        body=body,
+        app=app,
+    )
 
 
 # ── Request.args ────────────────────────────────────────────────────
@@ -101,3 +121,80 @@ async def test_files_handles_multiple_uploads_under_one_field_name():
     docs = files.getlist("doc")
     assert len(docs) == 4
     assert sorted(d.filename for d in docs) == ["f0.txt", "f1.txt", "f2.txt", "f3.txt"]
+
+
+# ── Request.files debug-mode missing-key diagnostics ────────────────
+
+
+@pytest.mark.asyncio
+async def test_files_missing_key_is_bare_keyerror_without_debug():
+    req = _req(
+        body=b"avatar=oops",
+        content_type="application/x-www-form-urlencoded",
+        app=_AppStub(debug=False),
+    )
+    files = await req.files()
+    with pytest.raises(KeyError) as exc:
+        files["avatar"]
+    # No app debug → plain multidict KeyError, message is just the key repr.
+    assert not isinstance(exc.value, FilesKeyError)
+    assert str(exc.value) == "'avatar'"
+
+
+@pytest.mark.asyncio
+async def test_files_missing_key_hints_enctype_for_plain_form_field():
+    req = _req(
+        body=b"avatar=oops",
+        content_type="application/x-www-form-urlencoded",
+        app=_AppStub(debug=True),
+    )
+    files = await req.files()
+    with pytest.raises(FilesKeyError) as exc:
+        files["avatar"]
+    # FilesKeyError is a KeyError subclass, so existing handlers still catch it.
+    assert isinstance(exc.value, KeyError)
+    msg = str(exc.value)
+    assert "avatar" in msg
+    assert 'enctype="multipart/form-data"' in msg
+
+
+@pytest.mark.asyncio
+async def test_files_missing_key_hints_json_body():
+    req = _req(
+        body=b'{"avatar": "x"}',
+        content_type="application/json",
+        app=_AppStub(debug=True),
+    )
+    files = await req.files()
+    with pytest.raises(FilesKeyError) as exc:
+        files["avatar"]
+    assert "JSON request" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_files_missing_key_hints_no_multipart_body():
+    req = _req(app=_AppStub(debug=True))
+    files = await req.files()
+    with pytest.raises(FilesKeyError) as exc:
+        files["missing"]
+    assert "multipart/form-data" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_files_present_key_returns_upload_in_debug_mode():
+    boundary = "----testbound"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="doc"; filename="a.txt"\r\n'
+        "Content-Type: text/plain\r\n\r\n"
+        "hello\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
+    req = _req(
+        body=body,
+        content_type=f"multipart/form-data; boundary={boundary}",
+        app=_AppStub(debug=True),
+    )
+    files = await req.files()
+    # Success path is unchanged: a present key returns the upload, no error.
+    assert files["doc"].filename == "a.txt"

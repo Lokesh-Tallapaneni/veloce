@@ -104,7 +104,9 @@ class SessionMiddleware(Middleware):
         persist_on_status: Callable[[int], bool] | None = None,
         cookie_prefix: Literal["host", "secure"] | None = None,
         partitioned: bool = False,
+        name: str | None = None,
     ) -> None:
+        super().__init__(name=name)
         keys = [secret_key] if isinstance(secret_key, str) else list(secret_key)
         if not keys:
             raise ValueError("secret_key must be a non-empty string or list of strings")
@@ -297,7 +299,9 @@ class ServerSessionMiddleware(Middleware):
         persist_on_status: Callable[[int], bool] | None = None,
         cookie_prefix: Literal["host", "secure"] | None = None,
         partitioned: bool = False,
+        name: str | None = None,
     ) -> None:
+        super().__init__(name=name)
         _validate_cookie_security(
             cookie_prefix=cookie_prefix,
             partitioned=partitioned,

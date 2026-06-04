@@ -408,6 +408,13 @@ class VeloceWorker(_GunicornWorker):
 
         app = self._veloce_app()
 
+        # Phase one: quiesce every live connection so each finishes its in-
+        # flight request and closes at the boundary rather than being cancelled
+        # mid-pipeline. Complements should_keep_serving (which already stops
+        # keep-alive connections once self.alive is cleared) by also closing
+        # idle connections promptly instead of letting them wait out the timer.
+        HttpProtocol.start_graceful_drain()
+
         # Drain in-flight tasks with the should_keep_serving / request-count
         # hooks STILL installed. self.alive is already False here, so a
         # keep-alive connection that finishes its current request consults

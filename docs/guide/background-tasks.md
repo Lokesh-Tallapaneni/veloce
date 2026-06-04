@@ -262,6 +262,38 @@ async def resilient(tasks: BackgroundTasks):
     finishes, the work is lost. For durable, retryable, or cross-process work,
     reach for a dedicated task queue instead.
 
+## App-scoped long-lived tasks
+
+`BackgroundTask`/`BackgroundTasks` are request-scoped and fire-and-forget. For
+work that should live for the application's lifetime — a queue poller, a metrics
+flusher, a heartbeat — use `app.spawn(coro, *, name=None)`. A spawned task is
+held with a strong reference (so the event loop cannot garbage-collect it
+mid-flight) and is automatically cancelled and awaited during shutdown, within
+the per-task `GRACEFUL_TASK_TIMEOUT` budget (default 10 seconds).
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+
+
+async def poll_queue():
+    while True:
+        await do_one_unit_of_work()
+
+
+@app.on_startup
+async def start_workers():
+    app.spawn(poll_queue(), name="queue-poller")
+```
+
+Name a task to retrieve it with `app.get_spawned_task("queue-poller")` or stop
+it early with `app.cancel_spawned_task("queue-poller")`. A duplicate name raises
+`ValueError`. `spawn` must be called with a running event loop — typically from
+an `on_startup` handler, the lifespan context, or a request handler — and raises
+`RuntimeError` otherwise. Failures are logged through the same path as
+request-scoped background tasks.
+
 ## Next steps
 
 - [Server-Sent Events](sse.md) — stream events to the client over a

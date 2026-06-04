@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import contextvars
 import functools
@@ -12,7 +13,7 @@ import time
 import traceback
 import warnings
 import weakref
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic import BaseModel as _PydanticBaseModel
@@ -48,6 +49,7 @@ from veloce._protocol_constants import (
     ASGI_EVENT_HTTP_RESPONSE_START,
     ASGI_EVENT_LIFESPAN_SHUTDOWN,
     ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE,
+    ASGI_EVENT_LIFESPAN_SHUTDOWN_FAILED,
     ASGI_EVENT_LIFESPAN_STARTUP,
     ASGI_EVENT_LIFESPAN_STARTUP_COMPLETE,
     ASGI_EVENT_LIFESPAN_STARTUP_FAILED,
@@ -77,6 +79,7 @@ from veloce.dependency import DependencyResolver, Depends
 from veloce.exceptions import (
     HTTPException,
     RequestValidationError,
+    SetupError,
     WebSocketException,
     WebSocketRequestValidationError,
 )
@@ -119,6 +122,13 @@ _exc_handler_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool
 # would re-walk the MRO every time for an unhandled exception type.
 _MISSING: Any = object()
 
+# `request._state` key holding the per-route filtered response-phase
+# middleware chain, set by the request phase only when the matched route
+# declares `exclude_middleware`. Absent for routes with no exclusions, so
+# `_run_response_middleware` keeps walking the full list with zero lookup
+# cost beyond a single dict miss.
+_MW_RESPONSE_CHAIN_KEY = "_mw_response_chain"
+
 # Pre-encoded ASCII bytes for the content-type strings the built-in
 # response classes emit. Hit at ASGI emit time before the per-request
 # `_reject_header_crlf(...).encode()` round-trip; values here are
@@ -139,6 +149,60 @@ _CT_BYTES_CACHE: dict[str, bytes] = {
 # vast majority of typical JSON API responses; larger payloads fall
 # through to the per-request `str(n).encode()` allocation.
 _CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(2048))
+
+# `BaseExceptionGroup` is a builtin only from Python 3.11; on 3.10 the name is
+# absent, so resolve it once via `builtins` and degrade to re-raising the first
+# failure when grouping is unavailable. Used to surface every error raised while
+# unwinding the lifespan stack instead of letting the first one mask the rest.
+_BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
+
+
+def _collect_chained(exc: BaseException) -> list[BaseException]:
+    """Flatten an exception and its `__context__` chain into a list.
+
+    `AsyncExitStack.aclose()` runs every teardown, chaining each failure onto
+    the previous through `__context__` and re-raising the last. Walking that
+    chain recovers all teardown failures (oldest last), and an interior
+    `BaseExceptionGroup` is expanded so its members are surfaced individually.
+    A cycle guard keeps the walk bounded even on a self-referential chain.
+    """
+    out: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if _BaseExceptionGroup is not None and isinstance(current, _BaseExceptionGroup):
+            out.extend(current.exceptions)  # type: ignore[attr-defined]
+        else:
+            out.append(current)
+        current = current.__context__
+    # Reverse so the first teardown that failed leads the group, matching the
+    # order the teardowns ran.
+    out.reverse()
+    return out
+
+
+def _raise_unwind_errors(errors: list[BaseException]) -> None:
+    """Re-raise lifespan-unwind failures, grouping them when possible.
+
+    A single failure is re-raised as-is so its traceback is preserved
+    verbatim. Several failures are combined into a `BaseExceptionGroup`
+    (Python 3.11+) so none is masked; on 3.10, where groups are unavailable,
+    the first failure is raised with the rest chained as a note.
+    """
+    if not errors:
+        return
+    if len(errors) == 1:
+        raise errors[0]
+    if _BaseExceptionGroup is not None:
+        raise _BaseExceptionGroup("lifespan shutdown failed", errors)
+    first = errors[0]
+    for extra in errors[1:]:
+        with contextlib.suppress(Exception):
+            first.add_note(  # type: ignore[attr-defined]
+                f"+ also raised during lifespan unwind: {extra!r}"
+            )
+    raise first
 
 
 def _prefers_html(request: Request) -> bool:
@@ -394,6 +458,9 @@ class Veloce(Router):
         terms_of_service: str | None = None,
         swagger_ui_parameters: dict[str, Any] | None = None,
         swagger_ui_init_oauth: dict[str, Any] | None = None,
+        separate_input_output_schemas: bool = True,
+        disambiguate_operation_ids: bool = True,
+        validate_openapi: bool | None = None,
         default_response_class: Any = None,
         dependencies: list[Any] | None = None,
         responses: dict[int, dict[str, Any]] | None = None,
@@ -402,16 +469,19 @@ class Veloce(Router):
         import_name: str | None = None,
         template_folder: str | None = None,
         instance_path: str | None = None,
+        on_duplicate: str = "error",
         **extra: Any,
     ) -> None:
         # App-level `dependencies` / `responses` - applied
         # to every route registered on the app (per-route entries are
-        # appended / overlaid on top).
+        # appended / overlaid on top). `on_duplicate` controls what happens
+        # when two handlers claim the same path+method (default: raise).
         super().__init__(
             prefix=prefix,
             default_response_class=default_response_class,
             dependencies=dependencies,
             responses=responses,
+            on_duplicate=on_duplicate,
         )
         # arbitrary `**extra` ctor kwargs are stashed on
         # `app.extra` for extensions / OpenAPI customisation to read.
@@ -449,6 +519,18 @@ class Veloce(Router):
         self.terms_of_service = terms_of_service
         self.swagger_ui_parameters = swagger_ui_parameters
         self.swagger_ui_init_oauth = swagger_ui_init_oauth
+        # OpenAPI generation knobs (consumed by veloce.contrib.openapi):
+        # - `separate_input_output_schemas`: emit a distinct serialization
+        #   (`-Output`) schema for a model whose validation and serialization
+        #   JSON Schemas diverge (computed/write-only fields). When False the
+        #   validation schema is reused for both request and response.
+        # - `disambiguate_operation_ids`: deterministically suffix colliding
+        #   auto-generated operationIds so the document stays codegen-valid.
+        # - `validate_openapi`: run the lightweight structural checker after
+        #   the document is assembled; `None` defers to `app.debug`.
+        self.separate_input_output_schemas = separate_input_output_schemas
+        self.disambiguate_operation_ids = disambiguate_operation_ids
+        self.validate_openapi = validate_openapi
 
         from veloce.config import Config
 
@@ -466,6 +548,31 @@ class Veloce(Router):
         self.extensions: dict[str, Any] = {}  # Extensions registry
         self._lifespan = lifespan
         self._lifespan_cm: Any = None
+        # Setup lock: flipped True on the first dispatch (under
+        # `_first_request_lock`) so late route/hook/blueprint registration -
+        # which would race in-flight requests under concurrent ASGI dispatch -
+        # raises `SetupError` instead of silently mutating the live route table.
+        # Initialised here, before the ctor-time `exception_handlers=` /
+        # `middleware=` registration runs, so `_assert_mutable` can read it.
+        # Relaxed under DEBUG/TESTING (decided at lock time) so hot-reload and
+        # test monkeypatching stay ergonomic.
+        self._setup_locked = False
+        # Master switch for the setup lock. The in-memory `TestClient` clears it
+        # so a test can keep registering routes/hooks between requests without
+        # tripping `SetupError`; real serving paths leave it on.
+        self._setup_lock_enabled = True
+        # Single AsyncExitStack driving startup teardown. Entered resources
+        # (the lifespan CM, each `on_shutdown` callback, the watchdog) are
+        # pushed here in startup order, so a failure mid-startup unwinds only
+        # what already succeeded and a clean shutdown unwinds everything in
+        # reverse. `None` until the first startup run.
+        self._lifespan_stack: contextlib.AsyncExitStack | None = None
+        # App-scoped background tasks spawned via `app.spawn(...)`. Named tasks
+        # live in the dict (cancellable / retrievable by name); anonymous ones
+        # in the set. Both hold strong references so the loop cannot GC an
+        # in-flight task, and both are cancelled-and-drained on shutdown.
+        self._spawned_named: dict[str, asyncio.Task[Any]] = {}
+        self._spawned_anon: set[asyncio.Task[Any]] = set()
 
         # Set up logger: the logger name is the
         # `import_name` (already resolved to the caller's module above
@@ -475,6 +582,12 @@ class Veloce(Router):
         self.logger = logging.getLogger(self.import_name)
 
         self._middlewares: list[Middleware] = []
+        # Monotonic generation counter for `_middlewares`, bumped on every
+        # mutation via `add_middleware`. A route's per-route exclusion chain
+        # cache (`RouteInfo._mw_chain_cache`) keys on this so a filtered
+        # chain is recomputed only when the registered middleware set
+        # actually changes, never per request.
+        self._mw_version = 0
         # Standard ASGI middleware - `(class, options)` pairs. Each wraps the
         # whole ASGI application (instantiated as `cls(app, **options)`) and
         # is assembled lazily into `_asgi_stack` on the first request.
@@ -484,6 +597,11 @@ class Veloce(Router):
         # finished HTTP request with a `RequestMetrics` record. Empty by
         # default, so an un-instrumented app pays nothing.
         self._instrumentation: list[Callable] = []
+        # Per-hook route-template exclusions, populated only when a hook is
+        # registered with `exclude_routes`. Sparse on purpose: the common case
+        # (no exclusions) leaves this empty so the dispatch loop skips the
+        # membership test entirely and a hook with no exclusion pays nothing.
+        self._instrumentation_excludes: dict[Callable, frozenset[str]] = {}
         # MCP-only tool registrations (contrib.mcp). Each entry is
         # `(handler, name, description, namespace)`, recorded by
         # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
@@ -692,7 +810,24 @@ class Veloce(Router):
         self._cached_view_functions = None
         self._cached_url_map = None
 
+    def _assert_mutable(self) -> None:
+        """Reject setup mutation once the app has started serving.
+
+        A no-op until the first dispatch latches `_setup_locked` (skipped under
+        DEBUG/TESTING), so registration during construction pays a single
+        boolean check. After the lock trips, route/hook/blueprint registration
+        raises `SetupError` rather than racing in-flight requests.
+        """
+        if self._setup_locked:
+            raise SetupError(
+                "Cannot register on the application after it has started "
+                "serving requests. Move route, hook, blueprint, and middleware "
+                "registration to before the first request, or enable DEBUG / "
+                "TESTING to allow late changes during development."
+            )
+
     def add_route(self, *args: Any, **kwargs: Any) -> None:
+        self._assert_mutable()
         super().add_route(*args, **kwargs)
         self._invalidate_route_caches()
 
@@ -705,6 +840,7 @@ class Veloce(Router):
         `prefix` and `url_prefix` are interchangeable; both spellings
         spells it `prefix`, Veloce spells it `url_prefix`.
         """
+        self._assert_mutable()
         from veloce.blueprints import Blueprint
 
         effective = url_prefix if url_prefix is not None else (prefix or None)
@@ -733,10 +869,28 @@ class Veloce(Router):
           assembled. This is what lets third-party ASGI middleware
           (observability, tracing, profiling, ...) plug in. Middleware
           added first is the outermost wrapper.
+
+        Pass `name=` to override the instance's exclusion name (the identifier
+        `exclude_middleware=[...]` on a route references). The override is
+        applied *after* construction rather than forwarded into the subclass
+        constructor, so per-instance naming works for every `Middleware`
+        subclass - including user subclasses whose `__init__` does not accept a
+        `name` keyword.
         """
+        self._assert_mutable()
         if isinstance(middleware, type):
             if issubclass(middleware, Middleware):
-                self._middlewares.append(middleware(**options))
+                # The name override is a framework concern, not a construction
+                # argument: pop it so arbitrary subclass constructors (which may
+                # not accept `name`) build cleanly, then stamp it on the built
+                # instance via the base `name` attribute the exclusion lookup
+                # reads.
+                name = options.pop("name", None)
+                instance = middleware(**options)
+                if name is not None:
+                    instance.name = name
+                self._middlewares.append(instance)
+                self._mw_version += 1
             elif issubclass(middleware, BaseHTTPMiddleware):
                 # `BaseHTTPMiddleware` is a dispatch-shape middleware, not
                 # an ASGI app - registering it as ASGI would wire the app
@@ -753,6 +907,7 @@ class Veloce(Router):
                 self._asgi_stack = None
         elif isinstance(middleware, Middleware):
             self._middlewares.append(middleware)
+            self._mw_version += 1
         else:
             # A bare ASGI middleware instance cannot be wired up - veloce
             # has to supply the wrapped app, which only the class form
@@ -764,7 +919,12 @@ class Veloce(Router):
                 "Register a BaseHTTPMiddleware via add_http_middleware()."
             )
 
-    def add_instrumentation(self, hook: Callable) -> Callable:
+    def add_instrumentation(
+        self,
+        hook: Callable | None = None,
+        *,
+        exclude_routes: Iterable[str] | None = None,
+    ) -> Callable:
         """Register an observability instrumentation hook.
 
         `hook` is called once per finished HTTP request with a
@@ -774,16 +934,55 @@ class Veloce(Router):
         a plain function or a coroutine function. A hook that raises is
         logged and skipped, so instrumentation never breaks a response.
 
-        Returns `hook` unchanged, so it also works as a decorator:
+        Returns `hook` unchanged, so it also works as a decorator. Both the
+        no-argument and the keyword-argument decorator forms are supported -
+        when `hook` is omitted a decorator is returned that captures
+        `exclude_routes` and registers the function it wraps:
 
             @app.add_instrumentation
             def export(metrics):
                 statsd.timing(metrics.route or "unmatched", metrics.duration_ms)
 
+            @app.add_instrumentation(exclude_routes={"/health"})
+            def export(metrics):
+                statsd.timing(metrics.route or "unmatched", metrics.duration_ms)
+
+        Pass `exclude_routes` to suppress this hook for noisy routes - a set
+        of matched route *templates* (e.g. `{"/health", "/metrics"}`). When a
+        finished request's route template is in the set the hook is skipped,
+        so health checks and scrape endpoints never pollute traces or metric
+        series. Matching is on the low-cardinality template resolved during
+        routing (never the concrete, attacker-controlled path), so there is
+        no per-request regex and no path-normalisation bypass. The filter is
+        applied in the core delivery loop, so every consumer of this hook -
+        tracing, metrics, access logs, custom - honours the same exclusion.
+        An unmatched request (route template `None`) is never excluded by a
+        named-route set.
+
         With no hook registered the request path carries no instrumentation
         cost - not even a clock read.
         """
+        # Registration mutates the per-request `_instrumentation` list the
+        # dispatch core iterates, so it follows the same setup-lock contract as
+        # routes and other hooks: late registration races concurrent dispatch
+        # and is rejected (relaxed under DEBUG/TESTING).
+        self._assert_mutable()
+
+        # Decorator-with-arguments form: `@app.add_instrumentation(...)` calls
+        # this with `hook=None`, so return a decorator that captures the keyword
+        # options and registers the function it wraps.
+        if hook is None:
+
+            def decorator(fn: Callable) -> Callable:
+                return self.add_instrumentation(fn, exclude_routes=exclude_routes)
+
+            return decorator
+
         self._instrumentation.append(hook)
+        if exclude_routes is not None:
+            excluded = frozenset(exclude_routes)
+            if excluded:
+                self._instrumentation_excludes[hook] = excluded
         return hook
 
     def use_secure_defaults(self) -> None:
@@ -1270,6 +1469,7 @@ class Veloce(Router):
 
     def register_error_handler(self, code_or_exception: int | type, func: Callable) -> None:
         """Register an error handler without a decorator."""
+        self._assert_mutable()
         if isinstance(code_or_exception, int):
             self._status_handlers[code_or_exception] = func
         else:
@@ -1576,6 +1776,7 @@ class Veloce(Router):
 
     def before_request(self, func: Callable) -> Callable:
         """Register a function to run before each request."""
+        self._assert_mutable()
         self._before_request_hooks.append(func)
         return func
 
@@ -1616,22 +1817,26 @@ class Veloce(Router):
         order; single-fire is guarded with an `asyncio.Lock` so
         concurrent first requests don't double-run the callbacks.
         """
+        self._assert_mutable()
         self._before_first_request_hooks.append(func)
         return func
 
     def after_request(self, func: Callable) -> Callable:
         """Register a function to run after each request."""
+        self._assert_mutable()
         self._after_request_hooks.append(func)
         return func
 
     def teardown_request(self, func: Callable) -> Callable:
         """Register a function to run after request teardown.
         Called with an optional exception argument, even if an exception occurred."""
+        self._assert_mutable()
         self._teardown_request_hooks.append(func)
         return func
 
     def teardown_appcontext(self, func: Callable) -> Callable:
         """Register a function to run on app-context teardown."""
+        self._assert_mutable()
         self._teardown_appcontext_hooks.append(func)
         return func
 
@@ -1687,6 +1892,7 @@ class Veloce(Router):
     def context_processor(self, func: Callable) -> Callable:
         """Register a template context processor.
         The function should return a dict that merges into the template context."""
+        self._assert_mutable()
         self._context_processors.append(func)
         return func
 
@@ -1775,6 +1981,7 @@ class Veloce(Router):
         (mutating it in place is the supported way to remove / rewrite
         values before the handler sees them).
         """
+        self._assert_mutable()
         self._url_value_preprocessors.append(func)
         return func
 
@@ -1828,6 +2035,7 @@ class Veloce(Router):
 
         Runs in registration order; mutate `values` in place.
         """
+        self._assert_mutable()
         self._url_default_funcs.append(func)
         return func
 
@@ -1852,6 +2060,7 @@ class Veloce(Router):
         Mountable multiple times on different apps with different
         prefixes - the blueprint itself stays unmodified.
         """
+        self._assert_mutable()
         from veloce.blueprints import Blueprint
 
         if not isinstance(blueprint, Blueprint):
@@ -2274,18 +2483,27 @@ class Veloce(Router):
         except Exception:
             self.logger.exception("request_started signal receiver raised")
 
-        # Drain `before_first_request` hooks exactly once. The double-check
-        # under the lock is the canonical pattern: the unlocked check
-        # short-circuits the common (already-fired) case without acquiring
-        # the lock; the locked check guarantees single-fire when concurrent
-        # first requests race.
-        if not self._first_request_fired and self._before_first_request_hooks:
+        # Drain `before_first_request` hooks exactly once AND decide the setup
+        # lock - both keyed off the single `_first_request_fired` latch. The
+        # double-check under the lock is the canonical pattern: the unlocked
+        # check short-circuits the common (already serving) case without
+        # acquiring the lock; the locked check guarantees single-fire when
+        # concurrent first requests race. The lock decision runs regardless of
+        # whether `before_first_request` hooks exist, so late registration is
+        # rejected on every app, not only ones with hooks.
+        if not self._first_request_fired:
             if self._first_request_lock is None:
                 self._first_request_lock = asyncio.Lock()
             async with self._first_request_lock:
                 if not self._first_request_fired:
                     for hook in self._before_first_request_hooks:
                         await self._call_handler(hook, {})
+                    # Freeze setup outside DEBUG/TESTING (and when the lock has
+                    # been disabled, e.g. by the in-memory TestClient) so
+                    # hot-reload and test monkeypatching can keep registering.
+                    self._setup_locked = self._setup_lock_enabled and not (
+                        self.config.get("DEBUG") or self.config.get("TESTING")
+                    )
                     self._first_request_fired = True
 
         # Enforce MAX_CONTENT_LENGTH. Check both the declared
@@ -2332,11 +2550,17 @@ class Veloce(Router):
                 response = await self._run_http_middleware_chain(request)
             else:
                 response = await self._dispatch_request(request)
-        except Exception:
+        except Exception as exc:
             # Dispatch propagated an exception (e.g. PROPAGATE_EXCEPTIONS is
             # set). Record a `500` metric before the exception continues
             # out, so error requests are never dropped from observability.
             if instrument:
+                # `_dispatch_request` records the originating exception's class
+                # name on request state before re-raising; an exception raised
+                # outside it (e.g. in `@app.middleware("http")`) leaves it
+                # unset, so fall back to the caught exception here. Either way
+                # only the low-cardinality class name reaches the metric.
+                request._state.setdefault("_error_type", type(exc).__qualname__)
                 with contextlib.suppress(Exception):
                     await self._run_instrumentation(
                         request,
@@ -2418,24 +2642,36 @@ class Veloce(Router):
         # (matches the per-connection resolver the WebSocket path uses).
         resolver: DependencyResolver | None = None
         try:
-            # Run middleware (request phase). Kept inline (rather than calling
-            # `_run_request_middleware`) so an app with no middleware pays zero
-            # extra coroutine awaits on the dispatch hot path; the MCP tool
-            # path replays the identical chain via that helper.
-            for mw in self._middlewares:
-                early_response = await mw.process_request(request)
-                if early_response is not None:
-                    return await self._run_response_middleware(request, early_response)
-
-            # Match the route once. `request.endpoint` is populated here so
-            # before_request hooks can gate on the route name; the same
-            # match object is reused for dispatch below.
+            # Match the route once - before the middleware request phase so a
+            # route's `exclude_middleware` opt-out can be honoured. The same
+            # match object is reused for dispatch below; `request.endpoint`
+            # and `url_rule` are populated here so before_request hooks can
+            # gate on the route name.
             _matched_path = request.path
             _matched_method = request.method
             match = self.match(request.method, request.path)
             if match is not None:
                 request.endpoint = match.route_info.name
                 request._state["url_rule"] = match.route_info.path_template
+
+            # Run middleware (request phase). A route with no exclusions - the
+            # common case - iterates the app's middleware list directly so it
+            # pays zero filtering cost. A route declaring `exclude_middleware`
+            # runs a memoised filtered chain and stashes the matching
+            # response-phase chain on `request._state` for symmetric skip.
+            # Kept inline (rather than calling `_run_request_middleware`) so an
+            # app with no middleware pays zero extra coroutine awaits; the MCP
+            # tool path replays the identical chain via that helper.
+            request_chain: list[Middleware] = self._middlewares
+            if match is not None and match.route_info.excluded_middleware is not None:
+                filtered = self._route_middleware_chains(match.route_info)
+                if filtered is not None:
+                    request_chain = filtered[0]
+                    request._state[_MW_RESPONSE_CHAIN_KEY] = filtered[1]
+            for mw in request_chain:
+                early_response = await mw.process_request(request)
+                if early_response is not None:
+                    return await self._run_response_middleware(request, early_response)
 
             # Run before_request hooks (app-level then matched blueprint).
             # A non-None return short-circuits. `_bp_name` is recorded as the
@@ -2456,6 +2692,18 @@ class Veloce(Router):
                 return resolved
             match = resolved
             _bp_name = _endpoint_blueprint(request.endpoint)
+
+            # The response-phase chain is NOT refreshed from the final matched
+            # route. Per-route middleware exclusion is keyed on the route matched
+            # at dispatch entry - the same match the request phase used - so the
+            # exact set of middleware that ran `process_request` is the set that
+            # runs `process_response`, even when a before_request hook rewrites
+            # request.path / method and `_resolve_route` re-matches to a route
+            # with a different `exclude_middleware`. Refreshing here would make
+            # request and response phases use different chains, leaving a
+            # middleware that paired setup in `process_request` without its
+            # teardown in `process_response` (or vice versa). The response chain
+            # stashed during the request phase above is therefore authoritative.
 
             # Resolve dependencies first and bind the resolver to this frame
             # *before* calling the handler - if the handler raises, the
@@ -2496,8 +2744,7 @@ class Veloce(Router):
                 type(exc)
             )
             if handler:
-                result = await self._call_exc_handler(handler, request, exc)
-                response = self._coerce_response(result)
+                response = await self._dispatch_exc_handler(handler, request, exc)
                 if self._middlewares:
                     response = await self._run_response_middleware(request, response)
                 return response
@@ -2520,11 +2767,17 @@ class Veloce(Router):
             _exc = exc
             handler = self._find_exception_handler(type(exc))
             if handler:
-                result = await self._call_exc_handler(handler, request, exc)
-                response = self._coerce_response(result)
+                response = await self._dispatch_exc_handler(handler, request, exc)
                 if self._middlewares:
                     response = await self._run_response_middleware(request, response)
                 return response
+
+            # This exception was not handled by any registered handler and is
+            # becoming a server error. Record its low-cardinality class name
+            # (never the message) on request state so the post-dispatch
+            # instrumentation hook can surface it as `RequestMetrics.error_type`
+            # without the exception object reaching the observability layer.
+            request._state["_error_type"] = type(exc).__qualname__
 
             # PROPAGATE_EXCEPTIONS: when set (or implicitly
             # when both DEBUG and TESTING are on), let the exception
@@ -3026,6 +3279,43 @@ class Veloce(Router):
             kwargs["exc"] = exc
         return await self._call_handler(handler, kwargs)
 
+    async def _dispatch_exc_handler(
+        self, handler: Callable, request: Request, exc: BaseException
+    ) -> Response:
+        """Invoke a user exception handler with a guard around its own raises.
+
+        A user error handler that itself raises must not escape dispatch
+        uncaught - that would surface as a bare 500 with no targeted log and
+        lose the original exception's context. This logs the secondary
+        failure (naming the handler and the request path) and returns
+        Veloce's standard 500, so a buggy handler degrades gracefully in
+        production. When `PROPAGATE_EXCEPTIONS` is in effect (tests/dev), the
+        secondary exception is re-raised so the handler bug is visible.
+        """
+        try:
+            result = await self._call_exc_handler(handler, request, exc)
+        except Exception as handler_exc:
+            if self._should_propagate_exceptions():
+                raise
+            handler_exc.__context__ = exc
+            self.logger.error(
+                "Exception handler %s raised while handling %s %s",
+                getattr(handler, "__qualname__", repr(handler)),
+                request.method,
+                request.path,
+                exc_info=handler_exc,
+            )
+            return self._coerce_response(
+                JSONResponse(
+                    {
+                        "detail": MSG_INTERNAL_SERVER_ERROR,
+                        "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    },
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            )
+        return self._coerce_response(result)
+
     def _apply_response_model(self, result: Any, route_info: Any) -> Any:
         """Route the handler return through `response_model` + dump flags.
 
@@ -3110,6 +3400,97 @@ class Veloce(Router):
         if exc is not None:
             self.logger.error("Background task failed", exc_info=exc)
 
+    # -- App-scoped background tasks ------------------------------
+
+    def spawn(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        name: str | None = None,
+    ) -> asyncio.Task[Any]:
+        """Schedule a long-lived, app-scoped background task.
+
+        Unlike per-request background tasks, a spawned task lives for the
+        application's lifetime: it is tracked with a strong reference (so the
+        loop cannot GC it mid-flight) and is cancelled-and-drained during
+        shutdown, honouring the `GRACEFUL_TASK_TIMEOUT` config budget per
+        task. Pass `name` to make the task retrievable and cancellable by
+        name via `get_spawned_task` / `cancel_spawned_task`; a duplicate name
+        raises. Failures are logged through the same path as request-scoped
+        background tasks, so app and request work surface uniformly.
+
+        Must be called with a running event loop (e.g. from within an
+        `on_startup` handler, the lifespan CM, or a request); calling it
+        before the loop exists raises `RuntimeError`.
+
+        Usage::
+
+            @app.on_startup
+            async def _start_poller():
+                app.spawn(poll_queue(), name="queue-poller")
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "app.spawn() requires a running event loop; call it from an "
+                "on_startup handler, the lifespan context, or a request handler."
+            ) from exc
+        if name is not None and name in self._spawned_named:
+            raise ValueError(f"a spawned task named {name!r} already exists")
+        task = loop.create_task(coro, name=name)
+        if name is not None:
+            self._spawned_named[name] = task
+        else:
+            self._spawned_anon.add(task)
+        task.add_done_callback(self._spawned_task_done)
+        return task
+
+    def get_spawned_task(self, name: str) -> asyncio.Task[Any] | None:
+        """Return the named spawned task, or `None` if there is no such task."""
+        return self._spawned_named.get(name)
+
+    def cancel_spawned_task(self, name: str) -> bool:
+        """Cancel a named spawned task. Return whether a task was cancelled."""
+        task = self._spawned_named.get(name)
+        if task is None:
+            return False
+        task.cancel()
+        return True
+
+    def _spawned_task_done(self, task: asyncio.Task[Any]) -> None:
+        """Done-callback: drop the strong ref and log any non-cancel failure."""
+        name = task.get_name()
+        if self._spawned_named.get(name) is task:
+            del self._spawned_named[name]
+        self._spawned_anon.discard(task)
+        self._log_background_task_error(task)
+
+    async def _drain_spawned_tasks(self) -> None:
+        """Cancel and await every spawned task within the per-task budget.
+
+        Run from the shutdown lifecycle after the on_shutdown handlers and the
+        lifespan stack have unwound, so a task spawned by a teardown callback is
+        also drained rather than surviving past shutdown. Each task gets at most
+        `GRACEFUL_TASK_TIMEOUT` seconds to finish cancelling; a task that ignores
+        cancellation past that is abandoned so shutdown cannot hang
+        indefinitely.
+        """
+        tasks = [*self._spawned_named.values(), *self._spawned_anon]
+        if not tasks:
+            return
+        timeout = self.config.get("GRACEFUL_TASK_TIMEOUT", 10)
+        for task in tasks:
+            task.cancel()
+        # `wait` never raises for a task that errored or was cancelled - it just
+        # reports it done - so the drain observes completion without re-raising
+        # per-task failures (already logged by the done-callback). A task that
+        # ignores cancellation past the budget lands in `pending` and is left
+        # behind rather than hanging shutdown.
+        await asyncio.wait(tasks, timeout=timeout)
+        self._spawned_named.clear()
+        self._spawned_anon.clear()
+
     def _coerce_response(self, result: Any, response_class: Any = None) -> Response:
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
@@ -3178,7 +3559,9 @@ class Veloce(Router):
                 return resp
         return JSONResponse(result)
 
-    async def _run_request_middleware(self, request: Request) -> Response | None:
+    async def _run_request_middleware(
+        self, request: Request, chain: list[Middleware] | None = None
+    ) -> Response | None:
         """Run the middleware request phase in registration order.
 
         Each `Middleware.process_request` runs in turn; the first to return a
@@ -3187,16 +3570,55 @@ class Veloce(Router):
         when no middleware short-circuits. Extracted so the MCP dispatch path
         can replay the identical request-phase chain a route-backed tool call
         would see on the HTTP path.
+
+        `chain` defaults to the app's full middleware list. A route declaring
+        `exclude_middleware` must skip the excluded middleware over MCP exactly
+        as on the HTTP path, so the MCP caller passes the route's pre-filtered
+        request-phase chain (from `_route_middleware_chains`) instead.
         """
-        for mw in self._middlewares:
+        for mw in self._middlewares if chain is None else chain:
             early_response = await mw.process_request(request)
             if early_response is not None:
                 return early_response
         return None
 
+    def _route_middleware_chains(
+        self, route_info: Any
+    ) -> tuple[list[Middleware], list[Middleware]] | None:
+        """Resolve the filtered (request-order, response-order) chains for a route.
+
+        Returns `None` when the route excludes nothing - the common case -
+        signalling callers to use the app's middleware list directly with no
+        copy or filter, so the dispatch hot path pays nothing extra. When a
+        route declares `exclude_middleware`, the filtered chains are computed
+        once per (route, middleware-generation) and memoised on the
+        RouteInfo, keyed on `self._mw_version`, so later requests reuse the
+        cached lists rather than re-filtering.
+        """
+        excluded = route_info.excluded_middleware
+        if excluded is None:
+            return None
+        cache = route_info._mw_chain_cache
+        version = self._mw_version
+        if cache is not None and cache[0] == version:
+            return cache[1], cache[2]
+        request_chain = [mw for mw in self._middlewares if mw.middleware_name not in excluded]
+        response_chain = request_chain[::-1]
+        route_info._mw_chain_cache = (version, request_chain, response_chain)
+        return request_chain, response_chain
+
     async def _run_response_middleware(self, request: Request, response: Response) -> Response:
-        """Run middleware response phase in reverse order."""
-        for mw in reversed(self._middlewares):
+        """Run middleware response phase in reverse order.
+
+        Honours a per-route filtered chain stashed on `request._state` by the
+        request phase, so a route's `exclude_middleware` opt-out applies
+        symmetrically to `process_response`. Absent that key (no exclusions),
+        the app's middleware list is walked in reverse as before.
+        """
+        chain = request._state.get(_MW_RESPONSE_CHAIN_KEY)
+        if chain is None:
+            chain = reversed(self._middlewares)
+        for mw in chain:
             response = await mw.process_response(request, response)
         return response
 
@@ -3218,6 +3640,15 @@ class Veloce(Router):
         production, not stream completion. See `RequestMetrics.streamed`.
         `end_time_ns` is the wall-clock end captured before any hook runs.
         """
+        # Surface the originating exception's class name (set on request state
+        # by the dispatch error paths) only for a server error, so a handler
+        # that deliberately returns a 5xx without raising is not mislabelled.
+        # The class name only is carried - never the message or the instance.
+        error_type = (
+            request._state.get("_error_type")
+            if status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR
+            else None
+        )
         metrics = RequestMetrics(
             method=request.method,
             path=request.path,
@@ -3226,6 +3657,7 @@ class Veloce(Router):
             duration_ms=duration_ms,
             streamed=streamed,
             end_time_ns=end_time_ns,
+            error_type=error_type,
             # Inbound distributed-trace headers, carried verbatim so a tracing
             # bridge (e.g. veloce.otel) can extract a parent context and
             # continue the trace. Built on every dispatch path here - never via
@@ -3233,7 +3665,17 @@ class Veloce(Router):
             # `None` when the request carries no trace headers.
             parent_context=_trace_carrier(request),
         )
+        # Per-hook route-template exclusions are sparse: when none are
+        # configured the membership test is skipped entirely so the common path
+        # is unchanged. A hook with an exclusion set is suppressed for a request
+        # whose matched route template is in that set (health/metrics/etc).
+        excludes = self._instrumentation_excludes
+        route = metrics.route
         for hook in self._instrumentation:
+            if excludes and route is not None:
+                excluded = excludes.get(hook)
+                if excluded is not None and route in excluded:
+                    continue
             try:
                 result = hook(metrics)
                 if inspect.isawaitable(result):
@@ -3405,13 +3847,28 @@ class Veloce(Router):
             await shutdown_event.wait()
 
     async def _graceful_shutdown(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Drain in-flight requests and run shutdown lifecycle."""
+        """Two-phase graceful shutdown, then run the shutdown lifecycle.
+
+        Phase one quiesces every live connection: each finishes the request it
+        is already dispatching and then closes at the request boundary instead
+        of being cancelled mid-pipeline. A connection accepted in the shutdown
+        window serves at most its first request. Phase two is the existing hard
+        fallback - any dispatch still running past the drain window is awaited
+        with a timeout, then cancelled - so a stuck handler can never hang the
+        process.
+        """
         # Deferred: same `veloce.status` -> `veloce/__init__` cycle that
         # the matching import in `_serve` breaks. These are the only two
         # call sites; not worth a structural refactor.
         from veloce.serving.protocol import HttpProtocol
 
-        # Wait for active dispatch tasks to complete (with timeout)
+        # Phase one: flip every live connection's drain flag so each self-
+        # quiesces at its own request boundary - no abrupt mid-pipeline cancel.
+        HttpProtocol.start_graceful_drain()
+
+        # Phase two (hard fallback): give in-flight dispatch tasks a bounded
+        # window to finish draining, then cancel any straggler so shutdown
+        # cannot block forever on a handler that ignores the drain.
         if HttpProtocol._active_tasks:
             await asyncio.wait(
                 HttpProtocol._active_tasks,
@@ -3423,53 +3880,119 @@ class Veloce(Router):
             task.cancel()
         HttpProtocol._active_tasks.clear()
 
+        # Clear the process-wide drain latch. Shutdown is terminal in
+        # production, but a single interpreter that serves again (notably the
+        # test harness) must not inherit a stuck "draining" state.
+        HttpProtocol.reset_graceful_drain()
+
         # Run shutdown lifecycle hooks
         await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
 
-    async def _run_lifecycle(self, event: str) -> None:
-        """Run lifecycle event handlers, including lifespan context manager."""
-        if event == LIFECYCLE_STARTUP:
-            # Lifespan context manager
-            if self._lifespan is not None:
-                self._lifespan_cm = self._lifespan(self)
-                await self._lifespan_cm.__aenter__()
+    async def _run_handler(self, handler: Callable[..., Any]) -> None:
+        """Invoke a lifecycle handler, offloading sync ones to a thread.
 
-            for handler in self._on_startup:
-                if _is_async_callable(handler):
-                    await handler()
-                else:
-                    loop = asyncio.get_running_loop()
-                    ctx = contextvars.copy_context()
-                    await loop.run_in_executor(None, ctx.run, functools.partial(handler))
-
-            # Dev-mode event-loop blocking watchdog - opt-in, so an app
-            # that does not set the config key never builds one. The key
-            # may be a plain truthy value, or a mapping of watchdog kwargs
-            # (`interval`, `stall_threshold`) for tuning.
-            _wd_config = self.config.get("EVENT_LOOP_WATCHDOG")
-            if _wd_config and self._watchdog is None:
-                from veloce.watchdog import EventLoopWatchdog
-
-                _wd_kwargs = dict(_wd_config) if isinstance(_wd_config, Mapping) else {}
-                self._watchdog = EventLoopWatchdog(asyncio.get_running_loop(), **_wd_kwargs)
-                self._watchdog.start()
+        Async handlers are awaited directly; a plain `def` handler runs in
+        the default executor under a copied context so it cannot block the
+        event loop. Shared by the startup and shutdown paths so the two stay
+        in lockstep.
+        """
+        if _is_async_callable(handler):
+            await handler()
         else:
-            if self._watchdog is not None:
-                self._watchdog.stop()
-                self._watchdog = None
+            loop = asyncio.get_running_loop()
+            ctx = contextvars.copy_context()
+            await loop.run_in_executor(None, ctx.run, functools.partial(handler))
 
-            for handler in self._on_shutdown:
-                if _is_async_callable(handler):
-                    await handler()
-                else:
-                    loop = asyncio.get_running_loop()
-                    ctx = contextvars.copy_context()
-                    await loop.run_in_executor(None, ctx.run, functools.partial(handler))
+    async def _run_lifecycle(self, event: str) -> None:
+        """Run lifecycle event handlers, including the lifespan context manager.
 
-            # Exit lifespan context manager
-            if self._lifespan_cm is not None:
-                await self._lifespan_cm.__aexit__(None, None, None)
+        Startup acquires the user lifespan CM and the dev watchdog onto a single
+        `AsyncExitStack` stored on the app. A startup handler that raises mid-way
+        unwinds exactly what was already acquired (the stack closes in reverse)
+        before the error propagates, so a partially-started app leaves no
+        orphaned resources. Shutdown drains any `app.spawn(...)` tasks, runs
+        every `on_shutdown` handler (one raising never skips the rest), then
+        closes the stack to exit the CM and stop the watchdog - collecting every
+        failure and re-raising them grouped, so no teardown error is masked.
+        """
+        if event == LIFECYCLE_STARTUP:
+            stack = contextlib.AsyncExitStack()
+            try:
+                # The lifespan CM is entered first so it exits last, after every
+                # on_shutdown handler has run - resources it provides outlive the
+                # handlers that use them.
+                if self._lifespan is not None:
+                    self._lifespan_cm = self._lifespan(self)
+                    await stack.enter_async_context(self._lifespan_cm)
+
+                for handler in self._on_startup:
+                    await self._run_handler(handler)
+
+                # Dev-mode event-loop blocking watchdog - opt-in, so an app
+                # that does not set the config key never builds one. The key
+                # may be a plain truthy value, or a mapping of watchdog kwargs
+                # (`interval`, `stall_threshold`) for tuning. Registered on the
+                # stack so it is always stopped, even on partial-startup failure.
+                _wd_config = self.config.get("EVENT_LOOP_WATCHDOG")
+                if _wd_config and self._watchdog is None:
+                    from veloce.watchdog import EventLoopWatchdog
+
+                    _wd_kwargs = dict(_wd_config) if isinstance(_wd_config, Mapping) else {}
+                    self._watchdog = EventLoopWatchdog(asyncio.get_running_loop(), **_wd_kwargs)
+                    self._watchdog.start()
+                    stack.push_async_callback(self._stop_watchdog)
+            except BaseException:
+                # Unwind whatever startup acquired before the failure, then let
+                # the original error propagate so the ASGI/native caller emits
+                # the startup-failed signal. Unwind errors must not mask the
+                # startup failure itself.
+                with contextlib.suppress(Exception):
+                    await stack.aclose()
                 self._lifespan_cm = None
+                raise
+            self._lifespan_stack = stack
+        else:
+            shutdown_stack = self._lifespan_stack
+            self._lifespan_stack = None
+            errors: list[BaseException] = []
+            try:
+                # Run every on_shutdown handler, newest first (symmetric to the
+                # startup order), collecting failures so one raising teardown
+                # does not abort the rest - unlike a bare loop that stops on
+                # first error.
+                for handler in reversed(self._on_shutdown):
+                    try:
+                        await self._run_handler(handler)
+                    except BaseException as exc:  # noqa: BLE001 - aggregated below
+                        errors.append(exc)
+                # Close the acquired-resource stack (lifespan CM exit + watchdog
+                # stop). When no startup ran (standalone or repeat shutdown) the
+                # stack is absent; fall back to stopping the watchdog and exiting
+                # an open CM directly so standalone shutdown still tears
+                # everything down.
+                self._lifespan_cm = None
+                if shutdown_stack is not None:
+                    try:
+                        await shutdown_stack.aclose()
+                    except BaseException as exc:  # noqa: BLE001 - aggregated below
+                        errors.extend(_collect_chained(exc))
+                else:
+                    await self._stop_watchdog()
+            finally:
+                # Drain spawned tasks LAST, after the on_shutdown handlers and
+                # lifespan teardown have completed, so any task a teardown
+                # callback spawned via `app.spawn(...)` is also drained instead
+                # of surviving past shutdown. In a `finally` so the drain still
+                # runs (with the same timeout/cancel behavior) even when a
+                # teardown raised above.
+                await self._drain_spawned_tasks()
+            _raise_unwind_errors(errors)
+
+    async def _stop_watchdog(self) -> None:
+        """Stop and clear the dev watchdog. Registered on the lifespan stack."""
+        if self._watchdog is not None:
+            self._watchdog.stop()
+            self._watchdog = None
 
     def lifespan_context(self) -> _LifespanManager:
         """Return an async context manager driving the lifespan cycle.
@@ -3911,6 +4434,22 @@ class Veloce(Router):
                         )
                         return
                 elif message["type"] == ASGI_EVENT_LIFESPAN_SHUTDOWN:
-                    await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
-                    await send({"type": ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE})
+                    # Mirror the startup branch: a teardown that raises (an
+                    # `on_shutdown` handler, the lifespan CM `__aexit__`, or a
+                    # drained spawned task) is reported via the spec's
+                    # `lifespan.shutdown.failed` message with a full traceback,
+                    # rather than escaping `__call__` and leaving the server to
+                    # drain on an unhandled exception. `_run_lifecycle` already
+                    # runs every teardown before re-raising, so the failed
+                    # signal does not skip remaining cleanups.
+                    try:
+                        await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
+                        await send({"type": ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE})
+                    except BaseException:
+                        await send(
+                            {
+                                "type": ASGI_EVENT_LIFESPAN_SHUTDOWN_FAILED,
+                                "message": traceback.format_exc(),
+                            }
+                        )
                     return

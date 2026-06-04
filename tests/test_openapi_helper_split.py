@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from veloce import Veloce
 from veloce.contrib.openapi import (
+    SchemaRegistry,
     _build_info_object,
     _extract_parameters,
     _extract_request_body,
@@ -116,15 +117,21 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     # _extract_parameters + _extract_request_body + _extract_responses build.
     routes = list(app._collect_all_routes())
     method, path, info = next((m, p, i) for m, p, i in routes if p == "/items" and m == "POST")
-    schemas_registry: dict = {}
+    schemas_registry = SchemaRegistry()
     params, body_schema, form_fields = _extract_parameters(info, schemas_registry)
     request_body = _extract_request_body(body_schema, form_fields)
     responses = _extract_responses(info, schemas_registry)
+    # `_walk_webhooks` appends each webhook's auto operationId to `auto_ops` for
+    # the document-wide disambiguation pass; the list is unused here.
+    webhook_auto_ops: list = []
+    webhooks = _walk_webhooks(app, schemas_registry, webhook_auto_ops)
+    # The helpers emit placeholder refs; finalize rewrites them into the same
+    # `#/components/schemas/...` form the orchestrator produces.
+    document = {"requestBody": request_body, "responses": responses, "webhooks": webhooks}
+    schemas_registry.finalize(document)
 
     op = full["paths"]["/items"][method.lower()]
-    assert op["requestBody"] == request_body
-    assert op["responses"] == responses
+    assert document["requestBody"] == op["requestBody"]
+    assert document["responses"] == op["responses"]
     assert params == op.get("parameters", [])
-
-    webhooks = _walk_webhooks(app, schemas_registry)
-    assert webhooks == full["webhooks"]
+    assert document["webhooks"] == full["webhooks"]

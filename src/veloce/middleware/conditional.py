@@ -31,7 +31,8 @@ class ConditionalGetMiddleware(Middleware):
         app.add_middleware(ConditionalGetMiddleware())
     """
 
-    def __init__(self, *, auto_etag: bool = True) -> None:
+    def __init__(self, *, auto_etag: bool = True, name: str | None = None) -> None:
+        super().__init__(name=name)
         self.auto_etag = auto_etag
 
     async def process_response(self, request: Request, response: Response) -> Response:

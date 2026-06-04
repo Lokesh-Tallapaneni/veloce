@@ -158,6 +158,41 @@ app.add_http_middleware(RequestIDMiddleware())
 Middleware runs in the order it is added on the way in, and in reverse
 on the way out — the first one added is the outermost layer.
 
+## Excluding middleware per route
+
+A route can opt out of named middleware with `exclude_middleware`. Each entry
+is matched against a middleware's name, which defaults to its class name; pass
+`name=` to the middleware when two instances of the same class must be
+addressed independently. The opt-out applies to both the request and response
+phases, so a skipped middleware never runs for that route at all.
+
+The exclusion set is keyed on the route matched at dispatch entry. The same set
+of middleware that runs `process_request` runs `process_response`, so setup and
+teardown stay balanced. A `before_request` hook that rewrites the request path
+to a different route does not change which middleware run for that request - the
+entry route's `exclude_middleware` is authoritative.
+
+```python
+app.add_middleware(CSRFMiddleware(secret="..."))
+app.add_middleware(RateLimitMiddleware(max_requests=100, window_seconds=60))
+
+
+# Inbound webhooks can't carry a CSRF token, and the health probe should
+# never be rate limited.
+@app.post("/webhooks/stripe", exclude_middleware=["CSRFMiddleware"])
+async def stripe_webhook(request):
+    ...
+
+
+@app.get("/health", exclude_middleware=["RateLimitMiddleware"])
+async def health():
+    return {"status": "ok"}
+```
+
+This works on `@app.route`/`@app.get`/`@app.post`/… and the imperative
+`add_api_route`, and on `Blueprint` and `Router` routes. Routes that declare no
+exclusions run every registered middleware and pay no extra per-request cost.
+
 ## See also
 
 - [Sessions](sessions.md) — `SessionMiddleware` and `ServerSessionMiddleware`.

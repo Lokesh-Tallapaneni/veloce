@@ -362,3 +362,133 @@ def test_forwarded_quoted_comma_integration():
     client = TestClient(app)
     resp = client.get("/info", headers={"Forwarded": 'for=192.0.2.1; host="a,b"'})
     assert resp.json()["client"] == "192.0.2.1"
+
+
+# ── X-Forwarded-Port (M10) ─────────────────────────────────────────────
+
+
+def _make_app_capturing_url(**kwargs) -> Veloce:
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(ProxyFix(**kwargs))
+
+    @app.get("/info")
+    async def info(request: Request):
+        url = request.url
+        return {"netloc": url.netloc, "port": url.port, "base_url": request.base_url}
+
+    return app
+
+
+def test_construction_rejects_negative_port():
+    with pytest.raises(ValueError):
+        ProxyFix(x_port=-1)
+
+
+def test_x_forwarded_port_fills_in_non_default_port():
+    """A forwarded Host without a port plus X-Forwarded-Port keeps the port."""
+    app = _make_app_capturing_url(x_host=1, x_port=1)
+    client = TestClient(app)
+    resp = client.get(
+        "/info",
+        headers={"X-Forwarded-Host": "public.example.com", "X-Forwarded-Port": "8443"},
+    )
+    body = resp.json()
+    assert body["port"] == 8443
+    assert body["netloc"] == "public.example.com:8443"
+    assert body["base_url"] == "http://public.example.com:8443"
+
+
+def test_x_forwarded_port_omitted_when_scheme_default():
+    """Port 443 under https equals the scheme default and is hidden in netloc."""
+    app = _make_app_capturing_url(x_host=1, x_port=1, x_proto=1)
+    client = TestClient(app)
+    resp = client.get(
+        "/info",
+        headers={
+            "X-Forwarded-Host": "public.example.com",
+            "X-Forwarded-Port": "443",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+    body = resp.json()
+    assert body["port"] == 443
+    assert body["netloc"] == "public.example.com"
+
+
+def test_explicit_host_port_wins_over_x_forwarded_port():
+    """A port in X-Forwarded-Host beats a separate X-Forwarded-Port."""
+    app = _make_app_capturing_url(x_host=1, x_port=1)
+    client = TestClient(app)
+    resp = client.get(
+        "/info",
+        headers={
+            "X-Forwarded-Host": "public.example.com:9000",
+            "X-Forwarded-Port": "8443",
+        },
+    )
+    assert resp.json()["port"] == 9000
+
+
+def test_x_forwarded_port_disabled_by_default():
+    """Without x_port the header is ignored - no port leaks into the URL."""
+    app = _make_app_capturing_url(x_host=1)
+    client = TestClient(app)
+    resp = client.get(
+        "/info",
+        headers={"X-Forwarded-Host": "public.example.com", "X-Forwarded-Port": "8443"},
+    )
+    assert resp.json()["port"] is None
+
+
+def test_x_forwarded_port_rejects_non_numeric():
+    """A non-numeric forwarded port is dropped rather than trusted."""
+    app = _make_app_capturing_url(x_host=1, x_port=1)
+    client = TestClient(app)
+    resp = client.get(
+        "/info",
+        headers={"X-Forwarded-Host": "public.example.com", "X-Forwarded-Port": "notaport"},
+    )
+    assert resp.json()["port"] is None
+
+
+def test_x_forwarded_port_rejects_out_of_range():
+    app = _make_app_capturing_url(x_host=1, x_port=1)
+    client = TestClient(app)
+    resp = client.get(
+        "/info",
+        headers={"X-Forwarded-Host": "public.example.com", "X-Forwarded-Port": "70000"},
+    )
+    assert resp.json()["port"] is None
+
+
+def test_x_forwarded_port_walks_back_with_trust_depth():
+    """`X-Forwarded-Port: 8443, 80` + x_port=2 trusts the outer (8443)."""
+    app = _make_app_capturing_url(x_host=1, x_port=2)
+    client = TestClient(app)
+    resp = client.get(
+        "/info",
+        headers={
+            "X-Forwarded-Host": "public.example.com",
+            "X-Forwarded-Port": "8443, 80",
+        },
+    )
+    assert resp.json()["port"] == 8443
+
+
+async def test_proxy_fix_rejects_crlf_in_x_forwarded_port():
+    with pytest.raises(ValueError):
+        await _run_proxy_fix(
+            {"X-Forwarded-Port": "8443\r\nInjected: 1"},
+            x_port=1,
+        )
+
+
+def test_forwarded_host_with_port_survives():
+    """RFC 7239 carries the port inside `host=...:port`; it reaches the URL."""
+    app = _make_app_capturing_url(x_host=1)
+    client = TestClient(app)
+    resp = client.get(
+        "/info",
+        headers={"Forwarded": "for=192.0.2.1; host=public.example.com:8443"},
+    )
+    assert resp.json()["port"] == 8443

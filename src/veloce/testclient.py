@@ -445,6 +445,13 @@ class TestClient:
             self._loop = asyncio.new_event_loop()
             self._owns_loop = True
 
+        # The in-memory test client is a testing tool: relax the
+        # first-request setup lock so a test can register routes/hooks between
+        # calls (the lock guards real concurrent serving, not single-threaded
+        # test dispatch).
+        if hasattr(app, "_setup_lock_enabled"):
+            app._setup_lock_enabled = False
+
         # Run startup lifecycle once at construction so users can mutate
         # app.state etc. in startup hooks before the first call.
         if hasattr(app, "_run_lifecycle"):
@@ -1111,6 +1118,11 @@ class AsyncTestClient:
 
     async def __aenter__(self) -> AsyncTestClient:
         self._entered = True
+        # Relax the first-request setup lock for the same reason as the sync
+        # TestClient: in-memory test dispatch is single-threaded, so late
+        # registration is safe and convenient here.
+        if hasattr(self.app, "_setup_lock_enabled"):
+            self.app._setup_lock_enabled = False
         if hasattr(self.app, "_run_lifecycle"):
             await self.app._run_lifecycle(LIFECYCLE_STARTUP)
             self._lifespan_run = True

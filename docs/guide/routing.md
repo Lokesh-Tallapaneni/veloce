@@ -84,6 +84,31 @@ async def report(day):
 
 Use `register_converter` to add your own.
 
+### Constrained converters
+
+The `int`, `float`, and `str` converters accept arguments, so a bound takes
+part in matching rather than only producing a handler-layer error. A value
+outside the bound is a **route miss** (404), not a `422`:
+
+| Rule                              | Matches                                  |
+|-----------------------------------|------------------------------------------|
+| `{n:int(min=1,max=100)}`          | an integer in `[1, 100]`                 |
+| `{n:int(min=1)}`                  | an integer `>= 1`                        |
+| `{n:int(signed=False)}`           | an unsigned integer (no leading `-`)     |
+| `{x:float(min=0.0,max=1.0)}`      | a float in `[0.0, 1.0]`                  |
+| `{code:str(length=2)}`            | a string of exactly 2 characters         |
+| `{slug:str(minlength=3,maxlength=64)}` | a string of 3–64 characters         |
+
+```python
+@app.get("/page/{n:int(min=1,max=100)}")
+async def page(n: int):
+    return {"page": n}     # "/page/0" and "/page/101" are 404, "/page/50" is 200
+```
+
+The constraints are enforced whether the route resolves on the radix fast path
+or the regex fallback, and `url_for` rejects a value the converter would never
+match. A converter with no arguments behaves exactly as before.
+
 ## Query parameters
 
 A handler parameter that is not a path parameter — and is not the
@@ -124,6 +149,22 @@ Routers can be nested and carry their own `dependencies=` and
 `responses=`. Scoped `before_request` / `after_request` /
 `teardown_request` hooks are a `Blueprint` feature — a plain `Router`
 has none.
+
+### Duplicate routes
+
+Registering a second handler for the same path and HTTP method raises
+`DuplicateRouteError` at registration time, so an accidental route shadowing
+fails loudly at startup instead of dispatching to the wrong handler. Change the
+policy with `on_duplicate` on `Veloce(...)` or `Router(...)`:
+
+```python
+app = Veloce(on_duplicate="error")    # default: raise DuplicateRouteError
+app = Veloce(on_duplicate="warn")     # log a warning and replace
+app = Veloce(on_duplicate="override") # replace silently
+```
+
+Including the same router twice carries the same handler and is an idempotent
+re-mount, never reported as a conflict.
 
 ## Reverse URLs
 

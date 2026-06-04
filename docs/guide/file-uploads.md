@@ -80,6 +80,20 @@ async def attachments(request: Request):
     return {"count": len(files), "names": [f.filename for f in files.values()]}
 ```
 
+!!! tip "Debug-mode diagnostics"
+
+    The most common upload mistake is submitting the form without
+    `enctype="multipart/form-data"`, so the field arrives as plain text and is
+    absent from `request.files()`. When the application runs with `debug=True`,
+    a missing-key lookup such as `files["avatar"]` raises
+    [`FilesKeyError`](../reference.md#veloce.FilesKeyError) — a `KeyError`
+    subclass whose message names the cause (missing `enctype`, a JSON body, or
+    no multipart body at all). In production the lookup raises a plain
+    `KeyError`. Use `files.get("avatar")` or `files.get_upload("avatar")` to
+    avoid the exception entirely.
+
+    !!! note "Added in version 0.4.0"
+
 ## The UploadFile object
 
 [`UploadFile`](../reference.md#veloce.UploadFile) wraps the uploaded
@@ -226,9 +240,28 @@ app.config["MAX_FORM_PARTS"] = 200
 app.config["MAX_FORM_PART_SIZE"] = 2 * 1024 * 1024   # 2 MiB per part
 ```
 
-When a request exceeds these limits, parsing fails before the whole body
-is buffered. See [Configuration](configuration.md) for how `app.config`
-is loaded and overridden.
+File and text parts can be limited independently. This is the common
+"small fields, large files" policy: cap each text field tightly while
+allowing larger uploads, and bound the file and field counts separately.
+
+```python
+app.config["MAX_FORM_FIELD_SIZE"] = 64 * 1024          # 64 KiB per text field
+app.config["MAX_FORM_FILE_SIZE"] = 50 * 1024 * 1024    # 50 MiB per file
+app.config["MAX_FORM_FIELDS"] = 500                    # at most 500 text fields
+app.config["MAX_FORM_FILES"] = 10                      # at most 10 files
+app.config["MAX_FORM_FIELD_MEMORY"] = 1024 * 1024      # 1 MiB of text in total
+```
+
+`MAX_FORM_FIELD_MEMORY` caps the combined resident size of every text
+field (value bytes plus field-name bytes), a ceiling that the per-field
+limit alone cannot express. When a request exceeds any of these limits,
+parsing fails with `413 Request Entity Too Large` before the whole body
+is buffered. A multipart request with a missing or malformed boundary is
+rejected with `400 Bad Request` rather than parsed to an empty form. A
+text field that declares its own `Content-Type` charset (one of `ascii`,
+`us-ascii`, `utf-8`, or `iso-8859-1`) is decoded with that charset. See
+[Configuration](configuration.md) for how `app.config` is loaded and
+overridden.
 
 ## Testing uploads
 

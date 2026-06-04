@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import functools
+import logging
 import re
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator, Sequence
 from typing import Any
 from urllib.parse import urlencode
 
@@ -28,6 +29,7 @@ from veloce.routing.converters import (
     StringConverter,
     UUIDConverter,
     _Converter,
+    _is_parametrized_spec,
     _iter_placeholders,
     _looks_like_regex,
     build_route_regex,
@@ -38,6 +40,12 @@ from veloce.routing.converters import (
 from veloce.status import HTTP_200_OK
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
+
+_logger = logging.getLogger(__name__)
+
+# Valid `on_duplicate` policies for a router. `"error"` raises, `"warn"` logs
+# and replaces, `"override"` replaces silently.
+_DUPLICATE_POLICIES = frozenset({"error", "warn", "override"})
 
 # Normalize an OpenAPI-style path to its parameter-name-agnostic shape:
 # `/items/{slug}` and `/items/{id}` both become `/items/{}`. Used to detect
@@ -71,7 +79,10 @@ def _reverse_converters_for(template: str) -> dict[str, _Converter]:
         if not spec:
             continue
         is_any = spec.startswith("any(") and spec.endswith(")")
-        if not is_any and _looks_like_regex(spec):
+        # A parametrized built-in (`int(min=1)`, `str(length=2)`) carries
+        # parens that read as regex, but it maps to a real coercing converter,
+        # so reverse it too and let url_for reject an out-of-bounds value.
+        if not is_any and not _is_parametrized_spec(spec) and _looks_like_regex(spec):
             continue
         converters[ph.name] = parse_converter(spec)
     return converters
@@ -118,9 +129,11 @@ class RadixNode:
         # own small containers and are scanned only after a static miss.
         self.static_children: dict[str, RadixNode] = {}
         self.param_children: list[RadixNode] = []
-        # O(1) registration-time lookup keyed by (param_name, converter_type).
-        # The ordered list above is still the source of truth at match time.
-        self._param_index: dict[tuple[str, type], RadixNode] = {}
+        # O(1) registration-time lookup keyed by (param_name, converter_type,
+        # constraint), where `constraint` is the parametrized spec text (e.g.
+        # `int(min=1)`) or None for an unparametrized converter. The ordered
+        # list above is still the source of truth at match time.
+        self._param_index: dict[tuple[str, type, str | None], RadixNode] = {}
         self.wildcard_child: RadixNode | None = None
         # Method name (uppercase) -> RouteInfo.
         self.handlers: dict[str, RouteInfo] = {}
@@ -190,6 +203,8 @@ class RouteInfo:
         "host",
         "expose_as_mcp_tool",
         "mcp_description",
+        "excluded_middleware",
+        "_mw_chain_cache",
     )
 
     def __init__(
@@ -223,6 +238,7 @@ class RouteInfo:
         host: str | None = None,
         expose_as_mcp_tool: bool = False,
         mcp_description: str | None = None,
+        excluded_middleware: frozenset[str] | None = None,
     ) -> None:
         self.handler = handler
         self.param_names = param_names
@@ -293,6 +309,15 @@ class RouteInfo:
         # safety policy at registry-build time.
         self.expose_as_mcp_tool = expose_as_mcp_tool
         self.mcp_description = mcp_description
+        # Named middleware this route opts out of. `None` (the common case)
+        # means "run every registered middleware" - the dispatch hot path
+        # then iterates the app's middleware list directly with zero extra
+        # work. A non-`None` frozenset triggers the filtered-chain path,
+        # whose result is memoised in `_mw_chain_cache` keyed on the app's
+        # middleware-list version so the filter runs at most once per
+        # (route, middleware-set) generation, not per request.
+        self.excluded_middleware: frozenset[str] | None = excluded_middleware
+        self._mw_chain_cache: tuple[int, list[Any], list[Any]] | None = None
 
 
 class RouteMatch:
@@ -364,8 +389,18 @@ class Router:
         default_response_class: Any = None,
         dependencies: list | None = None,
         responses: dict[int, dict[str, Any]] | None = None,
+        on_duplicate: str = "error",
     ) -> None:
         self.prefix = prefix.rstrip("/")
+        # Policy for a second handler registered on the same path+method:
+        # `"error"` (default) raises `DuplicateRouteError`, `"warn"` logs and
+        # replaces, `"override"` replaces silently. Catches accidental route
+        # shadowing at startup instead of a wrong handler firing in production.
+        if on_duplicate not in _DUPLICATE_POLICIES:
+            raise ValueError(
+                f"on_duplicate must be one of {sorted(_DUPLICATE_POLICIES)}, got {on_duplicate!r}"
+            )
+        self.on_duplicate = on_duplicate
         self.tags = tags or []
         # a Response subclass used when a registered route
         # doesn't pick its own `response_class=`. Routes still override
@@ -433,8 +468,14 @@ class Router:
 
                 # Reuse an existing param child with the same name AND matching
                 # converter type; otherwise add a new one. Different converters
-                # for the same name on the same slot would be ambiguous.
-                key = (param_name, type(converter))
+                # for the same name on the same slot would be ambiguous. A
+                # parametrized converter (`int(min=1)` vs `int(min=5)`) keeps
+                # its constraint text in the key so distinct bounds get their
+                # own node instead of silently reusing the first registered one.
+                constraint = (
+                    conv_spec if "(" in conv_spec and not conv_spec.startswith("any(") else None
+                )
+                key = (param_name, type(converter), constraint)
                 child = node._param_index.get(key)
                 if child is None:
                     child = RadixNode(seg)
@@ -472,6 +513,181 @@ class Router:
                 node = child
         return node, param_names
 
+    @staticmethod
+    def _handler_qualname(info: RouteInfo) -> str:
+        """Best-effort qualified name of a route's handler for error messages."""
+        handler = info.handler
+        module = getattr(handler, "__module__", None)
+        qualname = getattr(handler, "__qualname__", None) or getattr(handler, "__name__", None)
+        if qualname is None:
+            return repr(handler)
+        return f"{module}.{qualname}" if module else qualname
+
+    # Every RouteInfo slot that defines routing/dispatch behavior or shapes the
+    # generated OpenAPI document. The idempotent-remount exemption requires ALL
+    # of these to match: any difference is a genuine second registration that
+    # must obey the `on_duplicate` policy. Listed explicitly (rather than diffed
+    # against a hand-picked subset) so adding a route-defining slot to RouteInfo
+    # forces a conscious decision here. Excluded are only purely-derived/cached
+    # slots - `handler_plan`, `route_dep_plans`, `is_trivial_plan`,
+    # `is_request_only_plan`, `_mw_chain_cache` - which `add_route` rebuilds
+    # deterministically from the compared fields.
+    _ROUTE_IDENTITY_SLOTS: tuple[str, ...] = (
+        "param_names",
+        "dependencies",
+        "response_model",
+        "tags",
+        "summary",
+        "name",
+        "path_template",
+        "description",
+        "deprecated",
+        "response_description",
+        "status_code",
+        "response_class",
+        "response_model_include",
+        "response_model_exclude",
+        "response_model_exclude_unset",
+        "response_model_exclude_defaults",
+        "response_model_by_alias",
+        "response_model_exclude_none",
+        "include_in_schema",
+        "responses",
+        "operation_id",
+        "openapi_extra",
+        "defaults",
+        "callbacks",
+        "subdomain",
+        "host",
+        "expose_as_mcp_tool",
+        "mcp_description",
+        "excluded_middleware",
+    )
+
+    @classmethod
+    def _allow_duplicate(cls, existing: RouteInfo, incoming: RouteInfo) -> bool:
+        """Return True when re-registering `incoming` over `existing` is benign.
+
+        An idempotent re-mount - the same handler callable landing on the same
+        path+method again with identical route-defining metadata, as happens
+        when a router/blueprint is included more than once - is not a conflict
+        regardless of policy, so legitimate blueprint merges never
+        false-positive.
+
+        The exemption is deliberately narrow: it fires ONLY when the handler is
+        the same object AND every route-defining/document-shaping field matches.
+        A same-callable registration that carries *different* metadata (name,
+        response_model, dependencies, defaults, `exclude_middleware`,
+        `response_class`, `openapi_extra`, host/subdomain, ...) is a real second
+        registration and must go through the `on_duplicate` policy; comparing a
+        subset would silently bypass `on_duplicate='error'` for two distinct
+        decorations of one function.
+        """
+        if existing.handler is not incoming.handler:
+            return False
+        for slot in cls._ROUTE_IDENTITY_SLOTS:
+            if getattr(existing, slot) != getattr(incoming, slot):
+                return False
+        return True
+
+    def _on_duplicate_route(
+        self, path: str, method: str, existing: RouteInfo, incoming: RouteInfo
+    ) -> None:
+        """Apply the router's `on_duplicate` policy to a route collision."""
+        policy = self.on_duplicate
+        if policy == "override":
+            return
+        existing_name = self._handler_qualname(existing)
+        incoming_name = self._handler_qualname(incoming)
+        if policy == "warn":
+            _logger.warning(
+                "Duplicate route: %s %s, replacing %s with %s",
+                method,
+                path,
+                existing_name,
+                incoming_name,
+            )
+            return
+        # Deferred import: veloce.exceptions pulls in the http response stack,
+        # which transitively imports exceptions again; importing it at module
+        # top would create a routing<->http import cycle. This path runs only
+        # on an actual collision, never on the registration hot path.
+        from veloce.exceptions import DuplicateRouteError
+
+        raise DuplicateRouteError(path, method, existing_name, incoming_name)
+
+    def _drop_replaced_route_name(
+        self,
+        replaced: RouteInfo,
+        winning_name: str,
+        handler_table: dict[str, RouteInfo],
+        replaced_method: str,
+    ) -> None:
+        """Remove the replaced route's reverse entry when a duplicate wins.
+
+        On a `warn`/`override` replace, the incoming route is registered under
+        `winning_name`. If the route it displaced carried a *different* `name=`,
+        its `_named_routes` entry would otherwise survive and let
+        `url_for(old_name)` resolve to a route no longer in the handler table.
+
+        But a multi-method route (e.g. GET+POST under one `RouteInfo` and one
+        `name=`) may be replaced for a *single* method only: overriding GET
+        leaves the same endpoint live for POST, so `url_for(old_name)` must
+        keep working. Drop the reverse entry only when the replaced route is no
+        longer the owner of that name anywhere in the table - i.e. no remaining
+        live route (this `RouteInfo` under another method, or any other route)
+        still carries `old_name`. The slot at `(handler_table, replaced_method)`
+        is excluded from the scan because the caller is about to overwrite it
+        with the winning route. A same-name replace keeps the entry, since the
+        winning registration overwrites it with the correct template anyway.
+        """
+        old_name = replaced.name
+        if not old_name or old_name == winning_name:
+            return
+        if self._name_still_live(old_name, handler_table, replaced_method):
+            return
+        self._named_routes.pop(old_name, None)
+        self._reverse_converters.pop(old_name, None)
+
+    def _name_still_live(
+        self,
+        name: str,
+        excluded_table: dict[str, RouteInfo],
+        excluded_method: str,
+    ) -> bool:
+        """Whether any live route still carries `name`, ignoring one slot.
+
+        Walks every committed handler table (radix tree + regex routes) and
+        reports whether some route's `name` matches. The single slot at
+        `(excluded_table, excluded_method)` is skipped because it holds the
+        route being displaced and is about to be overwritten by the winner.
+        This runs only on a duplicate-route override/warn replace, never on
+        the per-request match path.
+        """
+        for table, method, info in self._iter_live_handlers():
+            if table is excluded_table and method == excluded_method:
+                continue
+            if info.name == name:
+                return True
+        return False
+
+    def _iter_live_handlers(
+        self,
+    ) -> Iterator[tuple[dict[str, RouteInfo], str, RouteInfo]]:
+        """Yield `(handler_table, method, RouteInfo)` for every live route."""
+        stack: list[RadixNode] = [self._root]
+        while stack:
+            node = stack.pop()
+            for method, info in node.handlers.items():
+                yield node.handlers, method, info
+            stack.extend(node.static_children.values())
+            stack.extend(node.param_children)
+            if node.wildcard_child is not None:
+                stack.append(node.wildcard_child)
+        for route in self._regex_routes:
+            for method, info in route.handlers.items():
+                yield route.handlers, method, info
+
     def add_route(
         self,
         path: str,
@@ -504,6 +720,7 @@ class Router:
         host: str | None = None,
         expose_as_mcp_tool: bool = False,
         mcp_description: str | None = None,
+        exclude_middleware: Sequence[str] | None = None,
     ) -> None:
         """Register a route in the radix tree.
 
@@ -591,12 +808,8 @@ class Router:
             host=host,
             expose_as_mcp_tool=expose_as_mcp_tool,
             mcp_description=mcp_description,
+            excluded_middleware=frozenset(exclude_middleware) if exclude_middleware else None,
         )
-
-        # Register named route for url_for. Drop any stale reverse-converter
-        # cache so a re-registered name re-derives from its new template.
-        self._named_routes[route_name] = (full_path, param_names)
-        self._reverse_converters.pop(route_name, None)
 
         # Pre-compute the handler resolution plan once, here at registration.
         # Falls back to None if the handler isn't introspectable; the resolver
@@ -636,8 +849,42 @@ class Router:
         else:
             assert node is not None
             handler_table = node.handlers
+        # Two-pass commit so a multi-method registration is atomic. The
+        # `on_duplicate='error'` policy raises a DuplicateRouteError; if we
+        # committed each method as we went, a collision on a *later* verb would
+        # leave the *earlier* verbs already mutated into the handler table,
+        # diverging from the caller's view (which catches the error expecting an
+        # unchanged router). Pass 1 evaluates the policy for every method and
+        # raises before any mutation; only once all methods pass do we mutate.
+        replaceable: list[tuple[str, RouteInfo]] = []
+        for method in methods:
+            mkey = method.upper()
+            existing = handler_table.get(mkey)
+            if existing is not None and not self._allow_duplicate(existing, route_info):
+                # May raise DuplicateRouteError on the 'error' policy; nothing
+                # has been mutated yet, so the router is left fully unchanged.
+                self._on_duplicate_route(full_path, mkey, existing, route_info)
+                # warn/override allowed the replace - remember the displaced
+                # route so pass 2 can drop its reverse entry after the check.
+                replaceable.append((mkey, existing))
+        # Pass 2: every method passed the policy, so commit them all. The
+        # named-route reverse entry below is written only after this point, so a
+        # caught DuplicateRouteError cannot leave url_for() polluted.
+        for mkey, existing in replaceable:
+            # The policy allowed the replace (warn/override). Drop the displaced
+            # route's reverse entry when it had a different name, so
+            # url_for(old_name) stops resolving to a dead route.
+            self._drop_replaced_route_name(existing, route_name, handler_table, mkey)
         for method in methods:
             handler_table[method.upper()] = route_info
+
+        # Register the named route for url_for only once the route is committed
+        # to the handler table above. The reverse entry reflects the route that
+        # actually wins on the override/warn replace paths, and is never written
+        # if the duplicate policy raised. Drop any stale reverse-converter cache
+        # so a re-registered name re-derives from its new template.
+        self._named_routes[route_name] = (full_path, param_names)
+        self._reverse_converters.pop(route_name, None)
 
     # -- Matching -------------------------------------------------
 
@@ -911,8 +1158,16 @@ class Router:
         host: str | None = None,
         expose_as_mcp_tool: bool = False,
         mcp_description: str | None = None,
+        exclude_middleware: Sequence[str] | None = None,
     ) -> Callable:
-        """Generic route decorator."""
+        """Generic route decorator.
+
+        `exclude_middleware=["CSRFMiddleware"]` opts this route out of the
+        named middleware (matched against each middleware's `name`), so a
+        webhook or health-check route can skip CSRF, auth, or rate limiting
+        without forking the middleware. Routes that declare no exclusions
+        pay no extra per-request cost.
+        """
 
         def decorator(func: RouteHandler) -> RouteHandler:
             self.add_route(
@@ -946,6 +1201,7 @@ class Router:
                 host=host,
                 expose_as_mcp_tool=expose_as_mcp_tool,
                 mcp_description=mcp_description,
+                exclude_middleware=exclude_middleware,
             )
             return func
 
@@ -1263,6 +1519,7 @@ class Router:
                     host=info.host,
                     expose_as_mcp_tool=info.expose_as_mcp_tool,
                     mcp_description=info.mcp_description,
+                    excluded_middleware=info.excluded_middleware,
                 )
                 route_info.handler_plan = info.handler_plan
                 is_ws = method.upper() == ROUTE_METHOD_WEBSOCKET
@@ -1278,6 +1535,10 @@ class Router:
                     and hp.slots[0].kind == K_REQUEST
                     and not route_info.route_dep_plans
                 )
+                existing = target.handlers.get(method)
+                if existing is not None and not self._allow_duplicate(existing, route_info):
+                    self._on_duplicate_route(full_path, method, existing, route_info)
+                    self._drop_replaced_route_name(existing, info.name, target.handlers, method)
                 target.handlers[method] = route_info
                 self._named_routes[info.name] = (full_path, param_names)
                 self._reverse_converters.pop(info.name, None)
@@ -1333,6 +1594,7 @@ class Router:
                     host=info.host,
                     expose_as_mcp_tool=info.expose_as_mcp_tool,
                     mcp_description=info.mcp_description,
+                    excluded_middleware=info.excluded_middleware,
                 )
                 # Reuse the parent's pre-computed handler plan.
                 route_info.handler_plan = info.handler_plan
@@ -1355,6 +1617,10 @@ class Router:
                     and hp.slots[0].kind == K_REQUEST
                     and not route_info.route_dep_plans
                 )
+                existing = cur.handlers.get(method)
+                if existing is not None and not self._allow_duplicate(existing, route_info):
+                    self._on_duplicate_route(full_path, method, existing, route_info)
+                    self._drop_replaced_route_name(existing, info.name, cur.handlers, method)
                 cur.handlers[method] = route_info
 
                 # Propagate slash-handling flags from the source node so a

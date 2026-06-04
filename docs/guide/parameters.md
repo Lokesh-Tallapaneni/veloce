@@ -50,6 +50,7 @@ The most useful keyword arguments are:
 | Argument | Meaning |
 |----------|---------|
 | `default` | Value used when the parameter is absent; omit it to make the parameter required. |
+| `default_factory` | A zero-argument callable invoked on every request the parameter is absent, so each request gets its own value. Use it for mutable defaults (`default_factory=list`) instead of a shared `default=[]`. Mutually exclusive with `default`. |
 | `alias` | The wire name to read from, when it differs from the Python argument name. |
 | `title`, `description` | OpenAPI documentation strings. |
 | `ge`, `le`, `gt`, `lt` | Numeric bounds for `int` / `float` / `Decimal` values. |
@@ -65,6 +66,18 @@ The most useful keyword arguments are:
     keyword is still accepted, and `pattern` wins if you pass both. Passing a
     non-positive `multiple_of` raises `ValueError` at startup rather than
     producing a non-conformant schema.
+
+!!! warning "Mutable defaults"
+    A static mutable default — `Query(default=[])` — is constructed once and
+    shared by every request, so an in-place mutation by one handler leaks into
+    the next. Veloce warns at startup when it sees a `list`, `dict`, or `set`
+    static default and points you at `default_factory`, which builds a fresh
+    value per request:
+
+    ```python
+    async def search(tags: list[str] = Query(default_factory=list)):
+        ...
+    ```
 
 ## Query
 

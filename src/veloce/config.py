@@ -140,6 +140,11 @@ class Config(dict[str, Any]):
             "MAX_CONTENT_LENGTH": None,
             "MAX_FORM_PARTS": 1000,
             "MAX_FORM_PART_SIZE": 10 * 1024 * 1024,
+            "MAX_FORM_FILES": None,
+            "MAX_FORM_FIELDS": None,
+            "MAX_FORM_FILE_SIZE": None,
+            "MAX_FORM_FIELD_SIZE": None,
+            "MAX_FORM_FIELD_MEMORY": None,
             "MAX_COOKIE_SIZE": 4093,
             "SESSION_COOKIE_NAME": "session",
             "SESSION_COOKIE_HTTPONLY": True,
@@ -157,6 +162,10 @@ class Config(dict[str, Any]):
             "REQUEST_HANDLER_TIMEOUT": 30,
             "KEEP_ALIVE_TIMEOUT": 75,
             "REQUEST_TIMEOUT": 30,
+            # Per-task budget, in seconds, for draining an `app.spawn(...)`
+            # background task on shutdown: each task is cancelled and awaited
+            # for at most this long before the drain moves on.
+            "GRACEFUL_TASK_TIMEOUT": 10,
         }
 
     @staticmethod

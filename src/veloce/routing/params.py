@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 
@@ -32,6 +33,7 @@ class ParamBase:
 
     __slots__ = (
         "default",
+        "default_factory",
         "alias",
         "title",
         "description",
@@ -54,6 +56,7 @@ class ParamBase:
     def __init__(
         self,
         default: Any = ...,
+        default_factory: Callable[[], Any] | None = None,
         alias: str | None = None,
         title: str | None = None,
         description: str | None = None,
@@ -72,7 +75,16 @@ class ParamBase:
         convert_underscores: bool = True,
         include_in_schema: bool = True,
     ) -> None:
+        # A static `default` and a `default_factory` are mutually exclusive:
+        # the factory exists precisely to build a fresh per-request value, so
+        # pinning it to a fixed default at the same time is always a mistake.
+        if default is not ... and default_factory is not None:
+            raise ValueError("default and default_factory are mutually exclusive")
         self.default = default
+        # When set, `default_factory` is invoked on every missing-value resolve
+        # so each request receives an independent object, preventing the
+        # shared-mutable aliasing a static `Query(default=[])` would cause.
+        self.default_factory = default_factory
         self.alias = alias
         self.title = title
         self.description = description
@@ -113,12 +125,18 @@ class ParamBase:
 
     @property
     def has_default(self) -> bool:
-        return self.default is not ...
+        return self.default is not ... or self.default_factory is not None
+
+    def resolve_default(self) -> Any:
+        """Return a fresh default - calling `default_factory` when one is set."""
+        if self.default_factory is not None:
+            return self.default_factory()
+        return self.default
 
     def validate(self, value: Any, name: str) -> Any:
         """Validate value against constraints."""
         if value is None and self.has_default:
-            return self.default
+            return self.resolve_default()
 
         if isinstance(value, (int, float, Decimal)):
             if self.ge is not None and value < self.ge:
