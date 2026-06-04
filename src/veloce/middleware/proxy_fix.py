@@ -25,6 +25,7 @@ from __future__ import annotations
 from veloce._constants import (
     HEADER_X_FORWARDED_FOR,
     HEADER_X_FORWARDED_HOST,
+    HEADER_X_FORWARDED_PORT,
     HEADER_X_FORWARDED_PREFIX,
     HEADER_X_FORWARDED_PROTO,
 )
@@ -41,6 +42,11 @@ class ProxyFix(Middleware):
     Trusts N hops for each ``X-Forwarded-*`` header (right-to-left).
     Setting any field to ``0`` disables it. Negative values raise at
     construction.
+
+    ``x_port`` trusts ``X-Forwarded-Port``: the resolved port fills in the
+    public port for ``request.url`` / redirects when the forwarded Host
+    carries none, so a proxy on a non-default port (e.g. 8443) is preserved.
+    An explicit port in the Host / ``X-Forwarded-Host`` always wins.
     """
 
     def __init__(
@@ -48,6 +54,7 @@ class ProxyFix(Middleware):
         x_for: int = 1,
         x_proto: int = 1,
         x_host: int = 0,
+        x_port: int = 0,
         x_prefix: int = 0,
         trust_forwarded: bool = True,
     ) -> None:
@@ -55,6 +62,7 @@ class ProxyFix(Middleware):
             ("x_for", x_for),
             ("x_proto", x_proto),
             ("x_host", x_host),
+            ("x_port", x_port),
             ("x_prefix", x_prefix),
         ):
             if val < 0:
@@ -62,6 +70,7 @@ class ProxyFix(Middleware):
         self.x_for = x_for
         self.x_proto = x_proto
         self.x_host = x_host
+        self.x_port = x_port
         self.x_prefix = x_prefix
         self.trust_forwarded = trust_forwarded
 
@@ -84,6 +93,12 @@ class ProxyFix(Middleware):
         host = fwd.get("host") or self._pick_hop(
             request.headers.get(HEADER_X_FORWARDED_HOST), self.x_host
         )
+        # RFC 7239 has no dedicated port directive: a `Forwarded` hop carries
+        # the public port inside `host="example.com:8443"`, so when that host
+        # is spliced into the Host header below the port survives via
+        # URL.from_request's own parse. `X-Forwarded-Port` is the separate
+        # legacy header that needs explicit resolution here.
+        port = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PORT), self.x_port)
         prefix = fwd.get("prefix") or self._pick_hop(
             request.headers.get(HEADER_X_FORWARDED_PREFIX), self.x_prefix
         )
@@ -98,6 +113,8 @@ class ProxyFix(Middleware):
             _reject_header_crlf(proto, HEADER_X_FORWARDED_PROTO)
         if host:
             _reject_header_crlf(host, HEADER_X_FORWARDED_HOST)
+        if port:
+            _reject_header_crlf(port, HEADER_X_FORWARDED_PORT)
         if prefix:
             _reject_header_crlf(prefix, HEADER_X_FORWARDED_PREFIX)
 
@@ -116,6 +133,17 @@ class ProxyFix(Middleware):
         if host:
             # Rewrite Host so URL.from_request picks up the original host.
             request.headers["host"] = host
+        if port:
+            # Stash the trusted public port as an int. URL.from_request uses
+            # it only when the (possibly rewritten) Host header carries no
+            # port of its own, so an explicit `host:port` always wins. A
+            # non-numeric or out-of-range value is dropped rather than trusted.
+            try:
+                port_num = int(port)
+            except ValueError:
+                port_num = -1
+            if 0 < port_num <= 65535:
+                request._state["proxy_fix_port"] = port_num
         if proto:
             # Override scheme - `URL.from_request` now prefers `scope.scheme`
             # over `X-Forwarded-Proto`, so mutate both: the header for

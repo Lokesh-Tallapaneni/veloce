@@ -238,8 +238,16 @@ class URL:
         path: str,
         query_string: str,
         scope_scheme: str | None = None,
+        forwarded_port: int | None = None,
     ) -> URL:
-        """Construct a URL from request headers and path components."""
+        """Construct a URL from request headers and path components.
+
+        `forwarded_port` is the public port a trusted reverse proxy supplied
+        (via `ProxyFix` reading `X-Forwarded-Port` / `Forwarded host=...:port`).
+        A port embedded in the Host header always wins; `forwarded_port` only
+        fills in the port when the Host header carries none, so a proxy on a
+        non-default port (e.g. 8443) survives into `netloc` / absolute URLs.
+        """
         host_header = headers.get(HEADER_HOST, "localhost")
         # Precedence (ASGI Sec. HTTP scope): the scope's `scheme` is the
         # authoritative answer when one was supplied - that's
@@ -275,6 +283,12 @@ class URL:
         else:
             host = host_header
             port = None
+        # The Host header is the authoritative source of the port; only when
+        # it carries none does a trusted `X-Forwarded-Port` / `Forwarded`
+        # port fill in. This keeps an explicit `host:port` from being
+        # overridden by a stale forwarded port.
+        if port is None and forwarded_port is not None:
+            port = forwarded_port
         return cls(
             scheme=scheme,
             host=host,
@@ -433,6 +447,54 @@ class RangeSpec:
         return f"RangeSpec(unit={self.unit!r}, ranges={self.ranges!r})"
 
 
+# A decomposed MIME media range: lower-cased type, subtype, the frozenset of
+# `(name, value)` media-type parameter pairs, and a specificity score used to
+# rank competing matches (RFC 9110 Sec. 12.5.1):
+#   3 = full `type/subtype` carrying parameters
+#   2 = full `type/subtype`
+#   1 = `type/*`
+#   0 = `*/*`
+# An invalid range (e.g. `*/json`) scores -1 and never matches.
+_MimeKey = tuple[str, str, frozenset[tuple[str, str]], int]
+
+
+def _parse_mime_key(value: str) -> _MimeKey:
+    """Decompose a media range into a cached, comparison-ready `_MimeKey`."""
+    head, _, rest = value.partition(";")
+    head = head.strip().lower()
+    type_, slash, subtype = head.partition("/")
+    if not slash:
+        # No `/` - not a valid media range.
+        return ("", "", frozenset(), -1)
+    type_ = type_.strip()
+    subtype = subtype.strip()
+    # `*/non-*` is meaningless (RFC 9110 Sec. 12.5.1) - never match it.
+    if type_ == "*" and subtype != "*":
+        return ("", "", frozenset(), -1)
+    params: set[tuple[str, str]] = set()
+    if rest:
+        for chunk in rest.split(";"):
+            chunk = chunk.strip()
+            if "=" not in chunk:
+                continue
+            k, _, v = chunk.partition("=")
+            v = v.strip()
+            if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+                v = v[1:-1]
+            # Parameter names are case-insensitive; values are kept verbatim
+            # except for the surrounding quotes.
+            params.add((k.strip().lower(), v))
+    if type_ == "*":
+        specificity = 0
+    elif subtype == "*":
+        specificity = 1
+    elif params:
+        specificity = 3
+    else:
+        specificity = 2
+    return (type_, subtype, frozenset(params), specificity)
+
+
 class AcceptHeader:
     """Parsed `Accept-*` header with RFC 9110 Sec. 12.5 q-value semantics.
 
@@ -448,8 +510,17 @@ class AcceptHeader:
         # `options` is already (value, q) tuples in original order; we
         # never re-sort because best_match wants the configured option
         # order to break ties, not the client's.
-        self._options = options
+        #
+        # For MIME headers each option is decomposed once into a
+        # `_MimeKey` (type, subtype, frozenset of media-type params,
+        # specificity score) so matching and specificity ranking read a
+        # cached tuple instead of re-splitting strings per comparison.
         self._mime = mime
+        self._options: list[tuple[str, float, _MimeKey | None]]
+        if mime:
+            self._options = [(value, q, _parse_mime_key(value)) for value, q in options]
+        else:
+            self._options = [(value, q, None) for value, q in options]
 
     @classmethod
     def parse(cls, raw: str, mime: bool = False) -> AcceptHeader:
@@ -457,7 +528,10 @@ class AcceptHeader:
 
         Q-values missing or unparseable default to 1.0 (RFC 9110 Sec. 12.4.2).
         Entries with `q=0` are kept - `best_match` treats them as
-        explicit rejections of that option.
+        explicit rejections of that option. For MIME headers, media-type
+        parameters (e.g. `application/json;profile="x"`) are retained and
+        participate in matching (RFC 9110 Sec. 12.5.1); the `q` parameter
+        separates the q-value from the media-type parameters.
         """
         if not raw:
             return cls([], mime)
@@ -472,32 +546,62 @@ class AcceptHeader:
             value, _, rest = chunk.partition(";")
             value = value.strip()
             q = 1.0
+            # Media-type parameters appear BEFORE `q`; accept-extension
+            # parameters appear AFTER it (RFC 9110 Sec. 12.5.1). For MIME
+            # headers the pre-`q` parameters are kept on the value so they
+            # take part in matching; for plain headers they are ignored.
+            params: list[str] = []
+            seen_q = False
             for param in rest.split(";"):
                 param = param.strip()
-                if param.startswith("q=") or param.startswith("Q="):
+                if not param:
+                    continue
+                if not seen_q and (param.startswith("q=") or param.startswith("Q=")):
                     try:
                         q = float(param[2:])
                     except ValueError:
                         q = 1.0
-                    break
+                    seen_q = True
+                    continue
+                if not seen_q:
+                    params.append(param)
+            if mime and params:
+                value = value + ";" + ";".join(params)
             items.append((value, q))
         return cls(items, mime)
 
     @property
     def values(self) -> list[str]:
         """All accepted values in the order the client sent them."""
-        return [v for v, _ in self._options]
+        return [v for v, _, _ in self._options]
 
     def quality(self, value: str) -> float:
         """Return the q-value the client assigned to `value`.
 
-        For MIME headers, matches `*/*` and `type/*` wildcards. Returns 0
-        when the value is rejected or not mentioned (callers usually
-        special-case this).
+        For MIME headers, matches `*/*` and `type/*` wildcards as well as
+        parameterized media ranges (e.g. `application/json;profile=x`); the
+        MOST SPECIFIC matching client range wins (RFC 9110 Sec. 12.5.1), with
+        ties broken by the higher q-value. Returns 0 when the value is
+        rejected or not mentioned (callers usually special-case this).
         """
+        if self._mime:
+            vkey = _parse_mime_key(value)
+            best_q = 0.0
+            best_spec = -1
+            for _opt, q, okey in self._options:
+                if okey is None or not self._mime_matches(okey, vkey):
+                    continue
+                spec = okey[3]
+                # A more specific range overrides a broader one regardless of
+                # q; among equally-specific ranges the higher q wins.
+                if spec > best_spec or (spec == best_spec and q > best_q):
+                    best_spec = spec
+                    best_q = q
+            return best_q
+        folded = value.lower()
         best = 0.0
-        for opt, q in self._options:
-            if self._matches(opt, value) and q > best:
+        for opt, q, _okey in self._options:
+            if (opt.lower() == folded or opt == "*") and q > best:
                 best = q
         return best
 
@@ -518,10 +622,10 @@ class AcceptHeader:
         # explicit `Br;q=0` must reject `br`. Fold both sides to lowercase
         # before the exact compare; the `*` wildcard fallback is unaffected.
         folded = value.lower()
-        for opt, q in self._options:
+        for opt, q, _okey in self._options:
             if opt.lower() == folded:
                 return q
-        for opt, q in self._options:
+        for opt, q, _okey in self._options:
             if opt == "*":
                 return q
         return 0.0
@@ -538,11 +642,11 @@ class AcceptHeader:
         case-insensitive (Sec. 8.4.1). Used by precompressed static selection to
         decide between serving the uncompressed asset and returning 406.
         """
-        for opt, q in self._options:
+        for opt, q, _okey in self._options:
             if opt.lower() == "identity":
                 # Explicit entry wins: identity is acceptable iff its q > 0.
                 return q > 0
-        for opt, q in self._options:
+        for opt, q, _okey in self._options:
             if opt == "*":
                 # Identity not named; the wildcard's q decides it.
                 return q > 0
@@ -552,49 +656,72 @@ class AcceptHeader:
     def best_match(self, options: list[str], default: str | None = None) -> str | None:
         """Return the option the client accepts with the highest q-value.
 
-        Ties go to the order in `options` (caller's preference). Returns
-        `default` when no option has q>0. When the header is empty (no
-        preference expressed), returns `options[0]` - RFC 9110 Sec. 12.5.1
-        treats a missing Accept as "accept anything".
+        Among candidates the client accepts (q>0), the one whose best
+        matching client range has the highest `(q, specificity)` wins, so a
+        parameterized exact match beats a bare wildcard (RFC 9110
+        Sec. 12.5.1). Ties on both go to the order in `options` (caller's
+        preference). Returns `default` when no option has q>0. When the
+        header is empty (no preference expressed), returns `options[0]` -
+        a missing Accept means "accept anything".
         """
         if not self._options:
             return options[0] if options else default
         best_opt: str | None = default
-        best_q = 0.0
+        best_rank: tuple[float, int] = (0.0, -1)
         for opt in options:
-            q = self.quality(opt)
-            if q > best_q:
-                best_q = q
+            rank = self._match_rank(opt)
+            if rank[0] > 0.0 and rank > best_rank:
+                best_rank = rank
                 best_opt = opt
         return best_opt
 
-    def _matches(self, opt: str, value: str) -> bool:
-        # RFC 9110 Sec. 8.4.1 (content codings) and Sec. 8.3.1 (media type
-        # type/subtype) are case-insensitive, so token comparison folds case;
-        # `Accept-Encoding: BR` matches `br` and `Accept: TEXT/HTML` matches
-        # `text/html`.
-        opt = opt.lower()
-        value = value.lower()
-        if opt == value:
-            return True
+    def _match_rank(self, value: str) -> tuple[float, int]:
+        """Return `(quality, specificity)` for `value` against this header.
+
+        `specificity` is the score of the most specific matching client
+        range (0 for non-MIME headers), used by `best_match` to prefer a
+        parameterized exact match over a wildcard at equal quality.
+        """
         if not self._mime:
-            # RFC 9110 Sec. 12.5.4: bare `*` matches any value in
-            # Accept-Language / Accept-Encoding / Accept-Charset.
-            return opt == "*"
-        # MIME wildcards: `*/*`, `text/*`.
-        if opt == "*/*":
-            return True
-        if "/" not in opt or "/" not in value:
+            return (self.quality(value), 0)
+        vkey = _parse_mime_key(value)
+        best_q = 0.0
+        best_spec = -1
+        for _opt, q, okey in self._options:
+            if okey is None or not self._mime_matches(okey, vkey):
+                continue
+            spec = okey[3]
+            if spec > best_spec or (spec == best_spec and q > best_q):
+                best_spec = spec
+                best_q = q
+        return (best_q, best_spec)
+
+    @staticmethod
+    def _mime_matches(okey: _MimeKey, vkey: _MimeKey) -> bool:
+        """Whether a client media range `okey` matches a server media type `vkey`.
+
+        Type and subtype must match or be covered by the range's `*`
+        wildcard, and every media-type parameter named in the range must be
+        present with an equal value in the server type (RFC 9110 Sec. 12.5.1).
+        An invalid range (specificity -1) never matches.
+        """
+        otype, osub, oparams, ospec = okey
+        if ospec < 0:
             return False
-        opt_type, opt_sub = opt.split("/", 1)
-        val_type, _val_sub = value.split("/", 1)
-        return bool(opt_sub == "*" and opt_type == val_type)
+        vtype, vsub, vparams, _vspec = vkey
+        if otype != "*" and otype != vtype:
+            return False
+        if osub != "*" and osub != vsub:
+            return False
+        # Parameters only constrain a fully-specified range; `<=` checks the
+        # range's params are a subset of the server type's params.
+        return oparams <= vparams
 
     def __contains__(self, value: str) -> bool:
         return self.quality(value) > 0
 
     def __bool__(self) -> bool:
-        return any(q > 0 for _, q in self._options)
+        return any(q > 0 for _, q, _ in self._options)
 
     def __iter__(self):
         return iter(self.values)

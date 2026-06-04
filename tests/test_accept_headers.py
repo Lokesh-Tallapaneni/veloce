@@ -201,3 +201,79 @@ def test_quality_matches_mime_type_case_insensitively():
     h = AcceptHeader.parse("TEXT/HTML;q=0.6, Application/*;q=0.3", mime=True)
     assert h.quality("text/html") == 0.6
     assert h.quality("application/json") == 0.3
+
+
+# ── RFC 9110 §12.5.1: parameterized media ranges ─────────────────────
+
+
+def test_parameterized_range_matches_value_with_param():
+    """`application/json;profile=x` matches the value carrying that param."""
+    h = AcceptHeader.parse("application/json;profile=x;q=0.8", mime=True)
+    assert h.quality("application/json;profile=x") == 0.8
+
+
+def test_parameterized_range_does_not_match_value_without_param():
+    """A range with a param does not match a value lacking it."""
+    h = AcceptHeader.parse("application/json;profile=x", mime=True)
+    assert h.quality("application/json") == 0.0
+
+
+def test_unparameterized_range_matches_value_with_param():
+    """A bare `application/json` range matches a parameterized value."""
+    h = AcceptHeader.parse("application/json", mime=True)
+    assert h.quality("application/json;profile=x") == 1.0
+
+
+def test_parameterized_param_value_must_be_equal():
+    h = AcceptHeader.parse("application/json;profile=x", mime=True)
+    assert h.quality("application/json;profile=y") == 0.0
+
+
+def test_q_separates_media_params_from_q_value():
+    """`level=1` before `q` is a media-type param; `ext=2` after `q` is dropped."""
+    h = AcceptHeader.parse("text/html;level=1;q=0.5;ext=2", mime=True)
+    assert h.quality("text/html;level=1") == 0.5
+    # The accept-extension `ext=2` is not a media-type param, so a plain
+    # `text/html` value still does not satisfy the `level=1` range.
+    assert h.quality("text/html") == 0.0
+
+
+def test_quoted_param_value_unquoted_for_match():
+    """A quoted param value in the range matches an unquoted-equal value."""
+    h = AcceptHeader.parse('application/json;profile="a b"', mime=True)
+    assert h.quality("application/json;profile=a b") == 1.0
+    assert h.quality('application/json;profile="a b"') == 1.0
+
+
+def test_parameterized_exact_beats_wildcard_in_best_match():
+    """An exact parameterized match outranks a bare `*/*` at equal-or-lower q."""
+    h = AcceptHeader.parse("*/*;q=0.5, application/json;profile=x;q=0.5", mime=True)
+    # Both q=0.5, but the parameterized range is more specific for the
+    # matching value, so it wins over a candidate that only hits `*/*`.
+    assert (
+        h.best_match(["text/plain", "application/json;profile=x"]) == "application/json;profile=x"
+    )
+
+
+def test_specificity_full_beats_type_star():
+    """`text/html` (specificity 2) beats `text/*` (specificity 1) at equal q."""
+    h = AcceptHeader.parse("text/*;q=0.7, text/html;q=0.7", mime=True)
+    assert h.quality("text/html") == 0.7
+    # The candidate that can match the full range ranks above one that only
+    # matches the wildcard.
+    assert h.best_match(["text/plain", "text/html"]) == "text/html"
+
+
+def test_invalid_star_subtype_never_matches():
+    """`*/json` is meaningless and must not match anything (RFC 9110 §12.5.1)."""
+    h = AcceptHeader.parse("*/json", mime=True)
+    assert h.quality("application/json") == 0.0
+    assert bool(h) is True  # still parsed, just non-matching
+
+
+def test_more_specific_zero_q_rejects_over_broad_accept():
+    """`application/*;q=0, */*;q=1` rejects an application subtype."""
+    h = AcceptHeader.parse("application/*;q=0, */*;q=1", mime=True)
+    # The more specific `application/*` (q=0) overrides the broader `*/*`.
+    assert h.quality("application/json") == 0.0
+    assert h.quality("text/html") == 1.0
