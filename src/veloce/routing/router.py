@@ -528,12 +528,28 @@ class Router:
         """Return True when re-registering `incoming` over `existing` is benign.
 
         An idempotent re-mount - the same handler callable landing on the same
-        path+method again, as happens when a router is included twice - is not
-        a conflict regardless of policy, so legitimate blueprint merges never
-        false-positive. Only a genuinely different handler is subject to the
-        `on_duplicate` policy.
+        path+method again with identical route-defining metadata, as happens
+        when a router/blueprint is included more than once - is not a conflict
+        regardless of policy, so legitimate blueprint merges never
+        false-positive.
+
+        The exemption is deliberately narrow: a same-callable registration that
+        carries *different* route metadata (a different name, response_model,
+        dependencies, or routing defaults) is a real second registration and
+        must go through the `on_duplicate` policy. Comparing only the handler
+        identity would silently bypass `on_duplicate='error'` for two distinct
+        decorations of one function. The compared fields are exactly those the
+        include-router remount path reproduces verbatim from the source route,
+        so a genuine remount still compares equal on every one of them.
         """
-        return existing.handler is incoming.handler
+        return (
+            existing.handler is incoming.handler
+            and existing.name == incoming.name
+            and existing.response_model is incoming.response_model
+            and existing.dependencies == incoming.dependencies
+            and existing.defaults == incoming.defaults
+            and existing.status_code == incoming.status_code
+        )
 
     def _on_duplicate_route(
         self, path: str, method: str, existing: RouteInfo, incoming: RouteInfo
@@ -684,11 +700,6 @@ class Router:
             excluded_middleware=frozenset(exclude_middleware) if exclude_middleware else None,
         )
 
-        # Register named route for url_for. Drop any stale reverse-converter
-        # cache so a re-registered name re-derives from its new template.
-        self._named_routes[route_name] = (full_path, param_names)
-        self._reverse_converters.pop(route_name, None)
-
         # Pre-compute the handler resolution plan once, here at registration.
         # Falls back to None if the handler isn't introspectable; the resolver
         # will rebuild on demand in that case.
@@ -731,8 +742,21 @@ class Router:
             mkey = method.upper()
             existing = handler_table.get(mkey)
             if existing is not None and not self._allow_duplicate(existing, route_info):
+                # Apply the `on_duplicate` policy *before* committing anything.
+                # On 'error' this raises and leaves the route fully unregistered;
+                # the named-route reverse entry below is therefore never written
+                # for a route that did not make it into the handler table, so a
+                # caught DuplicateRouteError cannot leave url_for() polluted.
                 self._on_duplicate_route(full_path, mkey, existing, route_info)
             handler_table[mkey] = route_info
+
+        # Register the named route for url_for only once the route is committed
+        # to the handler table above. The reverse entry reflects the route that
+        # actually wins on the override/warn replace paths, and is never written
+        # if the duplicate policy raised. Drop any stale reverse-converter cache
+        # so a re-registered name re-derives from its new template.
+        self._named_routes[route_name] = (full_path, param_names)
+        self._reverse_converters.pop(route_name, None)
 
     # -- Matching -------------------------------------------------
 

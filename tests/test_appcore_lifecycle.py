@@ -214,6 +214,44 @@ async def test_spawn_runs_and_is_drained_on_shutdown():
 
 
 @pytest.mark.asyncio
+async def test_task_spawned_in_on_shutdown_is_drained():
+    # The spawned-task drain runs AFTER the on_shutdown handlers, so a task a
+    # teardown callback spawns via app.spawn(...) is still cancelled and drained
+    # by the end of shutdown instead of surviving past it.
+    app = Veloce()
+    started = asyncio.Event()
+    cancelled: list[str] = []
+
+    async def late_worker():
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.append("late")
+            raise
+
+    spawned: list[asyncio.Task] = []
+
+    @app.on_shutdown
+    async def spawn_on_teardown():
+        task = app.spawn(late_worker(), name="late")
+        spawned.append(task)
+        # Let the task reach its first await so cancellation has something to
+        # interrupt; the drain that follows teardown must still reap it.
+        await started.wait()
+
+    await app._run_lifecycle("startup")
+    await app._run_lifecycle("shutdown")
+
+    assert spawned, "on_shutdown handler did not spawn a task"
+    task = spawned[0]
+    assert task.cancelled() or task.done()
+    assert cancelled == ["late"]
+    # Registry is cleared by the post-teardown drain.
+    assert app.get_spawned_task("late") is None
+
+
+@pytest.mark.asyncio
 async def test_spawn_duplicate_name_raises():
     app = Veloce()
 

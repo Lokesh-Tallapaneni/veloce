@@ -2654,6 +2654,20 @@ class Veloce(Router):
             match = resolved
             _bp_name = _endpoint_blueprint(request.endpoint)
 
+            # Refresh the response-phase chain from the FINAL matched route.
+            # The request-phase chain was computed from the pre-hook match, but
+            # a before_request hook may have rewritten request.path / method and
+            # `_resolve_route` re-matched to a different route with a different
+            # `exclude_middleware` set. The response phase must mirror the final
+            # route's exclusions, not the stale pre-hook ones. Zero-cost common
+            # path: a final route with no exclusions clears any stale stash so
+            # `_run_response_middleware` walks `self._middlewares` directly.
+            final_filtered = self._route_middleware_chains(match.route_info)
+            if final_filtered is not None:
+                request._state[_MW_RESPONSE_CHAIN_KEY] = final_filtered[1]
+            else:
+                request._state.pop(_MW_RESPONSE_CHAIN_KEY, None)
+
             # Resolve dependencies first and bind the resolver to this frame
             # *before* calling the handler - if the handler raises, the
             # `finally` block still sees the resolver and runs its
@@ -3418,11 +3432,12 @@ class Veloce(Router):
     async def _drain_spawned_tasks(self) -> None:
         """Cancel and await every spawned task within the per-task budget.
 
-        Run from the shutdown lifecycle before the lifespan stack unwinds, so
-        app-scoped background work is stopped before the resources it depends
-        on are torn down. Each task gets at most `GRACEFUL_TASK_TIMEOUT`
-        seconds to finish cancelling; a task that ignores cancellation past
-        that is abandoned so shutdown cannot hang indefinitely.
+        Run from the shutdown lifecycle after the on_shutdown handlers and the
+        lifespan stack have unwound, so a task spawned by a teardown callback is
+        also drained rather than surviving past shutdown. Each task gets at most
+        `GRACEFUL_TASK_TIMEOUT` seconds to finish cancelling; a task that ignores
+        cancellation past that is abandoned so shutdown cannot hang
+        indefinitely.
         """
         tasks = [*self._spawned_named.values(), *self._spawned_anon]
         if not tasks:
@@ -3893,30 +3908,40 @@ class Veloce(Router):
                 raise
             self._lifespan_stack = stack
         else:
-            await self._drain_spawned_tasks()
             shutdown_stack = self._lifespan_stack
             self._lifespan_stack = None
             errors: list[BaseException] = []
-            # Run every on_shutdown handler, newest first (symmetric to the
-            # startup order), collecting failures so one raising teardown does
-            # not abort the rest - unlike a bare loop that stops on first error.
-            for handler in reversed(self._on_shutdown):
-                try:
-                    await self._run_handler(handler)
-                except BaseException as exc:  # noqa: BLE001 - aggregated below
-                    errors.append(exc)
-            # Close the acquired-resource stack (lifespan CM exit + watchdog
-            # stop). When no startup ran (standalone or repeat shutdown) the
-            # stack is absent; fall back to stopping the watchdog and exiting an
-            # open CM directly so standalone shutdown still tears everything down.
-            self._lifespan_cm = None
-            if shutdown_stack is not None:
-                try:
-                    await shutdown_stack.aclose()
-                except BaseException as exc:  # noqa: BLE001 - aggregated below
-                    errors.extend(_collect_chained(exc))
-            else:
-                await self._stop_watchdog()
+            try:
+                # Run every on_shutdown handler, newest first (symmetric to the
+                # startup order), collecting failures so one raising teardown
+                # does not abort the rest - unlike a bare loop that stops on
+                # first error.
+                for handler in reversed(self._on_shutdown):
+                    try:
+                        await self._run_handler(handler)
+                    except BaseException as exc:  # noqa: BLE001 - aggregated below
+                        errors.append(exc)
+                # Close the acquired-resource stack (lifespan CM exit + watchdog
+                # stop). When no startup ran (standalone or repeat shutdown) the
+                # stack is absent; fall back to stopping the watchdog and exiting
+                # an open CM directly so standalone shutdown still tears
+                # everything down.
+                self._lifespan_cm = None
+                if shutdown_stack is not None:
+                    try:
+                        await shutdown_stack.aclose()
+                    except BaseException as exc:  # noqa: BLE001 - aggregated below
+                        errors.extend(_collect_chained(exc))
+                else:
+                    await self._stop_watchdog()
+            finally:
+                # Drain spawned tasks LAST, after the on_shutdown handlers and
+                # lifespan teardown have completed, so any task a teardown
+                # callback spawned via `app.spawn(...)` is also drained instead
+                # of surviving past shutdown. In a `finally` so the drain still
+                # runs (with the same timeout/cancel behavior) even when a
+                # teardown raised above.
+                await self._drain_spawned_tasks()
             _raise_unwind_errors(errors)
 
     async def _stop_watchdog(self) -> None:

@@ -148,3 +148,66 @@ def test_middleware_name_defaults_to_class_name():
     assert mw.middleware_name == "_Tagger"
     named = _Tagger("X", name="custom")
     assert named.middleware_name == "custom"
+
+
+def test_response_chain_follows_route_after_before_request_rewrite():
+    # A before_request hook may rewrite request.path, causing _resolve_route to
+    # re-match a different route. The response-phase middleware exclusion must
+    # reflect the FINAL matched route, not the pre-hook one. Here the request
+    # arrives for a route with no exclusions but is rewritten to a route that
+    # excludes "beta"; the response phase must skip "beta".
+    app = Veloce(openapi_url=None)
+    app.add_middleware(_Tagger("A"))
+    app.add_middleware(_Tagger("B", name="beta"))
+
+    @app.before_request
+    def rewrite(request: Request):
+        if request.path == "/enter":
+            request.path = "/final"
+        return None
+
+    @app.get("/enter")
+    async def enter(request: Request):
+        return {"hit": "enter"}
+
+    @app.get("/final", exclude_middleware=["beta"])
+    async def final(request: Request):
+        return {"hit": "final"}
+
+    with TestClient(app) as client:
+        resp = client.get("/enter")
+        assert resp.json() == {"hit": "final"}
+        # Final route excludes "beta": its response header must be absent.
+        assert "X-Saw-B" not in resp.headers
+        # "A" is not excluded by the final route, so it still stamps.
+        assert resp.headers.get("X-Saw-A") == "1"
+
+
+def test_response_chain_drops_stale_exclusion_after_rewrite():
+    # The inverse: the pre-hook route excludes "beta", but a before_request
+    # rewrite lands on a route with NO exclusions. The response phase must run
+    # every middleware (the stale exclusion must not leak through).
+    app = Veloce(openapi_url=None)
+    app.add_middleware(_Tagger("A"))
+    app.add_middleware(_Tagger("B", name="beta"))
+
+    @app.before_request
+    def rewrite(request: Request):
+        if request.path == "/skip-entry":
+            request.path = "/plain"
+        return None
+
+    @app.get("/skip-entry", exclude_middleware=["beta"])
+    async def skip_entry(request: Request):
+        return {"hit": "skip-entry"}
+
+    @app.get("/plain")
+    async def plain(request: Request):
+        return {"hit": "plain"}
+
+    with TestClient(app) as client:
+        resp = client.get("/skip-entry")
+        assert resp.json() == {"hit": "plain"}
+        # Final route excludes nothing: both response headers must be present.
+        assert resp.headers.get("X-Saw-A") == "1"
+        assert resp.headers.get("X-Saw-B") == "1"
