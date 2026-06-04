@@ -226,3 +226,43 @@ def test_server_session_vary_opt_out():
     app, _ = _server_app(vary_on_cookie=False)
     resp = app.test_client().get("/write")
     assert "cookie" not in _vary_values(resp)
+
+
+# ── Non-Session object under the reserved state key is tolerated ─────
+
+
+def test_cookie_session_tolerates_non_session_state_object():
+    """`session` is a framework-reserved state key, but `request._state` is
+    mutable scratch space. If user code replaces the Session with a plain
+    mapping (or any object lacking `.accessed` / `.modified`), process_response
+    must skip the session work gracefully rather than raise AttributeError."""
+    app = Veloce(debug=False, openapi_url=None)
+    app.add_middleware(SessionMiddleware(secret_key="k" * 32))
+
+    @app.get("/replace")
+    async def replace(request: Request):
+        request._state["session"] = {"user": "alice"}
+        return {"ok": True}
+
+    resp = app.test_client().get("/replace")
+    assert resp.status_code == 200
+    # The non-Session object carries no accessed/modified flags, so the
+    # middleware re-signs nothing and emits neither Set-Cookie nor Vary.
+    assert not _has_set_cookie(resp)
+    assert "cookie" not in _vary_values(resp)
+
+
+def test_server_session_tolerates_non_session_state_object():
+    """ServerSessionMiddleware mirrors the same tolerance for a non-Session
+    object placed under the reserved `session` state key."""
+    app = Veloce(debug=False, openapi_url=None)
+    app.add_middleware(ServerSessionMiddleware(store=InMemorySessionStore()))
+
+    @app.get("/replace")
+    async def replace(request: Request):
+        request._state["session"] = {"user": "alice"}
+        return {"ok": True}
+
+    resp = app.test_client().get("/replace")
+    assert resp.status_code == 200
+    assert not _has_set_cookie(resp)
