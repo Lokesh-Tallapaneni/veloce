@@ -162,6 +162,19 @@ class Config(dict[str, Any]):
             "REQUEST_HANDLER_TIMEOUT": 30,
             "KEEP_ALIVE_TIMEOUT": 75,
             "REQUEST_TIMEOUT": 30,
+            # OS-level TCP keepalive for the built-in (Veloce.run / gunicorn
+            # worker) serving path. When enabled, SO_KEEPALIVE is set on each
+            # accepted socket so the kernel probes idle peers and tears down
+            # half-open connections the application-level idle timer would never
+            # see (a peer that vanished without a FIN). The idle/interval/count
+            # knobs map to TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT and are
+            # applied only on platforms that expose them; left None they keep
+            # the OS defaults. Has no effect under ASGI servers, which own their
+            # own sockets.
+            "TCP_KEEPALIVE": True,
+            "TCP_KEEPALIVE_IDLE": None,
+            "TCP_KEEPALIVE_INTERVAL": None,
+            "TCP_KEEPALIVE_COUNT": None,
             # Per-task budget, in seconds, for draining an `app.spawn(...)`
             # background task on shutdown: each task is cancelled and awaited
             # for at most this long before the drain moves on.

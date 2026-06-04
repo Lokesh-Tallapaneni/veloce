@@ -13,9 +13,13 @@ Notable spec rules this middleware enforces:
 - Whenever the allowed origin depends on the request origin, the
   response MUST include `Vary: Origin` to prevent cache poisoning.
 - Preflight (`OPTIONS` with `Access-Control-Request-Method`) returns
-  204 with the negotiated set; preflight from a disallowed origin gets
-  the same 204 (with no allow-* headers) - the browser enforces the
-  block.
+  204 with the negotiated set; a preflight whose origin or requested
+  method is disallowed gets a diagnostic 400 instead so the rejection
+  is visible to developers (the browser would block it either way).
+- Private Network Access: when `allow_private_network=True` and a
+  preflight carries `Access-Control-Request-Private-Network: true`, the
+  response echoes `Access-Control-Allow-Private-Network: true`. The grant
+  is opt-in and never emitted otherwise.
 """
 
 from __future__ import annotations
@@ -29,9 +33,12 @@ from veloce._constants import (
     HEADER_ACCESS_CONTROL_ALLOW_HEADERS,
     HEADER_ACCESS_CONTROL_ALLOW_METHODS,
     HEADER_ACCESS_CONTROL_ALLOW_ORIGIN,
+    HEADER_ACCESS_CONTROL_ALLOW_PRIVATE_NETWORK,
     HEADER_ACCESS_CONTROL_EXPOSE_HEADERS,
     HEADER_ACCESS_CONTROL_MAX_AGE,
     HEADER_ACCESS_CONTROL_REQUEST_HEADERS,
+    HEADER_ACCESS_CONTROL_REQUEST_METHOD,
+    HEADER_ACCESS_CONTROL_REQUEST_PRIVATE_NETWORK,
     HEADER_ORIGIN,
 )
 from veloce._protocol_constants import (
@@ -91,6 +98,7 @@ class CORSMiddleware(Middleware):
         allow_methods: list[str] | None = None,
         allow_headers: list[str] | None = None,
         allow_credentials: bool = False,
+        allow_private_network: bool = False,
         max_age: int = 600,
         expose_headers: list[str] | None = None,
         name: str | None = None,
@@ -130,6 +138,7 @@ class CORSMiddleware(Middleware):
         ]
         self.allow_headers = allow_headers or ["*"]
         self.allow_credentials = allow_credentials
+        self.allow_private_network = allow_private_network
         self.max_age = max_age
         self.expose_headers = expose_headers or []
 
@@ -142,6 +151,13 @@ class CORSMiddleware(Middleware):
         self._allow_origins_has_star = "*" in self._allow_origins_set
         self._allow_headers_lower: frozenset[str] = frozenset(h.lower() for h in self.allow_headers)
         self._allow_headers_has_star = "*" in self.allow_headers
+        # Uppercased method set for the preflight requested-method check.
+        # HTTP methods are case-sensitive tokens; browsers send them in the
+        # canonical uppercase form, so an exact-set membership test is correct.
+        # Uppercased for the preflight check: browsers send the requested method
+        # in canonical case (`GET`) in `Access-Control-Request-Method`, so a
+        # lower-cased `allow_methods` config must still match.
+        self._allow_methods_set: frozenset[str] = frozenset(m.upper() for m in self.allow_methods)
         # Precompute the joined header strings - these are constant for
         # the middleware lifetime, so the per-response `", ".join(...)`
         # in `_add_cors_headers` is wasted work.
@@ -203,7 +219,22 @@ class CORSMiddleware(Middleware):
             # way, but 400 makes the rejection visible to developers.
             if not self._origin_allowed(origin):
                 return Response(
-                    status_code=status.HTTP_400_BAD_REQUEST, body=b"Disallowed CORS origin"
+                    status_code=status.HTTP_400_BAD_REQUEST, body=b"CORS origin not allowed"
+                )
+            # Fetch standard 4.8: the preflight is for the actual request's
+            # method, carried in Access-Control-Request-Method. If that
+            # method is not in the allow-set the preflight is a rejection;
+            # surface it as a diagnostic 400 instead of a 204 the browser
+            # would silently block. When the header is absent (soft OPTIONS
+            # probes from older clients) the check is skipped.
+            requested_method = request.headers.get(HEADER_ACCESS_CONTROL_REQUEST_METHOD, "")
+            if (
+                requested_method
+                and "*" not in self._allow_methods_set
+                and requested_method.upper() not in self._allow_methods_set
+            ):
+                return Response(
+                    status_code=status.HTTP_400_BAD_REQUEST, body=b"CORS method not allowed"
                 )
             response = Response(status_code=status.HTTP_204_NO_CONTENT, body=b"")
             self._add_cors_headers(response, origin, preflight=True)
@@ -217,6 +248,15 @@ class CORSMiddleware(Middleware):
                 matched = [t for t in tokens if t.lower() in self._allow_headers_lower]
                 if matched:
                     response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = ", ".join(matched)
+            # Private Network Access (https://wicg.github.io/private-network-access/):
+            # a preflight from a public origin to a private host carries
+            # Access-Control-Request-Private-Network: true. Only echo the
+            # grant when the server was explicitly configured to allow it;
+            # the header is omitted otherwise so the browser blocks access.
+            if self.allow_private_network and (
+                request.headers.get(HEADER_ACCESS_CONTROL_REQUEST_PRIVATE_NETWORK) == "true"
+            ):
+                response.headers[HEADER_ACCESS_CONTROL_ALLOW_PRIVATE_NETWORK] = "true"
             response.headers[HEADER_ACCESS_CONTROL_MAX_AGE] = str(self.max_age)
             return response
 

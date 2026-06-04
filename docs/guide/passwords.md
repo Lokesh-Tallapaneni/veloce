@@ -71,6 +71,38 @@ assert verify_password("", "anything") is False
     trivially fast) is treated as tampering and returns `False`, even if
     its format is otherwise valid.
 
+## Upgrading hashes on login
+
+Over time the recommended work factor rises, and you may switch from
+PBKDF2 to scrypt. Rather than forcing a password reset, re-derive a
+stored hash at the current strength the next time the user logs in —
+that is the one moment the plaintext is available.
+[`verify_and_needs_update`](../reference.md#veloce.verify_and_needs_update)
+checks the password and reports whether the stored verifier is weaker
+than the current defaults, returning `(ok, needs_update)`.
+
+```python
+from veloce import hash_password, verify_and_needs_update
+
+# A legacy PBKDF2 verifier from an older deployment.
+stored = hash_password("hunter2", method="pbkdf2:sha256")
+
+ok, needs_update = verify_and_needs_update(stored, "hunter2")
+if ok and needs_update:
+    # Plaintext is in hand on a successful login — re-hash at the
+    # current default (scrypt) and persist the new verifier.
+    stored = hash_password("hunter2")
+```
+
+`needs_update` is `True` when the stored verifier used a non-default
+method, or scrypt cost parameters below the current defaults. It is
+always `False` on a failed verify — there is nothing to upgrade for a
+credential that did not match.
+[`needs_rehash`](../reference.md#veloce.needs_rehash) exposes the same
+check without verifying, and
+[`verify_and_needs_update_async`](../reference.md#veloce.verify_and_needs_update_async)
+runs the verify on a worker thread for `async` handlers.
+
 ## Async handlers
 
 The key derivation is deliberately slow — roughly 100 ms of CPU — so

@@ -110,7 +110,13 @@ async def report(session=Depends(db_session)):
     return session.query(...)
 ```
 
-Multiple `yield` dependencies tear down in reverse order.
+Multiple `yield` dependencies tear down in reverse order. Every teardown
+runs even if an earlier one raises; the failures are then re-raised
+together as a `BaseExceptionGroup` (chained from the request exception
+when the request itself failed) so a broken teardown — a transaction that
+fails to commit or roll back, say — is observable rather than silently
+swallowed. The dispatcher logs the aggregated group so a failing teardown
+does not break the response cycle.
 
 ## Security dependencies
 
@@ -118,6 +124,13 @@ Multiple `yield` dependencies tear down in reverse order.
 `SecurityScopes` lets a dependency inspect the scopes required by the
 route. Veloce ships HTTP Basic/Bearer/Digest, API-key, and OAuth2
 schemes under `veloce.security`.
+
+When the same auth callable is required with different scope sets in one
+request — `Security(auth, scopes=["read"])` and `Security(auth,
+scopes=["read", "write"])` — and it reads `SecurityScopes`, each scope set
+resolves independently (the per-request dependency cache keys those entries
+by their active scopes). Plain `Depends`, and any `Security` dependency
+that does not read its scopes, still resolve once per request.
 
 ## Overriding dependencies in tests
 

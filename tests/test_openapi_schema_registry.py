@@ -19,6 +19,16 @@ from pydantic import BaseModel, computed_field
 
 from veloce import Veloce
 
+# The generator auto-adds shared `HTTPValidationError` / `ValidationError`
+# component schemas for any operation with a validatable parameter. These tests
+# assert the model components, so the validation envelope is filtered out.
+_VALIDATION_ENVELOPE_NAMES = {"HTTPValidationError", "ValidationError"}
+
+
+def _model_component_names(schema: dict) -> set[str]:
+    """Return component-schema names excluding the validation-error envelope."""
+    return set(schema["components"]["schemas"]) - _VALIDATION_ENVELOPE_NAMES
+
 
 def _make_named_model(cls_name: str, module: str, fields: dict[str, type]) -> type[BaseModel]:
     """Build a fresh BaseModel subclass with an explicit name and module."""
@@ -96,7 +106,7 @@ def test_same_name_models_do_not_collide() -> None:
         return {}
 
     schema = app.openapi()
-    names = set(schema["components"]["schemas"])
+    names = _model_component_names(schema)
     assert names == {"User__schemas", "User__db"}
 
     ref_a = schema["paths"]["/a"]["post"]["requestBody"]["content"]["application/json"]["schema"]
@@ -148,7 +158,7 @@ def test_validation_and_serialization_collapse_when_identical() -> None:
 
     schema = app.openapi()
     # Same shape for input and output -> one component, no `-Output` twin.
-    assert list(schema["components"]["schemas"]) == ["_Plain"]
+    assert _model_component_names(schema) == {"_Plain"}
     op = schema["paths"]["/p"]["post"]
     assert (
         op["requestBody"]["content"]["application/json"]["schema"]["$ref"]
@@ -168,7 +178,7 @@ def test_diverging_model_splits_into_output_variant() -> None:
         return {}
 
     schema = app.openapi()
-    names = set(schema["components"]["schemas"])
+    names = _model_component_names(schema)
     assert names == {"_Account", "_Account-Output"}
     op = schema["paths"]["/acct"]["post"]
     # Request -> validation schema (no computed field).
@@ -232,7 +242,7 @@ def test_separate_input_output_flag_disables_split() -> None:
 
     schema = app.openapi()
     # Split disabled -> response reuses the validation schema, one component.
-    assert list(schema["components"]["schemas"]) == ["_Account"]
+    assert _model_component_names(schema) == {"_Account"}
     op = schema["paths"]["/acct"]["post"]
     assert (
         op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]

@@ -1,0 +1,110 @@
+"""Deterministic middleware ordering via `add_middleware(priority=...)`.
+
+Higher priority runs earlier in the request phase and correspondingly later in
+the response phase; equal priorities keep registration order. With no priority
+set the chain is the plain registration order it has always been.
+"""
+
+from __future__ import annotations
+
+from veloce import Veloce
+from veloce.middleware import Middleware
+
+
+def _recorder(label: str, log: list[str]) -> type[Middleware]:
+    class _MW(Middleware):
+        name = label
+
+        async def process_request(self, request):
+            log.append(f"req:{label}")
+            return None
+
+        async def process_response(self, request, response):
+            log.append(f"resp:{label}")
+            return response
+
+    return _MW
+
+
+async def _drive(app: Veloce, log: list[str]) -> None:
+    from veloce.http.request import Request
+
+    request = Request(method="GET", path="/", query_string="", headers={}, body=b"")
+    await app._run_request_middleware(request)
+    from veloce.http.response import Response
+
+    await app._run_response_middleware(request, Response(body=b""))
+
+
+async def test_priority_orders_request_phase_high_first():
+    log: list[str] = []
+    app = Veloce()
+    app.add_middleware(_recorder("low", log)(), priority=1)
+    app.add_middleware(_recorder("high", log)(), priority=10)
+    app.add_middleware(_recorder("mid", log)(), priority=5)
+
+    await _drive(app, log)
+
+    # Request phase: descending priority. Response phase: the reverse.
+    assert log == [
+        "req:high",
+        "req:mid",
+        "req:low",
+        "resp:low",
+        "resp:mid",
+        "resp:high",
+    ]
+
+
+async def test_equal_priority_keeps_registration_order():
+    log: list[str] = []
+    app = Veloce()
+    app.add_middleware(_recorder("a", log)(), priority=5)
+    app.add_middleware(_recorder("b", log)(), priority=5)
+    app.add_middleware(_recorder("c", log)(), priority=5)
+
+    await _drive(app, log)
+
+    assert log[:3] == ["req:a", "req:b", "req:c"]
+
+
+async def test_no_priority_is_registration_order_unchanged():
+    log: list[str] = []
+    app = Veloce()
+    app.add_middleware(_recorder("first", log)())
+    app.add_middleware(_recorder("second", log)())
+
+    # No priority ever set: the ordered rebuild is skipped and the chain is the
+    # plain append-order list.
+    assert app._any_priority is False
+    assert [m.middleware_name for m in app._middlewares] == ["first", "second"]
+
+    await _drive(app, log)
+    assert log == ["req:first", "req:second", "resp:second", "resp:first"]
+
+
+async def test_priority_interleaved_with_default_zero():
+    log: list[str] = []
+    app = Veloce()
+    app.add_middleware(_recorder("default-a", log)())  # priority 0
+    app.add_middleware(_recorder("boost", log)(), priority=100)
+    app.add_middleware(_recorder("default-b", log)())  # priority 0
+
+    await _drive(app, log)
+
+    # The boosted middleware runs first in the request phase; the two
+    # default-priority entries keep their relative registration order.
+    assert log[:3] == ["req:boost", "req:default-a", "req:default-b"]
+
+
+def test_priority_not_forwarded_to_middleware_constructor():
+    """`priority` is popped before construction, so subclass __init__ is clean."""
+
+    class StrictMW(Middleware):
+        def __init__(self) -> None:
+            super().__init__()
+
+    app = Veloce()
+    # Must not raise a TypeError about an unexpected `priority` kwarg.
+    app.add_middleware(StrictMW, priority=3)
+    assert app._any_priority is True

@@ -1244,6 +1244,57 @@ class Router:
     # `websocket_route` is an alias for the `websocket` decorator.
     websocket_route = websocket
 
+    def websocket_listener(
+        self,
+        path: str,
+        *,
+        receive: str = "json",
+        send: str = "json",
+        on_connect: RouteHandler | Callable[..., Any] | None = None,
+        on_disconnect: RouteHandler | Callable[..., Any] | None = None,
+    ) -> Callable:
+        """Declarative WebSocket route - wrap a per-message callback.
+
+        The decorated callback handles one message at a time; the framework
+        owns the accept handshake, the receive loop, and the clean close on
+        disconnect. The callback is called as `cb(data)`, or `cb(ws, data)`
+        when its first parameter is named `ws`/`socket` (or it takes two
+        positional parameters). Returning a non-`None` value sends it back in
+        `send` mode; returning `None` sends nothing.
+
+        `receive`/`send` select the codec (`"json"` default, or `"text"` /
+        `"bytes"`). `on_connect(ws)` runs after accept; `on_disconnect(ws)`
+        always runs when the loop ends, including on peer disconnect. Sync
+        callbacks and hooks are offloaded to the executor.
+
+        Usage::
+
+            @app.websocket_listener("/echo")
+            async def echo(data):
+                return data
+
+        For full control over the handshake and loop use `@app.websocket`.
+        """
+
+        # Imported here, not at module top: `router` is imported during app
+        # bootstrap before `veloce.websocket`'s dependency chain is fully
+        # initialised, so a top-level import forms a cycle. This is a
+        # registration-time decorator call, not a per-request hot path.
+        from veloce.websocket import build_listener_handler
+
+        def decorator(func: RouteHandler | Callable[..., Any]) -> RouteHandler | Callable[..., Any]:
+            handler = build_listener_handler(
+                func,
+                receive=receive,
+                send=send,
+                on_connect=on_connect,
+                on_disconnect=on_disconnect,
+            )
+            self.add_route(path=path, handler=handler, methods=[ROUTE_METHOD_WEBSOCKET])
+            return func
+
+        return decorator
+
     def add_websocket_route(self, path: str, handler: RouteHandler) -> None:
         """Imperative WebSocket route registration - ASGI shape.
 

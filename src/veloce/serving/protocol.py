@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import socket as _socket
 import threading
 import weakref
 from collections import deque
@@ -62,6 +63,45 @@ WRITE_BUFFER_HIGH_WATER = 256 * 1024
 # process - but the helper that clears it exists for the test suite, which
 # drives shutdown repeatedly within one interpreter.
 _SHUTTING_DOWN = False
+
+
+def _enable_tcp_keepalive(
+    sock: _socket.socket,
+    idle: int | None,
+    interval: int | None,
+    count: int | None,
+) -> None:
+    """Turn on OS-level TCP keepalive for an accepted connection socket.
+
+    Sets SO_KEEPALIVE so the kernel probes an idle peer and reaps a half-open
+    connection that vanished without a FIN - a dead peer the application-level
+    idle timer never observes because no bytes ever arrive. The per-socket
+    tuning options are platform-specific: TCP_KEEPIDLE / TCP_KEEPINTVL /
+    TCP_KEEPCNT exist on Linux (and TCP_KEEPALIVE names the idle option on
+    macOS), but Windows exposes none of them via setsockopt. Each option is
+    therefore probed with `getattr` against the `socket` module and applied only
+    when both the constant and a value are present, so the native serving path
+    keeps working on Windows where only SO_KEEPALIVE itself is available. A
+    `None` value leaves the OS default in place. Failures to set any individual
+    option are swallowed - keepalive is best-effort hardening, never a reason to
+    drop an otherwise-serviceable connection.
+    """
+    with contextlib.suppress(OSError):
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+    # `TCP_KEEPIDLE` is the Linux name; macOS spells the idle option
+    # `TCP_KEEPALIVE`. Prefer whichever this build exposes.
+    idle_opt = getattr(_socket, "TCP_KEEPIDLE", None)
+    if idle_opt is None:
+        idle_opt = getattr(_socket, "TCP_KEEPALIVE", None)
+    for value, opt in (
+        (idle, idle_opt),
+        (interval, getattr(_socket, "TCP_KEEPINTVL", None)),
+        (count, getattr(_socket, "TCP_KEEPCNT", None)),
+    ):
+        if value is None or opt is None:
+            continue
+        with contextlib.suppress(OSError):
+            sock.setsockopt(_socket.IPPROTO_TCP, opt, value)
 
 
 class HttpProtocol(asyncio.Protocol):
@@ -385,6 +425,26 @@ class HttpProtocol(asyncio.Protocol):
         high = self.app.config.get("WRITE_BUFFER_HIGH_WATER", WRITE_BUFFER_HIGH_WATER)
         with contextlib.suppress(NotImplementedError, AttributeError):
             transport.set_write_buffer_limits(high=high)
+
+        # Enable OS-level TCP keepalive so the kernel detects a peer that died
+        # without closing (no FIN, no further bytes) - the application idle
+        # timer never sees such a connection. Skipped when disabled in config or
+        # when no settable socket is reachable: a transport may expose no
+        # `get_extra_info` (some test/uvloop stand-ins) or return None for the
+        # socket (a TLS transport). The socket is duck-typed on `setsockopt`
+        # rather than `isinstance(socket.socket)` so a uvloop socket wrapper is
+        # accepted too. Platform differences in the tuning options are handled
+        # inside the helper.
+        if self.app.config.get("TCP_KEEPALIVE", True):
+            get_extra_info = getattr(transport, "get_extra_info", None)
+            sock = get_extra_info("socket") if callable(get_extra_info) else None
+            if callable(getattr(sock, "setsockopt", None)):
+                _enable_tcp_keepalive(
+                    cast("_socket.socket", sock),
+                    self.app.config.get("TCP_KEEPALIVE_IDLE"),
+                    self.app.config.get("TCP_KEEPALIVE_INTERVAL"),
+                    self.app.config.get("TCP_KEEPALIVE_COUNT"),
+                )
 
         # Track this connection so graceful shutdown can flip its drain flag.
         # If shutdown already began before this connection was admitted, start

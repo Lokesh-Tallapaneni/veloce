@@ -99,6 +99,39 @@ def _marker_kind(marker: ParamBase) -> int:
     return MK_QUERY
 
 
+def _raise_kwarg_ambiguity(
+    handler: Callable, param_name: str, marker: Any, seen: list | None
+) -> None:
+    """Raise on a by-name magic parameter that also carries a value marker.
+
+    Builds the dependency chain (when the offending parameter is in a nested
+    `Depends`) from `_seen` so the message points at the exact handler.
+    """
+    from veloce.exceptions import ConfigurationError
+
+    marker_name = type(marker).__name__
+    chain = ""
+    # Only surface the chain for a nested dependency (more than just the
+    # handler itself); a top-level handler already names itself below.
+    if seen and len(seen) > 1:
+        names = [
+            getattr(c, "__qualname__", None) or getattr(c, "__name__", None) or repr(c)
+            for c in seen
+        ]
+        chain = f" (in dependency chain {' -> '.join(names)})"
+    where = (
+        getattr(handler, "__qualname__", None)
+        or getattr(handler, "__name__", None)
+        or repr(handler)
+    )
+    raise ConfigurationError(
+        f"parameter {param_name!r} on {where}{chain} is reserved for the injected "
+        f"{param_name!r} object but also declares a {marker_name}() marker; the marker "
+        f"would be silently ignored. Rename the parameter or drop the {marker_name}() "
+        "marker to resolve the ambiguity."
+    )
+
+
 def _warn_shared_mutable_default(name: str, default: Any) -> None:
     """Warn (once at registration) about a marker's shared mutable default."""
     warnings.warn(
@@ -137,6 +170,7 @@ class _Slot:
         "dep_is_gen",
         "dep_is_async_gen",
         "dep_offload",
+        "scope_sensitive",
     )
 
     def __init__(self, kind: int, name: str) -> None:
@@ -166,6 +200,14 @@ class _Slot:
         # Opt-in: route a blocking sync dependency through the thread pool
         # instead of calling it inline on the event loop.
         self.dep_offload = False
+        # Whether this dependency's cached result depends on the active
+        # Security() scope union. True only when the dependency carries its own
+        # Security() scopes AND its sub-graph reads them (a `SecurityScopes`
+        # parameter anywhere below). The resolver folds the active scopes into
+        # the cache key for these slots so the same callable referenced with
+        # different scope sets resolves as distinct entries; plain dependencies
+        # keep the cheap identity-only cache key. Computed once at registration.
+        self.scope_sensitive = False
 
 
 # -- Parallel-dependency grouping ---------------------------
@@ -426,7 +468,36 @@ def _build_depends_slot(
     if scopes:
         # target_type is repurposed as the scope list for Security() slots.
         slot.target_type = list(scopes)
+    # A dependency's cached result varies with the active scope union whenever
+    # something in its sub-graph reads `SecurityScopes` - whether the scopes are
+    # declared on this slot (`Security(..., scopes=...)`) OR inherited from an
+    # ancestor Security() and read by a plain-`Depends` helper below it. Mark any
+    # such slot so the resolver keys its cache by `(callable, active_scopes)`;
+    # otherwise the same callable resolved under different scope sets collides.
+    # One-time scan at registration; the hot path only branches on the bit.
+    slot.scope_sensitive = _subgraph_reads_scopes(slot.sub_plan, set())
     return slot
+
+
+def _subgraph_reads_scopes(plan: HandlerPlan | None, seen_plans: set[int]) -> bool:
+    """Whether `plan` (or any dependency below it) reads `SecurityScopes`.
+
+    A `K_SECURITY_SCOPES` slot anywhere in the reachable sub-graph means the
+    dependency's result genuinely depends on the active scope union, so its
+    cache entry must be scope-keyed. Cycle-guarded via `seen_plans`.
+    """
+    if plan is None:
+        return False
+    plan_id = id(plan)
+    if plan_id in seen_plans:
+        return False
+    seen_plans.add(plan_id)
+    for sub in plan.slots:
+        if sub.kind == K_SECURITY_SCOPES:
+            return True
+        if sub.kind == K_DEPENDS and _subgraph_reads_scopes(sub.sub_plan, seen_plans):
+            return True
+    return False
 
 
 def build_plan(
@@ -537,6 +608,24 @@ def build_plan(
                 default = extracted_marker
                 has_default = True
             annotation = base_type
+
+        # Ambiguity guard (registration-time, intent-aware). A parameter bound
+        # by a BY-NAME magic rule below (`request`, or `ws` / `websocket` on a
+        # WebSocket plan) that ALSO carries an explicit Query / Path / Header /
+        # Cookie / Body / Form / File marker is contradictory: the name asks for
+        # the injected object while the marker asks for a request value, and the
+        # by-name rule silently wins, dropping the marker. Flag only this exact
+        # conflict so the mis-binding surfaces at startup instead of at runtime.
+        # The annotation-driven magic bindings (`x: Request`, `bt: BackgroundTasks`)
+        # are not name-sensitive and stay untouched, and `Depends` is allowed so a
+        # dependency may still be named `request`; this keeps valid handlers
+        # (`q: str = Query()`, `request: Request`) free of false positives.
+        if isinstance(default, ParamBase):
+            magic_name = param_name == "request" or (
+                websocket and param_name in ("ws", "websocket")
+            )
+            if magic_name:
+                _raise_kwarg_ambiguity(handler, param_name, default, _seen)
 
         # WebSocket injection (websocket plans only) - by annotation or by
         # the `ws` / `websocket` parameter name. Checked first so it wins

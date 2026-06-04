@@ -86,10 +86,11 @@ from __future__ import annotations
 import contextlib
 import time
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, cast
 
 from veloce._protocol_constants import (
+    ASGI_SCOPE_HTTP,
     HTTP_METHOD_CONNECT,
     HTTP_METHOD_DELETE,
     HTTP_METHOD_GET,
@@ -113,6 +114,7 @@ if TYPE_CHECKING:  # pragma: no cover
 # `instrument_with_otel`, where a precise ImportError with an install hint is
 # raised.
 try:
+    from opentelemetry import context as _otel_context
     from opentelemetry import trace as _otel_trace
     from opentelemetry.context import Context as _OtelContext
     from opentelemetry.trace.propagation.tracecontext import (
@@ -121,6 +123,7 @@ try:
 
     _OTEL_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover - exercised only without opentelemetry
+    _otel_context = None  # type: ignore[assignment]
     _otel_trace = None  # type: ignore[assignment]
     _OtelContext = None  # type: ignore[assignment,misc]
     _W3CPropagator = None  # type: ignore[assignment,misc]
@@ -157,11 +160,70 @@ _STANDARD_METHODS = frozenset(
     }
 )
 
+# Raw ASGI header names whose values seed the inbound W3C trace carrier. ASGI
+# delivers header names lowercased as bytes; these are the only two the
+# propagator reads, so the live wrapper extracts just them rather than building
+# the whole header map per request.
+_TRACEPARENT_HEADER = b"traceparent"
+_TRACESTATE_HEADER = b"tracestate"
+
+
+def _span_name(route: str | None, method: str) -> str:
+    """Return the low-cardinality span name for a (route, method) pair.
+
+    The matched route template is used when present; an unmatched request
+    (``route`` is ``None`` for both a 404 and a 405) falls back to a stable
+    method-based name, and an unrecognised - hence attacker-controlled - verb
+    collapses to a single constant so the span name can never explode
+    span-name cardinality. The concrete request path is never used.
+    """
+    if route is not None:
+        return route
+    if method in _STANDARD_METHODS:
+        return f"HTTP {method}"
+    return "HTTP other"
+
+
+def _enrich_span(
+    span: Any,
+    metrics: RequestMetrics,
+    on_span: Callable[[Any, RequestMetrics], None] | None,
+) -> None:
+    """Apply the standard HTTP attributes (and optional user enrichment) to a span.
+
+    Shared by the backdated and live modes so both set an identical attribute set
+    (method, route when matched, status, duration, `error.type` on a raised 5xx)
+    and run the same suppressed ``on_span`` callback. The caller owns the span's
+    name and lifecycle - this only writes attributes onto a span that is already
+    started and current.
+    """
+    span.set_attribute("http.request.method", metrics.method)
+    if metrics.route is not None:
+        span.set_attribute("http.route", metrics.route)
+    span.set_attribute("http.response.status_code", metrics.status_code)
+    span.set_attribute("duration_ms", metrics.duration_ms)
+    if metrics.status_code >= HTTP_500_INTERNAL_SERVER_ERROR:
+        span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR))
+        # When the server error came from an unhandled raised exception, the core
+        # records its low-cardinality class name. Surface it as the OpenTelemetry
+        # `error.type` attribute - the class name only, never the traceback or
+        # the exception instance.
+        if metrics.error_type is not None:
+            span.set_attribute("error.type", metrics.error_type)
+    # Optional user enrichment, last so it can read/override the built-in
+    # attributes. A raised enrichment callback must not break the response cycle
+    # nor leak through the instrumentation hook, so it is suppressed and the span
+    # still ends cleanly.
+    if on_span is not None:
+        with contextlib.suppress(Exception):
+            on_span(span, metrics)
+
 
 def instrument_with_otel(
     app: Veloce,
     tracer_provider: Any | None = None,
     *,
+    live: bool = False,
     on_span: Callable[[Any, RequestMetrics], None] | None = None,
     exclude_routes: Iterable[str] | None = None,
 ) -> Callable[..., Any]:
@@ -228,9 +290,38 @@ def instrument_with_otel(
     already-registered hook unchanged. The dedup state lives on the app's hook
     list, not a module global, so two apps in one process each get their own
     bridge.
+
+    Pass ``live=True`` for the opt-in *live* mode: instead of backdating a span
+    after the request finishes, an ASGI-layer wrapper opens a real
+    ``SpanKind.SERVER`` span at request start and attaches it to the
+    OpenTelemetry context (``set_span_in_context`` + ``context.attach``) for the
+    whole handler. Spans the handler creates - and outbound-call spans - are
+    therefore children of the server span, so the trace tree is correct (the
+    default backdated mode cannot parent in-handler spans). The wrapper detaches
+    the context token and ends the span in a ``finally``, so the token is always
+    balanced and never leaked even when the handler raises, and it is correct
+    under concurrent requests (each request attaches and detaches its own
+    token). The span name and attributes are filled in from the same
+    ``RequestMetrics`` record the backdated mode uses - the bridge's enrichment
+    hook runs inside dispatch while the live span is current, so it updates the
+    span in place. In live mode a streamed response *is* timed end to end (the
+    span ends after the body drains), so streamed records are not skipped. Live
+    mode is opt-in because it adds an ASGI wrapper and one context attach/detach
+    per request; the default backdated mode stays zero-overhead. ``live=True``
+    returns the registered enrichment hook (same idempotency, ``on_span`` and
+    ``exclude_routes`` semantics as the backdated mode, except that an excluded
+    route still gets a context-carrying span - only its enrichment is skipped).
     """
     if _OTEL_IMPORT_ERROR is not None:
         raise ImportError(_INSTALL_HINT) from _OTEL_IMPORT_ERROR
+
+    if live:
+        return _instrument_live(
+            app,
+            tracer_provider,
+            on_span=on_span,
+            exclude_routes=exclude_routes,
+        )
 
     # Idempotency: if this app already carries a bridge hook (tagged below),
     # warn and hand back the existing one rather than appending a duplicate that
@@ -249,8 +340,6 @@ def instrument_with_otel(
 
     tracer = _otel_trace.get_tracer(__name__, tracer_provider=tracer_provider)
     SpanKind = _otel_trace.SpanKind
-    StatusCode = _otel_trace.StatusCode
-    Status = _otel_trace.Status
     propagator = _W3CPropagator()
 
     def _emit_span(metrics: RequestMetrics) -> None:
@@ -262,17 +351,10 @@ def instrument_with_otel(
             return
         # Name from the route template, never the concrete path: an unmatched
         # request (route is None for both 404 and 405) carries an
-        # attacker-controlled, high-cardinality path. Fall back to a stable
-        # method-based name - but only for a recognised HTTP method, since the
-        # method token is also attacker-controlled (Veloce accepts arbitrary
-        # verbs). An unrecognised verb collapses to a single constant so the
+        # attacker-controlled, high-cardinality path. The shared helper applies
+        # the method-based fallback and the unrecognised-verb collapse so the
         # span name can never explode cardinality. Raw path stays out entirely.
-        if metrics.route is not None:
-            span_name = metrics.route
-        elif metrics.method in _STANDARD_METHODS:
-            span_name = f"HTTP {metrics.method}"
-        else:
-            span_name = "HTTP other"
+        span_name = _span_name(metrics.route, metrics.method)
         # Anchor the window to the end captured at dispatch completion (before
         # any other hook ran); fall back to now only if a caller built the
         # metrics without it. Backdate the start by the measured duration.
@@ -296,26 +378,7 @@ def instrument_with_otel(
             start_time=start_time,
         )
         try:
-            span.set_attribute("http.request.method", metrics.method)
-            if metrics.route is not None:
-                span.set_attribute("http.route", metrics.route)
-            span.set_attribute("http.response.status_code", metrics.status_code)
-            span.set_attribute("duration_ms", metrics.duration_ms)
-            if metrics.status_code >= HTTP_500_INTERNAL_SERVER_ERROR:
-                span.set_status(Status(StatusCode.ERROR))
-                # When the server error came from an unhandled raised exception,
-                # the core records its low-cardinality class name. Surface it as
-                # the OpenTelemetry `error.type` attribute - the class name only,
-                # never the traceback or the exception instance.
-                if metrics.error_type is not None:
-                    span.set_attribute("error.type", metrics.error_type)
-            # Optional user enrichment, last so it can read/override the built-in
-            # attributes. A raised enrichment callback must not break the
-            # response cycle nor leak through the instrumentation hook, so it is
-            # suppressed and the span still ends cleanly.
-            if on_span is not None:
-                with contextlib.suppress(Exception):
-                    on_span(span, metrics)
+            _enrich_span(span, metrics, on_span)
         finally:
             span.end(end_time=end_time)
 
@@ -324,3 +387,135 @@ def instrument_with_otel(
     _emit_span._veloce_otel_bridge = True  # type: ignore[attr-defined]
     app.add_instrumentation(_emit_span, exclude_routes=exclude_routes)
     return _emit_span
+
+
+def _trace_carrier_from_scope(scope: dict[str, Any]) -> dict[str, str] | None:
+    """Pull the inbound W3C trace headers out of a raw ASGI scope, if any.
+
+    Returns a ``{"traceparent": ..., "tracestate": ...}`` carrier dict the
+    propagator can extract, or ``None`` when the request carries no
+    ``traceparent``. ASGI delivers header names lowercased as bytes; only the
+    two trace headers are read so the wrapper never builds the whole header map.
+    """
+    traceparent: str | None = None
+    tracestate: str | None = None
+    for name, value in scope.get("headers", ()):  # raw (bytes, bytes) tuples
+        if name == _TRACEPARENT_HEADER:
+            traceparent = value.decode("latin-1")
+        elif name == _TRACESTATE_HEADER:
+            tracestate = value.decode("latin-1")
+    if traceparent is None:
+        return None
+    carrier = {"traceparent": traceparent}
+    if tracestate is not None:
+        carrier["tracestate"] = tracestate
+    return carrier
+
+
+class _LiveSpanMiddleware:
+    """ASGI wrapper that opens a live server span and makes it the current context.
+
+    For an HTTP request it starts a ``SpanKind.SERVER`` span (parented under the
+    inbound W3C trace when present), attaches it to the OpenTelemetry context so
+    handler-created and outbound spans are its children, then ends the span and
+    detaches the context token in a ``finally`` - so the token is balanced and
+    never leaked even when the downstream app raises, and each concurrent request
+    attaches/detaches its own token. The span's name and attributes are filled in
+    by the paired enrichment hook, which runs inside dispatch while this span is
+    current. Non-HTTP scopes (websocket, lifespan) pass straight through.
+    """
+
+    def __init__(
+        self,
+        app: Callable[..., Awaitable[None]],
+        *,
+        tracer: Any,
+        propagator: Any,
+    ) -> None:
+        self._app = app
+        self._tracer = tracer
+        self._propagator = propagator
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope.get("type") != ASGI_SCOPE_HTTP:
+            await self._app(scope, receive, send)
+            return
+        carrier = _trace_carrier_from_scope(scope)
+        parent = self._propagator.extract(carrier) if carrier else _OtelContext()
+        # Start the span with a provisional method-based name; the enrichment
+        # hook updates it to the matched route template once routing is known.
+        span = self._tracer.start_span(
+            _span_name(None, scope.get("method", "")),
+            context=parent,
+            kind=_otel_trace.SpanKind.SERVER,
+        )
+        token = _otel_context.attach(_otel_trace.set_span_in_context(span))
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            # Detach and end unconditionally so the context token is balanced on
+            # every path - success, handler exception, or a mid-stream failure -
+            # and never leaks into the next request handled on this task.
+            _otel_context.detach(token)
+            span.end()
+
+
+def _instrument_live(
+    app: Veloce,
+    tracer_provider: Any | None,
+    *,
+    on_span: Callable[[Any, RequestMetrics], None] | None,
+    exclude_routes: Iterable[str] | None,
+) -> Callable[..., Any]:
+    """Install the live-span bridge: an ASGI wrapper plus an enrichment hook.
+
+    The wrapper opens the live server span and owns its lifecycle; the
+    enrichment hook (registered on ``add_instrumentation``) runs inside dispatch
+    while the live span is current and updates its name/attributes from the
+    finished ``RequestMetrics``. Shares the idempotency, ``on_span`` and
+    ``exclude_routes`` contract with the backdated mode.
+    """
+    # Idempotency: a second live install would stack a second ASGI wrapper and a
+    # second enrichment hook. Detect the existing bridge hook and bail with the
+    # same warning the backdated mode uses.
+    for hook in app._instrumentation:
+        if getattr(hook, _BRIDGE_MARKER, False):
+            warnings.warn(
+                "instrument_with_otel was already called on this app; "
+                "ignoring the redundant call to avoid emitting duplicate "
+                "server spans per request.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return hook
+
+    tracer = _otel_trace.get_tracer(__name__, tracer_provider=tracer_provider)
+    propagator = _W3CPropagator()
+
+    def _enrich_live_span(metrics: RequestMetrics) -> None:
+        # The wrapper attached the live server span as the current span before
+        # dispatch ran, so this hook (which fires inside dispatch) sees it via
+        # the ambient context. Enrich a recording span only - a no-op span (no
+        # SDK/sampler configured) ignores the writes anyway, but skipping keeps
+        # the hot path clean.
+        span = _otel_trace.get_current_span()
+        if not span.is_recording():
+            return
+        span.update_name(_span_name(metrics.route, metrics.method))
+        _enrich_span(span, metrics, on_span)
+
+    _enrich_live_span._veloce_otel_bridge = True  # type: ignore[attr-defined]
+    app.add_instrumentation(_enrich_live_span, exclude_routes=exclude_routes)
+    # Install the live span wrapper OUTERMOST so it wraps every other ASGI
+    # middleware: the server span must exist before any of them run, and their
+    # latency must fall inside it. `_LiveSpanMiddleware` is a raw ASGI wrapper,
+    # so it lives in the app's ASGI middleware list, which `_build_asgi_stack`
+    # wraps in reverse - index 0 is outermost. Insert at the front (rather than
+    # appending) so the span leads the chain regardless of any ASGI middleware
+    # already registered when `instrument_with_otel(..., live=True)` was called.
+    # `add_instrumentation` above already enforced the setup lock.
+    app._asgi_middleware.insert(
+        0, (_LiveSpanMiddleware, {"tracer": tracer, "propagator": propagator})
+    )
+    app._asgi_stack = None
+    return _enrich_live_span

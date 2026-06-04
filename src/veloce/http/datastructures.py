@@ -11,6 +11,7 @@ import asyncio
 import base64
 import contextlib
 import io
+import ipaddress
 from collections.abc import Mapping
 from typing import Any, BinaryIO, NamedTuple
 from urllib.parse import parse_qsl
@@ -206,6 +207,102 @@ class UploadFile:
 
 
 # -- URL -------------------------------------------------------------
+# Safe default host used when the Host header fails validation. Matches the
+# `URL.__init__` default so a rejected Host degrades to the same value as a
+# missing one rather than leaking the attacker-controlled string.
+_DEFAULT_HOST = "localhost"
+
+# RFC 3986 Sec. 3.2.2 reg-name / unreserved + sub-delims, plus `%` for
+# percent-encoded octets. A registered hostname is built only from these
+# characters; anything else (`/`, `?`, `#`, `@`, whitespace, control bytes,
+# CR/LF/NUL) is illegal in the authority's host and is exactly what a
+# Host-injection payload (`evil.com/path?x`, `a\r\nX: y`) carries. Validating
+# against this set stops such a Host from poisoning host / netloc / base_url /
+# url_root / absolute-URL construction.
+_HOST_REGNAME_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    "-._~"  # unreserved
+    "!$&'()*+,;="  # sub-delims
+    "%"  # pct-encoded marker
+)
+
+
+def _is_valid_reg_name(host: str) -> bool:
+    """Whether `host` is a non-empty RFC 3986 reg-name (no port, no brackets)."""
+    return bool(host) and all(c in _HOST_REGNAME_CHARS for c in host)
+
+
+def _is_valid_ipv6(host: str) -> bool:
+    """Whether `host` is a syntactically valid IPv6 literal (brackets stripped).
+
+    Parsed with `ipaddress.IPv6Address` so malformed forms like `:::1`, `::::`,
+    or `2001:::1` are rejected (a bare character-class check would accept them).
+    """
+    try:
+        ipaddress.IPv6Address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _parse_host_header(host_header: str) -> tuple[str, int | None]:
+    """Split a Host header into a validated `(host, port)`.
+
+    Rejects a Host whose host component is not a valid RFC 3986 reg-name or
+    IPv6 literal, or whose port is not a 1-65535 integer, by falling back to
+    `(_DEFAULT_HOST, None)`. A malformed Host therefore degrades to the safe
+    default instead of flowing into absolute-URL construction, where it could
+    inject a path/query/CRLF or an attacker-chosen origin.
+    """
+    if "[" in host_header:
+        # Bracketed IPv6: [::1]:8080
+        bracket_start = host_header.index("[")
+        bracket_end = host_header.find("]")
+        # The literal must open at the start and close before any port; a `[`
+        # anywhere else, or a missing `]`, is malformed.
+        if bracket_start != 0 or bracket_end == -1:
+            return (_DEFAULT_HOST, None)
+        host = host_header[1:bracket_end]
+        if not _is_valid_ipv6(host):
+            return (_DEFAULT_HOST, None)
+        rest = host_header[bracket_end + 1 :]
+        if not rest:
+            return (host, None)
+        if rest[0] != ":":
+            # Trailing garbage after `]` that is not a port separator.
+            return (_DEFAULT_HOST, None)
+        port = _parse_port(rest[1:])
+        if port is None:
+            return (_DEFAULT_HOST, None)
+        return (host, port)
+    if host_header.count(":") >= 2:
+        # Bare IPv6 (no brackets, no port): 2001:db8::1
+        if not _is_valid_ipv6(host_header):
+            return (_DEFAULT_HOST, None)
+        return (host_header, None)
+    if ":" in host_header:
+        host, _, port_str = host_header.rpartition(":")
+        if not _is_valid_reg_name(host):
+            return (_DEFAULT_HOST, None)
+        port = _parse_port(port_str)
+        if port is None:
+            return (_DEFAULT_HOST, None)
+        return (host, port)
+    if not _is_valid_reg_name(host_header):
+        return (_DEFAULT_HOST, None)
+    return (host_header, None)
+
+
+def _parse_port(port_str: str) -> int | None:
+    """Parse a Host-header port. Returns None for empty / non-1-65535 values."""
+    if not port_str.isdigit():
+        return None
+    port = int(port_str)
+    if 1 <= port <= 65535:
+        return port
+    return None
+
+
 class URL:
     """Parsed URL with component access - lazily constructed."""
 
@@ -265,29 +362,13 @@ class URL:
             scheme = URL_SCHEME_HTTPS
         else:
             scheme = URL_SCHEME_HTTP
-        if "[" in host_header:
-            # Bracketed IPv6: [::1]:8080
-            bracket_end = host_header.index("]")
-            if bracket_end + 1 < len(host_header) and host_header[bracket_end + 1] == ":":
-                port_str = host_header[bracket_end + 2 :]
-                port = int(port_str) if port_str else None
-            else:
-                port = None
-            host = host_header[1:bracket_end]
-        elif host_header.count(":") >= 2:
-            # Bare IPv6: 2001:db8::1 (no port)
-            host = host_header
-            port = None
-        elif ":" in host_header:
-            host, port_str = host_header.rsplit(":", 1)
-            try:
-                port = int(port_str)
-            except ValueError:
-                host = host_header
-                port = None
-        else:
-            host = host_header
-            port = None
+        # Validate the Host against the RFC 3986 Sec. 3.2.2 host grammar before
+        # it reaches host / netloc / base_url / url_root. A malformed Host
+        # (`evil.com/path?x`, a CRLF-injected value, a non-numeric port) falls
+        # back to the safe default rather than poisoning absolute-URL
+        # construction. A port embedded in the Host header still wins over
+        # `forwarded_port`.
+        host, port = _parse_host_header(host_header)
         # The Host header is the authoritative source of the port; only when
         # it carries none does a trusted `X-Forwarded-Port` / `Forwarded`
         # port fill in. This keeps an explicit `host:port` from being

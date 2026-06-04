@@ -125,6 +125,12 @@ field format; a `str` is UTF-8 encoded and sent verbatim; `bytes` are passed
 through unchanged. For anything beyond raw text you almost always want
 `ServerSentEvent`, so the `data:`/`event:`/`id:` framing is built correctly.
 
+Any other yielded value is coerced into a single-`data:` event so a quick
+producer never crashes the stream: a `dict` (or other `Mapping`) becomes a
+`data:` field carrying its JSON, and a scalar such as an `int` or `float`
+becomes a `data:` field carrying its text. Reach for `ServerSentEvent` when you
+need an `event:`/`id:`/`retry:` field.
+
 ```python
 from veloce import EventSourceResponse, Request, ServerSentEvent, Veloce
 
@@ -136,6 +142,8 @@ async def ticks(request: Request):
     async def generate():
         yield ServerSentEvent(data="structured event")
         yield "data: raw line\n\n"  # raw str, sent as-is
+        yield {"x": 1}  # dict -> data: {"x":1}
+        yield 42  # scalar -> data: 42
 
     return EventSourceResponse(generate())
 ```

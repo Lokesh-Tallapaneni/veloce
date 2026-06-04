@@ -57,10 +57,10 @@ app.mount("/assets", StaticFiles(directory="static"))
 ```
 
 The constructor signature is `StaticFiles(directory, prefix="/static",
-html=False, directory_index=False, must_exist=True, precompressed=False)`.
-`directory` is required and resolved to an absolute path; it must exist and be
-readable unless `must_exist=False` is passed. The other options are covered
-below.
+html=False, directory_index=False, must_exist=True, precompressed=False,
+redirect_status=307)`. `directory` is required and resolved to an absolute path;
+it must exist and be readable unless `must_exist=False` is passed. The other
+options are covered below.
 
 !!! note
     `mount_static` and `mount` register a static handler; they do **not** create
@@ -84,6 +84,36 @@ app.mount("/", StaticFiles(directory="public", html=True))
 
 This is enough to host a small static site: `public/index.html` answers `/`, and
 `public/about.html` answers both `/about.html` and `/about`.
+
+### Directory index and trailing-slash redirect
+
+In `html=True` mode a directory that contains an `index.html` is served as a
+page. A request without a trailing slash (`/docs`) first redirects to the
+slash-terminated form (`/docs/`) so the browser resolves the page's relative
+links against the directory rather than its parent; the slash-terminated request
+then serves `docs/index.html`. The redirect is `307 Temporary Redirect` by
+default and preserves the query string. Pass `redirect_status=308` for a
+cacheable permanent redirect (only `307` and `308` are accepted — a redirect
+that changes the request method would be wrong for a GET asset):
+
+```python title="app.py"
+from veloce import StaticFiles, Veloce
+
+app = Veloce()
+app.mount("/", StaticFiles(directory="public", html=True, redirect_status=308))
+```
+
+When `directory_index=True` is also set, an `index.html` still takes precedence
+over a generated listing; the listing is only produced for directories that have
+no index file.
+
+### Custom 404 page
+
+Also in `html=True` mode, if a request matches no file Veloce serves a
+`404.html` from the served root (with status `404` and `text/html`) when that
+file exists. Without a `404.html` the handler falls through so the application's
+normal 404 handling runs. The `404.html` page is subject to the same
+symlink-containment checks as any other served file.
 
 ## Directory listings
 

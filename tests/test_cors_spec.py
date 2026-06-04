@@ -180,6 +180,49 @@ def test_preflight_from_disallowed_origin_is_rejected():
     assert resp.headers.get("access-control-allow-origin") is None
 
 
+def test_preflight_with_disallowed_method_is_rejected():
+    """The preflight is for the actual request's method (carried in
+    Access-Control-Request-Method); a method outside the allow-set is a
+    rejection surfaced as a diagnostic 400."""
+    client = TestClient(
+        _make_app(allow_origins=["http://a.example"], allow_methods=["GET", "POST"])
+    )
+    resp = client.options(
+        "/x",
+        headers={
+            "origin": "http://a.example",
+            "access-control-request-method": "DELETE",
+        },
+    )
+    assert resp.status_code == 400
+    assert b"method" in resp.body
+    # No allow-methods negotiation is emitted on a rejected preflight.
+    assert resp.headers.get("access-control-allow-methods") is None
+
+
+def test_preflight_with_allowed_method_succeeds():
+    client = TestClient(
+        _make_app(allow_origins=["http://a.example"], allow_methods=["GET", "POST"])
+    )
+    resp = client.options(
+        "/x",
+        headers={
+            "origin": "http://a.example",
+            "access-control-request-method": "POST",
+        },
+    )
+    assert resp.status_code == 204
+    assert resp.headers.get("access-control-allow-origin") == "http://a.example"
+
+
+def test_options_without_request_method_skips_method_check():
+    """A soft OPTIONS probe (Origin but no Access-Control-Request-Method)
+    must not be rejected on the method check."""
+    client = TestClient(_make_app(allow_origins=["http://a.example"], allow_methods=["GET"]))
+    resp = client.options("/x", headers={"origin": "http://a.example"})
+    assert resp.status_code == 204
+
+
 def test_options_without_origin_passes_through():
     """An OPTIONS request with no Origin isn't CORS — the middleware should
     not synthesise a preflight response."""
@@ -211,6 +254,54 @@ def test_preflight_emits_max_age():
         headers={"origin": "http://any.example", "access-control-request-method": "GET"},
     )
     assert resp.headers.get("access-control-max-age") == "86400"
+
+
+# ── Private Network Access ─────────────────────────────────────────────
+
+
+def test_pna_echoed_when_allowed_and_requested():
+    """allow_private_network=True + a preflight requesting it → echo
+    Access-Control-Allow-Private-Network: true."""
+    client = TestClient(_make_app(allow_origins=["http://a.example"], allow_private_network=True))
+    resp = client.options(
+        "/x",
+        headers={
+            "origin": "http://a.example",
+            "access-control-request-method": "GET",
+            "access-control-request-private-network": "true",
+        },
+    )
+    assert resp.status_code == 204
+    assert resp.headers.get("access-control-allow-private-network") == "true"
+
+
+def test_pna_not_echoed_when_not_configured():
+    """Without opt-in, the grant header is never emitted even if requested."""
+    client = TestClient(_make_app(allow_origins=["http://a.example"]))
+    resp = client.options(
+        "/x",
+        headers={
+            "origin": "http://a.example",
+            "access-control-request-method": "GET",
+            "access-control-request-private-network": "true",
+        },
+    )
+    assert resp.status_code == 204
+    assert resp.headers.get("access-control-allow-private-network") is None
+
+
+def test_pna_not_echoed_when_not_requested():
+    """Opt-in configured but the preflight does not request PNA → no grant."""
+    client = TestClient(_make_app(allow_origins=["http://a.example"], allow_private_network=True))
+    resp = client.options(
+        "/x",
+        headers={
+            "origin": "http://a.example",
+            "access-control-request-method": "GET",
+        },
+    )
+    assert resp.status_code == 204
+    assert resp.headers.get("access-control-allow-private-network") is None
 
 
 # ── Wildcard regex + credentials ──────────────────────────────────────
@@ -259,3 +350,26 @@ def test_cors_allows_specific_regex_with_credentials():
         allow_credentials=True,
     )
     assert mw.allow_origin_regex is not None
+
+
+def test_preflight_accepts_lowercase_configured_methods():
+    """A lower-cased `allow_methods` config still passes a real browser preflight
+    (browsers send the requested method in canonical case)."""
+    client = TestClient(
+        _make_app(allow_origins=["http://a.example"], allow_methods=["get", "post"])
+    )
+    resp = client.options(
+        "/x",
+        headers={"origin": "http://a.example", "access-control-request-method": "GET"},
+    )
+    assert resp.status_code == 204
+
+
+def test_preflight_wildcard_methods_allows_any():
+    """`allow_methods=['*']` accepts any requested method on preflight."""
+    client = TestClient(_make_app(allow_origins=["http://a.example"], allow_methods=["*"]))
+    resp = client.options(
+        "/x",
+        headers={"origin": "http://a.example", "access-control-request-method": "DELETE"},
+    )
+    assert resp.status_code == 204

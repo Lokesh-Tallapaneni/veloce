@@ -67,6 +67,15 @@ HTTP_429_TOO_MANY_REQUESTS = 429
 HTTP_431_REQUEST_HEADER_FIELDS_TOO_LARGE = 431
 HTTP_451_UNAVAILABLE_FOR_LEGAL_REASONS = 451
 
+# RFC 9110 renamed four 4xx reason phrases; these modern spellings alias the
+# legacy constants above to the same code. Both names are supported - the legacy
+# spellings stay for back-compat. Plain constants (not a PEP 562 module
+# `__getattr__`) keep access zero-overhead and visible to static analysis.
+HTTP_413_CONTENT_TOO_LARGE = 413  # RFC 9110 Sec. 15.5.14 (was Request Entity Too Large)
+HTTP_414_URI_TOO_LONG = 414  # RFC 9110 Sec. 15.5.15 (was Request-URI Too Long)
+HTTP_416_RANGE_NOT_SATISFIABLE = 416  # RFC 9110 Sec. 15.5.17 (was Requested Range Not Satisfiable)
+HTTP_422_UNPROCESSABLE_CONTENT = 422  # RFC 9110 Sec. 15.5.21 (was Unprocessable Entity)
+
 # 5xx Server Error
 HTTP_500_INTERNAL_SERVER_ERROR = 500
 HTTP_501_NOT_IMPLEMENTED = 501

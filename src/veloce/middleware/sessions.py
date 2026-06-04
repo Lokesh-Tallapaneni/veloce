@@ -37,6 +37,17 @@ _logger = logging.getLogger("veloce.sessions")
 # safe ceiling (4096 - 3 bytes of separator overhead some impls reserve).
 _DEFAULT_MAX_COOKIE_SIZE = 4093
 
+# Chunked-cookie defaults. When `chunked=True`, a signed value too large for a
+# single cookie is split across numbered cookies named `<name>.0`, `<name>.1`,
+# ... up to `_DEFAULT_MAX_COOKIE_CHUNKS`. The cap bounds how many Set-Cookie
+# lines one session can emit (RFC 6265 Sec. 6.1 also caps per-domain cookies),
+# so an absurdly large session is dropped with a warning rather than flooding
+# the response with hundreds of cookies.
+_DEFAULT_MAX_COOKIE_CHUNKS = 8
+# Separator between the base cookie name and the chunk index. A literal `.` is
+# a valid RFC 6265 token character and is widely used for this convention.
+_CHUNK_SEP = "."
+
 
 def _session_accessed(session: Any) -> bool:
     """Whether a handler touched the session (read via `Request.session`, or
@@ -85,8 +96,42 @@ def _validate_cookie_security(
         )
 
 
+def _reassemble_chunks(cookies: Any, base_name: str, max_chunks: int) -> str | None:
+    """Rebuild a chunked cookie value from `<base_name>.0`, `.1`, ... cookies.
+
+    The chunks must be contiguous from index 0: the first missing index ends the
+    sequence. Returns the concatenated value, or None when no `.0` chunk exists.
+    Reads at most `max_chunks` indices so a forged cookie header cannot drive an
+    unbounded scan. The signed value is a single URL-safe token, so plain string
+    concatenation is the exact inverse of the response-side split.
+    """
+    first = cookies.get(f"{base_name}{_CHUNK_SEP}0")
+    if first is None:
+        return None
+    parts = [first]
+    for index in range(1, max_chunks):
+        part = cookies.get(f"{base_name}{_CHUNK_SEP}{index}")
+        if part is None:
+            break
+        parts.append(part)
+    return "".join(parts)
+
+
 class SessionMiddleware(Middleware):
-    """Server-side session stored in a signed, timestamped cookie."""
+    """Server-side session stored in a signed, timestamped cookie.
+
+    Set `renew_on_access=True` for sliding expiry: a session that was only read
+    during a request has its cookie re-signed with a fresh `Max-Age` on the way
+    out, so an active user is not logged out at the fixed `max_age`. Default is
+    off - only a modifying write rewrites the cookie.
+
+    Set `chunked=True` to transparently split a signed value larger than
+    `max_cookie_size` across numbered cookies (`<cookie_name>.0`, `.1`, ...) and
+    reassemble them on the next request. `max_chunks` bounds the split so an
+    oversized session is dropped with a warning rather than exploded into an
+    unbounded number of cookies. Default is off - the single oversized cookie is
+    dropped with a warning, unchanged from before.
+    """
 
     def __init__(
         self,
@@ -104,6 +149,9 @@ class SessionMiddleware(Middleware):
         persist_on_status: Callable[[int], bool] | None = None,
         cookie_prefix: Literal["host", "secure"] | None = None,
         partitioned: bool = False,
+        renew_on_access: bool = False,
+        chunked: bool = False,
+        max_chunks: int = _DEFAULT_MAX_COOKIE_CHUNKS,
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
@@ -152,12 +200,36 @@ class SessionMiddleware(Middleware):
         # `None` default means "persist for status < 500" - a failed request
         # should not write a half-mutated session (Set-Cookie / store write).
         self._persist_on_status = persist_on_status
+        # Sliding expiry: when True, a session merely *read* during the request
+        # (accessed, not modified) gets its cookie re-signed on the way out, so
+        # its server-enforced timestamp and `Max-Age` roll forward and an active
+        # user is never logged out mid-session. Default False keeps the prior
+        # behavior (only a modified session is re-written).
+        self.renew_on_access = renew_on_access
+        # Opt-in transparent chunking: when True, a signed value too large for a
+        # single cookie is split across numbered cookies (`<name>.0`, `.1`, ...)
+        # on the response and transparently reassembled on the request. Default
+        # off preserves the drop-with-warning behavior. `max_chunks` bounds the
+        # split so an absurdly large session is dropped, not exploded into
+        # hundreds of cookies.
+        if max_chunks < 1:
+            raise ValueError("max_chunks must be >= 1")
+        self.chunked = chunked
+        self.max_chunks = max_chunks
 
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the signed cookie into request state."""
         session_data: dict[str, Any] = {}
         is_new = True
         cookie_val = request.cookies.get(self._wire_cookie_name)
+        # When chunking is enabled and no single cookie is present, fall back to
+        # reassembling the numbered chunks. A whole (unchunked) cookie always
+        # wins so a session that later fits in one cookie reads correctly even
+        # while stale chunks linger before their delete reaches the client.
+        if not cookie_val and self.chunked:
+            cookie_val = _reassemble_chunks(
+                request.cookies, self._wire_cookie_name, self.max_chunks
+            )
         if cookie_val:
             try:
                 # Read with the longer window so a permanent cookie is
@@ -189,10 +261,22 @@ class SessionMiddleware(Middleware):
         if self.vary_on_cookie and _session_accessed(session):
             response.add_vary(HEADER_COOKIE)
 
-        # `Session` flips `.modified` on any mutating operation, so we can
-        # skip the re-sign + Set-Cookie when the handler never touched it.
         # No session attached (handler bypassed middleware?) -> nothing to do.
-        if session is None or not getattr(session, "modified", False):
+        if session is None:
+            return response
+
+        # `Session` flips `.modified` on any mutating operation, so the re-sign
+        # + Set-Cookie is normally skipped when the handler never touched it.
+        # With `renew_on_access`, an existing session that was only *read*
+        # (accessed, non-empty, not new) is also re-signed so its server-side
+        # timestamp and `Max-Age` slide forward - the idle-timeout reset.
+        modified = getattr(session, "modified", False)
+        if not modified and not (
+            self.renew_on_access
+            and getattr(session, "accessed", False)
+            and not getattr(session, "new", False)
+            and session
+        ):
             return response
 
         # A 5xx response should not persist a half-mutated session - neither a
@@ -202,16 +286,11 @@ class SessionMiddleware(Middleware):
             return response
 
         if not session:
-            response.delete_cookie(
-                self.cookie_name,
-                path=self.path,
-                domain=self.domain,
-                secure=self.secure,
-                httponly=self.httponly,
-                samesite=self.samesite,
-                partitioned=self.partitioned,
-                prefix=self.cookie_prefix,
-            )
+            self._delete_cookie(response, self.cookie_name, prefix=True)
+            # Clear any chunk cookies a previous larger session left behind, so
+            # an emptied session does not resurrect from stale `<name>.N` parts.
+            if self.chunked:
+                self._clear_chunks(response)
             return response
 
         cookie_value = self._signer.dumps(session)
@@ -222,47 +301,161 @@ class SessionMiddleware(Middleware):
         # drop the cookie (with a warning) rather than raising - a raise here
         # re-enters this middleware via the error-response path and would
         # propagate as an unhandled ASGI exception. RFC 6265 Sec. 6.1.
-        rendered = dump_cookie(
+        rendered = self._render_cookie(self.cookie_name, cookie_value, lifetime, prefix=True)
+        rendered_size = self._rendered_size(rendered)
+        # The single cookie fits: write it, and (chunked mode) clear any chunk
+        # cookies a previous oversized response wrote so the client does not
+        # keep two encodings of the same session.
+        if rendered_size <= self.max_cookie_size:
+            response._append_set_cookie_header(rendered)
+            response._encoded = None
+            if self.chunked:
+                self._clear_chunks(response)
+            return response
+
+        # Too large for one cookie. With chunking enabled, split the signed
+        # value across numbered cookies instead of dropping it.
+        if self.chunked:
+            if self._write_chunks(response, cookie_value, lifetime):
+                return response
+            # Fell through: even chunked, the value needs more than `max_chunks`
+            # cookies. Drop with a warning rather than emit a partial session.
+            # Clear the base cookie and every chunk slot so a previously-persisted
+            # (smaller) session is not silently resurrected from the client's
+            # stale cookies on the next request.
+            self._delete_cookie(response, self.cookie_name, prefix=True)
+            self._clear_chunks(response)
+            _logger.warning(
+                "Session cookie %r needs more than max_chunks=%d chunks; "
+                "dropping Set-Cookie on this response. Switch to "
+                "ServerSessionMiddleware for payloads of this size.",
+                self.cookie_name,
+                self.max_chunks,
+            )
+            return response
+
+        # Non-chunked mode (the default): the single cookie is oversized and
+        # chunking is off, so drop it with a warning. RFC 6265 Sec. 6.1.
+        _logger.warning(
+            "Session cookie %r is %d bytes, exceeds max_cookie_size=%d; "
+            "dropping Set-Cookie on this response. Enable chunked=True or "
+            "switch to ServerSessionMiddleware for payloads of this size.",
             self.cookie_name,
-            cookie_value,
+            rendered_size,
+            self.max_cookie_size,
+        )
+        return response
+
+    def _chunk_name(self, index: int) -> str:
+        """Bare wire name of chunk `index`, e.g. `__Host-session.0`.
+
+        Built on the prefixed wire name so request reassembly and response
+        writes agree, and so the `__Host-`/`__Secure-` guarantees carry to every
+        chunk. The prefix lives in the literal name (not passed to `dump_cookie`)
+        because `dump_cookie` would re-derive `__Host-__Host-...`.
+        """
+        return f"{self._wire_cookie_name}{_CHUNK_SEP}{index}"
+
+    def _render_cookie(self, name: str, value: str, lifetime: int, *, prefix: bool) -> str:
+        """Serialise one Set-Cookie line from this middleware's attributes.
+
+        `dump_cookie` has no `partitioned` arg, so the CHIPS attribute is
+        appended here - the constructor guard guarantees `secure=True` when set,
+        so it is always valid. `prefix` is True only for the base cookie passed
+        by its bare `cookie_name`; chunk cookies pass their already-prefixed wire
+        name with `prefix=False`.
+        """
+        rendered = dump_cookie(
+            name,
+            value,
             max_age=lifetime,
             path=self.path,
             domain=self.domain,
             httponly=self.httponly,
             secure=self.secure,
             samesite=self._samesite_cap,
-            prefix=self.cookie_prefix,
+            prefix=self.cookie_prefix if prefix else None,
         )
-        # `dump_cookie` has no `partitioned` arg, so append the CHIPS attribute
-        # here - the constructor guard guarantees `secure=True` when set, so it
-        # is always valid. Append before the size measurement so the 4093-byte
-        # guard counts it.
         if self.partitioned:
             rendered += "; Partitioned"
-        # Measure the on-the-wire byte length, not the character count: a
-        # non-ASCII cookie_name/path/domain would otherwise under-count and
-        # let the Set-Cookie line exceed the browser's ~4 KB truncation limit
-        # without tripping this guard. Cookie headers serialise as latin-1,
-        # where each code point maps to exactly one byte, so an all-ASCII line
-        # (the common case - the signed value is base64) needs no encode; the
-        # latin-1 fallback still raises on code points above U+00FF, as before.
-        rendered_size = len(rendered) if rendered.isascii() else len(rendered.encode("latin-1"))
-        if rendered_size > self.max_cookie_size:
-            _logger.warning(
-                "Session cookie %r is %d bytes, exceeds max_cookie_size=%d; "
-                "dropping Set-Cookie on this response. Switch to "
-                "ServerSessionMiddleware for payloads of this size.",
-                self.cookie_name,
-                rendered_size,
-                self.max_cookie_size,
+        return rendered
+
+    @staticmethod
+    def _rendered_size(rendered: str) -> int:
+        """On-the-wire byte length of a Set-Cookie line.
+
+        Measure bytes, not characters: a non-ASCII cookie_name/path/domain would
+        otherwise under-count and let the line exceed the browser's ~4 KB
+        truncation limit. Cookie headers serialise as latin-1 (one byte per code
+        point), so an all-ASCII line (the common case - the signed value is
+        base64) needs no encode; the latin-1 fallback still raises on code
+        points above U+00FF.
+        """
+        return len(rendered) if rendered.isascii() else len(rendered.encode("latin-1"))
+
+    def _write_chunks(self, response: Response, value: str, lifetime: int) -> bool:
+        """Split `value` across numbered cookies `<name>.0`, `.1`, ... .
+
+        Returns True when the whole value fit within `max_chunks`, False when it
+        needs more (the caller then drops with a warning). The per-chunk value
+        budget is the limit minus the rendered overhead of an empty chunk
+        cookie; the signed value is a URL-safe token, so it is not
+        percent-expanded and one token char renders as one byte. Built into a
+        scratch list first so a too-large value writes no partial cookies. On
+        success the base cookie and any higher-numbered stale chunks are cleared
+        so the client keeps exactly one encoding.
+        """
+        chunks: list[str] = []
+        start = 0
+        index = 0
+        length = len(value)
+        while start < length:
+            if index >= self.max_chunks:
+                return False
+            name = self._chunk_name(index)
+            # A multi-digit chunk index widens the name, so recompute the budget
+            # per chunk rather than reusing index 0's.
+            piece_overhead = self._rendered_size(
+                self._render_cookie(name, "", lifetime, prefix=False)
             )
-            return response
-        # `rendered` already holds the fully serialised Set-Cookie line built
-        # from this middleware's own (validated) `__init__` parameters, so it
-        # is appended directly rather than re-serialised through set_cookie.
-        response._append_set_cookie_header(rendered)
+            piece_budget = self.max_cookie_size - piece_overhead
+            if piece_budget < 1:
+                return False
+            piece = value[start : start + piece_budget]
+            chunks.append(self._render_cookie(name, piece, lifetime, prefix=False))
+            start += piece_budget
+            index += 1
+        for rendered in chunks:
+            response._append_set_cookie_header(rendered)
+        # Clear the base cookie (it may hold a stale smaller session) and any
+        # higher-numbered stale chunks left by a previous larger session.
+        self._delete_cookie(response, self.cookie_name, prefix=True)
+        for stale in range(index, self.max_chunks):
+            self._delete_cookie(response, self._chunk_name(stale), prefix=False)
         response._encoded = None
-        return response
+        return True
+
+    def _clear_chunks(self, response: Response) -> None:
+        """Delete every possible chunk cookie (`<name>.0` .. `<name>.N-1`)."""
+        for index in range(self.max_chunks):
+            self._delete_cookie(response, self._chunk_name(index), prefix=False)
+
+    def _delete_cookie(self, response: Response, name: str, *, prefix: bool) -> None:
+        """Tell the client to drop `name` using this middleware's attribute set.
+
+        `prefix` is True only for the base cookie passed by its bare name; chunk
+        cookies pass their already-prefixed wire name with `prefix=False`.
+        """
+        response.delete_cookie(
+            name,
+            path=self.path,
+            domain=self.domain,
+            secure=self.secure,
+            httponly=self.httponly,
+            samesite=self.samesite,
+            partitioned=self.partitioned,
+            prefix=self.cookie_prefix if prefix else None,
+        )
 
     def _should_persist(self, status_code: int) -> bool:
         """Whether the (modified) session should be written for this status."""
@@ -283,6 +476,10 @@ class ServerSessionMiddleware(Middleware):
     shared backend (e.g. a Redis-backed `SessionStore`) for a multi-worker
     deployment. The store is a plain object the caller owns - keep a
     reference to it to revoke sessions by id.
+
+    Set `renew_on_access=True` for sliding expiry: a session that was only read
+    during a request has its store TTL refreshed (via `SessionStore.touch`) and
+    its cookie re-stamped on the way out - an idle-timeout reset. Default off.
     """
 
     def __init__(
@@ -299,6 +496,7 @@ class ServerSessionMiddleware(Middleware):
         persist_on_status: Callable[[int], bool] | None = None,
         cookie_prefix: Literal["host", "secure"] | None = None,
         partitioned: bool = False,
+        renew_on_access: bool = False,
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
@@ -324,6 +522,10 @@ class ServerSessionMiddleware(Middleware):
         # and skip persistence on 5xx by default. Same semantics here.
         self.vary_on_cookie = vary_on_cookie
         self._persist_on_status = persist_on_status
+        # Sliding expiry: when True, a session merely *read* during the request
+        # has its server-side store TTL and cookie `Max-Age` refreshed on the
+        # way out (see SessionMiddleware). Default False keeps prior behavior.
+        self.renew_on_access = renew_on_access
         # Read/write must share the prefixed wire name (see SessionMiddleware).
         if cookie_prefix == "host":
             self._wire_cookie_name = f"__Host-{cookie_name}"
@@ -358,7 +560,20 @@ class ServerSessionMiddleware(Middleware):
         if self.vary_on_cookie and _session_accessed(session):
             response.add_vary(HEADER_COOKIE)
 
-        if session is None or not getattr(session, "modified", False):
+        if session is None:
+            return response
+
+        if not getattr(session, "modified", False):
+            # Sliding expiry: an existing session that was only read (accessed,
+            # not new) has its store TTL and cookie `Max-Age` refreshed, then
+            # we are done - the payload is unchanged so there is no store write.
+            if (
+                self.renew_on_access
+                and getattr(session, "accessed", False)
+                and not getattr(session, "new", False)
+                and self._should_persist(response.status_code)
+            ):
+                await self._renew(request, response)
             return response
 
         # Do not persist (store write or cookie change) on a 5xx by default.
@@ -410,6 +625,34 @@ class ServerSessionMiddleware(Middleware):
         """Whether the (modified) session should be written for this status."""
         policy = self._persist_on_status
         return policy(status_code) if policy is not None else status_code < 500
+
+    async def _renew(self, request: Request, response: Response) -> None:
+        """Slide the store TTL and cookie `Max-Age` for a read-only access.
+
+        Refreshes the existing entry's expiry without rewriting its payload.
+        If the entry was revoked under us (`touch` returns False) the cookie is
+        cleared, mirroring the revoked-under-us handling in `process_response`.
+        """
+        session_id = request._state.get("_session_id")
+        # No stored id means the cookie did not resolve to an entry on read;
+        # there is nothing to slide forward.
+        if session_id is None:
+            return
+        if not await self.store.touch(session_id, self.max_age):
+            self._clear_session_cookie(response)
+            return
+        response.set_cookie(
+            self.cookie_name,
+            session_id,
+            max_age=self.max_age,
+            path=self.path,
+            domain=self.domain,
+            httponly=self.httponly,
+            secure=self.secure,
+            samesite=self.samesite,
+            partitioned=self.partitioned,
+            prefix=self.cookie_prefix,
+        )
 
     def _clear_session_cookie(self, response: Response) -> None:
         """Tell the client to drop the session cookie. Single place that

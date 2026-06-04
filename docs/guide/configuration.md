@@ -73,6 +73,10 @@ The defaults are:
 | `REQUEST_HANDLER_TIMEOUT` | `30` | Per-handler timeout in seconds. |
 | `KEEP_ALIVE_TIMEOUT` | `75` | Keep-alive timeout in seconds. |
 | `REQUEST_TIMEOUT` | `30` | Request read timeout in seconds. |
+| `TCP_KEEPALIVE` | `True` | Enable OS-level TCP keepalive (`SO_KEEPALIVE`) on the built-in serving path. |
+| `TCP_KEEPALIVE_IDLE` | `None` | Idle seconds before the first keepalive probe (`TCP_KEEPIDLE`); Linux/macOS only. |
+| `TCP_KEEPALIVE_INTERVAL` | `None` | Seconds between keepalive probes (`TCP_KEEPINTVL`); Linux only. |
+| `TCP_KEEPALIVE_COUNT` | `None` | Failed probes before the connection is dropped (`TCP_KEEPCNT`); Linux only. |
 
 A few of these keys drive framework behaviour directly. `MAX_CONTENT_LENGTH`
 bounds the request body the server will read. `PROPAGATE_EXCEPTIONS`

@@ -22,6 +22,7 @@ from veloce.contrib.openapi import (
     _extract_parameters,
     _extract_request_body,
     _extract_responses,
+    _repoint_validation_error_refs,
     _walk_webhooks,
     get_openapi_schema,
 )
@@ -89,8 +90,8 @@ def _fixture_app() -> Veloce:
 # orjson serialization with sorted keys yields exactly this byte sequence
 # for the fixture above. Drift in either length or sha256 means the
 # refactor altered observable output.
-_EXPECTED_BYTES_LEN = 2339
-_EXPECTED_SHA256 = "3f643b204d0dbec86be2385e0c475389fdf33b01725e6dae14aa2194e67acf64"
+_EXPECTED_BYTES_LEN = 3359
+_EXPECTED_SHA256 = "976330372234fe156a0993c8515adb7165821e125fc3e917745f58ee0075ff9e"
 
 
 def test_get_openapi_schema_orchestrator_byte_identical() -> None:
@@ -120,15 +121,26 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     schemas_registry = SchemaRegistry()
     params, body_schema, form_fields = _extract_parameters(info, schemas_registry)
     request_body = _extract_request_body(body_schema, form_fields)
-    responses = _extract_responses(info, schemas_registry)
+    # POST /items carries a JSON body, so its request is validatable and the
+    # 422 response is auto-added — mirror the orchestrator's argument.
+    has_validatable_params = bool(params) or request_body is not None
+    responses = _extract_responses(info, schemas_registry, has_validatable_params)
     # `_walk_webhooks` appends each webhook's auto operationId to `auto_ops` for
     # the document-wide disambiguation pass; the list is unused here.
     webhook_auto_ops: list = []
     webhooks = _walk_webhooks(app, schemas_registry, webhook_auto_ops)
     # The helpers emit placeholder refs; finalize rewrites them into the same
     # `#/components/schemas/...` form the orchestrator produces.
-    document = {"requestBody": request_body, "responses": responses, "webhooks": webhooks}
+    document = {
+        "paths": {"/items": {method.lower(): {"responses": responses}}},
+        "requestBody": request_body,
+        "responses": responses,
+        "webhooks": webhooks,
+    }
     schemas_registry.finalize(document)
+    # Mirror the orchestrator's document-level step: resolve the auto-422
+    # placeholder ref to the finalized envelope name (no collision -> canonical).
+    _repoint_validation_error_refs(document, "HTTPValidationError")
 
     op = full["paths"]["/items"][method.lower()]
     assert document["requestBody"] == op["requestBody"]

@@ -29,7 +29,7 @@ from veloce.routing.params import Form as FormParam
 from veloce.routing.params import Header as HeaderParam
 from veloce.routing.params import ParamBase
 from veloce.routing.params import Path as PathParam
-from veloce.status import HTTP_200_OK
+from veloce.status import HTTP_200_OK, HTTP_422_UNPROCESSABLE_ENTITY
 
 _logger = logging.getLogger(__name__)
 
@@ -223,7 +223,7 @@ def _python_type_to_schema(annotation: Any) -> dict:
         int: {"type": "integer"},
         float: {"type": "number"},
         bool: {"type": "boolean"},
-        bytes: {"type": "string", "format": "binary"},
+        bytes: {"type": "string", "format": "byte"},
         list: {"type": "array", "items": {}},
         dict: {"type": "object"},
         datetime.datetime: {"type": "string", "format": "date-time"},
@@ -475,6 +475,24 @@ class SchemaRegistry:
         return [self._entries[k].token for k in self._order]
 
 
+def _rewrite_byte_format(node: Any) -> None:
+    """Rewrite bytes string fields from OpenAPI `format: binary` to `format: byte`.
+
+    Veloce's JSON encoder base64-encodes `bytes`/`bytearray`, so a bytes field in
+    a JSON model travels as a base64 string - RFC 4648 `byte` - not raw `binary`.
+    Pydantic emits `binary` for `bytes`; this realigns the generated schema with
+    the actual serialized form. Walks nested objects, arrays, and `$defs` in place.
+    """
+    if isinstance(node, dict):
+        if node.get("type") == "string" and node.get("format") == "binary":
+            node["format"] = "byte"
+        for value in node.values():
+            _rewrite_byte_format(value)
+    elif isinstance(node, list):
+        for item in node:
+            _rewrite_byte_format(item)
+
+
 class _SchemaEntry:
     """One `(model, mode)` registration awaiting name assignment."""
 
@@ -517,6 +535,8 @@ class _SchemaEntry:
             )
             self.body = {"type": "object"}
             return
+        # Realign bytes fields with veloce's base64 JSON encoding (binary -> byte).
+        _rewrite_byte_format(schema)
         if "$defs" in schema:
             for def_name, def_schema in schema["$defs"].items():
                 self.defs[def_name] = def_schema
@@ -607,6 +627,7 @@ def _pydantic_to_schema(model: type[BaseModel], registry: dict[str, dict]) -> di
     if name not in registry:
         try:
             schema = model.model_json_schema()
+            _rewrite_byte_format(schema)
             if "$defs" in schema:
                 for def_name, def_schema in schema["$defs"].items():
                     registry[def_name] = def_schema
@@ -871,13 +892,123 @@ def _extract_request_body(
     }
 
 
-def _extract_responses(info: Any, schemas_registry: SchemaRegistry) -> dict[str, dict]:
+# Component-schema names for the auto-generated validation-error response. The
+# `{"detail": [{"loc", "msg", "type"}, ...]}` payload these describe is exactly
+# what `request_validation_exception_handler` renders for a 422, so the document
+# advertises the body the resolver actually returns when a path/query/header/
+# cookie/body/form parameter fails validation.
+_VALIDATION_ERROR_SCHEMA_NAME = "ValidationError"
+_HTTP_VALIDATION_ERROR_SCHEMA_NAME = "HTTPValidationError"
+
+# The auto-added 422 response points at this internal placeholder ref rather than
+# the real component name. At finalize the placeholder is resolved to the actual
+# (collision-free) envelope component everywhere it appears. Using a placeholder
+# means a user-declared 422 that legitimately references a model named
+# `HTTPValidationError` is never mistaken for - or rewritten as - the auto entry.
+_AUTO_VALIDATION_ERROR_REF = "#/components/schemas/__veloce_auto_http_validation_error__"
+
+# Reference key (string status code) for the auto-added 422 entry.
+_VALIDATION_ERROR_STATUS = str(HTTP_422_UNPROCESSABLE_ENTITY)
+
+# Component schemas for the validation-error envelope, mirroring the per-error
+# items `RequestValidationError` carries (`loc` / `msg` / `type`). `loc` is a
+# mixed string/int path (`["query", "n"]`, `["body", 0, "name"]`), so its items
+# accept either; the wrapper nests an array of these under `detail`.
+_VALIDATION_ERROR_COMPONENT_SCHEMAS: dict[str, dict[str, Any]] = {
+    _VALIDATION_ERROR_SCHEMA_NAME: {
+        "type": "object",
+        "title": _VALIDATION_ERROR_SCHEMA_NAME,
+        "properties": {
+            "loc": {
+                "type": "array",
+                "title": "Location",
+                "items": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+            },
+            "msg": {"type": "string", "title": "Message"},
+            "type": {"type": "string", "title": "Error Type"},
+        },
+        "required": ["loc", "msg", "type"],
+    },
+    _HTTP_VALIDATION_ERROR_SCHEMA_NAME: {
+        "type": "object",
+        "title": _HTTP_VALIDATION_ERROR_SCHEMA_NAME,
+        "properties": {
+            "detail": {
+                "type": "array",
+                "title": "Detail",
+                "items": {"$ref": f"#/components/schemas/{_VALIDATION_ERROR_SCHEMA_NAME}"},
+            }
+        },
+    },
+}
+
+
+def _references_validation_error_schema(operation: dict[str, Any]) -> bool:
+    """Return True when `operation`'s 422 entry points at `HTTPValidationError`.
+
+    Used to decide whether the shared validation-error component schemas need to
+    be emitted. A user-declared 422 (different `$ref` or inline schema) does not
+    trigger registration of the auto component.
+    """
+    entry = operation.get("responses", {}).get(_VALIDATION_ERROR_STATUS)
+    if not isinstance(entry, dict):
+        return False
+    schema = entry.get("content", {}).get(MIME_JSON, {}).get("schema", {})
+    return isinstance(schema, dict) and schema.get("$ref") == _AUTO_VALIDATION_ERROR_REF
+
+
+def _unique_component_name(base: str, taken: dict[str, Any]) -> str:
+    """Return `base`, or `base_2`, `base_3`, ... when `base` is already a key."""
+    if base not in taken:
+        return base
+    i = 2
+    while f"{base}_{i}" in taken:
+        i += 1
+    return f"{base}_{i}"
+
+
+def _repoint_validation_error_refs(schema: dict[str, Any], http_name: str) -> None:
+    """Resolve the auto-422 placeholder `$ref` to the real envelope component.
+
+    The auto-added 422 responses carry `_AUTO_VALIDATION_ERROR_REF`; this rewrites
+    only those to the finalized (collision-free) component name. Because the
+    placeholder is internal, a user-declared 422 that references a model named
+    `HTTPValidationError` never matches and is left untouched.
+    """
+    new_ref = f"#/components/schemas/{http_name}"
+    groups = [schema.get("paths", {})]
+    if "webhooks" in schema:
+        groups.append(schema["webhooks"])
+    for group in groups:
+        for operations in group.values():
+            if not isinstance(operations, dict):
+                continue
+            for operation in operations.values():
+                if not isinstance(operation, dict):
+                    continue
+                entry = operation.get("responses", {}).get(_VALIDATION_ERROR_STATUS)
+                if not isinstance(entry, dict):
+                    continue
+                target = entry.get("content", {}).get(MIME_JSON, {}).get("schema")
+                if isinstance(target, dict) and target.get("$ref") == _AUTO_VALIDATION_ERROR_REF:
+                    target["$ref"] = new_ref
+
+
+def _extract_responses(
+    info: Any, schemas_registry: SchemaRegistry, has_validatable_params: bool
+) -> dict[str, dict]:
     """Build the operation `responses` map.
 
     Seeds with the success response (re-keyed to `info.status_code` when
     not 200), attaches `response_model` under the primary status, then
     merges entries from `info.responses` - each carrying `model`,
     `description`, or any free-form OpenAPI keys.
+
+    When `has_validatable_params` is set and the user has not already declared
+    a 422, an `HTTPValidationError` entry is added: the resolver raises
+    `RequestValidationError` (rendered as a 422 `{"detail": [...]}`) whenever a
+    request-bound parameter fails validation, so the documented responses match
+    what the operation actually returns.
     """
     responses: dict[str, dict] = {
         str(HTTP_200_OK): {"description": info.response_description},
@@ -891,6 +1022,24 @@ def _extract_responses(info: Any, schemas_registry: SchemaRegistry) -> dict[str,
         resp_schema = _response_model_to_schema(info.response_model, schemas_registry)
         if resp_schema is not None:
             responses[primary_status]["content"] = {MIME_JSON: {"schema": resp_schema}}
+
+    # Auto-add the validation-error response for operations whose request is
+    # validated. Skipped when the user already declares a 422 - via `responses=`
+    # OR `openapi_extra={"responses": {"422": ...}}` (which is deep-merged onto
+    # the operation later) - so a custom 422 shape / media type is preserved
+    # rather than overwritten. Operations with no validatable parameter never
+    # advertise a 422 the resolver cannot raise.
+    _openapi_extra_responses = (getattr(info, "openapi_extra", None) or {}).get("responses") or {}
+    if (
+        has_validatable_params
+        and _VALIDATION_ERROR_STATUS not in responses
+        and _VALIDATION_ERROR_STATUS not in {str(s) for s in (info.responses or {})}
+        and _VALIDATION_ERROR_STATUS not in {str(s) for s in _openapi_extra_responses}
+    ):
+        responses[_VALIDATION_ERROR_STATUS] = {
+            "description": "Validation Error",
+            "content": {MIME_JSON: {"schema": {"$ref": _AUTO_VALIDATION_ERROR_REF}}},
+        }
 
     for status_code, spec in (info.responses or {}).items():
         key = str(status_code)
@@ -1063,6 +1212,47 @@ def _collect_security_requirements(
 # -- Operation + webhook assembly ----------------------------
 
 
+def _dependency_graph_has_validatable(info: Any) -> bool:
+    """Return True if any dependency in the route's graph consumes validated input.
+
+    The resolver raises `RequestValidationError` (422) for a Query/Path/Header/
+    Cookie/Form/Body marker or a body-model parameter anywhere in the dependency
+    graph - not only at the top level - so the auto-generated 422 response must
+    reflect sub-dependency validation too. Known security schemes are not
+    request-validated user input, so the walk does not descend into them.
+    """
+    seen: set[int] = set()
+
+    def visit(dep_callable: Any) -> bool:
+        if dep_callable is None or id(dep_callable) in seen:
+            return False
+        seen.add(id(dep_callable))
+        sig, hints = _handler_intro(dep_callable)
+        if sig is None:
+            return False
+        for param in sig.parameters.values():
+            default = param.default
+            if isinstance(default, Depends):
+                target = default.dependency
+                if _scheme_definition(target) is not None:
+                    continue
+                if visit(target):
+                    return True
+                continue
+            if isinstance(default, ParamBase):
+                return True
+            if _is_model_type(hints.get(param.name, param.annotation)):
+                return True
+        return False
+
+    for dep in getattr(info, "dependencies", None) or []:
+        if isinstance(dep, Depends):
+            target = dep.dependency
+            if _scheme_definition(target) is None and visit(target):
+                return True
+    return visit(getattr(info, "handler", None))
+
+
 def _build_operation(
     info: Any,
     method_lower: str,
@@ -1106,7 +1296,15 @@ def _build_operation(
     if security_requirements:
         operation["security"] = security_requirements
 
-    operation["responses"] = _extract_responses(info, schemas_registry)
+    # An operation can return a 422 only when it carries something the resolver
+    # validates: a path/query/header/cookie parameter, a JSON body, a form field,
+    # or any validated input inside a `Depends(...)` sub-dependency. A handler
+    # with none of these never raises `RequestValidationError`, so it must not
+    # advertise a 422.
+    has_validatable_params = (
+        bool(parameters) or request_body is not None or _dependency_graph_has_validatable(info)
+    )
+    operation["responses"] = _extract_responses(info, schemas_registry, has_validatable_params)
 
     # `openapi_extra` - deep-merge the user-supplied dict over the
     # generated operation. Nested dicts merge key-by-key; scalars and
@@ -1216,6 +1414,11 @@ def get_openapi_schema(app: Any) -> dict:
     # silently fix by renaming).
     explicit_ops: list[tuple[dict[str, Any], str, str]] = []
 
+    # Set once any operation auto-adds the validation-error response, so the
+    # `HTTPValidationError` / `ValidationError` component schemas are emitted only
+    # when something actually references them.
+    needs_validation_error_schema = False
+
     for method, path, info in app._collect_all_routes():
         method_lower = method.lower()
         if path not in schema["paths"]:
@@ -1223,6 +1426,8 @@ def get_openapi_schema(app: Any) -> dict:
         operation = _build_operation(
             info, method_lower, schemas_registry, security_schemes_registry
         )
+        if _references_validation_error_schema(operation):
+            needs_validation_error_schema = True
         schema["paths"][path][method_lower] = operation
         if getattr(info, "operation_id", None):
             explicit_ops.append((operation, path, method_lower))
@@ -1240,6 +1445,27 @@ def get_openapi_schema(app: Any) -> dict:
         _disambiguate_operation_ids(auto_ops, explicit_ops)
 
     components_schemas = schemas_registry.finalize(schema)
+    # Add the validation-error component schemas only when an operation referenced
+    # them. If a user model already occupies `HTTPValidationError` / `ValidationError`,
+    # register the auto envelope under collision-free names and repoint the 422
+    # `$ref`s, so the documented validation-error payload is never silently bound to
+    # an unrelated user model.
+    if needs_validation_error_schema:
+        val_name = _unique_component_name(_VALIDATION_ERROR_SCHEMA_NAME, components_schemas)
+        http_name = _unique_component_name(_HTTP_VALIDATION_ERROR_SCHEMA_NAME, components_schemas)
+        val_body = copy.deepcopy(_VALIDATION_ERROR_COMPONENT_SCHEMAS[_VALIDATION_ERROR_SCHEMA_NAME])
+        val_body["title"] = val_name
+        http_body = copy.deepcopy(
+            _VALIDATION_ERROR_COMPONENT_SCHEMAS[_HTTP_VALIDATION_ERROR_SCHEMA_NAME]
+        )
+        http_body["title"] = http_name
+        http_body["properties"]["detail"]["items"]["$ref"] = f"#/components/schemas/{val_name}"
+        components_schemas[val_name] = val_body
+        components_schemas[http_name] = http_body
+        # Operations reference the auto-422 via an internal placeholder; resolve
+        # it to the finalized component name everywhere (always, since the
+        # placeholder is never a real component).
+        _repoint_validation_error_refs(schema, http_name)
     if components_schemas:
         schema["components"]["schemas"] = components_schemas
     if security_schemes_registry:

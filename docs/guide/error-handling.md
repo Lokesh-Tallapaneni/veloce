@@ -285,6 +285,14 @@ subclasses `UnprocessableEntity` (a `422` `HTTPException`). An
 `except ValidationError` handler, or one registered against
 `HTTPException`, catches it too via the MRO walk.
 
+The generated OpenAPI document advertises this response automatically. Any
+operation whose request is validated — one carrying a path, query, header, or
+cookie parameter, a JSON body, or a form field — gains a `422` entry that
+references a shared `HTTPValidationError` component schema (the
+`{"detail": [{"loc", "msg", "type"}, ...]}` shape shown above). Operations with
+no validatable parameter never advertise a `422`, and an explicit `422` declared
+through `responses=` or `openapi_extra` is kept as-is.
+
 ## Propagating exceptions during tests
 
 By default Veloce catches unhandled exceptions and returns a `500`. While

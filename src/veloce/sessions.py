@@ -175,6 +175,24 @@ class SessionStore:
         await self.write(session_id, data, max_age)
         return True
 
+    async def touch(self, session_id: str, max_age: int) -> bool:
+        """Extend the expiry of an existing entry without rewriting its payload.
+
+        Returns `True` when the id existed and its TTL was refreshed, `False`
+        when it was absent (revoked or expired). This is the sliding-expiry
+        write `ServerSessionMiddleware` uses on a read-only access, so an idle
+        session stays alive without round-tripping its full payload.
+
+        The default reads then rewrites the payload; a store with a native
+        TTL-refresh primitive (Redis `EXPIRE`, a DB `UPDATE ... expires_at`)
+        should override this to avoid moving the payload.
+        """
+        data = await self.read(session_id)
+        if data is None:
+            return False
+        await self.write(session_id, data, max_age)
+        return True
+
 
 class InMemorySessionStore(SessionStore):
     """A process-local `SessionStore` - a dict with per-entry expiry.
@@ -227,6 +245,18 @@ class InMemorySessionStore(SessionStore):
             return False
         self._entries[session_id] = (dict(data), time.time() + max_age)
         self._maybe_sweep()
+        return True
+
+    async def touch(self, session_id: str, max_age: int) -> bool:
+        # Refresh the expiry in place, reusing the stored payload object - no
+        # copy, since the payload is not changing. Same liveness check as
+        # `replace`: an absent or not-yet-evicted-but-expired entry counts as
+        # gone, so a stale session is never revived by a sliding-expiry touch.
+        entry = self._entries.get(session_id)
+        if entry is None or entry[1] <= time.time():
+            self._entries.pop(session_id, None)
+            return False
+        self._entries[session_id] = (entry[0], time.time() + max_age)
         return True
 
     def sweep_expired(self) -> int:

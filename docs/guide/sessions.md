@@ -146,6 +146,33 @@ async def remember(request: Request):
 The `permanent` flag is stored under a reserved `_permanent` key, so it
 persists in the cookie across requests.
 
+## Sliding expiry (idle timeout)
+
+By default a session is only re-written when a handler **modifies** it, so a
+read-only request never moves the expiry forward and the session ages out at a
+fixed `max_age` from its last write. Pass `renew_on_access=True` to switch to a
+sliding idle-timeout: any request that **reads** the session (via
+`request.session`) refreshes its expiry on the way out, so an active user is
+kept logged in and only an idle gap longer than `max_age` expires the session.
+
+```python
+from veloce import Request, SessionMiddleware, Veloce
+
+app = Veloce()
+app.add_middleware(
+    SessionMiddleware,
+    secret_key="change-me-in-production",
+    max_age=1800,            # expire after 30 minutes of inactivity
+    renew_on_access=True,    # ...measured from the last access, not the last write
+)
+```
+
+With the cookie middleware this re-signs the cookie (new server-side timestamp
+and `Max-Age`); with
+[`ServerSessionMiddleware`](../reference.md#veloce.ServerSessionMiddleware) it
+refreshes the store entry's TTL (through `SessionStore.touch`) and re-stamps the
+cookie. The default is `False`, preserving the write-only behavior.
+
 ## SessionMiddleware options
 
 [`SessionMiddleware`](../reference.md#veloce.SessionMiddleware) accepts these
@@ -164,7 +191,10 @@ keyword arguments:
 | `cookie_prefix`      | `None`         | `"host"` or `"secure"` — add the `__Host-`/`__Secure-` name prefix. |
 | `partitioned`        | `False`        | Set the `Partitioned` (CHIPS) attribute for partitioned storage. |
 | `permanent_lifetime` | `86400 * 31`   | Cookie lifetime when `session.permanent` is set.              |
-| `max_cookie_size`    | `4093`         | Largest rendered `Set-Cookie` before the cookie is dropped.   |
+| `max_cookie_size`    | `4093`         | Largest rendered `Set-Cookie` before the cookie is dropped (or chunked). |
+| `renew_on_access`    | `False`        | Slide the expiry forward on a read-only access (idle timeout). |
+| `chunked`            | `False`        | Split an oversized signed value across numbered cookies and reassemble it. |
+| `max_chunks`         | `8`            | Upper bound on chunk cookies; larger sessions are dropped with a warning. |
 
 `cookie_prefix` enforces the [RFC 6265bis](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis)
 name-prefix invariants: both prefixes require `secure=True`, and `"host"`
@@ -205,8 +235,14 @@ app.add_middleware(
     Because the whole session lives in the cookie, a large payload can
     exceed `max_cookie_size` (4093 bytes). When the rendered
     `Set-Cookie` is too large, `SessionMiddleware` logs a warning and
-    drops the `Set-Cookie` rather than corrupting the session. For large
-    payloads, switch to `ServerSessionMiddleware`.
+    drops the `Set-Cookie` rather than corrupting the session. Pass
+    `chunked=True` to instead split the signed value across numbered
+    cookies (`session.0`, `session.1`, ...) and reassemble them on the
+    next request; `max_chunks` (default 8) bounds the split, so a session
+    that needs more chunks is still dropped with a warning. Shrinking or
+    deleting a session clears its stale chunk cookies. For large payloads,
+    `ServerSessionMiddleware` is usually the better choice — it keeps the
+    cookie small and makes sessions revocable.
 
 ## Server-side sessions
 
@@ -326,6 +362,14 @@ expired, or revoked. `write` persists the payload to expire after
     non-atomic read-then-write. A store with an atomic conditional write
     (Redis `SET ... XX`, a SQL `UPDATE`) should override `replace` to
     close the check-then-write window.
+
+!!! tip "Override touch for sliding expiry"
+    When `renew_on_access=True`, the middleware calls
+    `touch(session_id, max_age)` to refresh an existing entry's expiry on a
+    read-only access without rewriting its payload. The default reads then
+    rewrites the payload; a store with a native TTL-refresh primitive (Redis
+    `EXPIRE`, a SQL `UPDATE ... expires_at`) should override `touch` to avoid
+    moving the payload.
 
 ## Reading the session outside the handler
 

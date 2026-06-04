@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import hash_password, is_strong_password, verify_password
+from veloce import (
+    hash_password,
+    is_strong_password,
+    needs_rehash,
+    verify_and_needs_update,
+    verify_and_needs_update_async,
+    verify_password,
+)
 from veloce._internal import _b64encode
 
 # ── Round-trip ────────────────────────────────────────────────────────
@@ -189,3 +196,77 @@ def test_verify_rejects_excessive_pbkdf2_iterations():
 def test_verify_pbkdf2_default_iterations_still_succeeds():
     stored = hash_password("hunter2", method="pbkdf2:sha256")
     assert verify_password(stored, "hunter2") is True
+
+
+# ── needs_rehash ──────────────────────────────────────────────────────
+
+
+def test_needs_rehash_false_for_current_defaults():
+    """A hash from the current defaults is at the current work factor."""
+    stored = hash_password("hunter2")
+    assert needs_rehash(stored) is False
+
+
+def test_needs_rehash_true_for_pbkdf2_against_scrypt_default():
+    """PBKDF2 is not the default method → flagged for migration to scrypt."""
+    stored = hash_password("hunter2", method="pbkdf2:sha256")
+    assert needs_rehash(stored) is True
+
+
+def test_needs_rehash_true_for_weaker_scrypt_params():
+    """A legacy scrypt hash below the current N is a rehash candidate."""
+    salt = _b64encode(b"\x00" * 16)
+    derived = _b64encode(b"\x00" * 64)
+    weak = f"scrypt$16384:8:1${salt}${derived}"  # N=2**14 < default 2**15
+    assert needs_rehash(weak) is True
+
+
+def test_needs_rehash_false_for_stronger_scrypt_params():
+    """A hash already above the defaults must not be downgraded."""
+    salt = _b64encode(b"\x00" * 16)
+    derived = _b64encode(b"\x00" * 64)
+    strong = f"scrypt$131072:8:1${salt}${derived}"  # N=2**17 > default
+    assert needs_rehash(strong) is False
+
+
+def test_needs_rehash_false_for_malformed():
+    assert needs_rehash("") is False
+    assert needs_rehash("garbage") is False
+    assert needs_rehash("only$two$segments") is False
+    assert needs_rehash("scrypt$bad:params:x$abc$def") is False
+
+
+def test_needs_rehash_false_for_unknown_method():
+    assert needs_rehash("argon2$3:2:1$YWJj$ZGVm") is False
+
+
+# ── verify_and_needs_update ───────────────────────────────────────────
+
+
+def test_verify_and_needs_update_ok_no_upgrade():
+    stored = hash_password("hunter2")
+    assert verify_and_needs_update(stored, "hunter2") == (True, False)
+
+
+def test_verify_and_needs_update_ok_with_upgrade():
+    """Correct password against a PBKDF2 hash → verify ok, upgrade flagged."""
+    stored = hash_password("hunter2", method="pbkdf2:sha256")
+    ok, upgrade = verify_and_needs_update(stored, "hunter2")
+    assert ok is True
+    assert upgrade is True
+
+
+def test_verify_and_needs_update_wrong_password_no_upgrade():
+    """A failed verify never reports needs_update — nothing to upgrade."""
+    stored = hash_password("hunter2", method="pbkdf2:sha256")
+    assert verify_and_needs_update(stored, "wrong") == (False, False)
+
+
+def test_verify_and_needs_update_malformed_no_upgrade():
+    assert verify_and_needs_update("garbage", "x") == (False, False)
+
+
+async def test_verify_and_needs_update_async_matches_sync():
+    stored = hash_password("hunter2", method="pbkdf2:sha256")
+    assert await verify_and_needs_update_async(stored, "hunter2") == (True, True)
+    assert await verify_and_needs_update_async(stored, "wrong") == (False, False)

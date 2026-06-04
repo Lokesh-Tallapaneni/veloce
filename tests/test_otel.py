@@ -802,3 +802,290 @@ def test_exclude_routes_suppresses_spans_for_noisy_routes() -> None:
     spans = exporter.get_finished_spans()
     names = [s.name for s in spans]
     assert names == ["/work"]
+
+
+# ── live mode: a real server span wraps handler execution ─────────────
+
+
+def _live_exporter_and_app(**kwargs):
+    """Build an in-memory exporter wired to a *live*-instrumented `_app()`."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from veloce.otel import instrument_with_otel
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    app = _app()
+    instrument_with_otel(app, tracer_provider=provider, live=True, **kwargs)
+    return exporter, provider, app
+
+
+def test_live_handler_span_is_child_of_server_span() -> None:
+    """The core of live mode: a span created inside the handler parents under the
+    live server span, with the route-template name and the standard attributes —
+    something the backdated mode cannot do."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry.trace import SpanKind
+
+    exporter, provider, app = _live_exporter_and_app()
+    child_tracer = provider.get_tracer("handler")
+
+    @app.get("/work", name="work")
+    async def work():
+        with child_tracer.start_as_current_span("inner-work"):
+            pass
+        return {"ok": True}
+
+    app.test_client().get("/work")
+
+    spans = {s.name: s for s in exporter.get_finished_spans()}
+    assert set(spans) == {"/work", "inner-work"}
+    server = spans["/work"]
+    inner = spans["inner-work"]
+
+    # The server span is a clean SERVER root; the handler span is its child.
+    assert server.kind == SpanKind.SERVER
+    assert server.parent is None
+    assert inner.parent is not None
+    assert inner.parent.span_id == server.context.span_id
+    assert inner.context.trace_id == server.context.trace_id
+
+    # The live span carries the same attribute set the backdated mode emits.
+    assert server.attributes["http.request.method"] == "GET"
+    assert server.attributes["http.route"] == "/work"
+    assert server.attributes["http.response.status_code"] == 200
+    assert "duration_ms" in server.attributes
+
+
+def test_live_context_token_not_leaked_on_handler_exception() -> None:
+    """The attach/detach must be balanced even when the handler raises: after the
+    request the ambient OTel context is restored (no leaked token), and the
+    server span is still ended and exported with the error recorded."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry import trace
+    from opentelemetry.trace import StatusCode
+
+    exporter, provider, app = _live_exporter_and_app()
+
+    # Before the request there is no current recording span.
+    assert not trace.get_current_span().is_recording()
+
+    app.test_client().get("/crash")  # raises ValueError -> 500
+
+    # After the request the token has been detached: the ambient context is back
+    # to having no recording span. A leaked token would leave the server span (or
+    # a stale context) current here.
+    assert not trace.get_current_span().is_recording()
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.attributes["http.response.status_code"] == 500
+    assert span.status.status_code == StatusCode.ERROR
+    assert span.attributes["error.type"] == "ValueError"
+
+
+def test_live_concurrent_requests_get_isolated_parent_spans() -> None:
+    """Under interleaved concurrent requests each handler span parents under its
+    own request's server span — the per-request attach/detach token model is
+    concurrency-safe and never cross-parents."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    import asyncio
+
+    from veloce.testclient import AsyncTestClient
+
+    exporter, provider, app = _live_exporter_and_app()
+    child_tracer = provider.get_tracer("handler")
+
+    @app.get("/a", name="a")
+    async def a():
+        with child_tracer.start_as_current_span("child-a"):
+            await asyncio.sleep(0.02)
+        return {"r": "a"}
+
+    @app.get("/b", name="b")
+    async def b():
+        with child_tracer.start_as_current_span("child-b"):
+            await asyncio.sleep(0.02)
+        return {"r": "b"}
+
+    async def drive():
+        async with AsyncTestClient(app) as client:
+            await asyncio.gather(client.get("/a"), client.get("/b"))
+
+    asyncio.run(drive())
+
+    spans = {s.name: s for s in exporter.get_finished_spans()}
+    assert set(spans) == {"/a", "/b", "child-a", "child-b"}
+
+    # Each child parents under its own request's server span, never the other's.
+    assert spans["child-a"].parent.span_id == spans["/a"].context.span_id
+    assert spans["child-b"].parent.span_id == spans["/b"].context.span_id
+    assert spans["child-a"].parent.span_id != spans["/b"].context.span_id
+    assert spans["/a"].context.trace_id != spans["/b"].context.trace_id
+
+
+def test_live_continues_inbound_distributed_trace() -> None:
+    """A request carrying a W3C traceparent produces a live server span that
+    joins that trace (same trace_id, parented under the caller's span)."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, provider, app = _live_exporter_and_app()
+
+    trace_id_hex = "0af7651916cd43dd8448eb211c80319c"
+    span_id_hex = "b7ad6b7169203331"
+    traceparent = f"00-{trace_id_hex}-{span_id_hex}-01"
+
+    app.test_client().get("/items/7", headers={"traceparent": traceparent})
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "/items/{item_id}"]
+    assert len(spans) == 1
+    span = spans[0]
+    assert format(span.context.trace_id, "032x") == trace_id_hex
+    assert span.parent is not None
+    assert format(span.parent.span_id, "016x") == span_id_hex
+
+
+def test_live_no_traceparent_starts_a_fresh_root_span() -> None:
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, provider, app = _live_exporter_and_app()
+    app.test_client().get("/items/7")
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "/items/{item_id}"]
+    assert len(spans) == 1
+    assert spans[0].parent is None
+
+
+def test_live_streaming_response_is_traced_end_to_end() -> None:
+    """Unlike the backdated mode (which skips streamed records), live mode times a
+    streaming body end to end: the span ends only after the body drains, so its
+    window covers the whole stream."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    import asyncio
+
+    from veloce.http.response import StreamingResponse
+
+    exporter, provider, app = _live_exporter_and_app()
+
+    @app.get("/slow-stream", name="slow_stream")
+    async def slow_stream():
+        async def gen():
+            for i in range(3):
+                await asyncio.sleep(0.02)
+                yield f"chunk-{i}".encode()
+
+        return StreamingResponse(gen())
+
+    resp = app.test_client().get("/slow-stream")
+    assert resp.status_code == 200
+    assert resp.body == b"chunk-0chunk-1chunk-2"
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.name == "/slow-stream"
+    # The span window spans the full ~60ms drain, not just response production.
+    duration_ns = span.end_time - span.start_time
+    assert duration_ns >= 50_000_000
+
+
+def test_live_on_span_enriches_the_live_span() -> None:
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    def enrich(span, metrics):
+        span.set_attribute("app.tenant", "acme")
+
+    exporter, provider, app = _live_exporter_and_app(on_span=enrich)
+
+    app.test_client().get("/items/7")
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "/items/{item_id}"]
+    assert len(spans) == 1
+    assert spans[0].attributes["app.tenant"] == "acme"
+
+
+def test_live_is_idempotent_no_duplicate_wrapper_or_hook() -> None:
+    """A second live install must not stack a second ASGI wrapper or a second
+    enrichment hook (which would double the per-request spans)."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, provider, app = _live_exporter_and_app()
+    from veloce.otel import instrument_with_otel
+
+    with pytest.warns(RuntimeWarning, match="already called"):
+        instrument_with_otel(app, tracer_provider=provider, live=True)
+
+    assert len(app._instrumentation) == 1
+    assert len(app._asgi_middleware) == 1
+
+    app.test_client().get("/items/7")
+    request_spans = [s for s in exporter.get_finished_spans() if s.name == "/items/{item_id}"]
+    assert len(request_spans) == 1
+
+
+def test_live_unmatched_request_uses_method_fallback_name() -> None:
+    """A 404 has no matched route: the live span keeps the stable method-based
+    fallback name (set at start, not overwritten) and carries no http.route."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    exporter, provider, app = _live_exporter_and_app()
+
+    secret = "/no/such/path-unique-marker-9f3a"
+    resp = app.test_client().get(secret)
+    assert resp.status_code == 404
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.name == "HTTP GET"
+    assert "http.route" not in span.attributes
+    for value in span.attributes.values():
+        assert value != secret
+
+
+def test_live_span_middleware_installed_outermost() -> None:
+    """Live instrumentation must wrap pre-existing ASGI middleware: the live span
+    wrapper leads the ASGI list (outermost - the list is wrapped in reverse) even
+    when an ASGI middleware was registered before `instrument_with_otel(live=True)`."""
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from veloce.otel import instrument_with_otel
+
+    class _ProbeASGI:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            await self.app(scope, receive, send)
+
+    app = _app()
+    app.add_middleware(_ProbeASGI)  # user ASGI middleware registered first
+    instrument_with_otel(app, tracer_provider=TracerProvider(), live=True)
+
+    # Index 0 of the ASGI middleware list is outermost (it is wrapped in reverse).
+    classes = [cls for cls, _opts in app._asgi_middleware]
+    assert classes[0].__name__ == "_LiveSpanMiddleware"
+    assert _ProbeASGI in classes
