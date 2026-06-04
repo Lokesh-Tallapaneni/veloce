@@ -1256,9 +1256,19 @@ class Request:
             return self._files
         form = await self.form()
         files = FormData()
+        non_file_keys: set[str] = set()
         for key, value in form.items():
             if isinstance(value, UploadFile):
                 files.add(key, value)
+            else:
+                non_file_keys.add(key)
+        # In debug mode, record what the request actually carried so a
+        # missing-key lookup on `request.files` raises a descriptive
+        # `FilesKeyError` (e.g. "submitted as a plain form field, add
+        # enctype=multipart/form-data") instead of a bare `KeyError`.
+        # Gated on `app.debug` so production lookups keep plain semantics.
+        if self.app is not None and getattr(self.app, "debug", False):
+            files._files_diagnostic = (self.mimetype, frozenset(non_file_keys))
         self._files = files
         return self._files
 

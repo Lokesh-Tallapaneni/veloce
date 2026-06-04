@@ -113,6 +113,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests. `default` and `default_factory` are mutually exclusive. Veloce also
   emits a startup warning when a marker's static default is a `list`, `dict`,
   or `set`, pointing at `default_factory`.
+- `FilesKeyError` gives a descriptive message when a missing key is looked up
+  on `request.files` while the application runs with `debug=True`. The message
+  names the most common cause: a field submitted as a plain form value because
+  the form lacked `enctype="multipart/form-data"`, a JSON request body where no
+  uploaded files exist, or a request with no multipart body at all. It
+  subclasses `KeyError`, so existing handlers that catch the lookup miss keep
+  working unchanged, and it is only raised in debug mode - production lookups
+  keep the plain `KeyError`. Importable from the top-level `veloce` package.
 
 - `encode_jwt` and `decode_jwt` sign and verify compact JSON Web Tokens using
   the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external dependency.
