@@ -83,6 +83,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mount_static`) now route through one internal sink that preserves each call
   site's existing setup-lock contract exactly.
 
+- The HTTP dispatch path now consumes the compiled pipeline. The request-phase and
+  response-phase middleware chains, the `@app.middleware("http")` `call_next` chain,
+  and the instrumentation timing block all read their fused per-request artifacts
+  from the compiled pipeline instead of re-probing the live feature lists at each
+  dispatch site; the response-phase reversal is computed once at compile rather than
+  per response. Response ordering is unchanged — app `after_request` (reversed),
+  then blueprint `after_request` (reversed), then `after_this_request`, then
+  response middleware (reversed) — and a route's `exclude_middleware` opt-out still
+  falls back to its dynamic filtered chain. The standard ASGI middleware stack and
+  the live OpenTelemetry server span (`instrument_with_otel(..., live=True)`) are now
+  assembled from the compiled pipeline as well; the live span remains the outermost
+  ASGI wrapper, wrapping every other middleware and the entire dispatch, and the
+  manual ASGI-stack reset in the otel bridge is removed in favour of the generation
+  counter. A feature-free application compiles to an all-empty pipeline and runs the
+  same dispatch shape as before.
+
 - `CORSMiddleware` preflight requests now validate the requested method.
   An `OPTIONS` preflight whose `Access-Control-Request-Method` is not in
   `allow_methods` returns a diagnostic `400` (`Disallowed CORS method`)

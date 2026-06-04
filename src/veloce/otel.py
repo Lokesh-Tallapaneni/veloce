@@ -89,6 +89,11 @@ import warnings
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, cast
 
+from veloce._pipeline import (
+    PH_ASGI_WRAP,
+    WRAP_ORDER_OTEL,
+    FeatureSpec,
+)
 from veloce._protocol_constants import (
     ASGI_SCOPE_HTTP,
     HTTP_METHOD_CONNECT,
@@ -508,14 +513,22 @@ def _instrument_live(
     app.add_instrumentation(_enrich_live_span, exclude_routes=exclude_routes)
     # Install the live span wrapper OUTERMOST so it wraps every other ASGI
     # middleware: the server span must exist before any of them run, and their
-    # latency must fall inside it. `_LiveSpanMiddleware` is a raw ASGI wrapper,
-    # so it lives in the app's ASGI middleware list, which `_build_asgi_stack`
-    # wraps in reverse - index 0 is outermost. Insert at the front (rather than
-    # appending) so the span leads the chain regardless of any ASGI middleware
-    # already registered when `instrument_with_otel(..., live=True)` was called.
+    # latency must fall inside it. The wrapper is registered as a PH_ASGI_WRAP
+    # feature with `WRAP_ORDER_OTEL`, which is higher than the standard ASGI
+    # middleware spec's default order, so it sorts first within the phase and is
+    # composed outermost - the same position the historical
+    # `_asgi_middleware.insert(0, ...)` gave it, but now reflected by the
+    # generation counter so the assembled stack rebuilds without a manual reset.
     # `add_instrumentation` above already enforced the setup lock.
-    app._asgi_middleware.insert(
-        0, (_LiveSpanMiddleware, {"tracer": tracer, "propagator": propagator})
+    options = {"tracer": tracer, "propagator": propagator}
+    app._register_feature_state(
+        app._features,
+        FeatureSpec(
+            "otel.live_span",
+            PH_ASGI_WRAP,
+            enabled=lambda: True,
+            build=lambda: [(_LiveSpanMiddleware, options)],
+            order=WRAP_ORDER_OTEL,
+        ),
     )
-    app._asgi_stack = None
     return _enrich_live_span

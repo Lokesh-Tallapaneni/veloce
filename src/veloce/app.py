@@ -45,11 +45,19 @@ from veloce._internal import (
     _reject_header_crlf,
 )
 from veloce._pipeline import (
+    PH_ASGI_WRAP,
+    PH_HTTP_AROUND,
+    PH_HTTP_FINISH,
+    PH_HTTP_POST,
+    PH_HTTP_PRE,
     PH_WS_HANDSHAKE,
     CompiledPipeline,
     FeatureSpec,
+    build_request_middleware,
+    build_response_middleware,
     build_ws_handshake_checks,
     compile_pipeline,
+    flatten_asgi_wrap,
 )
 from veloce._protocol_constants import (
     ASGI_EVENT_HTTP_RESPONSE_BODY,
@@ -637,11 +645,78 @@ class Veloce(Router):
                 build=lambda: build_ws_handshake_checks(self),
             )
         )
+        # Response-phase middleware: the `process_response` bound methods in
+        # reversed registration order, fused once at compile so no per-response
+        # `reversed(self._middlewares)` alloc runs. Consumed only when a request
+        # carries no per-route exclusion chain (`_MW_RESPONSE_CHAIN_KEY` absent);
+        # an excluded route falls back to the dynamic filtered walk.
+        self._features.append(
+            FeatureSpec(
+                "http.middleware.response",
+                PH_HTTP_POST,
+                enabled=lambda: bool(self._middlewares),
+                build=lambda: build_response_middleware(self),
+            )
+        )
+        # Request-phase middleware: the `process_request` bound methods in
+        # forward registration order, fused once. Consumed only when a request
+        # carries no per-route exclusion chain; an excluded route uses its
+        # dynamic filtered chain.
+        self._features.append(
+            FeatureSpec(
+                "http.middleware.request",
+                PH_HTTP_PRE,
+                enabled=lambda: bool(self._middlewares),
+                build=lambda: build_request_middleware(self),
+            )
+        )
+        # `@app.middleware("http")` call_next chain: the registered functions
+        # fused into a tuple. The slot is `None` when none are registered, so the
+        # around branch in `handle_request` is taken only when funcs exist.
+        self._features.append(
+            FeatureSpec(
+                "http.middleware.around",
+                PH_HTTP_AROUND,
+                enabled=lambda: bool(self._http_middleware_funcs),
+                build=lambda: tuple(self._http_middleware_funcs),
+            )
+        )
+        # Instrumentation hooks: the registered hooks fused into a tuple. The
+        # slot is `None` for an un-instrumented app, which then never reads the
+        # perf clock or runs the post-response metrics call.
+        self._features.append(
+            FeatureSpec(
+                "http.instrumentation",
+                PH_HTTP_FINISH,
+                enabled=lambda: bool(self._instrumentation),
+                build=lambda: tuple(self._instrumentation),
+            )
+        )
+        # Standard ASGI middleware wrappers: the registered `(cls, options)`
+        # pairs in registration order. Lives at the default `order` so any
+        # higher-order wrapper (the live-otel span, registered with a larger
+        # `order`) sorts ahead of it and ends up the outermost wrapper - the
+        # same position the historical `_asgi_middleware.insert(0, ...)` gave it.
+        # The build returns a list of pairs; `_build_asgi_stack` flattens the
+        # fused slot into one ordered chain.
+        self._features.append(
+            FeatureSpec(
+                "asgi.middleware",
+                PH_ASGI_WRAP,
+                enabled=lambda: bool(self._asgi_middleware),
+                build=lambda: list(self._asgi_middleware),
+            )
+        )
         # Standard ASGI middleware - `(class, options)` pairs. Each wraps the
         # whole ASGI application (instantiated as `cls(app, **options)`) and
         # is assembled lazily into `_asgi_stack` on the first request.
         self._asgi_middleware: list[tuple[Any, dict[str, Any]]] = []
+        # The assembled ASGI wrapper stack and the generation it was built at.
+        # Rebuilt when the compiled pipeline's generation advances (a new ASGI
+        # wrapper registered, e.g. the live-otel span), so no wrapper registry
+        # needs its own manual stack reset.
         self._asgi_stack: Callable | None = None
+        self._asgi_stack_gen: int = -1
         # Observability instrumentation hooks - each is invoked once per
         # finished HTTP request with a `RequestMetrics` record. Empty by
         # default, so an un-instrumented app pays nothing.
@@ -994,9 +1069,11 @@ class Veloce(Router):
                 )
             else:
                 # A standard ASGI middleware class - it needs the app it
-                # wraps, so defer construction until the stack is built.
+                # wraps, so defer construction until the stack is built. Bumping
+                # the generation counter invalidates the compiled wrap slot and,
+                # through the gen-keyed stack cache, the assembled stack too - no
+                # separate `_asgi_stack` reset needed.
                 self._asgi_middleware.append((middleware, options))
-                self._asgi_stack = None
                 self._gen += 1
         elif isinstance(middleware, Middleware):
             self._register_middleware(middleware, priority)
@@ -1370,12 +1447,12 @@ class Veloce(Router):
     # point at the same method.
     async def dispatch_request(self, request: Request) -> Any:
         """an alias for `_dispatch_request`."""
-        return await self._dispatch_request(request)
+        return await self._dispatch_request(request, self._ensure_pipeline())
 
     async def full_dispatch_request(self, request: Request) -> Any:
         """an alias for `_dispatch_request` (which already runs the
         full before/after-request hook chain inline)."""
-        return await self._dispatch_request(request)
+        return await self._dispatch_request(request, self._ensure_pipeline())
 
     async def preprocess_request(self, request: Request) -> Any:
         """Run all `before_request` hooks for `request`.
@@ -2589,8 +2666,20 @@ class Veloce(Router):
 
     # -- Request handling -----------------------------------------
 
-    async def handle_request(self, request: Request) -> Response:
-        """Main request handler - runs middleware chain + route dispatch."""
+    async def handle_request(
+        self, request: Request, cp: CompiledPipeline | None = None
+    ) -> Response:
+        """Main request handler - runs middleware chain + route dispatch.
+
+        `cp` is the compiled pipeline for this request. `__call__` already
+        resolves it (to gate the ASGI wrapper stack) and threads it in so the
+        generation check runs once per request, not once here and once there.
+        A caller that reaches this method directly (a mounted sub-app, the
+        public `dispatch_request` aliases) passes `None` and the pipeline is
+        resolved here.
+        """
+        if cp is None:
+            cp = self._ensure_pipeline()
         # Lazy OpenAPI setup (ensures routes exist on first request regardless of entry point)
         if not self._openapi_setup:
             self._setup_openapi()
@@ -2662,22 +2751,28 @@ class Veloce(Router):
                     },
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 )
-                if self._middlewares:
-                    response = await self._run_response_middleware(request, response)
+                # Cold reject before dispatch - the resolved pipeline still runs
+                # the fused response phase on the 413. No route was matched, so
+                # no per-route exclusion chain can exist (`excluded=False`).
+                if cp.http_post is not None:
+                    response = await self._run_response_phase(
+                        cp.http_post, request, response, False
+                    )
                 return response
 
         # Time the dispatch only when instrumentation hooks are registered -
-        # an un-instrumented app does not even read the clock.
-        instrument = self._instrumentation
+        # an un-instrumented app does not even read the clock. The fused finish
+        # slot is `None` exactly when `self._instrumentation` is empty.
+        instrument = cp.http_finish is not None
         started = time.perf_counter() if instrument else 0.0
 
         try:
             # If @app.middleware("http") funcs are registered, wrap dispatch
             # in the call_next chain.
-            if self._http_middleware_funcs:
-                response = await self._run_http_middleware_chain(request)
+            if cp.http_around is not None:
+                response = await self._run_http_middleware_chain(request, cp)
             else:
-                response = await self._dispatch_request(request)
+                response = await self._dispatch_request(request, cp)
         except Exception as exc:
             # Dispatch propagated an exception (e.g. PROPAGATE_EXCEPTIONS is
             # set). Record a `500` metric before the exception continues
@@ -2730,9 +2825,15 @@ class Veloce(Router):
 
         return response
 
-    async def _run_http_middleware_chain(self, request: Request) -> Response:
-        """Run @app.middleware('http') functions with call_next pattern."""
-        funcs = self._http_middleware_funcs
+    async def _run_http_middleware_chain(self, request: Request, cp: CompiledPipeline) -> Response:
+        """Run @app.middleware('http') functions with call_next pattern.
+
+        `cp.http_around` is the fused tuple of registered functions (the around
+        phase has one spec, so the slot holds the tuple directly); it is `None`
+        when none are registered, in which case the caller does not reach here -
+        so the slot is read directly with no per-request `None` guard.
+        """
+        funcs: tuple[Callable, ...] = cp.http_around  # type: ignore[assignment]
 
         def _make_next(level: int) -> Callable:
             _called = False
@@ -2744,13 +2845,13 @@ class Veloce(Router):
                 _called = True
                 if level + 1 < len(funcs):
                     return await funcs[level + 1](req, _make_next(level + 1))
-                return await self._dispatch_request(req)
+                return await self._dispatch_request(req, cp)
 
             return call_next
 
         return await funcs[0](request, _make_next(0))
 
-    async def _dispatch_request(self, request: Request) -> Response:
+    async def _dispatch_request(self, request: Request, cp: CompiledPipeline) -> Response:
         """Core request dispatch - middleware, routing, handler execution.
 
         Thin orchestrator: the request phase, route resolution, handler
@@ -2769,6 +2870,11 @@ class Veloce(Router):
         # request's `reset()` clobber another's `yield`-teardown stack
         # (matches the per-connection resolver the WebSocket path uses).
         resolver: DependencyResolver | None = None
+        # Whether this request stashed a per-route filtered response chain under
+        # `_MW_RESPONSE_CHAIN_KEY`. Carried as a local so the response phase skips
+        # the per-response `in request._state` membership probe on the common
+        # no-exclusion path and dispatches straight to the fused chain.
+        excluded = False
         try:
             # Match the route once - before the middleware request phase so a
             # route's `exclude_middleware` opt-out can be honoured. The same
@@ -2783,23 +2889,29 @@ class Veloce(Router):
                 request._state["url_rule"] = match.route_info.path_template
 
             # Run middleware (request phase). A route with no exclusions - the
-            # common case - iterates the app's middleware list directly so it
-            # pays zero filtering cost. A route declaring `exclude_middleware`
-            # runs a memoised filtered chain and stashes the matching
-            # response-phase chain on `request._state` for symmetric skip.
-            # Kept inline (rather than calling `_run_request_middleware`) so an
-            # app with no middleware pays zero extra coroutine awaits; the MCP
-            # tool path replays the identical chain via that helper.
-            request_chain: list[Middleware] = self._middlewares
+            # common case - iterates the compile-time fused `process_request`
+            # chain (`cp.http_pre`), which is `None` when no middleware exists so
+            # the loop is skipped with zero awaits. A route declaring
+            # `exclude_middleware` runs a memoised filtered chain of middleware
+            # objects and stashes the matching response-phase chain on
+            # `request._state` for symmetric skip.
             if match is not None and match.route_info.excluded_middleware is not None:
                 filtered = self._route_middleware_chains(match.route_info)
-                if filtered is not None:
-                    request_chain = filtered[0]
-                    request._state[_MW_RESPONSE_CHAIN_KEY] = filtered[1]
-            for mw in request_chain:
-                early_response = await mw.process_request(request)
-                if early_response is not None:
-                    return await self._run_response_middleware(request, early_response)
+                # `_route_middleware_chains` only returns `None` when the route
+                # excludes nothing, which the guard above already ruled out.
+                request._state[_MW_RESPONSE_CHAIN_KEY] = filtered[1]  # type: ignore[index]
+                excluded = True
+                for mw in filtered[0]:  # type: ignore[index]
+                    early_response = await mw.process_request(request)
+                    if early_response is not None:
+                        return await self._run_response_middleware(request, early_response)
+            elif cp.http_pre is not None:
+                for process_request in cp.http_pre:
+                    early_response = await process_request(request)
+                    if early_response is not None:
+                        return await self._run_response_phase(
+                            cp.http_post, request, early_response, False
+                        )
 
             # Run before_request hooks (app-level then matched blueprint).
             # A non-None return short-circuits. `_bp_name` is recorded as the
@@ -2815,7 +2927,9 @@ class Veloce(Router):
             # constraints, slash redirects, and 404/405. Returns either a
             # terminal Response (already through response middleware) or the
             # match to dispatch.
-            resolved = await self._resolve_route(request, match, _matched_path, _matched_method)
+            resolved = await self._resolve_route(
+                request, match, _matched_path, _matched_method, cp, excluded
+            )
             if isinstance(resolved, Response):
                 return resolved
             match = resolved
@@ -2858,10 +2972,19 @@ class Veloce(Router):
             # response-attached task) in fire-and-forget fashion.
             self._schedule_background_tasks(request, response)
 
-            # Inline empty-middleware gate skips the awaited no-op coroutine
-            # creation in the common case (no middleware registered).
-            if self._middlewares:
-                response = await self._run_response_middleware(request, response)
+            # Fused response phase. The slot is `None` when no middleware is
+            # registered, so the whole block is skipped with no awaited no-op.
+            # The common no-exclusion path iterates the compile-time reversed
+            # chain inline here (no helper frame, no `_MW_RESPONSE_CHAIN_KEY`
+            # membership probe); a route that stashed a filtered chain takes the
+            # dynamic walk so its opt-out is honoured.
+            http_post = cp.http_post
+            if http_post is not None:
+                if excluded:
+                    response = await self._run_response_middleware(request, response)
+                else:
+                    for process_response in http_post:
+                        response = await process_response(request, response)
             return response
 
         except HTTPException as exc:
@@ -2873,8 +2996,10 @@ class Veloce(Router):
             )
             if handler:
                 response = await self._dispatch_exc_handler(handler, request, exc)
-                if self._middlewares:
-                    response = await self._run_response_middleware(request, response)
+                if cp.http_post is not None:
+                    response = await self._run_response_phase(
+                        cp.http_post, request, response, excluded
+                    )
                 return response
 
             # `ValidationError` / `RequestValidationError` carry a
@@ -2888,16 +3013,18 @@ class Veloce(Router):
                 status_code=exc.status_code,
                 headers=exc.headers,
             )
-            if self._middlewares:
-                response = await self._run_response_middleware(request, response)
+            if cp.http_post is not None:
+                response = await self._run_response_phase(cp.http_post, request, response, excluded)
             return response
         except Exception as exc:
             _exc = exc
             handler = self._find_exception_handler(type(exc))
             if handler:
                 response = await self._dispatch_exc_handler(handler, request, exc)
-                if self._middlewares:
-                    response = await self._run_response_middleware(request, response)
+                if cp.http_post is not None:
+                    response = await self._run_response_phase(
+                        cp.http_post, request, response, excluded
+                    )
                 return response
 
             # This exception was not handled by any registered handler and is
@@ -2932,8 +3059,10 @@ class Veloce(Router):
                     body=body,
                     content_type=content_type,
                 )
-                if self._middlewares:
-                    response = await self._run_response_middleware(request, response)
+                if cp.http_post is not None:
+                    response = await self._run_response_phase(
+                        cp.http_post, request, response, excluded
+                    )
                 return response
 
             return await self._handle_error(
@@ -3037,6 +3166,8 @@ class Veloce(Router):
         match: Any,
         matched_path: str,
         matched_method: str,
+        cp: CompiledPipeline,
+        excluded: bool,
     ) -> Any:
         """Resolve the route to dispatch, or a terminal Response.
 
@@ -3112,8 +3243,10 @@ class Veloce(Router):
                     else status.HTTP_307_TEMPORARY_REDIRECT
                 )
                 response = RedirectResponse(alt, status_code=code)
-                if self._middlewares:
-                    response = await self._run_response_middleware(request, response)
+                if cp.http_post is not None:
+                    response = await self._run_response_phase(
+                        cp.http_post, request, response, excluded
+                    )
                 return response
 
         if match is None:
@@ -3126,8 +3259,10 @@ class Veloce(Router):
                     response = self.make_default_options_response(
                         request.path, allowed_methods=allowed
                     )
-                    if self._middlewares:
-                        response = await self._run_response_middleware(request, response)
+                    if cp.http_post is not None:
+                        response = await self._run_response_phase(
+                            cp.http_post, request, response, excluded
+                        )
                     return response
                 return await self._handle_error(
                     request,
@@ -3888,6 +4023,31 @@ class Veloce(Router):
         route_info._mw_chain_cache = (version, request_chain, response_chain)
         return request_chain, response_chain
 
+    async def _run_response_phase(
+        self,
+        fused: tuple[Callable, ...] | None,
+        request: Request,
+        response: Response,
+        excluded: bool,
+    ) -> Response:
+        """Apply the response phase, preferring the compile-time fused chain.
+
+        `excluded` is the caller's record of whether this request stashed a
+        per-route filtered response chain under `_MW_RESPONSE_CHAIN_KEY`; the
+        caller already knows it as a local, so the decision is passed in rather
+        than re-probed from `request._state` on every response. When set, the
+        dynamic reversed-filtered walk runs so the route's opt-out is honoured.
+        The common case iterates `fused` - the `process_response` bound methods
+        reversed once at compile - with no per-response `reversed` alloc. `fused`
+        is `None` only when no middleware is registered, so nothing runs.
+        """
+        if excluded:
+            return await self._run_response_middleware(request, response)
+        if fused is not None:
+            for process_response in fused:
+                response = await process_response(request, response)
+        return response
+
     async def _run_response_middleware(self, request: Request, response: Response) -> Response:
         """Run middleware response phase in reverse order.
 
@@ -4366,35 +4526,66 @@ class Veloce(Router):
         )
         await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": body})
 
-    def _build_asgi_stack(self) -> Callable:
-        """Wrap the core ASGI app with each registered ASGI middleware.
+    def _build_asgi_stack(self, cp: CompiledPipeline) -> Callable:
+        """Wrap the core ASGI app with the compiled PH_ASGI_WRAP chain.
 
-        The first-registered middleware ends up the outermost wrapper, so
-        it sees the request first and the response last.
+        The fused wrap slot is flattened into one ordered `(cls, options)`
+        chain - the highest-`order` wrapper (the live-otel span) first - and
+        composed inside out, so that wrapper ends up outermost: it sees the
+        request first and the response last, exactly as the historical
+        `_asgi_middleware.insert(0, ...)` guaranteed.
         """
         app: Callable = self._asgi_app
-        for cls, options in reversed(self._asgi_middleware):
+        for cls, options in reversed(flatten_asgi_wrap(cp.asgi_wrap)):
             app = cls(app, **options)
         return app
 
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
         """ASGI interface - allows running under uvicorn/hypercorn if desired.
 
-        Any third-party ASGI middleware registered via `add_middleware` wraps
-        the core application here; with none registered this is a direct call
-        to `_asgi_app` with no measurable overhead.
+        Any third-party ASGI middleware registered via `add_middleware` (and the
+        live-otel span) wraps the core application here; with none registered the
+        compiled wrap slot is `None` and this is a direct call to `_asgi_app`
+        with no measurable overhead.
         """
-        if self._asgi_middleware:
+        # Inline the pipeline generation check on the ASGI hot path: once setup
+        # latches, `_pipeline` is valid and `cp.gen == self._gen`, so this is a
+        # cached attribute read plus one int compare with no method-call frame.
+        # The cold (re)compile is delegated to `_ensure_pipeline`.
+        cp = self._pipeline
+        if cp is None or cp.gen != self._gen:
+            cp = self._ensure_pipeline()
+        if cp.asgi_wrap is not None:
+            # Rebuild the wrapper stack only when the pipeline generation moved
+            # (a wrapper was registered); otherwise reuse the memoised stack.
+            # The wrapper chain re-enters `__call__` per request, where the gen
+            # check then matches and `_asgi_app` is reached without a wrap slot.
             stack = self._asgi_stack
-            if stack is None:
-                stack = self._build_asgi_stack()
+            if stack is None or self._asgi_stack_gen != cp.gen:
+                stack = self._build_asgi_stack(cp)
                 self._asgi_stack = stack
+                self._asgi_stack_gen = cp.gen
             await stack(scope, receive, send)
         else:
-            await self._asgi_app(scope, receive, send)
+            # Thread the already-resolved pipeline into the core app so the HTTP
+            # dispatch reuses it instead of running a second generation check.
+            await self._asgi_app(scope, receive, send, cp)
 
-    async def _asgi_app(self, scope: dict, receive: Callable, send: Callable) -> None:
-        """The core ASGI application - HTTP / WebSocket / lifespan handling."""
+    async def _asgi_app(
+        self,
+        scope: dict,
+        receive: Callable,
+        send: Callable,
+        cp: CompiledPipeline | None = None,
+    ) -> None:
+        """The core ASGI application - HTTP / WebSocket / lifespan handling.
+
+        `cp` is the compiled pipeline resolved by `__call__`; threading it in
+        lets the HTTP path skip a redundant generation check. It is `None` when
+        a wrapper in the ASGI stack calls this method directly.
+        """
+        if cp is None:
+            cp = self._ensure_pipeline()
         if not self._openapi_setup:
             self._setup_openapi()
 
@@ -4480,7 +4671,7 @@ class Veloce(Router):
                 scope=scope,
             )
 
-            response = await self.handle_request(request)
+            response = await self.handle_request(request, cp)
 
             # Streaming response - emit the body as a sequence of ASGI
             # `http.response.body` chunks instead of one buffered
@@ -4656,7 +4847,7 @@ class Veloce(Router):
             # is_websocket_origin_allowed)` pairs from the middleware once, so
             # the per-connect path iterates a frozen tuple instead of probing
             # every middleware. `None` (no middleware) skips the gate entirely.
-            ws_checks: WsHandshakeChecks | None = self._ensure_pipeline().ws_handshake
+            ws_checks: WsHandshakeChecks | None = cp.ws_handshake
             if ws_checks is not None:
                 ws_host = ""
                 ws_origin = ""
