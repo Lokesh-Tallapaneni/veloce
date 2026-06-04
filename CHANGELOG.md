@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Parameter markers (`Query`, `Path`, `Body`, `Form`, `File`, `Header`,
+  `Cookie`) accept `default_factory`, a zero-argument callable invoked on every
+  request the parameter is absent, so each request receives its own value. Use
+  it for mutable defaults - `Query(default_factory=list)` - in place of a
+  shared `Query(default=[])`, which is constructed once and aliased across all
+  requests. `default` and `default_factory` are mutually exclusive. Veloce also
+  emits a startup warning when a marker's static default is a `list`, `dict`,
+  or `set`, pointing at `default_factory`.
+
 - `encode_jwt` and `decode_jwt` sign and verify compact JSON Web Tokens using
   the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external dependency.
   The `algorithms` allow-list passed to `decode_jwt` is required - there is no
@@ -325,6 +334,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decoder reason in the 400 response body; falls back to `DEBUG` when unset.
 
 ### Changed
+
+- Independent dependencies now resolve concurrently regardless of their
+  position in the handler signature. The resolver batches every parallel-safe
+  `Depends()` into topological waves computed once at registration, so two
+  independent dependencies separated by an ordinary parameter - for example
+  `a = Depends(...)`, `q: int = Query(...)`, `b = Depends(...)` - run together
+  instead of one after the other. Dependencies sharing a cached callable are
+  placed in successive waves so the cache is filled once and reused, never
+  raced; `Security()`-scope dependencies and `yield` dependencies continue to
+  resolve inline in declaration order, preserving scope and teardown semantics.
 
 - The unknown-object fallback in `jsonable_encoder` and the orjson default now
   drops private (underscore-prefixed) attributes from the structurally-derived
