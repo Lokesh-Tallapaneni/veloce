@@ -251,23 +251,234 @@ def _python_type_to_schema(annotation: Any) -> dict:
     return {"type": "string"}
 
 
+# Placeholder `$ref` prefix written while the document is assembled. Every
+# model reference points at `<PREFIX><token>` until `SchemaRegistry.finalize`
+# assigns the final human-readable component names and rewrites the whole
+# document in one pass. Keeping the prefix unmistakably non-OpenAPI guarantees
+# a leftover placeholder (a builder bug) is easy to spot.
+_REF_PLACEHOLDER_PREFIX = "#/$veloce-schema/"
+
+# Pydantic emits nested-model references as `#/$defs/<Name>`. They are rewritten
+# to point at the per-owner registry entry while the model's `$defs` are folded
+# into the document, so this fragment is matched on the way in.
+_PYDANTIC_DEF_PREFIX = "#/$defs/"
+
+
+class SchemaRegistry:
+    """Identity-keyed registry for the component schemas of one document.
+
+    Models are keyed on the class object plus the JSON-Schema mode
+    (`"validation"` for request bodies, `"serialization"` for responses), so
+    two distinct classes that happen to share a ``__name__`` never overwrite
+    each other and a model whose input and output shapes diverge can publish
+    both. References handed back during assembly are placeholders; `finalize`
+    resolves them to readable component names, disambiguating same-name
+    collisions by the diverging module segment and collapsing a serialization
+    variant back onto its validation schema when the two are byte-identical.
+    """
+
+    __slots__ = ("_entries", "_order", "separate_input_output")
+
+    def __init__(self, separate_input_output: bool = True) -> None:
+        # Identity key -> _SchemaEntry. The key is `(id(model), mode)`; the
+        # entry retains the class itself so finalize can derive names.
+        self._entries: dict[tuple[int, str], _SchemaEntry] = {}
+        # Insertion order of identity keys, so `components.schemas` is emitted
+        # deterministically in first-seen order rather than dict-hash order.
+        self._order: list[tuple[int, str]] = []
+        self.separate_input_output = separate_input_output
+
+    def ref(self, model: type[BaseModel], mode: str = "validation") -> dict[str, str]:
+        """Register `model` under `mode` and return a placeholder `$ref`."""
+        # Serialization is only requested for response schemas. When the app
+        # opts out of split schemas, fold every request back onto the single
+        # validation variant so the document keeps one schema name per model.
+        if mode == "serialization" and not self.separate_input_output:
+            mode = "validation"
+        key = (id(model), mode)
+        entry = self._entries.get(key)
+        if entry is None:
+            entry = _SchemaEntry(model, mode)
+            self._entries[key] = entry
+            self._order.append(key)
+        return {"$ref": f"{_REF_PLACEHOLDER_PREFIX}{entry.token}"}
+
+    def finalize(self, document: dict[str, Any]) -> dict[str, dict]:
+        """Resolve placeholders, rewrite `document` in place, return schemas.
+
+        Assigns each entry a final component name (bare class name when that
+        name is unique across the document, otherwise qualified by the module
+        tail), folds a byte-identical serialization variant onto its validation
+        twin, then rewrites every placeholder `$ref` reachable from `document`.
+        """
+        token_to_name: dict[str, str] = {}
+        components: dict[str, dict] = {}
+
+        # Group entries by the human-readable base name they want. A serialization
+        # entry is suffixed `-Output` only when it actually diverges from its
+        # validation twin, so the common (non-diverging) case keeps one name.
+        wanted: dict[str, list[_SchemaEntry]] = {}
+        for key in self._order:
+            entry = self._entries[key]
+            entry.build()
+            base = entry.model.__name__
+            if entry.mode == "serialization":
+                val_key = (id(entry.model), "validation")
+                twin = self._entries.get(val_key)
+                if twin is not None:
+                    twin.build()
+                    if twin.body == entry.body:
+                        # Output equals input: reuse the validation component
+                        # rather than emit a redundant `-Output` schema.
+                        entry.alias_token = twin.token
+                        continue
+                    # A model used for both input and output whose shapes
+                    # diverge keeps the bare name for the request schema and a
+                    # distinct `-Output` name for the response schema. With no
+                    # validation twin (response-only model) the bare name is
+                    # free, so no suffix is needed.
+                    base = f"{base}-Output"
+            wanted.setdefault(base, []).append(entry)
+
+        for base, group in wanted.items():
+            if len(group) == 1:
+                token_to_name[group[0].token] = base
+            else:
+                # Same base name from >1 distinct class: qualify each by the
+                # last segment of its defining module (`schemas.User` -> the
+                # `User__schemas` form). Identical qualified names are made
+                # unique with a numeric tail so the bijection always holds.
+                used: dict[str, int] = {}
+                for entry in group:
+                    seg = (entry.model.__module__ or "").rsplit(".", 1)[-1]
+                    candidate = f"{base}__{seg}" if seg else base
+                    seen = used.get(candidate, 0)
+                    used[candidate] = seen + 1
+                    if seen:
+                        candidate = f"{candidate}_{seen}"
+                    token_to_name[entry.token] = candidate
+
+        # Materialise components, folding each model's own `$defs` (nested
+        # models) under per-owner names so a nested-model name clash across two
+        # owners does not silently overwrite.
+        for key in self._order:
+            entry = self._entries[key]
+            if entry.alias_token is not None:
+                continue
+            name = token_to_name[entry.token]
+            components[name] = entry.body
+            for def_name, def_schema in entry.defs.items():
+                # First writer of a nested def name wins; identical re-emissions
+                # are harmless. A genuine clash keeps the first and the rewrite
+                # below points later owners at it - acceptable since nested defs
+                # carry no identity from Pydantic.
+                components.setdefault(def_name, def_schema)
+
+        # Rewrite every placeholder reference in the whole document, plus the
+        # `#/$defs/...` references inside the freshly materialised components.
+        resolved_token = {
+            t: (token_to_name.get(t) or token_to_name[self._alias_target(t)])
+            for t in self._all_tokens()
+        }
+        _rewrite_refs(document, resolved_token)
+        _rewrite_refs(components, resolved_token)
+        return components
+
+    def _alias_target(self, token: str) -> str:
+        for entry in self._entries.values():
+            if entry.token == token and entry.alias_token is not None:
+                return entry.alias_token
+        return token
+
+    def _all_tokens(self) -> list[str]:
+        return [self._entries[k].token for k in self._order]
+
+
+class _SchemaEntry:
+    """One `(model, mode)` registration awaiting name assignment."""
+
+    __slots__ = ("alias_token", "body", "defs", "mode", "model", "token")
+
+    # Monotonic token source shared across entries so placeholder strings stay
+    # short and globally unique within a process; only used as an opaque key.
+    _counter = 0
+
+    def __init__(self, model: type[BaseModel], mode: str) -> None:
+        self.model = model
+        self.mode = mode
+        cls = type(self)
+        cls._counter += 1
+        self.token = str(cls._counter)
+        self.body: dict[str, Any] = {}
+        self.defs: dict[str, dict] = {}
+        # Set when this entry collapses onto another (byte-identical output).
+        self.alias_token: str | None = None
+
+    def build(self) -> None:
+        """Populate `body` / `defs` from the model's JSON Schema once."""
+        if self.body:
+            return
+        try:
+            schema = self.model.model_json_schema(mode=self.mode)  # type: ignore[arg-type]
+        except Exception as exc:
+            # Degrading silently to `{type: object}` hides real model bugs.
+            # Log at WARNING so the failure surfaces, then fall back so /docs
+            # still renders (an underspecified schema beats a 500).
+            _logger.warning(
+                "OpenAPI schema generation failed for %s (%s mode): %s. "
+                "Falling back to {type: object}. "
+                "Inspect the model definition or attach a debugger to "
+                "veloce.contrib.openapi to see the full traceback.",
+                self.model.__name__,
+                self.mode,
+                exc,
+                exc_info=_logger.isEnabledFor(logging.DEBUG),
+            )
+            self.body = {"type": "object"}
+            return
+        if "$defs" in schema:
+            for def_name, def_schema in schema["$defs"].items():
+                self.defs[def_name] = def_schema
+            del schema["$defs"]
+        self.body = schema
+
+
+def _rewrite_refs(node: Any, token_to_name: dict[str, str]) -> None:
+    """Rewrite placeholder and `#/$defs/...` `$ref`s in place throughout `node`."""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            if ref.startswith(_REF_PLACEHOLDER_PREFIX):
+                name = token_to_name.get(ref[len(_REF_PLACEHOLDER_PREFIX) :])
+                if name is not None:
+                    node["$ref"] = f"#/components/schemas/{name}"
+            elif ref.startswith(_PYDANTIC_DEF_PREFIX):
+                node["$ref"] = f"#/components/schemas/{ref[len(_PYDANTIC_DEF_PREFIX) :]}"
+        for value in node.values():
+            _rewrite_refs(value, token_to_name)
+    elif isinstance(node, list):
+        for item in node:
+            _rewrite_refs(item, token_to_name)
+
+
 def _pydantic_to_schema(model: type[BaseModel], registry: dict[str, dict]) -> dict:
-    """Convert a Pydantic model to OpenAPI schema, adding to registry."""
+    """Convert a Pydantic model to a name-keyed `$ref`, extending `registry`.
+
+    Standalone validation-mode renderer for callers that build a self-contained
+    schema envelope (the MCP plan bridge inlines these into per-tool `$defs`).
+    The document-wide OpenAPI generator uses `SchemaRegistry` instead, which
+    keys on class identity and supports dual validation/serialization modes.
+    """
     name = model.__name__
     if name not in registry:
         try:
             schema = model.model_json_schema()
-            # Extract definitions
             if "$defs" in schema:
                 for def_name, def_schema in schema["$defs"].items():
                     registry[def_name] = def_schema
                 del schema["$defs"]
             registry[name] = schema
         except Exception as exc:
-            # Silently degrading to `{type: object}` hides genuine schema
-            # bugs in the user's models. Log loudly at WARNING so the
-            # failure surfaces in dev logs, then fall back so /docs still
-            # renders (an underspecified schema beats a 500 on /openapi.json).
             _logger.warning(
                 "OpenAPI schema generation failed for %s: %s. "
                 "Falling back to {type: object}. "
@@ -281,24 +492,27 @@ def _pydantic_to_schema(model: type[BaseModel], registry: dict[str, dict]) -> di
     return {"$ref": f"#/components/schemas/{name}"}
 
 
-def _response_model_to_schema(response_model: Any, registry: dict[str, dict]) -> dict | None:
+def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> dict | None:
     """Render `response_model` into an OpenAPI schema object.
 
     Handles three shapes:
     - `MyModel` (Pydantic BaseModel subclass) -> `{"$ref": ".../MyModel"}`.
     - `list[MyModel]` (or any `Sequence[MyModel]`) -> array-of-refs.
     - Anything else -> `None` (caller omits the schema).
+
+    Response models render under the model's serialization JSON Schema so
+    computed / read-only fields are documented as clients actually receive them.
     """
     origin = get_origin(response_model)
     if origin is list:
         args = get_args(response_model)
         if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
-            inner = _pydantic_to_schema(args[0], registry)
+            inner = registry.ref(args[0], mode="serialization")
             return {"type": "array", "items": inner}
         return {"type": "array", "items": {}}
 
     if isinstance(response_model, type) and issubclass(response_model, BaseModel):
-        return _pydantic_to_schema(response_model, registry)
+        return registry.ref(response_model, mode="serialization")
 
     return None
 
@@ -356,7 +570,7 @@ def _apply_marker_constraints(param_schema: dict[str, Any], marker: Any) -> None
 
 
 def _extract_parameters(
-    info: Any, schemas_registry: dict[str, dict]
+    info: Any, schemas_registry: SchemaRegistry
 ) -> tuple[list[dict], dict | None, list[tuple[str, dict, bool, bool]]]:
     """Walk the handler signature and classify every parameter.
 
@@ -405,7 +619,7 @@ def _extract_parameters(
             and issubclass(annotation, BaseModel)
             and (marker is None or isinstance(marker, BodyParam))
         ):
-            request_body_schema = _pydantic_to_schema(annotation, schemas_registry)
+            request_body_schema = schemas_registry.ref(annotation, mode="validation")
             continue
 
         # Determine parameter location.
@@ -523,7 +737,7 @@ def _extract_request_body(
     }
 
 
-def _extract_responses(info: Any, schemas_registry: dict[str, dict]) -> dict[str, dict]:
+def _extract_responses(info: Any, schemas_registry: SchemaRegistry) -> dict[str, dict]:
     """Build the operation `responses` map.
 
     Seeds with the success response (re-keyed to `info.status_code` when
@@ -718,12 +932,13 @@ def _collect_security_requirements(
 def _build_operation(
     info: Any,
     method_lower: str,
-    schemas_registry: dict[str, dict],
+    schemas_registry: SchemaRegistry,
     security_schemes_registry: dict[str, dict],
 ) -> dict[str, Any]:
     """Assemble one OpenAPI operation object for a single route entry."""
     # OpenAPI 3.1 Sec. 4.8.10 - operationId must be unique across the document.
-    # Explicit override wins; default = `<name>_<method>`.
+    # Explicit override wins; default = `<name>_<method>`. Collisions among the
+    # auto-generated form are resolved later in `_disambiguate_operation_ids`.
     op_id = (
         info.operation_id if getattr(info, "operation_id", None) else f"{info.name}_{method_lower}"
     )
@@ -769,7 +984,7 @@ def _build_operation(
     return operation
 
 
-def _webhook_request_body(handler: Any, registry: dict[str, dict]) -> dict | None:
+def _webhook_request_body(handler: Any, registry: SchemaRegistry) -> dict | None:
     """Return the OpenAPI schema for a webhook handler's Pydantic body param.
 
     A webhook handler documents the payload an external caller will
@@ -783,11 +998,11 @@ def _webhook_request_body(handler: Any, registry: dict[str, dict]) -> dict | Non
             continue
         annotation = hints.get(pname)
         if annotation and isinstance(annotation, type) and issubclass(annotation, BaseModel):
-            return _pydantic_to_schema(annotation, registry)
+            return registry.ref(annotation, mode="validation")
     return None
 
 
-def _walk_webhooks(app: Any, schemas_registry: dict[str, dict]) -> dict[str, Any]:
+def _walk_webhooks(app: Any, schemas_registry: SchemaRegistry) -> dict[str, Any]:
     """Return the OpenAPI 3.1 `webhooks` map from `app.webhooks`.
 
     Empty when no webhooks router exists or it has no routes. Each entry
@@ -839,27 +1054,137 @@ def get_openapi_schema(app: Any) -> dict:
     if getattr(app, "openapi_external_docs", None):
         schema["externalDocs"] = app.openapi_external_docs
 
-    schemas_registry: dict[str, dict] = {}
+    schemas_registry = SchemaRegistry(
+        separate_input_output=getattr(app, "separate_input_output_schemas", True)
+    )
     security_schemes_registry: dict[str, dict] = {}
+
+    # Operations whose operationId was auto-generated (no explicit override),
+    # recorded so a deterministic suffix can resolve duplicates afterwards.
+    auto_ops: list[tuple[dict[str, Any], str, str]] = []
 
     for method, path, info in app._collect_all_routes():
         method_lower = method.lower()
         if path not in schema["paths"]:
             schema["paths"][path] = {}
-        schema["paths"][path][method_lower] = _build_operation(
+        operation = _build_operation(
             info, method_lower, schemas_registry, security_schemes_registry
         )
+        schema["paths"][path][method_lower] = operation
+        if not getattr(info, "operation_id", None):
+            auto_ops.append((operation, path, method_lower))
 
     webhook_items = _walk_webhooks(app, schemas_registry)
     if webhook_items:
         schema["webhooks"] = webhook_items
 
-    if schemas_registry:
-        schema["components"]["schemas"] = schemas_registry
+    if getattr(app, "disambiguate_operation_ids", True):
+        _disambiguate_operation_ids(auto_ops)
+
+    components_schemas = schemas_registry.finalize(schema)
+    if components_schemas:
+        schema["components"]["schemas"] = components_schemas
     if security_schemes_registry:
         schema["components"]["securitySchemes"] = security_schemes_registry
 
+    validate = getattr(app, "validate_openapi", None)
+    if validate is None:
+        validate = bool(getattr(app, "debug", False))
+    if validate:
+        _validate_document(schema)
+
     return schema
+
+
+def _disambiguate_operation_ids(
+    auto_ops: list[tuple[dict[str, Any], str, str]],
+) -> None:
+    """Make every auto-generated operationId unique in place.
+
+    OpenAPI 3.1 Sec. 4.8.10 requires `operationId` unique across the document.
+    Two handlers sharing a function name on different paths would otherwise emit
+    the same id and break client code generation. Each duplicate after the
+    first keeps a deterministic path-derived suffix; a single aggregated WARNING
+    lists every collision and its resolution.
+    """
+    by_id: dict[str, list[tuple[dict[str, Any], str, str]]] = {}
+    for op, path, method in auto_ops:
+        by_id.setdefault(op["operationId"], []).append((op, path, method))
+
+    resolutions: list[str] = []
+    for op_id, group in by_id.items():
+        if len(group) == 1:
+            continue
+        assigned: set[str] = {op_id}
+        # Leave the first occurrence on the bare id; suffix the rest from their
+        # path so the assignment is stable across regenerations of the document.
+        for op, path, method in group[1:]:
+            suffix = "_".join(seg for seg in path.split("/") if seg) or "root"
+            candidate = f"{op_id}__{suffix}"
+            tail = 1
+            while candidate in assigned:
+                candidate = f"{op_id}__{suffix}_{tail}"
+                tail += 1
+            assigned.add(candidate)
+            op["operationId"] = candidate
+            resolutions.append(f"{op_id} -> {candidate} ({method.upper()} {path})")
+
+    if resolutions:
+        _logger.warning(
+            "Duplicate OpenAPI operationId(s) auto-disambiguated; pin "
+            "`operation_id=` on the affected routes to silence this. "
+            "Resolutions: %s",
+            "; ".join(resolutions),
+        )
+
+
+def _validate_document(schema: dict[str, Any]) -> None:
+    """Lightweight structural pass over the assembled OpenAPI document.
+
+    Opt-in (gated on `app.validate_openapi`, defaulting to `app.debug`) so the
+    common production build pays nothing. Catches malformed entries from the
+    free-form `info.responses` merge, a bad `openapi_extra` `_deep_merge`, or a
+    dangling `$ref` before the document reaches Swagger UI, raising a
+    `ValueError` that names the offending path and method.
+    """
+    schemas = schema.get("components", {}).get("schemas", {})
+    paths = schema.get("paths", {})
+    if not isinstance(paths, dict):
+        raise ValueError("OpenAPI document `paths` must be an object")
+
+    known_refs = {f"#/components/schemas/{name}" for name in schemas}
+
+    def check_refs(node: Any, where: str) -> None:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if (
+                isinstance(ref, str)
+                and ref.startswith("#/components/schemas/")
+                and ref not in known_refs
+            ):
+                raise ValueError(f"{where}: unresolved schema $ref {ref!r}")
+            for value in node.values():
+                check_refs(value, where)
+        elif isinstance(node, list):
+            for item in node:
+                check_refs(item, where)
+
+    for path, methods in paths.items():
+        if not isinstance(methods, dict):
+            raise ValueError(f"path {path!r}: operations container must be an object")
+        for method, operation in methods.items():
+            where = f"{method.upper()} {path}"
+            if not isinstance(operation, dict):
+                raise ValueError(f"{where}: operation must be an object")
+            responses = operation.get("responses")
+            if not isinstance(responses, dict) or not responses:
+                raise ValueError(f"{where}: operation must declare at least one response")
+            for param in operation.get("parameters", []) or []:
+                if not isinstance(param, dict) or "name" not in param or "in" not in param:
+                    raise ValueError(f"{where}: every parameter needs `name` and `in`")
+            check_refs(operation, where)
+
+    check_refs(schemas, "components.schemas")
 
 
 # -- Swagger UI / ReDoc templates ----------------------------
