@@ -1598,6 +1598,50 @@ def test_request_middleware_short_circuit_returns_response_and_runs_teardown():
     assert torn == [None]
 
 
+def test_exclude_middleware_skips_middleware_on_mcp_call():
+    """A route declaring `exclude_middleware=[...]` must skip the named
+    middleware over MCP exactly as on the HTTP path. A short-circuiting excluded
+    middleware therefore does NOT block the tool call, while a non-excluded
+    middleware still runs and its effect is observable in the result."""
+    from veloce.middleware.base import Middleware
+
+    app = Veloce(openapi_url=None)
+    blocked: list[str] = []
+
+    class Blocker(Middleware):
+        async def process_request(self, request):
+            # If this ran, the call would short-circuit with 403 and the handler
+            # would never execute. The route excludes it, so it must not run.
+            blocked.append("blocker")
+            return JSONResponse({"detail": "blocked"}, status_code=403)
+
+    class Stamper(Middleware):
+        async def process_request(self, request):
+            request.state.stamp = "stamped"
+            return None
+
+    app.add_middleware(Blocker)
+    app.add_middleware(Stamper)
+
+    @app.get(
+        "/open-tool",
+        expose_as_mcp_tool=True,
+        mcp_description="Open tool",
+        exclude_middleware=["Blocker"],
+    )
+    async def open_tool(request) -> dict:
+        return {"stamp": getattr(request.state, "stamp", None)}
+
+    out = _call(app, "open_tool", {})
+    assert "error" not in out
+    # The excluded Blocker did not short-circuit; the call succeeded.
+    assert out["result"].get("isError") is not True
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    # The non-excluded Stamper still ran and stamped the request state.
+    assert payload == {"stamp": "stamped"}
+    assert blocked == []
+
+
 def test_route_defaults_fill_unsupplied_mcp_argument():
     """A route with `defaults={'mode': 'summary'}` is callable over MCP without
     the agent supplying `mode`: the route default fills the handler kwarg, as

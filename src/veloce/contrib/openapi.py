@@ -1209,6 +1209,12 @@ def get_openapi_schema(app: Any) -> dict:
     # Operations whose operationId was auto-generated (no explicit override),
     # recorded so a deterministic suffix can resolve duplicates afterwards.
     auto_ops: list[tuple[dict[str, Any], str, str]] = []
+    # Operations carrying a user-pinned `operation_id`. These are reserved
+    # during disambiguation so an auto id colliding with a pinned id suffixes
+    # the AUTO one (a user's explicit id is never rewritten), and two identical
+    # pinned ids are detected and warned about (a user error the document can't
+    # silently fix by renaming).
+    explicit_ops: list[tuple[dict[str, Any], str, str]] = []
 
     for method, path, info in app._collect_all_routes():
         method_lower = method.lower()
@@ -1218,7 +1224,9 @@ def get_openapi_schema(app: Any) -> dict:
             info, method_lower, schemas_registry, security_schemes_registry
         )
         schema["paths"][path][method_lower] = operation
-        if not getattr(info, "operation_id", None):
+        if getattr(info, "operation_id", None):
+            explicit_ops.append((operation, path, method_lower))
+        else:
             auto_ops.append((operation, path, method_lower))
 
     # Webhook operations are appended to `auto_ops` so the disambiguation pass
@@ -1229,7 +1237,7 @@ def get_openapi_schema(app: Any) -> dict:
         schema["webhooks"] = webhook_items
 
     if getattr(app, "disambiguate_operation_ids", True):
-        _disambiguate_operation_ids(auto_ops)
+        _disambiguate_operation_ids(auto_ops, explicit_ops)
 
     components_schemas = schemas_registry.finalize(schema)
     if components_schemas:
@@ -1248,6 +1256,7 @@ def get_openapi_schema(app: Any) -> dict:
 
 def _disambiguate_operation_ids(
     auto_ops: list[tuple[dict[str, Any], str, str]],
+    explicit_ops: list[tuple[dict[str, Any], str, str]] | None = None,
 ) -> None:
     """Make every auto-generated operationId unique in place.
 
@@ -1256,19 +1265,47 @@ def _disambiguate_operation_ids(
     the same id and break client code generation. Each duplicate after the
     first keeps a deterministic path-derived suffix; a single aggregated WARNING
     lists every collision and its resolution.
+
+    User-pinned operationIds (`explicit_ops`) are reserved up front and never
+    rewritten: an auto id clashing with a pinned id (or with another auto id) is
+    suffixed instead. Two identical *explicit* ids are a user error the document
+    cannot silently fix by renaming a pinned id, so they are surfaced via a
+    WARNING rather than left to ship duplicated.
     """
+    explicit_ops = explicit_ops or []
+
+    # Reserve every explicit id first so auto ids are disambiguated against them.
+    # `assigned` accumulates ids already taken across the whole document, so the
+    # suffix search below never collides with a pinned id or an earlier auto id.
+    assigned: set[str] = set()
+    explicit_seen: dict[str, tuple[str, str]] = {}
+    explicit_dupes: list[str] = []
+    for op, path, method in explicit_ops:
+        op_id = op["operationId"]
+        if op_id in explicit_seen:
+            first_path, first_method = explicit_seen[op_id]
+            explicit_dupes.append(
+                f"{op_id} ({first_method.upper()} {first_path} and {method.upper()} {path})"
+            )
+        else:
+            explicit_seen[op_id] = (path, method)
+            assigned.add(op_id)
+
     by_id: dict[str, list[tuple[dict[str, Any], str, str]]] = {}
     for op, path, method in auto_ops:
         by_id.setdefault(op["operationId"], []).append((op, path, method))
 
     resolutions: list[str] = []
     for op_id, group in by_id.items():
-        if len(group) == 1:
-            continue
-        assigned: set[str] = {op_id}
-        # Leave the first occurrence on the bare id; suffix the rest from their
-        # path so the assignment is stable across regenerations of the document.
-        for op, path, method in group[1:]:
+        # An auto id is left on its bare form only when nothing else (no pinned
+        # id, no earlier auto group) already claimed it. Otherwise every member
+        # of the group, including the first, is suffixed from its path so the
+        # assignment is stable across regenerations of the document.
+        free_first = op_id not in assigned
+        for index, (op, path, method) in enumerate(group):
+            if index == 0 and free_first:
+                assigned.add(op_id)
+                continue
             suffix = "_".join(seg for seg in path.split("/") if seg) or "root"
             candidate = f"{op_id}__{suffix}"
             tail = 1
@@ -1285,6 +1322,14 @@ def _disambiguate_operation_ids(
             "`operation_id=` on the affected routes to silence this. "
             "Resolutions: %s",
             "; ".join(resolutions),
+        )
+
+    if explicit_dupes:
+        _logger.warning(
+            "Duplicate explicit OpenAPI operationId(s) - these violate OpenAPI "
+            "3.1 Sec. 4.8.10 and cannot be auto-resolved without overriding a "
+            "pinned `operation_id=`; rename one of each pair: %s",
+            "; ".join(explicit_dupes),
         )
 
 

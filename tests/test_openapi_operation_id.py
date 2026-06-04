@@ -79,6 +79,54 @@ def test_explicit_operation_id_is_left_untouched() -> None:
     assert schema["paths"]["/b"]["get"]["operationId"] == "dup_get"
 
 
+def test_explicit_id_colliding_with_auto_default_suffixes_the_auto_one() -> None:
+    # An explicit `operation_id='dup_get'` clashing with another route whose
+    # auto-default also computes to 'dup_get' must suffix the AUTO id, never the
+    # user's pinned id, and the document must not ship a duplicate.
+    app = Veloce()
+
+    @app.get("/pinned", operation_id="dup_get")
+    async def pinned(request):
+        return {}
+
+    @app.get("/auto", name="dup")
+    async def auto(request):
+        return {}
+
+    schema = app.openapi()
+    pinned_id = schema["paths"]["/pinned"]["get"]["operationId"]
+    auto_id = schema["paths"]["/auto"]["get"]["operationId"]
+    # The user's pinned id is untouched.
+    assert pinned_id == "dup_get"
+    # The auto id, which defaulted to the same value, is suffixed off its path.
+    assert auto_id == "dup_get__auto"
+    assert pinned_id != auto_id
+
+
+def test_duplicate_explicit_operation_ids_emit_warning(caplog) -> None:
+    # Two routes pinning the SAME explicit operation_id is a user error the
+    # document cannot fix by renaming a pinned id, so a clear warning is emitted
+    # (neither id is silently rewritten).
+    app = Veloce()
+
+    @app.get("/a", operation_id="same")
+    async def a(request):
+        return {}
+
+    @app.get("/b", operation_id="same")
+    async def b(request):
+        return {}
+
+    with caplog.at_level(logging.WARNING, logger="veloce.contrib.openapi"):
+        schema = app.openapi()
+    warnings = [r for r in caplog.records if "explicit" in r.getMessage().lower()]
+    assert len(warnings) == 1
+    assert "same" in warnings[0].getMessage()
+    # Both pinned ids are left as the user wrote them - not silently renamed.
+    assert schema["paths"]["/a"]["get"]["operationId"] == "same"
+    assert schema["paths"]["/b"]["get"]["operationId"] == "same"
+
+
 def test_disambiguation_can_be_disabled() -> None:
     app = Veloce(disambiguate_operation_ids=False)
 

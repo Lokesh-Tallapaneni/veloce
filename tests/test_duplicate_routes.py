@@ -418,3 +418,30 @@ def test_same_callable_different_host_is_a_conflict():
     app.add_route("/h", shared, methods=["GET"], host="a.example.com")
     with pytest.raises(DuplicateRouteError):
         app.add_route("/h", shared, methods=["GET"], host="b.example.com")
+
+
+def test_multi_method_error_registration_is_atomic():
+    # When `methods` carries more than one verb and the duplicate policy is
+    # 'error', a collision on any verb must leave the router completely
+    # unchanged. Here GET /x already exists; registering methods=['POST','GET']
+    # must raise on the GET collision WITHOUT having committed POST first, so
+    # POST /x stays unregistered (the caller catches the error expecting an
+    # unchanged router).
+    app = Veloce(on_duplicate="error")
+
+    async def existing():
+        return {"v": "get"}
+
+    async def incoming():
+        return {"v": "multi"}
+
+    app.add_route("/x", existing, methods=["GET"])
+
+    with pytest.raises(DuplicateRouteError):
+        app.add_route("/x", incoming, methods=["POST", "GET"])
+
+    client = TestClient(app)
+    # GET still resolves to the original handler.
+    assert client.get("/x").json() == {"v": "get"}
+    # POST was never committed - the route does not allow POST.
+    assert client.post("/x").status_code == 405

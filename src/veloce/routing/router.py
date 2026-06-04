@@ -849,21 +849,34 @@ class Router:
         else:
             assert node is not None
             handler_table = node.handlers
+        # Two-pass commit so a multi-method registration is atomic. The
+        # `on_duplicate='error'` policy raises a DuplicateRouteError; if we
+        # committed each method as we went, a collision on a *later* verb would
+        # leave the *earlier* verbs already mutated into the handler table,
+        # diverging from the caller's view (which catches the error expecting an
+        # unchanged router). Pass 1 evaluates the policy for every method and
+        # raises before any mutation; only once all methods pass do we mutate.
+        replaceable: list[tuple[str, RouteInfo]] = []
         for method in methods:
             mkey = method.upper()
             existing = handler_table.get(mkey)
             if existing is not None and not self._allow_duplicate(existing, route_info):
-                # Apply the `on_duplicate` policy *before* committing anything.
-                # On 'error' this raises and leaves the route fully unregistered;
-                # the named-route reverse entry below is therefore never written
-                # for a route that did not make it into the handler table, so a
-                # caught DuplicateRouteError cannot leave url_for() polluted.
+                # May raise DuplicateRouteError on the 'error' policy; nothing
+                # has been mutated yet, so the router is left fully unchanged.
                 self._on_duplicate_route(full_path, mkey, existing, route_info)
-                # The policy allowed the replace (warn/override). Drop the
-                # displaced route's reverse entry when it had a different name,
-                # so url_for(old_name) stops resolving to a dead route.
-                self._drop_replaced_route_name(existing, route_name, handler_table, mkey)
-            handler_table[mkey] = route_info
+                # warn/override allowed the replace - remember the displaced
+                # route so pass 2 can drop its reverse entry after the check.
+                replaceable.append((mkey, existing))
+        # Pass 2: every method passed the policy, so commit them all. The
+        # named-route reverse entry below is written only after this point, so a
+        # caught DuplicateRouteError cannot leave url_for() polluted.
+        for mkey, existing in replaceable:
+            # The policy allowed the replace (warn/override). Drop the displaced
+            # route's reverse entry when it had a different name, so
+            # url_for(old_name) stops resolving to a dead route.
+            self._drop_replaced_route_name(existing, route_name, handler_table, mkey)
+        for method in methods:
+            handler_table[method.upper()] = route_info
 
         # Register the named route for url_for only once the route is committed
         # to the handler table above. The reverse entry reflects the route that

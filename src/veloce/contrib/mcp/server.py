@@ -312,7 +312,18 @@ class MCPServer:
             # the tool result is derived from the response body, not a wire
             # response, so a response-mutating middleware (compression, headers)
             # has nothing to act on.
-            early = await self.app._run_request_middleware(request)
+            # A route declaring `exclude_middleware` must skip the excluded
+            # middleware here too, so the MCP path matches HTTP dispatch (which
+            # runs the route's filtered chain). `_route_middleware_chains`
+            # returns `None` when the route excludes nothing - the common,
+            # zero-cost case - in which case the full app chain runs.
+            filtered = (
+                self.app._route_middleware_chains(route_info)
+                if route_info.excluded_middleware is not None
+                else None
+            )
+            request_chain = filtered[0] if filtered is not None else None
+            early = await self.app._run_request_middleware(request, request_chain)
             if early is not None:
                 return _ShortCircuit(early)
 

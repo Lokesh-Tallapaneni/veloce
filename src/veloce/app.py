@@ -3520,7 +3520,9 @@ class Veloce(Router):
                 return resp
         return JSONResponse(result)
 
-    async def _run_request_middleware(self, request: Request) -> Response | None:
+    async def _run_request_middleware(
+        self, request: Request, chain: list[Middleware] | None = None
+    ) -> Response | None:
         """Run the middleware request phase in registration order.
 
         Each `Middleware.process_request` runs in turn; the first to return a
@@ -3529,8 +3531,13 @@ class Veloce(Router):
         when no middleware short-circuits. Extracted so the MCP dispatch path
         can replay the identical request-phase chain a route-backed tool call
         would see on the HTTP path.
+
+        `chain` defaults to the app's full middleware list. A route declaring
+        `exclude_middleware` must skip the excluded middleware over MCP exactly
+        as on the HTTP path, so the MCP caller passes the route's pre-filtered
+        request-phase chain (from `_route_middleware_chains`) instead.
         """
-        for mw in self._middlewares:
+        for mw in self._middlewares if chain is None else chain:
             early_response = await mw.process_request(request)
             if early_response is not None:
                 return early_response
