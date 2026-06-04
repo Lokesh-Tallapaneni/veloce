@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import threading
+import weakref
 from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
@@ -53,6 +54,15 @@ DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
 # default (a quarter of high) when only the high mark is supplied.
 WRITE_BUFFER_HIGH_WATER = 256 * 1024
 
+# Process-wide graceful-shutdown latch. Phase one of `Veloce._graceful_shutdown`
+# sets this and flips every live connection's `_draining` flag; a connection
+# admitted in the race window after the latch is set reads it in
+# `connection_made` and starts draining at once, so it serves at most one
+# request before quiescing. Reset is unnecessary - shutdown is terminal for the
+# process - but the helper that clears it exists for the test suite, which
+# drives shutdown repeatedly within one interpreter.
+_SHUTTING_DOWN = False
+
 
 class HttpProtocol(asyncio.Protocol):
     """Raw asyncio protocol - bypasses ASGI overhead entirely."""
@@ -72,14 +82,27 @@ class HttpProtocol(asyncio.Protocol):
         "_request_queue",
         "_server_loop",
         "_closing",
+        "_draining",
         "_current_source",
         "_raw_content_length",
         "_has_expect_continue",
         "_can_write",
+        # Allow weak references so live connections can be tracked in a
+        # `WeakSet` for graceful-shutdown draining without pinning the object.
+        "__weakref__",
     )
 
     # Class-level set: prevents GC of in-flight tasks across all connections.
     _active_tasks: set[asyncio.Task] = set()
+
+    # Live, admitted connections, tracked so graceful shutdown can quiesce each
+    # one at its next request boundary. A `WeakSet` so a connection that tears
+    # down normally drops out without manual bookkeeping and never pins a closed
+    # protocol object. Phase one of shutdown walks this once to flip every
+    # connection's `_draining` flag; each `_serve` loop then self-quiesces
+    # lazily, finishing its in-flight request and declining further pipelined
+    # work rather than being cancelled mid-flight.
+    _live_connections: weakref.WeakSet[HttpProtocol] = weakref.WeakSet()
 
     # Optional class-level hook invoked once per dispatched request, after the
     # response has been written. `None` by default so the per-request path pays
@@ -141,6 +164,13 @@ class HttpProtocol(asyncio.Protocol):
         # Set on teardown so an in-flight server loop stops pulling more work
         # and a client that closes mid-pipeline does not wedge the loop.
         self._closing: bool = False
+        # Set by `begin_drain()` during graceful shutdown. Distinct from
+        # `_closing`: a draining connection finishes the request it is already
+        # dispatching, then closes at the boundary instead of being cancelled,
+        # whereas `_closing` tears the loop down immediately. Pipelined requests
+        # queued behind the in-flight one are declined (the client retries on a
+        # fresh connection), so no accepted-and-running request is cut off.
+        self._draining: bool = False
         # The body source of the request currently being parsed off the wire.
         # `on_body` feeds it; `on_message_complete` signals EOF. Distinct from
         # the request the server loop is dispatching (an earlier one may still
@@ -356,6 +386,13 @@ class HttpProtocol(asyncio.Protocol):
         with contextlib.suppress(NotImplementedError, AttributeError):
             transport.set_write_buffer_limits(high=high)
 
+        # Track this connection so graceful shutdown can flip its drain flag.
+        # If shutdown already began before this connection was admitted, start
+        # it draining immediately so it serves at most its first request.
+        HttpProtocol._live_connections.add(self)
+        if _SHUTTING_DOWN:
+            self._draining = True
+
         self._start_keep_alive_timer()
 
     def connection_lost(self, exc: Exception | None) -> None:
@@ -363,6 +400,7 @@ class HttpProtocol(asyncio.Protocol):
             with HttpProtocol._connections_lock:
                 HttpProtocol._active_connections -= 1
             self._counted = False
+        HttpProtocol._live_connections.discard(self)
         # Stop the server loop from dispatching further queued requests and
         # drop any not-yet-served pipelined work; the client is gone.
         self._closing = True
@@ -386,6 +424,49 @@ class HttpProtocol(asyncio.Protocol):
             self._request_timer.cancel()
             self._request_timer = None
         self.transport = None
+
+    # -- graceful shutdown ----------------------------------------
+
+    def begin_drain(self) -> None:
+        """Mark this connection for graceful quiescing.
+
+        The in-flight request (if any) runs to completion; the `_serve` loop
+        then closes the transport at the request boundary rather than serving
+        further pipelined/queued requests. An idle keep-alive connection with
+        no in-flight request and nothing queued is closed at once so it does
+        not linger waiting out its idle timer during shutdown.
+        """
+        self._draining = True
+        idle = (self._server_loop is None or self._server_loop.done()) and not self._request_queue
+        if idle and self.transport is not None and not self.transport.is_closing():
+            self._closing = True
+            if self._keep_alive_handle is not None:
+                self._keep_alive_handle.cancel()
+                self._keep_alive_handle = None
+            self.transport.close()
+
+    @classmethod
+    def start_graceful_drain(cls) -> None:
+        """Phase one of graceful shutdown: quiesce every live connection.
+
+        Sets the process latch so connections admitted during the shutdown
+        window start draining immediately, then flips the drain flag on every
+        currently-live connection. Each connection self-quiesces at its own
+        request boundary - no eager per-connection close racing a mid-write
+        transport. A snapshot of the live set is taken first because
+        `begin_drain` may close (and thus deregister) a connection, mutating
+        the set mid-iteration.
+        """
+        global _SHUTTING_DOWN
+        _SHUTTING_DOWN = True
+        for conn in list(cls._live_connections):
+            conn.begin_drain()
+
+    @classmethod
+    def reset_graceful_drain(cls) -> None:
+        """Clear the shutdown latch. For test suites driving shutdown repeatedly."""
+        global _SHUTTING_DOWN
+        _SHUTTING_DOWN = False
 
     def _arm_request_timer(self) -> None:
         """Start the slowloris read budget when a request's bytes begin
@@ -595,6 +676,15 @@ class HttpProtocol(asyncio.Protocol):
                     _logger.exception("on_request_complete hook raised")
             if not should_continue:
                 # Connection: close (or a failed write) - stop serving.
+                return
+            # Graceful-shutdown quiescing: the in-flight request just finished,
+            # so close at this boundary instead of serving the next pipelined
+            # request. The request that completed was honoured in full; queued
+            # follow-ups are declined and the client retries on a fresh
+            # connection against a still-serving worker.
+            if self._draining:
+                if self.transport is not None and not self.transport.is_closing():
+                    self.transport.close()
                 return
             # Honour worker recycling at the request boundary. When the gunicorn
             # worker has tripped max_requests (clearing its `alive` flag) the

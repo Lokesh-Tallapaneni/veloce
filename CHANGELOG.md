@@ -81,6 +81,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that names the offending path and method. It defaults to `app.debug`, so the
   check runs in development and costs nothing in production unless explicitly
   enabled.
+- `app.spawn(coro, *, name=None)` schedules a long-lived, app-scoped background
+  task that is tracked with a strong reference and cancelled-and-drained on
+  shutdown within the `GRACEFUL_TASK_TIMEOUT` budget (default 10 seconds). Named
+  tasks are retrievable via `app.get_spawned_task(name)` and cancellable via
+  `app.cancel_spawned_task(name)`; a duplicate name raises `ValueError`.
+  Failures surface through the same logging path as request-scoped background
+  tasks. Calling `spawn` without a running event loop raises `RuntimeError`.
+
+- `SetupError` (a `RuntimeError` subclass, importable from the top-level
+  `veloce` package) is raised when routes, hooks, blueprints, middleware, or
+  error handlers are registered after the application has started serving
+  requests. The lock latches on the first dispatch and is relaxed under
+  `DEBUG`/`TESTING` and inside the in-memory `TestClient`, so hot-reload and
+  test monkeypatching are unaffected.
 
 - `encode_jwt` and `decode_jwt` sign and verify compact JSON Web Tokens using
   the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external dependency.
@@ -427,6 +441,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   boundary that violates the RFC 2046 grammar (empty, longer than 70
   characters, illegal characters, or a trailing space), now raises `400 Bad
   Request` instead of silently parsing to an empty form.
+- Application startup now drives the lifespan context manager and the dev
+  event-loop watchdog through a single `AsyncExitStack`, so a startup handler
+  that raises unwinds exactly the resources already acquired (in reverse) rather
+  than leaving a partially-started app with an un-exited lifespan CM or a running
+  watchdog. Shutdown runs every `on_shutdown` handler even when one raises and
+  re-raises all teardown failures together as a `BaseExceptionGroup`
+  (Python 3.11+; a single failure is re-raised as-is, with older versions
+  attaching the rest as notes), instead of stopping at the first failure.
+
+- `app.got_first_request` now flips to `True` on the first dispatch regardless of
+  whether any `before_first_request` hooks are registered, so it faithfully
+  reports whether a request has been handled. Previously the flag only flipped
+  when such hooks existed.
+
+- `Veloce.run()` and the gunicorn worker now perform a two-phase graceful
+  shutdown: every live connection is first quiesced - it finishes the request it
+  is already dispatching and then closes at the request boundary rather than
+  being cancelled mid-pipeline - before the existing bulk task wait/cancel runs
+  as a hard-timeout fallback. Accepted requests are no longer abruptly cut off
+  during drain.
+
+- The ASGI lifespan shutdown branch now reports teardown failures to the server
+  via the spec's `lifespan.shutdown.failed` message (with a full traceback)
+  instead of letting the exception escape `__call__`, mirroring the existing
+  `lifespan.startup.failed` handling.
 
 - The unknown-object fallback in `jsonable_encoder` and the orjson default now
   drops private (underscore-prefixed) attributes from the structurally-derived

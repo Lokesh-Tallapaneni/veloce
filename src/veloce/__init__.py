@@ -56,6 +56,7 @@ from veloce.exceptions import (
     DuplicateRouteError,
     HTTPException,
     RequestValidationError,
+    SetupError,
     ValidationError,
     WebSocketDisconnect,
     WebSocketException,
@@ -287,6 +288,7 @@ __all__ = [
     "RequestValidationError",
     "BuildError",
     "DuplicateRouteError",
+    "SetupError",
     "http_exception_handler",
     "request_validation_exception_handler",
     # Background

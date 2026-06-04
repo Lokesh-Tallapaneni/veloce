@@ -72,8 +72,13 @@ async def test_got_first_request_true_after_dispatch():
     assert app.got_first_request is True
 
 
-def test_got_first_request_unchanged_if_no_before_first_request_hooks():
-    """No hooks → first-request flag never flips."""
+def test_got_first_request_flips_even_without_before_first_request_hooks():
+    """First dispatch flips the flag regardless of registered hooks.
+
+    The first-request latch also drives the setup lock, so it is set on the
+    first dispatch whether or not any `before_first_request` hooks exist - the
+    flag now faithfully reports "a request has been handled".
+    """
     app = Veloce(debug=True, openapi_url=None)
 
     @app.get("/x")
@@ -81,8 +86,4 @@ def test_got_first_request_unchanged_if_no_before_first_request_hooks():
         return {}
 
     asyncio.run(app.handle_request(_req()))
-    # Without hooks registered, the dispatcher short-circuits before
-    # the flag flip — flag stays False. This is a minor behavioural
-    # quirk worth documenting; callers that want the flag should
-    # register a hook (even a no-op).
-    assert app.got_first_request is False
+    assert app.got_first_request is True

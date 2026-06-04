@@ -30,6 +30,7 @@ ASGI_EVENT_LIFESPAN_STARTUP_COMPLETE = "lifespan.startup.complete"
 ASGI_EVENT_LIFESPAN_STARTUP_FAILED = "lifespan.startup.failed"
 ASGI_EVENT_LIFESPAN_SHUTDOWN = "lifespan.shutdown"
 ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE = "lifespan.shutdown.complete"
+ASGI_EVENT_LIFESPAN_SHUTDOWN_FAILED = "lifespan.shutdown.failed"
 
 # Standard HTTP methods
 HTTP_METHOD_CONNECT = "CONNECT"

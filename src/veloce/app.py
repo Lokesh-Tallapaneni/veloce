@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import contextvars
 import functools
@@ -12,7 +13,7 @@ import time
 import traceback
 import warnings
 import weakref
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic import BaseModel as _PydanticBaseModel
@@ -48,6 +49,7 @@ from veloce._protocol_constants import (
     ASGI_EVENT_HTTP_RESPONSE_START,
     ASGI_EVENT_LIFESPAN_SHUTDOWN,
     ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE,
+    ASGI_EVENT_LIFESPAN_SHUTDOWN_FAILED,
     ASGI_EVENT_LIFESPAN_STARTUP,
     ASGI_EVENT_LIFESPAN_STARTUP_COMPLETE,
     ASGI_EVENT_LIFESPAN_STARTUP_FAILED,
@@ -77,6 +79,7 @@ from veloce.dependency import DependencyResolver, Depends
 from veloce.exceptions import (
     HTTPException,
     RequestValidationError,
+    SetupError,
     WebSocketException,
     WebSocketRequestValidationError,
 )
@@ -139,6 +142,60 @@ _CT_BYTES_CACHE: dict[str, bytes] = {
 # vast majority of typical JSON API responses; larger payloads fall
 # through to the per-request `str(n).encode()` allocation.
 _CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(2048))
+
+# `BaseExceptionGroup` is a builtin only from Python 3.11; on 3.10 the name is
+# absent, so resolve it once via `builtins` and degrade to re-raising the first
+# failure when grouping is unavailable. Used to surface every error raised while
+# unwinding the lifespan stack instead of letting the first one mask the rest.
+_BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
+
+
+def _collect_chained(exc: BaseException) -> list[BaseException]:
+    """Flatten an exception and its `__context__` chain into a list.
+
+    `AsyncExitStack.aclose()` runs every teardown, chaining each failure onto
+    the previous through `__context__` and re-raising the last. Walking that
+    chain recovers all teardown failures (oldest last), and an interior
+    `BaseExceptionGroup` is expanded so its members are surfaced individually.
+    A cycle guard keeps the walk bounded even on a self-referential chain.
+    """
+    out: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if _BaseExceptionGroup is not None and isinstance(current, _BaseExceptionGroup):
+            out.extend(current.exceptions)  # type: ignore[attr-defined]
+        else:
+            out.append(current)
+        current = current.__context__
+    # Reverse so the first teardown that failed leads the group, matching the
+    # order the teardowns ran.
+    out.reverse()
+    return out
+
+
+def _raise_unwind_errors(errors: list[BaseException]) -> None:
+    """Re-raise lifespan-unwind failures, grouping them when possible.
+
+    A single failure is re-raised as-is so its traceback is preserved
+    verbatim. Several failures are combined into a `BaseExceptionGroup`
+    (Python 3.11+) so none is masked; on 3.10, where groups are unavailable,
+    the first failure is raised with the rest chained as a note.
+    """
+    if not errors:
+        return
+    if len(errors) == 1:
+        raise errors[0]
+    if _BaseExceptionGroup is not None:
+        raise _BaseExceptionGroup("lifespan shutdown failed", errors)
+    first = errors[0]
+    for extra in errors[1:]:
+        with contextlib.suppress(Exception):
+            first.add_note(  # type: ignore[attr-defined]
+                f"+ also raised during lifespan unwind: {extra!r}"
+            )
+    raise first
 
 
 def _prefers_html(request: Request) -> bool:
@@ -484,6 +541,31 @@ class Veloce(Router):
         self.extensions: dict[str, Any] = {}  # Extensions registry
         self._lifespan = lifespan
         self._lifespan_cm: Any = None
+        # Setup lock: flipped True on the first dispatch (under
+        # `_first_request_lock`) so late route/hook/blueprint registration -
+        # which would race in-flight requests under concurrent ASGI dispatch -
+        # raises `SetupError` instead of silently mutating the live route table.
+        # Initialised here, before the ctor-time `exception_handlers=` /
+        # `middleware=` registration runs, so `_assert_mutable` can read it.
+        # Relaxed under DEBUG/TESTING (decided at lock time) so hot-reload and
+        # test monkeypatching stay ergonomic.
+        self._setup_locked = False
+        # Master switch for the setup lock. The in-memory `TestClient` clears it
+        # so a test can keep registering routes/hooks between requests without
+        # tripping `SetupError`; real serving paths leave it on.
+        self._setup_lock_enabled = True
+        # Single AsyncExitStack driving startup teardown. Entered resources
+        # (the lifespan CM, each `on_shutdown` callback, the watchdog) are
+        # pushed here in startup order, so a failure mid-startup unwinds only
+        # what already succeeded and a clean shutdown unwinds everything in
+        # reverse. `None` until the first startup run.
+        self._lifespan_stack: contextlib.AsyncExitStack | None = None
+        # App-scoped background tasks spawned via `app.spawn(...)`. Named tasks
+        # live in the dict (cancellable / retrievable by name); anonymous ones
+        # in the set. Both hold strong references so the loop cannot GC an
+        # in-flight task, and both are cancelled-and-drained on shutdown.
+        self._spawned_named: dict[str, asyncio.Task[Any]] = {}
+        self._spawned_anon: set[asyncio.Task[Any]] = set()
 
         # Set up logger: the logger name is the
         # `import_name` (already resolved to the caller's module above
@@ -715,7 +797,24 @@ class Veloce(Router):
         self._cached_view_functions = None
         self._cached_url_map = None
 
+    def _assert_mutable(self) -> None:
+        """Reject setup mutation once the app has started serving.
+
+        A no-op until the first dispatch latches `_setup_locked` (skipped under
+        DEBUG/TESTING), so registration during construction pays a single
+        boolean check. After the lock trips, route/hook/blueprint registration
+        raises `SetupError` rather than racing in-flight requests.
+        """
+        if self._setup_locked:
+            raise SetupError(
+                "Cannot register on the application after it has started "
+                "serving requests. Move route, hook, blueprint, and middleware "
+                "registration to before the first request, or enable DEBUG / "
+                "TESTING to allow late changes during development."
+            )
+
     def add_route(self, *args: Any, **kwargs: Any) -> None:
+        self._assert_mutable()
         super().add_route(*args, **kwargs)
         self._invalidate_route_caches()
 
@@ -728,6 +827,7 @@ class Veloce(Router):
         `prefix` and `url_prefix` are interchangeable; both spellings
         spells it `prefix`, Veloce spells it `url_prefix`.
         """
+        self._assert_mutable()
         from veloce.blueprints import Blueprint
 
         effective = url_prefix if url_prefix is not None else (prefix or None)
@@ -757,6 +857,7 @@ class Veloce(Router):
           (observability, tracing, profiling, ...) plug in. Middleware
           added first is the outermost wrapper.
         """
+        self._assert_mutable()
         if isinstance(middleware, type):
             if issubclass(middleware, Middleware):
                 self._middlewares.append(middleware(**options))
@@ -1314,6 +1415,7 @@ class Veloce(Router):
 
     def register_error_handler(self, code_or_exception: int | type, func: Callable) -> None:
         """Register an error handler without a decorator."""
+        self._assert_mutable()
         if isinstance(code_or_exception, int):
             self._status_handlers[code_or_exception] = func
         else:
@@ -1620,6 +1722,7 @@ class Veloce(Router):
 
     def before_request(self, func: Callable) -> Callable:
         """Register a function to run before each request."""
+        self._assert_mutable()
         self._before_request_hooks.append(func)
         return func
 
@@ -1660,22 +1763,26 @@ class Veloce(Router):
         order; single-fire is guarded with an `asyncio.Lock` so
         concurrent first requests don't double-run the callbacks.
         """
+        self._assert_mutable()
         self._before_first_request_hooks.append(func)
         return func
 
     def after_request(self, func: Callable) -> Callable:
         """Register a function to run after each request."""
+        self._assert_mutable()
         self._after_request_hooks.append(func)
         return func
 
     def teardown_request(self, func: Callable) -> Callable:
         """Register a function to run after request teardown.
         Called with an optional exception argument, even if an exception occurred."""
+        self._assert_mutable()
         self._teardown_request_hooks.append(func)
         return func
 
     def teardown_appcontext(self, func: Callable) -> Callable:
         """Register a function to run on app-context teardown."""
+        self._assert_mutable()
         self._teardown_appcontext_hooks.append(func)
         return func
 
@@ -1731,6 +1838,7 @@ class Veloce(Router):
     def context_processor(self, func: Callable) -> Callable:
         """Register a template context processor.
         The function should return a dict that merges into the template context."""
+        self._assert_mutable()
         self._context_processors.append(func)
         return func
 
@@ -1819,6 +1927,7 @@ class Veloce(Router):
         (mutating it in place is the supported way to remove / rewrite
         values before the handler sees them).
         """
+        self._assert_mutable()
         self._url_value_preprocessors.append(func)
         return func
 
@@ -1872,6 +1981,7 @@ class Veloce(Router):
 
         Runs in registration order; mutate `values` in place.
         """
+        self._assert_mutable()
         self._url_default_funcs.append(func)
         return func
 
@@ -1896,6 +2006,7 @@ class Veloce(Router):
         Mountable multiple times on different apps with different
         prefixes - the blueprint itself stays unmodified.
         """
+        self._assert_mutable()
         from veloce.blueprints import Blueprint
 
         if not isinstance(blueprint, Blueprint):
@@ -2318,18 +2429,27 @@ class Veloce(Router):
         except Exception:
             self.logger.exception("request_started signal receiver raised")
 
-        # Drain `before_first_request` hooks exactly once. The double-check
-        # under the lock is the canonical pattern: the unlocked check
-        # short-circuits the common (already-fired) case without acquiring
-        # the lock; the locked check guarantees single-fire when concurrent
-        # first requests race.
-        if not self._first_request_fired and self._before_first_request_hooks:
+        # Drain `before_first_request` hooks exactly once AND decide the setup
+        # lock - both keyed off the single `_first_request_fired` latch. The
+        # double-check under the lock is the canonical pattern: the unlocked
+        # check short-circuits the common (already serving) case without
+        # acquiring the lock; the locked check guarantees single-fire when
+        # concurrent first requests race. The lock decision runs regardless of
+        # whether `before_first_request` hooks exist, so late registration is
+        # rejected on every app, not only ones with hooks.
+        if not self._first_request_fired:
             if self._first_request_lock is None:
                 self._first_request_lock = asyncio.Lock()
             async with self._first_request_lock:
                 if not self._first_request_fired:
                     for hook in self._before_first_request_hooks:
                         await self._call_handler(hook, {})
+                    # Freeze setup outside DEBUG/TESTING (and when the lock has
+                    # been disabled, e.g. by the in-memory TestClient) so
+                    # hot-reload and test monkeypatching can keep registering.
+                    self._setup_locked = self._setup_lock_enabled and not (
+                        self.config.get("DEBUG") or self.config.get("TESTING")
+                    )
                     self._first_request_fired = True
 
         # Enforce MAX_CONTENT_LENGTH. Check both the declared
@@ -3167,6 +3287,96 @@ class Veloce(Router):
         if exc is not None:
             self.logger.error("Background task failed", exc_info=exc)
 
+    # -- App-scoped background tasks ------------------------------
+
+    def spawn(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        name: str | None = None,
+    ) -> asyncio.Task[Any]:
+        """Schedule a long-lived, app-scoped background task.
+
+        Unlike per-request background tasks, a spawned task lives for the
+        application's lifetime: it is tracked with a strong reference (so the
+        loop cannot GC it mid-flight) and is cancelled-and-drained during
+        shutdown, honouring the `GRACEFUL_TASK_TIMEOUT` config budget per
+        task. Pass `name` to make the task retrievable and cancellable by
+        name via `get_spawned_task` / `cancel_spawned_task`; a duplicate name
+        raises. Failures are logged through the same path as request-scoped
+        background tasks, so app and request work surface uniformly.
+
+        Must be called with a running event loop (e.g. from within an
+        `on_startup` handler, the lifespan CM, or a request); calling it
+        before the loop exists raises `RuntimeError`.
+
+        Usage::
+
+            @app.on_startup
+            async def _start_poller():
+                app.spawn(poll_queue(), name="queue-poller")
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "app.spawn() requires a running event loop; call it from an "
+                "on_startup handler, the lifespan context, or a request handler."
+            ) from exc
+        if name is not None and name in self._spawned_named:
+            raise ValueError(f"a spawned task named {name!r} already exists")
+        task = loop.create_task(coro, name=name)
+        if name is not None:
+            self._spawned_named[name] = task
+        else:
+            self._spawned_anon.add(task)
+        task.add_done_callback(self._spawned_task_done)
+        return task
+
+    def get_spawned_task(self, name: str) -> asyncio.Task[Any] | None:
+        """Return the named spawned task, or `None` if there is no such task."""
+        return self._spawned_named.get(name)
+
+    def cancel_spawned_task(self, name: str) -> bool:
+        """Cancel a named spawned task. Return whether a task was cancelled."""
+        task = self._spawned_named.get(name)
+        if task is None:
+            return False
+        task.cancel()
+        return True
+
+    def _spawned_task_done(self, task: asyncio.Task[Any]) -> None:
+        """Done-callback: drop the strong ref and log any non-cancel failure."""
+        name = task.get_name()
+        if self._spawned_named.get(name) is task:
+            del self._spawned_named[name]
+        self._spawned_anon.discard(task)
+        self._log_background_task_error(task)
+
+    async def _drain_spawned_tasks(self) -> None:
+        """Cancel and await every spawned task within the per-task budget.
+
+        Run from the shutdown lifecycle before the lifespan stack unwinds, so
+        app-scoped background work is stopped before the resources it depends
+        on are torn down. Each task gets at most `GRACEFUL_TASK_TIMEOUT`
+        seconds to finish cancelling; a task that ignores cancellation past
+        that is abandoned so shutdown cannot hang indefinitely.
+        """
+        tasks = [*self._spawned_named.values(), *self._spawned_anon]
+        if not tasks:
+            return
+        timeout = self.config.get("GRACEFUL_TASK_TIMEOUT", 10)
+        for task in tasks:
+            task.cancel()
+        # `wait` never raises for a task that errored or was cancelled - it just
+        # reports it done - so the drain observes completion without re-raising
+        # per-task failures (already logged by the done-callback). A task that
+        # ignores cancellation past the budget lands in `pending` and is left
+        # behind rather than hanging shutdown.
+        await asyncio.wait(tasks, timeout=timeout)
+        self._spawned_named.clear()
+        self._spawned_anon.clear()
+
     def _coerce_response(self, result: Any, response_class: Any = None) -> Response:
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
@@ -3482,13 +3692,28 @@ class Veloce(Router):
             await shutdown_event.wait()
 
     async def _graceful_shutdown(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Drain in-flight requests and run shutdown lifecycle."""
+        """Two-phase graceful shutdown, then run the shutdown lifecycle.
+
+        Phase one quiesces every live connection: each finishes the request it
+        is already dispatching and then closes at the request boundary instead
+        of being cancelled mid-pipeline. A connection accepted in the shutdown
+        window serves at most its first request. Phase two is the existing hard
+        fallback - any dispatch still running past the drain window is awaited
+        with a timeout, then cancelled - so a stuck handler can never hang the
+        process.
+        """
         # Deferred: same `veloce.status` -> `veloce/__init__` cycle that
         # the matching import in `_serve` breaks. These are the only two
         # call sites; not worth a structural refactor.
         from veloce.serving.protocol import HttpProtocol
 
-        # Wait for active dispatch tasks to complete (with timeout)
+        # Phase one: flip every live connection's drain flag so each self-
+        # quiesces at its own request boundary - no abrupt mid-pipeline cancel.
+        HttpProtocol.start_graceful_drain()
+
+        # Phase two (hard fallback): give in-flight dispatch tasks a bounded
+        # window to finish draining, then cancel any straggler so shutdown
+        # cannot block forever on a handler that ignores the drain.
         if HttpProtocol._active_tasks:
             await asyncio.wait(
                 HttpProtocol._active_tasks,
@@ -3500,53 +3725,109 @@ class Veloce(Router):
             task.cancel()
         HttpProtocol._active_tasks.clear()
 
+        # Clear the process-wide drain latch. Shutdown is terminal in
+        # production, but a single interpreter that serves again (notably the
+        # test harness) must not inherit a stuck "draining" state.
+        HttpProtocol.reset_graceful_drain()
+
         # Run shutdown lifecycle hooks
         await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
 
-    async def _run_lifecycle(self, event: str) -> None:
-        """Run lifecycle event handlers, including lifespan context manager."""
-        if event == LIFECYCLE_STARTUP:
-            # Lifespan context manager
-            if self._lifespan is not None:
-                self._lifespan_cm = self._lifespan(self)
-                await self._lifespan_cm.__aenter__()
+    async def _run_handler(self, handler: Callable[..., Any]) -> None:
+        """Invoke a lifecycle handler, offloading sync ones to a thread.
 
-            for handler in self._on_startup:
-                if _is_async_callable(handler):
-                    await handler()
-                else:
-                    loop = asyncio.get_running_loop()
-                    ctx = contextvars.copy_context()
-                    await loop.run_in_executor(None, ctx.run, functools.partial(handler))
-
-            # Dev-mode event-loop blocking watchdog - opt-in, so an app
-            # that does not set the config key never builds one. The key
-            # may be a plain truthy value, or a mapping of watchdog kwargs
-            # (`interval`, `stall_threshold`) for tuning.
-            _wd_config = self.config.get("EVENT_LOOP_WATCHDOG")
-            if _wd_config and self._watchdog is None:
-                from veloce.watchdog import EventLoopWatchdog
-
-                _wd_kwargs = dict(_wd_config) if isinstance(_wd_config, Mapping) else {}
-                self._watchdog = EventLoopWatchdog(asyncio.get_running_loop(), **_wd_kwargs)
-                self._watchdog.start()
+        Async handlers are awaited directly; a plain `def` handler runs in
+        the default executor under a copied context so it cannot block the
+        event loop. Shared by the startup and shutdown paths so the two stay
+        in lockstep.
+        """
+        if _is_async_callable(handler):
+            await handler()
         else:
-            if self._watchdog is not None:
-                self._watchdog.stop()
-                self._watchdog = None
+            loop = asyncio.get_running_loop()
+            ctx = contextvars.copy_context()
+            await loop.run_in_executor(None, ctx.run, functools.partial(handler))
 
-            for handler in self._on_shutdown:
-                if _is_async_callable(handler):
-                    await handler()
-                else:
-                    loop = asyncio.get_running_loop()
-                    ctx = contextvars.copy_context()
-                    await loop.run_in_executor(None, ctx.run, functools.partial(handler))
+    async def _run_lifecycle(self, event: str) -> None:
+        """Run lifecycle event handlers, including the lifespan context manager.
 
-            # Exit lifespan context manager
-            if self._lifespan_cm is not None:
-                await self._lifespan_cm.__aexit__(None, None, None)
+        Startup acquires the user lifespan CM and the dev watchdog onto a single
+        `AsyncExitStack` stored on the app. A startup handler that raises mid-way
+        unwinds exactly what was already acquired (the stack closes in reverse)
+        before the error propagates, so a partially-started app leaves no
+        orphaned resources. Shutdown drains any `app.spawn(...)` tasks, runs
+        every `on_shutdown` handler (one raising never skips the rest), then
+        closes the stack to exit the CM and stop the watchdog - collecting every
+        failure and re-raising them grouped, so no teardown error is masked.
+        """
+        if event == LIFECYCLE_STARTUP:
+            stack = contextlib.AsyncExitStack()
+            try:
+                # The lifespan CM is entered first so it exits last, after every
+                # on_shutdown handler has run - resources it provides outlive the
+                # handlers that use them.
+                if self._lifespan is not None:
+                    self._lifespan_cm = self._lifespan(self)
+                    await stack.enter_async_context(self._lifespan_cm)
+
+                for handler in self._on_startup:
+                    await self._run_handler(handler)
+
+                # Dev-mode event-loop blocking watchdog - opt-in, so an app
+                # that does not set the config key never builds one. The key
+                # may be a plain truthy value, or a mapping of watchdog kwargs
+                # (`interval`, `stall_threshold`) for tuning. Registered on the
+                # stack so it is always stopped, even on partial-startup failure.
+                _wd_config = self.config.get("EVENT_LOOP_WATCHDOG")
+                if _wd_config and self._watchdog is None:
+                    from veloce.watchdog import EventLoopWatchdog
+
+                    _wd_kwargs = dict(_wd_config) if isinstance(_wd_config, Mapping) else {}
+                    self._watchdog = EventLoopWatchdog(asyncio.get_running_loop(), **_wd_kwargs)
+                    self._watchdog.start()
+                    stack.push_async_callback(self._stop_watchdog)
+            except BaseException:
+                # Unwind whatever startup acquired before the failure, then let
+                # the original error propagate so the ASGI/native caller emits
+                # the startup-failed signal. Unwind errors must not mask the
+                # startup failure itself.
+                with contextlib.suppress(Exception):
+                    await stack.aclose()
                 self._lifespan_cm = None
+                raise
+            self._lifespan_stack = stack
+        else:
+            await self._drain_spawned_tasks()
+            shutdown_stack = self._lifespan_stack
+            self._lifespan_stack = None
+            errors: list[BaseException] = []
+            # Run every on_shutdown handler, newest first (symmetric to the
+            # startup order), collecting failures so one raising teardown does
+            # not abort the rest - unlike a bare loop that stops on first error.
+            for handler in reversed(self._on_shutdown):
+                try:
+                    await self._run_handler(handler)
+                except BaseException as exc:  # noqa: BLE001 - aggregated below
+                    errors.append(exc)
+            # Close the acquired-resource stack (lifespan CM exit + watchdog
+            # stop). When no startup ran (standalone or repeat shutdown) the
+            # stack is absent; fall back to stopping the watchdog and exiting an
+            # open CM directly so standalone shutdown still tears everything down.
+            self._lifespan_cm = None
+            if shutdown_stack is not None:
+                try:
+                    await shutdown_stack.aclose()
+                except BaseException as exc:  # noqa: BLE001 - aggregated below
+                    errors.extend(_collect_chained(exc))
+            else:
+                await self._stop_watchdog()
+            _raise_unwind_errors(errors)
+
+    async def _stop_watchdog(self) -> None:
+        """Stop and clear the dev watchdog. Registered on the lifespan stack."""
+        if self._watchdog is not None:
+            self._watchdog.stop()
+            self._watchdog = None
 
     def lifespan_context(self) -> _LifespanManager:
         """Return an async context manager driving the lifespan cycle.
@@ -3988,6 +4269,22 @@ class Veloce(Router):
                         )
                         return
                 elif message["type"] == ASGI_EVENT_LIFESPAN_SHUTDOWN:
-                    await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
-                    await send({"type": ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE})
+                    # Mirror the startup branch: a teardown that raises (an
+                    # `on_shutdown` handler, the lifespan CM `__aexit__`, or a
+                    # drained spawned task) is reported via the spec's
+                    # `lifespan.shutdown.failed` message with a full traceback,
+                    # rather than escaping `__call__` and leaving the server to
+                    # drain on an unhandled exception. `_run_lifecycle` already
+                    # runs every teardown before re-raising, so the failed
+                    # signal does not skip remaining cleanups.
+                    try:
+                        await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
+                        await send({"type": ASGI_EVENT_LIFESPAN_SHUTDOWN_COMPLETE})
+                    except BaseException:
+                        await send(
+                            {
+                                "type": ASGI_EVENT_LIFESPAN_SHUTDOWN_FAILED,
+                                "message": traceback.format_exc(),
+                            }
+                        )
                     return

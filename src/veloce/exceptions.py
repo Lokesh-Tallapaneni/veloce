@@ -355,6 +355,17 @@ class DuplicateRouteError(ValueError):
             "replacement or rename one of the routes."
         )
 
+class SetupError(RuntimeError):
+    """A registration ran after the application started serving.
+
+    Routes, hooks, blueprints, middleware, and similar setup must be wired
+    before the first request is dispatched. Once serving begins the route
+    table and hook lists are frozen, so a late mutation - which would race
+    in-flight requests under concurrent ASGI dispatch - raises this instead
+    of silently corrupting the live application. The lock is relaxed in
+    `DEBUG`/`TESTING` so hot-reload and test monkeypatching stay ergonomic.
+    """
+
 
 # -- Lookup table - status code -> subclass ----------------------------
 
