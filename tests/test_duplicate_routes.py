@@ -264,6 +264,56 @@ def test_warn_replace_removes_old_name_reverse_entry(caplog):
         app.url_for("old")
 
 
+def test_partial_method_override_keeps_shared_name_alive():
+    # A multi-method route (GET+POST) registered under one name must keep
+    # url_for(name) working when only ONE of its methods is overridden under a
+    # different name: the displaced GET is gone, but the same endpoint is still
+    # live for POST, so the old name still owns a live route and must reverse.
+    app = Veloce(on_duplicate="override")
+
+    async def shared():
+        return {"h": 1}
+
+    app.add_route("/p", shared, methods=["GET", "POST"], name="x")
+
+    async def replacement():
+        return {"h": 2}
+
+    app.add_route("/p", replacement, methods=["GET"], name="y")
+
+    # GET now serves the replacement; POST still serves the original endpoint.
+    client = TestClient(app)
+    assert client.get("/p").json() == {"h": 2}
+    assert client.post("/p").json() == {"h": 1}
+
+    # Both names resolve: "y" is the new GET route, "x" still resolves via the
+    # untouched POST route that carries it.
+    assert app.url_for("y") == "/p"
+    assert app.url_for("x") == "/p"
+
+
+def test_full_replacement_still_drops_stale_name():
+    # The single-method case is unchanged: a full replacement under a new name
+    # leaves no live route carrying the old name, so it must stop reversing.
+    from veloce.exceptions import BuildError
+
+    app = Veloce(on_duplicate="override")
+
+    async def shared():
+        return {"h": 1}
+
+    app.add_route("/p", shared, methods=["GET"], name="x")
+
+    async def replacement():
+        return {"h": 2}
+
+    app.add_route("/p", replacement, methods=["GET"], name="y")
+
+    assert app.url_for("y") == "/p"
+    with pytest.raises(BuildError):
+        app.url_for("x")
+
+
 def test_same_callable_different_name_is_a_conflict():
     # A same-callable registration carrying different route metadata (here a
     # different name) is a real second registration, not an idempotent remount,

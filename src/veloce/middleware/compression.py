@@ -106,7 +106,9 @@ class GZipMiddleware(Middleware):
         exclude_types: tuple[str, ...] = (),
         min_stream_chunk_offload: int = 32768,
         latency_sensitive_types: frozenset[str] = frozenset({MIME_TEXT_EVENT_STREAM}),
+        name: str | None = None,
     ) -> None:
+        super().__init__(name=name)
         self.minimum_size = minimum_size
         self.compresslevel = compresslevel
         # `include_types` is matched as a prefix (so `"text/"` covers

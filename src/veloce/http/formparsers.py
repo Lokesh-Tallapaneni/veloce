@@ -121,7 +121,9 @@ def parse_multipart_form(
     ISO-8859-1 for legacy clients. A part that declares its own
     `Content-Type` charset (RFC 7578 §5.1.2) is decoded with that charset
     instead, provided it is one of `ascii`, `us-ascii`, `utf-8`, or
-    `iso-8859-1`.
+    `iso-8859-1`. A declared charset is decoded strictly: bytes that are
+    invalid in it raise `BadRequest` (400) rather than being corrupted with
+    U+FFFD, since the part asserted its own encoding.
     """
     # A file/field-specific size limit overrides the shared per-part cap
     # for that part kind; otherwise the shared cap applies to both.
@@ -272,7 +274,18 @@ def parse_multipart_form(
             # before falling back to the global UTF-8 / charset_fallback path.
             part_charset = _part_charset(state["headers"].get("content-type", ""))
             if part_charset is not None:
-                value = raw_bytes.decode(part_charset, errors="replace")
+                # A part that *declares* a charset is asserting its bytes are
+                # valid in that encoding, so decode strictly: bytes that don't
+                # match (invalid UTF-8 under charset=utf-8, a byte > 0x7f under
+                # charset=ascii) are a client error, not text to silently
+                # corrupt with U+FFFD. The global charset_fallback path below
+                # still tolerates undeclared parts as before.
+                try:
+                    value = raw_bytes.decode(part_charset)
+                except UnicodeDecodeError as exc:
+                    raise BadRequest(
+                        f"multipart field {name!r} value is not valid {part_charset}"
+                    ) from exc
             else:
                 try:
                     value = raw_bytes.decode("utf-8")

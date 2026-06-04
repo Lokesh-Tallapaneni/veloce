@@ -27,7 +27,8 @@ class LoggingMiddleware(Middleware):
     # lifetime sidesteps both problems.
     _START_KEY = "__veloce_logging_start"
 
-    def __init__(self, logger: logging.Logger | None = None) -> None:
+    def __init__(self, logger: logging.Logger | None = None, *, name: str | None = None) -> None:
+        super().__init__(name=name)
         if logger is None:
             self.logger = logging.getLogger("veloce.access")
             # Handlers and level are bootstrapped independently. We check
@@ -89,7 +90,8 @@ class LoggingMiddleware(Middleware):
 class RequestIDMiddleware(Middleware):
     """Assign a unique request ID to each request and echo it in the response."""
 
-    def __init__(self, header_name: str = HEADER_X_REQUEST_ID) -> None:
+    def __init__(self, header_name: str = HEADER_X_REQUEST_ID, *, name: str | None = None) -> None:
+        super().__init__(name=name)
         self.header_name = header_name
         self._header_name_lower = header_name.lower()
 

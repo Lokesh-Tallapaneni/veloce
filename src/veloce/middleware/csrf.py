@@ -109,7 +109,9 @@ class CSRFMiddleware(Middleware):
         secret: str | None = None,
         max_age: int | None = None,
         trusted_origins: tuple[str, ...] | None = None,
+        name: str | None = None,
     ) -> None:
+        super().__init__(name=name)
         self.cookie_name = cookie_name
         self.header_name = header_name
         self.form_field = form_field

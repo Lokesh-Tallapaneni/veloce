@@ -113,7 +113,9 @@ class CSPMiddleware(Middleware):
         *,
         report_only_policy: str | Mapping[str, str | Sequence[str]] | None = None,
         nonce: bool = True,
+        name: str | None = None,
     ) -> None:
+        super().__init__(name=name)
         assert policy is not None or report_only_policy is not None, (
             "CSPMiddleware requires at least one of policy or report_only_policy"
         )
@@ -176,7 +178,8 @@ class TrustedHostMiddleware(Middleware):
     comparison (RFC 9110 Sec. 7.2).
     """
 
-    def __init__(self, allowed_hosts: list[str]) -> None:
+    def __init__(self, allowed_hosts: list[str], *, name: str | None = None) -> None:
+        super().__init__(name=name)
         # Split exact matches from wildcards at construction so the request
         # hot path stays O(1) for the common case.
         self._exact: frozenset[str] = frozenset(
@@ -227,7 +230,10 @@ class RateLimitMiddleware(Middleware):
     deployments.
     """
 
-    def __init__(self, max_requests: int = 100, window_seconds: int = 60) -> None:
+    def __init__(
+        self, max_requests: int = 100, window_seconds: int = 60, *, name: str | None = None
+    ) -> None:
+        super().__init__(name=name)
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self._buckets: dict[str, deque[float]] = {}
@@ -382,7 +388,9 @@ class HTTPSRedirectMiddleware(Middleware):
         *,
         exempt_paths: tuple[str, ...] = (),
         exempt_acme_challenge: bool = True,
+        name: str | None = None,
     ) -> None:
+        super().__init__(name=name)
         paths = list(exempt_paths)
         if exempt_acme_challenge:
             paths.append("/.well-known/acme-challenge/")
@@ -448,7 +456,9 @@ class SecurityHeadersMiddleware(Middleware):
         hsts_preload: bool = False,
         content_security_policy: str | None = None,
         permissions_policy: str | None = None,
+        name: str | None = None,
     ) -> None:
+        super().__init__(name=name)
         # Resolve the full header set once at construction so the
         # per-response cost is just copying a small, fixed dict.
         headers: dict[str, str] = {}
@@ -500,7 +510,10 @@ class WebSocketOriginMiddleware(Middleware):
     HTTP is `CORSMiddleware`'s job.
     """
 
-    def __init__(self, allowed_origins: list[str], allow_missing: bool = True) -> None:
+    def __init__(
+        self, allowed_origins: list[str], allow_missing: bool = True, *, name: str | None = None
+    ) -> None:
+        super().__init__(name=name)
         self._allowed: frozenset[str] = frozenset(o.rstrip("/").lower() for o in allowed_origins)
         self._allow_all = "*" in self._allowed
         self._allow_missing = allow_missing

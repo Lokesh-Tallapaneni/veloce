@@ -57,8 +57,13 @@ class ProxyFix(Middleware):
         x_port: int = 0,
         x_prefix: int = 0,
         trust_forwarded: bool = True,
+        name: str | None = None,
     ) -> None:
-        for name, val in (
+        # Forward the optional per-instance exclusion name to the base so
+        # `add_middleware(ProxyFix, name="edge")` and route-level
+        # `exclude_middleware=["edge"]` can target this instance.
+        super().__init__(name=name)
+        for field, val in (
             ("x_for", x_for),
             ("x_proto", x_proto),
             ("x_host", x_host),
@@ -66,7 +71,7 @@ class ProxyFix(Middleware):
             ("x_prefix", x_prefix),
         ):
             if val < 0:
-                raise ValueError(f"{name} must be >= 0, got {val}")
+                raise ValueError(f"{field} must be >= 0, got {val}")
         self.x_for = x_for
         self.x_proto = x_proto
         self.x_host = x_host

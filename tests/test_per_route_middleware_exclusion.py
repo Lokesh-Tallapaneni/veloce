@@ -11,6 +11,8 @@ no exclusions must keep running every registered middleware.
 
 from __future__ import annotations
 
+import pytest
+
 from veloce import Middleware, Request, TestClient, Veloce
 
 
@@ -226,3 +228,82 @@ def test_exclusion_keyed_on_entry_route_not_rewrite_target():
         # it is excluded from the response phase too.
         assert req_set == resp_set == {"A"}
         assert "X-Saw-B" not in resp.headers
+
+
+# ── Finding: built-in middleware must accept and forward `name=` ─────
+
+
+def test_proxyfix_accepts_name_and_is_targetable_by_exclusion():
+    # `add_middleware(ProxyFix, name="edge")` must instantiate (the override
+    # used to raise TypeError), and a route-level `exclude_middleware=["edge"]`
+    # must be able to target that instance by its overridden name.
+    from veloce.middleware.proxy_fix import ProxyFix
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(ProxyFix, name="edge", x_for=1, x_proto=1)
+
+    @app.get("/with-proxyfix")
+    async def with_pf(request: Request):
+        # ProxyFix ran: a trusted X-Forwarded-Proto rewrites the scope scheme.
+        return {"scheme": request.scope.get("scheme")}
+
+    @app.get("/no-proxyfix", exclude_middleware=["edge"])
+    async def no_pf(request: Request):
+        return {"scheme": request.scope.get("scheme")}
+
+    with TestClient(app) as client:
+        forwarded = {"X-Forwarded-Proto": "https"}
+        # The middleware instance carries the overridden name.
+        assert app._middlewares[0].middleware_name == "edge"
+        # On the unexcluded route ProxyFix rewrites the scheme to https.
+        assert client.get("/with-proxyfix", headers=forwarded).json()["scheme"] == "https"
+        # On the excluded route ProxyFix is skipped, so the scheme is untouched.
+        assert client.get("/no-proxyfix", headers=forwarded).json()["scheme"] == "http"
+
+
+def _builtin_middleware_cases() -> list[tuple[type, dict]]:
+    # Every built-in `Middleware` subclass with its own `__init__`, paired with
+    # the minimal required args; `name=` is appended by the test below.
+    from veloce.middleware.compression import GZipMiddleware
+    from veloce.middleware.conditional import ConditionalGetMiddleware
+    from veloce.middleware.cors import CORSMiddleware
+    from veloce.middleware.csrf import CSRFMiddleware
+    from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
+    from veloce.middleware.proxy_fix import ProxyFix
+    from veloce.middleware.security import (
+        CSPMiddleware,
+        HTTPSRedirectMiddleware,
+        RateLimitMiddleware,
+        SecurityHeadersMiddleware,
+        TrustedHostMiddleware,
+        WebSocketOriginMiddleware,
+    )
+    from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
+
+    return [
+        (CORSMiddleware, {}),
+        (GZipMiddleware, {}),
+        (ConditionalGetMiddleware, {}),
+        (CSRFMiddleware, {}),
+        (LoggingMiddleware, {}),
+        (RequestIDMiddleware, {}),
+        (ProxyFix, {}),
+        (CSPMiddleware, {"policy": "default-src 'self'"}),
+        (HTTPSRedirectMiddleware, {}),
+        (RateLimitMiddleware, {}),
+        (SecurityHeadersMiddleware, {}),
+        (TrustedHostMiddleware, {"allowed_hosts": ["example.com"]}),
+        (WebSocketOriginMiddleware, {"allowed_origins": ["https://example.com"]}),
+        (SessionMiddleware, {"secret_key": "k"}),
+        (ServerSessionMiddleware, {}),
+    ]
+
+
+@pytest.mark.parametrize(("cls", "kwargs"), _builtin_middleware_cases())
+def test_every_builtin_middleware_accepts_name_kwarg(cls, kwargs):
+    # Each built-in must accept `name=` and surface it via `middleware_name`,
+    # and fall back to the class name when no override is given.
+    named = cls(name="custom", **kwargs)
+    assert named.middleware_name == "custom"
+    default = cls(**kwargs)
+    assert default.middleware_name == cls.__name__

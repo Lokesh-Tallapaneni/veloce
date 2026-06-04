@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 import re
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Sequence
 from typing import Any
 from urllib.parse import urlencode
 
@@ -616,21 +616,77 @@ class Router:
 
         raise DuplicateRouteError(path, method, existing_name, incoming_name)
 
-    def _drop_replaced_route_name(self, replaced: RouteInfo, winning_name: str) -> None:
+    def _drop_replaced_route_name(
+        self,
+        replaced: RouteInfo,
+        winning_name: str,
+        handler_table: dict[str, RouteInfo],
+        replaced_method: str,
+    ) -> None:
         """Remove the replaced route's reverse entry when a duplicate wins.
 
         On a `warn`/`override` replace, the incoming route is registered under
         `winning_name`. If the route it displaced carried a *different* `name=`,
         its `_named_routes` entry would otherwise survive and let
         `url_for(old_name)` resolve to a route no longer in the handler table.
-        Drop that stale reverse entry (and its reverse-converter cache) so only
-        live endpoints reverse. A same-name replace keeps the entry, since the
+
+        But a multi-method route (e.g. GET+POST under one `RouteInfo` and one
+        `name=`) may be replaced for a *single* method only: overriding GET
+        leaves the same endpoint live for POST, so `url_for(old_name)` must
+        keep working. Drop the reverse entry only when the replaced route is no
+        longer the owner of that name anywhere in the table - i.e. no remaining
+        live route (this `RouteInfo` under another method, or any other route)
+        still carries `old_name`. The slot at `(handler_table, replaced_method)`
+        is excluded from the scan because the caller is about to overwrite it
+        with the winning route. A same-name replace keeps the entry, since the
         winning registration overwrites it with the correct template anyway.
         """
         old_name = replaced.name
-        if old_name and old_name != winning_name:
-            self._named_routes.pop(old_name, None)
-            self._reverse_converters.pop(old_name, None)
+        if not old_name or old_name == winning_name:
+            return
+        if self._name_still_live(old_name, handler_table, replaced_method):
+            return
+        self._named_routes.pop(old_name, None)
+        self._reverse_converters.pop(old_name, None)
+
+    def _name_still_live(
+        self,
+        name: str,
+        excluded_table: dict[str, RouteInfo],
+        excluded_method: str,
+    ) -> bool:
+        """Whether any live route still carries `name`, ignoring one slot.
+
+        Walks every committed handler table (radix tree + regex routes) and
+        reports whether some route's `name` matches. The single slot at
+        `(excluded_table, excluded_method)` is skipped because it holds the
+        route being displaced and is about to be overwritten by the winner.
+        This runs only on a duplicate-route override/warn replace, never on
+        the per-request match path.
+        """
+        for table, method, info in self._iter_live_handlers():
+            if table is excluded_table and method == excluded_method:
+                continue
+            if info.name == name:
+                return True
+        return False
+
+    def _iter_live_handlers(
+        self,
+    ) -> Iterator[tuple[dict[str, RouteInfo], str, RouteInfo]]:
+        """Yield `(handler_table, method, RouteInfo)` for every live route."""
+        stack: list[RadixNode] = [self._root]
+        while stack:
+            node = stack.pop()
+            for method, info in node.handlers.items():
+                yield node.handlers, method, info
+            stack.extend(node.static_children.values())
+            stack.extend(node.param_children)
+            if node.wildcard_child is not None:
+                stack.append(node.wildcard_child)
+        for route in self._regex_routes:
+            for method, info in route.handlers.items():
+                yield route.handlers, method, info
 
     def add_route(
         self,
@@ -806,7 +862,7 @@ class Router:
                 # The policy allowed the replace (warn/override). Drop the
                 # displaced route's reverse entry when it had a different name,
                 # so url_for(old_name) stops resolving to a dead route.
-                self._drop_replaced_route_name(existing, route_name)
+                self._drop_replaced_route_name(existing, route_name, handler_table, mkey)
             handler_table[mkey] = route_info
 
         # Register the named route for url_for only once the route is committed
@@ -1469,7 +1525,7 @@ class Router:
                 existing = target.handlers.get(method)
                 if existing is not None and not self._allow_duplicate(existing, route_info):
                     self._on_duplicate_route(full_path, method, existing, route_info)
-                    self._drop_replaced_route_name(existing, info.name)
+                    self._drop_replaced_route_name(existing, info.name, target.handlers, method)
                 target.handlers[method] = route_info
                 self._named_routes[info.name] = (full_path, param_names)
                 self._reverse_converters.pop(info.name, None)
@@ -1551,7 +1607,7 @@ class Router:
                 existing = cur.handlers.get(method)
                 if existing is not None and not self._allow_duplicate(existing, route_info):
                     self._on_duplicate_route(full_path, method, existing, route_info)
-                    self._drop_replaced_route_name(existing, info.name)
+                    self._drop_replaced_route_name(existing, info.name, cur.handlers, method)
                 cur.handlers[method] = route_info
 
                 # Propagate slash-handling flags from the source node so a

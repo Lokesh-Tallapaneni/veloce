@@ -311,3 +311,50 @@ def test_no_part_charset_falls_back_to_global():
     # ...but the global latin-1 fallback still applies.
     form = parse_multipart_form(body, _ct(), charset_fallback="latin-1")
     assert form["name"] == "\xe9"
+
+
+def test_declared_utf8_charset_rejects_invalid_bytes():
+    # A part that declares charset=utf-8 asserts its bytes are valid UTF-8;
+    # an invalid lead byte must be a 400, not U+FFFD-corrupted text.
+    boundary = _BOUNDARY
+    head = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="name"\r\n'
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "\r\n"
+    ).encode("ascii")
+    tail = f"\r\n--{boundary}--\r\n".encode("ascii")
+    body = head + b"\xff" + tail
+    with pytest.raises(BadRequest):
+        parse_multipart_form(body, _ct())
+
+
+def test_declared_ascii_charset_rejects_high_byte():
+    # charset=ascii with a byte > 0x7f is out of range and must be rejected.
+    boundary = _BOUNDARY
+    head = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="name"\r\n'
+        "Content-Type: text/plain; charset=ascii\r\n"
+        "\r\n"
+    ).encode("ascii")
+    tail = f"\r\n--{boundary}--\r\n".encode("ascii")
+    body = head + b"\x80" + tail
+    with pytest.raises(BadRequest):
+        parse_multipart_form(body, _ct())
+
+
+def test_declared_charset_valid_bytes_still_decode():
+    # A declared charset with matching bytes must still decode normally - the
+    # strict path rejects only genuinely invalid bytes.
+    boundary = _BOUNDARY
+    head = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="name"\r\n'
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "\r\n"
+    ).encode("ascii")
+    tail = f"\r\n--{boundary}--\r\n".encode("ascii")
+    body = head + "café".encode() + tail
+    form = parse_multipart_form(body, _ct())
+    assert form["name"] == "café"

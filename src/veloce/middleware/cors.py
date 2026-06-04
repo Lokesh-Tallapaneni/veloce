@@ -93,7 +93,9 @@ class CORSMiddleware(Middleware):
         allow_credentials: bool = False,
         max_age: int = 600,
         expose_headers: list[str] | None = None,
+        name: str | None = None,
     ) -> None:
+        super().__init__(name=name)
         self.allow_origins = list(allow_origins) if allow_origins is not None else ["*"]
         self.allow_origin_regex: Pattern[str] | None
         if allow_origin_regex:
