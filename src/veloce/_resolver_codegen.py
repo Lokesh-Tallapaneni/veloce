@@ -153,12 +153,23 @@ def _emit_marker(lines: list[str], ns: dict[str, Any], j: int, slot: Any) -> Non
     loc = _MARKER_LOC[mk]
     name = slot.name
 
-    ns[f"_mk{j}"] = marker
     ns[f"_t{j}"] = slot.target_type
     ns[f"_io{j}"] = slot.is_optional
     # `marker.validate` is bound once at registration; the per-request call is a
     # plain local invocation rather than an attribute lookup on the marker.
     ns[f"_val{j}"] = marker.validate
+
+    # Decide static-vs-factory default once, here at codegen time. A static
+    # default snapshots the value into the namespace and reads it inline (no
+    # call overhead on the common path); a `default_factory` binds the callable
+    # and emits a fresh call so each request gets an independent object.
+    if marker.has_default:
+        if marker.default_factory is not None:
+            ns[f"_df{j}"] = marker.default_factory
+            default_expr = f"_df{j}()"
+        else:
+            ns[f"_d{j}"] = marker.default
+            default_expr = f"_d{j}"
 
     # List-typed query / header / cookie marker - collect every repeated value.
     if mk in _LIST_MARKERS and get_origin(slot.target_type) in (list, set, tuple):
@@ -173,7 +184,7 @@ def _emit_marker(lines: list[str], ns: dict[str, Any], j: int, slot: Any) -> Non
             lines.append(f"    _vals = request.query_params.getlist({lookup!r})")
         lines.append("    if not _vals:")
         if marker.has_default:
-            lines.append(f"        k[{name!r}] = _mk{j}.default")
+            lines.append(f"        k[{name!r}] = {default_expr}")
         elif slot.is_optional:
             lines.append(f"        k[{name!r}] = None")
         else:
@@ -203,7 +214,7 @@ def _emit_marker(lines: list[str], ns: dict[str, Any], j: int, slot: Any) -> Non
 
     lines.append("    if _raw is None:")
     if marker.has_default:
-        lines.append(f"        k[{name!r}] = _mk{j}.default")
+        lines.append(f"        k[{name!r}] = {default_expr}")
     elif slot.is_optional:
         lines.append(f"        k[{name!r}] = None")
     else:

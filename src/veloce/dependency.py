@@ -380,7 +380,7 @@ class DependencyResolver:
             for slot in route_dep_plans:
                 await self._exec_depends(slot, request, path_params)
 
-        return await self._resolve_slots(plan.slots, request, path_params, plan.parallel_groups)
+        return await self._resolve_slots(plan, request, path_params)
 
     async def resolve_ws_plan(
         self,
@@ -403,7 +403,7 @@ class DependencyResolver:
             for slot in route_dep_plans:
                 await self._exec_depends(slot, websocket, path_params)
 
-        return await self._resolve_slots(plan.slots, websocket, path_params, plan.parallel_groups)
+        return await self._resolve_slots(plan, websocket, path_params)
 
     async def run_teardowns(self, exc: BaseException | None = None) -> None:
         """Run yield-dependency teardowns in reverse registration order.
@@ -455,14 +455,18 @@ class DependencyResolver:
 
     async def _resolve_slots(
         self,
-        slots: list[Any],
+        plan: Any,
         request: Request,
         path_params: dict[str, str],
-        parallel_groups: dict[int, int] | None = None,
     ) -> dict[str, Any]:
+        slots = plan.slots
         kwargs: dict[str, Any] = {}
-        # Precomputed at registration; empty dict means "no parallel runs".
-        groups = parallel_groups if parallel_groups is not None else {}
+        # Precomputed at registration. `wave_trigger` maps the earliest batched
+        # slot index to the ordered list of waves; `wave_members` holds every
+        # batched index. Both are empty when there is nothing to batch, so a
+        # linear chain pays no per-request overhead.
+        wave_trigger = plan.wave_trigger
+        wave_members = plan.wave_members
 
         i = 0
         n = len(slots)
@@ -518,20 +522,30 @@ class DependencyResolver:
                 continue
 
             if kind == K_DEPENDS:
-                # Run a precomputed contiguous group of parallel-safe
-                # `K_DEPENDS` siblings concurrently; otherwise resolve this one
-                # sequentially. The grouping (no Security() scope mutation, no
-                # yield-style deps, no shared use_cache callable) is derived
-                # once at registration - see `compute_parallel_groups`.
-                end = groups.get(i, i + 1)
-                if end > i + 1:
-                    group = slots[i:end]
-                    results = await asyncio.gather(
-                        *(self._exec_depends(s, request, path_params) for s in group)
-                    )
-                    for s, r in zip(group, results, strict=True):
-                        kwargs[s.name] = r
-                    i = end
+                # Topological batching (see `compute_dep_waves`): every batched
+                # parallel-safe dep is resolved at the earliest batched slot,
+                # so deps separated by non-dependency slots or sitting at
+                # different nesting depths still run concurrently. Waves run
+                # sequentially (each gathered, then awaited) so a wave that
+                # reuses a cached result always follows the wave that filled it.
+                # A batched member reached later is already in `kwargs` and is
+                # skipped. Unsafe deps (Security() scope mutators, yield deps)
+                # are never batched; they fall through to the inline resolve
+                # below in slot order, preserving teardown and scope semantics.
+                if wave_members and i in wave_members:
+                    # `wave_trigger` only holds the earliest batched index; at
+                    # any later batched member the result is already in `kwargs`
+                    # and there is nothing to do but advance.
+                    waves = wave_trigger.get(i)
+                    if waves is not None:
+                        for wave in waves:
+                            group = [slots[w] for w in wave]
+                            results = await asyncio.gather(
+                                *(self._exec_depends(s, request, path_params) for s in group)
+                            )
+                            for s, r in zip(group, results, strict=True):
+                                kwargs[s.name] = r
+                    i += 1
                     continue
                 kwargs[name] = await self._exec_depends(slot, request, path_params)
                 i += 1
@@ -697,7 +711,7 @@ class DependencyResolver:
             loc = _MARKER_LOC[mk]
             if not values:
                 if marker.has_default:
-                    return marker.default
+                    return marker.resolve_default()
                 if slot.is_optional:
                     return None
                 raise RequestValidationError(
@@ -733,7 +747,7 @@ class DependencyResolver:
 
         if raw is None:
             if marker.has_default:
-                return marker.default
+                return marker.resolve_default()
             if slot.is_optional:
                 return None
             raise RequestValidationError(
@@ -814,9 +828,7 @@ class DependencyResolver:
         if new_scopes:
             self._scope_stack.extend(new_scopes)
         try:
-            sub_kwargs = await self._resolve_slots(
-                sub_plan.slots, request, path_params, sub_plan.parallel_groups
-            )
+            sub_kwargs = await self._resolve_slots(sub_plan, request, path_params)
         finally:
             if new_scopes:
                 del self._scope_stack[-len(new_scopes) :]

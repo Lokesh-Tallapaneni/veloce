@@ -16,6 +16,7 @@ from __future__ import annotations
 import functools
 import inspect
 import types
+import warnings
 from collections.abc import Callable
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -98,6 +99,16 @@ def _marker_kind(marker: ParamBase) -> int:
     return MK_QUERY
 
 
+def _warn_shared_mutable_default(name: str, default: Any) -> None:
+    """Warn (once at registration) about a marker's shared mutable default."""
+    warnings.warn(
+        f"parameter {name!r} has a mutable {type(default).__name__} default that is "
+        f"shared across requests; pass default_factory={type(default).__name__} so each "
+        f"request gets its own value",
+        stacklevel=3,
+    )
+
+
 # -- Slot record --------------------------------------------
 class _Slot:
     """One handler parameter's pre-resolved binding to a request source.
@@ -111,6 +122,7 @@ class _Slot:
         "name",
         "target_type",
         "default",
+        "default_factory",
         "has_default",
         "is_optional",
         "list_inner",
@@ -132,6 +144,9 @@ class _Slot:
         self.name = name
         self.target_type: Any = None
         self.default: Any = None
+        # Set only for marker slots that carry a `default_factory`; plain
+        # path/query slots leave this None and read the static `default`.
+        self.default_factory: Callable[[], Any] | None = None
         self.has_default = False
         self.is_optional = False
         self.list_inner: Any = None
@@ -229,6 +244,88 @@ def compute_parallel_groups(slots: list[_Slot]) -> dict[int, int]:
     return groups
 
 
+def _cached_callables(slot: _Slot, seen_plans: set[int]) -> set[Any]:
+    """Every `use_cache=True` callable reachable from a K_DEPENDS subtree.
+
+    Two independent dependencies that share any cached callable (the slot's
+    own, or one nested anywhere below it) must not run in the same wave: the
+    first to resolve writes the shared result cache and the second reads it.
+    Collecting the full reachable set - not just the top-level callable -
+    catches the nested-shared-cache case the contiguous heuristic missed.
+    Cycle-guarded via `seen_plans`.
+    """
+    found: set[Any] = set()
+    if slot.use_cache and slot.dep_callable is not None:
+        found.add(slot.dep_callable)
+    sub_plan = slot.sub_plan
+    if sub_plan is None:
+        return found
+    plan_id = id(sub_plan)
+    if plan_id in seen_plans:
+        return found
+    seen_plans.add(plan_id)
+    for sub in sub_plan.slots:
+        if sub.kind == K_DEPENDS:
+            found |= _cached_callables(sub, seen_plans)
+    return found
+
+
+def compute_dep_waves(slots: list[_Slot]) -> list[list[int]]:
+    """Topological waves of parallel-safe K_DEPENDS slot indices.
+
+    Unlike `compute_parallel_groups` (which only fuses a contiguous run of
+    K_DEPENDS siblings in slot order), this batches every parallel-safe
+    dependency regardless of declaration order or intervening non-dependency
+    slots, so `dep_a, q: int = Query(), dep_b` resolves `dep_a` and `dep_b`
+    concurrently. The waves are an ordered list; the resolver runs each wave's
+    slots together and the waves themselves in sequence.
+
+    Two dependencies sharing a cached callable anywhere in their subtrees are
+    placed in successive waves (the shared callable acts as a synthetic
+    prerequisite) so the cache is filled once and reused, never raced.
+    Dependencies that are not parallel-safe (Security-scope mutators, yield
+    deps) are excluded entirely - the resolver keeps running those inline in
+    slot order to preserve teardown and scope semantics.
+
+    Returns `[]` when fewer than two safe dependencies exist, so a linear
+    chain or a single dep adds no per-request wave bookkeeping.
+    """
+    safe: list[int] = []
+    cached_sets: dict[int, set[Any]] = {}
+    for i, slot in enumerate(slots):
+        if slot.kind != K_DEPENDS or not _slot_parallel_safe(slot, set()):
+            continue
+        safe.append(i)
+        cached_sets[i] = _cached_callables(slot, set())
+
+    if len(safe) < 2:
+        return []
+
+    waves: list[list[int]] = []
+    wave_cached: list[set[Any]] = []
+    for idx in safe:
+        own_cached = cached_sets[idx]
+        placed = False
+        # Earliest wave that does not already hold a slot sharing a cached
+        # callable with this one. Walking waves in order keeps the synthetic
+        # prerequisite ordering deterministic and slot-order-stable.
+        for wave, taken in zip(waves, wave_cached, strict=True):
+            if own_cached.isdisjoint(taken):
+                wave.append(idx)
+                taken |= own_cached
+                placed = True
+                break
+        if not placed:
+            waves.append([idx])
+            wave_cached.append(set(own_cached))
+
+    # A degenerate result where every wave holds one slot means nothing can
+    # actually run concurrently; drop it so the resolver takes its plain path.
+    if all(len(wave) < 2 for wave in waves):
+        return []
+    return waves
+
+
 # -- Handler plan -------------------------------------------
 class HandlerPlan:
     """Frozen resolution plan for one handler, plus its dependency graph."""
@@ -240,6 +337,9 @@ class HandlerPlan:
         "route_dep_plans",
         "compiled_resolver",
         "parallel_groups",
+        "dep_waves",
+        "wave_trigger",
+        "wave_members",
     )
 
     def __init__(
@@ -259,8 +359,33 @@ class HandlerPlan:
         # tried and not compilable (see DependencyResolver.resolve_plan).
         self.compiled_resolver: Any = None
         # Parallel-dependency grouping, derived once here so the resolver does
-        # not re-scan slot safety on every request.
+        # not re-scan slot safety on every request. `parallel_groups` is the
+        # legacy contiguous-run map (kept for the compat shims and external
+        # callers); `dep_waves` is the topological batching the resolver now
+        # drives, fusing independent deps across non-dependency slots.
         self.parallel_groups = compute_parallel_groups(slots)
+        self.dep_waves = compute_dep_waves(slots)
+        # Resolver-facing projection of the waves, built once here. Every batched
+        # dependency is resolved at the earliest batched slot index
+        # (`wave_trigger` keyed by that single index, valued with the ordered
+        # list of waves to run sequentially). Running waves wave-by-wave there
+        # guarantees a cache-prerequisite wave completes before the wave that
+        # reuses its cached result. `wave_members` holds every batched index so
+        # a member reached later in the loop is recognised as already resolved
+        # and skipped. Both are empty when nothing batches, so a linear chain
+        # pays no per-request overhead.
+        members: set[int] = set()
+        batched_waves: list[list[int]] = []
+        for wave in self.dep_waves:
+            if len(wave) < 2:
+                continue
+            batched_waves.append(sorted(wave))
+            members.update(wave)
+        trigger: dict[int, list[list[int]]] = {}
+        if members:
+            trigger[min(members)] = batched_waves
+        self.wave_trigger = trigger
+        self.wave_members = members
 
 
 # -- Plan builders ------------------------------------------
@@ -482,9 +607,17 @@ def build_plan(
                 and getattr(default, "convert_underscores", True)
             ):
                 slot.lookup_name = slot.lookup_name.replace("_", "-")
+            slot.default_factory = default.default_factory
+            slot.has_default = default.has_default
             is_opt, inner = _unwrap_optional(annotation) if annotation else (False, annotation)
             slot.is_optional = is_opt
             slot.target_type = inner if is_opt else annotation
+            # DX lint (Veloce-original; FastAPI does not flag this): a mutable
+            # static default on a marker is shared across every request, so an
+            # in-place mutation by one handler leaks into the next. Point the
+            # author at `default_factory`, which builds a fresh value per call.
+            if default.default_factory is None and isinstance(default.default, (list, dict, set)):
+                _warn_shared_mutable_default(param_name, default.default)
             slots.append(slot)
             continue
 
