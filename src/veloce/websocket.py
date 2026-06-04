@@ -1327,62 +1327,49 @@ class WebSocket:
         # for the next frame in the buffer.
         return frame_len
 
-    def _close_too_big(self) -> None:
-        """Close the connection with `1009 Message Too Big`.
+    def _close_control(self, code: int) -> None:
+        """Synchronously send a close frame carrying `code`, then drop the transport.
 
-        Used when a peer declares a frame payload past `MAX_FRAME_SIZE`.
-        Mirrors the synchronous close in `_enqueue_or_close` - no `await`
-        is available from inside the Protocol callback that drives
-        `feed_data`.
+        Shared by the parser-side close paths (`_close_too_big`,
+        `_close_protocol_error`, `_close_invalid_payload`). No `await` is
+        available from inside the Protocol callback that drives `feed_data`, so
+        the close is synchronous and mirrors `_enqueue_or_close`: emit the close
+        frame, cancel the heartbeat, record the close code, mark the connection
+        closed, wake any parked receiver, and close the transport.
         """
         with contextlib.suppress(Exception):
-            self._send_frame((WS_1009_MESSAGE_TOO_BIG).to_bytes(2, "big"), opcode=0x8)  # Close
+            self._send_frame(code.to_bytes(2, "big"), opcode=0x8)  # Close
         self._cancel_heartbeat()
-        self.close_code = WS_1009_MESSAGE_TOO_BIG
+        self.close_code = code
         self._closed = True
         self._close_frame_sent = True
         self._wake_raw_receiver()
         with contextlib.suppress(Exception):
             if self.transport is not None:
                 self.transport.close()
+
+    def _close_too_big(self) -> None:
+        """Close the connection with `1009 Message Too Big`.
+
+        Used when a peer declares a frame payload past `MAX_FRAME_SIZE`.
+        """
+        self._close_control(WS_1009_MESSAGE_TOO_BIG)
 
     def _close_protocol_error(self) -> None:
         """Close the connection with `1002 Protocol Error`.
 
         Used for malformed frames - e.g. an oversized (>125 byte) or
-        fragmented control frame (RFC 6455 Sec. 5.5). Like `_close_too_big`,
-        the close is synchronous: no `await` is available from inside the
-        Protocol callback that drives `feed_data`.
+        fragmented control frame (RFC 6455 Sec. 5.5).
         """
-        with contextlib.suppress(Exception):
-            self._send_frame((WS_1002_PROTOCOL_ERROR).to_bytes(2, "big"), opcode=0x8)  # Close
-        self._cancel_heartbeat()
-        self.close_code = WS_1002_PROTOCOL_ERROR
-        self._closed = True
-        self._close_frame_sent = True
-        self._wake_raw_receiver()
-        with contextlib.suppress(Exception):
-            if self.transport is not None:
-                self.transport.close()
+        self._close_control(WS_1002_PROTOCOL_ERROR)
 
     def _close_invalid_payload(self) -> None:
         """Close the connection with `1007 Invalid Frame Payload Data`.
 
         Used when a TEXT message (whole or reassembled from fragments) is
-        not valid UTF-8 (RFC 6455 Sec. 8.1). Like the other parser-side
-        closers the close is synchronous - no `await` is available from
-        inside the Protocol callback that drives `feed_data`.
+        not valid UTF-8 (RFC 6455 Sec. 8.1).
         """
-        with contextlib.suppress(Exception):
-            self._send_frame((WS_1007_INVALID_FRAME_PAYLOAD_DATA).to_bytes(2, "big"), opcode=0x8)
-        self._cancel_heartbeat()
-        self.close_code = WS_1007_INVALID_FRAME_PAYLOAD_DATA
-        self._closed = True
-        self._close_frame_sent = True
-        self._wake_raw_receiver()
-        with contextlib.suppress(Exception):
-            if self.transport is not None:
-                self.transport.close()
+        self._close_control(WS_1007_INVALID_FRAME_PAYLOAD_DATA)
 
     def _handle_close_frame(self, payload: bytes | bytearray) -> None:
         """Process a received Close frame: validate, echo, and record state.

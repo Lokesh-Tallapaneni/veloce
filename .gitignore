@@ -45,6 +45,17 @@ CLAUDE.md
 
 # Internal scratch (perf-audit dumps, bench notes) — never shipped
 internal/
+.perfcheck.py
 *.png
 board-after-upload.png
 .cache/
+.tmp*/
+.manual*/
+tmp*/
+OPTIMIZATION*.md
+findings/
+.framework-src/
+
+# Benchmark result dumps — never shipped
+result_*.json
+result_*.b64

@@ -24,7 +24,7 @@ from veloce._constants import (
     MSG_ERROR_RESPONSE_EMISSION,
     MSG_INTERNAL_SERVER_ERROR,
 )
-from veloce._internal import _extract_host
+from veloce._internal import _extract_host, _ws_handshake_rejection
 from veloce._protocol_constants import (
     RAW_HEADER_CONTENT_LENGTH,
     ROUTE_METHOD_WEBSOCKET,
@@ -314,12 +314,13 @@ class HttpProtocol(asyncio.Protocol):
         if self.transport is None or self.transport.is_closing():
             return
 
-        # RFC 6455 native upgrade (Sec. 4.2). Gated on method == GET so the HTTP
-        # fast path pays only a single bytes compare before falling through. A
-        # valid upgrade with a matching websocket route is handled here and
+        # RFC 6455 native upgrade (Sec. 4.2). Gated on the parser's C-level
+        # `should_upgrade()` flag, which is set only when httptools parsed a
+        # `Connection: upgrade` + `Upgrade:` request - so an ordinary GET never
+        # enters the Python-level header scan inside `_handle_websocket_upgrade`.
+        # A valid upgrade with a matching websocket route is handled here and
         # returns; everything else continues down the normal HTTP path.
-        method = self.parser.get_method()
-        if method == b"GET" and self._handle_websocket_upgrade():
+        if self.parser.should_upgrade() and self._handle_websocket_upgrade():
             return
 
         max_len = self.app.config.get("MAX_CONTENT_LENGTH")
@@ -391,13 +392,19 @@ class HttpProtocol(asyncio.Protocol):
     def _handle_websocket_upgrade(self) -> bool:
         """Attempt the RFC 6455 handshake; return True if the connection diverted.
 
-        Called from `on_headers_complete` only for a GET. Detects a valid upgrade
-        request, matches a websocket route, runs the host/Origin checks, sends
-        the 101, and diverts the connection into WebSocket mode. Returns True
-        once the connection has been handled (diverted, or terminated with an
-        HTTP error response); False means "not a WebSocket upgrade - fall through
-        to the normal HTTP path".
+        Called from `on_headers_complete` when the parser flagged an upgrade.
+        Detects a valid upgrade request, matches a websocket route, runs the
+        host/Origin checks, sends the 101, and diverts the connection into
+        WebSocket mode. Returns True once the connection has been handled
+        (diverted, or terminated with an HTTP error response); False means "not a
+        WebSocket upgrade - fall through to the normal HTTP path".
         """
+        # RFC 6455 Sec. 4.1 requires the handshake to be a GET. A non-GET upgrade
+        # (e.g. an HTTP/2 prior-knowledge or h2c attempt) is not a WebSocket
+        # handshake - fall through to the normal HTTP path, which rejects the
+        # protocol switch with a 400 like any other non-WebSocket upgrade.
+        if self.parser.get_method() != b"GET":
+            return False
         # Detect the upgrade triplet (RFC 6455 Sec. 4.2.1). `connection` may be a
         # comma list ("keep-alive, Upgrade"); the others are single tokens. All
         # header names are already lowercased by `on_header`.
@@ -471,15 +478,9 @@ class HttpProtocol(asyncio.Protocol):
         # is an HTTP 403, not a close frame.
         host_str = _extract_host(host.decode("latin-1")) if host else ""
         origin_str = origin.decode("latin-1") if origin is not None else ""
-        for mw in self.app._middlewares:
-            host_check = getattr(mw, "is_host_allowed", None)
-            if host_check is not None and not host_check(host_str):
-                self._write_ws_http_error(status.HTTP_403_FORBIDDEN, b"Forbidden")
-                return True
-            origin_check = getattr(mw, "is_websocket_origin_allowed", None)
-            if origin_check is not None and not origin_check(origin_str):
-                self._write_ws_http_error(status.HTTP_403_FORBIDDEN, b"Forbidden")
-                return True
+        if _ws_handshake_rejection(self.app._middlewares, host_str, origin_str):
+            self._write_ws_http_error(status.HTTP_403_FORBIDDEN, b"Forbidden")
+            return True
 
         # Send the 101 (RFC 6455 Sec. 4.2.2) synchronously to switch the byte
         # stream. The accept-key math is the single shared `compute_accept`.
@@ -607,6 +608,9 @@ class HttpProtocol(asyncio.Protocol):
                 f"expected a full-duplex transport (write + pause_reading), "
                 f"got {type(transport).__name__}"
             )
+        # Narrow the local now so the 503-reject write/close below and the
+        # assignment see a `Transport`; the capability check above already
+        # proved the full-duplex interface is present.
         transport = cast("asyncio.Transport", transport)
         self.transport = transport
 

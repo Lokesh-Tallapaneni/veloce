@@ -4,8 +4,8 @@ The codebase guardrail in ``.claude/rules/development-guardrails.md`` under
 "Cross-Subpackage Imports" forbids importing underscore-prefixed symbols
 across subpackage boundaries. This module is the documented carve-out:
 symbols defined here (``_reject_header_crlf``, ``_file_etag``, ``_b64encode``,
-``_is_async_callable``, ``_extract_host``, and the MIME / status-phrase
-constants) ARE permitted to be imported from any subpackage -
+``_is_async_callable``, ``_extract_host``, ``_ws_handshake_rejection``, and the
+MIME / status-phrase constants) ARE permitted to be imported from any subpackage -
 ``http/``, ``middleware/``, ``security/``, ``serving/``, ``contrib/``,
 ``routing/`` - because they are explicitly internal-to-the-framework
 helpers with a stable contract.
@@ -29,7 +29,7 @@ import hashlib
 import inspect
 import sys
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from email.header import Header
 from http import HTTPStatus
 from typing import Any
@@ -247,3 +247,30 @@ def _extract_host(raw: str) -> str:
     if raw.count(":") >= 2:
         return raw.lower()
     return raw.split(":", 1)[0].lower()
+
+
+def _ws_handshake_rejection(middlewares: Iterable[object], host: str, origin: str) -> bool:
+    """Report whether a WebSocket handshake is refused by the host/Origin allow-lists.
+
+    A `websocket` scope never reaches an HTTP middleware's `process_request`, so
+    the handshake gate consults the same public predicates the middleware would
+    apply: `is_host_allowed(host)` and `is_websocket_origin_allowed(origin)`.
+    The two transports (native raw-socket and ASGI) share this single policy
+    decision so the predicate set and evaluation order stay in lock-step; each
+    caller maps the refusal onto its own wire form (an HTTP 403 on the native
+    path, a 1008 close on the ASGI path). Returns `True` when the handshake is
+    refused, `False` when it is allowed.
+
+    The scan walks the live middleware list once per handshake. Handshakes are a
+    cold path over a short list (typically 1-7 middlewares), so per-connection
+    iteration here is intentional - it is not a per-request, per-frame, or
+    per-message path.
+    """
+    for mw in middlewares:
+        host_check = getattr(mw, "is_host_allowed", None)
+        if host_check is not None and not host_check(host):
+            return True
+        origin_check = getattr(mw, "is_websocket_origin_allowed", None)
+        if origin_check is not None and not origin_check(origin):
+            return True
+    return False
