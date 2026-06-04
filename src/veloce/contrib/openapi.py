@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import datetime
 import enum
 import html
@@ -373,28 +374,32 @@ class SchemaRegistry:
         # that diverges from its validation twin (a nested `computed_field`, a
         # read-only field) - it must not be dropped onto the first writer, or the
         # serialization-only nested field disappears from the response schema.
-        # That owner's def is emitted under a disambiguated name and that owner's
-        # own `#/$defs/<name>` references are rewritten to point at it, so the
-        # `-Output` response schema reaches its distinct nested model.
+        # Divergence is transitive: a def whose own body matches the first
+        # writer's but which references (directly or through other defs) a
+        # diverging child still resolves to the WRONG subtree if folded, because
+        # its surviving `#/$defs/<child>` ref points at the validation child. So
+        # every def on a path that reaches a divergence gets its own `-Output`
+        # variant, and the owner's body plus each variant's internal refs are
+        # repointed at the renamed children so the response schema reaches the
+        # serialization subtree end to end.
         for key in self._order:
             entry = self._entries[key]
             if entry.alias_token is not None:
                 continue
             name = token_to_name[entry.token]
             components[name] = entry.body
-            local_renames: dict[str, str] = {}
+            local_renames = self._diverging_def_renames(entry.defs, components)
             for def_name, def_schema in entry.defs.items():
-                existing = components.get(def_name)
-                if existing is None:
+                target = local_renames.get(def_name)
+                if target is not None:
+                    # Diverging (directly or transitively): emit under the unique
+                    # name with its own refs repointed at any renamed children.
+                    rewritten = _copy_with_local_defs(def_schema, local_renames)
+                    components[target] = rewritten
+                elif def_name not in components:
                     components[def_name] = def_schema
-                elif existing != def_schema:
-                    # Same nested name, diverging content: allocate a unique name
-                    # and record the per-owner rename so this owner's refs target
-                    # the distinct def rather than the first writer's.
-                    unique = self._unique_def_name(components, def_name)
-                    components[unique] = def_schema
-                    local_renames[def_name] = unique
-                # An identical re-emission is harmless: the first writer stands.
+                # An identical, non-diverging re-emission is harmless: the first
+                # writer stands.
             if local_renames:
                 _rewrite_local_defs(entry.body, local_renames)
 
@@ -407,6 +412,45 @@ class SchemaRegistry:
         _rewrite_refs(document, resolved_token)
         _rewrite_refs(components, resolved_token)
         return components
+
+    def _diverging_def_renames(
+        self, defs: dict[str, dict], components: dict[str, dict]
+    ) -> dict[str, str]:
+        """Map nested-def names needing an `-Output` variant to unique names.
+
+        A def diverges when its own body differs from the committed component of
+        the same name, OR when it references (transitively) a def that diverges.
+        The second clause is the recursive part: a structurally-identical wrapper
+        that points at a diverging child must still get its own variant so the
+        response schema follows the serialization subtree rather than collapsing
+        onto the validation child. Computed as a fixpoint over the `#/$defs/...`
+        reference graph, then each diverging name is allocated a unique target.
+        """
+        diverging: set[str] = set()
+        for def_name, def_schema in defs.items():
+            existing = components.get(def_name)
+            if existing is not None and existing != def_schema:
+                diverging.add(def_name)
+
+        # Propagate divergence backwards along references until stable: any def
+        # that reaches a diverging def is itself diverging for the output graph.
+        changed = True
+        while changed:
+            changed = False
+            for def_name, def_schema in defs.items():
+                if def_name in diverging:
+                    continue
+                for target in _local_def_refs(def_schema):
+                    if target in diverging:
+                        diverging.add(def_name)
+                        changed = True
+                        break
+
+        renames: dict[str, str] = {}
+        for def_name in defs:
+            if def_name in diverging:
+                renames[def_name] = self._unique_def_name(components, def_name)
+        return renames
 
     @staticmethod
     def _unique_def_name(components: dict[str, dict], base: str) -> str:
@@ -478,6 +522,37 @@ class _SchemaEntry:
                 self.defs[def_name] = def_schema
             del schema["$defs"]
         self.body = schema
+
+
+def _local_def_refs(node: Any) -> set[str]:
+    """Collect every `#/$defs/<name>` target referenced anywhere under `node`."""
+    targets: set[str] = set()
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, dict):
+            ref = value.get("$ref")
+            if isinstance(ref, str) and ref.startswith(_PYDANTIC_DEF_PREFIX):
+                targets.add(ref[len(_PYDANTIC_DEF_PREFIX) :])
+            for item in value.values():
+                _walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                _walk(item)
+
+    _walk(node)
+    return targets
+
+
+def _copy_with_local_defs(node: dict, renames: dict[str, str]) -> dict:
+    """Deep-copy `node`, repointing renamed `#/$defs/<old>` refs to the new names.
+
+    Used to emit a diverging nested def's `-Output` variant: the source schema is
+    shared with the validation owner, so it must be copied before its internal
+    references are redirected at the renamed (serialization) children.
+    """
+    copied = copy.deepcopy(node)
+    _rewrite_local_defs(copied, renames)
+    return copied
 
 
 def _rewrite_local_defs(node: Any, renames: dict[str, str]) -> None:
@@ -1061,12 +1136,21 @@ def _webhook_request_body(handler: Any, registry: SchemaRegistry) -> dict | None
     return None
 
 
-def _walk_webhooks(app: Any, schemas_registry: SchemaRegistry) -> dict[str, Any]:
+def _walk_webhooks(
+    app: Any,
+    schemas_registry: SchemaRegistry,
+    auto_ops: list[tuple[dict[str, Any], str, str]],
+) -> dict[str, Any]:
     """Return the OpenAPI 3.1 `webhooks` map from `app.webhooks`.
 
     Empty when no webhooks router exists or it has no routes. Each entry
     is keyed by event name (the path on `@app.webhooks.post`) and carries
-    one operation per HTTP method registered.
+    one operation per HTTP method registered. Each webhook's auto-generated
+    operationId is appended to `auto_ops` so it flows through the same
+    document-wide disambiguation pass as normal routes; two webhooks sharing a
+    handler name (or a webhook colliding with a route) would otherwise emit a
+    duplicate operationId, which is invalid for code generation (OpenAPI 3.1
+    Sec. 4.8.10).
     """
     webhook_items: dict[str, Any] = {}
     webhooks_router = getattr(app, "webhooks", None)
@@ -1081,6 +1165,10 @@ def _walk_webhooks(app: Any, schemas_registry: SchemaRegistry) -> dict[str, Any]
                 "operationId": f"{winfo.name}_{wmethod.lower()}",
                 "responses": {"200": {"description": winfo.response_description}},
             }
+            # The disambiguator keys collisions on a deterministic identifier; a
+            # webhook has no URL path, so its event name stands in as the
+            # suffix source if a collision must be resolved.
+            auto_ops.append((op, event, wmethod.lower()))
             if winfo.description:
                 op["description"] = winfo.description
             body = _webhook_request_body(winfo.handler, schemas_registry)
@@ -1133,7 +1221,10 @@ def get_openapi_schema(app: Any) -> dict:
         if not getattr(info, "operation_id", None):
             auto_ops.append((operation, path, method_lower))
 
-    webhook_items = _walk_webhooks(app, schemas_registry)
+    # Webhook operations are appended to `auto_ops` so the disambiguation pass
+    # below dedupes operationIds across BOTH routes and webhooks deterministically
+    # (routes first in collection order, then webhooks in walker order).
+    webhook_items = _walk_webhooks(app, schemas_registry, auto_ops)
     if webhook_items:
         schema["webhooks"] = webhook_items
 

@@ -94,3 +94,60 @@ def test_disambiguation_can_be_disabled() -> None:
     # Opted out: both keep the colliding id (user has accepted responsibility).
     assert schema["paths"]["/a"]["get"]["operationId"] == "dup_get"
     assert schema["paths"]["/b"]["get"]["operationId"] == "dup_get"
+
+
+def test_webhook_operation_ids_are_disambiguated() -> None:
+    # Webhook operations flow through the same disambiguation pass as routes,
+    # so two webhook handlers sharing a name+method get distinct operationIds.
+    app = Veloce()
+
+    @app.webhooks.post("/new-event", name="notify")
+    async def notify(request):
+        return {}
+
+    @app.webhooks.post("/other-event", name="notify")
+    async def notify_other(request):
+        return {}
+
+    schema = app.openapi()
+    first = schema["webhooks"]["new-event"]["post"]["operationId"]
+    second = schema["webhooks"]["other-event"]["post"]["operationId"]
+    assert first != second
+    assert first == "notify_post"
+    assert second == "notify_post__other-event"
+
+
+def test_webhook_and_route_operation_id_collision_is_disambiguated() -> None:
+    # A webhook colliding with a normal route's auto operationId is resolved
+    # too, since both share the document-wide disambiguation pass.
+    app = Veloce()
+
+    @app.post("/notify", name="notify")
+    async def route_notify(request):
+        return {}
+
+    @app.webhooks.post("/notify", name="notify")
+    async def hook_notify(request):
+        return {}
+
+    schema = app.openapi()
+    route_id = schema["paths"]["/notify"]["post"]["operationId"]
+    hook_id = schema["webhooks"]["notify"]["post"]["operationId"]
+    assert route_id != hook_id
+
+
+def test_webhook_disambiguation_respects_opt_out() -> None:
+    # With disambiguation disabled, colliding webhook ids are left as-is.
+    app = Veloce(disambiguate_operation_ids=False)
+
+    @app.webhooks.post("/a", name="notify")
+    async def a(request):
+        return {}
+
+    @app.webhooks.post("/b", name="notify")
+    async def b(request):
+        return {}
+
+    schema = app.openapi()
+    assert schema["webhooks"]["a"]["post"]["operationId"] == "notify_post"
+    assert schema["webhooks"]["b"]["post"]["operationId"] == "notify_post"

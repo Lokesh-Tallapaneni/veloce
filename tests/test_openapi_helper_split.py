@@ -121,7 +121,10 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     params, body_schema, form_fields = _extract_parameters(info, schemas_registry)
     request_body = _extract_request_body(body_schema, form_fields)
     responses = _extract_responses(info, schemas_registry)
-    webhooks = _walk_webhooks(app, schemas_registry)
+    # `_walk_webhooks` appends each webhook's auto operationId to `auto_ops` for
+    # the document-wide disambiguation pass; the list is unused here.
+    webhook_auto_ops: list = []
+    webhooks = _walk_webhooks(app, schemas_registry, webhook_auto_ops)
     # The helpers emit placeholder refs; finalize rewrites them into the same
     # `#/components/schemas/...` form the orchestrator produces.
     document = {"requestBody": request_body, "responses": responses, "webhooks": webhooks}

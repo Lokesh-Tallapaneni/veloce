@@ -62,6 +62,19 @@ class _Wrapper(BaseModel):
     account: _Account
 
 
+# A three-level nesting where only the deepest model diverges between modes.
+# `_DeepMiddle` and `_DeepOuter` are byte-identical across validation and
+# serialization (each just references its child), so a naive one-level rewrite
+# folds them onto the validation graph and the response schema never reaches the
+# diverging `_Account`. Exercises the transitive `-Output` variant emission.
+class _DeepMiddle(BaseModel):
+    account: _Account
+
+
+class _DeepOuter(BaseModel):
+    middle: _DeepMiddle
+
+
 # Two distinct classes that deliberately share the same ``__name__`` ("User")
 # but live in different modules, to exercise collision-aware naming. Defined at
 # module scope (and bound to module-global names) so `get_type_hints` resolves
@@ -225,3 +238,39 @@ def test_separate_input_output_flag_disables_split() -> None:
         op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
         == "#/components/schemas/_Account"
     )
+
+
+def test_recursive_output_variant_through_intermediate_models() -> None:
+    # `_DeepOuter -> _DeepMiddle -> _Account`, where only `_Account` diverges
+    # between modes. Every def on the path to the divergence must get its own
+    # `-Output` variant so the response schema reaches `_Account-Output` (with
+    # the computed field) through a `_DeepMiddle-Output`.
+    app = Veloce()
+
+    @app.post("/deep", response_model=_DeepOuter)
+    async def deep(request, body: _DeepOuter):
+        return {}
+
+    schema = app.openapi()
+    components = schema["components"]["schemas"]
+    names = set(components)
+    assert {"_DeepOuter", "_DeepOuter-Output"} <= names
+
+    op = schema["paths"]["/deep"]["post"]
+    out_ref = op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert out_ref == "#/components/schemas/_DeepOuter-Output"
+
+    def resolve(ref: str) -> dict:
+        return components[ref.rsplit("/", 1)[-1]]
+
+    out_outer = resolve(out_ref)
+    middle = resolve(out_outer["properties"]["middle"]["$ref"])
+    account = resolve(middle["properties"]["account"]["$ref"])
+    # The serialization-only computed field surfaces through the full chain.
+    assert "doubled" in account["properties"]
+
+    # The request schema's chain must NOT carry the serialization-only field.
+    in_outer = resolve(op["requestBody"]["content"]["application/json"]["schema"]["$ref"])
+    in_middle = resolve(in_outer["properties"]["middle"]["$ref"])
+    in_account = resolve(in_middle["properties"]["account"]["$ref"])
+    assert "doubled" not in in_account["properties"]

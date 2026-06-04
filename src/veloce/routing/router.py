@@ -523,8 +523,49 @@ class Router:
             return repr(handler)
         return f"{module}.{qualname}" if module else qualname
 
-    @staticmethod
-    def _allow_duplicate(existing: RouteInfo, incoming: RouteInfo) -> bool:
+    # Every RouteInfo slot that defines routing/dispatch behavior or shapes the
+    # generated OpenAPI document. The idempotent-remount exemption requires ALL
+    # of these to match: any difference is a genuine second registration that
+    # must obey the `on_duplicate` policy. Listed explicitly (rather than diffed
+    # against a hand-picked subset) so adding a route-defining slot to RouteInfo
+    # forces a conscious decision here. Excluded are only purely-derived/cached
+    # slots - `handler_plan`, `route_dep_plans`, `is_trivial_plan`,
+    # `is_request_only_plan`, `_mw_chain_cache` - which `add_route` rebuilds
+    # deterministically from the compared fields.
+    _ROUTE_IDENTITY_SLOTS: tuple[str, ...] = (
+        "param_names",
+        "dependencies",
+        "response_model",
+        "tags",
+        "summary",
+        "name",
+        "path_template",
+        "description",
+        "deprecated",
+        "response_description",
+        "status_code",
+        "response_class",
+        "response_model_include",
+        "response_model_exclude",
+        "response_model_exclude_unset",
+        "response_model_exclude_defaults",
+        "response_model_by_alias",
+        "response_model_exclude_none",
+        "include_in_schema",
+        "responses",
+        "operation_id",
+        "openapi_extra",
+        "defaults",
+        "callbacks",
+        "subdomain",
+        "host",
+        "expose_as_mcp_tool",
+        "mcp_description",
+        "excluded_middleware",
+    )
+
+    @classmethod
+    def _allow_duplicate(cls, existing: RouteInfo, incoming: RouteInfo) -> bool:
         """Return True when re-registering `incoming` over `existing` is benign.
 
         An idempotent re-mount - the same handler callable landing on the same
@@ -533,23 +574,21 @@ class Router:
         regardless of policy, so legitimate blueprint merges never
         false-positive.
 
-        The exemption is deliberately narrow: a same-callable registration that
-        carries *different* route metadata (a different name, response_model,
-        dependencies, or routing defaults) is a real second registration and
-        must go through the `on_duplicate` policy. Comparing only the handler
-        identity would silently bypass `on_duplicate='error'` for two distinct
-        decorations of one function. The compared fields are exactly those the
-        include-router remount path reproduces verbatim from the source route,
-        so a genuine remount still compares equal on every one of them.
+        The exemption is deliberately narrow: it fires ONLY when the handler is
+        the same object AND every route-defining/document-shaping field matches.
+        A same-callable registration that carries *different* metadata (name,
+        response_model, dependencies, defaults, `exclude_middleware`,
+        `response_class`, `openapi_extra`, host/subdomain, ...) is a real second
+        registration and must go through the `on_duplicate` policy; comparing a
+        subset would silently bypass `on_duplicate='error'` for two distinct
+        decorations of one function.
         """
-        return (
-            existing.handler is incoming.handler
-            and existing.name == incoming.name
-            and existing.response_model is incoming.response_model
-            and existing.dependencies == incoming.dependencies
-            and existing.defaults == incoming.defaults
-            and existing.status_code == incoming.status_code
-        )
+        if existing.handler is not incoming.handler:
+            return False
+        for slot in cls._ROUTE_IDENTITY_SLOTS:
+            if getattr(existing, slot) != getattr(incoming, slot):
+                return False
+        return True
 
     def _on_duplicate_route(
         self, path: str, method: str, existing: RouteInfo, incoming: RouteInfo

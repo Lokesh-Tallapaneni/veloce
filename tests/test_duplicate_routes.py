@@ -314,3 +314,57 @@ def test_same_callable_identical_metadata_is_idempotent():
 
     client = TestClient(app)
     assert client.get("/i").json() == {"ok": True}
+
+
+def test_same_callable_different_exclude_middleware_is_a_conflict():
+    # `exclude_middleware` changes the dispatch chain, so two registrations that
+    # differ only there are not an idempotent remount.
+    app = Veloce()
+
+    async def shared():
+        return {"ok": True}
+
+    app.add_route("/em", shared, methods=["GET"])
+    with pytest.raises(DuplicateRouteError):
+        app.add_route("/em", shared, methods=["GET"], exclude_middleware=["cors"])
+
+
+def test_same_callable_different_response_class_is_a_conflict():
+    # A different `response_class` changes how the return value is rendered, so
+    # the second registration is a real conflict.
+    from veloce.http.response import HTMLResponse, PlainTextResponse
+
+    app = Veloce()
+
+    async def shared():
+        return "hi"
+
+    app.add_route("/rc", shared, methods=["GET"], response_class=PlainTextResponse)
+    with pytest.raises(DuplicateRouteError):
+        app.add_route("/rc", shared, methods=["GET"], response_class=HTMLResponse)
+
+
+def test_same_callable_different_openapi_extra_is_a_conflict():
+    # `openapi_extra` shapes the generated document; differing values mean the
+    # registrations are not interchangeable.
+    app = Veloce()
+
+    async def shared():
+        return {"ok": True}
+
+    app.add_route("/oe", shared, methods=["GET"], openapi_extra={"x-a": 1})
+    with pytest.raises(DuplicateRouteError):
+        app.add_route("/oe", shared, methods=["GET"], openapi_extra={"x-a": 2})
+
+
+def test_same_callable_different_host_is_a_conflict():
+    # A host constraint changes which requests the route serves, so it must not
+    # be exempted as an idempotent remount.
+    app = Veloce()
+
+    async def shared():
+        return {"ok": True}
+
+    app.add_route("/h", shared, methods=["GET"], host="a.example.com")
+    with pytest.raises(DuplicateRouteError):
+        app.add_route("/h", shared, methods=["GET"], host="b.example.com")
