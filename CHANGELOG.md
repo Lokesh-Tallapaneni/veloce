@@ -51,6 +51,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-numeric or out-of-range value is dropped rather than trusted. RFC 7239
   carries the port inside `Forwarded host=...:port`, which already flows
   through `x_host`.
+- The OpenAPI generator now keys component schemas on the model class identity
+  instead of the bare `__name__`. Two distinct models that share a name (for
+  example `schemas.User` and `db.User`) no longer overwrite each other: each
+  keeps its own component, qualified by the diverging module segment
+  (`User__schemas` / `User__db`) when names would otherwise collide, with every
+  `$ref` pointing at the correct schema. Nested-model references are rewritten
+  from Pydantic's `#/$defs/...` form to `#/components/schemas/...` so they
+  resolve in the assembled document.
+
+- Request bodies and response models now use separate JSON Schemas — the
+  validation schema for input and the serialization schema for output — so
+  computed and read-only fields are documented as clients actually receive
+  them. The two are emitted as a single component when byte-identical and split
+  into `Name` / `Name-Output` only when they diverge. Set
+  `separate_input_output_schemas=False` on `Veloce(...)` to reuse the
+  validation schema for both.
+
+- Auto-generated `operationId`s that collide are now disambiguated
+  deterministically with a stable path-derived suffix, keeping the emitted
+  document valid for client code generation; a single aggregated warning lists
+  every collision and its resolution. Explicit `operation_id=` values are left
+  untouched, and the behaviour can be disabled with
+  `disambiguate_operation_ids=False` on `Veloce(...)`.
+
+- A `validate_openapi` flag on `Veloce(...)` enables a lightweight structural
+  check of the assembled document (operations declare responses, parameters
+  carry `name` and `in`, every schema `$ref` resolves), raising a precise error
+  that names the offending path and method. It defaults to `app.debug`, so the
+  check runs in development and costs nothing in production unless explicitly
+  enabled.
 
 - `encode_jwt` and `decode_jwt` sign and verify compact JSON Web Tokens using
   the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external dependency.

@@ -394,6 +394,9 @@ class Veloce(Router):
         terms_of_service: str | None = None,
         swagger_ui_parameters: dict[str, Any] | None = None,
         swagger_ui_init_oauth: dict[str, Any] | None = None,
+        separate_input_output_schemas: bool = True,
+        disambiguate_operation_ids: bool = True,
+        validate_openapi: bool | None = None,
         default_response_class: Any = None,
         dependencies: list[Any] | None = None,
         responses: dict[int, dict[str, Any]] | None = None,
@@ -452,6 +455,18 @@ class Veloce(Router):
         self.terms_of_service = terms_of_service
         self.swagger_ui_parameters = swagger_ui_parameters
         self.swagger_ui_init_oauth = swagger_ui_init_oauth
+        # OpenAPI generation knobs (consumed by veloce.contrib.openapi):
+        # - `separate_input_output_schemas`: emit a distinct serialization
+        #   (`-Output`) schema for a model whose validation and serialization
+        #   JSON Schemas diverge (computed/write-only fields). When False the
+        #   validation schema is reused for both request and response.
+        # - `disambiguate_operation_ids`: deterministically suffix colliding
+        #   auto-generated operationIds so the document stays codegen-valid.
+        # - `validate_openapi`: run the lightweight structural checker after
+        #   the document is assembled; `None` defers to `app.debug`.
+        self.separate_input_output_schemas = separate_input_output_schemas
+        self.disambiguate_operation_ids = disambiguate_operation_ids
+        self.validate_openapi = validate_openapi
 
         from veloce.config import Config
 
