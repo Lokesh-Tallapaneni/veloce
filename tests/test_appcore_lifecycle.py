@@ -184,6 +184,38 @@ def test_setup_lock_relaxed_under_testclient():
         assert client.get("/b").status_code == 200
 
 
+def test_add_instrumentation_locks_after_first_request_outside_debug():
+    # The instrumentation list is iterated by concurrent dispatch, so late
+    # registration must trip the setup lock just like routes and hooks.
+    app = Veloce(openapi_url=None)
+
+    @app.get("/a")
+    async def a():
+        return {"ok": True}
+
+    asyncio.run(app.handle_request(_get("/a")))
+
+    with pytest.raises(SetupError):
+        app.add_instrumentation(lambda metrics: None)
+
+
+def test_add_instrumentation_lock_relaxed_under_debug():
+    # DEBUG keeps setup mutable, so late instrumentation registration is allowed
+    # (this is also what lets instrument_with_otel/prometheus run during setup).
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/a")
+    async def a():
+        return {}
+
+    asyncio.run(app.handle_request(_get("/a")))
+
+    seen: list[object] = []
+    app.add_instrumentation(seen.append)
+    asyncio.run(app.handle_request(_get("/a")))
+    assert len(seen) == 1
+
+
 # -- app.spawn -------------------------------------------------------
 
 

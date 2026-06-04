@@ -624,6 +624,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `add_middleware(MiddlewareClass, name="...")` now applies the exclusion-name
+  override after construction instead of forwarding `name` into the subclass
+  constructor. A user `Middleware` subclass whose `__init__` does not accept a
+  `name` keyword previously raised `TypeError` when registered with `name=`;
+  it can now be named and targeted by `exclude_middleware=[...]` like any
+  built-in. The override is set on the built instance, so passing `name=` to a
+  built-in (which still accepts the keyword) yields the same final name.
+
+- `Veloce.add_instrumentation` works as a decorator with arguments:
+  `@app.add_instrumentation(exclude_routes={"/health"})`. `hook` is now
+  optional; when omitted the call returns a decorator that registers the
+  wrapped function with the captured `exclude_routes`. The plain
+  `add_instrumentation(hook, ...)` call and the no-parenthesis
+  `@app.add_instrumentation` decorator are unchanged.
+
+- `Veloce.add_instrumentation` now enforces the setup lock: registering an
+  instrumentation hook after the app has started serving raises `SetupError`
+  (relaxed under DEBUG/TESTING and the in-memory `TestClient`), consistent with
+  route and hook registration. The per-request `_instrumentation` list is
+  iterated by concurrent dispatch, so late registration could otherwise race
+  in-flight requests. `instrument_with_otel` / `instrument_with_prometheus`,
+  which register during setup, are unaffected.
+
 - Per-route middleware exclusion (`exclude_middleware`) is now symmetric across
   the request and response phases. The exclusion set is keyed on the route
   matched at dispatch entry - the same route the request phase uses - so the

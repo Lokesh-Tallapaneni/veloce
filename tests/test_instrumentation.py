@@ -365,6 +365,43 @@ def test_no_exclude_routes_leaves_excludes_empty():
     assert app._instrumentation_excludes == {}
 
 
+# ── decorator form with arguments ─────────────────────────────────────
+
+
+def test_add_instrumentation_decorator_with_exclude_routes():
+    # `@app.add_instrumentation(exclude_routes=...)` registers the wrapped
+    # function and applies the exclusion - the hook fires for an unexcluded
+    # route but is skipped for the excluded one.
+    app = _app()
+    seen: list[RequestMetrics] = []
+
+    @app.add_instrumentation(exclude_routes={"/items/{item_id}"})
+    def record(metrics):
+        seen.append(metrics)
+
+    # The decorator returns the original function unchanged.
+    assert callable(record)
+    assert app._instrumentation == [record]
+    assert app._instrumentation_excludes[record] == frozenset({"/items/{item_id}"})
+
+    client = app.test_client()
+    client.get("/items/9")
+    assert seen == []
+    client.get("/stream")
+    assert len(seen) == 1
+
+
+def test_add_instrumentation_imperative_with_exclude_routes_still_works():
+    # The plain imperative call form is preserved alongside the decorator form.
+    app = _app()
+    seen: list[RequestMetrics] = []
+    hook = seen.append
+    returned = app.add_instrumentation(hook, exclude_routes={"/items/{item_id}"})
+    assert returned is hook
+    app.test_client().get("/items/4")
+    assert seen == []
+
+
 # ── lifecycle signals carry the request ───────────────────────────────
 
 

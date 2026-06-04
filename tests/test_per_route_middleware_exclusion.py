@@ -307,3 +307,55 @@ def test_every_builtin_middleware_accepts_name_kwarg(cls, kwargs):
     assert named.middleware_name == "custom"
     default = cls(**kwargs)
     assert default.middleware_name == cls.__name__
+
+
+class _UserMiddlewareNoName(Middleware):
+    """A user middleware whose __init__ does NOT accept a `name` keyword."""
+
+    def __init__(self, tag: str) -> None:
+        # Deliberately no `super().__init__(name=...)` and no `name` parameter,
+        # mirroring a typical user subclass written without knowledge of the
+        # framework's exclusion-naming mechanism.
+        self.tag = tag
+
+    async def process_response(self, request: Request, response):
+        response.headers[f"X-User-{self.tag}"] = "1"
+        return response
+
+
+def test_user_middleware_without_name_kwarg_is_nameable_and_excludable():
+    # `add_middleware(MyMW, name=...)` must set the override AFTER construction,
+    # so a subclass whose constructor rejects `name` can still be named and
+    # targeted by `exclude_middleware`.
+    app = Veloce(openapi_url=None)
+    app.add_middleware(_UserMiddlewareNoName, name="usermw", tag="X")
+
+    @app.get("/runs")
+    async def runs(request: Request):
+        return {"ok": True}
+
+    @app.get("/skips", exclude_middleware=["usermw"])
+    async def skips(request: Request):
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        # The post-construction override took effect.
+        assert app._middlewares[0].middleware_name == "usermw"
+        assert client.get("/runs").headers.get("X-User-X") == "1"
+        # The route opts out by the overridden name.
+        assert "X-User-X" not in client.get("/skips").headers
+
+
+def test_user_middleware_without_name_defaults_to_class_name():
+    # With no `name=` override, the exclusion name falls back to the class name
+    # even though the constructor never touched `self.name`.
+    app = Veloce(openapi_url=None)
+    app.add_middleware(_UserMiddlewareNoName, tag="Y")
+
+    @app.get("/skips", exclude_middleware=["_UserMiddlewareNoName"])
+    async def skips(request: Request):
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        assert app._middlewares[0].middleware_name == "_UserMiddlewareNoName"
+        assert "X-User-Y" not in client.get("/skips").headers

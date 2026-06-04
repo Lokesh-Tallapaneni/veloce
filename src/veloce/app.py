@@ -869,11 +869,27 @@ class Veloce(Router):
           assembled. This is what lets third-party ASGI middleware
           (observability, tracing, profiling, ...) plug in. Middleware
           added first is the outermost wrapper.
+
+        Pass `name=` to override the instance's exclusion name (the identifier
+        `exclude_middleware=[...]` on a route references). The override is
+        applied *after* construction rather than forwarded into the subclass
+        constructor, so per-instance naming works for every `Middleware`
+        subclass - including user subclasses whose `__init__` does not accept a
+        `name` keyword.
         """
         self._assert_mutable()
         if isinstance(middleware, type):
             if issubclass(middleware, Middleware):
-                self._middlewares.append(middleware(**options))
+                # The name override is a framework concern, not a construction
+                # argument: pop it so arbitrary subclass constructors (which may
+                # not accept `name`) build cleanly, then stamp it on the built
+                # instance via the base `name` attribute the exclusion lookup
+                # reads.
+                name = options.pop("name", None)
+                instance = middleware(**options)
+                if name is not None:
+                    instance.name = name
+                self._middlewares.append(instance)
                 self._mw_version += 1
             elif issubclass(middleware, BaseHTTPMiddleware):
                 # `BaseHTTPMiddleware` is a dispatch-shape middleware, not
@@ -905,7 +921,7 @@ class Veloce(Router):
 
     def add_instrumentation(
         self,
-        hook: Callable,
+        hook: Callable | None = None,
         *,
         exclude_routes: Iterable[str] | None = None,
     ) -> Callable:
@@ -918,9 +934,16 @@ class Veloce(Router):
         a plain function or a coroutine function. A hook that raises is
         logged and skipped, so instrumentation never breaks a response.
 
-        Returns `hook` unchanged, so it also works as a decorator:
+        Returns `hook` unchanged, so it also works as a decorator. Both the
+        no-argument and the keyword-argument decorator forms are supported -
+        when `hook` is omitted a decorator is returned that captures
+        `exclude_routes` and registers the function it wraps:
 
             @app.add_instrumentation
+            def export(metrics):
+                statsd.timing(metrics.route or "unmatched", metrics.duration_ms)
+
+            @app.add_instrumentation(exclude_routes={"/health"})
             def export(metrics):
                 statsd.timing(metrics.route or "unmatched", metrics.duration_ms)
 
@@ -939,6 +962,22 @@ class Veloce(Router):
         With no hook registered the request path carries no instrumentation
         cost - not even a clock read.
         """
+        # Registration mutates the per-request `_instrumentation` list the
+        # dispatch core iterates, so it follows the same setup-lock contract as
+        # routes and other hooks: late registration races concurrent dispatch
+        # and is rejected (relaxed under DEBUG/TESTING).
+        self._assert_mutable()
+
+        # Decorator-with-arguments form: `@app.add_instrumentation(...)` calls
+        # this with `hook=None`, so return a decorator that captures the keyword
+        # options and registers the function it wraps.
+        if hook is None:
+
+            def decorator(fn: Callable) -> Callable:
+                return self.add_instrumentation(fn, exclude_routes=exclude_routes)
+
+            return decorator
+
         self._instrumentation.append(hook)
         if exclude_routes is not None:
             excluded = frozenset(exclude_routes)
