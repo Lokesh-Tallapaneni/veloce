@@ -343,6 +343,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `JSON_ERRORS_VERBOSE` config key (default `False`): surfaces the verbose JSON
   decoder reason in the 400 response body; falls back to `DEBUG` when unset.
 
+- `Veloce.add_instrumentation` accepts an optional `exclude_routes` set of
+  matched route *templates* (e.g. `{"/health", "/metrics"}`); a request whose
+  route template is in the set skips that hook. The filter is applied in the
+  core delivery loop on the low-cardinality template, so every consumer -
+  tracing, metrics, access logs, custom - honours the same exclusion with no
+  per-request regex and no path-normalisation bypass. `instrument_with_otel`
+  and `instrument_with_prometheus` thread the same `exclude_routes` parameter
+  through. With no exclusions configured the dispatch path is unchanged.
+
+- `RequestMetrics` gains an `error_type` field carrying the class name of the
+  exception that produced a `5xx` when an *unhandled* raised exception turned
+  into a server error (the debug traceback, the generic `500`, or a propagated
+  exception); it is `None` for every other outcome, including a `5xx`
+  deliberately returned without raising. Only the class name is carried - never
+  the message or the exception instance.
+
+- `instrument_with_otel` accepts an optional `on_span(span, metrics)` callback
+  to enrich each emitted span with custom attributes or events; it runs inside
+  the bridge's `try`/`finally` and a raised callback is suppressed so it cannot
+  break the response. When a `5xx` came from a raised exception the bridge now
+  records `RequestMetrics.error_type` as the OpenTelemetry `error.type` span
+  attribute.
+
 ### Changed
 
 - The unknown-object fallback in `jsonable_encoder` and the orjson default now
@@ -450,6 +473,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any handler-set `Content-Type` are preserved.
 
 ### Fixed
+
+- `instrument_with_otel` is now idempotent. Calling it more than once on the
+  same app (a re-imported factory, a test fixture, a per-worker bootstrap)
+  previously registered a second span-emit hook, so every request produced two
+  `SpanKind.SERVER` spans - over-counted traces and doubled export cost. A
+  redundant call now emits a `RuntimeWarning` and returns the already-registered
+  hook instead of appending a duplicate. The dedup state lives on the app's hook
+  list, so two apps in one process each get their own bridge.
 
 - `Signal.asend()` now waits for every async receiver to finish before it
   returns or raises. When several async receivers were dispatched and one raised

@@ -83,8 +83,10 @@ used as a span name or exported as an attribute by default.
 
 from __future__ import annotations
 
+import contextlib
 import time
-from collections.abc import Callable
+import warnings
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, cast
 
 from veloce._protocol_constants import (
@@ -130,6 +132,14 @@ _INSTALL_HINT = (
     "dependency. Install it with: pip install veloceframework[otel]"
 )
 
+# Marker attribute set on the registered span-emit hook so a second
+# `instrument_with_otel(app)` call (a re-imported factory, a test fixture, a
+# per-worker bootstrap) can detect the existing bridge instead of appending a
+# duplicate that would emit two server spans per request. The state lives on the
+# hook object registered on the app instance - never a module global - so it is
+# correct when two apps share a process.
+_BRIDGE_MARKER = "_veloce_otel_bridge"
+
 # Recognised HTTP methods (RFC 9110 + PATCH/RFC 5789, plus Veloce's TRACE).
 # Only these may appear in a span name; any other verb is attacker-controlled
 # and collapses to "HTTP other" so it cannot explode span-name cardinality.
@@ -148,7 +158,13 @@ _STANDARD_METHODS = frozenset(
 )
 
 
-def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Callable[..., Any]:
+def instrument_with_otel(
+    app: Veloce,
+    tracer_provider: Any | None = None,
+    *,
+    on_span: Callable[[Any, RequestMetrics], None] | None = None,
+    exclude_routes: Iterable[str] | None = None,
+) -> Callable[..., Any]:
     """Bridge a Veloce app's instrumentation into OpenTelemetry spans.
 
     Registers a single :meth:`Veloce.add_instrumentation` hook that turns each
@@ -158,7 +174,25 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
     (``"HTTP GET"``) and the concrete path is never used as a name or attribute.
     Each span carries ``http.request.method``, ``http.route`` (only when a route
     matched), ``http.response.status_code``, and a ``duration_ms`` attribute; a
-    ``5xx`` status marks the span error.
+    ``5xx`` status marks the span error. When the ``5xx`` came from an unhandled
+    raised exception, ``RequestMetrics.error_type`` carries that exception's
+    class name and the bridge records it as the OpenTelemetry ``error.type``
+    span attribute - without ever touching the traceback or exception instance.
+
+    Pass ``on_span`` to enrich every emitted span: it is called as
+    ``on_span(span, metrics)`` inside the bridge's ``try``/``finally`` (after the
+    built-in attributes are set, before the span ends) so a caller can add
+    custom attributes or events without forking the bridge. It runs only for
+    spans that are actually emitted (never for skipped streamed records). An
+    exception raised by ``on_span`` is suppressed - enrichment can never break a
+    response or leak through the instrumentation hook - and the span still ends
+    cleanly.
+
+    Pass ``exclude_routes`` (a set of matched route *templates*, e.g.
+    ``{"/health", "/metrics"}``) to suppress spans for noisy routes; the
+    exclusion is applied in Veloce's core instrumentation loop on the
+    low-cardinality template, so health checks and scrape endpoints never
+    pollute the trace stream.
 
     Streamed responses are not traced: their body is emitted after the hook
     fires, so the available timing/status would be wrong. Such records are
@@ -186,9 +220,32 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
     the real request window. It is parented under the extracted inbound context
     (or a fresh empty one), never the ambient OpenTelemetry context active when
     the hook fires.
+
+    Idempotent: calling this more than once on the same app (a re-imported
+    factory, a test fixture, a per-worker bootstrap) does not register a second
+    bridge - which would emit two server spans per request and double export
+    cost. A redundant call emits a :class:`RuntimeWarning` and returns the
+    already-registered hook unchanged. The dedup state lives on the app's hook
+    list, not a module global, so two apps in one process each get their own
+    bridge.
     """
     if _OTEL_IMPORT_ERROR is not None:
         raise ImportError(_INSTALL_HINT) from _OTEL_IMPORT_ERROR
+
+    # Idempotency: if this app already carries a bridge hook (tagged below),
+    # warn and hand back the existing one rather than appending a duplicate that
+    # would double every server span. Scanning the app's own hook list keeps the
+    # guard per-app and ASGI-safe - no process-global sentinel.
+    for hook in app._instrumentation:
+        if getattr(hook, _BRIDGE_MARKER, False):
+            warnings.warn(
+                "instrument_with_otel was already called on this app; "
+                "ignoring the redundant call to avoid emitting duplicate "
+                "server spans per request.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return hook
 
     tracer = _otel_trace.get_tracer(__name__, tracer_provider=tracer_provider)
     SpanKind = _otel_trace.SpanKind
@@ -246,8 +303,24 @@ def instrument_with_otel(app: Veloce, tracer_provider: Any | None = None) -> Cal
             span.set_attribute("duration_ms", metrics.duration_ms)
             if metrics.status_code >= HTTP_500_INTERNAL_SERVER_ERROR:
                 span.set_status(Status(StatusCode.ERROR))
+                # When the server error came from an unhandled raised exception,
+                # the core records its low-cardinality class name. Surface it as
+                # the OpenTelemetry `error.type` attribute - the class name only,
+                # never the traceback or the exception instance.
+                if metrics.error_type is not None:
+                    span.set_attribute("error.type", metrics.error_type)
+            # Optional user enrichment, last so it can read/override the built-in
+            # attributes. A raised enrichment callback must not break the
+            # response cycle nor leak through the instrumentation hook, so it is
+            # suppressed and the span still ends cleanly.
+            if on_span is not None:
+                with contextlib.suppress(Exception):
+                    on_span(span, metrics)
         finally:
             span.end(end_time=end_time)
 
-    app.add_instrumentation(_emit_span)
+    # Tag the hook so a later `instrument_with_otel(app)` finds it and skips a
+    # duplicate registration (see the idempotency guard above).
+    _emit_span._veloce_otel_bridge = True  # type: ignore[attr-defined]
+    app.add_instrumentation(_emit_span, exclude_routes=exclude_routes)
     return _emit_span

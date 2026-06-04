@@ -40,6 +40,17 @@ class RequestMetrics:
     bridge should anchor its span window to this value (and `duration_ms`)
     rather than reading the clock when its own hook executes, so a slow
     earlier hook cannot shift the span past the real request boundary.
+
+    `error_type` is the low-cardinality class name (`type(exc).__qualname__`)
+    of the exception that produced a `5xx`, set only when an *unhandled*
+    raised exception turned into a server error (the debug traceback page,
+    the generic `500` response, or a propagated exception). It is `None` for
+    every other outcome - a `2xx`/`3xx`/`4xx`, or a `5xx` deliberately
+    returned by a handler/exception handler without a raised exception. A
+    tracing bridge can record it as the OpenTelemetry `error.type` attribute
+    without capturing the full traceback or exception instance, keeping the
+    record allocation-light. The class *name* only is carried, never the
+    message (which may hold attacker-controlled or sensitive text).
     """
 
     method: str
@@ -49,6 +60,7 @@ class RequestMetrics:
     duration_ms: float
     streamed: bool = False
     end_time_ns: int | None = None
+    error_type: str | None = None
     # Inbound distributed-trace headers (a `{"traceparent": ..., maybe
     # "tracestate": ...}` carrier dict) so a tracing bridge (e.g.
     # veloce.otel) can extract a parent context and continue the trace.
@@ -60,5 +72,6 @@ class RequestMetrics:
         return (
             f"RequestMetrics(method={self.method!r}, path={self.path!r}, "
             f"route={self.route!r}, status_code={self.status_code}, "
-            f"duration_ms={self.duration_ms:.3f}, streamed={self.streamed})"
+            f"duration_ms={self.duration_ms:.3f}, streamed={self.streamed}, "
+            f"error_type={self.error_type!r})"
         )

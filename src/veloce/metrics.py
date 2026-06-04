@@ -46,7 +46,7 @@ here.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -108,6 +108,7 @@ def instrument_with_prometheus(
     prefix: str = "http",
     buckets: Sequence[float] | None = None,
     group_status: bool = True,
+    exclude_routes: Iterable[str] | None = None,
 ) -> Callable[[RequestMetrics], None]:
     """Export Prometheus request metrics from a Veloce app's instrumentation.
 
@@ -128,7 +129,11 @@ def instrument_with_prometheus(
 
     ``prefix`` names the metrics (``http`` -> ``http_requests_total``);
     ``buckets`` overrides the histogram's second-valued buckets, defaulting to
-    prometheus_client's conventional set. ``group_status`` (default ``True``)
+    prometheus_client's conventional set. ``exclude_routes`` (a set of matched
+    route *templates*, e.g. ``{"/health", "/metrics"}``) suppresses these series
+    for noisy routes via Veloce's core instrumentation filter, so health checks
+    and the scrape endpoint itself never inflate request counts.
+    ``group_status`` (default ``True``)
     collapses the status code into its class bucket - ``200`` -> ``"2xx"``,
     ``404`` -> ``"4xx"``, ``503`` -> ``"5xx"`` - as the ``status`` label, so the
     counter holds at most one series per status class; set it ``False`` to keep
@@ -175,5 +180,5 @@ def instrument_with_prometheus(
         requests_total.labels(metrics.method, route_label, status_label).inc()
         request_duration.labels(metrics.method, route_label).observe(metrics.duration_ms / 1000.0)
 
-    app.add_instrumentation(_record)
+    app.add_instrumentation(_record, exclude_routes=exclude_routes)
     return _record
