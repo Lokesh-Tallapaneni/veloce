@@ -374,6 +374,7 @@ class DuplicateRouteError(ValueError):
             "replacement or rename one of the routes."
         )
 
+
 class SetupError(RuntimeError):
     """A registration ran after the application started serving.
 
