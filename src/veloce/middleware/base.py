@@ -15,7 +15,26 @@ from veloce.http.response import Response
 
 
 class Middleware:
-    """Base middleware class. Subclass and override process_request/process_response."""
+    """Base middleware class. Subclass and override process_request/process_response.
+
+    Each middleware carries a `name` used by per-route exclusion
+    (`exclude_middleware=[...]` on a route). The default name is the
+    concrete class name; override the class attribute, or pass `name=` when
+    two instances of the same class must be addressed independently.
+    """
+
+    # Identifier a route references to opt out of this middleware. Defaults
+    # to the class name; a per-instance override is honoured by `__init__`.
+    name: str = ""
+
+    def __init__(self, *, name: str | None = None) -> None:
+        if name is not None:
+            self.name = name
+
+    @property
+    def middleware_name(self) -> str:
+        """Resolved exclusion name - the instance/class `name` or class name."""
+        return self.name or type(self).__name__
 
     async def process_request(self, request: Request) -> Response | None:
         """Called before route handler. Return a Response to short-circuit."""

@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Routes can opt out of named middleware with `exclude_middleware=[...]` on
+  any route decorator (`@app.get(...)`, `@app.route(...)`, `add_api_route`,
+  and the same on `Blueprint`/`Router`). Each entry is matched against a
+  middleware's `name` (a new optional `Middleware(name=...)` argument that
+  defaults to the class name), and the opt-out applies symmetrically to both
+  the request and response phases. A route that declares no exclusions pays no
+  extra per-request cost; for a route that does, the filtered chain is computed
+  once and reused until the registered middleware set changes. Useful for
+  skipping CSRF on webhooks or auth/rate limiting on health and metrics
+  endpoints without forking the middleware.
+
 - `encode_jwt` and `decode_jwt` sign and verify compact JSON Web Tokens using
   the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external dependency.
   The `algorithms` allow-list passed to `decode_jwt` is required - there is no
@@ -325,6 +336,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decoder reason in the 400 response body; falls back to `DEBUG` when unset.
 
 ### Changed
+
+- A user-registered exception handler that itself raises no longer escapes
+  request dispatch uncaught. The secondary failure is logged with the handler's
+  name and the request path, and a standard 500 response is returned, so a buggy
+  error handler degrades gracefully in production. When `PROPAGATE_EXCEPTIONS`
+  is in effect (or implicitly under `DEBUG` + `TESTING`), the handler exception
+  is re-raised as before so the bug remains visible in tests and development.
 
 - The unknown-object fallback in `jsonable_encoder` and the orjson default now
   drops private (underscore-prefixed) attributes from the structurally-derived
