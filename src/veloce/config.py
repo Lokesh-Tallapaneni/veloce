@@ -157,6 +157,10 @@ class Config(dict[str, Any]):
             "REQUEST_HANDLER_TIMEOUT": 30,
             "KEEP_ALIVE_TIMEOUT": 75,
             "REQUEST_TIMEOUT": 30,
+            # Per-task budget, in seconds, for draining an `app.spawn(...)`
+            # background task on shutdown: each task is cancelled and awaited
+            # for at most this long before the drain moves on.
+            "GRACEFUL_TASK_TIMEOUT": 10,
         }
 
     @staticmethod
