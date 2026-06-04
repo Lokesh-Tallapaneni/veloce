@@ -248,11 +248,13 @@ class SessionMiddleware(Middleware):
         if session is None:
             return response
 
-        # `Session` is slotted: `.accessed` (any read via `Request.session`) and
-        # `.modified` (any mutation) always exist, so read them directly, once,
-        # and reuse for both the `Vary` and the persist decisions.
-        accessed = session.accessed
-        modified = session.modified
+        # Read `.accessed` / `.modified` once and reuse for the `Vary` and the
+        # persist decisions. `getattr` with a default tolerates a non-`Session`
+        # object placed under the reserved `session` state key (the key is
+        # framework-owned, but `request._state` is mutable scratch space), in
+        # which case the session work is simply skipped, as before.
+        accessed = getattr(session, "accessed", False)
+        modified = getattr(session, "modified", False)
 
         # Emit `Vary: Cookie` when a handler actually accessed the session, so a
         # response personalized from session contents is not shared across users
@@ -265,7 +267,9 @@ class SessionMiddleware(Middleware):
         # mutated. With `renew_on_access`, an existing session that was only
         # *read* (accessed, non-empty, not new) is also re-signed so its
         # server-side timestamp and `Max-Age` slide forward - the idle reset.
-        if not modified and not (self.renew_on_access and accessed and not session.new and session):
+        if not modified and not (
+            self.renew_on_access and accessed and not getattr(session, "new", False) and session
+        ):
             return response
 
         # A 5xx response should not persist a half-mutated session - neither a
@@ -546,9 +550,11 @@ class ServerSessionMiddleware(Middleware):
         if session is None:
             return response
 
-        # `Session` is slotted: read `.accessed` / `.modified` directly, once.
-        accessed = session.accessed
-        modified = session.modified
+        # Read `.accessed` / `.modified` once; `getattr` with a default tolerates
+        # a non-`Session` object placed under the reserved `session` state key,
+        # skipping the session work as before.
+        accessed = getattr(session, "accessed", False)
+        modified = getattr(session, "modified", False)
 
         # See SessionMiddleware: emit `Vary: Cookie` only when a handler accessed
         # the session (read or write), so session-independent responses stay
@@ -563,7 +569,7 @@ class ServerSessionMiddleware(Middleware):
             if (
                 self.renew_on_access
                 and accessed
-                and not session.new
+                and not getattr(session, "new", False)
                 and self._should_persist(response.status_code)
             ):
                 await self._renew(request, response)
