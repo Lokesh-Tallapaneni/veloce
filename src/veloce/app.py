@@ -122,6 +122,13 @@ _exc_handler_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool
 # would re-walk the MRO every time for an unhandled exception type.
 _MISSING: Any = object()
 
+# `request._state` key holding the per-route filtered response-phase
+# middleware chain, set by the request phase only when the matched route
+# declares `exclude_middleware`. Absent for routes with no exclusions, so
+# `_run_response_middleware` keeps walking the full list with zero lookup
+# cost beyond a single dict miss.
+_MW_RESPONSE_CHAIN_KEY = "_mw_response_chain"
+
 # Pre-encoded ASCII bytes for the content-type strings the built-in
 # response classes emit. Hit at ASGI emit time before the per-request
 # `_reject_header_crlf(...).encode()` round-trip; values here are
@@ -575,6 +582,12 @@ class Veloce(Router):
         self.logger = logging.getLogger(self.import_name)
 
         self._middlewares: list[Middleware] = []
+        # Monotonic generation counter for `_middlewares`, bumped on every
+        # mutation via `add_middleware`. A route's per-route exclusion chain
+        # cache (`RouteInfo._mw_chain_cache`) keys on this so a filtered
+        # chain is recomputed only when the registered middleware set
+        # actually changes, never per request.
+        self._mw_version = 0
         # Standard ASGI middleware - `(class, options)` pairs. Each wraps the
         # whole ASGI application (instantiated as `cls(app, **options)`) and
         # is assembled lazily into `_asgi_stack` on the first request.
@@ -861,6 +874,7 @@ class Veloce(Router):
         if isinstance(middleware, type):
             if issubclass(middleware, Middleware):
                 self._middlewares.append(middleware(**options))
+                self._mw_version += 1
             elif issubclass(middleware, BaseHTTPMiddleware):
                 # `BaseHTTPMiddleware` is a dispatch-shape middleware, not
                 # an ASGI app - registering it as ASGI would wire the app
@@ -877,6 +891,7 @@ class Veloce(Router):
                 self._asgi_stack = None
         elif isinstance(middleware, Middleware):
             self._middlewares.append(middleware)
+            self._mw_version += 1
         else:
             # A bare ASGI middleware instance cannot be wired up - veloce
             # has to supply the wrapped app, which only the class form
@@ -2588,24 +2603,36 @@ class Veloce(Router):
         # (matches the per-connection resolver the WebSocket path uses).
         resolver: DependencyResolver | None = None
         try:
-            # Run middleware (request phase). Kept inline (rather than calling
-            # `_run_request_middleware`) so an app with no middleware pays zero
-            # extra coroutine awaits on the dispatch hot path; the MCP tool
-            # path replays the identical chain via that helper.
-            for mw in self._middlewares:
-                early_response = await mw.process_request(request)
-                if early_response is not None:
-                    return await self._run_response_middleware(request, early_response)
-
-            # Match the route once. `request.endpoint` is populated here so
-            # before_request hooks can gate on the route name; the same
-            # match object is reused for dispatch below.
+            # Match the route once - before the middleware request phase so a
+            # route's `exclude_middleware` opt-out can be honoured. The same
+            # match object is reused for dispatch below; `request.endpoint`
+            # and `url_rule` are populated here so before_request hooks can
+            # gate on the route name.
             _matched_path = request.path
             _matched_method = request.method
             match = self.match(request.method, request.path)
             if match is not None:
                 request.endpoint = match.route_info.name
                 request._state["url_rule"] = match.route_info.path_template
+
+            # Run middleware (request phase). A route with no exclusions - the
+            # common case - iterates the app's middleware list directly so it
+            # pays zero filtering cost. A route declaring `exclude_middleware`
+            # runs a memoised filtered chain and stashes the matching
+            # response-phase chain on `request._state` for symmetric skip.
+            # Kept inline (rather than calling `_run_request_middleware`) so an
+            # app with no middleware pays zero extra coroutine awaits; the MCP
+            # tool path replays the identical chain via that helper.
+            request_chain: list[Middleware] = self._middlewares
+            if match is not None and match.route_info.excluded_middleware is not None:
+                filtered = self._route_middleware_chains(match.route_info)
+                if filtered is not None:
+                    request_chain = filtered[0]
+                    request._state[_MW_RESPONSE_CHAIN_KEY] = filtered[1]
+            for mw in request_chain:
+                early_response = await mw.process_request(request)
+                if early_response is not None:
+                    return await self._run_response_middleware(request, early_response)
 
             # Run before_request hooks (app-level then matched blueprint).
             # A non-None return short-circuits. `_bp_name` is recorded as the
@@ -2666,8 +2693,7 @@ class Veloce(Router):
                 type(exc)
             )
             if handler:
-                result = await self._call_exc_handler(handler, request, exc)
-                response = self._coerce_response(result)
+                response = await self._dispatch_exc_handler(handler, request, exc)
                 if self._middlewares:
                     response = await self._run_response_middleware(request, response)
                 return response
@@ -2690,8 +2716,7 @@ class Veloce(Router):
             _exc = exc
             handler = self._find_exception_handler(type(exc))
             if handler:
-                result = await self._call_exc_handler(handler, request, exc)
-                response = self._coerce_response(result)
+                response = await self._dispatch_exc_handler(handler, request, exc)
                 if self._middlewares:
                     response = await self._run_response_middleware(request, response)
                 return response
@@ -3203,6 +3228,43 @@ class Veloce(Router):
             kwargs["exc"] = exc
         return await self._call_handler(handler, kwargs)
 
+    async def _dispatch_exc_handler(
+        self, handler: Callable, request: Request, exc: BaseException
+    ) -> Response:
+        """Invoke a user exception handler with a guard around its own raises.
+
+        A user error handler that itself raises must not escape dispatch
+        uncaught - that would surface as a bare 500 with no targeted log and
+        lose the original exception's context. This logs the secondary
+        failure (naming the handler and the request path) and returns
+        Veloce's standard 500, so a buggy handler degrades gracefully in
+        production. When `PROPAGATE_EXCEPTIONS` is in effect (tests/dev), the
+        secondary exception is re-raised so the handler bug is visible.
+        """
+        try:
+            result = await self._call_exc_handler(handler, request, exc)
+        except Exception as handler_exc:
+            if self._should_propagate_exceptions():
+                raise
+            handler_exc.__context__ = exc
+            self.logger.error(
+                "Exception handler %s raised while handling %s %s",
+                getattr(handler, "__qualname__", repr(handler)),
+                request.method,
+                request.path,
+                exc_info=handler_exc,
+            )
+            return self._coerce_response(
+                JSONResponse(
+                    {
+                        "detail": MSG_INTERNAL_SERVER_ERROR,
+                        "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    },
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            )
+        return self._coerce_response(result)
+
     def _apply_response_model(self, result: Any, route_info: Any) -> Any:
         """Route the handler return through `response_model` + dump flags.
 
@@ -3461,9 +3523,43 @@ class Veloce(Router):
                 return early_response
         return None
 
+    def _route_middleware_chains(
+        self, route_info: Any
+    ) -> tuple[list[Middleware], list[Middleware]] | None:
+        """Resolve the filtered (request-order, response-order) chains for a route.
+
+        Returns `None` when the route excludes nothing - the common case -
+        signalling callers to use the app's middleware list directly with no
+        copy or filter, so the dispatch hot path pays nothing extra. When a
+        route declares `exclude_middleware`, the filtered chains are computed
+        once per (route, middleware-generation) and memoised on the
+        RouteInfo, keyed on `self._mw_version`, so later requests reuse the
+        cached lists rather than re-filtering.
+        """
+        excluded = route_info.excluded_middleware
+        if excluded is None:
+            return None
+        cache = route_info._mw_chain_cache
+        version = self._mw_version
+        if cache is not None and cache[0] == version:
+            return cache[1], cache[2]
+        request_chain = [mw for mw in self._middlewares if mw.middleware_name not in excluded]
+        response_chain = request_chain[::-1]
+        route_info._mw_chain_cache = (version, request_chain, response_chain)
+        return request_chain, response_chain
+
     async def _run_response_middleware(self, request: Request, response: Response) -> Response:
-        """Run middleware response phase in reverse order."""
-        for mw in reversed(self._middlewares):
+        """Run middleware response phase in reverse order.
+
+        Honours a per-route filtered chain stashed on `request._state` by the
+        request phase, so a route's `exclude_middleware` opt-out applies
+        symmetrically to `process_response`. Absent that key (no exclusions),
+        the app's middleware list is walked in reverse as before.
+        """
+        chain = request._state.get(_MW_RESPONSE_CHAIN_KEY)
+        if chain is None:
+            chain = reversed(self._middlewares)
+        for mw in chain:
             response = await mw.process_response(request, response)
         return response
 

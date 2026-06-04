@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 import re
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Sequence
 from typing import Any
 from urllib.parse import urlencode
 
@@ -203,6 +203,8 @@ class RouteInfo:
         "host",
         "expose_as_mcp_tool",
         "mcp_description",
+        "excluded_middleware",
+        "_mw_chain_cache",
     )
 
     def __init__(
@@ -236,6 +238,7 @@ class RouteInfo:
         host: str | None = None,
         expose_as_mcp_tool: bool = False,
         mcp_description: str | None = None,
+        excluded_middleware: frozenset[str] | None = None,
     ) -> None:
         self.handler = handler
         self.param_names = param_names
@@ -306,6 +309,15 @@ class RouteInfo:
         # safety policy at registry-build time.
         self.expose_as_mcp_tool = expose_as_mcp_tool
         self.mcp_description = mcp_description
+        # Named middleware this route opts out of. `None` (the common case)
+        # means "run every registered middleware" - the dispatch hot path
+        # then iterates the app's middleware list directly with zero extra
+        # work. A non-`None` frozenset triggers the filtered-chain path,
+        # whose result is memoised in `_mw_chain_cache` keyed on the app's
+        # middleware-list version so the filter runs at most once per
+        # (route, middleware-set) generation, not per request.
+        self.excluded_middleware: frozenset[str] | None = excluded_middleware
+        self._mw_chain_cache: tuple[int, list[Any], list[Any]] | None = None
 
 
 class RouteMatch:
@@ -581,6 +593,7 @@ class Router:
         host: str | None = None,
         expose_as_mcp_tool: bool = False,
         mcp_description: str | None = None,
+        exclude_middleware: Sequence[str] | None = None,
     ) -> None:
         """Register a route in the radix tree.
 
@@ -668,6 +681,7 @@ class Router:
             host=host,
             expose_as_mcp_tool=expose_as_mcp_tool,
             mcp_description=mcp_description,
+            excluded_middleware=frozenset(exclude_middleware) if exclude_middleware else None,
         )
 
         # Register named route for url_for. Drop any stale reverse-converter
@@ -992,8 +1006,16 @@ class Router:
         host: str | None = None,
         expose_as_mcp_tool: bool = False,
         mcp_description: str | None = None,
+        exclude_middleware: Sequence[str] | None = None,
     ) -> Callable:
-        """Generic route decorator."""
+        """Generic route decorator.
+
+        `exclude_middleware=["CSRFMiddleware"]` opts this route out of the
+        named middleware (matched against each middleware's `name`), so a
+        webhook or health-check route can skip CSRF, auth, or rate limiting
+        without forking the middleware. Routes that declare no exclusions
+        pay no extra per-request cost.
+        """
 
         def decorator(func: RouteHandler) -> RouteHandler:
             self.add_route(
@@ -1027,6 +1049,7 @@ class Router:
                 host=host,
                 expose_as_mcp_tool=expose_as_mcp_tool,
                 mcp_description=mcp_description,
+                exclude_middleware=exclude_middleware,
             )
             return func
 
@@ -1344,6 +1367,7 @@ class Router:
                     host=info.host,
                     expose_as_mcp_tool=info.expose_as_mcp_tool,
                     mcp_description=info.mcp_description,
+                    excluded_middleware=info.excluded_middleware,
                 )
                 route_info.handler_plan = info.handler_plan
                 is_ws = method.upper() == ROUTE_METHOD_WEBSOCKET
@@ -1417,6 +1441,7 @@ class Router:
                     host=info.host,
                     expose_as_mcp_tool=info.expose_as_mcp_tool,
                     mcp_description=info.mcp_description,
+                    excluded_middleware=info.excluded_middleware,
                 )
                 # Reuse the parent's pre-computed handler plan.
                 route_info.handler_plan = info.handler_plan
