@@ -8,6 +8,156 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Mounted Veloce sub-apps now have their lifecycle driven by the parent. A
+  Veloce instance mounted with `app.mount(prefix, sub_app)` runs its
+  `on_startup` handlers and lifespan context manager when the parent starts,
+  and is torn down when the parent shuts down. Children start after the parent
+  and are unwound in reverse, and a child whose startup fails unwinds the
+  already-started children along with the parent's own resources. Mounted
+  non-Veloce ASGI applications continue to own their own lifecycle and are not
+  driven by the parent.
+- `app.supervise(coro_factory, *, name, max_restarts, restart_window, backoff,
+  max_backoff)` runs a long-lived coroutine and restarts it on failure. The
+  factory is called again to produce a fresh coroutine on each restart; crashes
+  are logged, restarts are spaced by a doubling backoff bounded by
+  `max_backoff`, and a count-within-window circuit breaker stops restarting once
+  `max_restarts` failures occur within `restart_window` seconds (the counter
+  resets after a clean run longer than the window). The supervisor runs as an
+  `app.spawn(...)` task, so it is tracked by name and cancelled and drained on
+  shutdown; `asyncio.CancelledError` is never suppressed.
+- `add_middleware(..., priority=N)` orders the request/response middleware
+  pipeline deterministically. Higher priority runs earlier in the request phase
+  and correspondingly later in the response phase; middleware of equal priority
+  keeps registration order. The ordered chain is resolved once at registration
+  time, so per-request dispatch pays no sorting cost, and apps that set no
+  priority keep the existing registration-order behaviour unchanged.
+- Generated OpenAPI documents now include the `422` validation-error response
+  for every operation whose request is validated (any path, query, header, or
+  cookie parameter, a JSON request body, or a form field). The response
+  references a shared `HTTPValidationError` component schema describing the
+  `{"detail": [{"loc", "msg", "type"}, ...]}` body that the dependency resolver
+  returns when a parameter fails validation, with a `ValidationError` component
+  for each per-error item. Operations with no validatable parameter do not
+  advertise a `422`, and an explicitly declared `422` (via `responses=` or
+  `openapi_extra`) is preserved rather than overwritten.
+- `@app.websocket_listener(path)` declarative WebSocket route. The decorated
+  callback handles one message at a time; the framework owns the accept
+  handshake, the receive loop, and the clean close on disconnect. The callback
+  is invoked as `cb(data)`, or `cb(ws, data)` when its first parameter is named
+  `ws`/`socket` (or it declares two positional parameters); returning a
+  non-`None` value sends it back, returning `None` sends nothing. `receive` and
+  `send` select the codec (`"json"` default, or `"text"` / `"bytes"`).
+  `on_connect(ws)` runs after accept and `on_disconnect(ws)` always runs when
+  the loop ends, including on peer disconnect. Sync callbacks and hooks are
+  offloaded to the executor. The imperative `@app.websocket` decorator is
+  unchanged for full handshake/loop control. Available on `Veloce`, `Router`,
+  and `Blueprint`.
+- `CORSMiddleware` now supports Private Network Access. The new
+  `allow_private_network` option (default `False`) echoes
+  `Access-Control-Allow-Private-Network: true` on a preflight that carries
+  `Access-Control-Request-Private-Network: true`. The grant is opt-in and
+  never emitted unless configured.
+
+### Changed
+
+- `CORSMiddleware` preflight requests now validate the requested method.
+  An `OPTIONS` preflight whose `Access-Control-Request-Method` is not in
+  `allow_methods` returns a diagnostic `400` (`Disallowed CORS method`)
+  instead of a `204`, matching the existing disallowed-origin behavior.
+  Soft `OPTIONS` probes that omit `Access-Control-Request-Method` are
+  unaffected.
+
+- `SessionMiddleware` gains an opt-in `chunked` mode for sessions whose signed
+  cookie exceeds `max_cookie_size`. With `chunked=True`, the signed value is
+  split across numbered cookies (`session.0`, `session.1`, ...) on the response
+  and transparently reassembled on the next request; a `max_chunks` keyword
+  (default 8) bounds the split so an oversized session is dropped with a warning
+  rather than emitting an unbounded number of cookies. Shrinking or deleting a
+  session clears its stale chunk cookies. The default remains `chunked=False`,
+  preserving the prior drop-with-warning behavior for an oversized cookie.
+- Registration-time kwarg-ambiguity check: a handler (or dependency) parameter
+  whose name is reserved for an injected object (`request`, or `ws` /
+  `websocket` on a WebSocket route) but that also declares an explicit value
+  marker (`Query()`, `Path()`, `Header()`, `Cookie()`, `Body()`, `Form()`,
+  `File()`) now raises `ConfigurationError` (exported from the top-level
+  `veloce` package) at registration, with the dependency chain in the message
+  for nested dependencies. Previously the by-name injection silently won and the
+  marker was ignored, producing the wrong value at runtime. The check is
+  intent-aware: `request: Request`, `q: str = Query()`, and `request=Depends(...)`
+  are all left untouched, so valid handlers are never rejected.
+- OS-level TCP keepalive on the built-in serving path. `Veloce.run()` and the
+  gunicorn worker now set `SO_KEEPALIVE` on each accepted connection so the
+  kernel detects and reaps a peer that died without closing the connection,
+  which the application idle timer cannot observe. Controlled by `TCP_KEEPALIVE`
+  (default enabled) with optional `TCP_KEEPALIVE_IDLE`, `TCP_KEEPALIVE_INTERVAL`
+  and `TCP_KEEPALIVE_COUNT` config keys mapping to `TCP_KEEPIDLE` /
+  `TCP_KEEPINTVL` / `TCP_KEEPCNT`; the tuning keys are applied only on platforms
+  that expose them and otherwise leave the OS defaults in place. ASGI servers
+  own their own sockets and are unaffected.
+- `StaticFiles(html=True)` now serves a directory's `index.html` and supports a
+  custom `404.html`. A slash-less URL that maps to a directory containing
+  `index.html` (for example `/docs`) redirects to the trailing-slash form
+  (`/docs/`) so the page's relative links resolve against the directory; the
+  slash-terminated request then serves the index file. The redirect status is
+  `307` by default and is configurable through the new `redirect_status` keyword
+  (`307` or `308` only); the query string is preserved across the redirect. When
+  a request matches no file, a `404.html` in the served root is returned with
+  status `404` if present. Both behaviours are gated on `html=True`, so default
+  serving is unchanged. An `index.html` still takes precedence over a generated
+  `directory_index` listing.
+- Encoder extensibility for `jsonable_encoder`. A per-call `custom_encoder`
+  argument accepts a `{type: callable}` mapping that is consulted before every
+  built-in rule at every nesting level: the exact `type(obj)` entry is used
+  first, otherwise the entries are scanned in insertion order and the first
+  `isinstance` match wins. Because it runs first it can override container and
+  model handling as well as leaf scalars. A process-level registry is also
+  available through `register_encoder(type, fn)` and `unregister_encoder(type)`
+  (both exported from the top-level `veloce` package); registered encoders are
+  resolved by an MRO walk so subclasses are covered, override built-in handlers
+  for the same type, and apply on both the `jsonable_encoder` path and the
+  orjson `default=` response path. The `Secret` serialization guard still runs
+  ahead of any custom or registered encoder.
+
+### Changed
+
+- An SSE source iterator may now yield bare values. `EventSourceResponse`
+  coerces a yielded `Mapping` into a single `data:` field carrying its JSON, and
+  any other non-`str`/`bytes`/`ServerSentEvent` value (for example an `int` or
+  `float`) into a `data:` field carrying its text. `ServerSentEvent`, `str`, and
+  `bytes` keep their existing handling. Previously a yielded `dict`/`int`/`float`
+  fell through unencoded and crashed the chunk writer.
+- `jsonable_encoder` now dispatches scalar subclasses through their base type's
+  encoder. A subclass of `int`, `str`, `float`, `Decimal`, or another known
+  scalar (for example `class MyId(int)`) previously fell through to the
+  object-vars fallback and serialized as `{}`; it now encodes as its base
+  scalar. The resolution walks the class MRO once per concrete type and
+  memoizes the result. Serialized output for all previously supported built-in
+  types is unchanged.
+- `jsonable_encoder` and the orjson `default=` hook now encode `bytes` and
+  `bytearray` as lossless base64 strings instead of decoding them as UTF-8 with
+  replacement. The previous behaviour substituted U+FFFD for every non-UTF-8
+  byte, silently corrupting binary values (image headers, hash digests,
+  compressed blobs) into JSON that could not round-trip. The base64 form matches
+  the OpenAPI/JSON Schema `format: byte` representation and decodes back to the
+  exact original bytes. ASCII/UTF-8 byte values now serialize as their base64
+  encoding (for example `b"hi"` becomes `"aGk="`) rather than the decoded text.
+- RFC 9110 status-name aliases in `veloce.status`: `HTTP_413_CONTENT_TOO_LARGE`,
+  `HTTP_414_URI_TOO_LONG`, `HTTP_416_RANGE_NOT_SATISFIABLE`, and
+  `HTTP_422_UNPROCESSABLE_CONTENT` are now defined alongside the existing legacy
+  spellings (`HTTP_413_REQUEST_ENTITY_TOO_LARGE`, `HTTP_414_REQUEST_URI_TOO_LONG`,
+  `HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE`, `HTTP_422_UNPROCESSABLE_ENTITY`),
+  pointing at the same integer codes. The legacy names are retained for
+  back-compatibility.
+
+- Sliding session expiry: `SessionMiddleware` and `ServerSessionMiddleware`
+  accept `renew_on_access` (default `False`). When enabled, a session that was
+  only read during a request - not modified - has its expiry refreshed on the
+  way out: the cookie middleware re-signs the cookie with a fresh `Max-Age`, and
+  the server-side middleware refreshes the store entry's TTL (via the new
+  `SessionStore.touch`) and re-stamps the cookie. `SessionStore` gains a
+  `touch(session_id, max_age)` method to refresh an entry's expiry without
+  rewriting its payload; `InMemorySessionStore` refreshes the expiry in place.
+
 - Constrained route syntax: path converters now accept arguments in the brace
   form, so bounds participate in matching instead of only producing a
   handler-layer error. `{n:int(min=1,max=100)}` and `{x:float(min=0.0)}` bound
@@ -461,7 +611,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records `RequestMetrics.error_type` as the OpenTelemetry `error.type` span
   attribute.
 
+- `instrument_with_otel(app, live=True)` adds an opt-in *live* tracing mode. In
+  addition to the default backdated server span (recorded after the request
+  finishes), live mode installs an ASGI-layer wrapper that opens a real
+  `SpanKind.SERVER` span at request start and attaches it to the OpenTelemetry
+  context (`set_span_in_context` + `context.attach`) for the duration of the
+  handler, so spans the handler creates - and outbound-call spans - are children
+  of the server span and the trace tree is correct. The context token is
+  detached and the span ended in a `finally`, so the token is always balanced
+  and never leaked even when the handler raises, and the per-request token model
+  is concurrency-safe (each request attaches and detaches its own token). The
+  span name and attributes are filled in by the bridge's enrichment hook, which
+  runs inside dispatch while the live span is current, so it reuses the same
+  route-template naming, cardinality guards, `error.type` attribution, `on_span`
+  enrichment and `exclude_routes` filtering as the backdated mode. Unlike the
+  backdated mode, live mode times a streaming response end to end (the span ends
+  after the body drains). The implementation uses only the guarded OpenTelemetry
+  API plus context attach/detach - no `opentelemetry.instrumentation` contrib
+  dependency. The default backdated mode is unchanged and stays zero-overhead.
+
+- Password hashing gains rehash-on-login primitives. `needs_rehash(stored)`
+  reports whether a stored verifier was produced with a configuration weaker
+  than the current defaults - a non-default method (a PBKDF2 hash migrating to
+  scrypt) or scrypt cost parameters below the current `n`/`r`/`p`.
+  `verify_and_needs_update(stored, candidate)` returns `(ok, needs_update)` so
+  an application can verify a password and, on success, transparently re-derive
+  it at the current work factor while the plaintext is still in hand;
+  `needs_update` is always `False` on a failed verify.
+  `verify_and_needs_update_async` offloads the verify to a thread. The existing
+  `verify_password` signature is unchanged. All three are exported from the
+  top-level `veloce` package.
+
 ### Changed
+
+- Yield-dependency teardowns no longer swallow their own failures.
+  `run_teardowns` still runs every teardown in reverse registration order even
+  when one raises, but the failures are now collected and re-raised together as
+  a `BaseExceptionGroup` (PEP 654) - chained from the request exception when the
+  request itself failed - instead of being logged and discarded. A broken
+  teardown (a failed transaction commit or rollback, say) is therefore
+  observable. Each failure is still logged as it happens, and the HTTP and
+  WebSocket dispatch paths log the aggregated group rather than letting it break
+  the response cycle. A clean teardown chain allocates nothing and raises
+  nothing. On Python 3.10 (no exception groups) the first failure is re-raised,
+  chained, after the rest are logged.
 
 - A `multipart/form-data` request with a missing `boundary` parameter, or a
   boundary that violates the RFC 2046 grammar (empty, longer than 70
@@ -623,6 +816,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any handler-set `Content-Type` are preserved.
 
 ### Fixed
+
+- Scope-aware dependency caching. A `Security()` dependency whose sub-graph
+  reads `SecurityScopes` is now cached per active scope set, so the same auth
+  callable referenced with different scopes in one request
+  (`Security(auth, scopes=["read"])` and `Security(auth, scopes=["read",
+  "write"])`) resolves twice with the correct scopes instead of returning the
+  first cached result against the wrong scope set. Plain `Depends` and any
+  `Security()` dependency that does not read its scopes keep the identity-only
+  cache key, so they still resolve once per request.
 
 - `add_middleware(MiddlewareClass, name="...")` now applies the exclusion-name
   override after construction instead of forwarding `name` into the subclass
@@ -823,6 +1025,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gated on `os.name == "nt"`, so POSIX deployments are unaffected and pay no
   per-request cost. `secure_filename` gains the `CONIN$`/`CONOUT$` aliases for
   consistency.
+
+- `URL.from_request` validates the `Host` header against the RFC 3986 Sec. 3.2.2
+  host grammar (reg-name unreserved/sub-delims, bracketed or bare IPv6 literal)
+  and the port against the 1-65535 range before deriving `host`, `netloc`,
+  `base_url`, and `url_root`. A malformed `Host` (e.g. `evil.com/path?x`, an
+  `@`-userinfo form, an embedded CR/LF, or a non-numeric port) now falls back to
+  the safe default host instead of flowing into absolute-URL construction, so a
+  Host-injection payload can no longer poison the URLs the framework builds.
 
 ## [0.3.0] - 2026-06-01
 

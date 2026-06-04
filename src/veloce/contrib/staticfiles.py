@@ -44,13 +44,16 @@ from veloce._constants import (
 from veloce._internal import _etag_matches_strong, _etag_matches_weak, _file_etag
 from veloce.http.dates import http_date, parse_date
 from veloce.http.request import Request
-from veloce.http.response import Response, StreamingResponse
+from veloce.http.response import RedirectResponse, Response, StreamingResponse
 from veloce.safe import safe_join
 from veloce.status import (
     HTTP_200_OK,
     HTTP_206_PARTIAL_CONTENT,
     HTTP_304_NOT_MODIFIED,
+    HTTP_307_TEMPORARY_REDIRECT,
+    HTTP_308_PERMANENT_REDIRECT,
     HTTP_403_FORBIDDEN,
+    HTTP_404_NOT_FOUND,
     HTTP_406_NOT_ACCEPTABLE,
     HTTP_412_PRECONDITION_FAILED,
     HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
@@ -126,6 +129,7 @@ class StaticFiles:
         directory_index: bool = False,
         must_exist: bool = True,
         precompressed: bool = False,
+        redirect_status: int = HTTP_307_TEMPORARY_REDIRECT,
     ) -> None:
         self.directory = os.path.abspath(directory)
         # Validate the configured directory once at construction (a setup-time
@@ -170,6 +174,17 @@ class StaticFiles:
         # the variants must be generated ahead of time and the feature adds
         # one extra `stat` per request when enabled, so it is opt-in.
         self.precompressed = precompressed
+        # Status for the trailing-slash redirect issued when `html=True` and a
+        # slash-less URL maps to a directory holding `index.html` (so the
+        # browser's relative links resolve against `<dir>/`). 307 preserves the
+        # method and is the conservative default; pass 308 for a cacheable
+        # permanent redirect. Only 307/308 are accepted - a redirect that
+        # changes the method (301/302) would be wrong for a GET asset path.
+        if redirect_status not in (HTTP_307_TEMPORARY_REDIRECT, HTTP_308_PERMANENT_REDIRECT):
+            raise ValueError(
+                f"StaticFiles redirect_status must be 307 or 308, got {redirect_status!r}"
+            )
+        self.redirect_status = redirect_status
         # Bounded LRU: insertion order doubles as recency; the oldest
         # entry is dropped when the cap is hit. Capacity is per-instance
         # so a deployment with many static handlers stays bounded.
@@ -191,6 +206,50 @@ class StaticFiles:
         self._etag_cache.move_to_end(key)
         while len(self._etag_cache) > self.ETAG_CACHE_MAX:
             self._etag_cache.popitem(last=False)
+
+    def _redirect_to_slash(self, request: Request) -> RedirectResponse:
+        """Redirect a slash-less directory URL to its slash-terminated form.
+
+        The query string is preserved so `?v=2` survives the redirect. Only the
+        path gains a trailing slash; `RedirectResponse` percent-encodes and
+        CRLF-rejects the Location for us.
+        """
+        target = request.path + "/"
+        if request.query_string:
+            target = f"{target}?{request.query_string}"
+        return RedirectResponse(url=target, status_code=self.redirect_status)
+
+    async def _serve_404_html(self, loop: Any, try_stat: Any) -> Response | None:
+        """Return a 404 response from the root `404.html`, or None if absent.
+
+        The page is served with status 404 and `text/html`; it deliberately
+        skips the ETag/range/conditional machinery (an error body does not need
+        a validator). Symlink containment is enforced so a planted `404.html`
+        link cannot read a file outside the served root. Permission errors on
+        the page surface as 403, matching the read policy on any served file.
+        """
+        page_path = safe_join(self.directory, "404.html")
+        if page_path is None:
+            return None
+        page_stat, denied = await loop.run_in_executor(None, try_stat, page_path)
+        if denied:
+            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+        if page_stat is None or not stat.S_ISREG(page_stat.st_mode):
+            return None
+        real = await loop.run_in_executor(None, os.path.realpath, page_path)
+        if not self._is_under_root(real):
+            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+
+        def _read() -> bytes:
+            with open(page_path, "rb") as f:
+                return f.read()
+
+        body = await loop.run_in_executor(None, _read)
+        return Response(
+            status_code=HTTP_404_NOT_FOUND,
+            body=body,
+            content_type=MIME_TEXT_HTML_UTF8,
+        )
 
     async def _select_precompressed(
         self,
@@ -296,6 +355,24 @@ class StaticFiles:
                     file_path = file_path_html
                     stat_result = stat_html
                     is_file = True
+            # HTML mode: a directory URL holding `index.html` serves that file,
+            # the standard static-site behavior. A slash-less URL (`/s/docs`)
+            # first redirects to the slash-terminated form (`/s/docs/`) so the
+            # browser resolves the page's relative links against the directory
+            # rather than its parent; the slash-terminated request then serves
+            # the index. This mirrors how every static server (nginx, Apache,
+            # Starlette `html=True`) treats a directory with an index document.
+            if not is_file and self.html and is_dir:
+                index_path = os.path.join(file_path, "index.html")
+                stat_index, denied_index = await loop.run_in_executor(None, _try_stat, index_path)
+                if denied_index:
+                    return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+                if stat_index is not None and stat.S_ISREG(stat_index.st_mode):
+                    if not request.path.endswith("/"):
+                        return self._redirect_to_slash(request)
+                    file_path = index_path
+                    stat_result = stat_index
+                    is_file = True
             if not is_file and self.directory_index and is_dir:
                 # Symlink containment: same `commonpath` check as the file
                 # path below - single rule for "real path stays under the
@@ -305,6 +382,14 @@ class StaticFiles:
                 if not self._is_under_root(real):
                     return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
                 return await self._render_directory_index(file_path, request.path, loop)
+            # HTML mode: serve a configurable `404.html` from the served root
+            # before giving up, matching the custom-not-found-page convention of
+            # static-site hosts. The page is symlink-contained in the helper, so
+            # a planted `404.html` link cannot read outside the served root.
+            if not is_file and self.html:
+                not_found = await self._serve_404_html(loop, _try_stat)
+                if not_found is not None:
+                    return not_found
             if not is_file:
                 return None
 

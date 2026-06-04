@@ -291,3 +291,72 @@ def test_ping_comment_multiline_rejected():
 
     with pytest.raises(ValueError, match="newline"):
         EventSourceResponse(gen(), ping=1, ping_comment="a\nb")
+
+
+# ── Bare-value coercion ──────────────────────────────────────────────
+
+
+async def test_yield_dict_coerced_to_json_data():
+    """A yielded Mapping becomes a single `data:` field carrying its JSON."""
+
+    async def gen():
+        yield {"x": 1, "y": "z"}
+
+    chunks = await _drain(EventSourceResponse(gen()))
+    body = b"".join(chunks)
+    assert body == b'data: {"x":1,"y":"z"}\n\n'
+
+
+async def test_yield_int_and_float_coerced_to_text_data():
+    async def gen():
+        yield 42
+        yield 3.5
+
+    chunks = await _drain(EventSourceResponse(gen()))
+    assert chunks == [b"data: 42\n\n", b"data: 3.5\n\n"]
+
+
+async def test_yield_bool_coerced_to_text_data():
+    async def gen():
+        yield True
+
+    chunks = await _drain(EventSourceResponse(gen()))
+    assert chunks == [b"data: True\n\n"]
+
+
+async def test_coercion_under_ping_window():
+    """Coercion also applies on the heartbeat-bounded encode path."""
+
+    async def gen():
+        yield {"a": 1}
+        yield 7
+
+    chunks = await _drain(EventSourceResponse(gen(), ping=1))
+    body = b"".join(c for c in chunks if not c.startswith(b":"))
+    assert b'data: {"a":1}\n\n' in body
+    assert b"data: 7\n\n" in body
+
+
+async def test_str_and_bytes_fast_paths_unchanged():
+    """str/bytes keep the raw passthrough (no `data:` wrapping)."""
+
+    async def gen():
+        yield "raw-line\n\n"
+        yield b"raw-bytes"
+
+    chunks = await _drain(EventSourceResponse(gen()))
+    assert chunks == [b"raw-line\n\n", b"raw-bytes"]
+
+
+async def test_every_yielded_chunk_is_bytes():
+    """Coerced values never leak a non-bytes object into the chunk writer."""
+
+    async def gen():
+        yield {"k": "v"}
+        yield 1
+        yield 2.0
+        yield "s"
+        yield b"b"
+
+    chunks = await _drain(EventSourceResponse(gen()))
+    assert all(isinstance(c, bytes) for c in chunks)

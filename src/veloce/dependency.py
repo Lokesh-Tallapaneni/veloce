@@ -8,6 +8,7 @@ the handler signature per request.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import contextvars
 import functools
@@ -46,6 +47,11 @@ from veloce.http.request import Request
 from veloce.http.response import Response
 
 _logger = logging.getLogger(__name__)
+
+# `BaseExceptionGroup` is a builtin only from Python 3.11 (PEP 654); on 3.10 the
+# name is absent. When several yield-dependency teardowns fail, the failures are
+# surfaced together as a group on 3.11+ and chained singly on 3.10.
+_BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
 
 # Marks a plan whose compiled-resolver build was attempted and rejected, so
 # resolve_plan does not retry compilation on every request.
@@ -409,9 +415,19 @@ class DependencyResolver:
         """Run yield-dependency teardowns in reverse registration order.
 
         Each generator is advanced one step (or thrown into if *exc* is set)
-        so the code after its ``yield`` executes.  Exceptions inside teardown
-        code are logged and suppressed so they do not interrupt the chain.
+        so the code after its ``yield`` executes. Every teardown runs even when
+        an earlier one fails; the failures are collected and re-raised together
+        after the whole chain has drained, so a failing teardown (a transaction
+        commit / rollback error, say) is observable rather than silently
+        swallowed. Each is logged as it happens to preserve the previous
+        observability, then surfaced as a `BaseExceptionGroup` (PEP 654) on
+        3.11+ - chained from *exc* when the request itself failed - or as a
+        single chained raise on 3.10.
         """
+        # Collected teardown failures. Only genuine teardown bugs land here;
+        # the request exception re-emerging from `gen.throw(exc)` is the error
+        # the caller already holds, so it is not double-counted.
+        failures: list[BaseException] = []
         # Drain in reverse so the most recently set-up dependency tears down
         # first - matches Python's contextlib.ExitStack semantics.
         while self._teardowns:
@@ -421,7 +437,7 @@ class DependencyResolver:
                     if exc is not None:
                         # Only swallow the generator-exhausted signal; real
                         # teardown bugs propagate to the outer except so they
-                        # get logged instead of silently disappearing.
+                        # get logged and collected instead of disappearing.
                         with contextlib.suppress(StopIteration):
                             gen.throw(exc)
                     else:
@@ -434,8 +450,27 @@ class DependencyResolver:
                     else:
                         with contextlib.suppress(StopAsyncIteration):
                             await gen.__anext__()
-            except Exception:
+            except Exception as teardown_exc:
+                # The request exception thrown into the generator re-emerging
+                # unchanged is not a teardown failure - it is the error the
+                # caller is already handling. Skip it so it is not aggregated.
+                if teardown_exc is exc:
+                    continue
                 _logger.exception("teardown raised")
+                failures.append(teardown_exc)
+
+        if not failures:
+            return
+        # Surface the collected failures. The group keeps every individual
+        # traceback (vs. the previous swallow) and chains from the request
+        # error when there was one.
+        if _BaseExceptionGroup is not None:
+            raise _BaseExceptionGroup(
+                "exceptions raised during dependency teardown", failures
+            ) from exc
+        # 3.10 has no exception groups: re-raise the first failure (already
+        # logged the rest) chained from the request error so it is observable.
+        raise failures[0] from exc
 
     async def resolve(
         self,
@@ -782,8 +817,23 @@ class DependencyResolver:
         dep_callable = slot.dep_callable
         actual = self._overrides.get(dep_callable, dep_callable)
 
-        if slot.use_cache and actual in self._cache:
-            return self._cache[actual]
+        # The scopes this Security() pushes onto the chain. Plain `Depends` has
+        # no scopes so this is empty and every scope branch below is skipped.
+        new_scopes: list[str] = slot.target_type if isinstance(slot.target_type, list) else []
+
+        # Cache key. The common case keys purely on callable identity. A
+        # scope-sensitive Security() dependency (its sub-graph reads
+        # `SecurityScopes`) keys on the callable plus the scope union it will
+        # see, so the same callable referenced with different scope sets in one
+        # request resolves as distinct cached entries instead of colliding.
+        # The bit is precomputed at registration, so the hot path branches once.
+        if slot.scope_sensitive:
+            cache_key: Any = (actual, frozenset(self._scope_stack) | frozenset(new_scopes))
+        else:
+            cache_key = actual
+
+        if slot.use_cache and cache_key in self._cache:
+            return self._cache[cache_key]
 
         if actual is dep_callable:
             sub_plan = slot.sub_plan
@@ -824,7 +874,6 @@ class DependencyResolver:
         # slot inside the sub-plan sees them. Plain `Depends` has no scopes
         # so the push is a no-op. The stack is popped after the sub-plan
         # resolves regardless of success/failure.
-        new_scopes: list[str] = slot.target_type if isinstance(slot.target_type, list) else []
         if new_scopes:
             self._scope_stack.extend(new_scopes)
         try:
@@ -873,5 +922,5 @@ class DependencyResolver:
             result = actual(**sub_kwargs)
 
         if slot.use_cache:
-            self._cache[actual] = result
+            self._cache[cache_key] = result
         return result

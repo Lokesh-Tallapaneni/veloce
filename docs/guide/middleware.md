@@ -34,6 +34,29 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"])
 Middleware can also be passed when constructing the app, via the
 `middleware=[...]` argument to `Veloce(...)`.
 
+### CORS preflight and Private Network Access
+
+`CORSMiddleware` answers a preflight (`OPTIONS` with an `Origin`) with a
+`204`. A preflight whose `Origin` is not in the allow-list, or whose
+`Access-Control-Request-Method` is not in `allow_methods`, gets a
+diagnostic `400` instead of a silently-blocked `204` so the rejection is
+visible to developers.
+
+Set `allow_private_network=True` to participate in
+[Private Network Access](https://wicg.github.io/private-network-access/):
+when a preflight carries `Access-Control-Request-Private-Network: true`,
+the response echoes `Access-Control-Allow-Private-Network: true`. The grant
+is opt-in and never emitted unless configured.
+
+```python
+app.add_middleware(
+    CORSMiddleware(
+        allow_origins=["https://app.example.com"],
+        allow_private_network=True,
+    )
+)
+```
+
 ## Built-in middleware
 
 Veloce ships the following middleware, all importable from the top-level

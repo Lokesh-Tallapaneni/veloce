@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
 
 import orjson
@@ -29,6 +29,12 @@ from veloce.status import HTTP_200_OK
 # clients to ignore. Sent when no event arrives within the `ping` window
 # so idle connections survive proxy/load-balancer read timeouts.
 _PING_FRAME = b": ping\r\n\r\n"
+
+# What an SSE source iterator may yield. A `ServerSentEvent` is encoded
+# directly; `str`/`bytes` are taken as a ready event body; any other value
+# (a `Mapping`, an `int`/`float`, etc.) is coerced into a single-`data:`
+# event by `_encode_event` rather than crashing the chunk writer.
+_SSEItem = Any
 
 
 class ServerSentEvent:
@@ -153,7 +159,7 @@ class EventSourceResponse(Response):
 
     def __init__(
         self,
-        content: AsyncIterator[ServerSentEvent | str | bytes],
+        content: AsyncIterator[_SSEItem],
         status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
         ping: float | None = None,
@@ -236,14 +242,16 @@ class EventSourceResponse(Response):
 
     def _encode_stream(
         self,
-        content: AsyncIterator[ServerSentEvent | str | bytes],
+        content: AsyncIterator[_SSEItem],
     ) -> AsyncIterator[bytes]:
         """Encode each yielded item to `bytes`.
 
         Accepts `ServerSentEvent` objects (encoded via `.encode()`), plain
-        `str` (UTF-8 encoded), or already-encoded `bytes`. This keeps both
-        transports consistent: the ASGI streaming branch and `stream_to`
-        each receive `bytes` regardless of what the handler yields.
+        `str` (UTF-8 encoded), or already-encoded `bytes`. Any other yielded
+        value is coerced into a single-`data:` event (a `Mapping` becomes a
+        JSON body, a scalar its text). This keeps both transports consistent:
+        the ASGI streaming branch and `stream_to` each receive `bytes`
+        regardless of what the handler yields.
 
         When `ping` is set, the wait for the next event is bounded by
         `ping` seconds; on timeout a keep-alive comment frame is emitted
@@ -259,24 +267,36 @@ class EventSourceResponse(Response):
     # classmethod since it needs no per-response state.
 
     @staticmethod
-    def _encode_event(item: ServerSentEvent | str | bytes) -> bytes:
+    def _encode_event(item: Any) -> bytes:
+        # Fast paths first: the framework's own event object and the two
+        # already-wire-ready forms a handler commonly yields.
         if isinstance(item, ServerSentEvent):
             return item.encode()
         if isinstance(item, str):
             return item.encode("utf-8")
-        return item
+        if isinstance(item, (bytes, bytearray)):
+            return bytes(item)
+        # Coerce a bare yielded value into a single-`data:` event rather than
+        # letting a non-bytes object fall through and crash the chunk writer.
+        # A Mapping serialises to a JSON `data:` field; a scalar uses its text.
+        # `bool` is a subclass of `int`, so its `True`/`False` text is fine.
+        if isinstance(item, Mapping):
+            data = orjson.dumps(item, default=orjson_default).decode("utf-8")
+        else:
+            data = str(item)
+        return ServerSentEvent(data=data).encode()
 
     @classmethod
     async def _encode_plain(
         cls,
-        content: AsyncIterator[ServerSentEvent | str | bytes],
+        content: AsyncIterator[_SSEItem],
     ) -> AsyncIterator[bytes]:
         async for item in content:
             yield cls._encode_event(item)
 
     async def _encode_with_ping(
         self,
-        content: AsyncIterator[ServerSentEvent | str | bytes],
+        content: AsyncIterator[_SSEItem],
         ping: float,
     ) -> AsyncIterator[bytes]:
         # A single task wraps each `__anext__` so a ping-window timeout

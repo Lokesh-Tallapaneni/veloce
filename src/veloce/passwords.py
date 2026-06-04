@@ -206,6 +206,76 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
     return False
 
 
+def needs_rehash(stored: str) -> bool:
+    """Whether `stored` should be re-derived with the current defaults.
+
+    Returns True when the stored verifier was produced with a weaker
+    configuration than `hash_password` would produce today - either a
+    non-default method, or cost parameters below the current module
+    defaults. An app can call this after a successful `verify_password`
+    and transparently re-hash the password (the plaintext is in hand at
+    that moment) so credentials drift up to the current work factor on
+    each login without a forced reset.
+
+    A malformed or unparseable `stored` returns False - it is not a
+    rehash candidate (it would not verify in the first place), so the
+    caller's normal verify-failure path handles it.
+    """
+    if not stored:
+        return False
+    try:
+        method, params, _salt_b64, _hash_b64 = stored.split("$", 3)
+    except ValueError:
+        return False
+
+    # Any method other than the current default is upgraded on next login.
+    if method == "scrypt":
+        try:
+            n_str, r_str, p_str = params.split(":")
+            n, r, p = int(n_str), int(r_str), int(p_str)
+        except ValueError:
+            return False
+        return n < _SCRYPT_N or r < _SCRYPT_R or p < _SCRYPT_P
+
+    if method == "pbkdf2:sha256":
+        # PBKDF2 is not the default method, so a PBKDF2 hash is always a
+        # rehash candidate (it migrates to scrypt). Guard the params parse
+        # so a malformed verifier is reported as "not a candidate".
+        try:
+            int(params)
+        except ValueError:
+            return False
+        return True
+
+    # Unknown method tag - not a rehash candidate.
+    return False
+
+
+def verify_and_needs_update(stored: str, candidate: str | bytes) -> tuple[bool, bool]:
+    """Verify `candidate` and report whether `stored` should be upgraded.
+
+    Returns `(ok, needs_update)`:
+    - `ok` is the same boolean `verify_password` returns.
+    - `needs_update` is True only when `ok` is True AND the stored
+      verifier is weaker than the current defaults (see `needs_rehash`).
+      It is always False on a failed verify - there is nothing to upgrade
+      for a credential that did not match.
+
+    Usage::
+
+        ok, upgrade = verify_and_needs_update(user.pw_hash, form_password)
+        if not ok:
+            raise Unauthorized()
+        if upgrade:
+            user.pw_hash = hash_password(form_password)
+            db.save(user)
+    """
+    ok = verify_password(stored, candidate)
+    if not ok:
+        return (False, False)
+    return (True, needs_rehash(stored))
+
+
 async def hash_password_async(
     password: str | bytes,
     method: str = "scrypt",
@@ -231,6 +301,16 @@ async def verify_password_async(stored: str, candidate: str | bytes) -> bool:
     blocks the event loop. Offload it.
     """
     return await asyncio.to_thread(verify_password, stored, candidate)
+
+
+async def verify_and_needs_update_async(stored: str, candidate: str | bytes) -> tuple[bool, bool]:
+    """Async-safe wrapper for `verify_and_needs_update`.
+
+    Offloads the KDF verify to a thread for the same reason as
+    `verify_password_async`; `needs_rehash` is a cheap string parse and
+    runs inline on the worker thread alongside the verify.
+    """
+    return await asyncio.to_thread(verify_and_needs_update, stored, candidate)
 
 
 def is_strong_password(password: str, *, min_length: int = 8) -> bool:

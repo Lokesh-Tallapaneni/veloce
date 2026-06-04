@@ -56,6 +56,43 @@ async def chat(ws):
         await ws.send_text(f"you said: {message}")
 ```
 
+## Declarative listener — `@app.websocket_listener`
+
+When a handler is just "accept, then handle each message, then close on
+disconnect", `@app.websocket_listener(path)` removes the boilerplate. The
+decorated callback handles one message at a time; the framework owns the
+handshake, the receive loop, and the clean close.
+
+```python
+@app.websocket_listener("/echo")
+async def echo(data):
+    return {"echo": data}
+```
+
+The callback is called as `cb(data)`, or `cb(ws, data)` when its first
+parameter is named `ws`/`socket` (or it declares two positional parameters).
+Returning a non-`None` value sends it back; returning `None` sends nothing, so
+a pure consumer needs no special casing.
+
+`receive` and `send` select the codec — `"json"` (default), `"text"`, or
+`"bytes"`. `on_connect(ws)` runs after accept, and `on_disconnect(ws)` always
+runs when the loop ends, including on peer disconnect. Sync callbacks and hooks
+are offloaded to a thread, matching sync HTTP handlers.
+
+```python
+async def joined(ws): ...
+async def left(ws): ...
+
+@app.websocket_listener(
+    "/room", receive="text", send="text", on_connect=joined, on_disconnect=left
+)
+async def room(data):
+    return data.upper()
+```
+
+For full control over the handshake and loop, reach for the imperative
+`@app.websocket` decorator above.
+
 ## Inbound validation and close codes
 
 Incoming text frames are validated as UTF-8 at the parser boundary (RFC 6455

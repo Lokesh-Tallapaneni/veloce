@@ -101,7 +101,8 @@ def test_dumps_serialises_path_decimal_and_bytes():
 
     app = Veloce(openapi_url=None)
     body = app.json.dumps({"p": PurePosixPath("a/b"), "d": decimal.Decimal("1.5"), "b": b"hi"})
-    assert app.json.loads(body) == {"p": "a/b", "d": 1.5, "b": "hi"}
+    # Bytes serialise as lossless base64 ("hi" -> "aGk="), not a UTF-8 decode.
+    assert app.json.loads(body) == {"p": "a/b", "d": 1.5, "b": "aGk="}
 
 
 def test_dumps_serialises_arbitrary_object_via_vars():

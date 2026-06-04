@@ -387,6 +387,16 @@ class SetupError(RuntimeError):
     """
 
 
+class ConfigurationError(RuntimeError):
+    """A handler or route was declared in a way that cannot be resolved.
+
+    Raised at registration time, never per request, so a genuinely ambiguous
+    parameter declaration becomes a startup error instead of a silent
+    mis-binding discovered only at runtime. Carries the offending parameter
+    name so the message points straight at the conflict.
+    """
+
+
 # -- Lookup table - status code -> subclass ----------------------------
 
 _BY_CODE: dict[int, type[HTTPException]] = {

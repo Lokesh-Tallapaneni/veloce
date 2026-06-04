@@ -48,11 +48,12 @@ from veloce.contrib.templating import (
 from veloce.dependency import Depends, Security, SecurityScopes
 
 # Encoders
-from veloce.encoders import jsonable_encoder
+from veloce.encoders import jsonable_encoder, register_encoder, unregister_encoder
 
 # Exceptions
 from veloce.exceptions import (
     BuildError,
+    ConfigurationError,
     DuplicateRouteError,
     FilesKeyError,
     HTTPException,
@@ -148,6 +149,9 @@ from veloce.passwords import (
     hash_password,
     hash_password_async,
     is_strong_password,
+    needs_rehash,
+    verify_and_needs_update,
+    verify_and_needs_update_async,
     verify_password,
     verify_password_async,
 )
@@ -289,6 +293,7 @@ __all__ = [
     "ValidationError",
     "RequestValidationError",
     "BuildError",
+    "ConfigurationError",
     "DuplicateRouteError",
     "SetupError",
     "http_exception_handler",
@@ -376,6 +381,8 @@ __all__ = [
     "escape",
     # Encoders
     "jsonable_encoder",
+    "register_encoder",
+    "unregister_encoder",
     # Observability
     "RequestMetrics",
     "instrument_access_log",
@@ -396,6 +403,9 @@ __all__ = [
     "hash_password_async",
     "verify_password",
     "verify_password_async",
+    "needs_rehash",
+    "verify_and_needs_update",
+    "verify_and_needs_update_async",
     "is_strong_password",
     # Status
     "status",

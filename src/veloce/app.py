@@ -567,6 +567,11 @@ class Veloce(Router):
         # what already succeeded and a clean shutdown unwinds everything in
         # reverse. `None` until the first startup run.
         self._lifespan_stack: contextlib.AsyncExitStack | None = None
+        # Mounted Veloce sub-apps started during startup, in start order. Shut
+        # down newest-first BEFORE the parent's own on_shutdown handlers, so a
+        # child releasing work against a shared resource tears down while that
+        # resource is still open (reverse of parent-then-children startup).
+        self._started_subapps: list[Veloce] = []
         # App-scoped background tasks spawned via `app.spawn(...)`. Named tasks
         # live in the dict (cancellable / retrievable by name); anonymous ones
         # in the set. Both hold strong references so the loop cannot GC an
@@ -582,6 +587,21 @@ class Veloce(Router):
         self.logger = logging.getLogger(self.import_name)
 
         self._middlewares: list[Middleware] = []
+        # Priority-ordering bookkeeping for `_middlewares`. Each registered
+        # middleware records `(priority, sequence, instance)`; `sequence` is a
+        # monotonic registration counter so equal priorities keep registration
+        # order (a stable tiebreak). `_middleware_seq` issues those sequence
+        # numbers and `_any_priority` stays False until a non-zero priority is
+        # passed - while it is False, `_middlewares` is exactly the append-order
+        # list and the ordered rebuild is skipped entirely, so an app that never
+        # uses priorities pays nothing and its ordering is byte-identical to
+        # before. Once any priority is set, `_middlewares` is rebuilt at
+        # registration time (never per request) as a stable sort by descending
+        # priority, so higher-priority middleware runs earlier in the request
+        # phase and correspondingly later in the response phase.
+        self._middleware_records: list[tuple[int, int, Middleware]] = []
+        self._middleware_seq = 0
+        self._any_priority = False
         # Monotonic generation counter for `_middlewares`, bumped on every
         # mutation via `add_middleware`. A route's per-route exclusion chain
         # cache (`RouteInfo._mw_chain_cache`) keys on this so a filtered
@@ -876,8 +896,23 @@ class Veloce(Router):
         constructor, so per-instance naming works for every `Middleware`
         subclass - including user subclasses whose `__init__` does not accept a
         `name` keyword.
+
+        Pass `priority=` (an `int`, default `0`) to order this middleware
+        deterministically regardless of registration order. Higher priority
+        runs earlier in the request phase and correspondingly later in the
+        response phase; middleware of equal priority keeps registration order
+        (a stable tiebreak). The ordered chain is resolved once at registration
+        time, so per-request dispatch pays no sorting cost. When no middleware
+        sets a priority the behaviour is unchanged - the chain is the plain
+        registration order it has always been. `priority` applies to the
+        request/response `Middleware` pipeline only, not to ASGI-class
+        middleware (which is ordered by its own wrap nesting).
         """
         self._assert_mutable()
+        # `priority` is a framework ordering concern, not a construction
+        # argument: pop it before any middleware is built so it is never
+        # forwarded into a `Middleware` subclass constructor.
+        priority = options.pop("priority", 0)
         if isinstance(middleware, type):
             if issubclass(middleware, Middleware):
                 # The name override is a framework concern, not a construction
@@ -889,8 +924,7 @@ class Veloce(Router):
                 instance = middleware(**options)
                 if name is not None:
                     instance.name = name
-                self._middlewares.append(instance)
-                self._mw_version += 1
+                self._register_middleware(instance, priority)
             elif issubclass(middleware, BaseHTTPMiddleware):
                 # `BaseHTTPMiddleware` is a dispatch-shape middleware, not
                 # an ASGI app - registering it as ASGI would wire the app
@@ -906,8 +940,7 @@ class Veloce(Router):
                 self._asgi_middleware.append((middleware, options))
                 self._asgi_stack = None
         elif isinstance(middleware, Middleware):
-            self._middlewares.append(middleware)
-            self._mw_version += 1
+            self._register_middleware(middleware, priority)
         else:
             # A bare ASGI middleware instance cannot be wired up - veloce
             # has to supply the wrapped app, which only the class form
@@ -918,6 +951,33 @@ class Veloce(Router):
                 "middleware *class* (so veloce can supply the wrapped app). "
                 "Register a BaseHTTPMiddleware via add_http_middleware()."
             )
+
+    def _register_middleware(self, instance: Middleware, priority: int) -> None:
+        """Record a built `Middleware` instance and refresh the ordered chain.
+
+        Appends `(priority, sequence, instance)` to the registration ledger and
+        bumps the middleware generation counter (so per-route exclusion chains
+        recompute). While every registered priority is `0` the ordered chain is
+        just the append-order list, so `_middlewares` is updated by a plain
+        append and no sort runs - keeping the common no-priority case identical
+        to the previous behaviour. The first non-zero priority flips the app
+        into ordered mode and rebuilds `_middlewares` as a stable descending
+        sort by priority. All of this happens at registration time, never per
+        request.
+        """
+        seq = self._middleware_seq
+        self._middleware_seq = seq + 1
+        self._middleware_records.append((priority, seq, instance))
+        self._mw_version += 1
+        if priority and not self._any_priority:
+            self._any_priority = True
+        if self._any_priority:
+            # Stable sort by descending priority: Python's sort is stable, so
+            # within an equal priority the registration `seq` order is kept.
+            ordered = sorted(self._middleware_records, key=lambda r: -r[0])
+            self._middlewares = [rec[2] for rec in ordered]
+        else:
+            self._middlewares.append(instance)
 
     def add_instrumentation(
         self,
@@ -2233,11 +2293,16 @@ class Veloce(Router):
         onto `root_path`, so the mounted app sees a normal root-relative
         request.
 
-        Scope: a mounted ASGI app receives `http` and `websocket` scopes
-        only. The parent app owns the `lifespan` cycle and does not fan it
-        out, so a mounted app must not depend on ASGI `lifespan` events
-        for its setup. A mounted ASGI app owns its entire prefix subtree -
-        a native route registered under the same prefix is unreachable.
+        Lifecycle: a mounted *Veloce* sub-app has its startup and shutdown
+        driven by the parent - the parent runs each child's startup after its
+        own during `lifespan`/`run()` startup, and tears children down in
+        reverse on shutdown, so a child's `on_startup` / lifespan resources
+        initialise and release without a separate ASGI lifespan. A mounted
+        non-Veloce *ASGI* app receives `http` and `websocket` scopes only:
+        the parent does not fan the `lifespan` cycle out to it, so it must
+        not depend on ASGI `lifespan` events for its setup. A mounted ASGI
+        app owns its entire prefix subtree - a native route registered under
+        the same prefix is unreachable.
 
         Prefixes must not overlap: registering a prefix equal to, nested
         under, or containing an existing mount raises `ValueError`, since
@@ -2819,9 +2884,9 @@ class Veloce(Router):
         finally:
             # Yield-dependency teardowns first - they conceptually wrap the
             # request (the resource was acquired before the handler ran and
-            # must be released regardless of outcome). Errors here are
-            # swallowed inside `run_teardowns` so the response cycle stays
-            # intact.
+            # must be released regardless of outcome). `run_teardowns`
+            # re-raises aggregated teardown failures (PEP 654 group); they are
+            # logged here rather than allowed to break the response cycle.
             # `run_teardowns` is async; the common no-yield-dep case has
             # an empty stack, so skip the coroutine + await entirely.
             if resolver is not None and resolver._teardowns:
@@ -3458,6 +3523,159 @@ class Veloce(Router):
         task.cancel()
         return True
 
+    def supervise(
+        self,
+        coro_factory: Callable[[], Coroutine[Any, Any, Any]],
+        *,
+        name: str,
+        max_restarts: int = 5,
+        restart_window: float = 60.0,
+        backoff: float = 1.0,
+        max_backoff: float = 30.0,
+    ) -> asyncio.Task[Any]:
+        """Run a long-lived coroutine, restarting it on failure.
+
+        `coro_factory` is a zero-argument callable that returns a fresh
+        coroutine each time it is invoked - the supervisor calls it to start
+        the task and again to restart after a crash, so a single coroutine
+        object (which cannot be re-awaited) is not accepted. The supervised
+        coroutine is expected to run for the application's lifetime; if it
+        returns normally the supervisor restarts it, and if it raises the
+        failure is logged and the coroutine is restarted after a bounded
+        backoff delay. `asyncio.CancelledError` is never suppressed, so the
+        task stops cleanly when cancelled at shutdown.
+
+        A count-within-window circuit breaker bounds runaway restarts: at most
+        `max_restarts` restarts are allowed within any `restart_window` seconds.
+        The restart counter resets whenever the coroutine runs for longer than
+        the window without failing (a clean run), so steady-state restarts far
+        apart never trip the breaker; a tight crash loop does. When the breaker
+        trips the supervisor logs the give-up and stops restarting. `backoff`
+        is the initial delay between restarts and doubles up to `max_backoff`
+        on consecutive failures, resetting to `backoff` after a clean run.
+
+        The supervisor itself runs as an `app.spawn(...)` task, so it is tracked
+        with a strong reference and cancelled-and-drained on shutdown like any
+        other spawned task. `name` is required (the supervisor task is named so
+        it is retrievable / cancellable via `get_spawned_task` /
+        `cancel_spawned_task`); a duplicate name raises. Must be called with a
+        running event loop.
+
+        Usage::
+
+            @app.on_startup
+            async def _start():
+                app.supervise(lambda: poll_queue(), name="queue-poller")
+        """
+        if not callable(coro_factory):
+            raise TypeError(
+                "app.supervise() requires a zero-argument callable returning a "
+                "fresh coroutine (e.g. `lambda: worker()`), not a coroutine "
+                "object - a coroutine cannot be re-awaited after a restart."
+            )
+        # Reject a duplicate name before building the supervisor coroutine so a
+        # rejected call leaves no un-awaited coroutine behind (spawn would also
+        # reject, but only after the coroutine object exists).
+        if name in self._spawned_named:
+            raise ValueError(f"a spawned task named {name!r} already exists")
+        return self.spawn(
+            self._supervise_loop(
+                coro_factory,
+                name=name,
+                max_restarts=max_restarts,
+                restart_window=restart_window,
+                backoff=backoff,
+                max_backoff=max_backoff,
+            ),
+            name=name,
+        )
+
+    async def _supervise_loop(
+        self,
+        coro_factory: Callable[[], Coroutine[Any, Any, Any]],
+        *,
+        name: str,
+        max_restarts: int,
+        restart_window: float,
+        backoff: float,
+        max_backoff: float,
+    ) -> None:
+        """Drive `coro_factory` forever, restarting on failure with a breaker.
+
+        Re-raises `asyncio.CancelledError` immediately so shutdown cancellation
+        propagates. Counts failures within a sliding window; once the count
+        reaches `max_restarts` the supervisor logs and returns rather than
+        restarting, so a crash loop cannot spin the loop unbounded.
+        """
+        failures = 0
+        window_start = time.monotonic()
+        delay = backoff
+        while True:
+            started = time.monotonic()
+            try:
+                # The factory may do synchronous setup before building the
+                # coroutine; if THAT raises it is a crash like any other and is
+                # restarted, not propagated out of the supervisor.
+                awaitable = coro_factory()
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:  # noqa: BLE001 - logged and restarted
+                self.logger.error("Supervised task %r crashed; will restart", name, exc_info=exc)
+            else:
+                # A non-awaitable RETURN is a programmer error (the contract
+                # requires a fresh coroutine each call), not a crash: fail fast
+                # and surface it rather than retrying to the breaker.
+                if not inspect.isawaitable(awaitable):
+                    raise TypeError(
+                        f"app.supervise() factory for {name!r} must return a fresh "
+                        f"awaitable on each call (e.g. `lambda: worker()`); got "
+                        f"{type(awaitable).__name__}."
+                    )
+                try:
+                    await awaitable
+                except asyncio.CancelledError:
+                    # Shutdown / explicit cancel - propagate so the spawned task
+                    # drains cleanly and is not "restarted" into a new coroutine.
+                    raise
+                except BaseException as exc:  # noqa: BLE001 - logged and restarted
+                    self.logger.error(
+                        "Supervised task %r crashed; will restart", name, exc_info=exc
+                    )
+                else:
+                    # A normal return is still treated as "needs restarting": a
+                    # supervised task is meant to run for the app's lifetime, so a
+                    # silent exit is logged rather than left dead.
+                    self.logger.warning("Supervised task %r returned; restarting", name)
+            now = time.monotonic()
+            # A run that lasted longer than the window is a clean run: reset the
+            # failure count and the backoff so only tight crash loops accumulate.
+            if now - started >= restart_window:
+                failures = 0
+                window_start = now
+                delay = backoff
+            else:
+                # Slide the window forward when it has elapsed since the first
+                # counted failure, so failures spaced further apart than the
+                # window never trip the breaker.
+                if now - window_start >= restart_window:
+                    failures = 0
+                    window_start = now
+                    delay = backoff
+                failures += 1
+                # `max_restarts` counts RESTARTS, not failed runs: allow N
+                # restarts, then give up on the (N+1)th failure. (`>=` here would
+                # make `max_restarts=1` retry zero times - off by one.)
+                if failures > max_restarts:
+                    self.logger.error(
+                        "Supervised task %r exceeded %d restarts within %.0fs; giving up",
+                        name,
+                        max_restarts,
+                        restart_window,
+                    )
+                    return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_backoff)
+
     def _spawned_task_done(self, task: asyncio.Task[Any]) -> None:
         """Done-callback: drop the strong ref and log any non-cancel failure."""
         name = task.get_name()
@@ -3928,6 +4146,25 @@ class Veloce(Router):
                 for handler in self._on_startup:
                     await self._run_handler(handler)
 
+                # Fan startup out to every mounted Veloce sub-app. A mounted
+                # child is dispatched through the parent pipeline and never
+                # receives its own ASGI lifespan, so without this its
+                # `on_startup` / lifespan resources would never initialise. Each
+                # child's startup runs after the parent's own; the started
+                # children are recorded so shutdown can tear them down
+                # newest-first BEFORE the parent's on_shutdown handlers (and so a
+                # mid-fan-out failure unwinds the already-started ones). A
+                # non-Veloce ASGI mount owns its own lifecycle and is skipped.
+                # The same child instance mounted under multiple prefixes is
+                # started and shut down only once (deduped by identity).
+                self._started_subapps = []
+                _seen_subs: set[int] = set()
+                for _prefix, _prefix_slash, _sub in self._mounted_apps:
+                    if isinstance(_sub, Veloce) and id(_sub) not in _seen_subs:
+                        _seen_subs.add(id(_sub))
+                        await _sub._run_lifecycle(LIFECYCLE_STARTUP)
+                        self._started_subapps.append(_sub)
+
                 # Dev-mode event-loop blocking watchdog - opt-in, so an app
                 # that does not set the config key never builds one. The key
                 # may be a plain truthy value, or a mapping of watchdog kwargs
@@ -3945,7 +4182,10 @@ class Veloce(Router):
                 # Unwind whatever startup acquired before the failure, then let
                 # the original error propagate so the ASGI/native caller emits
                 # the startup-failed signal. Unwind errors must not mask the
-                # startup failure itself.
+                # startup failure itself. Already-started children come down
+                # first (newest-first), then the parent's acquired-resource stack.
+                with contextlib.suppress(Exception):
+                    await self._shutdown_subapps()
                 with contextlib.suppress(Exception):
                     await stack.aclose()
                 self._lifespan_cm = None
@@ -3956,6 +4196,19 @@ class Veloce(Router):
             self._lifespan_stack = None
             errors: list[BaseException] = []
             try:
+                # Cancel and drain parent-owned spawned / supervised background
+                # tasks FIRST, before mounted children tear down, so a parent
+                # background loop cannot keep touching child-owned state after the
+                # child has closed. The `finally` drain below still catches any
+                # task a teardown handler spawns (the registries are cleared, so
+                # this early drain and the late one do not double-cancel).
+                await self._drain_spawned_tasks()
+                # Tear mounted sub-apps down next (newest-first), before the
+                # parent's own on_shutdown handlers run - reverse of the
+                # parent-then-children startup order, so a shared resource a
+                # parent shutdown handler closes is still available while each
+                # child releases work against it.
+                errors.extend(await self._shutdown_subapps())
                 # Run every on_shutdown handler, newest first (symmetric to the
                 # startup order), collecting failures so one raising teardown
                 # does not abort the rest - unlike a bare loop that stops on
@@ -3987,6 +4240,22 @@ class Veloce(Router):
                 # teardown raised above.
                 await self._drain_spawned_tasks()
             _raise_unwind_errors(errors)
+
+    async def _shutdown_subapps(self) -> list[BaseException]:
+        """Shut down started mounted sub-apps newest-first; return any errors.
+
+        Every child is torn down even if one raises (errors aggregated and
+        returned to the caller), and the started list is cleared so a repeat or
+        standalone shutdown does not re-run them.
+        """
+        errors: list[BaseException] = []
+        for sub in reversed(self._started_subapps):
+            try:
+                await sub._run_lifecycle(LIFECYCLE_SHUTDOWN)
+            except BaseException as exc:  # noqa: BLE001 - aggregated by the caller
+                errors.extend(_collect_chained(exc))
+        self._started_subapps = []
+        return errors
 
     async def _stop_watchdog(self) -> None:
         """Stop and clear the dev watchdog. Registered on the lifespan stack."""
@@ -4418,8 +4687,14 @@ class Veloce(Router):
                         await ws.close()
             finally:
                 # Drain any `yield`-style dependency teardowns the
-                # handshake set up, exception-aware.
-                await ws_resolver.run_teardowns(ws_exc)
+                # handshake set up, exception-aware. `run_teardowns` now
+                # re-raises aggregated teardown failures; log them here so a
+                # broken teardown is observable without tearing down the
+                # connection-close path itself.
+                try:
+                    await ws_resolver.run_teardowns(ws_exc)
+                except Exception:
+                    self.logger.exception("yield-dependency teardown raised")
 
         elif scope["type"] == ASGI_SCOPE_LIFESPAN:
             while True:
