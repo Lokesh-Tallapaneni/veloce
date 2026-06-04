@@ -90,3 +90,15 @@ def test_add_vary_normalises_lowercase_existing():
     resp.add_vary("Origin")
     assert "vary" not in resp.headers
     assert resp.headers["Vary"] == "Cookie, Origin"
+
+
+def test_add_vary_fast_path_clears_empty_lowercase_vary():
+    """The no-existing-`Vary`, single-name fast path still clears an empty
+    lower-case `vary` key so the response carries exactly one canonical header.
+    """
+    resp = Response()
+    resp.headers["vary"] = ""  # empty -> treated as "no existing Vary"
+    val = resp.add_vary("Cookie")
+    assert val == "Cookie"
+    assert "vary" not in resp.headers
+    assert resp.headers["Vary"] == "Cookie"
