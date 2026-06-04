@@ -44,6 +44,13 @@ from veloce._internal import (
     _is_async_callable,
     _reject_header_crlf,
 )
+from veloce._pipeline import (
+    PH_WS_HANDSHAKE,
+    CompiledPipeline,
+    FeatureSpec,
+    build_ws_handshake_checks,
+    compile_pipeline,
+)
 from veloce._protocol_constants import (
     ASGI_EVENT_HTTP_RESPONSE_BODY,
     ASGI_EVENT_HTTP_RESPONSE_START,
@@ -108,6 +115,8 @@ from veloce.websocket import WebSocket
 
 if TYPE_CHECKING:  # pragma: no cover
     import ssl
+
+    from veloce._pipeline import WsHandshakeChecks
 
 
 # Cache of `(wants_request, wants_exc)` flags per exception handler - the
@@ -608,6 +617,26 @@ class Veloce(Router):
         # chain is recomputed only when the registered middleware set
         # actually changes, never per request.
         self._mw_version = 0
+        # Feature registry + compiled pipeline. `_features` holds the app-level
+        # `FeatureSpec` declarations; `_gen` is a monotonic generation counter
+        # bumped by every registration funnel; `_pipeline` caches the compiled
+        # artifact and is rebuilt lazily when `cp.gen != self._gen`. Generalises
+        # the `_mw_version` pattern from middleware-only to all compiled features.
+        self._gen = 0
+        self._features: list[FeatureSpec] = []
+        self._pipeline: CompiledPipeline | None = None
+        # WebSocket handshake host / origin gate: pre-filtered from the
+        # registered middleware at compile time so the per-connect path iterates
+        # a frozen tuple instead of probing every middleware. Enabled only when
+        # middleware exists.
+        self._features.append(
+            FeatureSpec(
+                "ws.handshake",
+                PH_WS_HANDSHAKE,
+                enabled=lambda: bool(self._middlewares),
+                build=lambda: build_ws_handshake_checks(self),
+            )
+        )
         # Standard ASGI middleware - `(class, options)` pairs. Each wraps the
         # whole ASGI application (instantiated as `cls(app, **options)`) and
         # is assembled lazily into `_asgi_stack` on the first request.
@@ -829,6 +858,35 @@ class Veloce(Router):
         self._cached_routes = None
         self._cached_view_functions = None
         self._cached_url_map = None
+        # Route mutation can flip the mount/static fast-path flags carried on the
+        # compiled pipeline, so bump the generation counter here too - the single
+        # route-mutation funnel doubles as a pipeline-invalidation sink.
+        self._gen += 1
+
+    def _ensure_pipeline(self) -> CompiledPipeline:
+        """Return the compiled pipeline, recompiling if the registry changed.
+
+        The generation check is the whole invalidation mechanism: any
+        registration bumps `_gen`, so a stale `cp.gen` triggers a rebuild. In
+        production `_gen` freezes once the setup lock latches, so this compiles
+        exactly once and thereafter is a single int compare.
+        """
+        cp = self._pipeline
+        if cp is None or cp.gen != self._gen:
+            cp = self._pipeline = compile_pipeline(self)
+        return cp
+
+    def _register_feature_state(self, target: list[Any], value: Any) -> None:
+        """Append compiled-feature state and bump the generation counter.
+
+        The single sink for non-route, non-middleware-ledger feature state. It
+        ONLY appends and bumps `_gen`; it deliberately does NOT call
+        `_assert_mutable` so a caller's existing mutability contract is preserved
+        exactly (callers that already assert keep their own assert; callers that
+        do not stay unguarded).
+        """
+        target.append(value)
+        self._gen += 1
 
     def _assert_mutable(self) -> None:
         """Reject setup mutation once the app has started serving.
@@ -939,6 +997,7 @@ class Veloce(Router):
                 # wraps, so defer construction until the stack is built.
                 self._asgi_middleware.append((middleware, options))
                 self._asgi_stack = None
+                self._gen += 1
         elif isinstance(middleware, Middleware):
             self._register_middleware(middleware, priority)
         else:
@@ -969,6 +1028,9 @@ class Veloce(Router):
         self._middleware_seq = seq + 1
         self._middleware_records.append((priority, seq, instance))
         self._mw_version += 1
+        # The middleware set drives the WS-handshake phase, so the middleware
+        # ledger funnel doubles as a pipeline-invalidation sink.
+        self._gen += 1
         if priority and not self._any_priority:
             self._any_priority = True
         if self._any_priority:
@@ -1038,7 +1100,7 @@ class Veloce(Router):
 
             return decorator
 
-        self._instrumentation.append(hook)
+        self._register_feature_state(self._instrumentation, hook)
         if exclude_routes is not None:
             excluded = frozenset(exclude_routes)
             if excluded:
@@ -1496,7 +1558,7 @@ class Veloce(Router):
             raise TypeError(
                 f"add_http_middleware expects a callable / instance / class, got {middleware!r}"
             )
-        self._http_middleware_funcs.append(middleware)
+        self._register_feature_state(self._http_middleware_funcs, middleware)
         return middleware
 
     def middleware(self, middleware_class_or_type: type | str, **kwargs) -> Any:
@@ -1513,7 +1575,7 @@ class Veloce(Router):
         if isinstance(middleware_class_or_type, str) and middleware_class_or_type == "http":
 
             def decorator(func: Callable) -> Callable:
-                self._http_middleware_funcs.append(func)
+                self._register_feature_state(self._http_middleware_funcs, func)
                 return func
 
             return decorator
@@ -2330,7 +2392,7 @@ class Veloce(Router):
                 )
         entry = (prefix, prefix + "/", app)
         if isinstance(app, Veloce):
-            self._mounted_apps.append(entry)
+            self._register_feature_state(self._mounted_apps, entry)
             return
         # `StaticFiles` looks ASGI-shaped (it's an object you'd
         # naturally hand to `mount`), but it speaks Veloce's
@@ -2342,7 +2404,7 @@ class Veloce(Router):
         # the lookup prefix instead.
         if isinstance(app, StaticFiles):
             app.prefix = prefix.rstrip("/")
-            self._static_handlers.append(app)
+            self._register_feature_state(self._static_handlers, app)
             return
         # Anything else must be callable in the ASGI shape. Catching
         # non-callables here surfaces the mistake at registration
@@ -2356,7 +2418,7 @@ class Veloce(Router):
                 f"For Veloce's own static-file handler, prefer "
                 f"`app.mount_static(prefix=..., directory=...)`."
             )
-        self._asgi_mounts.append(entry)
+        self._register_feature_state(self._asgi_mounts, entry)
 
     def _match_asgi_mount(self, path: str) -> tuple[str, Any] | None:
         """Return the `(prefix, app)` whose prefix owns `path`, if any."""
@@ -2454,8 +2516,9 @@ class Veloce(Router):
         downgrade the check to a warning when the directory is created after
         the app is constructed.
         """
-        self._static_handlers.append(
-            StaticFiles(directory=directory, prefix=prefix, html=html, must_exist=must_exist)
+        self._register_feature_state(
+            self._static_handlers,
+            StaticFiles(directory=directory, prefix=prefix, html=html, must_exist=must_exist),
         )
 
     # -- MCP (Model Context Protocol) -----------------------------
@@ -4589,36 +4652,46 @@ class Veloce(Router):
             # middleware such as TrustedHostMiddleware or
             # WebSocketOriginMiddleware never sees a `websocket` scope, so
             # apply any host allow-list and Origin allow-list directly here.
-            ws_host = ""
-            ws_origin = ""
-            _host_seen = False
-            _origin_seen = False
-            for _hk, _hv in scope.get("headers", []):
-                # First occurrence of each header wins - a duplicate
-                # `Origin` must not be able to shadow the real one.
-                if _hk == b"host" and not _host_seen:
-                    ws_host = _extract_host(_hv.decode("latin-1"))
-                    _host_seen = True
-                elif _hk == b"origin" and not _origin_seen:
-                    ws_origin = _hv.decode("latin-1")
-                    _origin_seen = True
-            for _mw in self._middlewares:
-                _host_check = getattr(_mw, "is_host_allowed", None)
-                if _host_check is not None and not _host_check(ws_host):
-                    msg = await receive()
-                    if msg["type"] == ASGI_EVENT_WS_CONNECT:
-                        await send(
-                            {"type": ASGI_EVENT_WS_CLOSE, "code": status.WS_1008_POLICY_VIOLATION}
-                        )
-                    return
-                _origin_check = getattr(_mw, "is_websocket_origin_allowed", None)
-                if _origin_check is not None and not _origin_check(ws_origin):
-                    msg = await receive()
-                    if msg["type"] == ASGI_EVENT_WS_CONNECT:
-                        await send(
-                            {"type": ASGI_EVENT_WS_CLOSE, "code": status.WS_1008_POLICY_VIOLATION}
-                        )
-                    return
+            # The compiled pipeline pre-filters the `(is_host_allowed,
+            # is_websocket_origin_allowed)` pairs from the middleware once, so
+            # the per-connect path iterates a frozen tuple instead of probing
+            # every middleware. `None` (no middleware) skips the gate entirely.
+            ws_checks: WsHandshakeChecks | None = self._ensure_pipeline().ws_handshake
+            if ws_checks is not None:
+                ws_host = ""
+                ws_origin = ""
+                _host_seen = False
+                _origin_seen = False
+                for _hk, _hv in scope.get("headers", []):
+                    # First occurrence of each header wins - a duplicate
+                    # `Origin` must not be able to shadow the real one.
+                    if _hk == b"host" and not _host_seen:
+                        ws_host = _extract_host(_hv.decode("latin-1"))
+                        _host_seen = True
+                    elif _hk == b"origin" and not _origin_seen:
+                        ws_origin = _hv.decode("latin-1")
+                        _origin_seen = True
+                for _host_check, _origin_check in ws_checks:
+                    if _host_check is not None and not _host_check(ws_host):
+                        msg = await receive()
+                        if msg["type"] == ASGI_EVENT_WS_CONNECT:
+                            await send(
+                                {
+                                    "type": ASGI_EVENT_WS_CLOSE,
+                                    "code": status.WS_1008_POLICY_VIOLATION,
+                                }
+                            )
+                        return
+                    if _origin_check is not None and not _origin_check(ws_origin):
+                        msg = await receive()
+                        if msg["type"] == ASGI_EVENT_WS_CONNECT:
+                            await send(
+                                {
+                                    "type": ASGI_EVENT_WS_CLOSE,
+                                    "code": status.WS_1008_POLICY_VIOLATION,
+                                }
+                            )
+                        return
 
             ws_match = self.match(ROUTE_METHOD_WEBSOCKET, scope.get("path", "/"))
             if ws_match is None:
