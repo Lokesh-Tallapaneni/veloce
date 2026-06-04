@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   charset per RFC 7578, instead of always assuming UTF-8. An unsupported
   declared charset is rejected with `400 Bad Request`; the global
   `charset_fallback` still applies when a part declares no charset.
+- `ProxyFix` accepts an `x_port` hop count and trusts `X-Forwarded-Port`. The
+  resolved public port fills in `request.url` (and therefore `base_url`,
+  redirects, and absolute URLs) when the forwarded Host carries no port of its
+  own, so a reverse proxy on a non-default port such as 8443 is preserved. A
+  port embedded in the Host / `X-Forwarded-Host` always wins, and a
+  non-numeric or out-of-range value is dropped rather than trusted. RFC 7239
+  carries the port inside `Forwarded host=...:port`, which already flows
+  through `x_host`.
 
 - `encode_jwt` and `decode_jwt` sign and verify compact JSON Web Tokens using
   the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external dependency.
@@ -403,6 +411,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ProxyFix` splits `Forwarded` / `X-Forwarded-*` element and pair lists on
   delimiters outside quoted strings, so a quoted comma or semicolon in a
   directive value (e.g. `host="a,b"`) no longer fakes an extra hop.
+
+- `Accept` content negotiation now honours media-type parameters (RFC 9110
+  Sec. 12.5.1). A parameterized media range such as `application/json;profile=x`
+  only matches a value carrying that parameter, a bare range still matches a
+  parameterized value, and `best_match` ranks candidates by `(q-value,
+  specificity)` so a parameterized or fully-specified match beats a wildcard at
+  equal quality and a more specific `q=0` range overrides a broader accept.
+  Each option's type/subtype/parameters are decomposed once at parse time. The
+  `q` parameter separates the q-value from media-type parameters; accept
+  extensions after `q` are ignored. Non-MIME `Accept-*` headers are unchanged.
 
 - `Response.content_disposition` (and `send_file`/`FileResponse` filenames)
   now emit an ASCII quotable name verbatim as `filename="..."` - spaces and

@@ -699,8 +699,16 @@ class Request:
         if self._url is None:
             scope = getattr(self, "scope", None)
             scope_scheme = scope.get("scheme") if isinstance(scope, dict) else None
+            # A trusted ProxyFix hop stashes the public port here when the
+            # forwarded Host carries none (e.g. proxy sends X-Forwarded-Host
+            # without a port plus a separate X-Forwarded-Port: 8443).
+            forwarded_port = self._state.get("proxy_fix_port") if self._state else None
             self._url = URL.from_request(
-                self.headers, self.path, self.query_string, scope_scheme=scope_scheme
+                self.headers,
+                self.path,
+                self.query_string,
+                scope_scheme=scope_scheme,
+                forwarded_port=forwarded_port,
             )
         return self._url
 
