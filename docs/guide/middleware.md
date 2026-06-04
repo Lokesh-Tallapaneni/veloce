@@ -166,6 +166,12 @@ is matched against a middleware's name, which defaults to its class name; pass
 addressed independently. The opt-out applies to both the request and response
 phases, so a skipped middleware never runs for that route at all.
 
+The exclusion set is keyed on the route matched at dispatch entry. The same set
+of middleware that runs `process_request` runs `process_response`, so setup and
+teardown stay balanced. A `before_request` hook that rewrites the request path
+to a different route does not change which middleware run for that request - the
+entry route's `exclude_middleware` is authoritative.
+
 ```python
 app.add_middleware(CSRFMiddleware(secret="..."))
 app.add_middleware(RateLimitMiddleware(max_requests=100, window_seconds=60))

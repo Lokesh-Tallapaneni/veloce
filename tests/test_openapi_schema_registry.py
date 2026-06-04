@@ -53,6 +53,15 @@ class _Account(BaseModel):
         return self.balance * 2
 
 
+# A wrapper whose own top-level shape is identical for validation and
+# serialization, but which nests `_Account` - a model that DOES diverge between
+# modes (its `doubled` computed field appears only in serialization). The
+# wrapper's root body is byte-identical across modes; only its nested `$defs`
+# differ. Exercises folding on the FULL schema (root + nested defs).
+class _Wrapper(BaseModel):
+    account: _Account
+
+
 # Two distinct classes that deliberately share the same ``__name__`` ("User")
 # but live in different modules, to exercise collision-aware naming. Defined at
 # module scope (and bound to module-global names) so `get_type_hints` resolves
@@ -161,6 +170,44 @@ def test_diverging_model_splits_into_output_variant() -> None:
         == "#/components/schemas/_Account-Output"
     )
     assert "doubled" in schema["components"]["schemas"]["_Account-Output"]["properties"]
+
+
+def test_nested_serialization_only_field_keeps_output_variant() -> None:
+    # The wrapper's top-level body is identical for validation and serialization,
+    # but its nested `_Account` diverges (serialization-only `doubled`). The
+    # fold-back decision must consider the FULL schema (root + nested `$defs`),
+    # not just the wrapper's root - otherwise the response schema collapses onto
+    # the request schema and the serialization-only nested field disappears.
+    app = Veloce()
+
+    @app.post("/w", response_model=_Wrapper)
+    async def w(request, body: _Wrapper):
+        return {}
+
+    schema = app.openapi()
+    names = set(schema["components"]["schemas"])
+    # A distinct `-Output` wrapper must survive because its nested defs diverge.
+    assert "_Wrapper" in names
+    assert "_Wrapper-Output" in names
+    op = schema["paths"]["/w"]["post"]
+    assert (
+        op["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/_Wrapper"
+    )
+    assert (
+        op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/_Wrapper-Output"
+    )
+    # The serialization-only computed field is reachable from the response
+    # schema's nested account model, not from the request schema's.
+    out_account_ref = schema["components"]["schemas"]["_Wrapper-Output"]["properties"]["account"][
+        "$ref"
+    ]
+    out_account = schema["components"]["schemas"][out_account_ref.rsplit("/", 1)[-1]]
+    assert "doubled" in out_account["properties"]
+    in_account_ref = schema["components"]["schemas"]["_Wrapper"]["properties"]["account"]["$ref"]
+    in_account = schema["components"]["schemas"][in_account_ref.rsplit("/", 1)[-1]]
+    assert "doubled" not in in_account["properties"]
 
 
 def test_separate_input_output_flag_disables_split() -> None:

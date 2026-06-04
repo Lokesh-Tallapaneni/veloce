@@ -219,6 +219,51 @@ def test_override_url_for_reflects_winning_route():
     assert client.get("/a").json() == {"h": 2}
 
 
+def test_override_replace_removes_old_name_reverse_entry():
+    # An override replace under a DIFFERENT name must drop the replaced route's
+    # reverse entry: the old route is gone from the handler table, so
+    # url_for(old_name) must stop resolving while url_for(new_name) works.
+    from veloce.exceptions import BuildError
+
+    app = Veloce(on_duplicate="override")
+
+    @app.get("/o", name="old")
+    async def first():
+        return {"h": 1}
+
+    @app.get("/o", name="new")
+    async def second():
+        return {"h": 2}
+
+    assert app.url_for("new") == "/o"
+    with pytest.raises(BuildError):
+        app.url_for("old")
+    client = TestClient(app)
+    assert client.get("/o").json() == {"h": 2}
+
+
+def test_warn_replace_removes_old_name_reverse_entry(caplog):
+    # Same as the override case but on the `warn` policy: the replace still wins,
+    # so the displaced name's reverse entry must be removed.
+    from veloce.exceptions import BuildError
+
+    app = Veloce(on_duplicate="warn")
+
+    @app.get("/o", name="old")
+    async def first():
+        return {"h": 1}
+
+    with caplog.at_level(logging.WARNING, logger="veloce.routing.router"):
+
+        @app.get("/o", name="new")
+        async def second():
+            return {"h": 2}
+
+    assert app.url_for("new") == "/o"
+    with pytest.raises(BuildError):
+        app.url_for("old")
+
+
 def test_same_callable_different_name_is_a_conflict():
     # A same-callable registration carrying different route metadata (here a
     # different name) is a real second registration, not an idempotent remount,

@@ -624,6 +624,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Per-route middleware exclusion (`exclude_middleware`) is now symmetric across
+  the request and response phases. The exclusion set is keyed on the route
+  matched at dispatch entry - the same route the request phase uses - so the
+  exact set of middleware that ran `process_request` is the set that runs
+  `process_response`. A `before_request` hook that rewrites the path to a route
+  with a different `exclude_middleware` no longer changes which middleware run
+  for that request, preventing an unbalanced chain where a middleware's
+  per-request setup ran without its teardown.
+
+- OpenAPI dual-schema generation now compares the full schema, including every
+  nested `$defs` entry, before folding a serialization variant onto its
+  validation twin. Previously only the top-level root was compared, so a parent
+  model with an identical root but a nested model carrying serialization-only
+  fields (a `computed_field`, a read-only alias) lost its distinct `-Output`
+  response schema even with `separate_input_output_schemas=True`.
+
+- A duplicate-route replace under the `warn` or `override` policy now removes the
+  replaced route's reverse (`url_for`) entry when the winning route uses a
+  different `name=`. Previously `url_for(old_name)` kept resolving to a route no
+  longer present in the dispatch table.
+
 - `instrument_with_otel` is now idempotent. Calling it more than once on the
   same app (a re-imported factory, a test fixture, a per-worker bootstrap)
   previously registered a second span-emit hook, so every request produced two

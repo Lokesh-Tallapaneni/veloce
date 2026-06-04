@@ -577,6 +577,22 @@ class Router:
 
         raise DuplicateRouteError(path, method, existing_name, incoming_name)
 
+    def _drop_replaced_route_name(self, replaced: RouteInfo, winning_name: str) -> None:
+        """Remove the replaced route's reverse entry when a duplicate wins.
+
+        On a `warn`/`override` replace, the incoming route is registered under
+        `winning_name`. If the route it displaced carried a *different* `name=`,
+        its `_named_routes` entry would otherwise survive and let
+        `url_for(old_name)` resolve to a route no longer in the handler table.
+        Drop that stale reverse entry (and its reverse-converter cache) so only
+        live endpoints reverse. A same-name replace keeps the entry, since the
+        winning registration overwrites it with the correct template anyway.
+        """
+        old_name = replaced.name
+        if old_name and old_name != winning_name:
+            self._named_routes.pop(old_name, None)
+            self._reverse_converters.pop(old_name, None)
+
     def add_route(
         self,
         path: str,
@@ -748,6 +764,10 @@ class Router:
                 # for a route that did not make it into the handler table, so a
                 # caught DuplicateRouteError cannot leave url_for() polluted.
                 self._on_duplicate_route(full_path, mkey, existing, route_info)
+                # The policy allowed the replace (warn/override). Drop the
+                # displaced route's reverse entry when it had a different name,
+                # so url_for(old_name) stops resolving to a dead route.
+                self._drop_replaced_route_name(existing, route_name)
             handler_table[mkey] = route_info
 
         # Register the named route for url_for only once the route is committed
@@ -1410,6 +1430,7 @@ class Router:
                 existing = target.handlers.get(method)
                 if existing is not None and not self._allow_duplicate(existing, route_info):
                     self._on_duplicate_route(full_path, method, existing, route_info)
+                    self._drop_replaced_route_name(existing, info.name)
                 target.handlers[method] = route_info
                 self._named_routes[info.name] = (full_path, param_names)
                 self._reverse_converters.pop(info.name, None)
@@ -1491,6 +1512,7 @@ class Router:
                 existing = cur.handlers.get(method)
                 if existing is not None and not self._allow_duplicate(existing, route_info):
                     self._on_duplicate_route(full_path, method, existing, route_info)
+                    self._drop_replaced_route_name(existing, info.name)
                 cur.handlers[method] = route_info
 
                 # Propagate slash-handling flags from the source node so a

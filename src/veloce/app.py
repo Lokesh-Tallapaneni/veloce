@@ -2654,19 +2654,17 @@ class Veloce(Router):
             match = resolved
             _bp_name = _endpoint_blueprint(request.endpoint)
 
-            # Refresh the response-phase chain from the FINAL matched route.
-            # The request-phase chain was computed from the pre-hook match, but
-            # a before_request hook may have rewritten request.path / method and
-            # `_resolve_route` re-matched to a different route with a different
-            # `exclude_middleware` set. The response phase must mirror the final
-            # route's exclusions, not the stale pre-hook ones. Zero-cost common
-            # path: a final route with no exclusions clears any stale stash so
-            # `_run_response_middleware` walks `self._middlewares` directly.
-            final_filtered = self._route_middleware_chains(match.route_info)
-            if final_filtered is not None:
-                request._state[_MW_RESPONSE_CHAIN_KEY] = final_filtered[1]
-            else:
-                request._state.pop(_MW_RESPONSE_CHAIN_KEY, None)
+            # The response-phase chain is NOT refreshed from the final matched
+            # route. Per-route middleware exclusion is keyed on the route matched
+            # at dispatch entry - the same match the request phase used - so the
+            # exact set of middleware that ran `process_request` is the set that
+            # runs `process_response`, even when a before_request hook rewrites
+            # request.path / method and `_resolve_route` re-matches to a route
+            # with a different `exclude_middleware`. Refreshing here would make
+            # request and response phases use different chains, leaving a
+            # middleware that paired setup in `process_request` without its
+            # teardown in `process_response` (or vice versa). The response chain
+            # stashed during the request phase above is therefore authoritative.
 
             # Resolve dependencies first and bind the resolver to this frame
             # *before* calling the handler - if the handler raises, the

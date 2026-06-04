@@ -327,7 +327,15 @@ class SchemaRegistry:
                 twin = self._entries.get(val_key)
                 if twin is not None:
                     twin.build()
-                    if twin.body == entry.body:
+                    # Compare the FULL schema - the top-level root (`body`) AND
+                    # every nested `$defs` entry (`defs`). Two models can share an
+                    # identical root while a nested model carries serialization-only
+                    # fields (a `computed_field`, a read-only / serialization alias)
+                    # that only surface in `mode="serialization"`. Folding on the
+                    # root alone would drop that distinct `-Output` schema even with
+                    # `separate_input_output_schemas=True`. Only collapse when the
+                    # entire schema, nested defs included, is byte-identical.
+                    if twin.body == entry.body and twin.defs == entry.defs:
                         # Output equals input: reuse the validation component
                         # rather than emit a redundant `-Output` schema.
                         entry.alias_token = twin.token
@@ -359,20 +367,36 @@ class SchemaRegistry:
                     token_to_name[entry.token] = candidate
 
         # Materialise components, folding each model's own `$defs` (nested
-        # models) under per-owner names so a nested-model name clash across two
-        # owners does not silently overwrite.
+        # models) into the shared component map. A nested def is emitted under
+        # its bare Pydantic name when free. When a later owner brings a def of
+        # the SAME name but DIFFERENT content - a serialization-mode nested model
+        # that diverges from its validation twin (a nested `computed_field`, a
+        # read-only field) - it must not be dropped onto the first writer, or the
+        # serialization-only nested field disappears from the response schema.
+        # That owner's def is emitted under a disambiguated name and that owner's
+        # own `#/$defs/<name>` references are rewritten to point at it, so the
+        # `-Output` response schema reaches its distinct nested model.
         for key in self._order:
             entry = self._entries[key]
             if entry.alias_token is not None:
                 continue
             name = token_to_name[entry.token]
             components[name] = entry.body
+            local_renames: dict[str, str] = {}
             for def_name, def_schema in entry.defs.items():
-                # First writer of a nested def name wins; identical re-emissions
-                # are harmless. A genuine clash keeps the first and the rewrite
-                # below points later owners at it - acceptable since nested defs
-                # carry no identity from Pydantic.
-                components.setdefault(def_name, def_schema)
+                existing = components.get(def_name)
+                if existing is None:
+                    components[def_name] = def_schema
+                elif existing != def_schema:
+                    # Same nested name, diverging content: allocate a unique name
+                    # and record the per-owner rename so this owner's refs target
+                    # the distinct def rather than the first writer's.
+                    unique = self._unique_def_name(components, def_name)
+                    components[unique] = def_schema
+                    local_renames[def_name] = unique
+                # An identical re-emission is harmless: the first writer stands.
+            if local_renames:
+                _rewrite_local_defs(entry.body, local_renames)
 
         # Rewrite every placeholder reference in the whole document, plus the
         # `#/$defs/...` references inside the freshly materialised components.
@@ -383,6 +407,19 @@ class SchemaRegistry:
         _rewrite_refs(document, resolved_token)
         _rewrite_refs(components, resolved_token)
         return components
+
+    @staticmethod
+    def _unique_def_name(components: dict[str, dict], base: str) -> str:
+        """Return a component name derived from `base` not already in use."""
+        # The `-Output` suffix mirrors the top-level serialization variant
+        # naming so a diverging nested model reads as its owner's output twin.
+        candidate = f"{base}-Output"
+        if candidate not in components:
+            return candidate
+        n = 2
+        while f"{candidate}_{n}" in components:
+            n += 1
+        return f"{candidate}_{n}"
 
     def _alias_target(self, token: str) -> str:
         for entry in self._entries.values():
@@ -441,6 +478,28 @@ class _SchemaEntry:
                 self.defs[def_name] = def_schema
             del schema["$defs"]
         self.body = schema
+
+
+def _rewrite_local_defs(node: Any, renames: dict[str, str]) -> None:
+    """Repoint `#/$defs/<old>` refs in `node` to `#/components/schemas/<new>`.
+
+    Used for an owner whose diverging nested def was emitted under a
+    disambiguated name; only the listed `$defs` names are rewritten so the
+    owner reaches its distinct nested model while leaving every other ref for
+    the global pass.
+    """
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith(_PYDANTIC_DEF_PREFIX):
+            old = ref[len(_PYDANTIC_DEF_PREFIX) :]
+            new = renames.get(old)
+            if new is not None:
+                node["$ref"] = f"#/components/schemas/{new}"
+        for value in node.values():
+            _rewrite_local_defs(value, renames)
+    elif isinstance(node, list):
+        for item in node:
+            _rewrite_local_defs(item, renames)
 
 
 def _rewrite_refs(node: Any, token_to_name: dict[str, str]) -> None:

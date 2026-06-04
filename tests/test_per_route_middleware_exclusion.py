@@ -3,8 +3,10 @@
 A route may declare `exclude_middleware=["Name", ...]`; each name is matched
 against a middleware's `middleware_name` (its `name` attribute, defaulting to
 the class name). The opt-out applies symmetrically to both the request and
-response phases. Routes that declare no exclusions must keep running every
-registered middleware.
+response phases, and is keyed on the route matched at dispatch entry - a
+before_request hook that rewrites the path to a route with a different
+`exclude_middleware` does not change which middleware run. Routes that declare
+no exclusions must keep running every registered middleware.
 """
 
 from __future__ import annotations
@@ -150,12 +152,15 @@ def test_middleware_name_defaults_to_class_name():
     assert named.middleware_name == "custom"
 
 
-def test_response_chain_follows_route_after_before_request_rewrite():
+def test_exclusion_is_symmetric_across_before_request_rewrite():
     # A before_request hook may rewrite request.path, causing _resolve_route to
-    # re-match a different route. The response-phase middleware exclusion must
-    # reflect the FINAL matched route, not the pre-hook one. Here the request
-    # arrives for a route with no exclusions but is rewritten to a route that
-    # excludes "beta"; the response phase must skip "beta".
+    # re-match a different route with a different `exclude_middleware`. Per-route
+    # exclusion is keyed on the route matched at DISPATCH ENTRY (the same match
+    # the request phase used), NOT the post-rewrite final route. So the exact set
+    # of middleware that ran process_request must equal the set that ran
+    # process_response. Here entry `/enter` excludes nothing while the rewrite
+    # target `/final` excludes "beta"; the rewrite must not change which
+    # middleware run - both A and B must run on both phases.
     app = Veloce(openapi_url=None)
     app.add_middleware(_Tagger("A"))
     app.add_middleware(_Tagger("B", name="beta"))
@@ -168,25 +173,32 @@ def test_response_chain_follows_route_after_before_request_rewrite():
 
     @app.get("/enter")
     async def enter(request: Request):
-        return {"hit": "enter"}
+        return {"order": getattr(request.state, "order", [])}
 
     @app.get("/final", exclude_middleware=["beta"])
     async def final(request: Request):
-        return {"hit": "final"}
+        return {"order": getattr(request.state, "order", [])}
 
     with TestClient(app) as client:
         resp = client.get("/enter")
-        assert resp.json() == {"hit": "final"}
-        # Final route excludes "beta": its response header must be absent.
-        assert "X-Saw-B" not in resp.headers
-        # "A" is not excluded by the final route, so it still stamps.
-        assert resp.headers.get("X-Saw-A") == "1"
+        # The request phase populates `order` (visible in the handler body); the
+        # response phase runs after the body is captured, so its effect is read
+        # from the stamped `X-Saw-*` headers instead.
+        order = resp.json()["order"]
+        req_set = {tag for phase, tag in order if phase == "req"}
+        resp_set = {tag for tag in ("A", "B") if resp.headers.get(f"X-Saw-{tag}") == "1"}
+        # Symmetry: the same middleware ran both phases.
+        assert req_set == resp_set
+        # Entry route excludes nothing, so the rewrite to /final (which excludes
+        # beta) is ignored - both A and B run on both phases.
+        assert req_set == {"A", "B"}
 
 
-def test_response_chain_drops_stale_exclusion_after_rewrite():
-    # The inverse: the pre-hook route excludes "beta", but a before_request
-    # rewrite lands on a route with NO exclusions. The response phase must run
-    # every middleware (the stale exclusion must not leak through).
+def test_exclusion_keyed_on_entry_route_not_rewrite_target():
+    # The inverse: entry `/skip-entry` excludes "beta", but a before_request
+    # rewrite lands on `/plain` which excludes nothing. Exclusion is keyed on the
+    # entry route, so "beta" stays excluded on BOTH phases - it never ran
+    # process_request, so it must not run process_response either.
     app = Veloce(openapi_url=None)
     app.add_middleware(_Tagger("A"))
     app.add_middleware(_Tagger("B", name="beta"))
@@ -199,15 +211,18 @@ def test_response_chain_drops_stale_exclusion_after_rewrite():
 
     @app.get("/skip-entry", exclude_middleware=["beta"])
     async def skip_entry(request: Request):
-        return {"hit": "skip-entry"}
+        return {"order": getattr(request.state, "order", [])}
 
     @app.get("/plain")
     async def plain(request: Request):
-        return {"hit": "plain"}
+        return {"order": getattr(request.state, "order", [])}
 
     with TestClient(app) as client:
         resp = client.get("/skip-entry")
-        assert resp.json() == {"hit": "plain"}
-        # Final route excludes nothing: both response headers must be present.
-        assert resp.headers.get("X-Saw-A") == "1"
-        assert resp.headers.get("X-Saw-B") == "1"
+        order = resp.json()["order"]
+        req_set = {tag for phase, tag in order if phase == "req"}
+        resp_set = {tag for tag in ("A", "B") if resp.headers.get(f"X-Saw-{tag}") == "1"}
+        # Symmetry: the entry route excluded "beta" from the request phase, so
+        # it is excluded from the response phase too.
+        assert req_set == resp_set == {"A"}
+        assert "X-Saw-B" not in resp.headers
