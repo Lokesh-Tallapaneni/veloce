@@ -84,7 +84,8 @@ the endpoint if an agent needs the data.
 ## The MCP context
 
 A tool handler (or one of its dependencies) may declare a parameter typed
-`MCPContext`, or named `ctx` / `context`, to receive the per-call context. It
+`MCPContext` to receive the per-call context; it is matched by that type
+annotation, not by the parameter's name. It
 carries the calling tool name and the raw argument mapping, plus inert
 placeholders for the cancellation / progress / logging channels that later
 protocol versions define.

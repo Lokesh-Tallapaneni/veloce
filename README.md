@@ -109,7 +109,7 @@ Open <http://127.0.0.1:8000/items/42> to see `{"item_id": 42}`, or
 | Templating        | Jinja2 with `url_for` / `g` / `current_app` globals, async render, context processors       |
 | Sessions          | signed cookies, server-side backend, `permanent_lifetime`, secret rotation                  |
 | Testing           | in-memory `TestClient`, multipart, cookies, follow-redirects, `session_transaction`         |
-| Tooling           | `veloce run`, `veloce routes`, `veloce shell` (Click-backed CLI)                            |
+| Tooling           | `veloce run`, `veloce routes`, `veloce shell` (argparse-based CLI)                          |
 
 The full Tier 0/1/2 feature matrix and per-feature design notes live in
 [`docs/`](docs/).

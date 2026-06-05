@@ -113,20 +113,24 @@ handler blocks the event loop for that whole time. From async code, use
 run the KDF on a worker thread and leave the loop free for other requests.
 
 ```python
-import secrets
-
 from veloce import (
     HTTPException,
     Request,
     Veloce,
+    hash_password,
     hash_password_async,
-    verify_password_or_dummy_async,
+    verify_password_async,
 )
 
 app = Veloce()
 
 # A real app uses a database; a dict keeps the example self-contained.
 _USERS: dict[str, str] = {}
+
+# A throwaway hash computed once at startup. On the no-such-user path the
+# submitted password is verified against this instead, which runs one real
+# KDF so an unknown username costs the same as a wrong password.
+_DUMMY_HASH = hash_password("password-that-no-account-uses")
 
 
 @app.post("/signup")
@@ -140,9 +144,9 @@ async def signup(request: Request):
 async def login(request: Request):
     body = await request.json()
     stored = _USERS.get(body["username"])
-    # `verify_password_or_dummy_async` runs a KDF even when `stored` is
-    # None, so an unknown username and a wrong password take the same time.
-    if not await verify_password_or_dummy_async(stored, body["password"]):
+    # Fall back to the dummy hash when the user does not exist, so an unknown
+    # username and a wrong password take the same time (one KDF either way).
+    if not await verify_password_async(stored or _DUMMY_HASH, body["password"]):
         raise HTTPException(401, "Incorrect username or password")
     return {"ok": True}
 ```
@@ -157,12 +161,11 @@ is no event loop to protect.
     stored hash is missing or malformed, so a plain
     `stored is None or verify_password(...)` login leaks which usernames
     exist: an unknown account answers in microseconds while a wrong
-    password takes ~100 ms. Use
-    [`verify_password_or_dummy`](../reference.md#veloce.verify_password_or_dummy)
-    (or `verify_password_or_dummy_async`) as the login entry point: it
-    runs one real KDF against a cached dummy verifier on the no-such-user
-    path so both cases cost the same. A genuine wrong-password check still
-    pays exactly one KDF.
+    password takes ~100 ms. Compute one throwaway hash at startup with
+    `hash_password(...)` and, on the no-such-user path, verify the submitted
+    password against it (`verify_password(stored or _DUMMY_HASH, ...)`, as
+    in the login handler above) so both cases pay exactly one KDF and cost
+    the same.
 
 ## Password strength policy
 
