@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextvars
-import functools
 import logging
 from collections.abc import Callable
 from typing import Any
 
-from veloce._internal import _is_async_callable
+from veloce._internal import _is_async_callable, offload
 
 _logger = logging.getLogger(__name__)
 
@@ -29,11 +26,7 @@ class BackgroundTask:
         if _is_async_callable(self.func):
             await self.func(*self.args, **self.kwargs)
         else:
-            loop = asyncio.get_running_loop()
-            ctx = contextvars.copy_context()
-            await loop.run_in_executor(
-                None, ctx.run, functools.partial(self.func, *self.args, **self.kwargs)
-            )
+            await offload(self.func, *self.args, **self.kwargs)
 
 
 class BackgroundTasks:

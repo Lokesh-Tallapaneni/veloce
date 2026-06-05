@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import builtins
 import contextlib
-import contextvars
 import functools
 import inspect
 import logging
@@ -41,7 +40,7 @@ from veloce._handler_plan import (
     _slot_parallel_safe,
     parallel_group_end,
 )
-from veloce._internal import _is_async_callable
+from veloce._internal import _is_async_callable, offload
 from veloce._resolver_codegen import compile_param_resolver
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
@@ -942,17 +941,9 @@ class DependencyResolver:
             result = await actual(**sub_kwargs)
         elif slot.dep_offload:
             # Opt-in: a blocking sync dependency runs in the thread pool so it
-            # cannot stall the event loop. The current context is snapshotted
-            # so request-scoped `ContextVar`s (the `request` proxy, `g`'s
-            # store, `flash()`) stay readable inside the worker thread - the
-            # same pattern the dispatcher uses for sync route handlers. A
-            # `ContextVar.set(...)` inside the dependency does not propagate
-            # back to the caller.
-            loop = asyncio.get_running_loop()
-            ctx = contextvars.copy_context()
-            result = await loop.run_in_executor(
-                None, ctx.run, functools.partial(actual, **sub_kwargs)
-            )
+            # cannot stall the event loop; `offload` preserves request-scoped
+            # ContextVars, the same pattern sync route handlers use.
+            result = await offload(actual, **sub_kwargs)
         else:
             result = actual(**sub_kwargs)
 

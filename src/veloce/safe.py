@@ -64,7 +64,14 @@ def _is_reserved_device(segment: str) -> bool:
 def constant_time_compare(a: str | bytes, b: str | bytes) -> bool:
     """Compare two secrets without leaking their contents through timing.
 
-    Wraps ``hmac.compare_digest``; ``str`` inputs are UTF-8 encoded first.
+    Wraps ``hmac.compare_digest``; ``str`` inputs are UTF-8 encoded first. Use
+    this when the operands may be ``str`` (or mixed ``str``/``bytes``). Callers
+    that already hold two equal-typed ``bytes`` values - the signing, JWT,
+    reset-token, password, and ``Secret`` verify paths - call ``hmac.compare_digest``
+    directly: routing them through here would add an ``isinstance`` ladder and a
+    redundant encode/copy on a security-hot verify path for no behavioural gain
+    (the False-on-type-mismatch branch is unreachable when both operands are
+    statically ``bytes``).
     """
     if isinstance(a, str) and isinstance(b, str):
         return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))

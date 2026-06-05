@@ -13,8 +13,6 @@ WebSocket paths. Per-tool instrumentation fires through the same
 from __future__ import annotations
 
 import asyncio
-import contextvars
-import functools
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -22,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import orjson
 
 from veloce import status
-from veloce._internal import _is_async_callable, is_json_mimetype
+from veloce._internal import _is_async_callable, is_json_mimetype, offload
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
@@ -461,12 +459,9 @@ class MCPServer:
         if _is_async_callable(handler):
             return await handler(**kwargs)
         # A sync handler runs in the thread pool so it cannot block the event
-        # loop - the same offload the HTTP path applies, with the current context
-        # copied so contextvars (`current_app` / `g` / the `request` proxy) stay
-        # readable in the worker thread.
-        loop = asyncio.get_running_loop()
-        ctx = contextvars.copy_context()
-        return await loop.run_in_executor(None, ctx.run, functools.partial(handler, **kwargs))
+        # loop - the same offload the HTTP path applies; `offload` preserves
+        # request-scoped ContextVars.
+        return await offload(handler, **kwargs)
 
     @staticmethod
     async def _run_response_background(result: Any) -> None:
