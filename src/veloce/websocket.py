@@ -1,4 +1,4 @@
-"""WebSocket support - basic implementation over raw asyncio."""
+"""WebSocket support — basic implementation over raw asyncio."""
 
 from __future__ import annotations
 
@@ -663,7 +663,14 @@ class WebSocket:
         subprotocol: str | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
-        """Complete the WebSocket handshake."""
+        """Complete the WebSocket handshake.
+
+        Raises:
+            RuntimeError: if the connection is already accepted or already
+                closed, or if a ``subprotocol``/``headers`` argument is passed
+                on the native (``Veloce.run``) upgrade path, where the 101
+                response has already been sent and cannot be renegotiated.
+        """
         # Enforce the handshake state machine: accepting an already-accepted
         # or already-closed connection is a programming error - surface it
         # as a clear exception rather than re-running the handshake.

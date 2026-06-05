@@ -1,4 +1,4 @@
-"""Router - radix-tree routing with path parameters, method dispatch, and route groups."""
+"""Router — radix-tree routing with path parameters, method dispatch, and route groups."""
 
 from __future__ import annotations
 
@@ -401,7 +401,7 @@ class Router:
         prefix: str = "",
         tags: list[str] | None = None,
         default_response_class: Any = None,
-        dependencies: list | None = None,
+        dependencies: list[Any] | None = None,
         responses: dict[int, dict[str, Any]] | None = None,
         on_duplicate: str = "error",
     ) -> None:
@@ -828,7 +828,7 @@ class Router:
         path: str,
         handler: RouteHandler,
         methods: list[str],
-        dependencies: list | None = None,
+        dependencies: list[Any] | None = None,
         response_model: Any = None,
         tags: list[str] | None = None,
         summary: str | None = None,
@@ -1246,7 +1246,7 @@ class Router:
         self,
         path: str,
         methods: list[str] | None = None,
-        dependencies: list | None = None,
+        dependencies: list[Any] | None = None,
         response_model: Any = None,
         tags: list[str] | None = None,
         summary: str | None = None,
@@ -1411,7 +1411,7 @@ class Router:
         return decorator
 
     def add_websocket_route(self, path: str, handler: RouteHandler) -> None:
-        """Imperative WebSocket route registration - ASGI shape.
+        """Register a WebSocket route imperatively (ASGI shape).
 
         The non-decorator form of `@app.websocket(path)`.
         """
@@ -1435,7 +1435,7 @@ class Router:
         methods: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Imperative route registration.
+        """Register a route imperatively.
 
         The non-decorator form: the handler argument is named `endpoint`
         here and forwarded to `add_route` (where it is `handler`). All

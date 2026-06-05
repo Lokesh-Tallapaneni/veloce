@@ -1,4 +1,4 @@
-"""JSON provider - pluggable serialisation boundary for response bodies.
+"""JSON provider — pluggable serialisation boundary for response bodies.
 
 The base `JSONProvider` declares three methods: `dumps`/`loads` for the
 bytes <-> object boundary, and `response` for handing a
@@ -38,7 +38,23 @@ def config_orjson_options(cfg: Any) -> int:
 
 
 class JSONProvider:
-    """Base class for JSON serialisation providers."""
+    """Base class for JSON serialisation providers.
+
+    Subclass to plug in an alternative serialiser, then point the app at it
+    via `app.json` (an instance) or `app.json_provider_class` (a class,
+    instantiated lazily on first access).
+
+    Usage::
+
+        class MyJSONProvider(JSONProvider):
+            def dumps(self, obj, **kwargs):
+                return my_lib.dumps(obj).encode()
+
+            def loads(self, data):
+                return my_lib.loads(data)
+
+        app.json_provider_class = MyJSONProvider
+    """
 
     def __init__(self, app: Any) -> None:
         self._app = app
@@ -57,8 +73,11 @@ class JSONProvider:
         raise NotImplementedError
 
     def response(self, value: Any, **kwargs: Any) -> Any:
-        """Build a `Response` carrying `value` as JSON. Default delegates
-        to `dumps` + a `JSONResponse`."""
+        """Build a `Response` carrying `value` as JSON.
+
+        The default implementation delegates to `dumps` and wraps the result
+        in a `JSONResponse`.
+        """
         # `from_bytes` skips JSONResponse's default re-encode so
         # caller-provided dumps options (e.g. sort_keys) survive.
         return JSONResponse.from_bytes(
@@ -69,7 +88,7 @@ class JSONProvider:
 
 
 class DefaultJSONProvider(JSONProvider):
-    """orjson-backed provider - Veloce's default.
+    """orjson-backed provider — Veloce's default.
 
     Honours two `app.config` flags so the existing `JSON_SORT_KEYS` /
     `JSONIFY_PRETTYPRINT_REGULAR` toggles keep working without callers

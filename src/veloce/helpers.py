@@ -1,4 +1,4 @@
-"""Helpers - abort, jsonify, make_response, flash, g, current_app, send_from_directory."""
+"""Helpers — abort, jsonify, make_response, flash, g, current_app, send_from_directory."""
 
 from __future__ import annotations
 
@@ -304,7 +304,8 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
     `Forbidden` for 403) so error handlers registered against a specific
     subclass match. Unknown codes fall back to the bare `HTTPException`.
 
-    Usage:
+    Usage::
+
         abort(404)              # -> raises NotFound
         abort(403, "Forbidden") # -> raises Forbidden
     """
@@ -486,7 +487,8 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
     - `JSONIFY_PRETTYPRINT_REGULAR` (default False) - indent the output
       with 2 spaces for readability. Often enabled under DEBUG.
 
-    Usage:
+    Usage::
+
         return jsonify(name="alice", age=30)
         return jsonify({"name": "alice"})
         return jsonify([1, 2, 3])
@@ -516,7 +518,8 @@ def make_response(
 ) -> Response:
     """Create a Response - a convenience wrapper.
 
-    Usage:
+    Usage::
+
         resp = make_response("Hello", 200)
         resp = make_response({"data": True}, 201)
     """
@@ -625,7 +628,8 @@ def _flash_store() -> Any:
 def flash(message: str, category: str = "message") -> None:
     """Flash a message for the next request - requires SessionMiddleware.
 
-    Usage:
+    Usage::
+
         flash("Item created successfully")
         flash("Invalid input", "error")
     """
@@ -648,7 +652,8 @@ def get_flashed_messages(
 ) -> list:
     """Get flashed messages - call in templates.
 
-    Usage:
+    Usage::
+
         messages = get_flashed_messages()
         messages = get_flashed_messages(with_categories=True)
     """

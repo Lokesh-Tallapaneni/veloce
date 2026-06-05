@@ -1,6 +1,6 @@
-"""Dependency injection - pre-planned at registration, executed per request.
+"""Dependency injection — pre-planned at registration, executed per request.
 
-Public API: `Depends`, `Security`, `DependencyResolver`. The resolver walks a
+Public API: `Depends`, `Security`, `SecurityScopes`. The resolver walks a
 pre-built `HandlerPlan` (see `veloce._handler_plan`) rather than reflecting on
 the handler signature per request.
 """
@@ -241,11 +241,20 @@ def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
 
 
 class Depends:
-    """Dependency marker - use in function signature defaults.
+    """Dependency marker — use in function signature defaults.
 
     `dependency` may be omitted (`Depends()`); the resolver then infers
-    it from the parameter's type annotation - the shorthand for
+    it from the parameter's type annotation — the shorthand for
     `x: SomeClass = Depends()`.
+
+    Usage::
+
+        def get_db() -> Database:
+            return Database()
+
+        @app.get("/users")
+        async def list_users(db: Database = Depends(get_db)) -> list[str]:
+            return db.all_usernames()
     """
 
     __slots__ = ("dependency", "use_cache", "offload")
@@ -672,7 +681,7 @@ class DependencyResolver:
                 i += 1
                 continue
 
-            # K_PATH and K_NONE are not currently emitted by build_plan; future-proof.
+            # K_PATH is not currently emitted by build_plan; future-proof.
             if kind == K_PATH:
                 if name in path_params:
                     kwargs[name] = _coerce_value(

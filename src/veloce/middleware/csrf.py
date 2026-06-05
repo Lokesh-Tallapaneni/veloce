@@ -1,4 +1,4 @@
-"""CSRF protection - double-submit-cookie pattern.
+"""CSRF protection — double-submit-cookie pattern.
 
 Spec anchors:
 - OWASP CSRF Cheat Sheet (Double Submit Cookie pattern, 2024 revision)
@@ -63,7 +63,7 @@ Veloce-specific knobs:
 from __future__ import annotations
 
 import secrets
-from typing import Any
+from collections.abc import Callable
 from urllib.parse import urlsplit
 
 from veloce import status
@@ -106,7 +106,7 @@ class CSRFMiddleware(Middleware):
         cookie_secure: bool = True,
         cookie_httponly: bool = False,
         cookie_samesite: str = "Lax",
-        token_factory: Any = None,
+        token_factory: Callable[[], str] | None = None,
         secret: str | None = None,
         max_age: int | None = None,
         trusted_origins: tuple[str, ...] | None = None,
@@ -150,7 +150,7 @@ class CSRFMiddleware(Middleware):
         # value carrying no valid server signature fails verification
         # even when the attacker also echoes it in the header.
         self._max_age = max_age
-        self._signer: Any = None
+        self._signer: Signer | None = None
         if secret:
             self._signer = Signer(secret, salt="veloce.csrf")
 
@@ -200,6 +200,10 @@ class CSRFMiddleware(Middleware):
             try:
                 form = await request.form()
             except Exception:
+                # A malformed or truncated body must not crash the CSRF
+                # check: any parse failure simply means no form-field token
+                # is available, so fall through to the mismatch verdict
+                # below rather than surfacing the parser error.
                 form = None
             # Multipart parts can resolve to UploadFile; only a string echoes the cookie.
             if form is not None and self._matches(form.get(self.form_field), cookie_val):

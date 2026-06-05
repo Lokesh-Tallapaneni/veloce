@@ -1,4 +1,4 @@
-"""HTML-safe string utilities - `Markup` and `escape`.
+"""HTML-safe string utilities — `Markup` and `escape`.
 
 `Markup` is a `str` subclass that signals "already-escaped". Templating
 engines (Jinja2) check `__html__()` to decide whether to re-escape:

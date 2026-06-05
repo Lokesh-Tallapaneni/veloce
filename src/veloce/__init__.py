@@ -1,4 +1,4 @@
-"""Veloce - Ultra-fast async Python web framework.
+"""Veloce — Ultra-fast async Python web framework.
 
 Veloce is a high-performance asynchronous web framework built on raw asyncio,
 httptools, and orjson. It pairs a small, well-typed API with predictable
@@ -21,11 +21,14 @@ from __future__ import annotations
 
 # Status codes
 from veloce import status
-from veloce.app import Veloce
+from veloce.app import URLRule, Veloce
 
 # Background tasks
 from veloce.background import BackgroundTask, BackgroundTasks
 from veloce.blueprints import Blueprint
+
+# Configuration
+from veloce.config import Config
 
 # MCP (Model Context Protocol) - the per-call context handle a tool handler
 # may declare. The server / transport classes stay under veloce.contrib.mcp.
@@ -69,6 +72,7 @@ from veloce.exceptions import (
 
 # Helpers
 from veloce.helpers import (
+    Aborter,
     abort,
     after_this_request,
     async_send_file,
@@ -115,6 +119,13 @@ from veloce.http.response import (
 )
 from veloce.instrumentation import RequestMetrics
 
+# JSON provider
+from veloce.json_provider import (
+    DefaultJSONProvider,
+    JSONProvider,
+    config_orjson_options,
+)
+
 # HTML-safe strings
 from veloce.markup import Markup, escape
 
@@ -142,7 +153,7 @@ from veloce.middleware import (
 )
 
 # Observability
-from veloce.observability import instrument_access_log
+from veloce.observability import instrument_access_log, log_requests_as_json
 
 # Password hashing helpers
 from veloce.passwords import (
@@ -243,6 +254,8 @@ __all__ = [
     "Router",
     "Blueprint",
     "APIRouter",
+    "URLRule",
+    "Config",
     # Responses
     "Response",
     "JSONResponse",
@@ -353,6 +366,7 @@ __all__ = [
     "View",
     "MethodView",
     # Helpers
+    "Aborter",
     "abort",
     "after_this_request",
     "async_send_file",
@@ -383,9 +397,14 @@ __all__ = [
     "jsonable_encoder",
     "register_encoder",
     "unregister_encoder",
+    # JSON provider
+    "JSONProvider",
+    "DefaultJSONProvider",
+    "config_orjson_options",
     # Observability
     "RequestMetrics",
     "instrument_access_log",
+    "log_requests_as_json",
     "EventLoopWatchdog",
     # Filesystem-safety
     "secure_filename",

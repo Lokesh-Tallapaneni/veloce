@@ -47,6 +47,11 @@ class ProxyFix(Middleware):
     public port for ``request.url`` / redirects when the forwarded Host
     carries none, so a proxy on a non-default port (e.g. 8443) is preserved.
     An explicit port in the Host / ``X-Forwarded-Host`` always wins.
+
+    Usage::
+
+        # Behind two trusted proxies forwarding client IP and scheme.
+        app.add_middleware(ProxyFix(x_for=2, x_proto=1, x_host=1))
     """
 
     def __init__(

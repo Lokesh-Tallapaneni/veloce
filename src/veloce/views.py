@@ -1,4 +1,4 @@
-"""Class-based views - `View` base + `MethodView`.
+"""Class-based views — `View` base + `MethodView`.
 
 Two class-based view styles:
 
@@ -20,11 +20,11 @@ URL however you like (read `request.method` yourself if needed):
     app.add_url_rule("/users/{id:int}", view_func=UserView.as_view("user"))
 
 `as_view(name)` returns an async dispatcher. By default a fresh
-instance is built per request (`init_every_request = True`); set it `False` to reuse a single instance. The
-`decorators` class list is applied to the generated view function
-outermost-last.
+instance is built per request (`init_every_request = True`); set it
+`False` to reuse a single instance. The `decorators` class list is
+applied to the generated view function outermost-last.
 
-Veloce-specific: handlers must be `async def` - a sync verb method on
+Veloce-specific: handlers must be `async def` — a sync verb method on
 a `MethodView` subclass raises at class-definition time.
 """
 

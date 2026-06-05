@@ -1,4 +1,4 @@
-"""Config - a `dict` subclass with convenient loader methods.
+"""Config — a `dict` subclass with convenient loader methods.
 
 `app.config` is a `Config`. The class inherits `dict`, so every existing
 idiom (`config["DEBUG"] = True`, `config.get("X")`, `config.update(...)`)
@@ -214,8 +214,7 @@ class Config(dict[str, Any]):
     # -- from_object --------------------------------------------------
 
     def from_object(self, obj: object | str) -> bool:
-        """Import UPPERCASE attributes from a module, class, instance, or
-        dotted-path string.
+        """Import UPPERCASE attributes from a module, class, instance, or dotted-path string.
 
         `from_object("myapp.settings.Prod")` resolves the dotted path,
         then walks attributes whose names pass `_is_uppercase_key`.

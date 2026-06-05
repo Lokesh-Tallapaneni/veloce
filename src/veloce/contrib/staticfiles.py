@@ -4,13 +4,13 @@ All file I/O runs in the executor so the event loop is never blocked.
 Conditional GET responses follow RFC 9110 Sec. 13.1.
 
 Spec anchors:
-- RFC 9110 Sec. 8.8.2 - Last-Modified header
-- RFC 9110 Sec. 8.8.3 - ETag header
-- RFC 9110 Sec. 13.1.1 - If-Match
-- RFC 9110 Sec. 13.1.3 - If-Modified-Since
-- RFC 9110 Sec. 13.1.4 - If-None-Match
-- RFC 9110 Sec. 13.1.4 - If-Unmodified-Since
-- RFC 9110 Sec. 13.2.2 - precondition precedence
+- RFC 9110 Sec. 8.8.2 — Last-Modified header
+- RFC 9110 Sec. 8.8.3 — ETag header
+- RFC 9110 Sec. 13.1.1 — If-Match
+- RFC 9110 Sec. 13.1.3 — If-Modified-Since
+- RFC 9110 Sec. 13.1.4 — If-None-Match
+- RFC 9110 Sec. 13.1.4 — If-Unmodified-Since
+- RFC 9110 Sec. 13.2.2 — precondition precedence
 """
 
 from __future__ import annotations
@@ -118,7 +118,16 @@ def _guess_content_type(path: str) -> str:
 
 
 class StaticFiles:
-    """Serve static files from a directory - all file I/O runs in executor."""
+    """Serve static files from a directory — all file I/O runs in executor.
+
+    Usage::
+
+        from veloce import Veloce
+        from veloce.contrib.staticfiles import StaticFiles
+
+        app = Veloce()
+        app.mount("/static", StaticFiles(directory="static"))
+    """
 
     # Per-instance bound on the ETag cache. Capping it keeps memory
     # bounded for long-running workers serving large static trees -

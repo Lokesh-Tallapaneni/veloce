@@ -1,4 +1,4 @@
-"""HTTP status codes - convenient named constants.
+"""HTTP status codes — convenient named constants.
 
 Usage::
 
@@ -8,6 +8,8 @@ Usage::
     async def create_item(item: Item):
         return item
 """
+
+from __future__ import annotations
 
 # 1xx Informational
 HTTP_100_CONTINUE = 100

@@ -70,7 +70,9 @@ _OPENAPI_REF_PREFIX = "#/components/schemas/"
 _MCP_REF_PREFIX = "#/$defs/"
 
 
-def build_input_schema(plan: HandlerPlan, schemas_registry: dict[str, dict]) -> dict[str, Any]:
+def build_input_schema(
+    plan: HandlerPlan, schemas_registry: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
     """Build the MCP tool input JSON Schema from a handler plan.
 
     Each handler parameter an agent supplies becomes a property; a parameter
@@ -108,7 +110,7 @@ def _collect_input_slots(
     slots: list[_Slot],
     properties: dict[str, Any],
     required: list[str],
-    schemas_registry: dict[str, dict],
+    schemas_registry: dict[str, dict[str, Any]],
     seen_plans: set[int],
 ) -> None:
     """Accumulate client-supplied input properties from a slot list.
@@ -151,7 +153,9 @@ def _collect_input_slots(
             required.append(slot.name)
 
 
-def _collect_defs(schema: dict[str, Any], schemas_registry: dict[str, dict]) -> dict[str, dict]:
+def _collect_defs(
+    schema: dict[str, Any], schemas_registry: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
     """Inline every component this schema references into a `$defs` map.
 
     Walks the built schema for `#/components/schemas/<Name>` refs, pulls each
@@ -159,7 +163,7 @@ def _collect_defs(schema: dict[str, Any], schemas_registry: dict[str, dict]) -> 
     transitively, rewrites all refs to the local `#/$defs/<Name>` form (in
     place, including inside the collected defs), and returns the `$defs` map.
     """
-    collected: dict[str, dict] = {}
+    collected: dict[str, dict[str, Any]] = {}
     pending = _rewrite_refs(schema)
     while pending:
         name = pending.pop()
@@ -212,7 +216,7 @@ def _deepcopy_schema(node: Any) -> Any:
 
 
 def _slot_schema(
-    slot: _Slot, schemas_registry: dict[str, dict]
+    slot: _Slot, schemas_registry: dict[str, dict[str, Any]]
 ) -> tuple[dict[str, Any] | None, bool]:
     """Return `(schema, required)` for one parameter slot, or `(None, _)` to skip."""
     kind = slot.kind

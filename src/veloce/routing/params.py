@@ -1,6 +1,7 @@
-"""Parameter markers - declarative bindings for query, path, body, and header values.
+"""Parameter markers — declarative bindings for query, path, body, and header values.
 
-Usage:
+Usage::
+
     @app.get("/items")
     async def list_items(
         q: str = Query(default="", description="Search query"),

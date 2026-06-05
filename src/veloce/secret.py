@@ -1,11 +1,11 @@
-"""Secret - an explicit wrapper that resists accidental plaintext disclosure.
+"""Secret — an explicit wrapper that resists accidental plaintext disclosure.
 
-A non-str-subclass, non-ABC wrapper around a ``str`` or ``bytes`` secret.
-Unlike a ``str`` subclass it can intercept every leak path -- ``repr``,
-``str``, ``format``/f-strings, and ``%`` interpolation all render
-``'***'`` -- so the plaintext only escapes through the explicit
-``reveal()`` method. Equality is constant-time (RFC 2104-style
-``hmac.compare_digest``) and the wrapper is unhashable to keep it out of
+A non-str-subclass, non-ABC wrapper around a `str` or `bytes` secret.
+Unlike a `str` subclass it can intercept every leak path — `repr`,
+`str`, `format`/f-strings, and `%` interpolation all render
+`'***'` — so the plaintext only escapes through the explicit
+`reveal()` method. Equality is constant-time (RFC 2104-style
+`hmac.compare_digest`) and the wrapper is unhashable to keep it out of
 key-based structures. JSON encoders refuse to serialise it.
 
 Usage::
@@ -19,7 +19,7 @@ Usage::
 from __future__ import annotations
 
 import hmac
-from typing import Any
+from typing import NoReturn
 
 
 class Secret:
@@ -58,7 +58,7 @@ class Secret:
             return hmac.compare_digest(a, b)
         return NotImplemented
 
-    def __hash__(self) -> Any:
+    def __hash__(self) -> NoReturn:
         raise TypeError("Secret is unhashable to avoid leaking into key-based structures")
 
     def __bool__(self) -> bool:

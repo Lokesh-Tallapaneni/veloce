@@ -1,4 +1,4 @@
-"""HTTP sub-package - request, response, and data structures."""
+"""HTTP sub-package — request, response, and data structures."""
 
 from __future__ import annotations
 
@@ -29,6 +29,9 @@ from veloce.http.response import (
     Response,
     StreamingResponse,
     UJSONResponse,
+    header_get,
+    header_key,
+    header_present,
 )
 
 __all__ = [
@@ -56,4 +59,7 @@ __all__ = [
     "Headers",
     "QueryParams",
     "parse_multipart_form",
+    "header_key",
+    "header_get",
+    "header_present",
 ]

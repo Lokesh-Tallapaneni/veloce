@@ -1,8 +1,8 @@
-"""Gunicorn worker - serves a Veloce app via the raw HTTP protocol.
+"""Gunicorn worker — serves a Veloce app via the raw HTTP protocol.
 
 This is an **advanced, optional** alternative to running Veloce under
 uvicorn. It lets gunicorn manage process supervision (forking, restarts,
-signals) while each worker drives Veloce's own ``HttpProtocol`` directly on
+signals) while each worker drives Veloce's own `HttpProtocol` directly on
 an asyncio event loop - no uvicorn, no ASGI shim. uvicorn remains the
 recommended production default; reach for this only when you already run a
 gunicorn-based stack and want Veloce to slot into it.
@@ -15,17 +15,17 @@ Then point gunicorn at the worker class by import path::
 
     gunicorn your_module:app -k veloce.workers.VeloceWorker
 
-Importing this module (or ``import veloce``) never requires gunicorn - the
+Importing this module (or `import veloce`) never requires gunicorn - the
 gunicorn base class is imported lazily, and the worker class only demands it
-at instantiation, raising a clear :class:`ImportError` with an install hint
+at instantiation, raising a clear `ImportError` with an install hint
 when it is missing.
 
-**TLS:** when gunicorn is started with ``--certfile`` / ``--keyfile``
-(``cfg.is_ssl``), the worker builds a server SSL context from gunicorn's
-config and hands it to ``create_server``; if the certificate chain is missing
-or unloadable it fails fast with :class:`RuntimeError` rather than silently
+**TLS:** when gunicorn is started with `--certfile` / `--keyfile`
+(`cfg.is_ssl`), the worker builds a server SSL context from gunicorn's
+config and hands it to `create_server`; if the certificate chain is missing
+or unloadable it fails fast with `RuntimeError` rather than silently
 serving cleartext over an HTTPS deployment. The default context is passed
-through gunicorn's ``ssl_context(config, default_ssl_context_factory)`` hook,
+through gunicorn's `ssl_context(config, default_ssl_context_factory)` hook,
 so a deployment that customises TLS there (minimum TLS version, mTLS tweaks)
 has those customisations honoured.
 
@@ -75,9 +75,9 @@ _INSTALL_HINT = (
 
 
 def build_protocol_factory(app: Veloce, loop: asyncio.AbstractEventLoop) -> functools.partial[Any]:
-    """Return a zero-argument factory that builds an ``HttpProtocol``.
+    """Return a zero-argument factory that builds an `HttpProtocol`.
 
-    asyncio's ``create_server`` calls the factory once per accepted
+    asyncio's `create_server` calls the factory once per accepted
     connection. Binding the app and loop up front keeps the per-connection
     path allocation-light. Factored out so it can be unit-tested without a
     running loop or gunicorn present.
@@ -88,18 +88,18 @@ def build_protocol_factory(app: Veloce, loop: asyncio.AbstractEventLoop) -> func
 
 
 def build_ssl_context(ssl_options: dict[str, Any]) -> ssl.SSLContext:
-    """Build a server ``ssl.SSLContext`` from gunicorn's ``cfg.ssl_options``.
+    """Build a server `ssl.SSLContext` from gunicorn's `cfg.ssl_options`.
 
     gunicorn exposes the resolved TLS settings as a flat dict
-    (``keyfile``, ``certfile``, ``ssl_version``, ``cert_reqs``, ``ca_certs``,
-    ``ciphers``, plus the wrap-time flags). This mirrors gunicorn's own
+    (`keyfile`, `certfile`, `ssl_version`, `cert_reqs`, `ca_certs`,
+    `ciphers`, plus the wrap-time flags). This mirrors gunicorn's own
     server-side context construction closely enough that handing the result to
-    ``loop.create_server(ssl=...)`` terminates TLS the same way gunicorn's
+    `loop.create_server(ssl=...)` terminates TLS the same way gunicorn's
     sync/threaded workers do.
 
-    A ``certfile`` is required: ``cfg.is_ssl`` is true when *either* a cert or
+    A `certfile` is required: `cfg.is_ssl` is true when *either* a cert or
     key is set, but a usable server context needs the certificate chain. If it
-    is missing this raises ``RuntimeError`` so the worker fails fast rather than
+    is missing this raises `RuntimeError` so the worker fails fast rather than
     silently serving cleartext. Factored out to be unit-testable without
     gunicorn or a running loop.
     """
@@ -142,7 +142,7 @@ class VeloceWorker(_GunicornWorker):
 
     Subclasses gunicorn's worker base and bridges the master-bound listening
     socket(s) to an asyncio server whose protocol factory yields Veloce's
-    ``HttpProtocol`` - the same raw HTTP/1.1 protocol ``Veloce.run()`` uses,
+    `HttpProtocol` - the same raw HTTP/1.1 protocol `Veloce.run()` uses,
     bypassing ASGI entirely. gunicorn owns process supervision; this worker
     owns the event loop and the request pipeline.
 
@@ -178,7 +178,7 @@ class VeloceWorker(_GunicornWorker):
     def _parent_alive(self) -> bool:
         """Best-effort check that the gunicorn master is still our parent.
 
-        When the arbiter dies the kernel reparents this worker (``getppid()``
+        When the arbiter dies the kernel reparents this worker (`getppid()`
         changes, typically to 1/init), so a changed parent pid means the master
         is gone and the worker should stop rather than orphan. Guarded: any
         failure reading the pid is treated as "still alive" so a transient error
@@ -192,12 +192,12 @@ class VeloceWorker(_GunicornWorker):
     def _count_request(self) -> None:
         """Increment the handled-request counter and trip max_requests recycling.
 
-        Installed as ``HttpProtocol.on_request_complete`` so it fires once per
-        dispatched request. gunicorn's base computes ``self.max_requests`` with
-        any ``max_requests_jitter`` already folded in (and uses ``sys.maxsize``
-        when recycling is disabled), so a plain ``>=`` comparison matches its
-        documented behaviour. Clearing ``self.alive`` lets the master replace
-        the worker after the in-flight request drains; waking ``_stop`` makes the
+        Installed as `HttpProtocol.on_request_complete` so it fires once per
+        dispatched request. gunicorn's base computes `self.max_requests` with
+        any `max_requests_jitter` already folded in (and uses `sys.maxsize`
+        when recycling is disabled), so a plain `>=` comparison matches its
+        documented behaviour. Clearing `self.alive` lets the master replace
+        the worker after the in-flight request drains; waking `_stop` makes the
         heartbeat loop notice immediately.
         """
         self.nr += 1
@@ -209,13 +209,13 @@ class VeloceWorker(_GunicornWorker):
     def _keep_serving(self) -> bool:
         """Report whether a connection may serve its next queued request.
 
-        Installed as ``HttpProtocol.should_keep_serving`` and consulted by the
+        Installed as `HttpProtocol.should_keep_serving` and consulted by the
         per-connection serve loop after each dispatched request. Returning
-        ``self.alive`` makes the loop stop at the request boundary once
-        ``max_requests`` recycling has cleared ``alive`` - otherwise a single
+        `self.alive` makes the loop stop at the request boundary once
+        `max_requests` recycling has cleared `alive` - otherwise a single
         connection with queued/pipelined requests would keep draining them past
         the limit before the worker restarts. gunicorn's own workers flip
-        ``alive`` and break inside the request-handling path for the same
+        `alive` and break inside the request-handling path for the same
         reason.
         """
         return self.alive
@@ -234,8 +234,8 @@ class VeloceWorker(_GunicornWorker):
         """Set up a fresh event loop, then hand control to the base class.
 
         gunicorn calls this once after the worker process is forked. A new
-        loop is created and installed before ``super().init_process()`` runs
-        the worker boot sequence (which ends by calling ``run()``), so the
+        loop is created and installed before `super().init_process()` runs
+        the worker boot sequence (which ends by calling `run()`), so the
         loop is current for the whole worker lifetime.
         """
         self._loop = asyncio.new_event_loop()
@@ -272,9 +272,9 @@ class VeloceWorker(_GunicornWorker):
         """Return the loaded Veloce application object.
 
         gunicorn's boot sequence loads the target callable during
-        ``init_process`` and stores it on ``self.wsgi`` (``self.app`` is
+        `init_process` and stores it on `self.wsgi` (`self.app` is
         gunicorn's own Application wrapper, not the user's app). Fall back to
-        ``self.app`` only if ``wsgi`` was not populated, which should not
+        `self.app` only if `wsgi` was not populated, which should not
         happen under a normal worker lifecycle.
         """
         return getattr(self, "wsgi", None) or self.app
@@ -282,19 +282,19 @@ class VeloceWorker(_GunicornWorker):
     def _build_ssl_context(self) -> ssl.SSLContext | None:
         """Return a server SSL context when gunicorn was started with TLS.
 
-        Reads ``cfg.is_ssl`` / ``cfg.ssl_options`` from gunicorn's config. When
-        TLS is off (the common case) this returns ``None`` and the serving path
+        Reads `cfg.is_ssl` / `cfg.ssl_options` from gunicorn's config. When
+        TLS is off (the common case) this returns `None` and the serving path
         is plain HTTP, byte-for-byte as before.
 
-        When TLS is on, the default context is built from ``cfg.ssl_options``
-        via :func:`build_ssl_context` (which fails fast if the cert chain is
+        When TLS is on, the default context is built from `cfg.ssl_options`
+        via `build_ssl_context` (which fails fast if the cert chain is
         missing - never silently downgrading HTTPS to cleartext). That default
-        is then run through gunicorn's documented ``ssl_context(config,
-        default_ssl_context_factory)`` hook, mirroring how gunicorn's own socket
-        layer calls ``conf.ssl_context(conf, default_ssl_context_factory)``. A
+        is then run through gunicorn's documented `ssl_context(config,
+        default_ssl_context_factory)` hook, mirroring how gunicorn's own socket
+        layer calls `conf.ssl_context(conf, default_ssl_context_factory)`. A
         deployment that customises TLS in this hook (minimum TLS version, mTLS
         tweaks, ciphers) sees those customisations honoured here; the stock hook
-        just returns ``default_ssl_context_factory()`` unchanged.
+        just returns `default_ssl_context_factory()` unchanged.
         """
         cfg = getattr(self, "cfg", None)
         if cfg is None:  # pragma: no cover - gunicorn always sets cfg
@@ -323,10 +323,10 @@ class VeloceWorker(_GunicornWorker):
         """Bind the gunicorn sockets to an asyncio server and serve.
 
         gunicorn binds the listening socket(s) in the master and passes them
-        down to each worker as ``self.sockets`` (objects exposing a ``.sock``
-        attribute). Each is handed to ``loop.create_server`` so the kernel
+        down to each worker as `self.sockets` (objects exposing a `.sock`
+        attribute). Each is handed to `loop.create_server` so the kernel
         accept queue is shared across workers, matching gunicorn's pre-fork
-        model. The loop runs until ``self.alive`` is cleared (by gunicorn's
+        model. The loop runs until `self.alive` is cleared (by gunicorn's
         signal handlers) or a graceful timeout elapses with no requests.
         """
         app = self._veloce_app()
@@ -400,7 +400,7 @@ class VeloceWorker(_GunicornWorker):
     async def _shutdown(self) -> None:
         """Drain in-flight dispatch tasks, then run shutdown lifecycle.
 
-        Mirrors ``Veloce._graceful_shutdown``: give active per-request tasks a
+        Mirrors `Veloce._graceful_shutdown`: give active per-request tasks a
         bounded window to finish, cancel any stragglers, then run the app's
         shutdown hooks so resources opened at startup are released.
         """

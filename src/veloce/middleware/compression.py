@@ -1,4 +1,4 @@
-"""Response compression middleware - CPU-bound work offloaded to executor."""
+"""Response compression middleware — CPU-bound work offloaded to executor."""
 
 from __future__ import annotations
 
@@ -96,6 +96,10 @@ class GZipMiddleware(Middleware):
     """GZip compression for responses above a size threshold.
 
     Compression runs in the thread pool executor to avoid blocking the event loop.
+
+    Usage::
+
+        app.add_middleware(GZipMiddleware(minimum_size=1024, compresslevel=6))
     """
 
     def __init__(

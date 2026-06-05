@@ -1,8 +1,8 @@
-"""Middleware base classes - the two first-class middleware shapes.
+"""Middleware base classes — the two first-class middleware shapes.
 
 - `Middleware`: split request/response hooks. Veloce-native shape, lightweight.
 - `BaseHTTPMiddleware`: a single `dispatch(request, call_next)` coroutine that
-  wraps the inner handler - a common ASGI pattern. Useful when the
+  wraps the inner handler — a common ASGI pattern. Useful when the
   middleware needs to inspect the response after computing the request.
 """
 
@@ -12,6 +12,9 @@ from collections.abc import Awaitable, Callable
 
 from veloce.http.request import Request
 from veloce.http.response import Response
+
+# The `call_next` argument type, so user dispatch functions can annotate it.
+CallNext = Callable[[Request], Awaitable[Response]]
 
 
 class Middleware:
@@ -48,14 +51,15 @@ class Middleware:
         return f"<{type(self).__name__}>"
 
 
-# The `call_next` argument type, so user dispatch functions can annotate it.
-CallNext = Callable[[Request], Awaitable[Response]]
-
-
 class BaseHTTPMiddleware:
     """Class-based dispatch-shape middleware.
 
-    Subclass and override `dispatch`:
+    Subclass and override `dispatch`, or construct with `dispatch=fn` for a
+    one-off middleware. The instance is callable as
+    `(request, call_next) -> response`, so it composes with the existing
+    `@app.middleware("http")` chain.
+
+    Usage::
 
         class TimingMW(BaseHTTPMiddleware):
             async def dispatch(self, request, call_next):
@@ -68,14 +72,9 @@ class BaseHTTPMiddleware:
 
         app.add_http_middleware(TimingMW())
 
-    For one-off middleware, construct with `dispatch=fn` instead of
-    subclassing:
-
+        # Or, without subclassing:
         async def my_dispatch(request, call_next): ...
         app.add_http_middleware(BaseHTTPMiddleware(dispatch=my_dispatch))
-
-    The instance is callable as `(request, call_next) -> response`, so it
-    composes with the existing `@app.middleware("http")` chain.
     """
 
     def __init__(self, dispatch: Callable | None = None) -> None:

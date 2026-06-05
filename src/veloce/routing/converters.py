@@ -1,4 +1,4 @@
-"""Path converters - match-time validation and coercion of URL segments.
+"""Path converters — match-time validation and coercion of URL segments.
 
 Two segment syntaxes are accepted: the angle-bracket form
 (`<int:id>`, `<path:p>`, `<any(a,b):x>`) and the brace form
@@ -381,7 +381,7 @@ class AnyConverter(_Converter):
 # Public base-class alias - subclass `Converter` to build a custom one.
 Converter = _Converter
 
-_BUILTIN = {
+_BUILTIN: dict[str, type[_Converter]] = {
     "str": StringConverter,
     "string": StringConverter,
     "int": IntConverter,

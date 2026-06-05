@@ -1,4 +1,4 @@
-"""Blueprint primitive - a core building block.
+"""Blueprint primitive — a core building block.
 
 A `Blueprint` is a deferred-registration collection of routes, hooks,
 and error handlers that gets bound to an app via
