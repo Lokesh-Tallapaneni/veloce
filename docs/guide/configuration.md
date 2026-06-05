@@ -77,6 +77,8 @@ The defaults are:
 | `TCP_KEEPALIVE_IDLE` | `None` | Idle seconds before the first keepalive probe (`TCP_KEEPIDLE`); Linux/macOS only. |
 | `TCP_KEEPALIVE_INTERVAL` | `None` | Seconds between keepalive probes (`TCP_KEEPINTVL`); Linux only. |
 | `TCP_KEEPALIVE_COUNT` | `None` | Failed probes before the connection is dropped (`TCP_KEEPCNT`); Linux only. |
+| `JSON_ERRORS_VERBOSE` | `False` | Include parser detail in JSON body-parse error responses. |
+| `GRACEFUL_TASK_TIMEOUT` | `10` | Seconds to wait for background tasks to finish cancelling on shutdown. |
 
 A few of these keys drive framework behaviour directly. `MAX_CONTENT_LENGTH`
 bounds the request body the server will read. `PROPAGATE_EXCEPTIONS`

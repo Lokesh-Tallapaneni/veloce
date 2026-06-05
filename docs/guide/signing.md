@@ -96,10 +96,11 @@ token = signer.dumps({"user_id": 42})
 # Within the window the token reads back normally.
 assert signer.loads(token, max_age=3600) == {"user_id": 42}
 
-# A token older than max_age raises BadTimeSignature. A freshly minted
-# token with max_age=0 is already past its window.
+# A token whose age exceeds max_age raises BadTimeSignature. A negative
+# window forces that path for a freshly minted token: its age (0 seconds)
+# already exceeds a -1 second window.
 try:
-    signer.loads(token, max_age=0)
+    signer.loads(token, max_age=-1)
 except BadTimeSignature:
     print("token expired")
 ```

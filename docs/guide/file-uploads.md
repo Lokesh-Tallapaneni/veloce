@@ -108,7 +108,7 @@ The object exposes:
 - `content_type` — the part's declared content type, defaulting to
   `"application/octet-stream"`.
 - `size` — the part size in bytes.
-- `headers` — the raw part headers as a `dict`.
+- `headers` — the part headers as a case-insensitive `Headers` object.
 - `read(size=-1)` — async; read up to `size` bytes, or the whole file
   when `size` is `-1`.
 - `write(data)` — async; append bytes.

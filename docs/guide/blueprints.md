@@ -44,7 +44,6 @@ from veloce import Blueprint
 blog = Blueprint(
     "blog",
     url_prefix="/blog",
-    tags=["blog"],
 )
 ```
 

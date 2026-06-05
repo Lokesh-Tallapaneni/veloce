@@ -94,7 +94,7 @@ async def numbers():
 
 @app.get("/stream")
 async def stream(request: Request):
-    return StreamingResponse(numbers(), media_type="text/plain")
+    return StreamingResponse(numbers(), content_type="text/plain")
 ```
 
 ## Request bodies with Pydantic

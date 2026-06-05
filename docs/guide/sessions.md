@@ -99,24 +99,21 @@ When a handler reads or writes the session, the middleware adds
 which tells caches that the response varies by the request `Cookie` header.
 A handler that never touches the session gets no extra `Vary`.
 
-Occasionally a handler reads the session but returns a body that is *not*
-personalised by it — a static asset reached through the session middleware,
-say. Call `suppress_session_vary(request)` to skip the automatic header for
-that one response so a shared cache may still store it:
+Varying on `Cookie` is the safe default. If a deployment never serves
+session-bearing responses from a shared cache — or manages cache-safety another
+way — construct the middleware with `vary_on_cookie=False` to turn the automatic
+header off for every response it handles:
 
 ```python
-from veloce import Request, suppress_session_vary
-
-
-@app.get("/public-asset")
-async def public_asset(request: Request):
-    if request.session.get("user_id"):
-        ...  # body does not depend on the session
-    suppress_session_vary(request)
-    return {"public": True}
+app.add_middleware(
+    SessionMiddleware,
+    secret_key="change-me-in-production",
+    vary_on_cookie=False,
+)
 ```
 
-Use it sparingly — varying on `Cookie` is the safe default.
+This is an app-wide switch, not a per-response one; leave it on unless a shared
+cache is genuinely not in play.
 
 ## Permanent sessions
 
