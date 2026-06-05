@@ -16,9 +16,10 @@ import traceback
 import warnings
 import weakref
 from collections.abc import Callable, Coroutine, Iterable, Mapping
-from typing import TYPE_CHECKING, Any, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, get_args, get_origin
 
 from pydantic import BaseModel as _PydanticBaseModel
+from typing_extensions import Doc
 
 from veloce import status
 from veloce._constants import (
@@ -503,38 +504,146 @@ class Veloce(Router):
 
     def __init__(
         self,
-        title: str = "Veloce",
-        version: str = "0.1.0",
-        description: str = "",
-        summary: str | None = None,
-        debug: bool = False,
-        prefix: str = "",
-        docs_url: str | None = "/docs",
-        redoc_url: str | None = "/redoc",
-        openapi_url: str | None = "/openapi.json",
-        lifespan: Callable | None = None,
-        redirect_slashes: bool = True,
-        root_path: str = "",
-        openapi_tags: list[dict[str, Any]] | None = None,
-        openapi_external_docs: dict[str, Any] | None = None,
-        servers: list[dict[str, Any]] | None = None,
-        license_info: dict[str, str] | None = None,
-        contact: dict[str, str] | None = None,
-        terms_of_service: str | None = None,
-        swagger_ui_parameters: dict[str, Any] | None = None,
-        swagger_ui_init_oauth: dict[str, Any] | None = None,
-        separate_input_output_schemas: bool = True,
-        disambiguate_operation_ids: bool = True,
-        validate_openapi: bool | None = None,
-        default_response_class: Any = None,
-        dependencies: list[Any] | None = None,
-        responses: dict[int, dict[str, Any]] | None = None,
-        exception_handlers: dict[Any, Callable] | None = None,
-        middleware: list[Any] | None = None,
-        import_name: str | None = None,
-        template_folder: str | None = None,
-        instance_path: str | None = None,
-        on_duplicate: str = "error",
+        title: Annotated[
+            str,
+            Doc("API title shown in the OpenAPI document and the docs UI."),
+        ] = "Veloce",
+        version: Annotated[
+            str,
+            Doc("API version string emitted into the OpenAPI document."),
+        ] = "0.1.0",
+        description: Annotated[
+            str,
+            Doc("Longer API description emitted into the OpenAPI document."),
+        ] = "",
+        summary: Annotated[
+            str | None,
+            Doc("Short one-line API summary emitted into the OpenAPI document."),
+        ] = None,
+        debug: Annotated[
+            bool,
+            Doc("Enable debug mode: verbose error pages and development conveniences."),
+        ] = False,
+        prefix: Annotated[
+            str,
+            Doc("Path prefix prepended to every route registered on the app."),
+        ] = "",
+        docs_url: Annotated[
+            str | None,
+            Doc("Path serving the Swagger UI docs page; `None` disables it."),
+        ] = "/docs",
+        redoc_url: Annotated[
+            str | None,
+            Doc("Path serving the ReDoc docs page; `None` disables it."),
+        ] = "/redoc",
+        openapi_url: Annotated[
+            str | None,
+            Doc("Path serving the generated OpenAPI JSON document; `None` disables it."),
+        ] = "/openapi.json",
+        lifespan: Annotated[
+            Callable | None,
+            Doc("Async context manager managing startup and shutdown resources for the app."),
+        ] = None,
+        redirect_slashes: Annotated[
+            bool,
+            Doc(
+                "Redirect a request to the canonical slashed/unslashed form on a trailing-slash mismatch."
+            ),
+        ] = True,
+        root_path: Annotated[
+            str,
+            Doc("ASGI root path the app is mounted under, used for URL generation behind a proxy."),
+        ] = "",
+        openapi_tags: Annotated[
+            list[dict[str, Any]] | None,
+            Doc("OpenAPI tag metadata objects describing and ordering the document's tags."),
+        ] = None,
+        openapi_external_docs: Annotated[
+            dict[str, Any] | None,
+            Doc("OpenAPI external-documentation object for the document root."),
+        ] = None,
+        servers: Annotated[
+            list[dict[str, Any]] | None,
+            Doc("OpenAPI server objects listing the base URLs the API is served from."),
+        ] = None,
+        license_info: Annotated[
+            dict[str, str] | None,
+            Doc("OpenAPI license object for the API."),
+        ] = None,
+        contact: Annotated[
+            dict[str, str] | None,
+            Doc("OpenAPI contact object for the API."),
+        ] = None,
+        terms_of_service: Annotated[
+            str | None,
+            Doc("URL to the API's terms of service, emitted into the OpenAPI document."),
+        ] = None,
+        swagger_ui_parameters: Annotated[
+            dict[str, Any] | None,
+            Doc("Configuration parameters passed to the Swagger UI docs page."),
+        ] = None,
+        swagger_ui_init_oauth: Annotated[
+            dict[str, Any] | None,
+            Doc("OAuth2 initialization config passed to Swagger UI's `initOAuth`."),
+        ] = None,
+        separate_input_output_schemas: Annotated[
+            bool,
+            Doc(
+                "Emit a distinct serialization schema for a model whose input and output schemas diverge."
+            ),
+        ] = True,
+        disambiguate_operation_ids: Annotated[
+            bool,
+            Doc(
+                "Deterministically suffix colliding auto-generated operationIds so the document stays valid."
+            ),
+        ] = True,
+        validate_openapi: Annotated[
+            bool | None,
+            Doc("Run the structural OpenAPI checker after assembly; `None` defers to `debug`."),
+        ] = None,
+        default_response_class: Annotated[
+            Any,
+            Doc("Response class used for routes that do not declare their own `response_class`."),
+        ] = None,
+        dependencies: Annotated[
+            list[Any] | None,
+            Doc("Dependencies applied to every route on the app, run before per-route ones."),
+        ] = None,
+        responses: Annotated[
+            dict[int, dict[str, Any]] | None,
+            Doc("Additional OpenAPI responses overlaid onto every route on the app."),
+        ] = None,
+        exception_handlers: Annotated[
+            dict[Any, Callable] | None,
+            Doc(
+                "Mapping of exception class or status code to a handler, registered at construction."
+            ),
+        ] = None,
+        middleware: Annotated[
+            list[Any] | None,
+            Doc("Middleware instances registered on the app at construction, outermost first."),
+        ] = None,
+        import_name: Annotated[
+            str | None,
+            Doc(
+                "Import name used to locate templates and static files; defaults to the caller's module."
+            ),
+        ] = None,
+        template_folder: Annotated[
+            str | None,
+            Doc("Directory holding templates, resolved relative to the application root path."),
+        ] = None,
+        instance_path: Annotated[
+            str | None,
+            Doc("Instance folder for runtime files; computed from the package root when omitted."),
+        ] = None,
+        on_duplicate: Annotated[
+            str,
+            Doc(
+                "Policy for a second handler on the same path and method: `error`, `warn`, or `override`."
+            ),
+        ] = "error",
         **extra: Any,
     ) -> None:
         # App-level `dependencies` / `responses` - applied
@@ -2364,10 +2473,24 @@ class Veloce(Router):
 
     def add_url_rule(
         self,
-        rule: str,
-        endpoint: str | None = None,
-        view_func: Callable | None = None,
-        methods: list[str] | None = None,
+        rule: Annotated[
+            str,
+            Doc("URL path template, including `{param}` / `{param:converter}` placeholders."),
+        ],
+        endpoint: Annotated[
+            str | None,
+            Doc("Endpoint name for `url_for`; required when registering an endpoint-only stub."),
+        ] = None,
+        view_func: Annotated[
+            Callable | None,
+            Doc(
+                "Handler for the route; `None` registers an endpoint-only stub for later attachment."
+            ),
+        ] = None,
+        methods: Annotated[
+            list[str] | None,
+            Doc("HTTP methods this rule serves; defaults to `GET`."),
+        ] = None,
         **kwargs: Any,
     ) -> None:
         """Add a URL rule programmatically.

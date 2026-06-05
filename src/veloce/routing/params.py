@@ -26,7 +26,9 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
+
+from typing_extensions import Doc
 
 
 class ParamBase:
@@ -56,25 +58,94 @@ class ParamBase:
 
     def __init__(
         self,
-        default: Any = ...,
-        default_factory: Callable[[], Any] | None = None,
-        alias: str | None = None,
-        title: str | None = None,
-        description: str | None = None,
-        ge: float | None = None,
-        le: float | None = None,
-        gt: float | None = None,
-        lt: float | None = None,
-        min_length: int | None = None,
-        max_length: int | None = None,
-        multiple_of: float | None = None,
-        regex: str | None = None,
-        pattern: str | None = None,
-        deprecated: bool = False,
-        examples: list[Any] | None = None,
-        embed: bool = False,
-        convert_underscores: bool = True,
-        include_in_schema: bool = True,
+        default: Annotated[
+            Any,
+            Doc(
+                "Static fallback value used when the parameter is absent; `...` marks it required."
+            ),
+        ] = ...,
+        default_factory: Annotated[
+            Callable[[], Any] | None,
+            Doc(
+                "Callable invoked per request to build a fresh default, avoiding shared mutable state."
+            ),
+        ] = None,
+        alias: Annotated[
+            str | None,
+            Doc("External name to read the value under instead of the Python parameter name."),
+        ] = None,
+        title: Annotated[
+            str | None,
+            Doc("Human-readable title emitted into the parameter's OpenAPI schema."),
+        ] = None,
+        description: Annotated[
+            str | None,
+            Doc("Description emitted into the parameter's OpenAPI schema."),
+        ] = None,
+        ge: Annotated[
+            float | None,
+            Doc("Require the numeric value to be greater than or equal to this bound."),
+        ] = None,
+        le: Annotated[
+            float | None,
+            Doc("Require the numeric value to be less than or equal to this bound."),
+        ] = None,
+        gt: Annotated[
+            float | None,
+            Doc("Require the numeric value to be strictly greater than this bound."),
+        ] = None,
+        lt: Annotated[
+            float | None,
+            Doc("Require the numeric value to be strictly less than this bound."),
+        ] = None,
+        min_length: Annotated[
+            int | None,
+            Doc("Require the string value to have at least this many characters."),
+        ] = None,
+        max_length: Annotated[
+            int | None,
+            Doc("Require the string value to have at most this many characters."),
+        ] = None,
+        multiple_of: Annotated[
+            float | None,
+            Doc("Require the numeric value to be a multiple of this positive number."),
+        ] = None,
+        regex: Annotated[
+            str | None,
+            Doc(
+                "Deprecated alias for `pattern`; the regular expression the value must fully match."
+            ),
+        ] = None,
+        pattern: Annotated[
+            str | None,
+            Doc("Regular expression the value must fully match; takes precedence over `regex`."),
+        ] = None,
+        deprecated: Annotated[
+            bool,
+            Doc("Mark the parameter as deprecated in the OpenAPI schema."),
+        ] = False,
+        examples: Annotated[
+            list[Any] | None,
+            Doc("Example values emitted into the parameter's OpenAPI schema."),
+        ] = None,
+        embed: Annotated[
+            bool,
+            Doc(
+                "For `Body` markers, nest the value under the parameter name inside the JSON body."
+            ),
+        ] = False,
+        convert_underscores: Annotated[
+            bool,
+            Doc(
+                "For `Header` markers, rewrite underscores in the name to hyphens (`x_token` to `x-token`)."
+            ),
+        ] = True,
+        include_in_schema: Annotated[
+            bool,
+            Doc(
+                "Resolve the parameter at runtime but omit it from the generated OpenAPI document."
+            ),
+        ] = True,
     ) -> None:
         # A static `default` and a `default_factory` are mutually exclusive:
         # the factory exists precisely to build a fresh per-request value, so

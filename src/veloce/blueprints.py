@@ -30,7 +30,9 @@ called multiple times on different apps.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
+
+from typing_extensions import Doc
 
 from veloce.routing.router import RouteInfo, Router, _readd_route
 
@@ -53,11 +55,30 @@ class Blueprint(Router):
 
     def __init__(
         self,
-        name: str,
-        url_prefix: str = "",
-        default_response_class: Any = None,
-        dependencies: list | None = None,
-        responses: dict[int, dict[str, Any]] | None = None,
+        name: Annotated[
+            str,
+            Doc("Blueprint name, used to prefix endpoint names for `url_for` (`<name>.<route>`)."),
+        ],
+        url_prefix: Annotated[
+            str,
+            Doc("Path prefix prepended to every route, overridable at `register_blueprint` time."),
+        ] = "",
+        default_response_class: Annotated[
+            Any,
+            Doc(
+                "Response class used for blueprint routes that do not declare their own `response_class`."
+            ),
+        ] = None,
+        dependencies: Annotated[
+            list | None,
+            Doc(
+                "Dependencies applied to every route on this blueprint, run before per-route ones."
+            ),
+        ] = None,
+        responses: Annotated[
+            dict[int, dict[str, Any]] | None,
+            Doc("Additional OpenAPI responses overlaid onto every route on this blueprint."),
+        ] = None,
     ) -> None:
         super().__init__(
             prefix=url_prefix,

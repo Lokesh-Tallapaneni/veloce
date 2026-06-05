@@ -6,8 +6,10 @@ import functools
 import logging
 import re
 from collections.abc import Callable, Coroutine, Iterator, Sequence
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlencode
+
+from typing_extensions import Doc
 
 from veloce._constants import MSG_SUCCESSFUL_RESPONSE
 from veloce._protocol_constants import (
@@ -398,12 +400,32 @@ class Router:
 
     def __init__(
         self,
-        prefix: str = "",
-        tags: list[str] | None = None,
-        default_response_class: Any = None,
-        dependencies: list[Any] | None = None,
-        responses: dict[int, dict[str, Any]] | None = None,
-        on_duplicate: str = "error",
+        prefix: Annotated[
+            str,
+            Doc("Path prefix prepended to every route registered on this router."),
+        ] = "",
+        tags: Annotated[
+            list[str] | None,
+            Doc("OpenAPI tags applied to every route registered on this router."),
+        ] = None,
+        default_response_class: Annotated[
+            Any,
+            Doc("Response class used for routes that do not declare their own `response_class`."),
+        ] = None,
+        dependencies: Annotated[
+            list[Any] | None,
+            Doc("Dependencies applied to every route, run before each route's own dependencies."),
+        ] = None,
+        responses: Annotated[
+            dict[int, dict[str, Any]] | None,
+            Doc("Additional OpenAPI responses overlaid onto every route on this router."),
+        ] = None,
+        on_duplicate: Annotated[
+            str,
+            Doc(
+                "Policy for a second handler on the same path and method: `error`, `warn`, or `override`."
+            ),
+        ] = "error",
     ) -> None:
         self.prefix = prefix.rstrip("/")
         # Policy for a second handler registered on the same path+method:
@@ -825,37 +847,142 @@ class Router:
 
     def add_route(
         self,
-        path: str,
-        handler: RouteHandler,
-        methods: list[str],
-        dependencies: list[Any] | None = None,
-        response_model: Any = None,
-        tags: list[str] | None = None,
-        summary: str | None = None,
-        name: str | None = None,
-        description: str | None = None,
-        deprecated: bool = False,
-        response_description: str = MSG_SUCCESSFUL_RESPONSE,
-        status_code: int = HTTP_200_OK,
-        response_class: Any = None,
-        response_model_include: set[str] | None = None,
-        response_model_exclude: set[str] | None = None,
-        response_model_exclude_unset: bool = False,
-        response_model_exclude_defaults: bool = False,
-        response_model_by_alias: bool = False,
-        response_model_exclude_none: bool = False,
-        include_in_schema: bool = True,
-        responses: dict[int, dict[str, Any]] | None = None,
-        operation_id: str | None = None,
-        openapi_extra: dict[str, Any] | None = None,
-        defaults: dict[str, Any] | None = None,
-        callbacks: dict[str, Any] | None = None,
-        strict_slashes: bool | None = None,
-        subdomain: str | None = None,
-        host: str | None = None,
-        expose_as_mcp_tool: bool = False,
-        mcp_description: str | None = None,
-        exclude_middleware: Sequence[str] | None = None,
+        path: Annotated[
+            str,
+            Doc("URL path template, including `{param}` / `{param:converter}` placeholders."),
+        ],
+        handler: Annotated[
+            RouteHandler,
+            Doc("Async or sync callable invoked when the route matches."),
+        ],
+        methods: Annotated[
+            list[str],
+            Doc("HTTP methods this handler serves (uppercased internally)."),
+        ],
+        dependencies: Annotated[
+            list[Any] | None,
+            Doc("Dependencies run for this route, appended after the router-level ones."),
+        ] = None,
+        response_model: Annotated[
+            Any,
+            Doc(
+                "Type used to filter and serialize the handler's return value and the OpenAPI response schema."
+            ),
+        ] = None,
+        tags: Annotated[
+            list[str] | None,
+            Doc("OpenAPI tags for this route, combined with the router-level tags."),
+        ] = None,
+        summary: Annotated[
+            str | None,
+            Doc("Short OpenAPI summary for this operation."),
+        ] = None,
+        name: Annotated[
+            str | None,
+            Doc("Endpoint name for `url_for` reverse lookup; defaults to the handler's name."),
+        ] = None,
+        description: Annotated[
+            str | None,
+            Doc("OpenAPI description; defaults to the handler's docstring."),
+        ] = None,
+        deprecated: Annotated[
+            bool,
+            Doc("Mark the operation as deprecated in the OpenAPI document."),
+        ] = False,
+        response_description: Annotated[
+            str,
+            Doc("Description of the successful response in the OpenAPI document."),
+        ] = MSG_SUCCESSFUL_RESPONSE,
+        status_code: Annotated[
+            int,
+            Doc("Default HTTP status code for a successful response."),
+        ] = HTTP_200_OK,
+        response_class: Annotated[
+            Any,
+            Doc("Response class for this route, overriding the router and framework defaults."),
+        ] = None,
+        response_model_include: Annotated[
+            set[str] | None,
+            Doc("Fields to include when serializing the response model."),
+        ] = None,
+        response_model_exclude: Annotated[
+            set[str] | None,
+            Doc("Fields to exclude when serializing the response model."),
+        ] = None,
+        response_model_exclude_unset: Annotated[
+            bool,
+            Doc("Omit fields left unset on the response model from the serialized output."),
+        ] = False,
+        response_model_exclude_defaults: Annotated[
+            bool,
+            Doc(
+                "Omit fields equal to their default on the response model from the serialized output."
+            ),
+        ] = False,
+        response_model_by_alias: Annotated[
+            bool,
+            Doc("Serialize the response model using field aliases instead of attribute names."),
+        ] = False,
+        response_model_exclude_none: Annotated[
+            bool,
+            Doc("Omit fields whose value is `None` from the serialized response model."),
+        ] = False,
+        include_in_schema: Annotated[
+            bool,
+            Doc("Register the route but omit it from the generated OpenAPI document when False."),
+        ] = True,
+        responses: Annotated[
+            dict[int, dict[str, Any]] | None,
+            Doc("Additional OpenAPI responses for this route, overlaid on the router-level ones."),
+        ] = None,
+        operation_id: Annotated[
+            str | None,
+            Doc("Explicit OpenAPI `operationId`; defaults to the route name."),
+        ] = None,
+        openapi_extra: Annotated[
+            dict[str, Any] | None,
+            Doc("Arbitrary dict deep-merged into this route's OpenAPI operation object."),
+        ] = None,
+        defaults: Annotated[
+            dict[str, Any] | None,
+            Doc(
+                "Fixed values merged into the path params at dispatch without overriding URL-matched ones."
+            ),
+        ] = None,
+        callbacks: Annotated[
+            dict[str, Any] | None,
+            Doc(
+                "OpenAPI Callback objects emitted verbatim into the operation's `callbacks` field."
+            ),
+        ] = None,
+        strict_slashes: Annotated[
+            bool | None,
+            Doc(
+                "When False, match both slashed and unslashed forms; `None` defers to the app policy."
+            ),
+        ] = None,
+        subdomain: Annotated[
+            str | None,
+            Doc(
+                "Constrain the route to a subdomain of `SERVER_NAME`; `*` matches any non-apex subdomain."
+            ),
+        ] = None,
+        host: Annotated[
+            str | None,
+            Doc("Constrain the route to an exact `Host` header value (case-insensitive)."),
+        ] = None,
+        expose_as_mcp_tool: Annotated[
+            bool,
+            Doc("Expose the route as an MCP tool in the contrib MCP registry."),
+        ] = False,
+        mcp_description: Annotated[
+            str | None,
+            Doc("LLM-facing description for the route's MCP tool, required when exposed as one."),
+        ] = None,
+        exclude_middleware: Annotated[
+            Sequence[str] | None,
+            Doc("Names of middleware this route opts out of."),
+        ] = None,
     ) -> None:
         """Register a route in the radix tree.
 
@@ -1244,36 +1371,138 @@ class Router:
 
     def route(
         self,
-        path: str,
-        methods: list[str] | None = None,
-        dependencies: list[Any] | None = None,
-        response_model: Any = None,
-        tags: list[str] | None = None,
-        summary: str | None = None,
-        name: str | None = None,
-        description: str | None = None,
-        deprecated: bool = False,
-        response_description: str = MSG_SUCCESSFUL_RESPONSE,
-        status_code: int = HTTP_200_OK,
-        response_class: Any = None,
-        response_model_include: set[str] | None = None,
-        response_model_exclude: set[str] | None = None,
-        response_model_exclude_unset: bool = False,
-        response_model_exclude_defaults: bool = False,
-        response_model_by_alias: bool = False,
-        response_model_exclude_none: bool = False,
-        include_in_schema: bool = True,
-        responses: dict[int, dict[str, Any]] | None = None,
-        operation_id: str | None = None,
-        openapi_extra: dict[str, Any] | None = None,
-        defaults: dict[str, Any] | None = None,
-        callbacks: dict[str, Any] | None = None,
-        strict_slashes: bool | None = None,
-        subdomain: str | None = None,
-        host: str | None = None,
-        expose_as_mcp_tool: bool = False,
-        mcp_description: str | None = None,
-        exclude_middleware: Sequence[str] | None = None,
+        path: Annotated[
+            str,
+            Doc("URL path template, including `{param}` / `{param:converter}` placeholders."),
+        ],
+        methods: Annotated[
+            list[str] | None,
+            Doc("HTTP methods this handler serves; defaults to `GET`."),
+        ] = None,
+        dependencies: Annotated[
+            list[Any] | None,
+            Doc("Dependencies run for this route, appended after the router-level ones."),
+        ] = None,
+        response_model: Annotated[
+            Any,
+            Doc(
+                "Type used to filter and serialize the handler's return value and the OpenAPI response schema."
+            ),
+        ] = None,
+        tags: Annotated[
+            list[str] | None,
+            Doc("OpenAPI tags for this route, combined with the router-level tags."),
+        ] = None,
+        summary: Annotated[
+            str | None,
+            Doc("Short OpenAPI summary for this operation."),
+        ] = None,
+        name: Annotated[
+            str | None,
+            Doc("Endpoint name for `url_for` reverse lookup; defaults to the handler's name."),
+        ] = None,
+        description: Annotated[
+            str | None,
+            Doc("OpenAPI description; defaults to the handler's docstring."),
+        ] = None,
+        deprecated: Annotated[
+            bool,
+            Doc("Mark the operation as deprecated in the OpenAPI document."),
+        ] = False,
+        response_description: Annotated[
+            str,
+            Doc("Description of the successful response in the OpenAPI document."),
+        ] = MSG_SUCCESSFUL_RESPONSE,
+        status_code: Annotated[
+            int,
+            Doc("Default HTTP status code for a successful response."),
+        ] = HTTP_200_OK,
+        response_class: Annotated[
+            Any,
+            Doc("Response class for this route, overriding the router and framework defaults."),
+        ] = None,
+        response_model_include: Annotated[
+            set[str] | None,
+            Doc("Fields to include when serializing the response model."),
+        ] = None,
+        response_model_exclude: Annotated[
+            set[str] | None,
+            Doc("Fields to exclude when serializing the response model."),
+        ] = None,
+        response_model_exclude_unset: Annotated[
+            bool,
+            Doc("Omit fields left unset on the response model from the serialized output."),
+        ] = False,
+        response_model_exclude_defaults: Annotated[
+            bool,
+            Doc(
+                "Omit fields equal to their default on the response model from the serialized output."
+            ),
+        ] = False,
+        response_model_by_alias: Annotated[
+            bool,
+            Doc("Serialize the response model using field aliases instead of attribute names."),
+        ] = False,
+        response_model_exclude_none: Annotated[
+            bool,
+            Doc("Omit fields whose value is `None` from the serialized response model."),
+        ] = False,
+        include_in_schema: Annotated[
+            bool,
+            Doc("Register the route but omit it from the generated OpenAPI document when False."),
+        ] = True,
+        responses: Annotated[
+            dict[int, dict[str, Any]] | None,
+            Doc("Additional OpenAPI responses for this route, overlaid on the router-level ones."),
+        ] = None,
+        operation_id: Annotated[
+            str | None,
+            Doc("Explicit OpenAPI `operationId`; defaults to the route name."),
+        ] = None,
+        openapi_extra: Annotated[
+            dict[str, Any] | None,
+            Doc("Arbitrary dict deep-merged into this route's OpenAPI operation object."),
+        ] = None,
+        defaults: Annotated[
+            dict[str, Any] | None,
+            Doc(
+                "Fixed values merged into the path params at dispatch without overriding URL-matched ones."
+            ),
+        ] = None,
+        callbacks: Annotated[
+            dict[str, Any] | None,
+            Doc(
+                "OpenAPI Callback objects emitted verbatim into the operation's `callbacks` field."
+            ),
+        ] = None,
+        strict_slashes: Annotated[
+            bool | None,
+            Doc(
+                "When False, match both slashed and unslashed forms; `None` defers to the app policy."
+            ),
+        ] = None,
+        subdomain: Annotated[
+            str | None,
+            Doc(
+                "Constrain the route to a subdomain of `SERVER_NAME`; `*` matches any non-apex subdomain."
+            ),
+        ] = None,
+        host: Annotated[
+            str | None,
+            Doc("Constrain the route to an exact `Host` header value (case-insensitive)."),
+        ] = None,
+        expose_as_mcp_tool: Annotated[
+            bool,
+            Doc("Expose the route as an MCP tool in the contrib MCP registry."),
+        ] = False,
+        mcp_description: Annotated[
+            str | None,
+            Doc("LLM-facing description for the route's MCP tool, required when exposed as one."),
+        ] = None,
+        exclude_middleware: Annotated[
+            Sequence[str] | None,
+            Doc("Names of middleware this route opts out of."),
+        ] = None,
     ) -> Callable:
         """Generic route decorator.
 
@@ -1347,7 +1576,13 @@ class Router:
         """`TRACE` route decorator - RFC 9110 Sec. 9.3.8."""
         return self.route(path, methods=[HTTP_METHOD_TRACE], **kwargs)
 
-    def websocket(self, path: str) -> Callable:
+    def websocket(
+        self,
+        path: Annotated[
+            str,
+            Doc("URL path template for the WebSocket route, including `{param}` placeholders."),
+        ],
+    ) -> Callable:
         """Register a WebSocket route via decorator."""
 
         def decorator(func: RouteHandler) -> RouteHandler:
@@ -1410,7 +1645,17 @@ class Router:
 
         return decorator
 
-    def add_websocket_route(self, path: str, handler: RouteHandler) -> None:
+    def add_websocket_route(
+        self,
+        path: Annotated[
+            str,
+            Doc("URL path template for the WebSocket route, including `{param}` placeholders."),
+        ],
+        handler: Annotated[
+            RouteHandler,
+            Doc("Callable invoked with the accepted WebSocket connection when the route matches."),
+        ],
+    ) -> None:
         """Register a WebSocket route imperatively (ASGI shape).
 
         The non-decorator form of `@app.websocket(path)`.
