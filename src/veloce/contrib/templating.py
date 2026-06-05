@@ -260,11 +260,16 @@ class Jinja2Templates:
         winner = self._resolved_cache.get(key)
         if winner is None:
             tpl = env.select_template(list(candidates))
-            # Drop the oldest entry before inserting once at the cap. A plain
-            # dict preserves insertion order, so the first key is the oldest.
-            if len(self._resolved_cache) >= self.RESOLVED_CACHE_MAX:
-                del self._resolved_cache[next(iter(self._resolved_cache))]
-            self._resolved_cache[key] = tpl.name
+            # Bound the cache: evict the oldest entries (a plain dict preserves
+            # insertion order, so the first key is the oldest) down to below the
+            # cap before inserting. `RESOLVED_CACHE_MAX <= 0` disables the cache
+            # entirely - a natural way for a user to turn it off - and the
+            # `>= 1` guard means `next(iter(...))` is never called on an empty
+            # dict; the `while` also absorbs the cap being lowered at runtime.
+            if self.RESOLVED_CACHE_MAX >= 1:
+                while len(self._resolved_cache) >= self.RESOLVED_CACHE_MAX:
+                    del self._resolved_cache[next(iter(self._resolved_cache))]
+                self._resolved_cache[key] = tpl.name
             return tpl
         return env.get_template(winner)
 
