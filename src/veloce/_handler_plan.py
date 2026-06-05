@@ -391,6 +391,7 @@ class HandlerPlan:
         "slots",
         "route_dep_plans",
         "compiled_resolver",
+        "compiled_graph_resolver",
         "parallel_groups",
         "dep_waves",
         "wave_trigger",
@@ -413,6 +414,11 @@ class HandlerPlan:
         # not yet attempted; a callable = compiled fast path; a sentinel =
         # tried and not compilable (see DependencyResolver.resolve_plan).
         self.compiled_resolver: Any = None
+        # Lazily-built straight-line `async` resolver for a no-wave dependency
+        # graph (see `_resolver_codegen.compile_graph_resolver`). Same tri-state
+        # as `compiled_resolver`: `None` = not yet attempted; a callable =
+        # compiled fast path; a sentinel = tried and not compilable.
+        self.compiled_graph_resolver: Any = None
         # Parallel-dependency grouping, derived once here so the resolver does
         # not re-scan slot safety on every request. `parallel_groups` is the
         # legacy contiguous-run map (kept for the compat shims and external

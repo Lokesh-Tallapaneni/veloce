@@ -78,6 +78,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Handlers whose dependency graph is a no-wave `Depends` chain now resolve
+  through a straight-line `async` resolver generated once at registration,
+  instead of the per-request `_resolve_slots` interpreter. The compiler accepts
+  a graph only when there is no parallel-safe batching to preserve, no Security
+  scopes, no `yield`-teardown dependencies, and no body / async markers; plans
+  with parallel waves, scopes, teardown, active dependency overrides, or MCP
+  context continue to use the interpreter, which keeps their `asyncio.gather`
+  batching and stateful semantics. Behaviour is identical on both paths. On a
+  resolver microbenchmark of a linear chain this cuts dependency-resolution time
+  by roughly 2.8x-3.9x (about 2.3 us at one level deep up to about 7.2 us at six
+  levels), scaling with chain depth.
 - The multipart `Content-Type` boundary is now extracted with the shared
   quoted-string-aware `parse_header_params` walker used for the part headers,
   rather than an ad-hoc `split(";")` and quote strip. A quoted boundary that

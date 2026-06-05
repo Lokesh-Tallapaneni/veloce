@@ -41,7 +41,7 @@ from veloce._handler_plan import (
     parallel_group_end,
 )
 from veloce._internal import _is_async_callable, offload
-from veloce._resolver_codegen import compile_param_resolver
+from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
 from veloce.http.request import Request
@@ -433,6 +433,33 @@ class DependencyResolver:
                 plan.compiled_resolver = cr = compiled if compiled is not None else _NOT_COMPILABLE
             if cr is not _NOT_COMPILABLE:
                 return cr(request, path_params)
+
+            # The param-only compiler rejected this plan (it has dependencies or
+            # other interpreter-only slots). A no-wave dependency graph - a
+            # linear chain with no parallel-safe batching to preserve, no
+            # Security scopes, and no yield-teardown deps - compiles to a
+            # straight-line `async` resolver too. It reads neither the override
+            # map nor the MCP context, so it is used only when both are absent;
+            # an active override or MCP context falls through to the interpreter,
+            # which applies them. The compiled body is self-contained (its own
+            # locals dedup shared deps), so it runs after the `reset()` above
+            # without touching `_cache` / `_teardowns` / `_scope_stack`.
+            if not self._overrides and self._mcp_context is None:
+                gcr = plan.compiled_graph_resolver
+                if gcr is None:
+                    graph = compile_graph_resolver(
+                        plan,
+                        _coerce_value,
+                        RequestValidationError,
+                        offload,
+                        BackgroundTasks,
+                        Response,
+                    )
+                    plan.compiled_graph_resolver = gcr = (
+                        graph if graph is not None else _NOT_COMPILABLE
+                    )
+                if gcr is not _NOT_COMPILABLE:
+                    return await gcr(request, path_params)
         else:
             for slot in route_dep_plans:
                 await self._exec_depends(slot, request, path_params)
