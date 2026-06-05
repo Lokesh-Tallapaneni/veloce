@@ -40,12 +40,13 @@ _ALGORITHMS: dict[str, Any] = {
     "HS512": hashlib.sha512,
 }
 
-# Canonical JWS header for each algorithm. Pre-serialised so encode does
-# no per-call dict construction; the order matches RFC 7515 Sec. 4.
+# The `typ` member of the JWS header (RFC 7515 Sec. 4.1.9). `encode_jwt`
+# builds the `{"alg": ..., "typ": _HEADER_TYP}` header per call so the
+# requested algorithm is reflected.
 _HEADER_TYP = "JWT"
 
 
-# -- Errors -------------------------------------------------------
+# ── Errors ──────────────────────────────────────────────────────
 
 
 class JWTError(Exception):
@@ -84,7 +85,7 @@ class MissingClaimError(JWTError):
     """A claim named in `require` is absent from the payload."""
 
 
-# -- Claims -------------------------------------------------------
+# ── Claims ──────────────────────────────────────────────────────
 
 
 class Claims(Mapping[str, Any]):
@@ -114,7 +115,7 @@ class Claims(Mapping[str, Any]):
         return f"Claims({self._data!r})"
 
 
-# -- encode / decode ----------------------------------------------
+# ── encode / decode ─────────────────────────────────────────────
 
 
 def encode_jwt(

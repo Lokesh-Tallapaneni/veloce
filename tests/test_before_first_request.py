@@ -96,3 +96,21 @@ async def test_concurrent_first_requests_dont_double_fire():
     delay_done.set()
     await asyncio.gather(t1, t2)
     assert fired == [1]
+
+
+@pytest.mark.asyncio
+async def test_dotenv_false_strings_still_lock_setup():
+    """A dotenv-style `DEBUG="false"`/`TESTING="false"` is falsy, so the first
+    request must latch `_setup_locked`. The raw string is truthy, so a naive
+    `if config.get("DEBUG")` would wrongly leave setup open."""
+    app = Veloce(openapi_url=None)
+    app.config["DEBUG"] = "false"
+    app.config["TESTING"] = "false"
+
+    @app.get("/x")
+    async def x():
+        return {}
+
+    assert app._setup_locked is False
+    await app.handle_request(_req())
+    assert app._setup_locked is True

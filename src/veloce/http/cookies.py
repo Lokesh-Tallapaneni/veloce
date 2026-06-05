@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 from urllib.parse import quote, unquote
 
+from veloce._header_parsing import unquote_value
 from veloce._internal import _reject_header_crlf
 from veloce.http.dates import http_date
 
@@ -48,8 +49,7 @@ def iter_cookies(header: str | None) -> Iterator[tuple[str, str]]:
         if name in seen:
             continue
         seen.add(name)
-        value = value.strip().strip('"')
-        yield name, unquote(value)
+        yield name, unquote(unquote_value(value))
 
 
 def parse_cookie(header: str | None) -> dict[str, str]:

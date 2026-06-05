@@ -12,7 +12,7 @@ import base64
 import contextlib
 import io
 import ipaddress
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, BinaryIO, NamedTuple
 from urllib.parse import parse_qsl
 
@@ -25,6 +25,7 @@ from veloce._constants import (
     MIME_OCTET_STREAM,
 )
 from veloce._header_parsing import parse_header_params
+from veloce._internal import is_default_port
 from veloce._protocol_constants import URL_SCHEME_HTTP, URL_SCHEME_HTTPS
 from veloce.exceptions import FilesKeyError, RequestURITooLong
 from veloce.http.cookies import iter_cookies
@@ -386,9 +387,8 @@ class URL:
     @property
     def netloc(self) -> str:
         """Return the network location (host:port)."""
-        default_ports = {URL_SCHEME_HTTP: 80, URL_SCHEME_HTTPS: 443}
         host_str = f"[{self.host}]" if ":" in self.host else self.host
-        if self.port and self.port != default_ports.get(self.scheme):
+        if self.port and not is_default_port(self.scheme, self.port):
             return f"{host_str}:{self.port}"
         return host_str
 
@@ -412,6 +412,31 @@ class URL:
 
 
 # -- Multidict-backed collections ------------------------------------
+# A header parameter value carrying any of these characters must be
+# double-quoted (RFC 9110 Sec. 5.6.6 quoted-string). Hoisted so `Headers.add`
+# does not rebuild the trigger set on every parameter.
+_HEADER_PARAM_QUOTE_TRIGGERS = frozenset((" ", ";", ",", '"'))
+
+
+class _GetListMixin:
+    """Shared `getlist` for the multidict-backed collections.
+
+    `multidict` exposes `getall`, which raises `KeyError` when the key is
+    absent; the framework's collections expose `getlist`, which returns an
+    empty list instead. The mixin is slotless so it adds no per-instance
+    `__dict__` to its (also slotless-by-omission) multidict subclasses.
+    """
+
+    __slots__ = ()
+
+    def getlist(self, key: str) -> list:
+        """Return all values for the given key as a list. Empty list if absent."""
+        try:
+            return self.getall(key)  # type: ignore[attr-defined]
+        except KeyError:
+            return []
+
+
 def _files_key_hint(key: str, mimetype: str, form_keys: frozenset[str]) -> str:
     """Build the debug message for a missing `request.files` key.
 
@@ -440,7 +465,7 @@ def _files_key_hint(key: str, mimetype: str, form_keys: frozenset[str]) -> str:
     )
 
 
-class FormData(MultiDict):
+class FormData(_GetListMixin, MultiDict):
     """Multi-value form-field collection (text fields + file uploads).
 
     Backed by `multidict.MultiDict`. Repeated form fields (`<input name="a">`
@@ -465,20 +490,13 @@ class FormData(MultiDict):
                 raise
             raise FilesKeyError(_files_key_hint(key, diag[0], diag[1])) from None
 
-    def getlist(self, key: str) -> list:
-        """Return all values for the given key as a list."""
-        try:
-            return self.getall(key)
-        except KeyError:
-            return []
-
     def get_upload(self, key: str) -> UploadFile | None:
         """Return the first value if it is an `UploadFile`, else `None`."""
         val = self.get(key)
         return val if isinstance(val, UploadFile) else None
 
 
-class Headers(CIMultiDict):
+class Headers(_GetListMixin, CIMultiDict):
     """Case-insensitive, multi-value header collection.
 
     Backed by `multidict.CIMultiDict`. Existing single-value access via
@@ -486,13 +504,6 @@ class Headers(CIMultiDict):
     values. Construction from a plain dict, a list of tuples, or another
     multidict all work - the underlying constructor handles each shape.
     """
-
-    def getlist(self, key: str) -> list:
-        """Alias for `getall`. Empty list if absent."""
-        try:
-            return self.getall(key)
-        except KeyError:
-            return []
 
     def to_wsgi_list(self) -> list[tuple[str, str]]:
         """Return headers as a list of `(name, value)` tuples.
@@ -518,9 +529,10 @@ class Headers(CIMultiDict):
             parts = [value]
             for pk, pv in params.items():
                 pk = pk.replace("_", "-")
-                if any(c in str(pv) for c in (" ", ";", ",", '"')):
-                    pv = '"' + str(pv).replace('"', '\\"') + '"'
-                parts.append(f"{pk}={pv}")
+                sval = str(pv)
+                if any(c in sval for c in _HEADER_PARAM_QUOTE_TRIGGERS):
+                    sval = '"' + sval.replace('"', '\\"') + '"'
+                parts.append(f"{pk}={sval}")
             value = "; ".join(parts)
         super().add(key, value)
 
@@ -545,8 +557,7 @@ class RangeSpec:
 
     @classmethod
     def parse(cls, header_value: str) -> RangeSpec | None:
-        """Parse a `Range:` header. Returns `None` on a missing or
-        unparseable value rather than raising."""
+        """Parse a `Range:` header, returning `None` for a missing or unparseable value."""
         if not header_value:
             return None
         if "=" not in header_value:
@@ -715,19 +726,7 @@ class AcceptHeader:
         rejected or not mentioned (callers usually special-case this).
         """
         if self._mime:
-            vkey = _parse_mime_key(value)
-            best_q = 0.0
-            best_spec = -1
-            for _opt, q, okey in self._options:
-                if okey is None or not self._mime_matches(okey, vkey):
-                    continue
-                spec = okey[3]
-                # A more specific range overrides a broader one regardless of
-                # q; among equally-specific ranges the higher q wins.
-                if spec > best_spec or (spec == best_spec and q > best_q):
-                    best_spec = spec
-                    best_q = q
-            return best_q
+            return self._mime_best(_parse_mime_key(value))[0]
         folded = value.lower()
         best = 0.0
         for opt, q, _okey in self._options:
@@ -814,7 +813,14 @@ class AcceptHeader:
         """
         if not self._mime:
             return (self.quality(value), 0)
-        vkey = _parse_mime_key(value)
+        return self._mime_best(_parse_mime_key(value))
+
+    def _mime_best(self, vkey: _MimeKey) -> tuple[float, int]:
+        """Return `(quality, specificity)` for `vkey` across this header's ranges.
+
+        The most specific matching client range wins regardless of q; among
+        equally-specific ranges the higher q wins (RFC 9110 Sec. 12.5.1).
+        """
         best_q = 0.0
         best_spec = -1
         for _opt, q, okey in self._options:
@@ -853,7 +859,7 @@ class AcceptHeader:
     def __bool__(self) -> bool:
         return any(q > 0 for _, q, _ in self._options)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str]:
         return iter(self.values)
 
 
@@ -932,19 +938,13 @@ class Authorization:
 
 
 # -- Cookies & query parameters --------------------------------------
-class Cookies(MultiDict):
+class Cookies(_GetListMixin, MultiDict):
     """Cookie collection parsed from the `Cookie` header.
 
     Built on `multidict.MultiDict`. Parsing delegates to `iter_cookies`
     (RFC 6265 section 5.4) so values are percent-decoded. Duplicate names
     collapse to the first occurrence per the spec.
     """
-
-    def getlist(self, key: str) -> list:
-        try:
-            return self.getall(key)
-        except KeyError:
-            return []
 
     @classmethod
     def from_cookie_header(cls, header_value: str) -> Cookies:
@@ -957,20 +957,13 @@ class Cookies(MultiDict):
         return cls(iter_cookies(header_value))
 
 
-class QueryParams(MultiDict):
+class QueryParams(_GetListMixin, MultiDict):
     """Multi-value, case-sensitive query parameter collection.
 
     Backed by `multidict.MultiDict`. Repeated query keys (``?x=1&x=2``)
     preserve every value; `getlist("x")` returns ``["1", "2"]`` while
     `params["x"]` returns ``"1"`` (the first).
     """
-
-    def getlist(self, key: str) -> list:
-        """Return all values for the given key as a list."""
-        try:
-            return self.getall(key)
-        except KeyError:
-            return []
 
     @classmethod
     def from_query_string(cls, query_string: str) -> QueryParams:

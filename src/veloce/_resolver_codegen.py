@@ -33,6 +33,7 @@ from veloce._handler_plan import (
     K_PATH,
     K_QUERY,
     K_REQUEST,
+    MARKER_LOC,
     MK_COOKIE,
     MK_HEADER,
     MK_PATH,
@@ -52,10 +53,6 @@ _SYNC_MARKERS = frozenset({MK_QUERY, MK_PATH, MK_HEADER, MK_COOKIE})
 # Marker kinds that support repeated values via a list/set/tuple annotation.
 # MK_PATH binds a single path segment, so it has no list form.
 _LIST_MARKERS = frozenset({MK_QUERY, MK_HEADER, MK_COOKIE})
-
-# Mirror of dependency._MARKER_LOC for the sync subset, used for the
-# openapi-style `loc` strings the generated error payloads carry.
-_MARKER_LOC = {MK_QUERY: "query", MK_PATH: "path", MK_HEADER: "header", MK_COOKIE: "cookie"}
 
 
 class _Missing:
@@ -150,7 +147,7 @@ def _emit_marker(lines: list[str], ns: dict[str, Any], j: int, slot: Any) -> Non
     marker = slot.marker
     mk = slot.marker_kind
     lookup = slot.lookup_name
-    loc = _MARKER_LOC[mk]
+    loc = MARKER_LOC[mk]
     name = slot.name
 
     ns[f"_t{j}"] = slot.target_type

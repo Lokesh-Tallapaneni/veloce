@@ -39,6 +39,8 @@ class BackgroundTask:
 class BackgroundTasks:
     """Collection of background tasks to run after response."""
 
+    __slots__ = ("_tasks",)
+
     def __init__(self) -> None:
         self._tasks: list[BackgroundTask] = []
 

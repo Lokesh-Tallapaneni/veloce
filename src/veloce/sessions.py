@@ -239,11 +239,12 @@ class InMemorySessionStore(SessionStore):
         # write - a revoked session stays revoked. An expired entry that
         # has not yet been lazily evicted counts as absent (mirrors
         # `read`), so a stale session is never rewritten back to life.
+        now = time.time()
         entry = self._entries.get(session_id)
-        if entry is None or entry[1] <= time.time():
+        if entry is None or entry[1] <= now:
             self._entries.pop(session_id, None)
             return False
-        self._entries[session_id] = (dict(data), time.time() + max_age)
+        self._entries[session_id] = (dict(data), now + max_age)
         self._maybe_sweep()
         return True
 
@@ -252,11 +253,12 @@ class InMemorySessionStore(SessionStore):
         # copy, since the payload is not changing. Same liveness check as
         # `replace`: an absent or not-yet-evicted-but-expired entry counts as
         # gone, so a stale session is never revived by a sliding-expiry touch.
+        now = time.time()
         entry = self._entries.get(session_id)
-        if entry is None or entry[1] <= time.time():
+        if entry is None or entry[1] <= now:
             self._entries.pop(session_id, None)
             return False
-        self._entries[session_id] = (entry[0], time.time() + max_age)
+        self._entries[session_id] = (entry[0], now + max_age)
         return True
 
     def sweep_expired(self) -> int:
@@ -267,10 +269,11 @@ class InMemorySessionStore(SessionStore):
         the probabilistic sweep that fires from `write` / `replace`.
         """
         now = time.time()
-        # Snapshot first - a concurrent write during iteration would otherwise
-        # raise `RuntimeError: dictionary changed size during iteration`. Use
-        # `pop(..., None)` so a concurrent delete of the same id is a no-op.
-        expired = [sid for sid, (_, exp) in list(self._entries.items()) if exp <= now]
+        # The comprehension fully materialises `expired` before any mutation,
+        # so it is its own snapshot - a separate `list(...)` of the items view
+        # would be a redundant copy. Use `pop(..., None)` below so a concurrent
+        # delete of the same id is a no-op.
+        expired = [sid for sid, (_, exp) in self._entries.items() if exp <= now]
         removed = 0
         for sid in expired:
             if self._entries.pop(sid, None) is not None:

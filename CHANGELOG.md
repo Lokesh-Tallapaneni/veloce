@@ -60,6 +60,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The multipart `Content-Type` boundary is now extracted with the shared
+  quoted-string-aware `parse_header_params` walker used for the part headers,
+  rather than an ad-hoc `split(";")` and quote strip. A quoted boundary that
+  contains a semicolon (e.g. `boundary="a;b"`) is now parsed correctly instead
+  of being truncated, and the `boundary` parameter name is matched
+  case-insensitively with surrounding whitespace tolerated, consistent with how
+  every other Content-Type parameter is parsed.
+
+- The OpenTelemetry bridge (`veloce.otel`) now shares one `_existing_bridge`
+  guard between the backdated and live factories instead of two verbatim
+  idempotency loops, and both W3C trace-carrier extractors (the framework-core
+  `request.headers` reader in `veloce.app` and the bridge's raw-ASGI-scope
+  reader) now build their carrier dict through one shared
+  `build_trace_carrier(traceparent, tracestate)` tail. The structured access-log
+  factories (`veloce.observability`) build their JSON payload through one shared
+  `_json_payload(...)` helper rather than two near-identical dict literals. The
+  emitted spans, warnings, and log records are unchanged.
+- The MCP server (`veloce.contrib.mcp.server`) now imports `orjson` at module
+  top instead of inside the per-`tools/call` body-serialisation helpers, matching
+  the module-top import the stdio transport already uses. Behavior is unchanged.
+- The in-memory test client (`veloce.testclient`) now drives both the sync
+  `TestClient` and the `AsyncTestClient` request paths through one shared
+  `_collect_response` coroutine, parses every `Set-Cookie` first pair through a
+  single `_parse_set_cookie_first_pair` helper, and matches the `Set-Cookie`
+  header name against a precomputed `_SET_COOKIE_LOWER` constant. Both clients'
+  request/redirect loops are now driven by one shared `_follow_redirects` helper
+  - the status classification, GET-rewrite, one-shot-stream replay guard, and
+  hop cap live in one place, with only the per-hop await/`run_until_complete`
+  boundary staying per-client. The connected
+  WebSocket session's `receive_text`/`receive_bytes` share one `_receive(key)`
+  driver. Responses, cookie handling, and frame reception are unchanged.
+- The file-serving helpers (`veloce.helpers`) resolve their
+  `Content-Disposition` filename through one `_attachment_name` helper across
+  `send_file`, `send_from_directory`, and `send_from_directory_async`, and the
+  `abort()` shorthand and `Aborter` share a single `_default_detail` reason-phrase
+  fallback. `BackgroundTasks` now declares `__slots__`, matching its slotted
+  `BackgroundTask` sibling. Behavior is unchanged.
+- `jsonable_encoder` and `orjson_default` (`veloce.encoders`) now share their
+  scalar conversions for `Path`/`Decimal`/`timedelta`/`bytes` through one
+  `_encode_shared_scalar` helper, and `jsonable_encoder`'s list/tuple/set/deque/
+  generator branches recurse through a single module-level `_encode_seq` helper
+  (the set branch passes its `sorted(obj, key=str)` form), removing the parallel
+  copies. The Secret-serialisation guard is
+  single-sourced through `_reject_secret` so both entry points share one message.
+  `_resolve_encoder` now memoises and probes via a sentinel-keyed lookup over a
+  merged built-in encoder table, and the MRO walk runs at most once per
+  `jsonable_encoder` call when the process-level encoder registry is non-empty.
+  Behavior is unchanged.
+- `StaticFiles` now frames its repeated `403 Forbidden` and `304 Not Modified`
+  responses through internal `_forbidden()` and `_not_modified(etag,
+  last_modified)` helpers instead of constructing each one inline, so every
+  denial returns the same opaque body and every conditional-GET hit echoes the
+  same validator headers from one place. The `Jinja2Templates` fallback-list
+  resolution cache (`_resolved_cache`) is now bounded by the new
+  `RESOLVED_CACHE_MAX` class attribute (default `1024`), evicting the oldest
+  entry on overflow so a caller that builds candidate lists from request-derived
+  names cannot grow it without bound. Behavior is unchanged.
+- `Signal.asend` and `Signal.send_robust_async` now short-circuit with an empty
+  result when the signal has no subscriptions, mirroring the existing `send`
+  fast path, so the dispatch-time context snapshot and result scaffolding are no
+  longer allocated for an unsubscribed signal. `InMemorySessionStore.replace`
+  and `touch` read the clock once per call, `sweep_expired` no longer copies the
+  items view before its own comprehension snapshot, and the coroutine-from-sync
+  -send diagnostic in `Signal.send_robust` resolves the receiver name once.
+  Behavior is unchanged.
+- The native serving path's HTTP error responses are now framed through a
+  single `HttpProtocol._emit_http_error` helper instead of six near-identical
+  write-and-close blocks (oversized request line/headers, 413, 408, 400, the
+  503 admission reject, and the pre-101 WebSocket handshake refusals), and the
+  request-target split shared by HTTP dispatch and the WebSocket upgrade is
+  factored into `_parse_request_target`. The raw-transport WebSocket close
+  teardown is single-sourced as `WebSocket._terminate_raw`, with `_close_control`
+  and `_echo_close` delegating to it, and the field initialisation shared by the
+  raw-transport constructor and `from_asgi` is centralised in
+  `WebSocket._init_common` so a new field is set on both paths from one place.
+  The heartbeat scheduler now uses `asyncio.get_running_loop()` to match the
+  rest of the module. Behavior is unchanged.
+- `GZipMiddleware`'s buffered and streaming paths now share a single
+  content-type / existing-encoding precheck (`_skip_for_type_or_encoding`) and a
+  single post-compression header rewrite (`_finalize_gzip_headers`), replacing
+  the two parallel guard-and-rewrite blocks. Each path keeps its own guard
+  ordering and SSE/Range handling; behavior is unchanged.
+- The HTTP auth schemes precompute their per-request constants at construction
+  time: `HTTPBasic` and `HTTPDigest` cache the Basic/Digest scheme-prefix
+  lengths as module constants, `HTTPBasic` builds its `WWW-Authenticate`
+  challenge dict once in `__init__` as a template and copies it per 401, and
+  `HTTPDigest` precomputes the realm/qop/algorithm portions of its challenge,
+  splicing only the per-call nonce in. `OAuth2PasswordRequestForm` hoists its
+  `Form`-marker resolution to a module-level `_form_value` helper instead of
+  defining a closure per construction, and `_extract_api_key` tests an
+  all-whitespace key with `isspace()` rather than allocating a stripped copy.
+  Behavior is unchanged.
+- The dependency resolver's marker-location map is now single-sourced as
+  `MARKER_LOC` next to the `MK_*` constants in `_handler_plan`, replacing the
+  divergent copies previously kept in `dependency` and `_resolver_codegen`. The
+  interpreter's marker missing-required error is also built through one shared
+  helper, and a redundant scope-stack copy in `SecurityScopes` injection was
+  removed. Behavior is unchanged.
+- The two session middlewares (`SessionMiddleware`, `ServerSessionMiddleware`)
+  now share their duplicated logic through module-level helpers: the RFC 6265bis
+  cookie name-prefix derivation (`_wire_name`), the persist-on-status decision
+  (`_should_persist`), and the response-phase preamble that reads the session,
+  emits `Vary: Cookie`, and short-circuits when no session is attached
+  (`_begin_session_response`). `ServerSessionMiddleware`'s identical write and
+  renew Set-Cookie blocks are single-sourced as `_set_session_cookie`, mirroring
+  the existing `_clear_session_cookie`. `CSRFMiddleware` stores `safe_methods` as
+  a `frozenset` for the per-request membership test and drops a redundant
+  `.upper()` on the already-upper-cased `request.method`. Behavior is unchanged.
+- The multidict-backed HTTP collections (`FormData`, `Headers`, `Cookies`,
+  `QueryParams`) now share a single slotless `getlist` implementation via an
+  internal mixin instead of four identical copies, and `AcceptHeader.quality`
+  and `AcceptHeader._match_rank` share one MIME match-and-rank pass. Behavior is
+  unchanged.
+- Route registration in `Router` was de-duplicated without changing behavior.
+  The `RouteInfo` construction and dispatch-plan finalization shared by
+  `add_route`, `include_router`'s tree merge, and the regex-route merge are now
+  factored into `_build_merged_route_info`, `_finalize_plans`, and
+  `_commit_merged_method`, so the three registration paths stay in lock-step.
+  The deferred `_handler_plan` imports that were spread across these paths are
+  consolidated into a single registration-time import inside `_finalize_plans`,
+  keeping the planning import off the dependency-direction boundary and out of
+  any per-request path.
+- The per-request config lookups in the body, form, and JSON accessors share a
+  single `_config()` helper. Behavior is unchanged.
+- The multipart parser no longer re-parses each part's `Content-Disposition`
+  header twice. The quoted-string-aware parameter walk now runs once when a
+  part's kind is resolved, and `on_part_end` reuses the cached parameters
+  instead of walking the header again. `CacheControl.to_header` collapses two
+  byte-identical serialization branches into one. Behavior is unchanged.
+
 - `SessionMiddleware` and `ServerSessionMiddleware` do less work on the response
   path. The session's `accessed`/`modified` state is read once and reused for the
   `Vary` and persist decisions instead of through repeated probes, and
@@ -157,7 +287,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   orjson `default=` response path. The `Secret` serialization guard still runs
   ahead of any custom or registered encoder.
 
-### Changed
+- `FileResponse` now declares `__slots__`, so its instances no longer carry a
+  per-instance `__dict__`. Every other `Response` subclass already declared
+  empty slots; `FileResponse` was the lone subclass that silently reintroduced
+  a `__dict__`, defeating the slotted base. Behaviour is unchanged for callers
+  that only use the documented attributes.
+- `FileResponse(path)` performs a single `os.stat` for its existence check and
+  the `Last-Modified` / `ETag` metadata instead of stat-ing the path twice (once
+  via `os.path.isfile`, once via `os.stat`). A missing path and a non-regular
+  path (directory, broken symlink) still raise `FileNotFoundError` as before.
+- Consolidated several duplicated string-handling idioms onto single internal
+  helpers so the call sites cannot drift: the JSON content-type predicate
+  (`is_json_mimetype`), the IPv6-aware host/port split (`_extract_host`, now with
+  a `lower` flag shared with `ProxyFix`), the scheme default-port map
+  (`DEFAULT_PORTS` with `is_default_port` / `strip_default_port`, consumed by
+  `URL.netloc` and the CSRF origin matcher), and the `.strip().strip('"')`
+  quoted-value trim (`unquote_value`). `URL.netloc` continues to suppress only an
+  explicit `http`/`https` default port and emits a `ws`/`wss` `:80`/`:443`
+  verbatim, so absolute-URL strings for WebSocket-scope requests are unchanged;
+  the `ws`/`wss` defaults remain exclusive to the CSRF origin matcher. Behaviour
+  is otherwise unchanged.
 
 - An SSE source iterator may now yield bare values. `EventSourceResponse`
   coerces a yielded `Mapping` into a single `data:` field carrying its JSON, and
@@ -712,8 +861,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `verify_password` signature is unchanged. All three are exported from the
   top-level `veloce` package.
 
-### Changed
-
 - Yield-dependency teardowns no longer swallow their own failures.
   `run_teardowns` still runs every teardown in reverse registration order even
   when one raises, but the failures are now collected and re-raised together as
@@ -887,6 +1034,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The MCP tool serialiser now applies the same JSON content-type rule as
+  `Request.is_json` / `Response.is_json` (`application/json` or an
+  `application/*+json` structured suffix, RFC 6839 Sec. 3.1). It previously
+  treated any media type ending in `json` as JSON, so an unrelated type such as
+  `text/json` was wrongly parsed as a JSON body.
+- The first-request setup-lock now coerces the `DEBUG` and `TESTING` config
+  flags the same way the `app.debug` property does. A string value such as
+  `DEBUG=false` loaded from a dotenv file previously read as truthy here and
+  left setup unlocked while `app.debug` reported `False`; both now agree.
+- Config-key validation now uses an ASCII digit range check instead of
+  `str.isdigit()`. The documented contract for `Config` keys is ASCII
+  `A-Z`/`0-9`/`_`, but `str.isdigit()` also accepts non-ASCII digit
+  characters (superscripts, Arabic-Indic digits, ...), so a key such as
+  `KEY²` was wrongly admitted by `from_mapping`, `from_object`, and
+  `from_prefixed_env`. Such keys are now rejected, matching the contract.
 - Scope-aware dependency caching. A `Security()` dependency whose sub-graph
   reads `SecurityScopes` is now cached per active scope set, so the same auth
   callable referenced with different scopes in one request

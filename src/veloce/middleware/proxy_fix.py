@@ -29,8 +29,8 @@ from veloce._constants import (
     HEADER_X_FORWARDED_PREFIX,
     HEADER_X_FORWARDED_PROTO,
 )
-from veloce._header_parsing import split_outside_quotes
-from veloce._internal import _reject_header_crlf
+from veloce._header_parsing import split_outside_quotes, unquote_value
+from veloce._internal import _extract_host, _reject_header_crlf
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -124,17 +124,10 @@ class ProxyFix(Middleware):
             _reject_header_crlf(prefix, HEADER_X_FORWARDED_PREFIX)
 
         if client:
-            # Strip port suffix, but preserve IPv6 addresses.
-            if "[" in client:
-                # Bracketed IPv6, e.g. "[2001:db8::1]:8080" or "[2001:db8::1]"
-                host_only = client.split("]", 1)[0][1:]
-            elif client.count(":") >= 2:
-                # Bare IPv6 (no brackets, no port), e.g. "2001:db8::1"
-                host_only = client
-            else:
-                # IPv4 or hostname, optionally with ":port"
-                host_only = client.split(":", 1)[0]
-            request._state["proxy_fix_client"] = host_only
+            # Strip the port suffix, preserving IPv6 literals. `lower=False`
+            # keeps the client IP in its original casing - this is a stored
+            # address, not a host compared case-insensitively.
+            request._state["proxy_fix_client"] = _extract_host(client, lower=False)
         if host:
             # Rewrite Host so URL.from_request picks up the original host.
             request.headers["host"] = host
@@ -157,7 +150,10 @@ class ProxyFix(Middleware):
             # ASGI scope says "http" (TLS terminated upstream) but the
             # trusted hop tells us the original scheme was "https".
             request.headers[HEADER_X_FORWARDED_PROTO] = proto
-            if isinstance(getattr(request, "scope", None), dict):
+            # `Request.scope` is a framework-owned field always set in __init__
+            # (to `scope or {}`), so access it directly; only the dict shape is
+            # checked before mutating the scheme key.
+            if isinstance(request.scope, dict):
                 request.scope["scheme"] = proto
         if prefix:
             request._state["proxy_fix_prefix"] = prefix
@@ -211,7 +207,7 @@ class ProxyFix(Middleware):
                 continue
             k, _, v = pair.partition("=")
             k = k.strip().lower()
-            v = v.strip().strip('"')
+            v = unquote_value(v)
             if v.startswith("[") and "]" in v:
                 v = v.split("]", 1)[0][1:]
             result[k] = v

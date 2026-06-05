@@ -45,6 +45,19 @@ no public re-export.
 from __future__ import annotations
 
 
+def unquote_value(value: str) -> str:
+    """Trim surrounding whitespace then a single pair of double quotes.
+
+    The `.strip().strip('"')` idiom used to recover a header parameter
+    value (cookie value, Cache-Control directive value, a `charset=`/
+    `boundary=` parameter, a `Forwarded` element value). Whitespace is
+    removed first so a quoted value padded with spaces (` "v" `) unquotes
+    to `v`. Single source for the sites that do not need the full
+    quoted-string walker.
+    """
+    return value.strip().strip('"')
+
+
 def split_outside_quotes(value: str, delimiter: str) -> list[str]:
     """Split `value` on `delimiter`, but never inside a double-quoted string.
 

@@ -19,8 +19,10 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+import orjson
+
 from veloce import status
-from veloce._internal import _is_async_callable
+from veloce._internal import _is_async_callable, is_json_mimetype
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
@@ -586,9 +588,7 @@ def _response_body_value(response: Response) -> Any:
     body = response.body
     if not body:
         return ""
-    if response.mimetype.endswith("json"):
-        import orjson
-
+    if is_json_mimetype(response.mimetype):
         try:
             return orjson.loads(body)
         except orjson.JSONDecodeError:
@@ -600,8 +600,6 @@ def _stringify(result: Any) -> str:
     """Serialise a handler return value to the text content of a tool result."""
     if isinstance(result, str):
         return result
-    import orjson
-
     try:
         return orjson.dumps(result, default=_orjson_default).decode()
     except (TypeError, orjson.JSONEncodeError):

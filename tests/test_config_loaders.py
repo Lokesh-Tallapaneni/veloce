@@ -23,6 +23,10 @@ def test_uppercase_key_predicate():
     assert not Config._is_uppercase_key("1ABC")  # leading digit
     assert not Config._is_uppercase_key("")
     assert not Config._is_uppercase_key("Mixed_Case")
+    # Non-ASCII "digit" characters must be rejected: the contract is ASCII
+    # A-Z/0-9/_, but str.isdigit() also accepts superscripts and other scripts.
+    assert not Config._is_uppercase_key("KEY²")  # superscript two
+    assert not Config._is_uppercase_key("KEY٠")  # Arabic-Indic zero
 
 
 # ── from_mapping (CF5) ────────────────────────────────────────────────

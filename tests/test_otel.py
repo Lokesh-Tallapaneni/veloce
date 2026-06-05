@@ -48,6 +48,22 @@ def test_install_hint_names_the_optional_extra() -> None:
     assert "veloceframework[otel]" in otel._INSTALL_HINT
 
 
+def test_build_trace_carrier_shared_tail() -> None:
+    # The shared carrier tail underpins both the framework-core header reader
+    # and the otel bridge's raw-scope reader; verify the three cases directly
+    # (no OpenTelemetry needed). Absent traceparent -> None so callers skip
+    # extraction; present -> a {traceparent[, tracestate]} dict.
+    from veloce._protocol_constants import build_trace_carrier
+
+    assert build_trace_carrier(None, None) is None
+    assert build_trace_carrier(None, "vendor=1") is None
+    assert build_trace_carrier("00-trace-span-01", None) == {"traceparent": "00-trace-span-01"}
+    assert build_trace_carrier("00-trace-span-01", "vendor=1") == {
+        "traceparent": "00-trace-span-01",
+        "tracestate": "vendor=1",
+    }
+
+
 def test_factory_without_opentelemetry_raises_importerror() -> None:
     # Without OpenTelemetry the factory must refuse with a clear, actionable
     # error rather than failing obscurely deeper in the bridge.

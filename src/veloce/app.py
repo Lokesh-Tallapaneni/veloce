@@ -86,6 +86,7 @@ from veloce._protocol_constants import (
     TRACE_HEADER_TRACESTATE,
     URL_SCHEME_HTTP,
     URL_SCHEME_HTTPS,
+    build_trace_carrier,
 )
 from veloce.blueprints import _endpoint_blueprint
 from veloce.contrib.staticfiles import StaticFiles
@@ -108,7 +109,7 @@ from veloce.http.response import (
 )
 from veloce.instrumentation import RequestMetrics
 from veloce.middleware import BaseHTTPMiddleware, Middleware
-from veloce.routing.router import RouteInfo, Router
+from veloce.routing.router import RouteInfo, Router, _readd_route
 from veloce.sessions import Session
 from veloce.signals import (
     appcontext_popped,
@@ -166,6 +167,48 @@ _CT_BYTES_CACHE: dict[str, bytes] = {
 # vast majority of typical JSON API responses; larger payloads fall
 # through to the per-request `str(n).encode()` allocation.
 _CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(2048))
+
+
+def _build_asgi_headers(
+    headers: Any, skip_content_length: bool
+) -> tuple[list[tuple[bytes, bytes]], bool, bool]:
+    """Build ASGI `(name, value)` header tuples from a response header map.
+
+    Single source of truth for the ASGI emit header scan shared by the
+    streaming and buffered branches of `_asgi_app`. Both paths bypass
+    `Response.encode()`, so the response-splitting CRLF guard must be applied
+    here. Each header becomes its own tuple; `Set-Cookie` is split back into
+    per-cookie tuples (`Response.set_cookie` joins them with a
+    `\r\nSet-Cookie: ` literal for the raw HTTP/1.1 wire path). Returns the
+    tuples plus whether the response already carried content-type /
+    content-length, so the caller can decide on framework defaults. The
+    streaming branch passes `skip_content_length=True` (the ASGI server frames
+    the body) and ignores the returned flags.
+    """
+    has_ct = False
+    has_cl = False
+    asgi_headers: list[tuple[bytes, bytes]] = []
+    for k, v in headers.items():
+        k_lower = k.lower()
+        if k_lower == "set-cookie":
+            for piece in v.split("\r\nSet-Cookie:"):
+                cookie = piece.strip()
+                _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
+                asgi_headers.append(
+                    (RAW_HEADER_SET_COOKIE, _encode_header_value(cookie).encode("latin-1"))
+                )
+        else:
+            if k_lower == "content-type":
+                has_ct = True
+            elif k_lower == "content-length":
+                has_cl = True
+                if skip_content_length:
+                    continue
+            _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
+            _reject_header_crlf(v, f"{k} header value")
+            asgi_headers.append((k_lower.encode(), _encode_header_value(v).encode("latin-1")))
+    return asgi_headers, has_ct, has_cl
+
 
 # `BaseExceptionGroup` is a builtin only from Python 3.11; on 3.10 the name is
 # absent, so resolve it once via `builtins` and degrade to re-raising the first
@@ -248,11 +291,7 @@ def _trace_carrier(request: Request) -> dict[str, str] | None:
     traceparent = request.headers.get(TRACE_HEADER_TRACEPARENT)
     if traceparent is None:
         return None
-    carrier = {TRACE_HEADER_TRACEPARENT: traceparent}
-    tracestate = request.headers.get(TRACE_HEADER_TRACESTATE)
-    if tracestate is not None:
-        carrier[TRACE_HEADER_TRACESTATE] = tracestate
-    return carrier
+    return build_trace_carrier(traceparent, request.headers.get(TRACE_HEADER_TRACESTATE))
 
 
 class _LifespanManager:
@@ -2280,37 +2319,7 @@ class Veloce(Router):
             # The route's name is prefixed with `<bpname>.` so url_for
             # and dispatcher hook-gating can find it.
             endpoint = f"{bp_name}.{info.name}"
-            self.add_route(
-                path=full_path,
-                handler=info.handler,
-                methods=methods,
-                dependencies=info.dependencies,
-                response_model=info.response_model,
-                tags=info.tags,
-                summary=info.summary,
-                name=endpoint,
-                description=info.description,
-                deprecated=info.deprecated,
-                response_description=info.response_description,
-                status_code=info.status_code,
-                response_class=info.response_class,
-                response_model_include=info.response_model_include,
-                response_model_exclude=info.response_model_exclude,
-                response_model_exclude_unset=info.response_model_exclude_unset,
-                response_model_exclude_defaults=info.response_model_exclude_defaults,
-                response_model_by_alias=info.response_model_by_alias,
-                response_model_exclude_none=info.response_model_exclude_none,
-                include_in_schema=info.include_in_schema,
-                responses=info.responses,
-                operation_id=info.operation_id,
-                openapi_extra=info.openapi_extra,
-                defaults=info.defaults,
-                callbacks=info.callbacks,
-                subdomain=info.subdomain,
-                host=info.host,
-                expose_as_mcp_tool=info.expose_as_mcp_tool,
-                mcp_description=info.mcp_description,
-            )
+            _readd_route(self, full_path, methods, info, endpoint)
 
         # Bucket the blueprint's hooks under its name so dispatch can
         # look them up by the matched route's endpoint prefix instead of
@@ -2718,8 +2727,12 @@ class Veloce(Router):
                     # Freeze setup outside DEBUG/TESTING (and when the lock has
                     # been disabled, e.g. by the in-memory TestClient) so
                     # hot-reload and test monkeypatching can keep registering.
+                    # Coerce both flags the same way the `debug` property does
+                    # so a string `DEBUG=false`/`TESTING=false` from a dotenv
+                    # file leaves setup locked instead of staying open on the
+                    # truthy raw string.
                     self._setup_locked = self._setup_lock_enabled and not (
-                        self.config.get("DEBUG") or self.config.get("TESTING")
+                        self.debug or _coerce_bool(self.config.get("TESTING"))
                     )
                     self._first_request_fired = True
 
@@ -2883,7 +2896,7 @@ class Veloce(Router):
             # gate on the route name.
             _matched_path = request.path
             _matched_method = request.method
-            match = self.match(request.method, request.path)
+            match = self.match(_matched_method, _matched_path)
             if match is not None:
                 request.endpoint = match.route_info.name
                 request._state["url_rule"] = match.route_info.path_template
@@ -4767,29 +4780,12 @@ class Veloce(Router):
                 _ct_bytes = _CT_BYTES_CACHE.get(_ct)
                 if _ct_bytes is None:
                     _ct_bytes = _reject_header_crlf(_ct, "content-type").encode()
-                stream_headers: list[tuple[bytes, bytes]] = [
-                    (RAW_HEADER_CONTENT_TYPE, _ct_bytes),
-                ]
-                for sk, sv in response.headers.items():
-                    sk_lower = sk.lower()
-                    if sk_lower == "content-length":
-                        continue
-                    if sk_lower == "set-cookie":
-                        for piece in sv.split("\r\nSet-Cookie:"):
-                            cookie = piece.strip()
-                            _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
-                            stream_headers.append(
-                                (
-                                    RAW_HEADER_SET_COOKIE,
-                                    _encode_header_value(cookie).encode("latin-1"),
-                                )
-                            )
-                    else:
-                        _reject_header_crlf(sk, MSG_LABEL_HEADER_NAME)
-                        _reject_header_crlf(sv, f"{sk} header value")
-                        stream_headers.append(
-                            (sk_lower.encode(), _encode_header_value(sv).encode("latin-1"))
-                        )
+                stream_headers, _, _ = _build_asgi_headers(
+                    response.headers, skip_content_length=True
+                )
+                # ASGI does not mandate header order, so append (O(1)) rather
+                # than insert at the front (O(n) list shift).
+                stream_headers.append((RAW_HEADER_CONTENT_TYPE, _ct_bytes))
                 await send(
                     {
                         "type": ASGI_EVENT_HTTP_RESPONSE_START,
@@ -4857,37 +4853,17 @@ class Veloce(Router):
             # Single pass over the response headers: emit each as an ASGI
             # tuple while tracking whether a content-type / content-length
             # was supplied, so the framework default is only prepended when
-            # the response does not already carry it.
-            has_ct = False
-            has_cl = False
-            asgi_headers: list[tuple[bytes, bytes]] = []
+            # the response does not already carry it. The buffered path keeps
+            # any response-set content-length (e.g. the compressed length from
+            # `GZipMiddleware`), so it does not skip that header.
             if response.headers:
-                for k, v in response.headers.items():
-                    k_lower = k.lower()
-                    if k_lower == "set-cookie":
-                        # `Response.set_cookie` joins multiple cookies into one
-                        # header value with `\r\nSet-Cookie: ` literal for the
-                        # raw HTTP/1.1 wire path. Split it back into per-cookie
-                        # ASGI tuples regardless of how many cookies are there.
-                        for piece in v.split("\r\nSet-Cookie:"):
-                            cookie = piece.strip()
-                            _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
-                            asgi_headers.append(
-                                (
-                                    RAW_HEADER_SET_COOKIE,
-                                    _encode_header_value(cookie).encode("latin-1"),
-                                )
-                            )
-                    else:
-                        if k_lower == "content-type":
-                            has_ct = True
-                        elif k_lower == "content-length":
-                            has_cl = True
-                        _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
-                        _reject_header_crlf(v, f"{k} header value")
-                        asgi_headers.append(
-                            (k_lower.encode(), _encode_header_value(v).encode("latin-1"))
-                        )
+                asgi_headers, has_ct, has_cl = _build_asgi_headers(
+                    response.headers, skip_content_length=False
+                )
+            else:
+                has_ct = False
+                has_cl = False
+                asgi_headers = []
             # Prepend the framework default content-type/content-length only
             # when the response does not already carry that header. A user or
             # middleware value (e.g. the compressed length from

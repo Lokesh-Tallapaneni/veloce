@@ -288,6 +288,31 @@ class WebSocket:
         _validate_heartbeat(heartbeat)
         self.transport = transport
         self.headers = headers
+        self._idle_timeout = idle_timeout
+        self._init_common()
+        self._init_heartbeat(heartbeat)
+        maxsize = (
+            recv_queue_maxsize
+            if recv_queue_maxsize is not None
+            else self.DEFAULT_RECV_QUEUE_MAXSIZE
+        )
+        # Carries reassembled `bytes` messages plus the `_RAW_DISCONNECT`
+        # sentinel the frame parser enqueues to wake a parked receiver on close.
+        self._receive_queue: asyncio.Queue[bytes | object] = asyncio.Queue(maxsize=maxsize)
+
+    def _init_common(self) -> None:
+        """Set every mode-independent default field shared by both constructors.
+
+        Called by `__init__` (raw-transport) and `from_asgi` (which builds the
+        instance via `cls.__new__` to skip the transport-required `__init__`).
+        Centralising these assignments means a newly added field is initialised
+        on both paths from one place, rather than silently surfacing as an
+        ASGI-only `AttributeError`. The per-mode fields stay in the callers:
+        `transport`/`headers`/`_idle_timeout` (whose static types differ between
+        the two paths), the receive queue, the heartbeat arg, the ASGI
+        send/receive callables, and the scope/path that `from_asgi` and
+        `from_transport` fill in.
+        """
         self._accepted = False
         self._closed = False
         # Peer-initiated close tracking for the raw-transport close handshake
@@ -312,16 +337,6 @@ class WebSocket:
         # then NOT emit a second handshake. Default False so direct construction
         # and `from_asgi` keep writing the 101 themselves.
         self._handshake_sent = False
-        self._idle_timeout = idle_timeout
-        self._init_heartbeat(heartbeat)
-        maxsize = (
-            recv_queue_maxsize
-            if recv_queue_maxsize is not None
-            else self.DEFAULT_RECV_QUEUE_MAXSIZE
-        )
-        # Carries reassembled `bytes` messages plus the `_RAW_DISCONNECT`
-        # sentinel the frame parser enqueues to wake a parked receiver on close.
-        self._receive_queue: asyncio.Queue[bytes | object] = asyncio.Queue(maxsize=maxsize)
         # Fragmented-message reassembly state (RFC 6455 Sec. 5.4). `_frag_opcode`
         # is the data opcode of the message currently being assembled, or
         # `None` when no fragmented message is in progress.
@@ -391,33 +406,18 @@ class WebSocket:
         ws = cls.__new__(cls)
         ws.transport = None  # type: ignore[assignment]
         ws.headers = headers
-        ws._accepted = False
-        ws._closed = False
-        ws._peer_closed = False
-        ws._close_frame_sent = False
-        ws._peer_close_event = None
-        ws._handshake_sent = False
         ws._idle_timeout = idle_timeout
+        ws._init_common()
         # A heartbeat passed in ASGI mode is accepted for API symmetry but
         # never drives a timer: the ASGI server owns ping/pong on this path.
         ws._init_heartbeat(None)
+        # ASGI mode drives the connection through the send/receive callables, so
+        # the raw frame parser's queue is never used.
         ws._receive_queue = None  # type: ignore[assignment]
-        ws._frag_opcode = None  # unused in ASGI mode (no raw frame parsing)
-        ws._frag_buffer = bytearray()
-        ws._frag_validator = None  # unused in ASGI mode (server validates UTF-8)
-        ws.close_code = None
-        ws.close_reason = ""
-        ws._recv_buffer = bytearray()  # unused in ASGI mode (no raw frame parsing)
         ws._asgi_receive = receive
         ws._asgi_send = send
         ws.scope = scope
         ws.path = scope.get("path", "")
-        ws.path_params = {}
-        ws._query_params = None
-        ws._cookies = None
-        # ASGI mode never drains through the raw transport - the ASGI server owns
-        # outbound flow control.
-        ws._send_drain = None
         return ws
 
     @classmethod
@@ -1327,26 +1327,37 @@ class WebSocket:
         # for the next frame in the buffer.
         return frame_len
 
-    def _close_control(self, code: int) -> None:
+    def _terminate_raw(self, code: int, *, record_close_code: bool) -> None:
         """Synchronously send a close frame carrying `code`, then drop the transport.
 
-        Shared by the parser-side close paths (`_close_too_big`,
-        `_close_protocol_error`, `_close_invalid_payload`). No `await` is
-        available from inside the Protocol callback that drives `feed_data`, so
-        the close is synchronous and mirrors `_enqueue_or_close`: emit the close
-        frame, cancel the heartbeat, record the close code, mark the connection
-        closed, wake any parked receiver, and close the transport.
+        The single raw-mode teardown core. No `await` is available from inside
+        the Protocol callback that drives `feed_data`, so the close is
+        synchronous and mirrors `_enqueue_or_close`: emit the close frame, cancel
+        the heartbeat, mark the connection closed, wake any parked receiver, and
+        close the transport. `record_close_code` writes `code` into `close_code`
+        for the locally-initiated close paths (`_close_control`); the peer-reply
+        path (`_echo_close`) leaves `close_code` to `_handle_close_frame`, which
+        records the peer's own code.
         """
         with contextlib.suppress(Exception):
             self._send_frame(code.to_bytes(2, "big"), opcode=0x8)  # Close
         self._cancel_heartbeat()
-        self.close_code = code
+        if record_close_code:
+            self.close_code = code
         self._closed = True
         self._close_frame_sent = True
         self._wake_raw_receiver()
         with contextlib.suppress(Exception):
             if self.transport is not None:
                 self.transport.close()
+
+    def _close_control(self, code: int) -> None:
+        """Locally close the connection with `code` (records `close_code`).
+
+        Shared by the parser-side close paths (`_close_too_big`,
+        `_close_protocol_error`, `_close_invalid_payload`).
+        """
+        self._terminate_raw(code, record_close_code=True)
 
     def _close_too_big(self) -> None:
         """Close the connection with `1009 Message Too Big`.
@@ -1413,19 +1424,12 @@ class WebSocket:
     def _echo_close(self, code: int) -> None:
         """Send a Close frame in reply to a peer close and tear down.
 
-        The reply carries `code` (a 2-byte status) and no reason. Both the
-        frame write and the transport close are best-effort - the peer may
-        already be gone - so each is suppressed independently.
+        The reply carries `code` (a 2-byte status) and no reason. `close_code`
+        is left untouched - `_handle_close_frame` already recorded the peer's
+        own status before echoing. Both the frame write and the transport close
+        are best-effort - the peer may already be gone.
         """
-        with contextlib.suppress(Exception):
-            self._send_frame(code.to_bytes(2, "big"), opcode=0x8)
-        self._cancel_heartbeat()
-        self._closed = True
-        self._close_frame_sent = True
-        self._wake_raw_receiver()
-        with contextlib.suppress(Exception):
-            if self.transport is not None:
-                self.transport.close()
+        self._terminate_raw(code, record_close_code=False)
 
     def _enqueue_or_close(self, payload: bytes) -> None:
         """Push a reassembled message onto the receive queue.
@@ -1499,7 +1503,9 @@ class WebSocket:
         """
         interval = self._heartbeat
         assert interval is not None
-        loop = asyncio.get_event_loop()
+        # A running loop is always present: both call sites (`start_heartbeat`
+        # off `accept()`, and the `call_later` tick) run inside the event loop.
+        loop = asyncio.get_running_loop()
         self._hb_handle = loop.call_later(interval, self._heartbeat_tick)
 
     def _heartbeat_tick(self) -> None:

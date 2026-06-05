@@ -176,6 +176,14 @@ class Jinja2Templates:
     (caller's explicit context wins on collisions).
     """
 
+    # Per-instance bound on the resolved-fallback-list cache. Each entry is a
+    # distinct candidate sequence resolved in production (`auto_reload` False).
+    # Candidate lists come from code, so the key space is normally tiny, but a
+    # caller that builds fallback lists from request-derived names could grow
+    # the dict without bound - cap it the same way the static ETag cache is.
+    # Eviction only costs a re-run of `select_template` on a cold key.
+    RESOLVED_CACHE_MAX = 1024
+
     def __init__(
         self,
         directory: str = "templates",
@@ -252,6 +260,10 @@ class Jinja2Templates:
         winner = self._resolved_cache.get(key)
         if winner is None:
             tpl = env.select_template(list(candidates))
+            # Drop the oldest entry before inserting once at the cap. A plain
+            # dict preserves insertion order, so the first key is the oldest.
+            if len(self._resolved_cache) >= self.RESOLVED_CACHE_MAX:
+                del self._resolved_cache[next(iter(self._resolved_cache))]
             self._resolved_cache[key] = tpl.name
             return tpl
         return env.get_template(winner)

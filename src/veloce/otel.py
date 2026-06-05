@@ -105,6 +105,7 @@ from veloce._protocol_constants import (
     HTTP_METHOD_POST,
     HTTP_METHOD_PUT,
     HTTP_METHOD_TRACE,
+    build_trace_carrier,
 )
 from veloce.status import HTTP_500_INTERNAL_SERVER_ERROR
 
@@ -173,6 +174,30 @@ _TRACEPARENT_HEADER = b"traceparent"
 _TRACESTATE_HEADER = b"tracestate"
 
 
+def _existing_bridge(app: Veloce, stacklevel: int) -> Callable[..., Any] | None:
+    """Return the app's already-registered otel bridge hook, or `None`.
+
+    Both the backdated and live factories must refuse a second install (a
+    duplicate would emit two server spans / stack a second ASGI wrapper per
+    request). The guard scans the app's own hook list - never a process-global
+    sentinel - so two apps sharing a process each keep their own bridge. When a
+    bridge is found it warns and returns it; the caller hands it back unchanged.
+    The `stacklevel` differs by entry point so the warning points at the
+    original `instrument_with_otel` call.
+    """
+    for hook in app._instrumentation:
+        if getattr(hook, _BRIDGE_MARKER, False):
+            warnings.warn(
+                "instrument_with_otel was already called on this app; "
+                "ignoring the redundant call to avoid emitting duplicate "
+                "server spans per request.",
+                RuntimeWarning,
+                stacklevel=stacklevel,
+            )
+            return hook
+    return None
+
+
 def _span_name(route: str | None, method: str) -> str:
     """Return the low-cardinality span name for a (route, method) pair.
 
@@ -202,12 +227,14 @@ def _enrich_span(
     name and lifecycle - this only writes attributes onto a span that is already
     started and current.
     """
+    route = metrics.route
+    status_code = metrics.status_code
     span.set_attribute("http.request.method", metrics.method)
-    if metrics.route is not None:
-        span.set_attribute("http.route", metrics.route)
-    span.set_attribute("http.response.status_code", metrics.status_code)
+    if route is not None:
+        span.set_attribute("http.route", route)
+    span.set_attribute("http.response.status_code", status_code)
     span.set_attribute("duration_ms", metrics.duration_ms)
-    if metrics.status_code >= HTTP_500_INTERNAL_SERVER_ERROR:
+    if status_code >= HTTP_500_INTERNAL_SERVER_ERROR:
         span.set_status(_otel_trace.Status(_otel_trace.StatusCode.ERROR))
         # When the server error came from an unhandled raised exception, the core
         # records its low-cardinality class name. Surface it as the OpenTelemetry
@@ -328,20 +355,12 @@ def instrument_with_otel(
             exclude_routes=exclude_routes,
         )
 
-    # Idempotency: if this app already carries a bridge hook (tagged below),
-    # warn and hand back the existing one rather than appending a duplicate that
-    # would double every server span. Scanning the app's own hook list keeps the
-    # guard per-app and ASGI-safe - no process-global sentinel.
-    for hook in app._instrumentation:
-        if getattr(hook, _BRIDGE_MARKER, False):
-            warnings.warn(
-                "instrument_with_otel was already called on this app; "
-                "ignoring the redundant call to avoid emitting duplicate "
-                "server spans per request.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return hook
+    # Idempotency: if this app already carries a bridge hook, warn and hand back
+    # the existing one rather than appending a duplicate that would double every
+    # server span (see `_existing_bridge`).
+    existing = _existing_bridge(app, stacklevel=2)
+    if existing is not None:
+        return existing
 
     tracer = _otel_trace.get_tracer(__name__, tracer_provider=tracer_provider)
     SpanKind = _otel_trace.SpanKind
@@ -364,7 +383,8 @@ def instrument_with_otel(
         # any other hook ran); fall back to now only if a caller built the
         # metrics without it. Backdate the start by the measured duration.
         # OpenTelemetry timestamps are integer nanoseconds.
-        end_time = metrics.end_time_ns if metrics.end_time_ns is not None else time.time_ns()
+        end_time_ns = metrics.end_time_ns
+        end_time = end_time_ns if end_time_ns is not None else time.time_ns()
         start_time = end_time - int(metrics.duration_ms * 1_000_000)
         # Parent the span under the inbound W3C trace context extracted from
         # the request's trace headers (so a distributed trace is continued),
@@ -409,12 +429,7 @@ def _trace_carrier_from_scope(scope: dict[str, Any]) -> dict[str, str] | None:
             traceparent = value.decode("latin-1")
         elif name == _TRACESTATE_HEADER:
             tracestate = value.decode("latin-1")
-    if traceparent is None:
-        return None
-    carrier = {"traceparent": traceparent}
-    if tracestate is not None:
-        carrier["tracestate"] = tracestate
-    return carrier
+    return build_trace_carrier(traceparent, tracestate)
 
 
 class _LiveSpanMiddleware:
@@ -481,18 +496,12 @@ def _instrument_live(
     ``exclude_routes`` contract with the backdated mode.
     """
     # Idempotency: a second live install would stack a second ASGI wrapper and a
-    # second enrichment hook. Detect the existing bridge hook and bail with the
-    # same warning the backdated mode uses.
-    for hook in app._instrumentation:
-        if getattr(hook, _BRIDGE_MARKER, False):
-            warnings.warn(
-                "instrument_with_otel was already called on this app; "
-                "ignoring the redundant call to avoid emitting duplicate "
-                "server spans per request.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
-            return hook
+    # second enrichment hook. Bail on the existing bridge with the same warning
+    # the backdated mode uses (deeper stacklevel for the extra `_instrument_live`
+    # frame).
+    existing = _existing_bridge(app, stacklevel=3)
+    if existing is not None:
+        return existing
 
     tracer = _otel_trace.get_tracer(__name__, tracer_provider=tracer_provider)
     propagator = _W3CPropagator()

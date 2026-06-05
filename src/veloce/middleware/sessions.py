@@ -109,6 +109,50 @@ def _reassemble_chunks(cookies: Any, base_name: str, max_chunks: int) -> str | N
     return "".join(parts)
 
 
+def _wire_name(cookie_prefix: Literal["host", "secure"] | None, cookie_name: str) -> str:
+    """Apply the RFC 6265bis name prefix to the configured cookie name.
+
+    The wire name carries the `__Host-`/`__Secure-` prefix so the request read
+    and the response write agree on the same name. Derived once at construction
+    to keep the per-request read off the hot path. Shared by both middlewares.
+    """
+    if cookie_prefix == "host":
+        return f"__Host-{cookie_name}"
+    if cookie_prefix == "secure":
+        return f"__Secure-{cookie_name}"
+    return cookie_name
+
+
+def _should_persist(policy: Callable[[int], bool] | None, status_code: int) -> bool:
+    """Whether a modified session should be written for this response status.
+
+    The `None` policy default means "persist for status < 500" - a failed
+    request should not write a half-mutated session. Shared by both middlewares.
+    """
+    return policy(status_code) if policy is not None else status_code < 500
+
+
+def _begin_session_response(
+    vary_on_cookie: bool, session: Any, response: Response
+) -> tuple[bool, bool] | None:
+    """Shared response-phase preamble for both session middlewares.
+
+    Returns `None` when there is no session to persist (the caller returns the
+    response unchanged). Otherwise returns `(accessed, modified)` after emitting
+    `Vary: Cookie` when the handler touched the session, so a URL-keyed cache
+    cannot share a session-personalized body across users (RFC 9110 Sec.
+    12.5.5). `getattr` with a default tolerates a non-`Session` object placed
+    under the reserved `session` state key, skipping the session work as before.
+    """
+    if session is None:
+        return None
+    accessed = getattr(session, "accessed", False)
+    modified = getattr(session, "modified", False)
+    if vary_on_cookie and (accessed or modified):
+        response.add_vary(HEADER_COOKIE)
+    return accessed, modified
+
+
 class SessionMiddleware(Middleware):
     """Server-side session stored in a signed, timestamped cookie.
 
@@ -171,15 +215,7 @@ class SessionMiddleware(Middleware):
         self.cookie_prefix = cookie_prefix
         self.partitioned = partitioned
         self._samesite_cap = self.samesite.capitalize() if self.samesite else None
-        # The wire name carries the RFC 6265bis prefix; the request side must
-        # read under the same name. `__init__`-time derivation keeps the
-        # per-request read off the hot path.
-        if cookie_prefix == "host":
-            self._wire_cookie_name = f"__Host-{cookie_name}"
-        elif cookie_prefix == "secure":
-            self._wire_cookie_name = f"__Secure-{cookie_name}"
-        else:
-            self._wire_cookie_name = cookie_name
+        self._wire_cookie_name = _wire_name(cookie_prefix, cookie_name)
         # `PERMANENT_SESSION_LIFETIME` analog - used for the cookie
         # `Max-Age` when `session.permanent` is set. Defaults to 31 days.
         self.permanent_lifetime = permanent_lifetime
@@ -244,24 +280,11 @@ class SessionMiddleware(Middleware):
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back into the signed cookie."""
         session = request._state.get("session")
+        begun = _begin_session_response(self.vary_on_cookie, session, response)
         # No session attached (handler bypassed middleware?) -> nothing to do.
-        if session is None:
+        if begun is None:
             return response
-
-        # Read `.accessed` / `.modified` once and reuse for the `Vary` and the
-        # persist decisions. `getattr` with a default tolerates a non-`Session`
-        # object placed under the reserved `session` state key (the key is
-        # framework-owned, but `request._state` is mutable scratch space), in
-        # which case the session work is simply skipped, as before.
-        accessed = getattr(session, "accessed", False)
-        modified = getattr(session, "modified", False)
-
-        # Emit `Vary: Cookie` when a handler actually accessed the session, so a
-        # response personalized from session contents is not shared across users
-        # by a URL-keyed cache (RFC 9110 Sec. 12.5.5). A session-independent
-        # response (handler never touched `request.session`) stays cacheable.
-        if self.vary_on_cookie and (accessed or modified):
-            response.add_vary(HEADER_COOKIE)
+        accessed, modified = begun
 
         # The re-sign + Set-Cookie is normally skipped when the session was never
         # mutated. With `renew_on_access`, an existing session that was only
@@ -275,7 +298,7 @@ class SessionMiddleware(Middleware):
         # A 5xx response should not persist a half-mutated session - neither a
         # Set-Cookie nor the empty-session delete. The gate wraps the whole
         # persist block. Default (no policy): persist only for status < 500.
-        if not self._should_persist(response.status_code):
+        if not _should_persist(self._persist_on_status, response.status_code):
             return response
 
         if not session:
@@ -450,11 +473,6 @@ class SessionMiddleware(Middleware):
             prefix=self.cookie_prefix if prefix else None,
         )
 
-    def _should_persist(self, status_code: int) -> bool:
-        """Whether the (modified) session should be written for this status."""
-        policy = self._persist_on_status
-        return policy(status_code) if policy is not None else status_code < 500
-
 
 class ServerSessionMiddleware(Middleware):
     """Server-side session - the cookie carries only an opaque session id.
@@ -520,12 +538,7 @@ class ServerSessionMiddleware(Middleware):
         # way out (see SessionMiddleware). Default False keeps prior behavior.
         self.renew_on_access = renew_on_access
         # Read/write must share the prefixed wire name (see SessionMiddleware).
-        if cookie_prefix == "host":
-            self._wire_cookie_name = f"__Host-{cookie_name}"
-        elif cookie_prefix == "secure":
-            self._wire_cookie_name = f"__Secure-{cookie_name}"
-        else:
-            self._wire_cookie_name = cookie_name
+        self._wire_cookie_name = _wire_name(cookie_prefix, cookie_name)
 
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the server-side store by cookie id."""
@@ -547,20 +560,10 @@ class ServerSessionMiddleware(Middleware):
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back to the server-side store."""
         session = request._state.get("session")
-        if session is None:
+        begun = _begin_session_response(self.vary_on_cookie, session, response)
+        if begun is None:
             return response
-
-        # Read `.accessed` / `.modified` once; `getattr` with a default tolerates
-        # a non-`Session` object placed under the reserved `session` state key,
-        # skipping the session work as before.
-        accessed = getattr(session, "accessed", False)
-        modified = getattr(session, "modified", False)
-
-        # See SessionMiddleware: emit `Vary: Cookie` only when a handler accessed
-        # the session (read or write), so session-independent responses stay
-        # cacheable.
-        if self.vary_on_cookie and (accessed or modified):
-            response.add_vary(HEADER_COOKIE)
+        accessed, modified = begun
 
         if not modified:
             # Sliding expiry: an existing session that was only read (accessed,
@@ -570,13 +573,13 @@ class ServerSessionMiddleware(Middleware):
                 self.renew_on_access
                 and accessed
                 and not getattr(session, "new", False)
-                and self._should_persist(response.status_code)
+                and _should_persist(self._persist_on_status, response.status_code)
             ):
                 await self._renew(request, response)
             return response
 
         # Do not persist (store write or cookie change) on a 5xx by default.
-        if not self._should_persist(response.status_code):
+        if not _should_persist(self._persist_on_status, response.status_code):
             return response
 
         session_id = request._state.get("_session_id")
@@ -606,24 +609,8 @@ class ServerSessionMiddleware(Middleware):
                 # Revoked under us - honour the revocation and drop the cookie.
                 self._clear_session_cookie(response)
                 return response
-        response.set_cookie(
-            self.cookie_name,
-            session_id,
-            max_age=self.max_age,
-            path=self.path,
-            domain=self.domain,
-            httponly=self.httponly,
-            secure=self.secure,
-            samesite=self.samesite,
-            partitioned=self.partitioned,
-            prefix=self.cookie_prefix,
-        )
+        self._set_session_cookie(response, session_id)
         return response
-
-    def _should_persist(self, status_code: int) -> bool:
-        """Whether the (modified) session should be written for this status."""
-        policy = self._persist_on_status
-        return policy(status_code) if policy is not None else status_code < 500
 
     async def _renew(self, request: Request, response: Response) -> None:
         """Slide the store TTL and cookie `Max-Age` for a read-only access.
@@ -640,6 +627,14 @@ class ServerSessionMiddleware(Middleware):
         if not await self.store.touch(session_id, self.max_age):
             self._clear_session_cookie(response)
             return
+        self._set_session_cookie(response, session_id)
+
+    def _set_session_cookie(self, response: Response, session_id: str) -> None:
+        """Write the opaque session-id cookie with this middleware's attributes.
+
+        Single place mapping the cookie attribute set to `set_cookie`, mirroring
+        the delete-side `_clear_session_cookie`; both write and renew share it.
+        """
         response.set_cookie(
             self.cookie_name,
             session_id,

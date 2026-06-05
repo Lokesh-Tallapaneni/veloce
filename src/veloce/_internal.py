@@ -55,6 +55,22 @@ MIME_OCTET = MIME_OCTET_STREAM
 _STATUS_PHRASES: dict[int, str] = {s.value: s.phrase for s in HTTPStatus}
 
 
+def is_json_mimetype(mimetype: str) -> bool:
+    """True for `application/json` or any `application/*+json` subtype.
+
+    Single source of the JSON content-type predicate consumed by
+    `Request.is_json`, `Response.is_json`, and the MCP tool serialiser.
+    Per RFC 6839 Sec. 3.1 the structured-suffix `+json` (e.g.
+    `application/vnd.api+json`, `application/problem+json`) marks the body
+    as JSON-encoded; a bare `endswith("json")` over-matches unrelated types
+    such as `text/json`, so the suffix test is anchored to the
+    `application/` tree.
+    """
+    if mimetype == MIME_JSON:
+        return True
+    return mimetype.startswith("application/") and mimetype.endswith("+json")
+
+
 def _coerce_bool(value: Any) -> bool:
     """Interpret a config flag as a bool, including dotenv-style strings.
 
@@ -240,13 +256,54 @@ def _check_async(fn: Callable[..., Any]) -> bool:
     return call is not None and inspect.iscoroutinefunction(call)
 
 
-def _extract_host(raw: str) -> str:
-    """Strip port from a Host header value, handling IPv6 brackets."""
+# The default transport port for each URL scheme (RFC 6454 Sec. 4 -
+# origin equivalence treats `https://host` and `https://host:443` as the
+# same origin). CSRF origin matching canonicalises ws/wss origins too, so
+# its strip form spans all four schemes. The URL build form (`URL.netloc`)
+# deliberately does NOT: it only suppresses an explicit http/https default
+# port and emits a ws/wss `:80`/`:443` verbatim, preserving the absolute-URL
+# strings Veloce produced before the strip/build helpers were unified.
+_NETLOC_DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}
+DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def is_default_port(scheme: str, port: int | None) -> bool:
+    """True when `port` is the default http/https port for `scheme` (or unset)."""
+    return port is None or _NETLOC_DEFAULT_PORTS.get(scheme) == port
+
+
+def strip_default_port(scheme: str, netloc: str) -> str:
+    """Drop the scheme's default `:port` suffix from a `host[:port]` netloc.
+
+    Browsers omit `:443`/`:80` from `Origin`/`Referer` for default-port
+    requests, so `host` and `host:default` denote the same origin
+    (RFC 6454 Sec. 4). A non-default or absent port is left untouched.
+    """
+    default = DEFAULT_PORTS.get(scheme)
+    if default is not None:
+        suffix = f":{default}"
+        if netloc.endswith(suffix):
+            return netloc[: -len(suffix)]
+    return netloc
+
+
+def _extract_host(raw: str, lower: bool = True) -> str:
+    """Strip the port from a Host header value, handling IPv6 brackets.
+
+    Bracketed IPv6 (`[2001:db8::1]:8080` / `[2001:db8::1]`), bare IPv6
+    (`2001:db8::1`, two or more colons and no brackets), and the IPv4 /
+    hostname `host:port` form are each handled so a colon inside an IPv6
+    literal is never mistaken for a port separator. `lower` lower-cases the
+    result for case-insensitive host comparison (the default); ProxyFix
+    passes `lower=False` because it stores the client IP verbatim.
+    """
     if "[" in raw:
-        return raw.split("]", 1)[0][1:].lower()
-    if raw.count(":") >= 2:
-        return raw.lower()
-    return raw.split(":", 1)[0].lower()
+        host = raw.split("]", 1)[0][1:]
+    elif raw.count(":") >= 2:
+        host = raw
+    else:
+        host = raw.split(":", 1)[0]
+    return host.lower() if lower else host
 
 
 def _ws_handshake_rejection(middlewares: Iterable[object], host: str, origin: str) -> bool:

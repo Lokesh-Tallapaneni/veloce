@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from veloce._constants import HEADER_VALUE_PUBLIC
+from veloce._header_parsing import unquote_value
 
 _BOOL_DIRECTIVES = frozenset(
     {
@@ -71,7 +72,7 @@ class CacheControl:
             if "=" in token:
                 k, _, v = token.partition("=")
                 k = _to_attr(k.strip().lower())
-                v = v.strip().strip('"')
+                v = unquote_value(v)
                 if k in _INT_DIRECTIVES:
                     try:
                         self._directives[k] = int(v)
@@ -117,10 +118,10 @@ class CacheControl:
         parts: list[str] = []
         for k, v in self._directives.items():
             wire = _to_wire(k)
+            # Bool-True flags emit the bare directive; numeric and string
+            # values share one `name=value` form (int formats identically).
             if v is True:
                 parts.append(wire)
-            elif isinstance(v, int):
-                parts.append(f"{wire}={v}")
             else:
                 parts.append(f"{wire}={v}")
         return ", ".join(parts)

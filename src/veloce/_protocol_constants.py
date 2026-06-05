@@ -2,7 +2,9 @@
 
 These names centralize wire-level ASGI tokens, HTTP method names, auth-scheme
 names, and a few framework-level protocol invariants that are repeated across
-multiple modules.
+multiple modules, plus the small `build_trace_carrier` tail that assembles a
+W3C trace-carrier dict from extracted header values (colocated with the trace
+header constants so the keys and their consumer stay together).
 
 This module is internal-only and is not part of the public API.
 """
@@ -66,6 +68,24 @@ RAW_HEADER_SET_COOKIE = b"set-cookie"
 # W3C trace-context header names
 TRACE_HEADER_TRACEPARENT = "traceparent"
 TRACE_HEADER_TRACESTATE = "tracestate"
+
+
+def build_trace_carrier(traceparent: str | None, tracestate: str | None) -> dict[str, str] | None:
+    """Assemble a W3C trace-carrier dict from extracted header values.
+
+    Shared tail for the two extraction sites (the framework-core
+    `request.headers` reader and the optional otel bridge's raw-ASGI-scope
+    reader): both pull the same two headers from different sources, then build
+    the same `{traceparent[, tracestate]}` carrier. Returns `None` when
+    `traceparent` is absent so callers can cheaply skip propagator extraction.
+    """
+    if traceparent is None:
+        return None
+    carrier = {TRACE_HEADER_TRACEPARENT: traceparent}
+    if tracestate is not None:
+        carrier[TRACE_HEADER_TRACESTATE] = tracestate
+    return carrier
+
 
 # Framework lifecycle events
 LIFECYCLE_STARTUP = "startup"

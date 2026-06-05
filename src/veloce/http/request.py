@@ -40,10 +40,9 @@ from veloce._constants import (
     HEADER_X_FORWARDED_FOR,
     HEADER_X_REQUESTED_WITH,
     MIME_FORM_URLENCODED,
-    MIME_JSON,
     MIME_MULTIPART_FORM_DATA,
 )
-from veloce._internal import _coerce_bool
+from veloce._internal import _coerce_bool, is_json_mimetype
 from veloce._protocol_constants import URL_SCHEME_HTTPS
 from veloce.exceptions import RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
@@ -425,10 +424,7 @@ class Request:
         `application/vnd.api+json`, `application/problem+json`) marks the
         body as JSON-encoded.
         """
-        ct = self.mimetype
-        if ct == MIME_JSON:
-            return True
-        return ct.startswith("application/") and ct.endswith("+json")
+        return is_json_mimetype(self.mimetype)
 
     @property
     def is_multipart(self) -> bool:
@@ -1009,6 +1005,15 @@ class Request:
             )
         return self._body
 
+    def _config(self) -> Any:
+        """Return the bound app's `config` mapping, or `None`.
+
+        `getattr(None, ...)` is safe, so this also covers the unbound-app
+        case without a separate guard. Cold path - only the body/form/json
+        accessors read per-app limit knobs.
+        """
+        return getattr(self.app, "config", None)
+
     @property
     def max_content_length(self) -> int | None:
         """The body-size cap for this request.
@@ -1017,9 +1022,7 @@ class Request:
         (the dispatcher enforces it, returning 413 on overflow).
         `None` - no limit - when unset or no app is bound.
         """
-        if self.app is None:
-            return None
-        cfg = getattr(self.app, "config", None)
+        cfg = self._config()
         return cfg.get("MAX_CONTENT_LENGTH") if cfg is not None else None
 
     def get_json(
@@ -1087,7 +1090,7 @@ class Request:
         from veloce.exceptions import BadRequest  # noqa: I001 - breaks cycle: exceptions -> app -> request
 
         _logger.warning("JSON parse error: %s", error)
-        cfg = getattr(self.app, "config", None) if self.app is not None else None
+        cfg = self._config()
         # Surface the verbose reason when explicitly enabled OR in debug mode.
         # An explicit OR (not a dict-default fallback) is required because the
         # `JSON_ERRORS_VERBOSE` key is seeded into the default config, so it is
@@ -1191,7 +1194,7 @@ class Request:
                 # MAX_CONTENT_LENGTH. Shares the MAX_FORM_PARTS knob with the
                 # multipart branch; `None` disables the cap.
                 max_fields = DEFAULT_MAX_MULTIPART_PARTS
-                cfg = getattr(self.app, "config", None) if self.app is not None else None
+                cfg = self._config()
                 if cfg is not None:
                     max_fields = cfg.get("MAX_FORM_PARTS", max_fields)
                 try:
@@ -1215,7 +1218,7 @@ class Request:
                 mp_max_file_size: int | None = None
                 mp_max_field_size: int | None = None
                 mp_max_field_memory: int | None = None
-                cfg = getattr(self.app, "config", None) if self.app is not None else None
+                cfg = self._config()
                 if cfg is not None:
                     cfg_parts = cfg.get("MAX_FORM_PARTS", max_parts)
                     if cfg_parts is not None:

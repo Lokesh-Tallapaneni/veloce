@@ -162,3 +162,27 @@ def test_valid_ipv6_host_preserved():
     """A syntactically valid IPv6 literal is preserved."""
     assert _url("[::1]:8080").host == "::1"
     assert _url("[2001:db8::1]").host == "2001:db8::1"
+
+
+# ── netloc default-port suppression is scheme-specific ────────────────
+#
+# The build form suppresses an explicit default port only for http/https,
+# matching the absolute-URL strings Veloce produced before the strip and
+# build helpers were unified. The scheme reaching `URL` mirrors the ASGI
+# `scope["scheme"]`, which is `ws`/`wss` for a WebSocket scope.
+
+
+def test_netloc_suppresses_http_default_port():
+    assert URL(scheme="http", host="example.com", port=80).netloc == "example.com"
+    assert URL(scheme="https", host="example.com", port=443).netloc == "example.com"
+
+
+def test_netloc_keeps_non_default_http_port():
+    assert URL(scheme="http", host="example.com", port=8080).netloc == "example.com:8080"
+
+
+def test_netloc_keeps_explicit_ws_default_port():
+    # ws/wss default ports are NOT suppressed by the build form; an explicit
+    # :80/:443 on a WebSocket-scope URL survives into netloc / base_url.
+    assert URL(scheme="ws", host="example.com", port=80).netloc == "example.com:80"
+    assert URL(scheme="wss", host="example.com", port=443).netloc == "example.com:443"

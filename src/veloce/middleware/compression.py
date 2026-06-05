@@ -154,17 +154,7 @@ class GZipMiddleware(Middleware):
         ):
             return response
 
-        if not self._should_compress_type(response.content_type):
-            return response
-
-        # Don't re-encode a response that already declares a Content-Encoding
-        # (e.g. it was returned pre-gzipped, or an upstream layer encoded it).
-        # Stacking encodings produces a payload no client will decode, and
-        # violates RFC 9110 Sec. 8.4 (each Content-Encoding identifies one
-        # transformation; doubling them silently is a bug). Field names are
-        # case-insensitive (RFC 9110 Sec. 5.1), so honor any casing.
-        existing_encoding = header_get(response.headers, HEADER_CONTENT_ENCODING)
-        if existing_encoding and existing_encoding.strip().lower() not in ("", "identity"):
+        if self._skip_for_type_or_encoding(response):
             return response
 
         # Offload CPU-bound compression to thread pool. Wrap in
@@ -177,20 +167,10 @@ class GZipMiddleware(Middleware):
         ctx = contextvars.copy_context()
         compressed = await loop.run_in_executor(None, ctx.run, gzip.compress, body, level)
 
-        if len(compressed) < len(response.body):
+        clen = len(compressed)
+        if clen < len(response.body):
             response.body = compressed
-            # Field names are case-insensitive (RFC 9110 Sec. 5.1): a handler may
-            # have stored Content-Encoding / Content-Length under any casing
-            # (e.g. `Content-length`). Drop every existing spelling first so the
-            # canonical key we set below is the only one on the wire - otherwise a
-            # stale mixed-case length would describe the uncompressed body.
-            self._drop_header(response, HEADER_CONTENT_ENCODING)
-            self._drop_header(response, HEADER_CONTENT_LENGTH)
-            response.headers[HEADER_CONTENT_ENCODING] = HEADER_VALUE_GZIP
-            response.headers[HEADER_CONTENT_LENGTH] = str(len(compressed))
-            response.add_vary(HEADER_ACCEPT_ENCODING)
-            response._encoded = None
-            self._weaken_strong_etag(response)
+            self._finalize_gzip_headers(response, content_length=clen)
 
         return response
 
@@ -210,13 +190,7 @@ class GZipMiddleware(Middleware):
         ):
             return response
 
-        if not self._should_compress_type(response.content_type):
-            return response
-
-        # Don't re-encode a response that already declares a Content-Encoding.
-        # Field names are case-insensitive (RFC 9110 Sec. 5.1), so honor any casing.
-        existing_encoding = header_get(response.headers, HEADER_CONTENT_ENCODING)
-        if existing_encoding and existing_encoding.strip().lower() not in ("", "identity"):
+        if self._skip_for_type_or_encoding(response):
             return response
 
         # Range responses are served whole and uncompressed (see the buffered
@@ -227,21 +201,49 @@ class GZipMiddleware(Middleware):
             return response
 
         response._stream = self._compress_stream(response._stream, request)
-        # Field names are case-insensitive (RFC 9110 Sec. 5.1): drop any existing
-        # Content-Encoding under whatever casing a handler set before writing the
-        # canonical one, so only a single gzip encoding ends up on the response.
-        self._drop_header(response, HEADER_CONTENT_ENCODING)
-        response.headers[HEADER_CONTENT_ENCODING] = HEADER_VALUE_GZIP
         # A streamed gzip body is chunked / `more_body`-framed; any declared
-        # length describes the uncompressed representation and must go (the
-        # native chunked path relies on Transfer-Encoding, not Content-Length).
-        # Pop every casing (`Content-Length`, `content-length`, `Content-length`)
-        # so no stale uncompressed length survives.
+        # length describes the uncompressed representation, so finalize with no
+        # Content-Length (the native chunked path relies on Transfer-Encoding).
+        self._finalize_gzip_headers(response, content_length=None)
+        return response
+
+    def _skip_for_type_or_encoding(self, response: Response) -> bool:
+        """Return True when the response must not be gzipped on type/encoding grounds.
+
+        Shared by the buffered and streaming paths: a non-compressible content
+        type, or a response that already declares a non-identity
+        Content-Encoding, is passed through untouched. Stacking encodings
+        produces a payload no client will decode and violates RFC 9110 Sec. 8.4
+        (each Content-Encoding identifies one transformation; doubling them is a
+        bug). Field names are case-insensitive (RFC 9110 Sec. 5.1), so any
+        casing is honored.
+        """
+        if not self._should_compress_type(response.content_type):
+            return True
+        existing_encoding = header_get(response.headers, HEADER_CONTENT_ENCODING)
+        if not existing_encoding:
+            return False
+        return existing_encoding.strip().lower() not in ("", "identity")
+
+    def _finalize_gzip_headers(self, response: Response, content_length: int | None) -> None:
+        """Rewrite headers after the body bytes have been gzipped.
+
+        Field names are case-insensitive (RFC 9110 Sec. 5.1): a handler may have
+        stored Content-Encoding / Content-Length under any casing, so drop every
+        existing spelling first and write the canonical key once - otherwise a
+        stale mixed-case length would describe the uncompressed body.
+        `content_length` is the compressed byte count for the buffered path, or
+        `None` for the streaming path where the chunked/`more_body` framing
+        carries no declared length.
+        """
+        self._drop_header(response, HEADER_CONTENT_ENCODING)
         self._drop_header(response, HEADER_CONTENT_LENGTH)
+        response.headers[HEADER_CONTENT_ENCODING] = HEADER_VALUE_GZIP
+        if content_length is not None:
+            response.headers[HEADER_CONTENT_LENGTH] = str(content_length)
         response.add_vary(HEADER_ACCEPT_ENCODING)
         response._encoded = None
         self._weaken_strong_etag(response)
-        return response
 
     @staticmethod
     def _drop_header(response: Response, name: str) -> None:
