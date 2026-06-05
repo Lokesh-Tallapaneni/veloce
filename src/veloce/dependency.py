@@ -17,10 +17,11 @@ import logging
 import weakref
 from collections.abc import Callable
 from enum import Enum
-from typing import Any, Literal, get_args, get_origin
+from typing import Annotated, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
+from typing_extensions import Doc
 
 from veloce._constants import MSG_FIELD_REQUIRED
 from veloce._handler_plan import (
@@ -261,9 +262,24 @@ class Depends:
 
     def __init__(
         self,
-        dependency: Callable | None = None,
-        use_cache: bool = True,
-        offload: bool = False,
+        dependency: Annotated[
+            Callable | None,
+            Doc(
+                "Callable to resolve and inject; inferred from the parameter's type annotation when omitted."
+            ),
+        ] = None,
+        use_cache: Annotated[
+            bool,
+            Doc(
+                "Cache the resolved value so a dependency referenced more than once per request runs once."
+            ),
+        ] = True,
+        offload: Annotated[
+            bool,
+            Doc(
+                "Run a blocking sync dependency in the thread pool so it cannot stall the event loop."
+            ),
+        ] = False,
     ) -> None:
         self.dependency = dependency
         self.use_cache = use_cache
@@ -283,10 +299,30 @@ class Security(Depends):
 
     def __init__(
         self,
-        dependency: Callable | None = None,
-        scopes: list[str] | None = None,
-        use_cache: bool = True,
-        offload: bool = False,
+        dependency: Annotated[
+            Callable | None,
+            Doc(
+                "Callable to resolve and inject; inferred from the parameter's type annotation when omitted."
+            ),
+        ] = None,
+        scopes: Annotated[
+            list[str] | None,
+            Doc(
+                "OAuth 2.0 scopes this dependency requires, accumulated for the `SecurityScopes` chain and OpenAPI."
+            ),
+        ] = None,
+        use_cache: Annotated[
+            bool,
+            Doc(
+                "Cache the resolved value so a dependency referenced more than once per request runs once."
+            ),
+        ] = True,
+        offload: Annotated[
+            bool,
+            Doc(
+                "Run a blocking sync dependency in the thread pool so it cannot stall the event loop."
+            ),
+        ] = False,
     ) -> None:
         super().__init__(dependency=dependency, use_cache=use_cache, offload=offload)
         self.scopes = scopes or []
