@@ -12,7 +12,7 @@ import hashlib
 import inspect
 import math
 import struct
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import orjson
 
@@ -45,6 +45,25 @@ from veloce.status import (
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Awaitable, Callable, Coroutine, Iterable
+
+
+# RFC 6455 Sec. 1.3: the server's `Sec-WebSocket-Accept` is the base64 of the
+# SHA-1 of the client's `Sec-WebSocket-Key` concatenated with this fixed GUID.
+_WS_ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def compute_accept(key: str) -> str:
+    """Compute the RFC 6455 Sec. 1.3 `Sec-WebSocket-Accept` value for `key`.
+
+    The single source of the handshake-accept math: both the raw-transport
+    `WebSocket.accept` branch and the native `HttpProtocol` upgrade handler call
+    this so the 101 response carries exactly one, consistent accept key. SHA-1 is
+    mandated by the spec for the handshake fingerprint - it is not used here as a
+    security primitive.
+    """
+    return base64.b64encode(
+        hashlib.sha1((key + _WS_ACCEPT_GUID).encode()).digest()  # noqa: S324
+    ).decode()
 
 
 def _validate_positive_seconds(value: float | None, name: str) -> None:
@@ -212,7 +231,9 @@ class WebSocket:
 
     # RFC 6455 Sec. 1.3 magic GUID, concatenated with the client's
     # `Sec-WebSocket-Key` and SHA-1+base64'd to form `Sec-WebSocket-Accept`.
-    GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    # The standalone `compute_accept` helper / `_WS_ACCEPT_GUID` carry the same
+    # value; this class attribute is kept for backward compatibility.
+    GUID = _WS_ACCEPT_GUID
 
     # Cap inbound frame backlog. An unbounded `asyncio.Queue` lets a peer
     # that sends faster than the handler reads grow it without limit -
@@ -248,6 +269,13 @@ class WebSocket:
     _hb_next_token: int
     _hb_saw_inbound: bool
 
+    # Bound on how long a server-initiated raw-transport `close()` waits for the
+    # peer's reply close frame before dropping the TCP connection (RFC 6455
+    # Sec. 7.1.1: an endpoint may close the connection if the peer's close does
+    # not arrive within a reasonable time). Keeps a well-behaved peer's clean
+    # handshake intact while never blocking shutdown on an unresponsive peer.
+    CLOSE_HANDSHAKE_TIMEOUT = 5.0
+
     def __init__(
         self,
         transport: asyncio.Transport,
@@ -262,6 +290,28 @@ class WebSocket:
         self.headers = headers
         self._accepted = False
         self._closed = False
+        # Peer-initiated close tracking for the raw-transport close handshake
+        # (RFC 6455 Sec. 5.5.1). `_peer_closed` records that the peer sent the
+        # first close frame, so the server's `close()` can skip waiting for a
+        # reply it has already received. The peer's status code is validated and
+        # recorded into `close_code` by `_handle_close_frame`.
+        self._peer_closed = False
+        # Distinct from `_closed`: a peer-initiated close sets `_closed` from
+        # inside the frame parser before the server has sent its own (reply)
+        # close frame. `close()` keys the actual frame write off this flag so a
+        # peer-driven close still triggers the server's reply, completing the
+        # RFC 6455 Sec. 5.5.1 handshake instead of returning early on `_closed`.
+        self._close_frame_sent = False
+        # Signalled by the frame parser when the peer's close frame arrives, so a
+        # server-initiated `close()` can await the reply (bounded by
+        # `CLOSE_HANDSHAKE_TIMEOUT`) before dropping the transport. Created lazily
+        # by `close()` since the common ASGI path never uses it.
+        self._peer_close_event: asyncio.Event | None = None
+        # True only on the native upgrade path, where `HttpProtocol` already
+        # wrote the 101 synchronously to switch the byte stream. `accept()` must
+        # then NOT emit a second handshake. Default False so direct construction
+        # and `from_asgi` keep writing the 101 themselves.
+        self._handshake_sent = False
         self._idle_timeout = idle_timeout
         self._init_heartbeat(heartbeat)
         maxsize = (
@@ -269,7 +319,9 @@ class WebSocket:
             if recv_queue_maxsize is not None
             else self.DEFAULT_RECV_QUEUE_MAXSIZE
         )
-        self._receive_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=maxsize)
+        # Carries reassembled `bytes` messages plus the `_RAW_DISCONNECT`
+        # sentinel the frame parser enqueues to wake a parked receiver on close.
+        self._receive_queue: asyncio.Queue[bytes | object] = asyncio.Queue(maxsize=maxsize)
         # Fragmented-message reassembly state (RFC 6455 Sec. 5.4). `_frag_opcode`
         # is the data opcode of the message currently being assembled, or
         # `None` when no fragmented message is in progress.
@@ -298,6 +350,14 @@ class WebSocket:
         self.path_params: dict[str, Any] = {}
         self._query_params: Any = None
         self._cookies: dict[str, str] | None = None
+        # Write-side backpressure hook for the native raw-transport path. The
+        # protocol installs an awaitable (`HttpProtocol.drain`) via
+        # `set_send_drain`; the async send wrappers await it before each frame so
+        # a slow-reading client suspends the producer instead of growing the
+        # transport write buffer without bound. Stays `None` in ASGI mode (the
+        # ASGI server owns flow control) and on direct construction, so the
+        # send path pays a single `is not None` check.
+        self._send_drain: Any = None
 
     @classmethod
     def from_asgi(
@@ -333,6 +393,10 @@ class WebSocket:
         ws.headers = headers
         ws._accepted = False
         ws._closed = False
+        ws._peer_closed = False
+        ws._close_frame_sent = False
+        ws._peer_close_event = None
+        ws._handshake_sent = False
         ws._idle_timeout = idle_timeout
         # A heartbeat passed in ASGI mode is accepted for API symmetry but
         # never drives a timer: the ASGI server owns ping/pong on this path.
@@ -351,11 +415,67 @@ class WebSocket:
         ws.path_params = {}
         ws._query_params = None
         ws._cookies = None
+        # ASGI mode never drains through the raw transport - the ASGI server owns
+        # outbound flow control.
+        ws._send_drain = None
+        return ws
+
+    @classmethod
+    def from_transport(
+        cls,
+        transport: asyncio.Transport,
+        headers: dict[str, str],
+        scope: dict,
+        *,
+        path_params: dict[str, Any] | None = None,
+        idle_timeout: float | None = None,
+        recv_queue_maxsize: int | None = None,
+    ) -> WebSocket:
+        """Construct a raw-transport WebSocket whose 101 was already sent.
+
+        Used by the native `HttpProtocol` upgrade path. The protocol writes the
+        RFC 6455 Sec. 4.2.2 101 response synchronously (to switch the byte
+        stream) before building this object, so `_handshake_sent` is set: a later
+        `accept()` validates state but does not emit a second handshake. The
+        connection is otherwise a normal raw-mode `WebSocket` - `transport` is
+        set, `_asgi_send` stays `None` (so `_is_asgi` is False), and inbound
+        bytes flow through `feed_data`/`_parse_frame` exactly as for a directly
+        constructed instance.
+
+        `headers` are the lowercased handshake headers (latin-1 decoded by the
+        protocol). `scope` mirrors the ASGI websocket scope shape so the same
+        `path`/`query_params`/`client`/`cookies` accessors work unchanged.
+        """
+        ws = cls(
+            transport, headers, recv_queue_maxsize=recv_queue_maxsize, idle_timeout=idle_timeout
+        )
+        ws._handshake_sent = True
+        ws.scope = scope
+        ws.path = scope.get("path", "")
+        ws.path_params = path_params if path_params is not None else {}
         return ws
 
     @property
     def _is_asgi(self) -> bool:
         return self._asgi_send is not None
+
+    @property
+    def _needs_close(self) -> bool:
+        """Whether this side still owes a close frame to the peer.
+
+        Drives the dispatcher's exit handling. `_closed` alone is the wrong
+        signal on the raw-transport path: a peer-initiated close sets `_closed`
+        from inside the frame parser before the server has sent its own (reply)
+        close frame (RFC 6455 Sec. 5.5.1), so guarding the dispatcher's
+        `close()` on `not _closed` would suppress that reply and hang the
+        handshake. In raw mode the server still owes a close exactly while it
+        has not sent one (`_close_frame_sent` is False). In ASGI mode the
+        framework never sends a second close after `_closed` is set (a local
+        close or a peer disconnect both set it), so `_closed` is the signal.
+        """
+        if self._is_asgi:
+            return not self._closed
+        return not self._close_frame_sent
 
     @property
     def query_params(self) -> Any:
@@ -576,11 +696,27 @@ class WebSocket:
             self._accepted = True
             return
 
+        if self._handshake_sent:
+            # Native upgrade path: `HttpProtocol` already wrote the 101
+            # synchronously to switch the byte stream, so there is no second
+            # handshake to emit. The 101 is already on the wire, so a
+            # subprotocol or extra header passed here cannot be appended to it -
+            # fail loud rather than silently drop the negotiation. Native
+            # subprotocol negotiation is a documented limitation; run under an
+            # ASGI server (uvicorn/hypercorn) for that case.
+            if subprotocol is not None or headers is not None:
+                raise RuntimeError(
+                    "WebSocket.accept(): native (Veloce.run) WebSocket upgrade does not "
+                    "support negotiating a subprotocol or custom handshake headers - the 101 "
+                    "response was already sent. Run under an ASGI server (uvicorn/hypercorn) "
+                    "for native subprotocol negotiation."
+                )
+            self._accepted = True
+            return
+
         # Raw-transport mode (HTTP/1.1 101 handshake).
         key = self.headers.get(HEADER_SEC_WEBSOCKET_KEY.lower(), "")
-        accept_key = base64.b64encode(
-            hashlib.sha1((key + self.GUID).encode()).digest()  # noqa: S324
-        ).decode()
+        accept_key = compute_accept(key)
 
         lines = [
             "HTTP/1.1 101 Switching Protocols",
@@ -609,7 +745,7 @@ class WebSocket:
         if self._is_asgi:
             await self._asgi_send_safe({"type": ASGI_EVENT_WS_SEND, "text": data})
             return
-        self._send_frame(data.encode("utf-8"), opcode=0x1)
+        await self._raw_send(data.encode("utf-8"), opcode=0x1)
 
     async def send_json(self, data: Any, mode: str = "text") -> None:
         """Send JSON data.
@@ -634,7 +770,7 @@ class WebSocket:
         if self._is_asgi:
             await self._asgi_send_safe({"type": ASGI_EVENT_WS_SEND, "bytes": data})
             return
-        self._send_frame(data, opcode=0x2)
+        await self._raw_send(data, opcode=0x2)
 
     async def _asgi_send_safe(self, message: dict) -> None:
         """Forward an ASGI send, normalizing a dead-peer OSError to a disconnect.
@@ -731,6 +867,18 @@ class WebSocket:
             # `_raw_recv` disconnect path.
             raise WebSocketDisconnect(self.close_code or WS_1000_NORMAL_CLOSURE)
 
+    def set_send_drain(self, drain: Any) -> None:
+        """Install the native write-side backpressure hook (raw transport only).
+
+        `drain` is an awaitable-returning callable (`HttpProtocol.drain`) that
+        blocks while the transport's outgoing buffer is over its high-water
+        mark. The async `send_*` wrappers await it before writing each frame, so
+        a slow-reading client suspends the producing handler instead of letting
+        the transport buffer grow without bound. The native upgrade path
+        (`HttpProtocol`) calls this once; ASGI mode leaves it unset.
+        """
+        self._send_drain = drain
+
     def set_idle_timeout(self, idle_timeout: float | None) -> None:
         """Set the idle-receive timeout in seconds (`None` disables it).
 
@@ -805,12 +953,15 @@ class WebSocket:
             except (TimeoutError, asyncio.TimeoutError):
                 await self._maybe_idle_timeout(timeout, eff)
                 raise
+        # The frame parser enqueues `_RAW_DISCONNECT` when the connection
+        # closes (peer close frame, oversized/protocol-error/invalid-payload
+        # close, or a heartbeat timeout on a dead peer) to wake a parked
+        # receiver; surface it as the disconnect the handler expects, carrying
+        # the recorded close code so the handler unwinds like a peer close.
+        # A close frame may omit the status code, so fall back to a normal 1000.
         if item is _RAW_DISCONNECT:
-            # A terminal close (e.g. a heartbeat timeout on a dead peer) woke
-            # this parked receive; surface it as a disconnect carrying the
-            # recorded close code so the handler unwinds like a peer close.
             raise WebSocketDisconnect(self.close_code or WS_1000_NORMAL_CLOSURE)
-        return item
+        return cast("bytes", item)
 
     async def _maybe_idle_timeout(self, timeout: float | None, eff: float | None) -> None:
         """Treat a `wait_for` timeout as an idle close when idle won the race.
@@ -891,23 +1042,46 @@ class WebSocket:
             return
 
     async def close(self, code: int = WS_1000_NORMAL_CLOSURE, reason: str = "") -> None:
-        """Send a close frame.
+        """Send a close frame and complete the RFC 6455 close handshake.
 
         Per RFC 6455 Sec. 5.5.1 the close-frame payload is a 2-byte big-endian
         status code optionally followed by a UTF-8 reason of at most
         123 bytes (so the whole payload fits in the 125-byte
         control-frame budget). Reasons longer than 123 bytes are
         truncated to a clean UTF-8 boundary.
+
+        On the raw-transport path the close is a full handshake (Sec. 5.5.1,
+        Sec. 7.1.1): the close frame is sent, then a server-initiated close
+        waits for the peer's reply close frame (bounded by
+        `CLOSE_HANDSHAKE_TIMEOUT`) before dropping the TCP connection. A
+        peer-initiated close already carries the peer's frame, so the reply is
+        sent and the transport closed without waiting.
         """
-        if self._closed:
-            return
-        self._closed = True
-        self._cancel_heartbeat()
         if self._is_asgi:
+            if self._closed:
+                return
+            self._closed = True
+            self._cancel_heartbeat()
             await self._asgi_send(
                 {"type": ASGI_EVENT_WS_CLOSE, "code": code, "reason": reason or ""}
             )
             return
+        # Raw transport. `_closed` may already be set (peer-initiated close set
+        # it from the frame parser), so the reply frame is keyed off
+        # `_close_frame_sent`, not `_closed`, to avoid returning early before the
+        # server has answered the peer's close.
+        if self._close_frame_sent:
+            return
+        peer_started = self._peer_closed
+        self._closed = True
+        self._close_frame_sent = True
+        self._cancel_heartbeat()
+        # Arm the reply-wait before sending our frame so a peer close frame that
+        # arrives during/right after the send is not missed (the parser sets the
+        # event only when it is already present). Skipped when the peer started
+        # the close - its frame is already in hand.
+        if not peer_started:
+            self._peer_close_event = asyncio.Event()
         payload = struct.pack("!H", code)
         if reason:
             reason_bytes = reason.encode("utf-8")[:123]
@@ -920,8 +1094,19 @@ class WebSocket:
                 except UnicodeDecodeError:
                     reason_bytes = reason_bytes[:-1]
             payload += reason_bytes
-        self._send_frame(payload, opcode=0x8)
-        self.transport.close()
+        with contextlib.suppress(Exception):
+            self._send_frame(payload, opcode=0x8)
+        # Server-initiated close: await the peer's reply close frame so both
+        # sides agree the connection is closing before the TCP socket drops
+        # (RFC 6455 Sec. 7.1.1). The frame parser sets `_peer_close_event` when
+        # the peer's close arrives; a silent peer trips the bounded timeout.
+        if not peer_started and self._peer_close_event is not None:
+            with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    self._peer_close_event.wait(), timeout=self.CLOSE_HANDSHAKE_TIMEOUT
+                )
+        if self.transport is not None:
+            self.transport.close()
 
     def feed_data(self, data: bytes) -> None:
         """Feed raw bytes from the transport (called by the protocol).
@@ -1045,6 +1230,17 @@ class WebSocket:
         # Control frames (close / ping / pong) - never fragmented; handled
         # independently of any fragmented message in progress.
         if opcode == 0x8:  # Close
+            # Peer-initiated close (RFC 6455 Sec. 5.5.1). Record that the peer
+            # started the handshake and unblock any server-initiated `close()`
+            # already awaiting the peer's reply, then validate the close payload,
+            # echo the reply close frame, record `close_code`/`close_reason`, and
+            # wake any parked receiver so the handler unwinds via
+            # `WebSocketDisconnect`. `_handle_close_frame` sends the reply and
+            # sets `_close_frame_sent`, so `_run_websocket`'s clean-exit
+            # `close()` is a no-op rather than emitting a second close frame.
+            self._peer_closed = True
+            if self._peer_close_event is not None:
+                self._peer_close_event.set()
             self._handle_close_frame(payload)
             raise WebSocketDisconnect(self.close_code or WS_1000_NORMAL_CLOSURE)
         if opcode == 0x9:  # Ping
@@ -1131,59 +1327,49 @@ class WebSocket:
         # for the next frame in the buffer.
         return frame_len
 
-    def _close_too_big(self) -> None:
-        """Close the connection with `1009 Message Too Big`.
+    def _close_control(self, code: int) -> None:
+        """Synchronously send a close frame carrying `code`, then drop the transport.
 
-        Used when a peer declares a frame payload past `MAX_FRAME_SIZE`.
-        Mirrors the synchronous close in `_enqueue_or_close` - no `await`
-        is available from inside the Protocol callback that drives
-        `feed_data`.
+        Shared by the parser-side close paths (`_close_too_big`,
+        `_close_protocol_error`, `_close_invalid_payload`). No `await` is
+        available from inside the Protocol callback that drives `feed_data`, so
+        the close is synchronous and mirrors `_enqueue_or_close`: emit the close
+        frame, cancel the heartbeat, record the close code, mark the connection
+        closed, wake any parked receiver, and close the transport.
         """
         with contextlib.suppress(Exception):
-            self._send_frame((WS_1009_MESSAGE_TOO_BIG).to_bytes(2, "big"), opcode=0x8)  # Close
+            self._send_frame(code.to_bytes(2, "big"), opcode=0x8)  # Close
         self._cancel_heartbeat()
-        self.close_code = WS_1009_MESSAGE_TOO_BIG
+        self.close_code = code
         self._closed = True
+        self._close_frame_sent = True
         self._wake_raw_receiver()
         with contextlib.suppress(Exception):
             if self.transport is not None:
                 self.transport.close()
+
+    def _close_too_big(self) -> None:
+        """Close the connection with `1009 Message Too Big`.
+
+        Used when a peer declares a frame payload past `MAX_FRAME_SIZE`.
+        """
+        self._close_control(WS_1009_MESSAGE_TOO_BIG)
 
     def _close_protocol_error(self) -> None:
         """Close the connection with `1002 Protocol Error`.
 
         Used for malformed frames - e.g. an oversized (>125 byte) or
-        fragmented control frame (RFC 6455 Sec. 5.5). Like `_close_too_big`,
-        the close is synchronous: no `await` is available from inside the
-        Protocol callback that drives `feed_data`.
+        fragmented control frame (RFC 6455 Sec. 5.5).
         """
-        with contextlib.suppress(Exception):
-            self._send_frame((WS_1002_PROTOCOL_ERROR).to_bytes(2, "big"), opcode=0x8)  # Close
-        self._cancel_heartbeat()
-        self.close_code = WS_1002_PROTOCOL_ERROR
-        self._closed = True
-        self._wake_raw_receiver()
-        with contextlib.suppress(Exception):
-            if self.transport is not None:
-                self.transport.close()
+        self._close_control(WS_1002_PROTOCOL_ERROR)
 
     def _close_invalid_payload(self) -> None:
         """Close the connection with `1007 Invalid Frame Payload Data`.
 
         Used when a TEXT message (whole or reassembled from fragments) is
-        not valid UTF-8 (RFC 6455 Sec. 8.1). Like the other parser-side
-        closers the close is synchronous - no `await` is available from
-        inside the Protocol callback that drives `feed_data`.
+        not valid UTF-8 (RFC 6455 Sec. 8.1).
         """
-        with contextlib.suppress(Exception):
-            self._send_frame((WS_1007_INVALID_FRAME_PAYLOAD_DATA).to_bytes(2, "big"), opcode=0x8)
-        self._cancel_heartbeat()
-        self.close_code = WS_1007_INVALID_FRAME_PAYLOAD_DATA
-        self._closed = True
-        self._wake_raw_receiver()
-        with contextlib.suppress(Exception):
-            if self.transport is not None:
-                self.transport.close()
+        self._close_control(WS_1007_INVALID_FRAME_PAYLOAD_DATA)
 
     def _handle_close_frame(self, payload: bytes | bytearray) -> None:
         """Process a received Close frame: validate, echo, and record state.
@@ -1235,6 +1421,7 @@ class WebSocket:
             self._send_frame(code.to_bytes(2, "big"), opcode=0x8)
         self._cancel_heartbeat()
         self._closed = True
+        self._close_frame_sent = True
         self._wake_raw_receiver()
         with contextlib.suppress(Exception):
             if self.transport is not None:
@@ -1394,6 +1581,22 @@ class WebSocket:
         if self._receive_queue is not None:
             with contextlib.suppress(asyncio.QueueFull):
                 self._receive_queue.put_nowait(_RAW_DISCONNECT)
+
+    async def _raw_send(self, data: bytes, opcode: int) -> None:
+        """Write one frame on the raw transport, honouring write backpressure.
+
+        Awaits the protocol's write-side drain (installed via `set_send_drain`)
+        BEFORE writing, so a slow-reading client - which trips the transport's
+        `pause_writing` - suspends the producing handler here instead of letting
+        `_send_frame` buffer unbounded bytes in memory. The drain is a no-op when
+        the connection is writable, so the common case adds one `is not None`
+        check plus an already-set `Event.wait()`. `_send_frame` itself stays
+        synchronous: it is also invoked from the sync Protocol callback that
+        drives `feed_data` (pong / close replies), where no `await` is available.
+        """
+        if self._send_drain is not None:
+            await self._send_drain()
+        self._send_frame(data, opcode=opcode)
 
     def _send_frame(self, data: bytes, opcode: int) -> None:
         """Send a WebSocket frame.

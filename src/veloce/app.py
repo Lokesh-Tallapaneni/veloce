@@ -108,7 +108,7 @@ from veloce.http.response import (
 )
 from veloce.instrumentation import RequestMetrics
 from veloce.middleware import BaseHTTPMiddleware, Middleware
-from veloce.routing.router import Router
+from veloce.routing.router import RouteInfo, Router
 from veloce.sessions import Session
 from veloce.signals import (
     appcontext_popped,
@@ -4540,6 +4540,89 @@ class Veloce(Router):
             app = cls(app, **options)
         return app
 
+    async def _run_websocket(self, ws: WebSocket, route_info: RouteInfo) -> None:
+        """Run a matched WebSocket handler and apply the close-code mapping.
+
+        The connection envelope (host/Origin checks, route match, connection
+        refusal) is the caller's responsibility - the ASGI branch drives it via
+        receive/send, the native upgrade handler via the raw transport. The
+        caller must have set `ws.path_params` and `ws.scope` before invoking
+        this. A generic handler exception is re-raised after closing with 1011
+        so the surrounding driver can log it.
+        """
+        # Bind the app context for this connection so handlers, dependencies,
+        # and helpers (`current_app`, `g`, template rendering, context
+        # processors) work the same under `Veloce.run()` (native upgrade) as
+        # under uvicorn/hypercorn (ASGI). Both call sites are independent tasks,
+        # so the contextvar set here is scoped to the dispatch task and falls
+        # through naturally when it ends - mirroring the HTTP dispatch pattern.
+        _current_app_var.set(self)
+        g._reset()
+        # A fresh resolver per connection: a WebSocket is long-lived,
+        # so its yield-dependency teardown stack must not be cleared
+        # by a concurrent request resetting the shared HTTP resolver.
+        ws_resolver = DependencyResolver()
+        ws_resolver._overrides = self._dependency_overrides
+        ws_resolver._override_subplans = self._override_subplans
+        ws_exc: BaseException | None = None
+        try:
+            handler = route_info.handler
+            # WebSocket DI runs through the shared HandlerPlan /
+            # DependencyResolver - the same path as HTTP dispatch - so
+            # WebSocket dependencies get `yield`-style teardown and
+            # `Security` / `SecurityScopes` support (F8).
+            if route_info.handler_plan is not None:
+                try:
+                    kwargs = await ws_resolver.resolve_ws_plan(
+                        route_info.handler_plan,
+                        ws,
+                        ws.path_params,
+                        route_info.route_dep_plans,
+                    )
+                except RequestValidationError as exc:
+                    # A WebSocket dependency failed validation -
+                    # surface it as the WS-specific error (V9).
+                    raise WebSocketRequestValidationError(getattr(exc, "errors", []) or []) from exc
+            else:
+                kwargs = {}
+            await handler(**kwargs)
+        except WebSocketRequestValidationError:
+            # Dependency validation failure - close with 1008
+            # (policy violation), not 1011, and swallow.
+            if ws._needs_close:
+                with contextlib.suppress(Exception):
+                    await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+        except WebSocketException as exc:
+            # Application-driven close - send the requested code +
+            # reason and swallow the exception (not an error).
+            if ws._needs_close:
+                with contextlib.suppress(Exception):
+                    await ws.close(code=exc.code, reason=exc.reason or "")
+        except Exception as exc:
+            ws_exc = exc
+            if ws._needs_close:
+                with contextlib.suppress(Exception):
+                    await ws.close(code=status.WS_1011_INTERNAL_ERROR)  # internal error
+            raise
+        else:
+            # Clean exit. On the raw path a peer-initiated close has set
+            # `_closed` but the server still owes its reply close frame, so the
+            # `_needs_close` predicate (not the raw `_closed` flag) drives the
+            # reply that completes the RFC 6455 Sec. 5.5.1 handshake.
+            if ws._needs_close:
+                with contextlib.suppress(Exception):
+                    await ws.close()
+        finally:
+            # Drain any `yield`-style dependency teardowns the
+            # handshake set up, exception-aware. `run_teardowns` now
+            # re-raises aggregated teardown failures; log them here so a
+            # broken teardown is observable without tearing down the
+            # connection-close path itself.
+            try:
+                await ws_resolver.run_teardowns(ws_exc)
+            except Exception:
+                self.logger.exception("yield-dependency teardown raised")
+
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
         """ASGI interface - allows running under uvicorn/hypercorn if desired.
 
@@ -4835,9 +4918,10 @@ class Veloce(Router):
             # ASGI WS dispatch (W1). Match the route table for a
             # WEBSOCKET-method handler and run it with a WebSocket built
             # from the ASGI receive/send pair. Path params are coerced
-            # the same way they are for HTTP.
-            _current_app_var.set(self)
-            g._reset()
+            # the same way they are for HTTP. The app context
+            # (`_current_app_var` / `g`) is bound inside `_run_websocket`,
+            # shared with the native upgrade path; the host/Origin checks
+            # below do not read it.
 
             # Host and Origin validation for WebSocket handshakes - an HTTP
             # middleware such as TrustedHostMiddleware or
@@ -4897,68 +4981,7 @@ class Veloce(Router):
             ws = WebSocket.from_asgi(scope, receive, send)
             ws.path_params = ws_match.path_params
             route_info = ws_match.route_info
-            # A fresh resolver per connection: a WebSocket is long-lived,
-            # so its yield-dependency teardown stack must not be cleared
-            # by a concurrent request resetting the shared HTTP resolver.
-            ws_resolver = DependencyResolver()
-            ws_resolver._overrides = self._dependency_overrides
-            ws_resolver._override_subplans = self._override_subplans
-            ws_exc: BaseException | None = None
-            try:
-                handler = route_info.handler
-                # WebSocket DI runs through the shared HandlerPlan /
-                # DependencyResolver - the same path as HTTP dispatch - so
-                # WebSocket dependencies get `yield`-style teardown and
-                # `Security` / `SecurityScopes` support (F8).
-                if route_info.handler_plan is not None:
-                    try:
-                        kwargs = await ws_resolver.resolve_ws_plan(
-                            route_info.handler_plan,
-                            ws,
-                            ws_match.path_params,
-                            route_info.route_dep_plans,
-                        )
-                    except RequestValidationError as exc:
-                        # A WebSocket dependency failed validation -
-                        # surface it as the WS-specific error (V9).
-                        raise WebSocketRequestValidationError(
-                            getattr(exc, "errors", []) or []
-                        ) from exc
-                else:
-                    kwargs = {}
-                await handler(**kwargs)
-            except WebSocketRequestValidationError:
-                # Dependency validation failure - close with 1008
-                # (policy violation), not 1011, and swallow.
-                if not ws._closed:
-                    with contextlib.suppress(Exception):
-                        await ws.close(code=status.WS_1008_POLICY_VIOLATION)
-            except WebSocketException as exc:
-                # Application-driven close - send the requested code +
-                # reason and swallow the exception (not an error).
-                if not ws._closed:
-                    with contextlib.suppress(Exception):
-                        await ws.close(code=exc.code, reason=exc.reason or "")
-            except Exception as exc:
-                ws_exc = exc
-                if not ws._closed:
-                    with contextlib.suppress(Exception):
-                        await ws.close(code=status.WS_1011_INTERNAL_ERROR)  # internal error
-                raise
-            else:
-                if not ws._closed:
-                    with contextlib.suppress(Exception):
-                        await ws.close()
-            finally:
-                # Drain any `yield`-style dependency teardowns the
-                # handshake set up, exception-aware. `run_teardowns` now
-                # re-raises aggregated teardown failures; log them here so a
-                # broken teardown is observable without tearing down the
-                # connection-close path itself.
-                try:
-                    await ws_resolver.run_teardowns(ws_exc)
-                except Exception:
-                    self.logger.exception("yield-dependency teardown raised")
+            await self._run_websocket(ws, route_info)
 
         elif scope["type"] == ASGI_SCOPE_LIFESPAN:
             while True:

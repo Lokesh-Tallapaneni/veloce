@@ -24,10 +24,16 @@ from veloce._constants import (
     MSG_ERROR_RESPONSE_EMISSION,
     MSG_INTERNAL_SERVER_ERROR,
 )
-from veloce._protocol_constants import RAW_HEADER_CONTENT_LENGTH
+from veloce._internal import _extract_host, _ws_handshake_rejection
+from veloce._protocol_constants import (
+    RAW_HEADER_CONTENT_LENGTH,
+    ROUTE_METHOD_WEBSOCKET,
+)
+from veloce.exceptions import WebSocketDisconnect
 from veloce.http._body import RequestBodySource
 from veloce.http.request import Request
 from veloce.http.response import Response, StreamingResponse
+from veloce.websocket import WebSocket, compute_accept
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
@@ -104,6 +110,19 @@ def _enable_tcp_keepalive(
             sock.setsockopt(_socket.IPPROTO_TCP, opt, value)
 
 
+# RFC 6455 Sec. 4.2.1: a WebSocket handshake is a GET carrying the upgrade
+# triplet. These are the lowercased header names the upgrade detector scans for
+# (httptools delivers names already lowercased via `on_header`).
+_WS_HEADER_CONNECTION = b"connection"
+_WS_HEADER_UPGRADE = b"upgrade"
+_WS_HEADER_KEY = b"sec-websocket-key"
+_WS_HEADER_VERSION = b"sec-websocket-version"
+_WS_HEADER_HOST = b"host"
+_WS_HEADER_ORIGIN = b"origin"
+# RFC 6455 Sec. 4.2.2: the only WebSocket protocol version Veloce speaks.
+_WS_SUPPORTED_VERSION = b"13"
+
+
 class HttpProtocol(asyncio.Protocol):
     """Raw asyncio protocol - bypasses ASGI overhead entirely."""
 
@@ -127,6 +146,8 @@ class HttpProtocol(asyncio.Protocol):
         "_raw_content_length",
         "_has_expect_continue",
         "_can_write",
+        "_websocket",
+        "_ws_task",
         # Allow weak references so live connections can be tracked in a
         # `WeakSet` for graceful-shutdown draining without pinning the object.
         "__weakref__",
@@ -227,10 +248,19 @@ class HttpProtocol(asyncio.Protocol):
         # Write-side backpressure gate. Set (writable) by default; cleared by
         # `pause_writing` when the transport buffer crosses the high-water mark
         # and re-set by `resume_writing` once it drains below the low mark. The
-        # streaming/SSE path awaits `drain()`, which only blocks while cleared,
-        # so the common keep-alive path pays a single already-set `Event` check.
+        # streaming/SSE path and the native WebSocket send path both await
+        # `drain()`, which only blocks while cleared, so the common keep-alive
+        # path pays a single already-set `Event` check.
         self._can_write: asyncio.Event = asyncio.Event()
         self._can_write.set()
+        # Native WebSocket mode. `None` on the HTTP fast path (a single
+        # `is not None` check per `data_received`). Once a valid RFC 6455
+        # upgrade is matched and the 101 is sent, the connection is diverted:
+        # `_websocket` holds the raw-transport `WebSocket` and subsequent socket
+        # bytes are fed to its frame parser instead of the HTTP parser. `_ws_task`
+        # is the handler dispatch task, cancelled on connection_lost.
+        self._websocket: WebSocket | None = None
+        self._ws_task: asyncio.Task | None = None
 
     # -- httptools callbacks --------------------------------------
 
@@ -282,6 +312,15 @@ class HttpProtocol(asyncio.Protocol):
         if self._oversized:
             return
         if self.transport is None or self.transport.is_closing():
+            return
+
+        # RFC 6455 native upgrade (Sec. 4.2). Gated on the parser's C-level
+        # `should_upgrade()` flag, which is set only when httptools parsed a
+        # `Connection: upgrade` + `Upgrade:` request - so an ordinary GET never
+        # enters the Python-level header scan inside `_handle_websocket_upgrade`.
+        # A valid upgrade with a matching websocket route is handled here and
+        # returns; everything else continues down the normal HTTP path.
+        if self.parser.should_upgrade() and self._handle_websocket_upgrade():
             return
 
         max_len = self.app.config.get("MAX_CONTENT_LENGTH")
@@ -348,6 +387,181 @@ class HttpProtocol(asyncio.Protocol):
             HttpProtocol._active_tasks.add(self._server_loop)
             self._server_loop.add_done_callback(self._task_done)
 
+    # -- WebSocket upgrade (RFC 6455 Sec. 4.2) --------------------
+
+    def _handle_websocket_upgrade(self) -> bool:
+        """Attempt the RFC 6455 handshake; return True if the connection diverted.
+
+        Called from `on_headers_complete` when the parser flagged an upgrade.
+        Detects a valid upgrade request, matches a websocket route, runs the
+        host/Origin checks, sends the 101, and diverts the connection into
+        WebSocket mode. Returns True once the connection has been handled
+        (diverted, or terminated with an HTTP error response); False means "not a
+        WebSocket upgrade - fall through to the normal HTTP path".
+        """
+        # RFC 6455 Sec. 4.1 requires the handshake to be a GET. A non-GET upgrade
+        # (e.g. an HTTP/2 prior-knowledge or h2c attempt) is not a WebSocket
+        # handshake - fall through to the normal HTTP path, which rejects the
+        # protocol switch with a 400 like any other non-WebSocket upgrade.
+        if self.parser.get_method() != b"GET":
+            return False
+        # Detect the upgrade triplet (RFC 6455 Sec. 4.2.1). `connection` may be a
+        # comma list ("keep-alive, Upgrade"); the others are single tokens. All
+        # header names are already lowercased by `on_header`.
+        has_upgrade_token = False
+        upgrade_is_ws = False
+        ws_key: bytes | None = None
+        ws_version: bytes | None = None
+        host = b""
+        origin: bytes | None = None
+        for name, value in self.headers:
+            if name == _WS_HEADER_CONNECTION:
+                # Case-insensitive, comma-list aware: any "upgrade" token counts.
+                for token in value.split(b","):
+                    if token.strip().lower() == _WS_HEADER_UPGRADE:
+                        has_upgrade_token = True
+                        break
+            elif name == _WS_HEADER_UPGRADE:
+                if value.strip().lower() == b"websocket":
+                    upgrade_is_ws = True
+            elif name == _WS_HEADER_KEY:
+                if value:
+                    ws_key = value
+            elif name == _WS_HEADER_VERSION:
+                ws_version = value.strip()
+            elif name == _WS_HEADER_HOST and not host:
+                host = value
+            elif name == _WS_HEADER_ORIGIN and origin is None:
+                origin = value
+
+        # Not a WebSocket handshake at all - fall through to HTTP. Short-circuit
+        # on the first missing element so an ordinary GET pays almost nothing.
+        if not (has_upgrade_token and upgrade_is_ws):
+            return False
+
+        transport = self.transport
+        if transport is None or transport.is_closing():
+            return True
+
+        # An upgrade to websocket with the wrong version: per RFC 6455 Sec. 4.2.2
+        # respond 426 advertising the version we speak.
+        if ws_version != _WS_SUPPORTED_VERSION:
+            self._write_ws_http_error(
+                status.HTTP_426_UPGRADE_REQUIRED,
+                b"Upgrade Required",
+                extra=b"Sec-WebSocket-Version: 13\r\n",
+            )
+            return True
+
+        # A malformed upgrade missing the mandatory key (RFC 6455 Sec. 4.2.1) is
+        # a bad request - there is no nonce to fingerprint into the 101.
+        if ws_key is None:
+            self._write_ws_http_error(status.HTTP_400_BAD_REQUEST, b"Bad Request")
+            return True
+
+        parsed = httptools.parse_url(self.url)
+        path = parsed.path.decode("ascii") if parsed.path else "/"
+        query_bytes = parsed.query or b""
+
+        # Match BEFORE sending the 101 so we never switch protocols on a path
+        # with no handler. No handler -> 404 (RFC-correct: the upgrade has not
+        # completed, so the refusal is an ordinary HTTP response, not a close
+        # frame).
+        ws_match = self.app.match(ROUTE_METHOD_WEBSOCKET, path)
+        if ws_match is None:
+            self._write_ws_http_error(status.HTTP_404_NOT_FOUND, b"Not Found")
+            return True
+
+        # Host / Origin allow-lists. An HTTP middleware's `process_request`
+        # never sees a handshake, so consult the public predicates directly. A
+        # rejection here precedes the 101 (the upgrade has not completed), so it
+        # is an HTTP 403, not a close frame.
+        host_str = _extract_host(host.decode("latin-1")) if host else ""
+        origin_str = origin.decode("latin-1") if origin is not None else ""
+        if _ws_handshake_rejection(self.app._middlewares, host_str, origin_str):
+            self._write_ws_http_error(status.HTTP_403_FORBIDDEN, b"Forbidden")
+            return True
+
+        # Send the 101 (RFC 6455 Sec. 4.2.2) synchronously to switch the byte
+        # stream. The accept-key math is the single shared `compute_accept`.
+        accept_key = compute_accept(ws_key.decode("latin-1"))
+        transport.write(
+            b"HTTP/1.1 101 Switching Protocols\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Accept: " + accept_key.encode("ascii") + b"\r\n\r\n"
+        )
+
+        # Build the raw-transport WebSocket. The scope mirrors the ASGI websocket
+        # shape so the same path/query/client/cookies accessors work.
+        headers_dict = {
+            name.decode("latin-1"): value.decode("latin-1") for name, value in self.headers
+        }
+        scope = {
+            "type": "websocket",
+            "path": path,
+            "query_string": query_bytes,
+            "headers": self.headers,
+            "client": transport.get_extra_info("peername"),
+        }
+        idle_timeout = self.app.config.get("WEBSOCKET_IDLE_TIMEOUT")
+        ws = WebSocket.from_transport(
+            transport,
+            headers_dict,
+            scope,
+            path_params=ws_match.path_params,
+            idle_timeout=idle_timeout,
+        )
+        # Wire write-side backpressure: the raw send path awaits this before each
+        # frame, so a slow-reading client (which trips `pause_writing`) suspends
+        # the producing handler instead of growing the transport write buffer
+        # without bound. Mirrors the read-side `source.set_flow_control` wiring.
+        ws.set_send_drain(self.drain)
+
+        # Divert: all subsequent socket bytes go to the frame parser. Stand down
+        # the HTTP timers and clear the consumed request buffers - no HTTP
+        # Request is built or enqueued for this connection.
+        self._websocket = ws
+        if self._keep_alive_handle is not None:
+            self._keep_alive_handle.cancel()
+            self._keep_alive_handle = None
+        if self._request_timer is not None:
+            self._request_timer.cancel()
+            self._request_timer = None
+        self.url = b""
+        self.headers = []
+        self._header_bytes_total = 0
+        self._raw_content_length = None
+        self._has_expect_continue = False
+
+        # Dispatch the handler through the shared core. Tracked in `_active_tasks`
+        # with the generic done-callback (logs unhandled errors) and held in
+        # `_ws_task` so connection_lost can cancel it if the client drops.
+        self._ws_task = self.loop.create_task(self.app._run_websocket(ws, ws_match.route_info))
+        HttpProtocol._active_tasks.add(self._ws_task)
+        self._ws_task.add_done_callback(self._task_done)
+        return True
+
+    def _write_ws_http_error(self, status_code: int, reason: bytes, extra: bytes = b"") -> None:
+        """Refuse a handshake with a plain HTTP response, then close.
+
+        Used for the pre-101 refusal paths (wrong version, no route, host/Origin
+        rejected, malformed). The upgrade has not completed, so the refusal is an
+        ordinary HTTP/1.1 response (RFC 6455 Sec. 4.2.2 / Sec. 4.4), never a
+        WebSocket close frame. `extra` carries any additional header lines (e.g.
+        the 426's `Sec-WebSocket-Version`).
+        """
+        self._oversized = True
+        transport = self.transport
+        if transport is None or transport.is_closing():
+            return
+        phrase = reason.decode("ascii")
+        head = (
+            f"HTTP/1.1 {status_code} {phrase}\r\nContent-Length: 0\r\nConnection: close\r\n"
+        ).encode("ascii")
+        transport.write(head + extra + b"\r\n")
+        transport.close()
+
     def on_body(self, body: bytes) -> None:
         # Feed the in-flight request's body source. The source is the single
         # source of truth for the running byte total: `feed` tracks it and
@@ -377,13 +591,14 @@ class HttpProtocol(asyncio.Protocol):
     # -- asyncio.Protocol callbacks -------------------------------
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        # HTTP runs over a full-duplex transport; the Liskov-correct signature
-        # widens to `BaseTransport`, so narrow back here. Check by capability,
-        # not `isinstance(asyncio.Transport)`: uvloop's transport implements the
-        # full-duplex interface but is NOT a subclass of `asyncio.Transport`, so
-        # an isinstance check rejects the production uvloop loop (every
-        # connection fails). A full-duplex transport has both `write` (write
-        # side) and `pause_reading` (read side); a half-duplex one lacks one.
+        # HTTP/WebSocket runs over a full-duplex transport; the Liskov-correct
+        # signature widens to `BaseTransport`, so narrow back here. Check by
+        # capability, not `isinstance(asyncio.Transport)`: uvloop's transport
+        # implements the full-duplex interface but is NOT a subclass of
+        # `asyncio.Transport`, so an isinstance check rejects the production
+        # uvloop loop (every connection fails). A full-duplex transport has both
+        # `write` (write side) and `pause_reading` (read side); a half-duplex
+        # one lacks one.
         # Explicit raise (not `assert`) so `python -O` does not strip it.
         if not (
             callable(getattr(transport, "write", None))
@@ -393,6 +608,9 @@ class HttpProtocol(asyncio.Protocol):
                 f"expected a full-duplex transport (write + pause_reading), "
                 f"got {type(transport).__name__}"
             )
+        # Narrow the local now so the 503-reject write/close below and the
+        # assignment see a `Transport`; the capability check above already
+        # proved the full-duplex interface is present.
         transport = cast("asyncio.Transport", transport)
         self.transport = transport
 
@@ -461,6 +679,17 @@ class HttpProtocol(asyncio.Protocol):
                 HttpProtocol._active_connections -= 1
             self._counted = False
         HttpProtocol._live_connections.discard(self)
+        # WebSocket mode: the client dropped. Mark the connection closed so a
+        # handler blocked in `receive` unwinds on its next read, and cancel the
+        # dispatch task; `_run_websocket`'s finally still runs its teardowns.
+        if self._websocket is not None:
+            self._websocket._closed = True
+            if self._ws_task is not None and not self._ws_task.done():
+                self._ws_task.cancel()
+            self._websocket = None
+            self._ws_task = None
+            self.transport = None
+            return
         # Stop the server loop from dispatching further queued requests and
         # drop any not-yet-served pipelined work; the client is gone.
         self._closing = True
@@ -561,8 +790,9 @@ class HttpProtocol(asyncio.Protocol):
         """asyncio callback: the transport write buffer crossed the high mark.
 
         Clearing the gate makes the next `drain()` block, throttling a
-        producer that is outrunning a slow client. Idempotent - asyncio
-        guarantees paired pause/resume, but tolerating a repeat avoids the
+        producer (a streaming/SSE response or the native WebSocket send path)
+        that is outrunning a slow client. Idempotent - asyncio guarantees
+        paired pause/resume, but tolerating a repeat avoids the
         crash-on-double-pause assert aiohttp carries.
         """
         self._can_write.clear()
@@ -575,10 +805,10 @@ class HttpProtocol(asyncio.Protocol):
         """Block while the transport write buffer is over the high mark.
 
         Returns immediately on the common path (gate set). The streaming and
-        SSE response paths await this after writing each chunk so a fast
-        producer cannot grow the event loop's write buffer without bound. A
-        closing/absent transport returns at once so a torn-down connection
-        does not park the producer.
+        SSE response paths, and the native WebSocket send path, await this
+        after writing each chunk/frame so a fast producer cannot grow the
+        event loop's write buffer without bound. A closing/absent transport
+        returns at once so a torn-down connection does not park the producer.
         """
         if self._can_write.is_set():
             return
@@ -691,6 +921,16 @@ class HttpProtocol(asyncio.Protocol):
             _logger.error("Unhandled error in request dispatch: %s", exc, exc_info=exc)
 
     def data_received(self, data: bytes) -> None:
+        # Once the connection has diverted to WebSocket mode, every byte is a
+        # frame (or part of one) - feed the frame parser, never the HTTP parser.
+        # A close frame inside the buffer sets `_closed`, wakes any parked
+        # receiver (so the handler unwinds via `WebSocketDisconnect` and the
+        # close handshake completes), and raises `WebSocketDisconnect` out of
+        # `feed_data`, which is suppressed here.
+        if self._websocket is not None:
+            with contextlib.suppress(WebSocketDisconnect):
+                self._websocket.feed_data(data)
+            return
         if self._oversized:
             return
         # First bytes of a fresh request - arm the slowloris read budget. The
@@ -700,15 +940,30 @@ class HttpProtocol(asyncio.Protocol):
             self._arm_request_timer()
         try:
             self.parser.feed_data(data)
+        except httptools.HttpParserUpgrade:
+            # A successful WebSocket upgrade: `on_headers_complete` already
+            # diverted the connection (`_handle_websocket_upgrade` set
+            # `self._websocket`) and httptools then raises `HttpParserUpgrade`
+            # at the body offset to signal the protocol switch. This is NOT an
+            # error - suppress it so it does not surface through the event
+            # loop's exception handler as a spurious traceback on every connect.
+            # If the divert did not take (no route, refused handshake), treat it
+            # as a malformed request and fall through to the 400 path.
+            if self._websocket is None:
+                self._send_bad_request()
         except httptools.HttpParserError:
-            if self.transport:
-                self.transport.write(
-                    b"HTTP/1.1 400 Bad Request\r\n"
-                    b"Content-Length: 11\r\n"
-                    b"Connection: close\r\n\r\n"
-                    b"Bad Request"
-                )
-                self.transport.close()
+            self._send_bad_request()
+
+    def _send_bad_request(self) -> None:
+        """Write a minimal `400 Bad Request` and close the connection."""
+        if self.transport:
+            self.transport.write(
+                b"HTTP/1.1 400 Bad Request\r\n"
+                b"Content-Length: 11\r\n"
+                b"Connection: close\r\n\r\n"
+                b"Bad Request"
+            )
+            self.transport.close()
 
     # -- request dispatch -----------------------------------------
 
