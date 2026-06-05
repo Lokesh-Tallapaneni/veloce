@@ -49,8 +49,7 @@ from typing import Any
 
 import orjson
 
-from veloce._internal import _b64decode, _b64encode
-from veloce.secret import Secret
+from veloce._internal import _b64decode, _b64encode, _coerce_secret_bytes
 
 # ── Exceptions ──────────────────────────────────────────────
 
@@ -65,6 +64,16 @@ class BadTimeSignature(BadSignature):
 
 class BadData(BadSignature):
     """The token's payload could not be decoded (malformed base64 / JSON)."""
+
+
+def _derive_key(secret: bytes, salt: bytes) -> bytes:
+    """Derive a per-salt MAC key from the secret via nested HMAC (RFC 2104 Sec. 2).
+
+    Mixing the salt into the MAC key means tokens for different purposes
+    (e.g. session vs password-reset) won't validate against each other even
+    though they share the secret.
+    """
+    return hmac.new(secret, salt, hashlib.sha256).digest()
 
 
 class Signer:
@@ -84,19 +93,11 @@ class Signer:
         secret: str | bytes,
         salt: str | bytes = "veloce.signing",
     ) -> None:
-        if isinstance(secret, Secret):
-            secret = secret.reveal()
-        if isinstance(secret, str):
-            secret = secret.encode("utf-8")
-        if isinstance(salt, str):
-            salt = salt.encode("utf-8")
+        secret = _coerce_secret_bytes(secret)
+        salt = _coerce_secret_bytes(salt)
         if not secret:
             raise ValueError("secret must be non-empty")
-        # Derive a per-salt key from the secret. Mixing the salt into the
-        # MAC key means tokens for different purposes (e.g. session vs
-        # password-reset) won't validate against each other even though
-        # they share the secret.
-        self._key = hmac.new(secret, salt, hashlib.sha256).digest()
+        self._key = _derive_key(secret, salt)
         # Future support for key rotation: extra accepted keys for verify.
         self._secret_keys: list[bytes] = [self._key]
 
@@ -111,13 +112,9 @@ class Signer:
         keep the old one as a fallback for the rotation window. Tokens
         signed with the fallback still verify; new tokens use the primary.
         """
-        if isinstance(secret, Secret):
-            secret = secret.reveal()
-        if isinstance(secret, str):
-            secret = secret.encode("utf-8")
-        if isinstance(salt, str):
-            salt = salt.encode("utf-8")
-        self._secret_keys.append(hmac.new(secret, salt, hashlib.sha256).digest())
+        secret = _coerce_secret_bytes(secret)
+        salt = _coerce_secret_bytes(salt)
+        self._secret_keys.append(_derive_key(secret, salt))
 
     # -- dumps / loads ----------------------------------------------
 

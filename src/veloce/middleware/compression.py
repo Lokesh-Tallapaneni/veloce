@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextvars
 import gzip
 import zlib
 from typing import TYPE_CHECKING, Any
@@ -22,6 +20,7 @@ from veloce._constants import (
     MIME_JSON,
     MIME_TEXT_EVENT_STREAM,
 )
+from veloce._internal import offload
 from veloce.http.request import Request
 from veloce.http.response import Response, header_get, header_key, header_present
 from veloce.middleware.base import Middleware
@@ -161,15 +160,11 @@ class GZipMiddleware(Middleware):
         if self._skip_for_type_or_encoding(response):
             return response
 
-        # Offload CPU-bound compression to thread pool. Wrap in
-        # `contextvars.copy_context().run(...)` so any ContextVar reads
-        # inside the executor (today none; future-proof for hooks) see
-        # the request-scoped values rather than "unbound".
-        loop = asyncio.get_running_loop()
+        # Offload CPU-bound compression to the thread pool; `offload`
+        # preserves any request-scoped ContextVars.
         level = self.compresslevel
         body = response.body
-        ctx = contextvars.copy_context()
-        compressed = await loop.run_in_executor(None, ctx.run, gzip.compress, body, level)
+        compressed = await offload(gzip.compress, body, level)
 
         clen = len(compressed)
         if clen < len(response.body):
@@ -287,7 +282,6 @@ class GZipMiddleware(Middleware):
         by the final `Z_FINISH` flush.
         """
         co = zlib.compressobj(self.compresslevel, zlib.DEFLATED, zlib.MAX_WBITS | 16)
-        loop = asyncio.get_running_loop()
         async for chunk in stream:
             # Downstream chunked / ASGI emit paths expect bytes; streams may
             # yield str (see `StreamingResponse._aiter_sync`).
@@ -295,9 +289,8 @@ class GZipMiddleware(Middleware):
             if len(b) < self.min_stream_chunk_offload:
                 out = self._compress_frame(co, b)
             else:
-                # Offload large frames to the executor, preserving ContextVars.
-                ctx = contextvars.copy_context()
-                out = await loop.run_in_executor(None, ctx.run, self._compress_frame, co, b)
+                # Offload large frames to the thread pool, preserving ContextVars.
+                out = await offload(self._compress_frame, co, b)
             if out:
                 yield out
         # `Z_FINISH` emits any buffered output plus the gzip CRC/length trailer.

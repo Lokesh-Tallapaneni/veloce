@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import contextvars
 import enum
-import functools
 import hashlib
 import inspect
 import math
@@ -22,7 +20,7 @@ from veloce._constants import (
     HEADER_SEC_WEBSOCKET_KEY,
     HEADER_SEC_WEBSOCKET_PROTOCOL,
 )
-from veloce._internal import _is_async_callable, _reject_header_crlf
+from veloce._internal import _is_async_callable, _reject_header_crlf, offload
 from veloce._protocol_constants import (
     ASGI_EVENT_WS_ACCEPT,
     ASGI_EVENT_WS_CLOSE,
@@ -1681,12 +1679,9 @@ def _resolve_listener_callable(
         return callback, wants_socket
 
     async def _async_call(*args: Any) -> Any:
-        loop = asyncio.get_running_loop()
-        # Copy the current context so the worker thread sees the same
-        # `current_app` / `g` / request-scoped ContextVars a sync HTTP handler
-        # gets (a bare `run_in_executor` would run with an empty context).
-        ctx = contextvars.copy_context()
-        return await loop.run_in_executor(None, ctx.run, functools.partial(callback, *args))
+        # `offload` preserves the request-scoped ContextVars a sync HTTP
+        # handler sees (`current_app` / `g` / `request`).
+        return await offload(callback, *args)
 
     return _async_call, wants_socket
 

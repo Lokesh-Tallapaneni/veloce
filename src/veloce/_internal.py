@@ -23,8 +23,11 @@ keep it inside the owning subpackage.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
+import contextvars
+import functools
 import hashlib
 import inspect
 import sys
@@ -43,6 +46,7 @@ from veloce._constants import (
     MSG_LABEL_SET_COOKIE_VALUE,
 )
 from veloce._protocol_constants import SET_COOKIE_JOINER
+from veloce.secret import Secret
 
 MIME_HTML = MIME_TEXT_HTML_UTF8
 MIME_PLAIN = MIME_TEXT_PLAIN_UTF8
@@ -67,6 +71,38 @@ def is_json_mimetype(mimetype: str) -> bool:
     if mimetype == MIME_JSON:
         return True
     return mimetype.startswith("application/") and mimetype.endswith("+json")
+
+
+def offload(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> asyncio.Future[Any]:
+    """Run a sync callable in the default executor, preserving request context.
+
+    Returns the awaitable (call sites do `await offload(...)`) so it adds no
+    extra coroutine frame on the hot dispatch path - only one function-call
+    frame, which is negligible against the thread-pool hop itself. The callable
+    runs through a `copy_context()` snapshot so request-scoped ContextVars
+    (`request`/`session`/`g`/`current_app` proxies, `flash()`) stay bound in the
+    worker thread; omitting that wrap makes them read "unbound". The snapshot is
+    read-only from the caller's view - a `ContextVar.set(...)` inside the sync
+    callable does not propagate back.
+    """
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    return loop.run_in_executor(None, ctx.run, functools.partial(fn, *args, **kwargs))
+
+
+def _coerce_secret_bytes(value: str | bytes | Secret) -> bytes:
+    """Unwrap a `Secret` and UTF-8 encode a `str`, returning raw bytes.
+
+    Single source of the secret/salt coercion shared by `veloce.signing` and
+    `veloce.passwords`. Callers that require a non-empty secret check the
+    returned bytes (`if not coerced:`), which is equivalent to checking the
+    pre-encode `str`/`bytes` since `not b""` and `not ""` are both true.
+    """
+    if isinstance(value, Secret):
+        value = value.reveal()
+    if isinstance(value, str):
+        value = value.encode("utf-8")
+    return value
 
 
 def _coerce_bool(value: Any) -> bool:

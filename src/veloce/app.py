@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import builtins
 import contextlib
-import contextvars
 import functools
 import inspect
 import os
@@ -46,6 +45,7 @@ from veloce._internal import (
     _extract_host,
     _is_async_callable,
     _reject_header_crlf,
+    offload,
 )
 from veloce._pipeline import (
     PH_ASGI_WRAP,
@@ -2226,9 +2226,7 @@ class Veloce(Router):
                 if _is_async_callable(hook):
                     await hook(exc)
                 else:
-                    loop = asyncio.get_running_loop()
-                    ctx = contextvars.copy_context()
-                    await loop.run_in_executor(None, ctx.run, functools.partial(hook, exc))
+                    await offload(hook, exc)
             except Exception:
                 self.logger.exception(f"{label} hook raised an exception")
 
@@ -3645,19 +3643,9 @@ class Veloce(Router):
             is_coro = _is_async_callable(handler)
         if is_coro:
             return await handler(**kwargs)
-        # Run sync handlers in executor to avoid blocking the event loop.
-        # Snapshot the current context so request-scoped `ContextVar`s
-        # (`_current_request_var`, `_current_app_var`, `g`'s store)
-        # remain readable in the worker thread - without `ctx.run`,
-        # `loop.run_in_executor` runs the call in the executor's bare
-        # context and helpers like `flash()`, `current_app.config[...]`,
-        # and the `request` / `session` proxies all see "unbound". The
-        # snapshot is read-only from the caller's perspective: a
-        # `ContextVar.set(...)` inside the sync handler does not
-        # propagate back.
-        loop = asyncio.get_running_loop()
-        ctx = contextvars.copy_context()
-        return await loop.run_in_executor(None, ctx.run, functools.partial(handler, **kwargs))
+        # Run sync handlers in the thread pool so they cannot block the event
+        # loop; `offload` preserves request-scoped ContextVars.
+        return await offload(handler, **kwargs)
 
     async def _call_exc_handler(
         self, handler: Callable, request: Request, exc: BaseException
@@ -4469,9 +4457,7 @@ class Veloce(Router):
         if _is_async_callable(handler):
             await handler()
         else:
-            loop = asyncio.get_running_loop()
-            ctx = contextvars.copy_context()
-            await loop.run_in_executor(None, ctx.run, functools.partial(handler))
+            await offload(handler)
 
     async def _run_lifecycle(self, event: str) -> None:
         """Run lifecycle event handlers, including the lifespan context manager.

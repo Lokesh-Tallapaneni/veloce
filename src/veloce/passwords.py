@@ -31,8 +31,7 @@ import hmac
 import os
 import secrets
 
-from veloce._internal import _b64decode, _b64encode
-from veloce.secret import Secret
+from veloce._internal import _b64decode, _b64encode, _coerce_secret_bytes
 
 # Default parameters. Tuned for ~100ms on a 2020-era laptop - enough to
 # meaningfully slow offline attack without making login latency painful.
@@ -94,15 +93,12 @@ def hash_password(
     `salt_length` is the number of random bytes used for the salt;
     16 is the OWASP minimum.
     """
-    if isinstance(password, Secret):
-        password = password.reveal()
+    password = _coerce_secret_bytes(password)
     if not password:
         raise ValueError("password must be non-empty")
     if salt_length < 8:
         raise ValueError("salt_length must be >= 8 (OWASP recommendation)")
 
-    if isinstance(password, str):
-        password = password.encode("utf-8")
     salt = secrets.token_bytes(salt_length)
 
     if method == "scrypt":
@@ -135,12 +131,9 @@ def verify_password(stored: str, candidate: str | bytes) -> bool:
     method, or mismatch. Uses `hmac.compare_digest` for the final byte
     comparison so timing attacks can't leak partial matches.
     """
-    if isinstance(candidate, Secret):
-        candidate = candidate.reveal()
+    candidate = _coerce_secret_bytes(candidate)
     if not stored or not candidate:
         return False
-    if isinstance(candidate, str):
-        candidate = candidate.encode("utf-8")
     try:
         method, params, salt_b64, hash_b64 = stored.split("$", 3)
     except ValueError:
