@@ -58,6 +58,16 @@ generic one. The same applies to `render_template`, `stream_template`, and
 templates.TemplateResponse(["user_dashboard.html", "dashboard.html"], context)
 ```
 
+In production (`auto_reload` disabled) the resolved candidate list is cached so
+the on-disk lookup runs once per distinct list. The cache is bounded by the
+`Jinja2Templates.RESOLVED_CACHE_MAX` class attribute (default `1024`, FIFO
+eviction of the oldest entry). Override it on the class or instance if you build
+fallback lists from many request-derived names:
+
+```python
+templates.RESOLVED_CACHE_MAX = 256
+```
+
 `TemplateResponse` also accepts `media_type=...` to override the
 `Content-Type` (it defaults to `text/html`) and `background=...` to attach a
 [background task](background-tasks.md) — a callable, a `BackgroundTask`, or a

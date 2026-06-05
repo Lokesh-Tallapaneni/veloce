@@ -29,6 +29,13 @@ from veloce.routing.params import Form as FormParam
 from veloce.routing.params import Header as HeaderParam
 from veloce.routing.params import ParamBase
 from veloce.routing.params import Path as PathParam
+from veloce.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery
+from veloce.security.http import HTTPBasic, HTTPBearer, HTTPDigest
+from veloce.security.oauth2 import (
+    OAuth2AuthorizationCodeBearer,
+    OAuth2PasswordBearer,
+    OpenIdConnect,
+)
 from veloce.status import HTTP_200_OK, HTTP_422_UNPROCESSABLE_ENTITY
 
 _logger = logging.getLogger(__name__)
@@ -122,6 +129,32 @@ def _literal_enum_schema(values: list) -> dict[str, Any]:
     elif all(isinstance(v, str) for v in values):
         schema["type"] = "string"
     return schema
+
+
+# Scalar Python types mapped to their fixed OpenAPI / JSON Schema fragment.
+# Hoisted out of `_python_type_to_schema` so the table is built once at import
+# time rather than per call. Callers mutate the schema they get back
+# (`_apply_marker_constraints` writes minimum/maximum/pattern; the parameter
+# builder sets `default`), so a lookup hit must return a fresh shallow copy -
+# never a reference into this shared table. The copy is shallow: nested
+# containers (the `list` entry's `items` dict) are shared across callers, so
+# callers must mutate only top-level keys and never edit `schema["items"]` (or
+# any nested object) in place, which would corrupt this table for every caller.
+_SCALAR_TYPE_SCHEMAS: dict[Any, dict[str, Any]] = {
+    str: {"type": "string"},
+    int: {"type": "integer"},
+    float: {"type": "number"},
+    bool: {"type": "boolean"},
+    bytes: {"type": "string", "format": "byte"},
+    list: {"type": "array", "items": {}},
+    dict: {"type": "object"},
+    datetime.datetime: {"type": "string", "format": "date-time"},
+    datetime.date: {"type": "string", "format": "date"},
+    datetime.time: {"type": "string", "format": "time"},
+    datetime.timedelta: {"type": "string", "format": "duration"},
+    uuid.UUID: {"type": "string", "format": "uuid"},
+    Decimal: {"type": "number"},
+}
 
 
 def _python_type_to_schema(annotation: Any) -> dict:
@@ -218,24 +251,10 @@ def _python_type_to_schema(annotation: Any) -> dict:
     if origin is Literal:
         return _literal_enum_schema(list(get_args(annotation)))
 
-    type_map: dict[Any, dict[str, Any]] = {
-        str: {"type": "string"},
-        int: {"type": "integer"},
-        float: {"type": "number"},
-        bool: {"type": "boolean"},
-        bytes: {"type": "string", "format": "byte"},
-        list: {"type": "array", "items": {}},
-        dict: {"type": "object"},
-        datetime.datetime: {"type": "string", "format": "date-time"},
-        datetime.date: {"type": "string", "format": "date"},
-        datetime.time: {"type": "string", "format": "time"},
-        datetime.timedelta: {"type": "string", "format": "duration"},
-        uuid.UUID: {"type": "string", "format": "uuid"},
-        Decimal: {"type": "number"},
-    }
-    mapped = type_map.get(annotation)
+    mapped = _SCALAR_TYPE_SCHEMAS.get(annotation)
     if mapped is not None:
-        return mapped
+        # Shallow copy: callers mutate the result (constraints, defaults).
+        return dict(mapped)
 
     # `Enum` subclass -> an enum schema carrying the member values.
     if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
@@ -661,12 +680,12 @@ def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> 
     origin = get_origin(response_model)
     if origin is list:
         args = get_args(response_model)
-        if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+        if args and _is_model_type(args[0]):
             inner = registry.ref(args[0], mode="serialization")
             return {"type": "array", "items": inner}
         return {"type": "array", "items": {}}
 
-    if isinstance(response_model, type) and issubclass(response_model, BaseModel):
+    if _is_model_type(response_model):
         return registry.ref(response_model, mode="serialization")
 
     return None
@@ -770,8 +789,7 @@ def _extract_parameters(
         # form fields (where it emits `{"type": "string"}`), not `requestBody`.
         if (
             annotation
-            and isinstance(annotation, type)
-            and issubclass(annotation, BaseModel)
+            and _is_model_type(annotation)
             and (marker is None or isinstance(marker, BodyParam))
         ):
             request_body_schema = schemas_registry.ref(annotation, mode="validation")
@@ -1074,15 +1092,6 @@ def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
     The name is derived from the scheme class so duplicate registrations
     of the same scheme reuse the same components.securitySchemes entry.
     """
-    # Deferred imports to avoid circular dependency with security subpackage.
-    from veloce.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery
-    from veloce.security.http import HTTPBasic, HTTPBearer, HTTPDigest
-    from veloce.security.oauth2 import (
-        OAuth2AuthorizationCodeBearer,
-        OAuth2PasswordBearer,
-        OpenIdConnect,
-    )
-
     cls_name = type(scheme).__name__
     if isinstance(scheme, OAuth2PasswordBearer):
         return cls_name, {
@@ -1329,7 +1338,7 @@ def _webhook_request_body(handler: Any, registry: SchemaRegistry) -> dict | None
         if pname in ("self", "request"):
             continue
         annotation = hints.get(pname)
-        if annotation and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        if annotation and _is_model_type(annotation):
             return registry.ref(annotation, mode="validation")
     return None
 

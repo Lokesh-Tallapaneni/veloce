@@ -20,6 +20,16 @@ from veloce.security._utils import _extract_bearer_token
 from veloce.status import HTTP_422_UNPROCESSABLE_ENTITY
 
 
+def _form_value(v: Any) -> Any:
+    """Resolve a constructor argument that may still be a `Form` marker.
+
+    Under the dependency resolver each field arrives as the resolved request
+    value; when the form is constructed directly the arguments are still the
+    `Form()` markers, so fall back to their declared defaults.
+    """
+    return v.default if isinstance(v, Form) else v
+
+
 class OAuth2PasswordBearer:
     """OAuth2 Password Bearer flow - extracts token from Authorization header."""
 
@@ -117,15 +127,12 @@ class OAuth2PasswordRequestForm:
         # field from the request form body via the `Form()` markers and
         # passes resolved values here. When constructed directly the
         # params are still `Form` markers - fall back to their defaults.
-        def _value(v: Any) -> Any:
-            return v.default if isinstance(v, Form) else v
-
-        self.grant_type = _value(grant_type)
-        self.username = _value(username)
-        self.password = _value(password)
-        self.scope = _value(scope)
-        self.client_id = _value(client_id)
-        self.client_secret = _value(client_secret)
+        self.grant_type = _form_value(grant_type)
+        self.username = _form_value(username)
+        self.password = _form_value(password)
+        self.scope = _form_value(scope)
+        self.client_id = _form_value(client_id)
+        self.client_secret = _form_value(client_secret)
 
     @classmethod
     async def from_request(cls, request: Request) -> OAuth2PasswordRequestForm:
@@ -148,7 +155,7 @@ class OAuth2PasswordRequestForm:
 class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
     """`OAuth2PasswordRequestForm` with a mandatory `grant_type`.
 
-    the non-strict form leaves `grant_type` optional;
+    The non-strict form leaves `grant_type` optional;
     the strict form *requires* it and constrains the value to the
     literal `password` (RFC 6749 Sec. 4.3.2). Missing or mismatched values
     fail validation with 422.

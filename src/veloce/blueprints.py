@@ -32,7 +32,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from veloce.routing.router import RouteInfo, Router
+from veloce.routing.router import RouteInfo, Router, _readd_route
 
 
 def _endpoint_blueprint(endpoint: str | None) -> str | None:
@@ -169,37 +169,7 @@ class Blueprint(Router):
         for path, methods, info in child._walk_routes():
             full_path = (nested_prefix or "") + path
             endpoint = f"{child.name}.{info.name}"
-            self.add_route(
-                path=full_path,
-                handler=info.handler,
-                methods=methods,
-                dependencies=info.dependencies,
-                response_model=info.response_model,
-                tags=info.tags,
-                summary=info.summary,
-                name=endpoint,
-                description=info.description,
-                deprecated=info.deprecated,
-                response_description=info.response_description,
-                status_code=info.status_code,
-                response_class=info.response_class,
-                response_model_include=info.response_model_include,
-                response_model_exclude=info.response_model_exclude,
-                response_model_exclude_unset=info.response_model_exclude_unset,
-                response_model_exclude_defaults=info.response_model_exclude_defaults,
-                response_model_by_alias=info.response_model_by_alias,
-                response_model_exclude_none=info.response_model_exclude_none,
-                include_in_schema=info.include_in_schema,
-                responses=info.responses,
-                operation_id=info.operation_id,
-                openapi_extra=info.openapi_extra,
-                defaults=info.defaults,
-                callbacks=info.callbacks,
-                subdomain=info.subdomain,
-                host=info.host,
-                expose_as_mcp_tool=info.expose_as_mcp_tool,
-                mcp_description=info.mcp_description,
-            )
+            _readd_route(self, full_path, methods, info, endpoint)
 
         # Inherit child hooks + error handlers. Child's hooks will be
         # endpoint-gated when *this* blueprint registers onto the app

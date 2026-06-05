@@ -58,6 +58,19 @@ MK_BODY = 4
 MK_FORM = 5
 MK_FILE = 6
 
+# Canonical MK_* -> openapi-style location string. Single-sourced here next to
+# the MK_ constants so the interpreter (`dependency.py`) and the codegen
+# (`_resolver_codegen.py`) read one map instead of maintaining divergent copies.
+MARKER_LOC = {
+    MK_QUERY: "query",
+    MK_PATH: "path",
+    MK_HEADER: "header",
+    MK_COOKIE: "cookie",
+    MK_BODY: "body",
+    MK_FORM: "form",
+    MK_FILE: "form",
+}
+
 
 # -- Annotation helpers -------------------------------------
 def _unwrap_optional(annotation: Any) -> tuple[bool, Any]:

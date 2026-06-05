@@ -188,7 +188,10 @@ class Config(dict[str, Any]):
             return False
         if not ("A" <= name[0] <= "Z"):
             return False
-        return all(("A" <= c <= "Z") or c.isdigit() or c == "_" for c in name)
+        # ASCII-digit range check, not `c.isdigit()`: the latter also returns
+        # True for non-ASCII digit characters (superscripts, Arabic-Indic, ...),
+        # which would admit keys the documented ASCII contract forbids.
+        return all(("A" <= c <= "Z") or ("0" <= c <= "9") or c == "_" for c in name)
 
     # -- from_mapping -------------------------------------------------
 

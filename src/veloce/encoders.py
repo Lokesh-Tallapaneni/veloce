@@ -27,6 +27,15 @@ from veloce.secret import Secret
 _ORJSON_INT_MIN = -(2**63)
 _ORJSON_INT_MAX = 2**64
 
+# Raised by both JSON entry points when a Secret reaches the serialiser; kept as
+# one literal so the two guard sites cannot drift.
+_SECRET_REJECTED = "Secret must not be serialized to JSON; call .reveal() explicitly"
+
+
+def _reject_secret() -> None:
+    """Raise the shared `TypeError` for a Secret that reached the serialiser."""
+    raise TypeError(_SECRET_REJECTED)
+
 
 def _decimal_to_json(obj: decimal.Decimal) -> int | float | str:
     """Encode a Decimal preserving integer-valued ones as JSON integers.
@@ -99,6 +108,21 @@ _SCALAR_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
 # for the same class. Empty by default, so the common path never touches it.
 _REGISTERED_ENCODERS: dict[type, Callable[[Any], Any]] = {}
 
+# Built-in leaf and scalar tables merged once at import. Their keys are
+# disjoint, so the merge preserves every entry and lets the MRO walk probe a
+# single dict per base instead of chaining two `.get(...)` calls. The user
+# registry is probed separately (and only when non-empty) so it keeps winning
+# over a built-in handler for the same class.
+_BUILTIN_TYPE_ENCODERS: dict[type, Callable[[Any], Any]] = {
+    **_LEAF_TYPE_ENCODERS,
+    **_SCALAR_TYPE_ENCODERS,
+}
+
+# Distinguishes "no encoder cached" from a legitimately cached `None` (an
+# unknown type that matched no base), so the memo can be probed with a single
+# `get` instead of a membership test plus a subscript.
+_MISSING = object()
+
 # Memoizes the MRO walk per concrete type. A scalar subclass (`class MyInt(int)`)
 # resolves to its base encoder once, then every later instance is a single dict
 # hit. Cleared whenever the user registry changes so a late `register_encoder`
@@ -117,15 +141,18 @@ def _resolve_encoder(cls: type) -> Callable[[Any], Any] | None:
     result (no base matched) is cached too, so repeated unknown types do not
     re-walk the MRO.
     """
-    if cls in _RESOLVED_ENCODERS:
-        return _RESOLVED_ENCODERS[cls]
+    cached = _RESOLVED_ENCODERS.get(cls, _MISSING)
+    if cached is not _MISSING:
+        return cached  # type: ignore[return-value]
     resolved: Callable[[Any], Any] | None = None
+    # The registry (when non-empty) must win over the built-in tables for the
+    # same base, so probe it first; otherwise the merged built-in map answers
+    # in one lookup per base.
+    registry = _REGISTERED_ENCODERS
     for base in cls.__mro__:
-        encoder = (
-            _REGISTERED_ENCODERS.get(base)
-            or _LEAF_TYPE_ENCODERS.get(base)
-            or _SCALAR_TYPE_ENCODERS.get(base)
-        )
+        encoder = registry.get(base) if registry else None
+        if encoder is None:
+            encoder = _BUILTIN_TYPE_ENCODERS.get(base)
         if encoder is not None:
             resolved = encoder
             break
@@ -181,6 +208,29 @@ def _resolve_custom(
     return None
 
 
+def _encode_shared_scalar(obj: Any) -> Any:
+    """Encode the four scalars both JSON paths convert identically, else `_MISSING`.
+
+    Shared by `jsonable_encoder` and `orjson_default` so the Path/Decimal/
+    timedelta/bytes conversions stay in lockstep. Returns `_MISSING` when `obj`
+    is none of those four, letting each caller fall through to its own branches.
+    The four target types are mutually disjoint, so the probe order is immaterial.
+    """
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, decimal.Decimal):
+        return _decimal_to_json(obj)
+    if isinstance(obj, datetime.timedelta):
+        return obj.total_seconds()
+    if isinstance(obj, (bytes, bytearray)):
+        # Lossless base64 (the JSON-canonical representation, matching OpenAPI/
+        # JSON Schema `format: byte`). A UTF-8 `.decode()` would substitute
+        # U+FFFD for any non-UTF-8 byte, corrupting image headers, hash digests,
+        # gzip blobs, etc.; base64 round-trips every byte.
+        return base64.b64encode(obj).decode("ascii")
+    return _MISSING
+
+
 def _public_vars(obj: Any) -> dict[str, Any]:
     """Return an object's `__dict__` minus private (underscore) attributes.
 
@@ -195,6 +245,34 @@ def _public_vars(obj: Any) -> dict[str, Any]:
     if getattr(obj, "__json_include_private__", False):
         return ns
     return {k: v for k, v in ns.items() if not (isinstance(k, str) and k.startswith("_"))}
+
+
+def _encode_seq(
+    items: Any,
+    *,
+    include: Any,
+    exclude: Any,
+    exclude_none: bool,
+    custom_encoder: Any,
+    _seen: set[int] | None,
+) -> list[Any]:
+    """Recurse `jsonable_encoder` over each element of a sequence.
+
+    Shared by the list/tuple/set/deque/generator branches of
+    `jsonable_encoder` so the identical per-element recursion lives in one
+    place instead of five copies.
+    """
+    return [
+        jsonable_encoder(
+            item,
+            include=include,
+            exclude=exclude,
+            exclude_none=exclude_none,
+            custom_encoder=custom_encoder,
+            _seen=_seen,
+        )
+        for item in items
+    ]
 
 
 def jsonable_encoder(
@@ -239,7 +317,7 @@ def jsonable_encoder(
     # `.reveal()` at the call site. Checked before custom_encoder so a
     # caller cannot accidentally register the guard away.
     if isinstance(obj, Secret):
-        raise TypeError("Secret must not be serialized to JSON; call .reveal() explicitly")
+        _reject_secret()
 
     # Per-call custom encoders win over every built-in rule, at every depth.
     # Guarded so the common (no-custom) path pays nothing.
@@ -252,10 +330,13 @@ def jsonable_encoder(
     # type (including for a built-in like `datetime`) overrides the default
     # handler. Guarded on the dict being non-empty so the common path - where
     # nothing is registered - pays a single truthiness check and skips the walk.
+    # The resolved value is reused by the final MRO-walk gate below so the walk
+    # runs at most once per call; `_MISSING` marks "registry empty, not walked".
+    resolved_encoder: Callable[[Any], Any] | None | object = _MISSING
     if _REGISTERED_ENCODERS:
-        encoder = _resolve_encoder(type(obj))
-        if encoder is not None:
-            return encoder(obj)
+        resolved_encoder = _resolve_encoder(type(obj))
+        if resolved_encoder is not None:
+            return resolved_encoder(obj)
 
     # Exact-type leaf encoder (covers None, str, int, float, bool, UUID,
     # Decimal, datetime/date/time/timedelta in one hash lookup).
@@ -267,29 +348,23 @@ def jsonable_encoder(
     # subclassed Enum / datetime / Decimal / bytes / bytearray).
     if isinstance(obj, enum.Enum):
         return obj.value
-    if isinstance(obj, (bytes, bytearray)):
-        # Encode binary losslessly as base64 (the JSON-canonical representation,
-        # matching OpenAPI/JSON Schema `format: byte`). A UTF-8 `.decode()` would
-        # silently substitute U+FFFD for any non-UTF-8 byte, corrupting image
-        # headers, hash digests, gzip blobs, etc.; base64 round-trips every byte.
-        return base64.b64encode(obj).decode("ascii")
-    if isinstance(obj, Path):
-        return str(obj)
+    scalar = _encode_shared_scalar(obj)
+    if scalar is not _MISSING:
+        return scalar
     if isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
         return obj.isoformat()
-    if isinstance(obj, datetime.timedelta):
-        return obj.total_seconds()
-    if isinstance(obj, decimal.Decimal):
-        return _decimal_to_json(obj)
     if isinstance(obj, uuid.UUID):
         return str(obj)
 
     # MRO-walk resolver: catches the process-level user registry, the scalar
     # table, and scalar subclasses (`class MyInt(int)` -> the `int` encoder)
     # that the exact-type fast paths above miss. Memoized per concrete type.
-    encoder = _resolve_encoder(type(obj))
-    if encoder is not None:
-        return encoder(obj)
+    # Reuses the registry-gate result above (same `type(obj)`) when it already
+    # walked; only walks here when the registry was empty (`_MISSING`).
+    if resolved_encoder is _MISSING:
+        resolved_encoder = _resolve_encoder(type(obj))
+    if resolved_encoder is not None:
+        return resolved_encoder(obj)  # type: ignore[operator]
 
     # Cycle detection - only matters for container types that recurse
     # back through `jsonable_encoder`. Allocate the seen-set lazily so
@@ -356,57 +431,50 @@ def jsonable_encoder(
                 )
             return result
 
+        # The four sequence branches recurse identically per element; only the
+        # iterable form differs (sets sort for deterministic output). They share
+        # the module-level `_encode_seq` helper so the shared body costs no
+        # per-call closure allocation.
         if isinstance(obj, (list, tuple)):
-            return [
-                jsonable_encoder(
-                    item,
-                    include=include,
-                    exclude=exclude,
-                    exclude_none=exclude_none,
-                    custom_encoder=custom_encoder,
-                    _seen=_seen,
-                )
-                for item in obj
-            ]
+            return _encode_seq(
+                obj,
+                include=include,
+                exclude=exclude,
+                exclude_none=exclude_none,
+                custom_encoder=custom_encoder,
+                _seen=_seen,
+            )
 
         if isinstance(obj, (set, frozenset)):
-            return [
-                jsonable_encoder(
-                    item,
-                    include=include,
-                    exclude=exclude,
-                    exclude_none=exclude_none,
-                    custom_encoder=custom_encoder,
-                    _seen=_seen,
-                )
-                for item in sorted(obj, key=str)
-            ]
+            # `sorted(obj, key=str)` keeps set output deterministic.
+            return _encode_seq(
+                sorted(obj, key=str),
+                include=include,
+                exclude=exclude,
+                exclude_none=exclude_none,
+                custom_encoder=custom_encoder,
+                _seen=_seen,
+            )
 
         if isinstance(obj, deque):
-            return [
-                jsonable_encoder(
-                    item,
-                    include=include,
-                    exclude=exclude,
-                    exclude_none=exclude_none,
-                    custom_encoder=custom_encoder,
-                    _seen=_seen,
-                )
-                for item in obj
-            ]
+            return _encode_seq(
+                obj,
+                include=include,
+                exclude=exclude,
+                exclude_none=exclude_none,
+                custom_encoder=custom_encoder,
+                _seen=_seen,
+            )
 
         if isinstance(obj, GeneratorType):
-            return [
-                jsonable_encoder(
-                    item,
-                    include=include,
-                    exclude=exclude,
-                    exclude_none=exclude_none,
-                    custom_encoder=custom_encoder,
-                    _seen=_seen,
-                )
-                for item in obj
-            ]
+            return _encode_seq(
+                obj,
+                include=include,
+                exclude=exclude,
+                exclude_none=exclude_none,
+                custom_encoder=custom_encoder,
+                _seen=_seen,
+            )
 
         # Fallback: try to convert to dict
         try:
@@ -441,7 +509,7 @@ def orjson_default(obj: Any) -> Any:
     two paths agree on the same conversions.
     """
     if isinstance(obj, Secret):
-        raise TypeError("Secret must not be serialized to JSON; call .reveal() explicitly")
+        _reject_secret()
     # Process-level registry first so a registered type (incl. one shadowing a
     # built-in handled below) is honoured on the orjson default-hook path too.
     # Guarded on a non-empty dict so the common path skips the MRO walk.
@@ -451,16 +519,9 @@ def orjson_default(obj: Any) -> Any:
             return encoder(obj)
     if isinstance(obj, (set, frozenset)):
         return sorted(obj, key=str)
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, decimal.Decimal):
-        return _decimal_to_json(obj)
-    if isinstance(obj, datetime.timedelta):
-        return obj.total_seconds()
-    if isinstance(obj, (bytes, bytearray)):
-        # Lossless base64, consistent with `jsonable_encoder`; a UTF-8 decode
-        # would corrupt non-UTF-8 binary into U+FFFD replacement characters.
-        return base64.b64encode(obj).decode("ascii")
+    scalar = _encode_shared_scalar(obj)
+    if scalar is not _MISSING:
+        return scalar
     # MRO walk (registry -> leaf -> scalar) so a subclass orjson cannot encode
     # natively - e.g. a third-party `datetime`/`float` subclass - still resolves
     # via its base instead of falling through to the `vars()` fallback (`{}`).

@@ -350,9 +350,8 @@ class HttpProtocol(asyncio.Protocol):
         # message-complete. The idle keep-alive timer was already cancelled
         # when the first bytes arrived (`_arm_request_timer`).
 
-        parsed = httptools.parse_url(self.url)
-        path = parsed.path.decode("ascii") if parsed.path else "/"
-        query_string = parsed.query.decode("ascii") if parsed.query else ""
+        path, query_bytes = self._parse_request_target()
+        query_string = query_bytes.decode("ascii")
 
         source = RequestBodySource(max_content_length=max_len)
         # Wire body backpressure to the transport's flow control: the source
@@ -459,9 +458,7 @@ class HttpProtocol(asyncio.Protocol):
             self._write_ws_http_error(status.HTTP_400_BAD_REQUEST, b"Bad Request")
             return True
 
-        parsed = httptools.parse_url(self.url)
-        path = parsed.path.decode("ascii") if parsed.path else "/"
-        query_bytes = parsed.query or b""
+        path, query_bytes = self._parse_request_target()
 
         # Match BEFORE sending the 101 so we never switch protocols on a path
         # with no handler. No handler -> 404 (RFC-correct: the upgrade has not
@@ -552,15 +549,7 @@ class HttpProtocol(asyncio.Protocol):
         the 426's `Sec-WebSocket-Version`).
         """
         self._oversized = True
-        transport = self.transport
-        if transport is None or transport.is_closing():
-            return
-        phrase = reason.decode("ascii")
-        head = (
-            f"HTTP/1.1 {status_code} {phrase}\r\nContent-Length: 0\r\nConnection: close\r\n"
-        ).encode("ascii")
-        transport.write(head + extra + b"\r\n")
-        transport.close()
+        self._emit_http_error(status_code, reason, extra=extra)
 
     def on_body(self, body: bytes) -> None:
         # Feed the in-flight request's body source. The source is the single
@@ -626,13 +615,7 @@ class HttpProtocol(asyncio.Protocol):
                 admitted = True
                 self._counted = True
         if not admitted:
-            if not transport.is_closing():
-                transport.write(
-                    b"HTTP/1.1 503 Service Unavailable\r\n"
-                    b"Content-Length: 0\r\n"
-                    b"Connection: close\r\n\r\n"
-                )
-                transport.close()
+            self._emit_http_error(status.HTTP_503_SERVICE_UNAVAILABLE, b"Service Unavailable")
             return
 
         # Arm write-side flow control: asyncio fires `pause_writing` once the
@@ -817,6 +800,31 @@ class HttpProtocol(asyncio.Protocol):
             return
         await self._can_write.wait()
 
+    def _emit_http_error(
+        self, status_code: int, reason: bytes, body: bytes = b"", extra: bytes = b""
+    ) -> None:
+        """Write a minimal `Connection: close` HTTP/1.1 error response, then close.
+
+        The single framing path for every pre-dispatch refusal (oversized
+        request line/headers, 413, 408, 400, the 503 admission reject, and the
+        pre-101 WebSocket handshake refusals). `Content-Length` is derived from
+        `body`; `extra` carries any additional header lines (e.g. the 426's
+        `Sec-WebSocket-Version`). A guard short-circuits when the transport is
+        already gone so a torn-down connection is never written to. Caller-
+        specific side effects (the `_oversized` latch, source EOF, timer resets)
+        stay in the callers - this helper owns only the wire framing.
+        """
+        transport = self.transport
+        if transport is None or transport.is_closing():
+            return
+        phrase = reason.decode("ascii")
+        head = (
+            f"HTTP/1.1 {status_code} {phrase}\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n"
+        ).encode("ascii")
+        transport.write(head + extra + b"\r\n" + body)
+        transport.close()
+
     def _reject_oversized(self, status_code: int, reason: bytes) -> None:
         """Emit a minimal HTTP/1.1 error response and close the connection.
 
@@ -824,14 +832,19 @@ class HttpProtocol(asyncio.Protocol):
         can't trust the parser to recover, so the connection is terminated.
         """
         self._oversized = True
-        if self.transport is None or self.transport.is_closing():
-            return
-        phrase = reason.decode("ascii")
-        head = (
-            f"HTTP/1.1 {status_code} {phrase}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        ).encode("ascii")
-        self.transport.write(head)
-        self.transport.close()
+        self._emit_http_error(status_code, reason)
+
+    def _parse_request_target(self) -> tuple[str, bytes]:
+        """Split the parsed request line into `(path, raw_query_bytes)`.
+
+        `path` is ascii-decoded (defaulting to `/` when absent); the query is
+        returned raw so the WebSocket scope can carry the bytes verbatim while
+        the HTTP path decodes them. Shared by the HTTP dispatch and the
+        WebSocket upgrade so the request-target split lives in one place.
+        """
+        parsed = httptools.parse_url(self.url)
+        path = parsed.path.decode("ascii") if parsed.path else "/"
+        return path, parsed.query or b""
 
     def _declared_content_length(self) -> int | None:
         """Parse the just-parsed request's `Content-Length` header, or None.
@@ -877,26 +890,16 @@ class HttpProtocol(asyncio.Protocol):
         if self._current_source is not None:
             self._current_source.feed_eof()
             self._current_source = None
-        if self.transport is not None and not self.transport.is_closing():
-            self.transport.write(
-                b"HTTP/1.1 413 Content Too Large\r\n"
-                b"Content-Length: 17\r\n"
-                b"Connection: close\r\n\r\n"
-                b"Content Too Large"
-            )
-            self.transport.close()
+        self._emit_http_error(
+            status.HTTP_413_CONTENT_TOO_LARGE, b"Content Too Large", b"Content Too Large"
+        )
 
     def _request_timeout(self) -> None:
         """A client took too long to send a complete request - drop it."""
         self._request_timer = None
-        if self.transport and not self.transport.is_closing():
-            self.transport.write(
-                b"HTTP/1.1 408 Request Timeout\r\n"
-                b"Content-Length: 15\r\n"
-                b"Connection: close\r\n\r\n"
-                b"Request Timeout"
-            )
-            self.transport.close()
+        self._emit_http_error(
+            status.HTTP_408_REQUEST_TIMEOUT, b"Request Timeout", b"Request Timeout"
+        )
 
     def _start_keep_alive_timer(self) -> None:
         """Start idle timeout - close connection if no request arrives."""
@@ -956,14 +959,7 @@ class HttpProtocol(asyncio.Protocol):
 
     def _send_bad_request(self) -> None:
         """Write a minimal `400 Bad Request` and close the connection."""
-        if self.transport:
-            self.transport.write(
-                b"HTTP/1.1 400 Bad Request\r\n"
-                b"Content-Length: 11\r\n"
-                b"Connection: close\r\n\r\n"
-                b"Bad Request"
-            )
-            self.transport.close()
+        self._emit_http_error(status.HTTP_400_BAD_REQUEST, b"Bad Request", b"Bad Request")
 
     # -- request dispatch -----------------------------------------
 

@@ -288,8 +288,6 @@ class RequestValidationError(ValidationError):
     handlers continue to catch it via the MRO walk.
     """
 
-    pass
-
 
 # -- WebSocket exceptions ---------------------------------------------
 
@@ -325,8 +323,6 @@ class WebSocketRequestValidationError(RequestValidationError):
     violation) rather than 1011 (internal error), since the failure is
     a client-side contract violation, not a server fault.
     """
-
-    pass
 
 
 # -- Other exception families -----------------------------------------

@@ -130,14 +130,15 @@ def parse_multipart_form(
     file_size_cap = max_file_size if max_file_size is not None else max_part_size
     field_size_cap = max_field_size if max_field_size is not None else max_part_size
 
-    boundary = ""
-    boundary_present = False
-    for seg in content_type.split(";"):
-        seg = seg.strip()
-        if seg.startswith("boundary="):
-            boundary_present = True
-            boundary = seg[9:].strip('"')
-            break
+    # The boundary is a Content-Type parameter, so extract it with the same
+    # quoted-string-aware walker used for the part headers below
+    # (`parse_header_params`) rather than an ad-hoc `split(";")` + quote strip.
+    # This keeps boundary parsing consistent with the rest of the module and
+    # handles a quoted or whitespace-padded `boundary=...` (RFC 2046 / RFC 7578)
+    # the same way every other Content-Type parameter is parsed.
+    _, ct_params = parse_header_params(content_type, delimiter=";", unescape=True)
+    boundary_present = "boundary" in ct_params
+    boundary = ct_params.get("boundary", "")
 
     if not boundary_present:
         raise BadRequest("multipart/form-data is missing the boundary parameter")
@@ -160,6 +161,10 @@ def parse_multipart_form(
         "is_file": False,
         "size_cap": field_size_cap,
         "disposition_parsed": False,
+        # Parsed Content-Disposition params, cached at the header->data
+        # transition so on_part_end reuses them instead of re-walking the
+        # quoted-string-aware header a second time per part.
+        "disposition_params": {},
     }
 
     def _too_large(message: str) -> None:
@@ -179,6 +184,7 @@ def parse_multipart_form(
         state["is_file"] = False
         state["size_cap"] = field_size_cap
         state["disposition_parsed"] = False
+        state["disposition_params"] = {}
 
     def on_header_field(data: bytes, start: int, end: int) -> None:
         state["header_field"] += data[start:end]
@@ -210,6 +216,7 @@ def parse_multipart_form(
         # file or text field so the right count/size limits apply per byte.
         disposition = state["headers"].get("content-disposition", "")
         _, params = _parse_content_disposition(disposition)
+        state["disposition_params"] = params
         is_file = params.get("filename") is not None
         state["is_file"] = is_file
         state["size_cap"] = file_size_cap if is_file else field_size_cap
@@ -242,8 +249,8 @@ def parse_multipart_form(
         # An empty part never emits part data, so classify it here too.
         if not state["disposition_parsed"]:
             _resolve_part_kind()
-        disposition = state["headers"].get("content-disposition", "")
-        _, params = _parse_content_disposition(disposition)
+        # Reuse the Content-Disposition params parsed in _resolve_part_kind.
+        params = state["disposition_params"]
         name = params.get("name", "")
         filename = params.get("filename")
 

@@ -36,6 +36,7 @@ from veloce._handler_plan import (
     K_SECURITY_SCOPES,
     K_UPLOAD_FILE,
     K_WEBSOCKET,
+    MARKER_LOC,
     _slot_parallel_safe,
     parallel_group_end,
 )
@@ -56,18 +57,6 @@ _BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExcepti
 # Marks a plan whose compiled-resolver build was attempted and rejected, so
 # resolve_plan does not retry compilation on every request.
 _NOT_COMPILABLE = object()
-
-_MARKER_LOC = {
-    # Map MK_* -> openapi-style location string. Resolved lazily to avoid import
-    # ordering issues.
-    0: "query",
-    1: "path",
-    2: "header",
-    3: "cookie",
-    4: "body",
-    5: "form",
-    6: "form",
-}
 
 # Shared empty sentinels for resolvers that never see app-level overrides
 # (the dispatcher overwrites the slot before any read, so the sentinels
@@ -230,6 +219,24 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
     return _coerce_via_pydantic(value, target_type, param_name, loc)
 
 
+def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
+    """Build the missing-required error for a `Query`/`Header`/`Cookie`/`Form`
+    marker. The list and scalar branches of `_resolve_marker` raise the same
+    `value_error.missing` shape, so it is constructed in one place. (A bare
+    `K_QUERY` slot uses the distinct `'missing'` / `MSG_FIELD_REQUIRED` contract;
+    that intentional difference is preserved.)
+    """
+    return RequestValidationError(
+        [
+            {
+                "loc": [loc, name],
+                "msg": f"Missing required parameter: {name}",
+                "type": "value_error.missing",
+            }
+        ]
+    )
+
+
 # -- Markers -----------------------------------------------
 
 
@@ -373,7 +380,8 @@ class DependencyResolver:
         # Param-only plans (request + scalar path/query, no route deps) resolve
         # through a straight-line function compiled on first use and cached on
         # the plan. It reads no resolver state, so after the reset above it
-        # returns directly without entering the interpreter loop.
+        # returns directly without entering the interpreter loop. A plan the
+        # compiler rejects (`_NOT_COMPILABLE`) falls through to the interpreter.
         if not route_dep_plans:
             cr = plan.compiled_resolver
             if cr is None:
@@ -381,8 +389,7 @@ class DependencyResolver:
                 plan.compiled_resolver = cr = compiled if compiled is not None else _NOT_COMPILABLE
             if cr is not _NOT_COMPILABLE:
                 return cr(request, path_params)
-
-        if route_dep_plans:
+        else:
             for slot in route_dep_plans:
                 await self._exec_depends(slot, request, path_params)
 
@@ -550,9 +557,11 @@ class DependencyResolver:
                 continue
 
             if kind == K_SECURITY_SCOPES:
-                # Snapshot the accumulated scopes - copy so later
-                # mutations of `_scope_stack` don't affect this instance.
-                kwargs[name] = SecurityScopes(list(self._scope_stack))
+                # `SecurityScopes.__init__` already snapshots its argument with
+                # `list(...)`, so pass the live stack directly rather than
+                # copying it twice; later mutations still don't affect this
+                # instance.
+                kwargs[name] = SecurityScopes(self._scope_stack)
                 i += 1
                 continue
 
@@ -743,21 +752,17 @@ class DependencyResolver:
                 values = request.cookies.getlist(lookup)
             else:  # MK_QUERY
                 values = request.query_params.getlist(lookup)
-            loc = _MARKER_LOC[mk]
+            loc = MARKER_LOC[mk]
             if not values:
                 if marker.has_default:
                     return marker.resolve_default()
                 if slot.is_optional:
                     return None
-                raise RequestValidationError(
-                    [
-                        {
-                            "loc": [loc, slot.name],
-                            "msg": f"Missing required parameter: {slot.name}",
-                            "type": "value_error.missing",
-                        }
-                    ]
-                )
+                raise _err_missing_marker(loc, slot.name)
+            # Per-element `marker.validate(...)` constraints (min_length, ge, regex,
+            # ...) are intentionally NOT enforced on list-typed markers here; only
+            # coercion runs. The codegen path matches. Enforcing them is a behavior
+            # change tracked separately, not a behavior-preserving fix.
             return [v if inner is str else _coerce_value(v, inner, slot.name, loc) for v in values]
 
         if mk == 1:  # MK_PATH
@@ -770,46 +775,31 @@ class DependencyResolver:
             body = await request.json()
             # `Body(embed=True)` - the value lives under the param name
             # inside the JSON object, rather than being the whole body.
-            if getattr(marker, "embed", False) and isinstance(body, dict):
-                raw = body.get(lookup)
-            else:
-                raw = body
+            # `embed` is a declared slot always set in `ParamBase.__init__`.
+            raw = body.get(lookup) if marker.embed and isinstance(body, dict) else body
         elif mk in (5, 6):  # MK_FORM / MK_FILE
             form = await request.form()
             raw = form.get(lookup)
         else:  # MK_QUERY (0)
             raw = request.query_params.get(lookup)
 
+        loc = MARKER_LOC[mk]
         if raw is None:
             if marker.has_default:
                 return marker.resolve_default()
             if slot.is_optional:
                 return None
-            raise RequestValidationError(
-                [
-                    {
-                        "loc": [_MARKER_LOC[mk], slot.name],
-                        "msg": f"Missing required parameter: {slot.name}",
-                        "type": "value_error.missing",
-                    }
-                ]
-            )
+            raise _err_missing_marker(loc, slot.name)
 
         target = slot.target_type
         if target and target is not str and not isinstance(raw, (dict, list)):
-            raw = _coerce_value(raw, target, slot.name, _MARKER_LOC[mk])
+            raw = _coerce_value(raw, target, slot.name, loc)
 
         try:
             return marker.validate(raw, slot.name)
         except ValueError as e:
             raise RequestValidationError(
-                [
-                    {
-                        "loc": [_MARKER_LOC[mk], slot.name],
-                        "msg": str(e),
-                        "type": "value_error",
-                    }
-                ]
+                [{"loc": [loc, slot.name], "msg": str(e), "type": "value_error"}]
             ) from e
 
     async def _exec_depends(self, slot: Any, request: Request, path_params: dict[str, str]) -> Any:

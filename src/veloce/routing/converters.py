@@ -25,18 +25,9 @@ import re
 import uuid
 from typing import Any
 
-# UUID format per RFC 4122 (8-4-4-4-12 hex digits, case-insensitive).
-_UUID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{12}$"
-)
-
-# Body (un-anchored) form of the UUID pattern, reused when translating a
-# `{id:uuid}` placeholder into a named regex group for the hybrid router's
-# regex fallback. Keep in sync with `_UUID_RE`.
+# UUID format per RFC 4122 (8-4-4-4-12 hex digits, case-insensitive). This is
+# the body (un-anchored) form, reused when translating a `{id:uuid}` placeholder
+# into a named regex group for the hybrid router's regex fallback.
 _UUID_PATTERN = (
     r"[0-9a-fA-F]{8}-"
     r"[0-9a-fA-F]{4}-"
@@ -44,6 +35,10 @@ _UUID_PATTERN = (
     r"[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{12}"
 )
+
+# Anchored form for whole-segment validation. Derived from the single
+# `_UUID_PATTERN` source so the two cannot drift.
+_UUID_RE = re.compile(f"^{_UUID_PATTERN}$")
 
 # Un-anchored regex fragments for the built-in converters. A bare `{name}`
 # (no converter) and the `str`/`string` converters both match one non-slash

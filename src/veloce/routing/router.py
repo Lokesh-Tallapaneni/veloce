@@ -380,7 +380,21 @@ class RegexRoute:
 
 
 class Router:
-    """High-performance radix-tree router with a decorator-based route API."""
+    """High-performance radix-tree router with a decorator-based route API.
+
+    Usage::
+
+        from veloce import Router, Veloce
+
+        api = Router(prefix="/api")
+
+        @api.get("/items/{item_id:int}")
+        async def get_item(item_id: int):
+            return {"item_id": item_id}
+
+        app = Veloce()
+        app.include_router(api)
+    """
 
     def __init__(
         self,
@@ -688,6 +702,127 @@ class Router:
             for method, info in route.handlers.items():
                 yield route.handlers, method, info
 
+    def _build_merged_route_info(
+        self,
+        info: RouteInfo,
+        param_names: list[str],
+        full_path: str,
+    ) -> RouteInfo:
+        """Build a `RouteInfo` for a route being merged in from a child router.
+
+        Copies the source route's fields, re-applies this router's
+        `router_dependencies`/`tags`/`responses`, and re-binds the merged
+        path and param names. Shared by the tree (`_merge_node`) and regex
+        (`_merge_regex_routes`) merge paths so they stay in lock-step.
+        """
+        combined_deps = list(self.router_dependencies)
+        if info.dependencies:
+            combined_deps.extend(info.dependencies)
+        return RouteInfo(
+            handler=info.handler,
+            param_names=param_names,
+            dependencies=combined_deps if combined_deps else info.dependencies,
+            response_model=info.response_model,
+            tags=(info.tags or []) + list(self.tags),
+            summary=info.summary,
+            name=info.name,
+            path_template=full_path,
+            description=info.description,
+            deprecated=info.deprecated,
+            response_description=info.response_description,
+            status_code=info.status_code,
+            response_class=info.response_class or self.default_response_class,
+            response_model_include=info.response_model_include,
+            response_model_exclude=info.response_model_exclude,
+            response_model_exclude_unset=info.response_model_exclude_unset,
+            response_model_exclude_defaults=info.response_model_exclude_defaults,
+            response_model_by_alias=info.response_model_by_alias,
+            response_model_exclude_none=info.response_model_exclude_none,
+            include_in_schema=info.include_in_schema,
+            responses=(
+                None
+                if not self.router_responses and not info.responses
+                else {**self.router_responses, **(info.responses or {})}
+            ),
+            operation_id=info.operation_id,
+            # Carry constraints from the source RouteInfo - without these,
+            # sub-routers merged via include_router would silently lose their
+            # subdomain / host / openapi_extra / defaults / callbacks
+            # declarations.
+            openapi_extra=info.openapi_extra,
+            defaults=info.defaults,
+            callbacks=info.callbacks,
+            subdomain=info.subdomain,
+            host=info.host,
+            expose_as_mcp_tool=info.expose_as_mcp_tool,
+            mcp_description=info.mcp_description,
+            excluded_middleware=info.excluded_middleware,
+        )
+
+    def _commit_merged_method(
+        self,
+        handler_table: dict[str, RouteInfo],
+        method: str,
+        route_info: RouteInfo,
+        source_name: str,
+        full_path: str,
+        param_names: list[str],
+    ) -> None:
+        """Apply the duplicate policy and commit one merged method.
+
+        Shared by both merge paths (`_merge_node`, `_merge_regex_routes`):
+        runs the collision check, drops the displaced reverse entry when a
+        replace wins, writes the handler table, and refreshes the named-route
+        reverse map. Unlike `add_route`, the merge paths commit per method
+        rather than two-pass-atomically across all methods.
+        """
+        existing = handler_table.get(method)
+        if existing is not None and not self._allow_duplicate(existing, route_info):
+            self._on_duplicate_route(full_path, method, existing, route_info)
+            self._drop_replaced_route_name(existing, source_name, handler_table, method)
+        handler_table[method] = route_info
+        self._named_routes[source_name] = (full_path, param_names)
+        self._reverse_converters.pop(source_name, None)
+
+    def _finalize_plans(
+        self,
+        route_info: RouteInfo,
+        *,
+        is_ws: bool,
+        reuse_handler_plan: Any = None,
+    ) -> None:
+        """Attach the handler/dependency plans and dispatch classification.
+
+        On registration (`add_route`) the handler plan is built fresh; on a
+        merge the parent's plan is reused via `reuse_handler_plan`. Either way
+        the route-dependency plans and the trivial / request-only dispatch
+        flags are recomputed here so all three registration paths stay
+        byte-for-byte identical.
+
+        Deferred import: `_handler_plan` lives above `routing` in the
+        dependency direction, so importing it at module top would invert that
+        order. Consolidating the import here keeps it off the per-request path
+        (registration-time only) and in a single place.
+        """
+        from veloce._handler_plan import K_REQUEST, build_plan, build_route_dep_plans
+
+        if reuse_handler_plan is not None:
+            route_info.handler_plan = reuse_handler_plan
+        else:
+            route_info.handler_plan = build_plan(route_info.handler, websocket=is_ws)
+        route_info.route_dep_plans = build_route_dep_plans(route_info.dependencies, websocket=is_ws)
+        slots = route_info.handler_plan.slots
+        has_deps = bool(route_info.route_dep_plans)
+        # A handler with no parameter slots and no route-level dependencies
+        # needs nothing resolved.
+        route_info.is_trivial_plan = not slots and not has_deps
+        # Request-only fast path: the handler takes only `request` and the
+        # route has no dependencies. Skip DependencyResolver entirely and bind
+        # kwargs = {"request": request} directly.
+        route_info.is_request_only_plan = (
+            len(slots) == 1 and slots[0].kind == K_REQUEST and not has_deps
+        )
+
     def add_route(
         self,
         path: str,
@@ -812,34 +947,11 @@ class Router:
         )
 
         # Pre-compute the handler resolution plan once, here at registration.
-        # Falls back to None if the handler isn't introspectable; the resolver
-        # will rebuild on demand in that case.
-        # Deferred import: _handler_plan depends on routing.params (same
-        # subpackage), and pulling it at module level would create a
-        # routing -> app-layer dependency direction violation. The import
-        # runs once per route registration, not per request.
-        from veloce._handler_plan import build_plan, build_route_dep_plans
-
         # A WebSocket route's plan is built in websocket mode so the
         # `WebSocket` connection is bound by annotation / name and its
         # dependency graph runs through the shared resolver.
         is_ws = any(m.upper() == ROUTE_METHOD_WEBSOCKET for m in methods)
-        route_info.handler_plan = build_plan(handler, websocket=is_ws)
-        route_info.route_dep_plans = build_route_dep_plans(route_info.dependencies, websocket=is_ws)
-        # Classify the route for dispatch: a handler with no parameter
-        # slots and no route-level dependencies needs nothing resolved.
-        route_info.is_trivial_plan = (
-            not route_info.handler_plan.slots and not route_info.route_dep_plans
-        )
-        # Request-only fast path: the handler takes only `request` and
-        # the route has no dependencies. Skip DependencyResolver entirely
-        # and bind kwargs = {"request": request} directly.
-        from veloce._handler_plan import K_REQUEST  # same deferred-import rationale as above
-
-        hp = route_info.handler_plan
-        route_info.is_request_only_plan = (
-            len(hp.slots) == 1 and hp.slots[0].kind == K_REQUEST and not route_info.route_dep_plans
-        )
+        self._finalize_plans(route_info, is_ws=is_ws)
 
         # `node` is the radix leaf for tree routes; `regex_route` is set
         # instead for regex routes (the two branches above are mutually
@@ -1063,22 +1175,25 @@ class Router:
                 # client error. Loud failure beats a `'NoneType' is not
                 # callable` two frames deeper.
                 raise RuntimeError(f"radix-tree param child {child.param_name!r} has no converter")
+            # Bind the param name once so the assignment branch and the gated
+            # rollback below share a single attribute load.
+            pname = child.param_name
             if converter.greedy:
                 rest = "/".join(segments[idx:])
                 ok, coerced = converter.match(rest)
                 if ok and child.handlers:
-                    params[child.param_name] = coerced  # type: ignore[index]
+                    params[pname] = coerced  # type: ignore[index]
                     return child
                 continue
             ok, coerced = converter.match(seg)
             if not ok:
                 continue
-            params[child.param_name] = coerced  # type: ignore[index]
+            params[pname] = coerced  # type: ignore[index]
             result = self._match_node(child, segments, idx + 1, params)
             if result is not None:
                 return result
             if not single_param:
-                del params[child.param_name]  # type: ignore[arg-type]
+                del params[pname]  # type: ignore[arg-type]
 
         # Try wildcard (legacy `*` syntax - kept for back-compat).
         if node.wildcard_child is not None:
@@ -1233,7 +1348,7 @@ class Router:
         return self.route(path, methods=[HTTP_METHOD_TRACE], **kwargs)
 
     def websocket(self, path: str) -> Callable:
-        """WebSocket route decorator."""
+        """Register a WebSocket route via decorator."""
 
         def decorator(func: RouteHandler) -> RouteHandler:
             self.add_route(path=path, handler=func, methods=[ROUTE_METHOD_WEBSOCKET])
@@ -1305,10 +1420,9 @@ class Router:
     def add_api_websocket_route(
         self, path: str, endpoint: RouteHandler, name: str | None = None
     ) -> None:
-        """the imperative imperative WebSocket route registration.
+        """Register an imperative WebSocket route, mirroring `add_api_route`.
 
-        Mirrors `add_api_route` for WebSocket endpoints - the
-        non-decorator form of `@app.websocket(path)`. `name` is
+        The non-decorator form of `@app.websocket(path)`. `name` is
         accepted but currently unused.
         """
         self.add_route(path=path, handler=endpoint, methods=[ROUTE_METHOD_WEBSOCKET], name=name)
@@ -1380,11 +1494,11 @@ class Router:
             converters = _reverse_converters_for(template)
             self._reverse_converters[name] = converters
         for pname, converter in converters.items():
-            ok, _ = converter.match(str(path_params[pname]))
+            value = path_params[pname]
+            ok, _ = converter.match(str(value))
             if not ok:
                 raise ValueError(
-                    f"Value {path_params[pname]!r} for path parameter {pname!r} "
-                    f"is invalid for route {name!r}"
+                    f"Value {value!r} for path parameter {pname!r} is invalid for route {name!r}"
                 )
 
         # Single-pass substitution built from template segments prevents
@@ -1514,8 +1628,6 @@ class Router:
         this router's `router_dependencies`, and preserves the route name the
         same way `_merge_node` does for tree routes.
         """
-        from veloce._handler_plan import K_REQUEST, build_route_dep_plans
-
         for src in router._regex_routes:
             full_path = prefix + src.template if prefix else src.template
             target = self._regex_route_index.get(full_path)
@@ -1533,66 +1645,15 @@ class Router:
                 target.tolerant_slash = True
 
             for method, info in src.handlers.items():
-                combined_deps = list(self.router_dependencies)
-                if info.dependencies:
-                    combined_deps.extend(info.dependencies)
-                route_info = RouteInfo(
-                    handler=info.handler,
-                    param_names=param_names,
-                    dependencies=combined_deps if combined_deps else info.dependencies,
-                    response_model=info.response_model,
-                    tags=(info.tags or []) + list(self.tags),
-                    summary=info.summary,
-                    name=info.name,
-                    path_template=full_path,
-                    description=info.description,
-                    deprecated=info.deprecated,
-                    response_description=info.response_description,
-                    status_code=info.status_code,
-                    response_class=info.response_class or self.default_response_class,
-                    response_model_include=info.response_model_include,
-                    response_model_exclude=info.response_model_exclude,
-                    response_model_exclude_unset=info.response_model_exclude_unset,
-                    response_model_exclude_defaults=info.response_model_exclude_defaults,
-                    response_model_by_alias=info.response_model_by_alias,
-                    response_model_exclude_none=info.response_model_exclude_none,
-                    include_in_schema=info.include_in_schema,
-                    responses=(
-                        None
-                        if not self.router_responses and not info.responses
-                        else {**self.router_responses, **(info.responses or {})}
-                    ),
-                    operation_id=info.operation_id,
-                    openapi_extra=info.openapi_extra,
-                    defaults=info.defaults,
-                    callbacks=info.callbacks,
-                    subdomain=info.subdomain,
-                    host=info.host,
-                    expose_as_mcp_tool=info.expose_as_mcp_tool,
-                    mcp_description=info.mcp_description,
-                    excluded_middleware=info.excluded_middleware,
-                )
-                route_info.handler_plan = info.handler_plan
+                route_info = self._build_merged_route_info(info, param_names, full_path)
+                # Reuse the parent's pre-computed handler plan; route_dep_plans
+                # are rebuilt from the combined dependencies since this router's
+                # router_dependencies may have been prepended above.
                 is_ws = method.upper() == ROUTE_METHOD_WEBSOCKET
-                route_info.route_dep_plans = build_route_dep_plans(
-                    route_info.dependencies, websocket=is_ws
+                self._finalize_plans(route_info, is_ws=is_ws, reuse_handler_plan=info.handler_plan)
+                self._commit_merged_method(
+                    target.handlers, method, route_info, info.name, full_path, param_names
                 )
-                route_info.is_trivial_plan = (
-                    not route_info.handler_plan.slots and not route_info.route_dep_plans
-                )
-                hp = route_info.handler_plan
-                route_info.is_request_only_plan = (
-                    len(hp.slots) == 1
-                    and hp.slots[0].kind == K_REQUEST
-                    and not route_info.route_dep_plans
-                )
-                existing = target.handlers.get(method)
-                if existing is not None and not self._allow_duplicate(existing, route_info):
-                    self._on_duplicate_route(full_path, method, existing, route_info)
-                    self._drop_replaced_route_name(existing, info.name, target.handlers, method)
-                target.handlers[method] = route_info
-                self._named_routes[info.name] = (full_path, param_names)
-                self._reverse_converters.pop(info.name, None)
 
     def _merge_node(self, node: RadixNode, prefix: str, path_segments: list[str]) -> None:
         """Recursively merge nodes from another router's tree."""
@@ -1603,90 +1664,27 @@ class Router:
                 segments = self._split_path(full_path)
                 cur, param_names = self._insert_path_into_tree(self._root, segments, full_path)
 
-                combined_deps = list(self.router_dependencies)
-                if info.dependencies:
-                    combined_deps.extend(info.dependencies)
-
-                route_info = RouteInfo(
-                    handler=info.handler,
-                    param_names=param_names,
-                    dependencies=combined_deps if combined_deps else info.dependencies,
-                    response_model=info.response_model,
-                    tags=(info.tags or []) + list(self.tags),
-                    summary=info.summary,
-                    name=info.name,
-                    path_template=full_path,
-                    description=info.description,
-                    deprecated=info.deprecated,
-                    response_description=info.response_description,
-                    status_code=info.status_code,
-                    response_class=info.response_class or self.default_response_class,
-                    response_model_include=info.response_model_include,
-                    response_model_exclude=info.response_model_exclude,
-                    response_model_exclude_unset=info.response_model_exclude_unset,
-                    response_model_exclude_defaults=info.response_model_exclude_defaults,
-                    response_model_by_alias=info.response_model_by_alias,
-                    response_model_exclude_none=info.response_model_exclude_none,
-                    include_in_schema=info.include_in_schema,
-                    responses=(
-                        None
-                        if not self.router_responses and not info.responses
-                        else {**self.router_responses, **(info.responses or {})}
-                    ),
-                    operation_id=info.operation_id,
-                    # Carry constraints from the source RouteInfo - without
-                    # these, sub-routers merged via include_router would
-                    # silently lose their subdomain / host / openapi_extra
-                    # / defaults / callbacks declarations.
-                    openapi_extra=info.openapi_extra,
-                    defaults=info.defaults,
-                    callbacks=info.callbacks,
-                    subdomain=info.subdomain,
-                    host=info.host,
-                    expose_as_mcp_tool=info.expose_as_mcp_tool,
-                    mcp_description=info.mcp_description,
-                    excluded_middleware=info.excluded_middleware,
-                )
-                # Reuse the parent's pre-computed handler plan.
-                route_info.handler_plan = info.handler_plan
-
-                # Rebuild route_dep_plans from the combined dependencies -
-                # the parent's plans are stale when router_dependencies
-                # were prepended above.
-                from veloce._handler_plan import K_REQUEST, build_route_dep_plans
-
+                route_info = self._build_merged_route_info(info, param_names, full_path)
+                # Reuse the parent's pre-computed handler plan; route_dep_plans
+                # are rebuilt from the combined dependencies since this router's
+                # router_dependencies may have been prepended above.
                 is_ws = method.upper() == ROUTE_METHOD_WEBSOCKET
-                route_info.route_dep_plans = build_route_dep_plans(
-                    route_info.dependencies, websocket=is_ws
-                )
-                route_info.is_trivial_plan = (
-                    not route_info.handler_plan.slots and not route_info.route_dep_plans
-                )
-                hp = route_info.handler_plan
-                route_info.is_request_only_plan = (
-                    len(hp.slots) == 1
-                    and hp.slots[0].kind == K_REQUEST
-                    and not route_info.route_dep_plans
-                )
-                existing = cur.handlers.get(method)
-                if existing is not None and not self._allow_duplicate(existing, route_info):
-                    self._on_duplicate_route(full_path, method, existing, route_info)
-                    self._drop_replaced_route_name(existing, info.name, cur.handlers, method)
-                cur.handlers[method] = route_info
+                self._finalize_plans(route_info, is_ws=is_ws, reuse_handler_plan=info.handler_plan)
 
                 # Propagate slash-handling flags from the source node so a
                 # router declared with `strict_slashes=False` keeps that
                 # behaviour after merge, and `add_route` calls that set
                 # `trailing_slash` on the source see the flag reflected
-                # on the merged node.
+                # on the merged node. Node flags are independent of the
+                # handler-table commit below, so order does not matter.
                 if node.trailing_slash:
                     cur.trailing_slash = True
                 if node.tolerant_slash:
                     cur.tolerant_slash = True
 
-                # Update named routes
-                self._named_routes[info.name] = (full_path, param_names)
-                self._reverse_converters.pop(info.name, None)
+                self._commit_merged_method(
+                    cur.handlers, method, route_info, info.name, full_path, param_names
+                )
 
         for child in node.static_children.values():
             self._merge_node(child, prefix, path_segments + [child.segment])
@@ -1696,3 +1694,47 @@ class Router:
             self._merge_node(
                 node.wildcard_child, prefix, path_segments + [node.wildcard_child.segment]
             )
+
+
+def _readd_route(
+    target: Router, full_path: str, methods: list[str], info: RouteInfo, endpoint: str
+) -> None:
+    """Re-register `info` onto `target` under `full_path`/`endpoint`.
+
+    Single source of truth for the `RouteInfo`-to-`add_route` field mapping
+    shared by blueprint splicing (`Veloce.register_blueprint`) and nested
+    blueprint composition (`Blueprint.register_blueprint`). Keeping the kwarg
+    block here means a new `RouteInfo` field is forwarded on every
+    re-registration path, not silently dropped on one of them.
+    """
+    target.add_route(
+        path=full_path,
+        handler=info.handler,
+        methods=methods,
+        dependencies=info.dependencies,
+        response_model=info.response_model,
+        tags=info.tags,
+        summary=info.summary,
+        name=endpoint,
+        description=info.description,
+        deprecated=info.deprecated,
+        response_description=info.response_description,
+        status_code=info.status_code,
+        response_class=info.response_class,
+        response_model_include=info.response_model_include,
+        response_model_exclude=info.response_model_exclude,
+        response_model_exclude_unset=info.response_model_exclude_unset,
+        response_model_exclude_defaults=info.response_model_exclude_defaults,
+        response_model_by_alias=info.response_model_by_alias,
+        response_model_exclude_none=info.response_model_exclude_none,
+        include_in_schema=info.include_in_schema,
+        responses=info.responses,
+        operation_id=info.operation_id,
+        openapi_extra=info.openapi_extra,
+        defaults=info.defaults,
+        callbacks=info.callbacks,
+        subdomain=info.subdomain,
+        host=info.host,
+        expose_as_mcp_tool=info.expose_as_mcp_tool,
+        mcp_description=info.mcp_description,
+    )

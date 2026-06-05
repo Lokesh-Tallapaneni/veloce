@@ -75,6 +75,7 @@ from veloce._constants import (
     MIME_FORM_URLENCODED,
     MIME_MULTIPART_FORM_DATA,
 )
+from veloce._internal import strip_default_port
 from veloce._protocol_constants import (
     HTTP_METHOD_GET,
     HTTP_METHOD_HEAD,
@@ -115,7 +116,9 @@ class CSRFMiddleware(Middleware):
         self.cookie_name = cookie_name
         self.header_name = header_name
         self.form_field = form_field
-        self.safe_methods = tuple(m.upper() for m in safe_methods)
+        # A frozenset for the per-request membership probe (it is only ever
+        # tested with `in`, never iterated), mirroring `TrustedHostMiddleware`.
+        self.safe_methods = frozenset(m.upper() for m in safe_methods)
         self.cookie_secure = cookie_secure
         self.cookie_httponly = cookie_httponly
         self.cookie_samesite = cookie_samesite
@@ -137,7 +140,7 @@ class CSRFMiddleware(Middleware):
                 # Drop a default port here too, so a configured wildcard or
                 # exact origin written with `:443`/`:80` still matches a
                 # browser Origin/Referer that omits it.
-                host = self._strip_default_port(scheme, split.netloc.lower())
+                host = strip_default_port(scheme, split.netloc.lower())
                 if host.startswith("."):
                     parsed.append((scheme, None, host[1:]))
                 else:
@@ -159,7 +162,8 @@ class CSRFMiddleware(Middleware):
         existing = request.cookies.get(self.cookie_name)
         request._state["_csrf_cookie"] = existing
 
-        if request.method.upper() in self.safe_methods:
+        # `request.method` is already upper-cased at construction.
+        if request.method in self.safe_methods:
             return None
 
         # Origin-first stage (active only when `trusted_origins` is set):
@@ -265,32 +269,19 @@ class CSRFMiddleware(Middleware):
             return None
         return self._forbidden("CSRF referer mismatch")
 
-    @staticmethod
-    def _strip_default_port(scheme: str, netloc: str) -> str:
-        """Drop the scheme's default port so `host` and `host:default` match.
-
-        Browsers omit `:443`/`:80` from `Origin`/`Referer` for default-port
-        requests, but a configured trusted origin may carry an explicit default
-        port; both forms denote the same origin (RFC 6454 Sec. 4).
-        """
-        default = {"https": ":443", "http": ":80", "wss": ":443", "ws": ":80"}.get(scheme)
-        if default and netloc.endswith(default):
-            return netloc[: -len(default)]
-        return netloc
-
     def _origin_allowed(self, origin: str, own_scheme: str, own_host: str) -> bool:
         """True if `origin` is the request's own origin or a trusted entry."""
         split = urlsplit(origin)
         o_scheme = split.scheme.lower()
-        o_host = self._strip_default_port(o_scheme, split.netloc.lower())
+        o_host = strip_default_port(o_scheme, split.netloc.lower())
         if not o_scheme or not o_host:
             return False
-        if o_scheme == own_scheme and o_host == self._strip_default_port(own_scheme, own_host):
+        if o_scheme == own_scheme and o_host == strip_default_port(own_scheme, own_host):
             return True
         for t_scheme, t_host, t_suffix in self._trusted:
             if o_scheme != t_scheme:
                 continue
-            if t_host is not None and o_host == self._strip_default_port(t_scheme, t_host):
+            if t_host is not None and o_host == strip_default_port(t_scheme, t_host):
                 return True
             if t_suffix is not None and (o_host == t_suffix or o_host.endswith("." + t_suffix)):
                 return True

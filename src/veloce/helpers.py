@@ -220,6 +220,14 @@ class _RequestGlobals:
 # -- Aborter -----------------------------------------------
 
 
+def _default_detail(code: int) -> str:
+    """Resolve the reason-phrase fallback used when no detail is supplied."""
+    try:
+        return HTTPStatus(code).phrase
+    except ValueError:
+        return "Error"
+
+
 class Aborter:
     """A callable that turns a status code into an HTTPException.
 
@@ -243,10 +251,7 @@ class Aborter:
         headers: dict[str, str] | None = None,
     ) -> NoReturn:
         if not detail:
-            try:
-                detail = HTTPStatus(code).phrase
-            except ValueError:
-                detail = "Error"
+            detail = _default_detail(code)
         cls = self._mapping.get(code) or self.mapping.get(code) or exception_for_status(code)
         raise cls(status_code=code, detail=detail, headers=headers)
 
@@ -304,10 +309,7 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
         abort(403, "Forbidden") # -> raises Forbidden
     """
     if not detail:
-        try:
-            detail = HTTPStatus(status_code).phrase
-        except ValueError:
-            detail = "Error"
+        detail = _default_detail(status_code)
     cls = exception_for_status(status_code)
     raise cls(status_code=status_code, detail=detail, headers=headers)
 
@@ -338,6 +340,17 @@ def after_this_request(func: Any) -> Any:
 # -- send_file() -------------------------------------------
 
 
+def _attachment_name(resolved: str, as_attachment: bool, download_name: str | None) -> str | None:
+    """Resolve the `Content-Disposition` filename for a file response.
+
+    Returns `None` for inline responses; otherwise the explicit
+    `download_name` or the basename of the resolved path.
+    """
+    if not as_attachment:
+        return None
+    return download_name or os.path.basename(resolved)
+
+
 def _build_send_file_args(
     path_or_file: Any,
     as_attachment: bool,
@@ -365,9 +378,7 @@ def _build_send_file_args(
         headers[HEADER_CACHE_CONTROL] = f"public, max-age={max_age}"
 
     path = str(path_or_file)
-    if as_attachment and not download_name:
-        download_name = os.path.basename(path)
-    attachment_name = download_name if as_attachment else None
+    attachment_name = _attachment_name(path, as_attachment, download_name)
     return path, attachment_name, headers, etag is False
 
 
@@ -554,9 +565,7 @@ def send_from_directory(
     if resolved is None:
         abort(HTTP_403_FORBIDDEN, MSG_ACCESS_DENIED)
 
-    if as_attachment and not download_name:
-        download_name = os.path.basename(str(resolved))
-    attachment_name = download_name if as_attachment else None
+    attachment_name = _attachment_name(str(resolved), as_attachment, download_name)
     return FileResponse(
         path=resolved,
         filename=attachment_name,
@@ -581,9 +590,7 @@ async def send_from_directory_async(
     if resolved is None:
         abort(HTTP_403_FORBIDDEN, MSG_ACCESS_DENIED)
 
-    if as_attachment and not download_name:
-        download_name = os.path.basename(str(resolved))
-    attachment_name = download_name if as_attachment else None
+    attachment_name = _attachment_name(str(resolved), as_attachment, download_name)
     return await FileResponse.from_path(
         path=resolved,
         filename=attachment_name,

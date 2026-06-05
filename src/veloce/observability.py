@@ -35,6 +35,32 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.instrumentation import RequestMetrics
 
 
+def _json_payload(
+    metrics: RequestMetrics,
+    *,
+    include_streamed: bool,
+    include_path: bool,
+) -> dict[str, object]:
+    """Build the JSON access-log payload shared by both factories.
+
+    Both emit the same low-cardinality base record (method, route template,
+    status, rounded duration); the two factories differ only in whether they
+    also carry `streamed` and the high-cardinality concrete `path`, so those
+    are gated by flags rather than duplicating the dict construction.
+    """
+    payload: dict[str, object] = {
+        "method": metrics.method,
+        "route": metrics.route,
+        "status": metrics.status_code,
+        "duration_ms": round(metrics.duration_ms, 3),
+    }
+    if include_streamed:
+        payload["streamed"] = metrics.streamed
+    if include_path:
+        payload["path"] = metrics.path
+    return payload
+
+
 def _default_access_logger() -> logging.Logger:
     """Resolve the ``veloce.access`` logger, bootstrapping a handler once."""
     logger = logging.getLogger("veloce.access")
@@ -63,15 +89,7 @@ def log_requests_as_json(
     def _emit(metrics: RequestMetrics) -> None:
         if not resolved.isEnabledFor(level):
             return
-        payload = {
-            "method": metrics.method,
-            "route": metrics.route,
-            "status": metrics.status_code,
-            "duration_ms": round(metrics.duration_ms, 3),
-            "streamed": metrics.streamed,
-        }
-        if include_path:
-            payload["path"] = metrics.path
+        payload = _json_payload(metrics, include_streamed=True, include_path=include_path)
         resolved.log(level, "%s", dumps(payload).decode())
 
     app.add_instrumentation(_emit)
@@ -95,12 +113,7 @@ def instrument_access_log(
             return
         route_label = metrics.route if metrics.route is not None else metrics.path
         if json:
-            payload = {
-                "method": metrics.method,
-                "route": metrics.route,
-                "status": metrics.status_code,
-                "duration_ms": round(metrics.duration_ms, 3),
-            }
+            payload = _json_payload(metrics, include_streamed=False, include_path=False)
             resolved.info("%s", app.json.dumps(payload).decode())
         else:
             resolved.info(

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import mimetypes
 import os
+import stat
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
@@ -44,6 +45,7 @@ from veloce._constants import (
     HEADER_WWW_AUTHENTICATE,
     MIME_TEXT_PLAIN,
 )
+from veloce._header_parsing import unquote_value
 from veloce._internal import (
     _STATUS_PHRASES,
     MIME_HTML,
@@ -55,6 +57,7 @@ from veloce._internal import (
     _etag_matches_weak,
     _file_etag,
     _reject_header_crlf,
+    is_json_mimetype,
 )
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
 from veloce.encoders import orjson_default
@@ -187,10 +190,7 @@ class Response:
         Matches `application/json` and any `application/*+json`
         structured suffix (RFC 6839 Sec. 3.1).
         """
-        mt = self.mimetype
-        if mt == MIME_JSON:
-            return True
-        return mt.startswith("application/") and mt.endswith("+json")
+        return is_json_mimetype(self.mimetype)
 
     def get_json(self) -> Any:
         """Parse the response body as JSON.
@@ -398,7 +398,7 @@ class Response:
         for part in ct.split(";"):
             part = part.strip()
             if part.startswith("charset="):
-                return part[8:].strip().strip('"')
+                return unquote_value(part[8:])
         return "utf-8"
 
     @charset.setter
@@ -427,7 +427,7 @@ class Response:
             if not part or "=" not in part:
                 continue
             key, _, value = part.partition("=")
-            params[key.strip().lower()] = value.strip().strip('"')
+            params[key.strip().lower()] = unquote_value(value)
         return params
 
     def calculate_content_length(self) -> int:
@@ -1452,6 +1452,8 @@ def _format_content_disposition(disposition: str, filename: str) -> str:
 class FileResponse(Response):
     """Serve a file from disk - uses async I/O via executor."""
 
+    __slots__ = ()
+
     def __init__(
         self,
         path: str,
@@ -1460,8 +1462,17 @@ class FileResponse(Response):
         headers: dict[str, str] | None = None,
         content_disposition_type: str = HEADER_VALUE_ATTACHMENT,
     ) -> None:
-        # Validate path exists (cheap stat check - actual read is deferred)
-        if not os.path.isfile(path):
+        # Single stat covers both the existence/regular-file guard and the
+        # mtime/size used for Last-Modified + ETag below; a separate
+        # `os.path.isfile` pre-check would stat the path twice. A missing
+        # path raises here; a non-regular path (directory, broken symlink)
+        # is rejected with the same FileNotFoundError `os.path.isfile`
+        # would have produced via a False return.
+        try:
+            st = os.stat(path)
+        except OSError as err:
+            raise FileNotFoundError(f"File not found: {path}") from err
+        if not stat.S_ISREG(st.st_mode):
             raise FileNotFoundError(f"File not found: {path}")
 
         if content_type is None:
@@ -1475,7 +1486,6 @@ class FileResponse(Response):
                 content_disposition_type, filename
             )
 
-        st = os.stat(path)
         if HEADER_LAST_MODIFIED not in hdrs and "last-modified" not in hdrs:
             hdrs[HEADER_LAST_MODIFIED] = http_date(st.st_mtime)
         if HEADER_ETAG not in hdrs and "etag" not in hdrs:

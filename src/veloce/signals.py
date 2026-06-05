@@ -282,14 +282,15 @@ class Signal:
                     # the "coroutine was never awaited" RuntimeWarning and surface
                     # the misuse as a TypeError result entry.
                     value.close()
+                    name = getattr(target, "__qualname__", repr(target))
                     value = TypeError(
                         "async receiver requires Signal.send_robust_async; "
-                        f"got coroutine from {getattr(target, '__qualname__', repr(target))!r}"
+                        f"got coroutine from {name!r}"
                     )
                     _logger.warning(
                         "Receiver %r for signal %r returned a coroutine; "
                         "use send_robust_async to await async receivers",
-                        getattr(target, "__qualname__", repr(target)),
+                        name,
                         self.name,
                     )
             results.append((target, value))
@@ -315,6 +316,10 @@ class Signal:
         instead re-raise the first failure while later receivers kept
         running in the background past teardown.
         """
+        # No subscriptions: skip the context snapshot and scaffolding, exactly
+        # as `send` does, so callers can dispatch unconditionally.
+        if not self._subs:
+            return []
         # Snapshot the dispatch-time context BEFORE any sync receiver runs.
         # Sync receivers run inline below and may mutate ContextVars; async
         # receivers must still observe the caller's original request-local
@@ -359,6 +364,10 @@ class Signal:
         exceptions, raised either at call time or while awaiting, are
         logged at WARNING and substituted into the result list.
         """
+        # No subscriptions: skip the context snapshot and scaffolding, exactly
+        # as `send` does, so callers can dispatch unconditionally.
+        if not self._subs:
+            return []
         # Snapshot the dispatch-time context BEFORE any sync receiver runs, so
         # async receivers observe the caller's original context even if a sync
         # receiver mutated a ContextVar (see `asend`).

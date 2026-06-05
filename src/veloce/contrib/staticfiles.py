@@ -85,6 +85,26 @@ def _precondition_failed(
     return False
 
 
+def _forbidden() -> Response:
+    """Build the canonical 403 served on traversal / symlink-escape / EACCES.
+
+    Every static denial returns the same opaque body so the handler never
+    discloses whether a path exists, only that it may not be read."""
+    return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+
+
+def _not_modified(etag: str, last_modified: str) -> Response:
+    """Build the 304 carrying the current validators (RFC 9110 Sec. 13.1.4).
+
+    The empty-body 304 must still echo `ETag` and `Last-Modified` so the
+    client can refresh its cached validators on the revalidation hit."""
+    return Response(
+        status_code=HTTP_304_NOT_MODIFIED,
+        body=b"",
+        headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
+    )
+
+
 @lru_cache(maxsize=512)
 def _guess_content_type(path: str) -> str:
     """Cache `mimetypes.guess_type` by full path.
@@ -233,12 +253,12 @@ class StaticFiles:
             return None
         page_stat, denied = await loop.run_in_executor(None, try_stat, page_path)
         if denied:
-            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+            return _forbidden()
         if page_stat is None or not stat.S_ISREG(page_stat.st_mode):
             return None
         real = await loop.run_in_executor(None, os.path.realpath, page_path)
         if not self._is_under_root(real):
-            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+            return _forbidden()
 
         def _read() -> bytes:
             with open(page_path, "rb") as f:
@@ -318,7 +338,7 @@ class StaticFiles:
         # Pure string arithmetic; actual filesystem I/O is offloaded below.
         file_path = safe_join(self.directory, relative)  # noqa: ASYNC240
         if file_path is None:
-            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+            return _forbidden()
 
         loop = asyncio.get_running_loop()
 
@@ -339,7 +359,7 @@ class StaticFiles:
 
         stat_result, denied = await loop.run_in_executor(None, _try_stat, file_path)
         if denied:
-            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+            return _forbidden()
         is_dir = stat_result is not None and stat.S_ISDIR(stat_result.st_mode)
         is_file = stat_result is not None and stat.S_ISREG(stat_result.st_mode)
 
@@ -350,7 +370,7 @@ class StaticFiles:
                 file_path_html = file_path + ".html"
                 stat_html, denied_html = await loop.run_in_executor(None, _try_stat, file_path_html)
                 if denied_html:
-                    return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+                    return _forbidden()
                 if stat_html is not None and stat.S_ISREG(stat_html.st_mode):
                     file_path = file_path_html
                     stat_result = stat_html
@@ -366,7 +386,7 @@ class StaticFiles:
                 index_path = os.path.join(file_path, "index.html")
                 stat_index, denied_index = await loop.run_in_executor(None, _try_stat, index_path)
                 if denied_index:
-                    return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+                    return _forbidden()
                 if stat_index is not None and stat.S_ISREG(stat_index.st_mode):
                     if not request.path.endswith("/"):
                         return self._redirect_to_slash(request)
@@ -380,7 +400,7 @@ class StaticFiles:
                 # symlink in the index path from escaping.
                 real = await loop.run_in_executor(None, os.path.realpath, file_path)
                 if not self._is_under_root(real):
-                    return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+                    return _forbidden()
                 return await self._render_directory_index(file_path, request.path, loop)
             # HTML mode: serve a configurable `404.html` from the served root
             # before giving up, matching the custom-not-found-page convention of
@@ -399,7 +419,7 @@ class StaticFiles:
         # directory must not expose files elsewhere on the filesystem.
         real_path = await loop.run_in_executor(None, os.path.realpath, file_path)
         if not self._is_under_root(real_path):
-            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+            return _forbidden()
 
         # Derive the media type from the ORIGINAL path before any
         # precompressed swap, so `app.css.br` keeps `text/css` rather than
@@ -413,13 +433,13 @@ class StaticFiles:
         try:
             variant = await self._select_precompressed(request, file_path, loop, _try_stat)
         except PermissionError:
-            return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+            return _forbidden()
         if variant is not None:
             variant_path, content_encoding, variant_stat = variant
             # A planted `.br`/`.gz` symlink must not escape the served root.
             variant_real = await loop.run_in_executor(None, os.path.realpath, variant_path)
             if not self._is_under_root(variant_real):
-                return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
+                return _forbidden()
             file_path = variant_path
             stat_result = variant_stat
         elif self.precompressed and not request.accept_encodings.accepts_identity():
@@ -469,18 +489,10 @@ class StaticFiles:
         if_none_match = request.headers.get(HEADER_IF_NONE_MATCH, "")
         if if_none_match:
             if if_none_match.strip() == "*":
-                return Response(
-                    status_code=HTTP_304_NOT_MODIFIED,
-                    body=b"",
-                    headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
-                )
+                return _not_modified(etag, last_modified)
             for token in if_none_match.split(","):
                 if _etag_matches_weak(etag, token):
-                    return Response(
-                        status_code=HTTP_304_NOT_MODIFIED,
-                        body=b"",
-                        headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
-                    )
+                    return _not_modified(etag, last_modified)
         else:
             ims_header = request.headers.get(HEADER_IF_MODIFIED_SINCE, "")
             ims_dt = parse_date(ims_header)
@@ -489,11 +501,7 @@ class StaticFiles:
             # resolution; otherwise `mtime=1.5` would always appear
             # "newer" than `IMS=1`.
             if ims_ts is not None and int(mtime) <= int(ims_ts):
-                return Response(
-                    status_code=HTTP_304_NOT_MODIFIED,
-                    body=b"",
-                    headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
-                )
+                return _not_modified(etag, last_modified)
 
         # Range request - RFC 9110 Sec. 14.2. Single-range only; multi-range
         # would require multipart/byteranges which we don't ship yet.

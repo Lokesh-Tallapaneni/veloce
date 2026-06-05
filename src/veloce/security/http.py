@@ -19,7 +19,9 @@ from veloce.status import HTTP_401_UNAUTHORIZED
 # API-key schemes can share them without an import cycle; they remain
 # importable from `veloce.security.http` and are used by the schemes below.
 _BASIC_PREFIX = (AUTH_SCHEME_BASIC + " ").lower()
+_BASIC_PREFIX_LEN = len(_BASIC_PREFIX)
 _DIGEST_PREFIX = (AUTH_SCHEME_DIGEST + " ").lower()
+_DIGEST_PREFIX_LEN = len(_DIGEST_PREFIX)
 
 
 class HTTPBasicCredentials:
@@ -39,24 +41,33 @@ class HTTPBasic:
         _validate_realm(realm)
         self.auto_error = auto_error
         self.realm = realm
-
-    def _challenge_headers(self) -> dict[str, str]:
-        """The `WWW-Authenticate: Basic realm="..."` challenge, or `{}` when no
-        realm is configured. Shared by every 401 path so they stay uniform."""
-        if self.realm:
-            return {
-                HEADER_WWW_AUTHENTICATE: f'{AUTH_SCHEME_BASIC} realm="{_quote_header_value(self.realm)}"'
+        # The `WWW-Authenticate: Basic realm="..."` challenge (or `{}` when no
+        # realm is configured) is request-invariant, so build it once at
+        # construction as a template. Each 401 raise copies it via
+        # `_challenge()` so response middleware (CORS/Session/SecurityHeaders)
+        # mutating `response.headers` in place cannot leak request-specific
+        # headers (Vary, Set-Cookie, Access-Control-*) into the shared dict and
+        # carry them onto every subsequent challenge.
+        if realm:
+            self._challenge_template = {
+                HEADER_WWW_AUTHENTICATE: f'{AUTH_SCHEME_BASIC} realm="{_quote_header_value(realm)}"'
             }
-        return {}
+        else:
+            self._challenge_template = {}
+
+    def _challenge(self) -> dict[str, str]:
+        # Fresh copy per 401 so each challenge response is isolated from the
+        # next; the template stays immutable.
+        return dict(self._challenge_template)
 
     def __call__(self, request: Request) -> HTTPBasicCredentials | None:
         auth = request.headers.get(HEADER_AUTHORIZATION, "")
-        if auth[: len(_BASIC_PREFIX)].lower() != _BASIC_PREFIX:
+        if auth[:_BASIC_PREFIX_LEN].lower() != _BASIC_PREFIX:
             if self.auto_error:
                 raise HTTPException(
                     HTTP_401_UNAUTHORIZED,
                     MSG_NOT_AUTHENTICATED,
-                    headers=self._challenge_headers(),
+                    headers=self._challenge(),
                 )
             return None
 
@@ -67,12 +78,12 @@ class HTTPBasic:
         # genuine bugs (NameError, AttributeError) and convert them to
         # a 401, masking defects.
         try:
-            decoded = base64.b64decode(auth[len(_BASIC_PREFIX) :], validate=True).decode("utf-8")
+            decoded = base64.b64decode(auth[_BASIC_PREFIX_LEN:], validate=True).decode("utf-8")
         except (binascii.Error, ValueError, UnicodeDecodeError) as err:
             raise HTTPException(
                 HTTP_401_UNAUTHORIZED,
                 "Invalid authentication credentials",
-                headers=self._challenge_headers(),
+                headers=self._challenge(),
             ) from err
         # RFC 7617 Sec. 2: the credentials are `userid ":" password`; the colon
         # is mandatory. A colon-less payload is malformed and must not
@@ -82,7 +93,7 @@ class HTTPBasic:
             raise HTTPException(
                 HTTP_401_UNAUTHORIZED,
                 "Invalid authentication credentials",
-                headers=self._challenge_headers(),
+                headers=self._challenge(),
             )
         return HTTPBasicCredentials(username=username, password=password)
 
@@ -159,23 +170,24 @@ class HTTPDigest:
         self.algorithm = algorithm
         self.auto_error = auto_error
         self.nonce_factory = nonce_factory or _default_nonce
+        # Only the `nonce` varies between challenges; the quoted realm, qop and
+        # algorithm params are request-invariant, so precompute the constant
+        # prefix and suffix once and splice the per-call nonce in between.
+        self._challenge_prefix = (
+            f'{AUTH_SCHEME_DIGEST} realm="{_quote_header_value(realm)}", qop="{qop}", nonce="'
+        )
+        self._challenge_suffix = f'", algorithm={algorithm}'
 
     def _challenge_headers(self) -> dict[str, str]:
-        nonce = self.nonce_factory()
         # RFC 7616 Sec. 3.3 - challenge param names case-insensitive but
         # the quoted-string values must be exact. Build the header
         # rigorously; clients in the wild reject malformed challenges.
-        parts = [
-            f'realm="{_quote_header_value(self.realm)}"',
-            f'qop="{self.qop}"',
-            f'nonce="{nonce}"',
-            f"algorithm={self.algorithm}",
-        ]
-        return {HEADER_WWW_AUTHENTICATE: AUTH_SCHEME_DIGEST + " " + ", ".join(parts)}
+        nonce = self.nonce_factory()
+        return {HEADER_WWW_AUTHENTICATE: self._challenge_prefix + nonce + self._challenge_suffix}
 
     def __call__(self, request: Request) -> HTTPDigestCredentials | None:
         auth = request.headers.get(HEADER_AUTHORIZATION, "")
-        if auth[: len(_DIGEST_PREFIX)].lower() != _DIGEST_PREFIX:
+        if auth[:_DIGEST_PREFIX_LEN].lower() != _DIGEST_PREFIX:
             if self.auto_error:
                 raise HTTPException(
                     HTTP_401_UNAUTHORIZED,
@@ -183,7 +195,7 @@ class HTTPDigest:
                     headers=self._challenge_headers(),
                 )
             return None
-        return _parse_digest(auth[len(_DIGEST_PREFIX) :])
+        return _parse_digest(auth[_DIGEST_PREFIX_LEN:])
 
 
 def _default_nonce() -> str:

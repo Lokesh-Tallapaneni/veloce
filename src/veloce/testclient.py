@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import mimetypes
 import secrets
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
@@ -71,6 +71,24 @@ from veloce.status import (
     WS_1000_NORMAL_CLOSURE,
 )
 
+# Set-Cookie header-name match is case-insensitive; precompute the lowercased
+# form once so the per-header scan in `TestResponse` and the cookie-jar update
+# do not recompute it on every header.
+_SET_COOKIE_LOWER = HEADER_SET_COOKIE.lower()
+
+
+def _parse_set_cookie_first_pair(value: str) -> tuple[str, str] | None:
+    """Return the `(name, value)` of a Set-Cookie header's first segment.
+
+    The leading `name=value` pair is the cookie itself; the rest are
+    attributes. Returns `None` when the first segment has no `=`.
+    """
+    first = value.split(";", 1)[0].strip()
+    if "=" not in first:
+        return None
+    cname, _, cval = first.partition("=")
+    return cname.strip(), cval.strip()
+
 
 def _resolve_redirect_location(location: str, base_url: str) -> tuple[str, str]:
     """Decompose a `Location` header into `(path, query)` for the next hop.
@@ -92,6 +110,92 @@ def _resolve_redirect_location(location: str, base_url: str) -> tuple[str, str]:
     # Relative location (or odd scheme-only) - use verbatim, splitting any qs.
     path, _, query = location.partition("?")
     return path, query
+
+
+# Redirect status codes the test clients follow when `follow_redirects` is on.
+_REDIRECT_STATUSES = frozenset(
+    (
+        HTTP_301_MOVED_PERMANENTLY,
+        HTTP_302_FOUND,
+        HTTP_303_SEE_OTHER,
+        HTTP_307_TEMPORARY_REDIRECT,
+        HTTP_308_PERMANENT_REDIRECT,
+    )
+)
+# 301/302/303 rewrite the next hop to GET with an empty body; 307/308 preserve.
+_REDIRECT_TO_GET = frozenset((HTTP_301_MOVED_PERMANENTLY, HTTP_302_FOUND, HTTP_303_SEE_OTHER))
+
+
+async def _follow_redirects(
+    *,
+    build_headers: Callable[[dict[str, str] | None], dict[str, str]],
+    send_one: Callable[[str, str, str, dict[str, str], bytes, Any | None], Awaitable[TestResponse]],
+    update_cookies: Callable[[TestResponse], None],
+    max_redirects: int,
+    base_url: str,
+    follow: bool,
+    client_name: str,
+    method: str,
+    path: str,
+    query_string: str,
+    body: bytes,
+    headers: dict[str, str] | None,
+    stream: Any | None,
+) -> TestResponse:
+    """Drive the request/redirect loop shared by both test clients.
+
+    `send_one` is the per-hop async dispatch (`_send_one_request`); the only
+    difference between the sync and async clients is how that coroutine is
+    awaited, which stays in each client's `_make_request`. The status
+    classification, GET-rewrite, one-shot-stream replay guard, and hop cap
+    live here so a redirect-semantics fix lands in one place.
+
+    RFC 9110 Sec. 15.4: 303 always changes the method to GET and drops the
+    body; 301/302 historically did the same (every browser does), and for
+    test-client predictability the same browser convention is followed here.
+    307/308 strictly preserve method and body.
+    """
+    current_method = method
+    current_path = path
+    current_query = query_string
+    current_body = body
+    current_headers = headers
+    current_stream = stream
+
+    for _ in range(max_redirects + 1):
+        all_headers = build_headers(current_headers)
+        resp = await send_one(
+            current_method,
+            current_path,
+            current_query,
+            all_headers,
+            current_body,
+            current_stream,
+        )
+        update_cookies(resp)
+        if not follow or resp.status_code not in _REDIRECT_STATUSES:
+            return resp
+        location = resp.headers.get(HEADER_LOCATION)
+        if not location:
+            return resp
+        if resp.status_code in _REDIRECT_TO_GET:
+            current_method = HTTP_METHOD_GET
+            current_body = b""
+            # The body is dropped on this hop, so the one-shot stream iterator
+            # is no longer needed (and must not be re-consumed).
+            current_stream = None
+        elif current_stream is not None:
+            # 307/308 must replay method + body, but a consumed one-shot
+            # iterator cannot be re-read. Fail loudly rather than silently
+            # sending an empty body.
+            raise RuntimeError(
+                "streamed request body cannot be replayed across redirects; "
+                "pass follow_redirects=False"
+            )
+        current_path, current_query = _resolve_redirect_location(location, base_url)
+    raise RuntimeError(
+        f"{client_name} exceeded {max_redirects} redirects following {method} {path}"
+    )
 
 
 async def _aiter_body_chunks(stream: Any) -> AsyncIterator[bytes]:
@@ -201,7 +305,7 @@ class TestResponse:
         for k, v in raw_headers:
             name = k.decode("latin-1")
             value = v.decode("latin-1")
-            if name.lower() == HEADER_SET_COOKIE.lower():
+            if name.lower() == _SET_COOKIE_LOWER:
                 set_cookies.append(value)
             else:
                 flat[name] = value
@@ -213,10 +317,9 @@ class TestResponse:
         # `name=value` segment wins.
         self.cookies: dict[str, str] = {}
         for line in set_cookies:
-            first = line.split(";", 1)[0].strip()
-            if "=" in first:
-                cname, _, cval = first.partition("=")
-                self.cookies[cname.strip()] = cval.strip()
+            pair = _parse_set_cookie_first_pair(line)
+            if pair is not None:
+                self.cookies[pair[0]] = pair[1]
 
     def json(self) -> Any:
         """Parse the response body as JSON and return the result."""
@@ -255,20 +358,19 @@ def _apply_set_cookie_to_jar(jar: dict[str, str], raw_headers: list[tuple[bytes,
     """
     for name_bytes, value_bytes in raw_headers:
         name = name_bytes.decode("latin-1")
-        if name.lower() != HEADER_SET_COOKIE.lower():
+        if name.lower() != _SET_COOKIE_LOWER:
             continue
         value = value_bytes.decode("latin-1")
-        first = value.split(";", 1)[0].strip()
-        if "=" not in first:
+        pair = _parse_set_cookie_first_pair(value)
+        if pair is None:
             continue
-        cname, _, cval = first.partition("=")
-        cname = cname.strip()
+        cname, cval = pair
         rest = value.split(";")[1:]
         is_deletion = any("max-age=0" in seg.strip().lower() for seg in rest)
         if is_deletion:
             jar.pop(cname, None)
         else:
-            jar[cname] = cval.strip()
+            jar[cname] = cval
 
 
 def _guess_content_type(filename: str | None, content: Any) -> str:
@@ -416,6 +518,33 @@ def _build_scope(
     }
 
 
+async def _collect_response(app: Any, scope: dict[str, Any], receive: Any) -> TestResponse:
+    """Drive one ASGI request/response cycle and assemble a `TestResponse`.
+
+    Shared by the sync and async clients' `_send_one_request` so the `send`
+    closure and body assembly live in one place (a fix to either applies to
+    both, per the async/sync parity guardrail).
+    """
+    status_code = HTTP_500_INTERNAL_SERVER_ERROR
+    raw_headers: list[tuple[bytes, bytes]] = []
+    body_chunks: list[bytes] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        nonlocal status_code, raw_headers
+        mtype = message["type"]
+        if mtype == ASGI_EVENT_HTTP_RESPONSE_START:
+            status_code = message["status"]
+            raw_headers = list(message.get("headers") or [])
+        elif mtype == ASGI_EVENT_HTTP_RESPONSE_BODY:
+            chunk = message.get("body", b"")
+            if chunk:
+                body_chunks.append(chunk)
+            # `more_body` False signals end of response.
+
+    await app(scope, receive, send)
+    return TestResponse(status_code, b"".join(body_chunks), raw_headers)
+
+
 class TestClient:
     """Sync test client - drives the app through its ASGI surface."""
 
@@ -540,28 +669,8 @@ class TestClient:
         stream: Any | None = None,
     ) -> TestResponse:
         scope = _build_scope(method, path, query_string, headers)
-
         receive = _build_receive(body, stream)
-
-        status_code = HTTP_500_INTERNAL_SERVER_ERROR
-        raw_headers: list[tuple[bytes, bytes]] = []
-        body_chunks: list[bytes] = []
-
-        async def send(message: dict[str, Any]) -> None:
-            nonlocal status_code, raw_headers
-            mtype = message["type"]
-            if mtype == ASGI_EVENT_HTTP_RESPONSE_START:
-                status_code = message["status"]
-                raw_headers = list(message.get("headers") or [])
-            elif mtype == ASGI_EVENT_HTTP_RESPONSE_BODY:
-                chunk = message.get("body", b"")
-                if chunk:
-                    body_chunks.append(chunk)
-                # `more_body` False signals end of response.
-
-        await self.app(scope, receive, send)
-
-        return TestResponse(status_code, b"".join(body_chunks), raw_headers)
+        return await _collect_response(self.app, scope, receive)
 
     def _make_request(
         self,
@@ -578,69 +687,25 @@ class TestClient:
             query_string = f"{path_qs}&{query_string}" if query_string else path_qs
 
         follow = self.follow_redirects if follow_redirects is None else follow_redirects
-        current_method = method
-        current_path = path
-        current_query = query_string
-        current_body = body
-        current_headers = headers
-        current_stream = stream
-
-        for _ in range(self._MAX_REDIRECTS + 1):
-            all_headers = self._build_headers(current_headers)
-            resp = self._loop.run_until_complete(
-                self._send_one_request(
-                    current_method,
-                    current_path,
-                    current_query,
-                    all_headers,
-                    current_body,
-                    current_stream,
-                )
+        # The redirect loop lives in the shared `_follow_redirects` driver; the
+        # sync client's only specialisation is running the whole coroutine on
+        # its dedicated loop (the async client awaits it instead).
+        return self._loop.run_until_complete(
+            _follow_redirects(
+                build_headers=self._build_headers,
+                send_one=self._send_one_request,
+                update_cookies=self._update_cookies,
+                max_redirects=self._MAX_REDIRECTS,
+                base_url=self.base_url,
+                follow=follow,
+                client_name="TestClient",
+                method=method,
+                path=path,
+                query_string=query_string,
+                body=body,
+                headers=headers,
+                stream=stream,
             )
-            self._update_cookies(resp)
-            if not follow or resp.status_code not in (
-                HTTP_301_MOVED_PERMANENTLY,
-                HTTP_302_FOUND,
-                HTTP_303_SEE_OTHER,
-                HTTP_307_TEMPORARY_REDIRECT,
-                HTTP_308_PERMANENT_REDIRECT,
-            ):
-                return resp
-            location = resp.headers.get(HEADER_LOCATION)
-            if not location:
-                return resp
-            # RFC 9110 Sec. 15.4: 303 always changes the method to GET and
-            # drops the body. 301/302 historically did the same (browsers
-            # all do); modern recommendation is to preserve, but for
-            # test-client predictability we follow the browser convention.
-            # 307/308 strictly preserve method+body.
-            new_method = current_method
-            new_body = current_body
-            if resp.status_code in (
-                HTTP_301_MOVED_PERMANENTLY,
-                HTTP_302_FOUND,
-                HTTP_303_SEE_OTHER,
-            ):
-                new_method = HTTP_METHOD_GET
-                new_body = b""
-                # The body is dropped on this hop, so the one-shot stream
-                # iterator is no longer needed (and must not be re-consumed).
-                current_stream = None
-            elif current_stream is not None:
-                # 307/308 must replay method + body, but a consumed one-shot
-                # iterator cannot be re-read. Fail loudly rather than silently
-                # sending an empty body.
-                raise RuntimeError(
-                    "streamed request body cannot be replayed across redirects; "
-                    "pass follow_redirects=False"
-                )
-            new_path, new_query = _resolve_redirect_location(location, self.base_url)
-            current_method = new_method
-            current_path = new_path
-            current_query = new_query
-            current_body = new_body
-        raise RuntimeError(
-            f"TestClient exceeded {self._MAX_REDIRECTS} redirects following {method} {path}"
         )
 
     # -- Method shortcuts ---------------------------------------------
@@ -998,23 +1063,22 @@ class _WebSocketSession:
             self._to_handler.put({"type": ASGI_EVENT_WS_RECEIVE, "bytes": data})
         )
 
-    def receive_text(self) -> str:
-        async def _r() -> str:
+    def _receive(self, key: str) -> Any:
+        """Pull the next frame and return its `key` payload (`text`/`bytes`)."""
+
+        async def _r() -> Any:
             msg = await self._from_handler.get()
             if msg.get("type") == ASGI_EVENT_WS_CLOSE:
                 raise Exception(f"WebSocket closed: {msg.get('code', WS_1000_NORMAL_CLOSURE)}")
-            return msg["text"]
+            return msg[key]
 
         return self._client._loop.run_until_complete(_r())
+
+    def receive_text(self) -> str:
+        return self._receive("text")
 
     def receive_bytes(self) -> bytes:
-        async def _r() -> bytes:
-            msg = await self._from_handler.get()
-            if msg.get("type") == ASGI_EVENT_WS_CLOSE:
-                raise Exception(f"WebSocket closed: {msg.get('code', WS_1000_NORMAL_CLOSURE)}")
-            return msg["bytes"]
-
-        return self._client._loop.run_until_complete(_r())
+        return self._receive("bytes")
 
     def receive_json(self) -> Any:
         return orjson.loads(self.receive_text())
@@ -1169,26 +1233,8 @@ class AsyncTestClient:
         stream: Any | None = None,
     ) -> TestResponse:
         scope = _build_scope(method, path, query_string, headers)
-
         receive = _build_receive(body, stream)
-
-        status_code = HTTP_500_INTERNAL_SERVER_ERROR
-        raw_headers: list[tuple[bytes, bytes]] = []
-        body_chunks: list[bytes] = []
-
-        async def send(message: dict[str, Any]) -> None:
-            nonlocal status_code, raw_headers
-            mtype = message["type"]
-            if mtype == ASGI_EVENT_HTTP_RESPONSE_START:
-                status_code = message["status"]
-                raw_headers = list(message.get("headers") or [])
-            elif mtype == ASGI_EVENT_HTTP_RESPONSE_BODY:
-                chunk = message.get("body", b"")
-                if chunk:
-                    body_chunks.append(chunk)
-
-        await self.app(scope, receive, send)
-        return TestResponse(status_code, b"".join(body_chunks), raw_headers)
+        return await _collect_response(self.app, scope, receive)
 
     async def _make_request(
         self,
@@ -1211,56 +1257,24 @@ class AsyncTestClient:
             query_string = f"{path_qs}&{query_string}" if query_string else path_qs
 
         follow = self.follow_redirects if follow_redirects is None else follow_redirects
-        current_method, current_path = method, path
-        current_query, current_body = query_string, body
-        current_headers = headers
-        current_stream = stream
-
-        for _ in range(self._MAX_REDIRECTS + 1):
-            all_headers = self._build_headers(current_headers)
-            resp = await self._send_one_request(
-                current_method,
-                current_path,
-                current_query,
-                all_headers,
-                current_body,
-                current_stream,
-            )
-            self._update_cookies(resp)
-            if not follow or resp.status_code not in (
-                HTTP_301_MOVED_PERMANENTLY,
-                HTTP_302_FOUND,
-                HTTP_303_SEE_OTHER,
-                HTTP_307_TEMPORARY_REDIRECT,
-                HTTP_308_PERMANENT_REDIRECT,
-            ):
-                return resp
-            location = resp.headers.get(HEADER_LOCATION)
-            if not location:
-                return resp
-            # 301/302/303 -> GET with no body (browser convention);
-            # 307/308 preserve method + body.
-            if resp.status_code in (
-                HTTP_301_MOVED_PERMANENTLY,
-                HTTP_302_FOUND,
-                HTTP_303_SEE_OTHER,
-            ):
-                current_method, current_body = HTTP_METHOD_GET, b""
-                # Body dropped on this hop - discard the one-shot stream too.
-                current_stream = None
-            elif current_stream is not None:
-                # 307/308 replay method + body, but a consumed one-shot
-                # iterator cannot be re-read. Fail loudly.
-                raise RuntimeError(
-                    "streamed request body cannot be replayed across redirects; "
-                    "pass follow_redirects=False"
-                )
-            current_path, current_query = _resolve_redirect_location(location, self.base_url)
-            # `current_headers` is intentionally kept across the hop - the
-            # caller's headers (Authorization, custom headers) must reach
-            # the redirected request, matching the sync TestClient.
-        raise RuntimeError(
-            f"AsyncTestClient exceeded {self._MAX_REDIRECTS} redirects following {method} {path}"
+        # Shares the `_follow_redirects` driver with the sync client - the async
+        # client simply awaits the coroutine where the sync client runs it on
+        # its loop. The driver keeps `current_headers` across hops, so the
+        # caller's headers (Authorization, custom) reach the redirected request.
+        return await _follow_redirects(
+            build_headers=self._build_headers,
+            send_one=self._send_one_request,
+            update_cookies=self._update_cookies,
+            max_redirects=self._MAX_REDIRECTS,
+            base_url=self.base_url,
+            follow=follow,
+            client_name="AsyncTestClient",
+            method=method,
+            path=path,
+            query_string=query_string,
+            body=body,
+            headers=headers,
+            stream=stream,
         )
 
     def _assemble_body(

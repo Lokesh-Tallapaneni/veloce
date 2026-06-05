@@ -216,9 +216,9 @@ def _cmd_routes(args: argparse.Namespace) -> int:
         return 0
 
     # Compute column widths from the data - no fixed-width truncation.
-    method_w = max(len(r["method"]) for r in rows + [{"method": "METHOD"}])
-    path_w = max(len(r["path"]) for r in rows + [{"path": "PATH"}])
-    name_w = max(len(str(r.get("name") or "")) for r in rows + [{"name": "NAME"}])
+    method_w = max(len("METHOD"), max(len(r["method"]) for r in rows))
+    path_w = max(len("PATH"), max(len(r["path"]) for r in rows))
+    name_w = max(len("NAME"), max(len(str(r.get("name") or "")) for r in rows))
 
     line = f"{'METHOD':<{method_w}}  {'PATH':<{path_w}}  {'NAME':<{name_w}}"
     print(line)
@@ -235,13 +235,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
     app = _load_app(args.app)
     _require_app_attr(app, "security_audit", "`.security_audit()`")
 
-    warnings = app.security_audit()
-    if not warnings:
+    issues = app.security_audit()
+    if not issues:
         print("Security audit: no issues found.")
         return 0
-    print(f"Security audit: {len(warnings)} issue(s) found:")
-    for warning in warnings:
-        print(f"  - {warning}")
+    print(f"Security audit: {len(issues)} issue(s) found:")
+    for issue in issues:
+        print(f"  - {issue}")
     return 1
 
 

@@ -868,6 +868,21 @@ def test_exposed_route_returning_plain_response_yields_body_text():
     assert out["result"]["content"][0]["text"] == "hello world"
 
 
+def test_exposed_route_text_json_body_is_not_json_decoded():
+    """`text/json` is not `application/json`: a JSON-looking body under that
+    content type is returned as verbatim text, never decoded and re-serialised.
+    Guards the `is_json_mimetype` over-match fix (`endswith("json")` matched
+    `text/json`)."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/tj", expose_as_mcp_tool=True, mcp_description="text/json body")
+    async def tj() -> Response:
+        return Response(body=b'{"x": 1}', content_type="text/json")
+
+    out = _call(app, "tj", {})
+    assert out["result"]["content"][0]["text"] == '{"x": 1}'
+
+
 # -- Request injection ------------------------------------------------
 
 

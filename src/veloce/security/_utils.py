@@ -86,7 +86,10 @@ def _extract_api_key(
     the missing-key path a single branch with no per-request header build.
     """
     key = source.get(name)
-    if not key or not key.strip():
+    # `isspace()` tests for an all-whitespace key without allocating the
+    # stripped copy `.strip()` would build on every (success-path) request;
+    # `not key` already covers the empty/None case.
+    if not key or key.isspace():
         if auto_error:
             raise HTTPException(HTTP_401_UNAUTHORIZED, MSG_NOT_AUTHENTICATED, headers=challenge)
         return None
