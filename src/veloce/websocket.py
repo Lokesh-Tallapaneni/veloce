@@ -1182,6 +1182,16 @@ class WebSocket:
             self._close_protocol_error()
             return 0
 
+        # RFC 6455 Sec. 5.1: every client-to-server frame MUST be masked, and a
+        # server that receives an unmasked frame fails the connection with a
+        # 1002 protocol error. `feed_data` is driven only by the server-side
+        # transport, so an unmasked frame is a non-conformant or hostile client;
+        # reject it here - before length resolution / payload allocation -
+        # rather than processing it as a valid message.
+        if not masked:
+            self._close_protocol_error()
+            return 0
+
         offset = 2
         if payload_len == 126:
             if n < 4:

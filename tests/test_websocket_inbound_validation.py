@@ -118,6 +118,40 @@ async def test_valid_utf8_text_frame_still_delivered():
     assert ws._receive_queue.get_nowait().decode("utf-8") == "naïve café"
 
 
+# ── Client frame masking (RFC 6455 Sec. 5.1) ───────────────────────────
+
+
+async def test_unmasked_client_frame_closes_with_1002():
+    # RFC 6455 Sec. 5.1: a client->server frame MUST be masked; an unmasked
+    # frame fails the connection with a 1002 protocol error rather than being
+    # processed as a valid message.
+    ws, transport = _make_ws()
+    # TEXT frame, fin=1, payload "hi", mask bit cleared, no mask key, raw payload.
+    ws.feed_data(bytes([0x81, 0x02]) + b"hi")
+    assert ws._closed is True
+    assert transport.closed is True
+    assert _last_close_code(transport) == 1002
+    # The unmasked payload never reached the receive queue as data.
+    from veloce.websocket import _RAW_DISCONNECT
+
+    assert ws._receive_queue.get_nowait() is _RAW_DISCONNECT
+
+
+async def test_unmasked_control_frame_closes_with_1002():
+    # The masking requirement applies to control frames too; an unmasked PING
+    # is a protocol error, not a frame to pong.
+    ws, transport = _make_ws()
+    ws.feed_data(bytes([0x89, 0x00]))  # PING, fin=1, len 0, unmasked
+    assert _last_close_code(transport) == 1002
+
+
+async def test_masked_client_frame_still_accepted():
+    # The masking guard must not reject a properly masked client frame.
+    ws, _ = _make_ws()
+    ws.feed_data(_client_frame(0x1, b"ok", fin=True))
+    assert ws._receive_queue.get_nowait().decode("utf-8") == "ok"
+
+
 async def test_text_truncated_codepoint_at_fin_closes_with_1007():
     """A TEXT frame ending mid-codepoint (incomplete UTF-8 sequence) is
     invalid even though every byte so far was a legal prefix."""
