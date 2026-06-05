@@ -15,6 +15,18 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.response import Response
 
 
+# Control characters (the C0 range plus DEL) in a request-derived value would
+# let an attacker forge or split access-log lines (CWE-117): on the ASGI path
+# the server percent-decodes the URL into `request.path`, so a `%0a` in the
+# request target arrives as a real newline that the plain-text formatter writes
+# as a new physical log record. Escape every control character before it reaches
+# the log sink. A normal method / path holds none, so `translate` is a straight
+# pass over the string.
+_CONTROL_ESCAPE = {c: f"\\x{c:02x}" for c in range(0x20)}
+_CONTROL_ESCAPE[0x7F] = "\\x7f"
+_LOG_SANITIZE = str.maketrans(_CONTROL_ESCAPE)
+
+
 class LoggingMiddleware(Middleware):
     """Structured request/response access logging.
 
@@ -84,8 +96,8 @@ class LoggingMiddleware(Middleware):
         duration_ms = (time.monotonic() - start) * 1000 if start else 0
         self.logger.info(
             "%s %s %d %.1fms",
-            request.method,
-            request.path,
+            request.method.translate(_LOG_SANITIZE),
+            request.path.translate(_LOG_SANITIZE),
             response.status_code,
             duration_ms,
         )

@@ -1270,6 +1270,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- `LoggingMiddleware` now escapes control characters in the request method and
+  path before writing the access-log line. On the ASGI serving path the server
+  percent-decodes the URL into `request.path`, so a request target containing
+  `%0a` / `%0d` previously placed a real newline into the log record and let an
+  attacker forge or split access-log lines (CWE-117). Control characters are now
+  rendered in `\xNN` form; a normal method and path are unchanged.
+- The native WebSocket server rejects an unmasked client-to-server frame with a
+  `1002` protocol-error close, per RFC 6455 Sec. 5.1. The raw-transport frame
+  parser previously read the mask bit but did not enforce it, processing an
+  unmasked frame as a valid message. Only the native `Veloce.run()` serving path
+  is affected; under an ASGI server the server owns frame parsing.
 - HTTP Basic authentication rejects an RFC 7617-malformed credential that lacks
   the `username:password` colon (previously accepted as an empty-password
   login).
