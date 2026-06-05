@@ -211,6 +211,35 @@ async def test_streaming_delivers_decodable_frame_per_chunk():
     assert delivered == b"".join(chunks)
 
 
+async def test_streaming_206_short_circuit_sets_vary():
+    # A streamed 206 / Content-Range is passed through uncompressed, but the
+    # middleware still advertises Vary: Accept-Encoding (RFC 9110 Sec. 12.5.5)
+    # so caches see the encoding dimension on the range response too.
+    request = Request(
+        method="GET",
+        path="/",
+        query_string="",
+        headers=[(b"accept-encoding", b"gzip")],
+        body=b"",
+    )
+
+    async def gen():
+        for chunk in _CHUNKS:
+            yield chunk
+
+    response = StreamingResponse(
+        gen(),
+        status_code=206,
+        content_type="application/json",
+        headers={"Content-Range": "bytes 0-9999/99999"},
+    )
+    mw = GZipMiddleware(minimum_size=0)
+    response = await mw.process_response(request, response)
+
+    assert "Content-Encoding" not in response.headers
+    assert "accept-encoding" in response.headers.get("Vary", "").lower()
+
+
 async def test_streaming_chunked_native_gzip():
     # Drive the native chunked path: process_response wraps _stream, then
     # StreamingResponse.stream_to frames the already-gzipped bytes as chunks.

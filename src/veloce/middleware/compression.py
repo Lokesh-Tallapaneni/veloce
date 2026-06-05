@@ -133,6 +133,17 @@ class GZipMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Compress the response body with gzip if the client accepts it."""
+        # This middleware negotiates content on Accept-Encoding, so every
+        # response it touches varies on that header - including the ones it
+        # leaves uncompressed (no gzip in Accept-Encoding, below `minimum_size`,
+        # a 206 / Content-Range, an incompressible type, an already-encoded
+        # body). Declaring `Vary: Accept-Encoding` up front, before any
+        # short-circuit, keeps the encoding dimension visible to every cache
+        # layer end-to-end (RFC 9110 Sec. 12.5.5) rather than only on the
+        # compressed path. The streamed path is reached via the delegation
+        # below, so it inherits this marker too; `add_vary` de-duplicates, so
+        # the success path does not re-add it.
+        response.add_vary(HEADER_ACCEPT_ENCODING)
         accept = request.headers.get(HEADER_ACCEPT_ENCODING, "")
         if not _accepts_gzip(accept):
             return response
@@ -240,7 +251,8 @@ class GZipMiddleware(Middleware):
         response.headers[HEADER_CONTENT_ENCODING] = HEADER_VALUE_GZIP
         if content_length is not None:
             response.headers[HEADER_CONTENT_LENGTH] = str(content_length)
-        response.add_vary(HEADER_ACCEPT_ENCODING)
+        # `Vary: Accept-Encoding` is already set by `process_response` at entry,
+        # ahead of every short-circuit, so it is not re-added here.
         response._encoded = None
         self._weaken_strong_etag(response)
 
