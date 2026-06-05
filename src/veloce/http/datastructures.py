@@ -1,4 +1,4 @@
-"""Core data structures - UploadFile, Header, URL, FormData.
+"""Core data structures — UploadFile, Header, URL, FormData.
 
 `Headers` and `QueryParams` subclass `multidict.CIMultiDict` and
 `multidict.MultiDict` respectively. They preserve duplicate keys and add
@@ -429,7 +429,7 @@ class _GetListMixin:
 
     __slots__ = ()
 
-    def getlist(self, key: str) -> list:
+    def getlist(self, key: str) -> list[str]:
         """Return all values for the given key as a list. Empty list if absent."""
         try:
             return self.getall(key)  # type: ignore[attr-defined]

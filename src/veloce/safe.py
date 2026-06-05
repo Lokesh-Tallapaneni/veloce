@@ -1,4 +1,4 @@
-"""Safety helpers - constant-time comparison, filename sanitisation, path joining.
+"""Safety helpers — constant-time comparison, filename sanitisation, path joining.
 
 `constant_time_compare(a, b)` compares two secrets without timing leaks.
 `secure_filename(name)` returns a safe basename for a user-supplied filename.

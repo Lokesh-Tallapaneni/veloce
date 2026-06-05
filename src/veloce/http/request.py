@@ -1,4 +1,4 @@
-"""Request object - lazy parsing for speed."""
+"""Request object — lazy parsing for speed."""
 
 from __future__ import annotations
 
@@ -77,8 +77,16 @@ class Request:
     """Incoming HTTP request with lazy attribute parsing.
 
     All expensive operations (JSON parsing, cookie parsing, URL construction,
-    form/multipart parsing) are deferred until accessed - zero overhead for
+    form/multipart parsing) are deferred until accessed — zero overhead for
     properties you don't use.
+
+    Usage::
+
+        @app.get("/users/{user_id}")
+        async def show(request: Request, user_id: str):
+            data = await request.json()
+            agent = request.headers.get("user-agent", "")
+            return {"id": user_id, "agent": agent, "body": data}
     """
 
     __slots__ = (
@@ -220,7 +228,7 @@ class Request:
 
     @property
     def args(self) -> QueryParams:
-        """an alias for `query_params` - the parsed URL query string."""
+        """Alias for `query_params` — the parsed URL query string."""
         return self.query_params
 
     @property
@@ -233,10 +241,10 @@ class Request:
 
     @property
     def view_args(self) -> dict[str, Any]:
-        """an alias for `path_params` - the matched route's path params.
+        """Alias for `path_params` — the matched route's path params.
 
-        Veloce names the dict of URL-captured values `request.view_args`;
-        veloce calls it `path_params`. Both point at the same dict.
+        `request.view_args` and `request.path_params` are two names for the
+        dict of URL-captured values; both point at the same dict.
         """
         return self._path_params
 
@@ -772,7 +780,7 @@ class Request:
 
     @property
     def script_root(self) -> str:
-        """an alias for `root_path` - also called `script_root`.
+        """Alias for `root_path` — also called `script_root`.
 
         ProxyFix-style middleware may also set
         `_state["proxy_fix_prefix"]`; that wins over the ASGI scope
@@ -817,7 +825,7 @@ class Request:
     def environ(self) -> dict:
         """Alias for the ASGI `scope` dict.
 
-        third-party code paths reach for `request.environ` (WSGI); ASGI
+        Third-party code paths reach for `request.environ` (WSGI); ASGI
         scope is the analogue. Returns the live dict so middleware can
         introspect (mutation goes through framework APIs, not this).
         """
@@ -825,9 +833,9 @@ class Request:
 
     @property
     def url_rule(self) -> str | None:
-        """the matched route's template (e.g. `/users/{id}`).
+        """Return the matched route's template (e.g. `/users/{id}`).
 
-        Returns the raw path template the radix tree used for the match -
+        Returns the raw path template the radix tree used for the match —
         i.e. `path_params` placeholders are unsubstituted. `None` for
         synthetic requests that never went through dispatch.
         """
@@ -835,7 +843,7 @@ class Request:
 
     @property
     def blueprint(self) -> str | None:
-        """the name of the blueprint that owns the matched route.
+        """Return the name of the blueprint that owns the matched route.
 
         Veloce stores the endpoint as `<bp>.<name>` for blueprint routes.
         Returns the bit before the dot, or `None` if the endpoint is
@@ -848,7 +856,7 @@ class Request:
 
     @property
     def blueprints(self) -> list[str]:
-        """every blueprint in the matched endpoint's parent chain.
+        """Return every blueprint in the matched endpoint's parent chain.
 
         For an endpoint `a.b.c.view`, returns `["a.b.c", "a.b", "a"]`
         (innermost first). Empty list when the route is top-level or the
@@ -919,7 +927,7 @@ class Request:
 
     @property
     def remote_addr(self) -> str | None:
-        """an alias for `client_host` - the connecting client's IP.
+        """Alias for `client_host` — the connecting client's IP.
 
         Honours ProxyFix-style middleware: when the trusted hop has set
         `_state["proxy_fix_client"]`, that value wins over the raw TCP

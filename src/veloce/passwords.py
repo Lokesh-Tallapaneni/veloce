@@ -1,4 +1,4 @@
-"""Password hashing helpers - derive, verify, and grade passwords.
+"""Password hashing helpers — derive, verify, and grade passwords.
 
 `hash_password(password, method=...)` derives a verifier from a password
 and returns a string-encoded hash; `verify_password(stored, candidate)`

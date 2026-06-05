@@ -1,4 +1,4 @@
-"""MCP tool registry - the name -> tool table the server serves.
+"""MCP tool registry — the name -> tool table the server serves.
 
 A `ToolRegistry` is assembled once, at `mount_mcp` time, from two sources:
 
@@ -68,7 +68,7 @@ class ToolRegistry:
     """
 
     tools: dict[str, MCPTool] = field(default_factory=dict)
-    schemas: dict[str, dict] = field(default_factory=dict)
+    schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def add(self, tool: MCPTool) -> None:
         if tool.name in self.tools:

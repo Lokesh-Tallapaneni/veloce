@@ -1,1 +1,14 @@
-"""Contrib sub-package - optional integrations (templating, OpenAPI, static files)."""
+"""Contrib sub-package — optional integrations (templating, OpenAPI, static files)."""
+
+from __future__ import annotations
+
+from veloce.contrib.openapi import get_openapi_schema, setup_openapi_routes
+from veloce.contrib.staticfiles import StaticFiles
+from veloce.contrib.templating import Jinja2Templates
+
+__all__ = [
+    "Jinja2Templates",
+    "StaticFiles",
+    "get_openapi_schema",
+    "setup_openapi_routes",
+]

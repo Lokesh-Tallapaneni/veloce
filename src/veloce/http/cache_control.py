@@ -1,4 +1,4 @@
-"""CacheControl - parsed view of a `Cache-Control` header.
+"""CacheControl — parsed view of a `Cache-Control` header.
 
 RFC 9111 Sec. 5.2 defines the `Cache-Control` directives. Each directive
 is either a bare token (`no-cache`, `must-revalidate`) or a
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from veloce._constants import HEADER_VALUE_PUBLIC
 from veloce._header_parsing import unquote_value
 
 _BOOL_DIRECTIVES = frozenset(
@@ -25,7 +24,7 @@ _BOOL_DIRECTIVES = frozenset(
         "no_transform",
         "must_revalidate",
         "proxy_revalidate",
-        HEADER_VALUE_PUBLIC,
+        "public",
         "private",
         "immutable",
         "only_if_cached",

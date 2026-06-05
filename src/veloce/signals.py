@@ -1,6 +1,6 @@
-"""Signals - minimal pub/sub.
+"""Signals — minimal pub/sub.
 
-Provides a lightweight `Signal` class that exposing a
+Provides a lightweight `Signal` class that exposes a
 `signal.connect(receiver)` / `signal.send(sender, **kwargs)` API, so
 signal-based application code stays small.
 

@@ -1,4 +1,4 @@
-"""Logging middleware - request/response access logging and request IDs."""
+"""Logging middleware — request/response access logging and request IDs."""
 
 from __future__ import annotations
 
@@ -16,7 +16,12 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 class LoggingMiddleware(Middleware):
-    """Structured request/response access logging."""
+    """Structured request/response access logging.
+
+    Usage::
+
+        app.add_middleware(LoggingMiddleware())
+    """
 
     # Stash the start timestamp on the request itself rather than in a
     # middleware-owned dict keyed by id(request). A handler exception
@@ -88,7 +93,12 @@ class LoggingMiddleware(Middleware):
 
 
 class RequestIDMiddleware(Middleware):
-    """Assign a unique request ID to each request and echo it in the response."""
+    """Assign a unique request ID to each request and echo it in the response.
+
+    Usage::
+
+        app.add_middleware(RequestIDMiddleware())
+    """
 
     def __init__(self, header_name: str = HEADER_X_REQUEST_ID, *, name: str | None = None) -> None:
         super().__init__(name=name)

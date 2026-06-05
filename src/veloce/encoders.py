@@ -1,4 +1,4 @@
-"""JSON encoding - convert arbitrary Python objects to JSON-compatible types."""
+"""JSON encoding — convert arbitrary Python objects to JSON-compatible types."""
 
 from __future__ import annotations
 
@@ -170,7 +170,8 @@ def register_encoder(type_: type, encoder: Callable[[Any], Any]) -> None:
     already has a built-in handler overrides that handler for the type and
     its subclasses.
 
-    Usage:
+    Usage::
+
         register_encoder(MyId, lambda v: v.hex)
     """
     if not isinstance(type_, type):
@@ -310,7 +311,8 @@ def jsonable_encoder(
     via `register_encoder` are consulted later (after the exact-type fast
     paths) and cover subclasses through an MRO walk.
 
-    Usage:
+    Usage::
+
         data = jsonable_encoder(my_pydantic_model, exclude={"password"})
     """
     # A Secret must never be serialised to JSON; require an explicit

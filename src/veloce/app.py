@@ -1,4 +1,4 @@
-"""Veloce application - the main entry point."""
+"""Veloce application — the main entry point."""
 
 from __future__ import annotations
 
@@ -8,7 +8,9 @@ import contextlib
 import contextvars
 import functools
 import inspect
+import os
 import signal
+import sys
 import time
 import traceback
 import warnings
@@ -482,7 +484,8 @@ class _URLMap:
 class Veloce(Router):
     """Ultra-fast async web framework.
 
-    Usage:
+    Usage::
+
         app = Veloce()
 
         @app.get("/")
@@ -491,6 +494,12 @@ class Veloce(Router):
 
         app.run()
     """
+
+    # Veloce exposes `openapi_version` and `openapi_schema` as direct
+    # attributes for customisation. veloce stores `openapi_schema` on
+    # the instance (None until first `openapi()` call); `openapi_version`
+    # is the spec version string emitted in the document.
+    openapi_version: str = "3.1.0"
 
     def __init__(
         self,
@@ -549,8 +558,6 @@ class Veloce(Router):
         # `Veloce(__name__)` works. Used to compute `root_path` (the
         # package directory) for template / static-file resolution.
         if import_name is None:
-            import sys
-
             frame = sys._getframe(1)
             import_name = frame.f_globals.get("__name__", "veloce.app")
         self.import_name = import_name
@@ -893,8 +900,6 @@ class Veloce(Router):
         self.template_folder: str | None = template_folder
         self._templates: Any = None
         if template_folder is not None:
-            import os
-
             from veloce.contrib.templating import Jinja2Templates
 
             tdir = template_folder
@@ -1300,8 +1305,6 @@ class Veloce(Router):
         `DeprecationWarning` when called on a running loop. From async
         handlers, prefer `send_static_file_async`.
         """
-        import os
-
         from veloce.helpers import send_from_directory
 
         directory = self.static_folder
@@ -1316,8 +1319,6 @@ class Veloce(Router):
         it never blocks the event loop. Prefer this from async handlers
         over the sync `send_static_file`.
         """
-        import os
-
         from veloce.helpers import send_from_directory_async
 
         directory = self.static_folder
@@ -1335,9 +1336,6 @@ class Veloce(Router):
         for resolving template / static directories relative to the
         app's source file.
         """
-        import os
-        import sys
-
         mod = sys.modules.get(self.import_name)
         mod_file = getattr(mod, "__file__", None) if mod else None
         if mod_file:
@@ -1384,8 +1382,6 @@ class Veloce(Router):
         this computed default. The directory is *not* auto-created -
         the caller decides whether to `mkdir` it.
         """
-        import os
-
         if self._instance_path is not None:
             return self._instance_path
         return os.path.join(self.package_root, "instance")
@@ -1426,7 +1422,7 @@ class Veloce(Router):
     def got_first_request(self) -> bool:
         """`True` after the first request has been fully handled.
 
-        compatibility - read-only. Useful when conditional setup
+        Read-only compatibility accessor. Useful when conditional setup
         depends on whether the app has bootstrapped yet, e.g. a
         `before_first_request` hook firing exactly once is reflected
         here as `True`.
@@ -1485,11 +1481,11 @@ class Veloce(Router):
     # - which `_dispatch_request` already does inline - so both names
     # point at the same method.
     async def dispatch_request(self, request: Request) -> Any:
-        """an alias for `_dispatch_request`."""
+        """Alias for `_dispatch_request`."""
         return await self._dispatch_request(request, self._ensure_pipeline())
 
     async def full_dispatch_request(self, request: Request) -> Any:
-        """an alias for `_dispatch_request` (which already runs the
+        """Alias for `_dispatch_request` (which already runs the
         full before/after-request hook chain inline)."""
         return await self._dispatch_request(request, self._ensure_pipeline())
 
@@ -1979,7 +1975,7 @@ class Veloce(Router):
 
     @property
     def blueprints(self) -> dict[str, Any]:
-        """snapshot mapping of `bp.name -> Blueprint`.
+        """Snapshot mapping of `bp.name -> Blueprint`.
 
         Returns a fresh copy, so caller mutations don't affect the
         framework. Re-registering the same name overwrites the previous
@@ -1988,7 +1984,7 @@ class Veloce(Router):
         return dict(self._blueprints_map)
 
     def iter_blueprints(self) -> Any:
-        """iterate over every registered `Blueprint`.
+        """Iterate over every registered `Blueprint`.
 
         Returns the blueprints in registration order (Python 3.7+ dict
         insertion order). Yields the Blueprint objects, not their names.
@@ -2139,7 +2135,8 @@ class Veloce(Router):
     def template_filter(self, name: str | None = None) -> Callable:
         """Register a function as a Jinja filter.
 
-        Usage:
+        Usage::
+
             @app.template_filter("upper")
             def upper(s): return s.upper()
 
@@ -2209,7 +2206,8 @@ class Veloce(Router):
         """Register a function `fn(endpoint, values)` that can mutate the
         matched path params before the handler runs.
 
-        Usage:
+        Usage::
+
             @app.url_value_preprocessor
             def pull_lang(endpoint, values):
                 from veloce import g
@@ -2265,7 +2263,8 @@ class Veloce(Router):
         """Register a function `fn(endpoint, values)` that injects default
         kwargs into every `url_for` / `url_path_for` call.
 
-        Usage:
+        Usage::
+
             @app.url_defaults
             def add_lang(endpoint, values):
                 from veloce import g
@@ -4174,12 +4173,6 @@ class Veloce(Router):
 
             self.openapi_schema = get_openapi_schema(self)
         return self.openapi_schema
-
-    # Veloce exposes `openapi_version` and `openapi_schema` as direct
-    # attributes for customisation. veloce stores `openapi_schema` on
-    # the instance (None until first `openapi()` call); `openapi_version`
-    # is the spec version string emitted in the document.
-    openapi_version: str = "3.1.0"
 
     def run(
         self,

@@ -1,4 +1,4 @@
-"""Response types - optimized serialization with orjson."""
+"""Response types — optimized serialization with orjson."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import hashlib
 import mimetypes
 import os
 import stat
+import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
@@ -110,7 +111,15 @@ def header_present(headers: Mapping[str, str], name: str) -> bool:
 
 
 class Response:
-    """Base HTTP response."""
+    """Base HTTP response.
+
+    Usage::
+
+        from veloce import Response
+
+        async def handler(request):
+            return Response(body=b"hello", content_type="text/plain")
+    """
 
     __slots__ = (
         "status_code",
@@ -1166,7 +1175,15 @@ class Response:
 
 
 class JSONResponse(Response):
-    """JSON response using orjson for speed."""
+    """JSON response using orjson for speed.
+
+    Usage::
+
+        from veloce import JSONResponse
+
+        async def handler(request):
+            return JSONResponse({"ok": True}, status_code=200)
+    """
 
     __slots__ = ()
 
@@ -1358,6 +1375,17 @@ class StreamingResponse(Response):
     `content` may be an async iterator/iterable **or** a plain sync
     iterable (e.g. a generator). A sync iterable is wrapped so the
     response always exposes an async stream; both forms are accepted.
+
+    Usage::
+
+        from veloce import StreamingResponse
+
+        async def handler(request):
+            def chunks():
+                yield b"part-1"
+                yield b"part-2"
+
+            return StreamingResponse(chunks(), content_type="text/plain")
     """
 
     __slots__ = ()
@@ -1503,8 +1531,6 @@ class FileResponse(Response):
         except RuntimeError:
             pass
         else:
-            import warnings
-
             warnings.warn(
                 "FileResponse(path) does a blocking read on the running "
                 "event loop. Use `await FileResponse.from_path(path, ...)` "

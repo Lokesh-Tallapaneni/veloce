@@ -1,4 +1,4 @@
-"""CORS middleware - Cross-Origin Resource Sharing per the Fetch standard.
+"""CORS middleware — Cross-Origin Resource Sharing per the Fetch standard.
 
 Implemented from the Fetch standard's CORS protocol section
 (https://fetch.spec.whatwg.org/#http-cors-protocol) and RFC 9110 Sec. 10.2.
@@ -89,7 +89,18 @@ def _is_wildcard_regex(pattern: str, compiled: Pattern[str]) -> bool:
 
 
 class CORSMiddleware(Middleware):
-    """Cross-Origin Resource Sharing middleware."""
+    """Cross-Origin Resource Sharing middleware.
+
+    Usage::
+
+        app.add_middleware(
+            CORSMiddleware(
+                allow_origins=["https://example.com"],
+                allow_methods=["GET", "POST"],
+                allow_credentials=True,
+            )
+        )
+    """
 
     def __init__(
         self,

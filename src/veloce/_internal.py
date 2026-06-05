@@ -1,4 +1,4 @@
-"""Semi-public internal utilities - shared across subpackages, not part of the public API.
+"""Semi-public internal utilities — shared across subpackages, not part of the public API.
 
 The codebase guardrail in ``.claude/rules/development-guardrails.md`` under
 "Cross-Subpackage Imports" forbids importing underscore-prefixed symbols
@@ -35,9 +35,7 @@ from http import HTTPStatus
 from typing import Any
 
 from veloce._constants import (
-    MIME_JSON as MIME_JSON,
-)
-from veloce._constants import (
+    MIME_JSON,
     MIME_OCTET_STREAM,
     MIME_TEXT_HTML_UTF8,
     MIME_TEXT_PLAIN_UTF8,

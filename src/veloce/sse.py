@@ -1,4 +1,4 @@
-"""Server-Sent Events (SSE) - streaming event responses."""
+"""Server-Sent Events (SSE) — streaming event responses."""
 
 from __future__ import annotations
 
@@ -139,7 +139,8 @@ class ServerSentEvent:
 class EventSourceResponse(Response):
     """SSE streaming response - sends events over a long-lived connection.
 
-    Usage:
+    Usage::
+
         @app.get("/events")
         async def events(request: Request):
             async def generate():

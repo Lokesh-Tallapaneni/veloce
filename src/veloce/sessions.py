@@ -1,4 +1,4 @@
-"""Session container - a dict that tracks mutation and newness.
+"""Session container — a dict that tracks mutation and newness.
 
 `SessionMiddleware` stores one of these on every request. `new` reports
 whether the request arrived without a valid session cookie; `modified`
@@ -6,6 +6,8 @@ flips to `True` the first time any mutating operation runs, so callers
 can cheaply tell whether the session needs to be written back.
 `permanent` selects the longer `permanent_lifetime` for
 the session cookie's `Max-Age` instead of the default `max_age`.
+
+The session cookie's `Max-Age`/`Expires` semantics follow RFC 6265 §5.2.
 """
 
 from __future__ import annotations

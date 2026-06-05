@@ -1,4 +1,4 @@
-"""OpenAPI 3.1 schema generation and Swagger UI - auto-generated from routes."""
+"""OpenAPI 3.1 schema generation and Swagger UI — auto-generated from routes."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ _REDOC_VERSION = "2.1.5"
 _REDOC_JS_INTEGRITY = "sha384-0GrsyTQc9Oqd8h+b2dbc4XdR2T/DYpy0tLNNstyx+LBMUyiBbcWPbEs9aRmUcaxD"
 
 
-# -- Introspection / merge helpers ---------------------------
+# ── Introspection / merge helpers ──────────────────────────
 
 
 def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
@@ -89,6 +89,10 @@ def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
         try:
             hints = get_type_hints(handler)
         except Exception:
+            # `get_type_hints` raises a wide range (NameError on unresolved
+            # forward refs, TypeError on bad annotations, recursion errors on
+            # cyclic models); schema generation degrades gracefully to no hints
+            # rather than failing the whole `/docs` build over one handler.
             hints = {}
     result = (sig, hints)
     with contextlib.suppress(TypeError):
@@ -109,7 +113,7 @@ def _deep_merge(target: dict, overlay: dict) -> None:
             target[key] = value
 
 
-# -- Python type -> JSON Schema helpers -----------------------
+# ── Python type → JSON Schema helpers ──────────────────────
 
 
 def _is_model_type(annotation: Any) -> bool:
@@ -691,7 +695,7 @@ def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> 
     return None
 
 
-# -- Info / parameter / body / response builders -------------
+# ── Info / parameter / body / response builders ────────────
 
 
 def _build_info_object(app: Any) -> dict[str, Any]:
@@ -1082,15 +1086,15 @@ def _extract_responses(
     return responses
 
 
-# -- Security scheme discovery -------------------------------
+# ── Security scheme discovery ──────────────────────────────
 
 
 def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
-    """Inspect a Security() target and return (name, OpenAPI security
-    scheme object) for known scheme classes, or None.
+    """Return `(name, OpenAPI security scheme object)` for a Security() target.
 
-    The name is derived from the scheme class so duplicate registrations
-    of the same scheme reuse the same components.securitySchemes entry.
+    Returns `None` for unknown scheme classes. The name is derived from the
+    scheme class so duplicate registrations of the same scheme reuse the same
+    `components.securitySchemes` entry.
     """
     cls_name = type(scheme).__name__
     if isinstance(scheme, OAuth2PasswordBearer):
@@ -1160,12 +1164,12 @@ def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
 def _collect_security_requirements(
     info: Any, registry: dict[str, dict]
 ) -> list[dict[str, list[str]]]:
-    """Walk the route's dependency chain, collecting one OpenAPI security
-    requirement per `Security(scheme, scopes=[...])` discovered.
+    """Collect one OpenAPI security requirement per reachable `Security()`.
 
-    Mutates `registry` to add components.securitySchemes entries.
-    Returns the operation-level `security` list - a sequence of
-    `{schemeName: [scopes]}` dicts. Empty when no Security() is reachable.
+    Walks the route's dependency chain, mutating `registry` to add
+    `components.securitySchemes` entries. Returns the operation-level
+    `security` list — a sequence of `{schemeName: [scopes]}` dicts, empty
+    when no `Security()` is reachable.
     """
     requirements: list[dict[str, list[str]]] = []
     seen: set[int] = set()
@@ -1218,7 +1222,7 @@ def _collect_security_requirements(
     return requirements
 
 
-# -- Operation + webhook assembly ----------------------------
+# ── Operation + webhook assembly ───────────────────────────
 
 
 def _dependency_graph_has_validatable(info: Any) -> bool:
@@ -1388,107 +1392,6 @@ def _walk_webhooks(
     return webhook_items
 
 
-# -- Public API ----------------------------------------------
-
-
-def get_openapi_schema(app: Any) -> dict:
-    """Generate OpenAPI 3.1 schema from the app's registered routes."""
-    schema: dict[str, Any] = {
-        "openapi": "3.1.0",
-        "info": _build_info_object(app),
-        "paths": {},
-        "components": {"schemas": {}},
-    }
-
-    if getattr(app, "servers", None):
-        schema["servers"] = app.servers
-    if getattr(app, "openapi_tags", None):
-        schema["tags"] = app.openapi_tags
-    # OpenAPI 3.1 Sec. 4.8.11 - top-level `externalDocs` object.
-    if getattr(app, "openapi_external_docs", None):
-        schema["externalDocs"] = app.openapi_external_docs
-
-    schemas_registry = SchemaRegistry(
-        separate_input_output=getattr(app, "separate_input_output_schemas", True)
-    )
-    security_schemes_registry: dict[str, dict] = {}
-
-    # Operations whose operationId was auto-generated (no explicit override),
-    # recorded so a deterministic suffix can resolve duplicates afterwards.
-    auto_ops: list[tuple[dict[str, Any], str, str]] = []
-    # Operations carrying a user-pinned `operation_id`. These are reserved
-    # during disambiguation so an auto id colliding with a pinned id suffixes
-    # the AUTO one (a user's explicit id is never rewritten), and two identical
-    # pinned ids are detected and warned about (a user error the document can't
-    # silently fix by renaming).
-    explicit_ops: list[tuple[dict[str, Any], str, str]] = []
-
-    # Set once any operation auto-adds the validation-error response, so the
-    # `HTTPValidationError` / `ValidationError` component schemas are emitted only
-    # when something actually references them.
-    needs_validation_error_schema = False
-
-    for method, path, info in app._collect_all_routes():
-        method_lower = method.lower()
-        if path not in schema["paths"]:
-            schema["paths"][path] = {}
-        operation = _build_operation(
-            info, method_lower, schemas_registry, security_schemes_registry
-        )
-        if _references_validation_error_schema(operation):
-            needs_validation_error_schema = True
-        schema["paths"][path][method_lower] = operation
-        if getattr(info, "operation_id", None):
-            explicit_ops.append((operation, path, method_lower))
-        else:
-            auto_ops.append((operation, path, method_lower))
-
-    # Webhook operations are appended to `auto_ops` so the disambiguation pass
-    # below dedupes operationIds across BOTH routes and webhooks deterministically
-    # (routes first in collection order, then webhooks in walker order).
-    webhook_items = _walk_webhooks(app, schemas_registry, auto_ops)
-    if webhook_items:
-        schema["webhooks"] = webhook_items
-
-    if getattr(app, "disambiguate_operation_ids", True):
-        _disambiguate_operation_ids(auto_ops, explicit_ops)
-
-    components_schemas = schemas_registry.finalize(schema)
-    # Add the validation-error component schemas only when an operation referenced
-    # them. If a user model already occupies `HTTPValidationError` / `ValidationError`,
-    # register the auto envelope under collision-free names and repoint the 422
-    # `$ref`s, so the documented validation-error payload is never silently bound to
-    # an unrelated user model.
-    if needs_validation_error_schema:
-        val_name = _unique_component_name(_VALIDATION_ERROR_SCHEMA_NAME, components_schemas)
-        http_name = _unique_component_name(_HTTP_VALIDATION_ERROR_SCHEMA_NAME, components_schemas)
-        val_body = copy.deepcopy(_VALIDATION_ERROR_COMPONENT_SCHEMAS[_VALIDATION_ERROR_SCHEMA_NAME])
-        val_body["title"] = val_name
-        http_body = copy.deepcopy(
-            _VALIDATION_ERROR_COMPONENT_SCHEMAS[_HTTP_VALIDATION_ERROR_SCHEMA_NAME]
-        )
-        http_body["title"] = http_name
-        http_body["properties"]["detail"]["items"]["$ref"] = f"#/components/schemas/{val_name}"
-        components_schemas[val_name] = val_body
-        components_schemas[http_name] = http_body
-        # Operations reference the auto-422 via an internal placeholder; resolve
-        # it to the finalized component name everywhere (always, since the
-        # placeholder is never a real component).
-        _repoint_validation_error_refs(schema, http_name)
-    if components_schemas:
-        schema["components"]["schemas"] = components_schemas
-    if security_schemes_registry:
-        schema["components"]["securitySchemes"] = security_schemes_registry
-
-    validate = getattr(app, "validate_openapi", None)
-    if validate is None:
-        validate = bool(getattr(app, "debug", False))
-    if validate:
-        _validate_document(schema)
-
-    return schema
-
-
 def _disambiguate_operation_ids(
     auto_ops: list[tuple[dict[str, Any], str, str]],
     explicit_ops: list[tuple[dict[str, Any], str, str]] | None = None,
@@ -1617,7 +1520,108 @@ def _validate_document(schema: dict[str, Any]) -> None:
     check_refs(schemas, "components.schemas")
 
 
-# -- Swagger UI / ReDoc templates ----------------------------
+# ── Public API ─────────────────────────────────────────────
+
+
+def get_openapi_schema(app: Any) -> dict:
+    """Generate OpenAPI 3.1 schema from the app's registered routes."""
+    schema: dict[str, Any] = {
+        "openapi": "3.1.0",
+        "info": _build_info_object(app),
+        "paths": {},
+        "components": {"schemas": {}},
+    }
+
+    if getattr(app, "servers", None):
+        schema["servers"] = app.servers
+    if getattr(app, "openapi_tags", None):
+        schema["tags"] = app.openapi_tags
+    # OpenAPI 3.1 Sec. 4.8.11 - top-level `externalDocs` object.
+    if getattr(app, "openapi_external_docs", None):
+        schema["externalDocs"] = app.openapi_external_docs
+
+    schemas_registry = SchemaRegistry(
+        separate_input_output=getattr(app, "separate_input_output_schemas", True)
+    )
+    security_schemes_registry: dict[str, dict] = {}
+
+    # Operations whose operationId was auto-generated (no explicit override),
+    # recorded so a deterministic suffix can resolve duplicates afterwards.
+    auto_ops: list[tuple[dict[str, Any], str, str]] = []
+    # Operations carrying a user-pinned `operation_id`. These are reserved
+    # during disambiguation so an auto id colliding with a pinned id suffixes
+    # the AUTO one (a user's explicit id is never rewritten), and two identical
+    # pinned ids are detected and warned about (a user error the document can't
+    # silently fix by renaming).
+    explicit_ops: list[tuple[dict[str, Any], str, str]] = []
+
+    # Set once any operation auto-adds the validation-error response, so the
+    # `HTTPValidationError` / `ValidationError` component schemas are emitted only
+    # when something actually references them.
+    needs_validation_error_schema = False
+
+    for method, path, info in app._collect_all_routes():
+        method_lower = method.lower()
+        if path not in schema["paths"]:
+            schema["paths"][path] = {}
+        operation = _build_operation(
+            info, method_lower, schemas_registry, security_schemes_registry
+        )
+        if _references_validation_error_schema(operation):
+            needs_validation_error_schema = True
+        schema["paths"][path][method_lower] = operation
+        if getattr(info, "operation_id", None):
+            explicit_ops.append((operation, path, method_lower))
+        else:
+            auto_ops.append((operation, path, method_lower))
+
+    # Webhook operations are appended to `auto_ops` so the disambiguation pass
+    # below dedupes operationIds across BOTH routes and webhooks deterministically
+    # (routes first in collection order, then webhooks in walker order).
+    webhook_items = _walk_webhooks(app, schemas_registry, auto_ops)
+    if webhook_items:
+        schema["webhooks"] = webhook_items
+
+    if getattr(app, "disambiguate_operation_ids", True):
+        _disambiguate_operation_ids(auto_ops, explicit_ops)
+
+    components_schemas = schemas_registry.finalize(schema)
+    # Add the validation-error component schemas only when an operation referenced
+    # them. If a user model already occupies `HTTPValidationError` / `ValidationError`,
+    # register the auto envelope under collision-free names and repoint the 422
+    # `$ref`s, so the documented validation-error payload is never silently bound to
+    # an unrelated user model.
+    if needs_validation_error_schema:
+        val_name = _unique_component_name(_VALIDATION_ERROR_SCHEMA_NAME, components_schemas)
+        http_name = _unique_component_name(_HTTP_VALIDATION_ERROR_SCHEMA_NAME, components_schemas)
+        val_body = copy.deepcopy(_VALIDATION_ERROR_COMPONENT_SCHEMAS[_VALIDATION_ERROR_SCHEMA_NAME])
+        val_body["title"] = val_name
+        http_body = copy.deepcopy(
+            _VALIDATION_ERROR_COMPONENT_SCHEMAS[_HTTP_VALIDATION_ERROR_SCHEMA_NAME]
+        )
+        http_body["title"] = http_name
+        http_body["properties"]["detail"]["items"]["$ref"] = f"#/components/schemas/{val_name}"
+        components_schemas[val_name] = val_body
+        components_schemas[http_name] = http_body
+        # Operations reference the auto-422 via an internal placeholder; resolve
+        # it to the finalized component name everywhere (always, since the
+        # placeholder is never a real component).
+        _repoint_validation_error_refs(schema, http_name)
+    if components_schemas:
+        schema["components"]["schemas"] = components_schemas
+    if security_schemes_registry:
+        schema["components"]["securitySchemes"] = security_schemes_registry
+
+    validate = getattr(app, "validate_openapi", None)
+    if validate is None:
+        validate = bool(getattr(app, "debug", False))
+    if validate:
+        _validate_document(schema)
+
+    return schema
+
+
+# ── Swagger UI / ReDoc templates ───────────────────────────
 
 
 # Byte-level escapes applied to orjson output before it is embedded inline in

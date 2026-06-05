@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `URLRule`, the route-table view object yielded by `app.url_map`, is now
+  exported from the top-level `veloce` package for introspection and typing.
+- `Config`, the `dict` subclass backing `app.config`, is now exported from the
+  top-level `veloce` package for typing and direct construction.
+- `Aborter`, the callable that backs `abort()`, is now exported from the
+  top-level `veloce` package.
+- `JSONProvider`, `DefaultJSONProvider`, and `config_orjson_options` are now
+  exported from the top-level `veloce` package for subclassing custom JSON
+  providers without deep-importing `veloce.json_provider`.
+- `log_requests_as_json`, the factory that registers a JSON access-log hook, is
+  now exported from the top-level `veloce` package alongside
+  `instrument_access_log`.
+- `get_openapi_schema` and `setup_openapi_routes` are now exported from the
+  `veloce.contrib` package for direct use without deep-importing
+  `veloce.contrib.openapi`.
+- `StaticFiles` and `Jinja2Templates` are now exported from the
+  `veloce.contrib` package for direct use without deep-importing
+  `veloce.contrib.staticfiles` and `veloce.contrib.templating`.
 - Mounted Veloce sub-apps now have their lifecycle driven by the parent. A
   Veloce instance mounted with `app.mount(prefix, sub_app)` runs its
   `on_startup` handlers and lifespan context manager when the parent starts,

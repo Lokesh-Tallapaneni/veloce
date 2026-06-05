@@ -1,4 +1,4 @@
-"""Test client - in-memory driver for the app's ASGI surface.
+"""Test client — in-memory driver for the app's ASGI surface.
 
 Constructs ASGI scopes directly and calls `app.__call__(scope, receive, send)`
 on a dedicated event loop. This exercises the same path a production ASGI
@@ -546,7 +546,15 @@ async def _collect_response(app: Any, scope: dict[str, Any], receive: Any) -> Te
 
 
 class TestClient:
-    """Sync test client - drives the app through its ASGI surface."""
+    """Sync test client - drives the app through its ASGI surface.
+
+    Usage::
+
+        client = TestClient(app)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert response.json() == {"message": "ok"}
+    """
 
     __test__ = False  # don't let pytest collect this as a test class
 

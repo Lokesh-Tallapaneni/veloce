@@ -1,4 +1,4 @@
-"""MCPServer - dispatch JSON-RPC 2.0 method calls against the tool registry.
+"""MCPServer — dispatch JSON-RPC 2.0 method calls against the tool registry.
 
 The server is transport-agnostic: a transport (stdio in v1) hands it decoded
 JSON-RPC request objects and forwards the responses it returns. It implements
@@ -43,7 +43,6 @@ _logger = logging.getLogger(__name__)
 PROTOCOL_VERSION = "2025-06-18"
 
 # JSON-RPC 2.0 error codes (Sec. 5.1) plus the MCP "method not found" reuse.
-_JSONRPC_PARSE_ERROR = -32700
 _JSONRPC_INVALID_REQUEST = -32600
 _JSONRPC_METHOD_NOT_FOUND = -32601
 _JSONRPC_INVALID_PARAMS = -32602

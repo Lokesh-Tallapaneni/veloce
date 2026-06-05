@@ -1,4 +1,4 @@
-"""Jinja2 templating - lazy import, zero cost when unused."""
+"""Jinja2 templating — lazy import, zero cost when unused."""
 
 from __future__ import annotations
 
@@ -156,15 +156,14 @@ def _coerce_background(background: Any) -> Any:
         return background
     if callable(background):
         return BackgroundTask(background)
-    raise TypeError(
-        "background must be a callable, BackgroundTask, BackgroundTasks, or None"
-    ) from None
+    raise TypeError("background must be a callable, BackgroundTask, BackgroundTasks, or None")
 
 
 class Jinja2Templates:
     """Jinja2 template engine integration.
 
-    Usage:
+    Usage::
+
         templates = Jinja2Templates(directory="templates")
 
         @app.get("/page")
@@ -372,7 +371,7 @@ class Jinja2Templates:
         merged = await _gather_context_processors_async(context or {})
         return await template.render_async(merged)
 
-    def get_template(self, name: str | Sequence[str]):
+    def get_template(self, name: str | Sequence[str]) -> Any:
         """Get a raw Jinja2 template object, resolving a fallback list to the
         first existing template."""
         return self._resolve_template(self.env, name)
