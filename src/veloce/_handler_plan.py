@@ -20,9 +20,8 @@ import warnings
 from collections.abc import Callable
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
-from pydantic import BaseModel
-
 from veloce._internal import _is_async_callable
+from veloce._model_backend import ModelBackend, backend_of
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
 from veloce.http.request import Request
@@ -184,6 +183,7 @@ class _Slot:
         "dep_is_async_gen",
         "dep_offload",
         "scope_sensitive",
+        "backend",
     )
 
     def __init__(self, kind: int, name: str) -> None:
@@ -221,6 +221,9 @@ class _Slot:
         # different scope sets resolves as distinct entries; plain dependencies
         # keep the cheap identity-only cache key. Computed once at registration.
         self.scope_sensitive = False
+        # Which model backend validates a K_BODY_MODEL slot - Pydantic or
+        # msgspec, tagged at registration by `backend_of(inner_type)`.
+        self.backend = ModelBackend.NONE
 
 
 # -- Parallel-dependency grouping ---------------------------
@@ -743,12 +746,16 @@ def build_plan(
                 slots.append(slot)
             continue
 
-        # Pydantic model from body. A WebSocket handshake has no request
-        # body to validate, so the parameter is left to its default.
-        if inner_type and isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
+        # Scalar model body - a Pydantic BaseModel or a msgspec.Struct. A
+        # WebSocket handshake has no request body to validate, so the parameter
+        # is left to its default. A `list[Model]` body is a GenericAlias (not a
+        # `type`), so it falls through to the query-list branch below unchanged.
+        _body_backend = backend_of(inner_type) if inner_type else ModelBackend.NONE
+        if _body_backend is not ModelBackend.NONE:
             if not websocket:
                 slot = _Slot(K_BODY_MODEL, param_name)
                 slot.model = inner_type
+                slot.backend = _body_backend
                 slot.is_optional = is_optional
                 slots.append(slot)
             continue

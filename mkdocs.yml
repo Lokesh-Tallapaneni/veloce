@@ -136,6 +136,7 @@ nav:
       - Error Handling: guide/error-handling.md
       - Blueprints: guide/blueprints.md
       - Parameters: guide/parameters.md
+      - msgspec (fast backend): guide/msgspec.md
       - Dependency Injection: guide/dependency-injection.md
       - Templates: guide/templates.md
       - Static Files: guide/static-files.md

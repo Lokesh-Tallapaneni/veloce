@@ -72,12 +72,20 @@ otel = ["opentelemetry-api>=1.20"]
 # optional so a plain install carries no metrics dependency. Install with
 # `pip install veloceframework[metrics]`.
 metrics = ["prometheus_client>=0.17"]
+# msgspec as an opt-in fast validation / serialization backend alongside
+# Pydantic: a handler may type a body param or response as a `msgspec.Struct`
+# and it decodes / encodes in C. Pydantic stays the default and is always
+# required; without this extra every msgspec code path is inert. The `>=0.13`
+# floor is set by `msgspec.to_builtins`. Install with
+# `pip install veloceframework[fast]`.
+fast = ["msgspec>=0.13"]
 # Everything optional in one shot.
 all = [
     "websockets>=12",
     "gunicorn>=21.0; sys_platform != 'win32'",
     "opentelemetry-api>=1.20",
     "prometheus_client>=0.17",
+    "msgspec>=0.13",
 ]
 
 [project.scripts]
@@ -99,6 +107,9 @@ dev = [
     "pytest-asyncio>=0.21",
     "ruff>=0.6",
     "mypy>=1.10",
+    # The `fast` extra's backend, so the default test run exercises the msgspec
+    # path; the no-msgspec CI leg installs without it and the guarded tests skip.
+    "msgspec>=0.13",
 ]
 docs = [
     "mkdocs-material[imaging]>=9.5",
