@@ -144,6 +144,62 @@ native subprotocol negotiation is unsupported.
     your workload before relying on it, and note uvicorn remains the
     recommended default for most deployments.
 
+## Serving over HTTP/2
+
+Veloce's built-in server and uvicorn both speak HTTP/1.1 only. Because the
+app is ASGI-native, HTTP/2 needs no application changes — it is a serving
+concern, reached two ways.
+
+**Behind a reverse proxy (the common path).** Terminate HTTP/2 and TLS at
+nginx / Caddy / a cloud load balancer, and proxy HTTP/1.1 to the app. The
+HTTP/2 wins (multiplexing, header compression) apply on the client-to-edge
+hop; the edge-to-app hop stays HTTP/1.1. An nginx server block:
+
+```nginx
+server {
+    listen 443 ssl;
+    http2 on;                 # nginx < 1.25.1: `listen 443 ssl http2;`
+    server_name example.com;
+    ssl_certificate     /etc/ssl/example.crt;
+    ssl_certificate_key /etc/ssl/example.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;     # the app, on HTTP/1.1
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket upgrade pass-through (HTTP/1.1 only).
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+Add [`ProxyFix`](middleware.md) so the app trusts the proxy's
+`X-Forwarded-*` headers (correct client IP and `https` scheme):
+
+```python
+from veloce import ProxyFix
+
+# One proxy hop in front: trust the last X-Forwarded-For / -Proto entry.
+app.add_middleware(ProxyFix, x_for=1, x_proto=1)
+```
+
+**Direct HTTP/2 with Hypercorn.** Hypercorn is an ASGI server that speaks
+HTTP/1.1, HTTP/2, and HTTP/3; it serves the same Veloce app with no code
+change. Browsers require HTTP/2 over TLS (negotiated via ALPN), so pass a
+certificate:
+
+```bash
+pip install hypercorn
+hypercorn main:app --certfile cert.pem --keyfile key.pem --bind 0.0.0.0:8443
+```
+
+Over TLS, Hypercorn negotiates HTTP/2 automatically; an HTTP/1.1 client on
+the same port still works. WebSocket routes are served on both paths.
+
 ## Extending the CLI with plugins
 
 The `veloce` command ships with `run`, `routes`, `check`, `shell`, and
