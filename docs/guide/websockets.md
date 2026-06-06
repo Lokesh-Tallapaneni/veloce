@@ -1,5 +1,5 @@
 ---
-description: Build WebSocket endpoints in Veloce with subprotocol negotiation, origin validation (CSWSH defense), dependency injection on connect, and an in-memory test client.
+description: Build WebSocket endpoints in Veloce with origin validation (CSWSH defense), dependency injection on connect, subprotocol negotiation, and an in-memory test client.
 tags: [websocket, asgi, real-time]
 ---
 
@@ -203,6 +203,15 @@ async def negotiated(ws):
     await ws.send_text(chosen or "none")
     await ws.close()
 ```
+
+!!! warning "ASGI server only"
+    Confirming a subprotocol via `accept(subprotocol=...)` is supported only
+    under an ASGI server (uvicorn / hypercorn). On the built-in `Veloce.run()`
+    server it raises `RuntimeError`: that path writes the `101 Switching
+    Protocols` response — including the `Sec-WebSocket-Protocol` header — before
+    `accept()` runs, so the subprotocol cannot be chosen at `accept()` time.
+    `negotiate_subprotocol(...)` (reading the client's offered list) works on
+    both paths; only confirming one back is ASGI-only.
 
 ## Origin validation (CSWSH defence)
 

@@ -45,13 +45,20 @@ app.config["REQUEST_TIMEOUT"] = 15     # drop a half-sent request after 15s
 app.config["KEEP_ALIVE_TIMEOUT"] = 30  # close an idle connection after 30s
 ```
 
-It serves **HTTP/1.1 only** — it performs no WebSocket upgrade
-handshake and does not implement HTTP/2. Run WebSocket routes and
-HTTP/2 workloads under uvicorn, which implements both; Veloce's
-WebSocket support is reached through the ASGI server, not the built-in
-development server. This is a deliberate scope line: hardening a
-from-scratch production server is not the project's goal when mature
-ASGI servers already exist.
+It serves **HTTP/1.1 and WebSocket** — the built-in server performs the
+RFC 6455 upgrade handshake itself, so WebSocket routes run under
+`app.run()` without an ASGI server. It does **not** implement HTTP/2.
+For HTTP/2, either serve the app under an HTTP/2-capable ASGI server such
+as Hypercorn, or — as most deployments do — terminate HTTP/2 at a reverse
+proxy (nginx, Caddy, a cloud load balancer) that forwards HTTP/1.1 to the
+app; uvicorn itself is HTTP/1.1-only. One WebSocket caveat: native
+subprotocol negotiation is unsupported — `accept(subprotocol=...)` raises
+on the built-in server, because the `101 Switching Protocols` response is
+written before `accept()` runs — so use an ASGI server if you need to
+negotiate a subprotocol. Not shipping a from-scratch HTTP/2 stack is a
+deliberate scope line: it is a large, security-sensitive binary protocol,
+and in practice HTTP/2 is almost always terminated at a proxy that speaks
+HTTP/1.1 to the app, so the app server rarely needs to implement it.
 
 ## Running with multiple workers
 
@@ -120,8 +127,10 @@ The per-worker state caveats in the table above apply unchanged: each
 gunicorn worker is a separate process with its own memory, so in-memory
 rate-limit buckets, caches, and `app.state` mutations are per-worker.
 
-This path serves **HTTP/1.1 only**, exactly like the built-in development
-server — WebSocket and HTTP/2 workloads still belong under uvicorn.
+This path serves **HTTP/1.1 and WebSocket** through the same built-in
+protocol as `app.run()` — for HTTP/2, put it behind a reverse proxy or
+use an HTTP/2-capable ASGI server, as above. As on the built-in server,
+native subprotocol negotiation is unsupported.
 
 !!! note "New — runtime-verified, not yet battle-tested at scale"
     `VeloceWorker` has been exercised end-to-end on Linux (Ubuntu 24.04,
@@ -134,6 +143,62 @@ server — WebSocket and HTTP/2 workloads still belong under uvicorn.
     sustained production load or at multi-worker scale — load-test it for
     your workload before relying on it, and note uvicorn remains the
     recommended default for most deployments.
+
+## Serving over HTTP/2
+
+Veloce's built-in server and uvicorn both speak HTTP/1.1 only. Because the
+app is ASGI-native, HTTP/2 needs no application changes — it is a serving
+concern, reached two ways.
+
+**Behind a reverse proxy (the common path).** Terminate HTTP/2 and TLS at
+nginx / Caddy / a cloud load balancer, and proxy HTTP/1.1 to the app. The
+HTTP/2 wins (multiplexing, header compression) apply on the client-to-edge
+hop; the edge-to-app hop stays HTTP/1.1. An nginx server block:
+
+```nginx
+server {
+    listen 443 ssl;
+    http2 on;                 # nginx < 1.25.1: `listen 443 ssl http2;`
+    server_name example.com;
+    ssl_certificate     /etc/ssl/example.crt;
+    ssl_certificate_key /etc/ssl/example.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;     # the app, on HTTP/1.1
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket upgrade pass-through (HTTP/1.1 only).
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+Add [`ProxyFix`](middleware.md) so the app trusts the proxy's
+`X-Forwarded-*` headers (correct client IP and `https` scheme):
+
+```python
+from veloce import ProxyFix
+
+# One proxy hop in front: trust the last X-Forwarded-For / -Proto entry.
+app.add_middleware(ProxyFix, x_for=1, x_proto=1)
+```
+
+**Direct HTTP/2 with Hypercorn.** Hypercorn is an ASGI server that speaks
+HTTP/1.1, HTTP/2, and HTTP/3; it serves the same Veloce app with no code
+change. Browsers require HTTP/2 over TLS (negotiated via ALPN), so pass a
+certificate:
+
+```bash
+pip install hypercorn
+hypercorn main:app --certfile cert.pem --keyfile key.pem --bind 0.0.0.0:8443
+```
+
+Over TLS, Hypercorn negotiates HTTP/2 automatically; an HTTP/1.1 client on
+the same port still works. WebSocket routes are served on both paths.
 
 ## Extending the CLI with plugins
 
