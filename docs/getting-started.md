@@ -47,7 +47,9 @@ Run it either way:
 
 ```bash
 python main.py
-# or, equivalently
+# or with the built-in CLI (no extra dependencies):
+veloce run main:app
+# or under uvicorn, the optional extra: pip install veloceframework[uvicorn]
 python -m uvicorn main:app
 ```
 

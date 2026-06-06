@@ -50,6 +50,47 @@ def test_run_accepts_overrides():
     assert args.workers == 4
 
 
+def test_run_falls_back_to_native_when_uvicorn_absent(monkeypatch):
+    # uvicorn is an optional extra; with it unimportable, `veloce run` serves
+    # through the built-in `app.run()` server.
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    calls: dict = {}
+
+    class _FakeApp:
+        def run(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "_load_app", lambda ref: _FakeApp())
+    args = build_parser().parse_args(["run", "x:y", "--port", "9001", "--workers", "2"])
+    assert cli_module._cmd_run(args) == 0
+    assert calls == {"host": "127.0.0.1", "port": 9001, "workers": 2}
+
+
+def test_run_native_maps_all_interfaces_to_bind_all(monkeypatch):
+    # host 0.0.0.0 maps to the native server's bind_all=True (mutually exclusive
+    # with an explicit host).
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    calls: dict = {}
+
+    class _FakeApp:
+        def run(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "_load_app", lambda ref: _FakeApp())
+    args = build_parser().parse_args(["run", "x:y", "--host", "0.0.0.0", "--port", "9002"])
+    assert cli_module._cmd_run(args) == 0
+    assert calls == {"port": 9002, "workers": 1, "bind_all": True}
+
+
+def test_run_reload_without_uvicorn_errors(monkeypatch):
+    # --reload is a uvicorn-only feature; without uvicorn it fails loudly.
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    monkeypatch.setattr(cli_module, "_load_app", lambda ref: object())
+    args = build_parser().parse_args(["run", "x:y", "--reload"])
+    with pytest.raises(SystemExit, match="--reload requires uvicorn"):
+        cli_module._cmd_run(args)
+
+
 def test_load_app_bad_form_raises():
     with pytest.raises(SystemExit, match="module:attribute"):
         _load_app("no-colon-here")

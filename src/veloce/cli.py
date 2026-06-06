@@ -2,8 +2,9 @@
 
 Two subcommands today:
 
-- `veloce run app:app [--host --port --reload --workers]` - boot the
-  app under uvicorn using a familiar, minimal command surface.
+- `veloce run app:app [--host --port --reload --workers]` - serve the
+  app under uvicorn when it is installed (the optional `[uvicorn]` extra),
+  otherwise fall back to veloce's built-in `app.run()` server.
 - `veloce routes app:app` - print the route table (method, path, name).
   Useful for sanity-checking a blueprint mount without `curl`ing each
   path.
@@ -138,23 +139,54 @@ def _require_app_attr(app: Any, attr: str, hint: str) -> None:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    """`veloce run` - hand the app off to uvicorn."""
+    """`veloce run` - serve the app under uvicorn, or the built-in server.
+
+    uvicorn is an optional extra (`pip install veloceframework[uvicorn]`). When
+    it is installed the app is handed to it (preserving `--reload` and
+    cross-platform multi-worker); otherwise this falls back to veloce's built-in
+    `app.run()` server so `veloce run` works on a plain install. `--reload` is a
+    uvicorn-only feature.
+    """
+    _apply_env_file(args)
+    app = _load_app(args.app)  # resolve + validate the reference
+
     try:
         import uvicorn
-    except ImportError as err:  # pragma: no cover - only on broken envs
-        raise SystemExit("uvicorn is not installed. Install it with: pip install uvicorn") from err
+    except ImportError:
+        uvicorn = None  # type: ignore[assignment]
 
-    _apply_env_file(args)
-    _load_app(args.app)  # validate the reference before handing to uvicorn
+    if uvicorn is not None:
+        uvicorn.run(
+            args.app,
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            workers=args.workers if args.workers > 1 else None,
+            log_level=args.log_level,
+        )
+        return 0
 
-    uvicorn.run(
-        args.app,
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        workers=args.workers if args.workers > 1 else None,
-        log_level=args.log_level,
+    # uvicorn absent: serve with the built-in development server.
+    if args.reload:
+        raise SystemExit(
+            "--reload requires uvicorn. Install it with: pip install veloceframework[uvicorn]"
+        )
+    if not callable(getattr(app, "run", None)):
+        raise SystemExit(
+            f"{args.app!r} has no built-in server to fall back to; install "
+            "veloceframework[uvicorn] to serve it under uvicorn."
+        )
+    print(
+        "uvicorn is not installed - serving with veloce's built-in server. "
+        "Install veloceframework[uvicorn] for the recommended production server "
+        "and --reload support.",
+        file=sys.stderr,
     )
+    # The native server takes `bind_all=True` rather than an all-interfaces host.
+    if args.host in ("0.0.0.0", "::"):
+        app.run(port=args.port, workers=args.workers, bind_all=True)
+    else:
+        app.run(host=args.host, port=args.port, workers=args.workers)
     return 0
 
 
@@ -490,7 +522,9 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_run = sub.add_parser("run", help="Run the app under uvicorn.")
+    p_run = sub.add_parser(
+        "run", help="Run the app under uvicorn (or the built-in server if uvicorn is absent)."
+    )
     p_run.add_argument("app", help=MSG_APP_REFERENCE_FORM)
     p_run.add_argument("--host", default="127.0.0.1")
     p_run.add_argument("--port", type=int, default=8000)

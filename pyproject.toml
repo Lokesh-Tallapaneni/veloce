@@ -47,19 +47,25 @@ dependencies = [
     "multidict>=6.0.0",
     "python-multipart>=0.0.6",
     "httptools>=0.6.0",
-    "uvicorn[standard]>=0.23",
     "jinja2>=3.1",
     "click>=8.1",
 ]
 
 [project.optional-dependencies]
+# uvicorn is the recommended production ASGI server and what `veloce run` hands
+# the app to. It is optional because veloce does NOT need it to serve: the
+# built-in `app.run()` server (and the gunicorn `VeloceWorker`) run the app
+# directly, and `veloce run` falls back to the built-in server when uvicorn is
+# absent (its `--reload` then needs this extra). Install with
+# `pip install veloceframework[uvicorn]` to deploy under `uvicorn your:app`.
+uvicorn = ["uvicorn[standard]>=0.23"]
 # WebSocket apps need the `websockets` library — pull it in via
 # `pip install veloceframework[ws]`. Kept optional so REST-only deploys
 # do not download the WS implementation.
 ws = ["websockets>=12"]
 # gunicorn process supervision for the optional `veloce.workers.VeloceWorker`
 # worker class. POSIX-only — gunicorn does not run on Windows — so this extra
-# is opt-in and never pulled in by a plain install. uvicorn (a core dep)
+# is opt-in and never pulled in by a plain install. The `uvicorn` extra
 # remains the recommended production server.
 gunicorn = ["gunicorn>=21.0; sys_platform != 'win32'"]
 # OpenTelemetry tracing bridge for `veloce.otel.instrument_with_otel`. Only the
@@ -81,6 +87,7 @@ metrics = ["prometheus_client>=0.17"]
 fast = ["msgspec>=0.13"]
 # Everything optional in one shot.
 all = [
+    "uvicorn[standard]>=0.23",
     "websockets>=12",
     "gunicorn>=21.0; sys_platform != 'win32'",
     "opentelemetry-api>=1.20",
@@ -99,14 +106,18 @@ Issues = "https://github.com/Lokesh-Tallapaneni/veloce/issues"
 Changelog = "https://github.com/Lokesh-Tallapaneni/veloce/blob/main/CHANGELOG.md"
 
 [dependency-groups]
-# Runtime deps (uvicorn, jinja2, click) are now in [project.dependencies]
-# so they're picked up by `pip install veloceframework` directly; the
-# dev group covers only test + lint + type-check tooling.
+# Runtime deps (jinja2, click) are in [project.dependencies]; the dev group
+# covers test + lint + type-check tooling, plus the optional backends the suite
+# exercises (uvicorn for the `veloce run` / serving tests, msgspec for the fast
+# path).
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "ruff>=0.6",
     "mypy>=1.10",
+    # uvicorn is now an optional extra, but the test suite still exercises the
+    # `veloce run` / serving paths, so the dev environment installs it.
+    "uvicorn[standard]>=0.23",
     # The `fast` extra's backend, so the default test run exercises the msgspec
     # path; the no-msgspec CI leg installs without it and the guarded tests skip.
     "msgspec>=0.13",

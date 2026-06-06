@@ -85,7 +85,15 @@ async def read_item(item_id: int) -> dict[str, int]:
     return {"item_id": item_id}
 ```
 
-Run it with any ASGI server:
+Run it with the built-in server (no extra dependencies):
+
+```bash
+veloce run main:app
+```
+
+`uvicorn` is an optional extra — install it (`pip install veloceframework[uvicorn]`)
+to serve under it or any other ASGI server, or use `app.run()` / the gunicorn
+`VeloceWorker`:
 
 ```bash
 uvicorn main:app

@@ -93,6 +93,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `uvicorn` is now an optional extra instead of a hard runtime dependency.
+  Veloce does not need it to serve - the built-in `app.run()` server and the
+  gunicorn `VeloceWorker` run the app directly - and `veloce run` now falls
+  back to the built-in server when uvicorn is absent (its `--reload` then
+  requires the extra). **Migration:** if you deploy under `uvicorn your:app`,
+  install `pip install veloceframework[uvicorn]` (or `[all]`); a plain
+  `pip install veloceframework` no longer pulls uvicorn in. This slims the base
+  install for anyone using the built-in server, `VeloceWorker`, or another ASGI
+  server such as Hypercorn.
 - The MCP tool-exposure documentation now states the actual posture: exposure
   is default-closed and a route of any HTTP verb becomes a tool only with an
   explicit `expose_as_mcp_tool=True`, and an exposed route keeps its `Security`
