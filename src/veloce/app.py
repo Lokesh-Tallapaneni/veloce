@@ -47,6 +47,7 @@ from veloce._internal import (
     _reject_header_crlf,
     offload,
 )
+from veloce._model_backend import _HAS_MSGSPEC, is_msgspec_struct
 from veloce._pipeline import (
     PH_ASGI_WRAP,
     PH_HTTP_AROUND,
@@ -295,6 +296,30 @@ def _trace_carrier(request: Request) -> dict[str, str] | None:
     if traceparent is None:
         return None
     return build_trace_carrier(traceparent, request.headers.get(TRACE_HEADER_TRACESTATE))
+
+
+def _is_msgspec_payload(result: Any) -> bool:
+    """Whether a handler return value should be encoded by msgspec.
+
+    A `msgspec.Struct`, or a non-empty `list` whose first element is one. A
+    `tuple` is deliberately excluded - it is the `(body, status[, headers])`
+    response idiom and must not be encoded as a JSON array; `_coerce_response`
+    handles the tuple and recurses on its body, at which point a lone struct
+    reaches this predicate.
+    """
+    if is_msgspec_struct(type(result)):
+        return True
+    if isinstance(result, list) and result:
+        return is_msgspec_struct(type(result[0]))
+    return False
+
+
+def _is_struct_list_model(model: Any) -> bool:
+    """Whether `model` is `list[SomeStruct]` (a msgspec list response_model)."""
+    if get_origin(model) is list:
+        args = get_args(model)
+        return bool(args) and is_msgspec_struct(args[0])
+    return False
 
 
 class _LifespanManager:
@@ -3496,7 +3521,16 @@ class Veloce(Router):
         # The handler may return a dict/BaseModel/list; if the route
         # declared a response_model, route the value through it so
         # extra fields drop, aliases apply, and unset/None filters fire.
-        if route_info.response_model is not None and not isinstance(result, Response):
+        # A msgspec-struct response_model (or `list[Struct]`) is encoded by the
+        # runtime branch in `_coerce_response`, not reshaped through Pydantic's
+        # `model_dump` / `model_validate`. Both guards are False for every
+        # Pydantic model, so the Pydantic path is unchanged.
+        if (
+            route_info.response_model is not None
+            and not isinstance(result, Response)
+            and not is_msgspec_struct(route_info.response_model)
+            and not _is_struct_list_model(route_info.response_model)
+        ):
             result = self._apply_response_model(result, route_info)
 
         response = self._coerce_response(result, route_info.response_class)
@@ -4034,6 +4068,18 @@ class Veloce(Router):
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
             return result
+        # A msgspec struct (or a list of structs) encodes in C with no
+        # intermediate dict. With no response_class it is written straight to a
+        # JSON Response; with one, it is normalized to builtins so the requested
+        # class renders it the usual way. A `(struct, status)` tuple is excluded
+        # by `_is_msgspec_payload` and flows to the tuple handler below, which
+        # recurses on the struct body.
+        if _HAS_MSGSPEC and _is_msgspec_payload(result):
+            import msgspec
+
+            if response_class is None:
+                return Response(body=msgspec.json.encode(result), content_type=MIME_JSON)
+            result = msgspec.to_builtins(result)
         # Use custom response_class if specified
         if response_class is not None:
             if isinstance(result, tuple):

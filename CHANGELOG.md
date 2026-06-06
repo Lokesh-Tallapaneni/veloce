@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- msgspec is now supported as an opt-in fast validation and serialization
+  backend alongside Pydantic, installed with the `fast` extra
+  (`pip install veloceframework[fast]`). A handler may type a request-body
+  parameter or a response as a `msgspec.Struct`; it then decodes and encodes in
+  C with no intermediate dict. The backend is chosen per endpoint by the
+  parameter or response type, so Pydantic `BaseModel` and `msgspec.Struct`
+  endpoints coexist in one app with no configuration. Pydantic stays the default
+  and the only required dependency; without the extra every msgspec path is
+  inert and behaviour is unchanged. Validation errors, response shaping, and
+  OpenAPI `/docs` component schemas (request bodies and declared
+  `response_model` structs, including `list[Struct]`) are at parity with the
+  Pydantic path; the one difference is that a msgspec validation error reports
+  the offending field path inside the message text rather than a structured
+  `loc`. `list[Struct]` request bodies and attrs/dataclasses are not yet
+  supported.
 - `URLRule`, the route-table view object yielded by `app.url_map`, is now
   exported from the top-level `veloce` package for introspection and typing.
 - `Config`, the `dict` subclass backing `app.config`, is now exported from the

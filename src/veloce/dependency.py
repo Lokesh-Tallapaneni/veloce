@@ -41,6 +41,7 @@ from veloce._handler_plan import (
     parallel_group_end,
 )
 from veloce._internal import _is_async_callable, offload
+from veloce._model_backend import ModelBackend
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
@@ -774,6 +775,11 @@ class DependencyResolver:
         return _slot_parallel_safe(slot, seen_plans)
 
     async def _resolve_body_model(self, slot: Any, request: Request) -> Any:
+        if slot.backend == ModelBackend.MSGSPEC:
+            return await self._resolve_msgspec_body(slot, request)
+        return await self._resolve_pydantic_body(slot, request)
+
+    async def _resolve_pydantic_body(self, slot: Any, request: Request) -> Any:
         try:
             body_data = await request.json()
             return slot.model.model_validate(body_data)
@@ -800,6 +806,39 @@ class DependencyResolver:
                     }
                 ]
             ) from err
+
+    async def _resolve_msgspec_body(self, slot: Any, request: Request) -> Any:
+        # Reached only for a msgspec.Struct body slot, which the registration
+        # tagging in `_handler_plan` produces only when msgspec is installed.
+        import msgspec
+
+        raw = await request.body()
+        # An empty or whitespace-only body is "missing", not a decode error -
+        # `msgspec.json.decode(b"")` would raise an opaque truncation error.
+        if not raw or not raw.strip():
+            if slot.is_optional:
+                return None
+            raise RequestValidationError(
+                [{"loc": ["body"], "msg": "Missing request body", "type": "missing"}]
+            )
+        try:
+            # `strict=True` (the default) enforces types on decode: a `str` for an
+            # `int` field is rejected rather than coerced.
+            return msgspec.json.decode(raw, type=slot.model)
+        except msgspec.ValidationError as e:
+            # `ValidationError` SUBCLASSES `DecodeError`, so it must be caught
+            # first - reversing the order would let the `DecodeError` arm swallow
+            # it. msgspec embeds the offending field path inside the message
+            # text (e.g. "Expected `int`, got `str` - at `$.count`"); that format
+            # is not a stable public API, so it is surfaced whole in `msg` rather
+            # than parsed into `loc`, which stays `["body"]`.
+            raise RequestValidationError(
+                [{"loc": ["body"], "msg": str(e), "type": "value_error"}]
+            ) from e
+        except msgspec.DecodeError as e:
+            raise RequestValidationError(
+                [{"loc": ["body"], "msg": "Invalid JSON body", "type": "value_error"}]
+            ) from e
 
     async def _resolve_marker(
         self, slot: Any, request: Request, path_params: dict[str, str]

@@ -19,6 +19,7 @@ import orjson
 from pydantic import BaseModel
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
+from veloce._model_backend import is_msgspec_struct
 from veloce._protocol_constants import OAUTH2_GRANT_TYPE_PASSWORD
 from veloce.dependency import Depends
 from veloce.http.response import HTMLResponse, JSONResponse
@@ -117,8 +118,15 @@ def _deep_merge(target: dict, overlay: dict) -> None:
 
 
 def _is_model_type(annotation: Any) -> bool:
-    """Return True for a Pydantic ``BaseModel`` subclass annotation."""
-    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
+    """Return True for a Pydantic ``BaseModel`` or a ``msgspec.Struct`` annotation.
+
+    The single gate every request-body / response / list-item schema site uses,
+    so both backends register a component schema and resolve to a ``$ref`` the
+    same way.
+    """
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return True
+    return is_msgspec_struct(annotation)
 
 
 def _literal_enum_schema(values: list) -> dict[str, Any]:
@@ -540,6 +548,9 @@ class _SchemaEntry:
         """Populate `body` / `defs` from the model's JSON Schema once."""
         if self.body:
             return
+        if is_msgspec_struct(self.model):
+            self._build_msgspec()
+            return
         try:
             schema = self.model.model_json_schema(mode=self.mode)  # type: ignore[arg-type]
         except Exception as exc:
@@ -565,6 +576,46 @@ class _SchemaEntry:
                 self.defs[def_name] = def_schema
             del schema["$defs"]
         self.body = schema
+
+    def _build_msgspec(self) -> None:
+        """Populate `body` / `defs` from a `msgspec.Struct`'s JSON Schema.
+
+        msgspec has no separate validation / serialization shape, so `mode` is
+        not consulted - the registry folds the byte-identical variants onto one
+        component name. The `#/$defs/{name}` ref template matches the nested-ref
+        prefix the document rewriter already repoints into `components.schemas`,
+        so nested structs resolve with no extra translation.
+        """
+        import msgspec
+
+        try:
+            schemas, components = msgspec.json.schema_components(
+                [self.model], ref_template="#/$defs/{name}"
+            )
+        except Exception as exc:
+            _logger.warning(
+                "OpenAPI schema generation failed for %s (msgspec): %s. "
+                "Falling back to {type: object}.",
+                self.model.__name__,
+                exc,
+                exc_info=_logger.isEnabledFor(logging.DEBUG),
+            )
+            self.body = {"type": "object"}
+            return
+        # msgspec returns the model's own schema inside `components` and a
+        # top-level `$ref` to it; lift that into `body` and keep the rest as
+        # nested `$defs`. A struct with no nested refs may come back inline.
+        root = schemas[0]
+        if isinstance(root, dict) and set(root) == {"$ref"}:
+            name = root["$ref"].rsplit("/", 1)[-1]
+            self.body = components.pop(name, {"type": "object"})
+        else:
+            self.body = dict(root)
+        for def_name, def_schema in components.items():
+            self.defs[def_name] = def_schema
+        _rewrite_byte_format(self.body)
+        for def_schema in self.defs.values():
+            _rewrite_byte_format(def_schema)
 
 
 def _local_def_refs(node: Any) -> set[str]:
