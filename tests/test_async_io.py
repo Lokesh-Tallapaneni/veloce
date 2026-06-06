@@ -34,6 +34,39 @@ class TestFileResponseAsync:
         resp = await FileResponse.from_path(str(test_file), filename="report.pdf")
         assert b"attachment" in resp.headers.get("Content-Disposition", "").encode()
 
+    @pytest.mark.asyncio
+    async def test_from_path_small_file_inline(self, tmp_path):
+        # A file at/below the inline threshold is read on the loop (no executor
+        # hop) and still returns the full body.
+        from veloce.http.response import _INLINE_READ_MAX
+
+        test_file = tmp_path / "small.bin"
+        body = b"s" * (_INLINE_READ_MAX)  # exactly the threshold -> inline
+        test_file.write_bytes(body)
+        resp = await FileResponse.from_path(str(test_file))
+        assert resp.body == body
+        assert resp.status_code == 200
+        assert resp.headers.get("ETag")
+
+    @pytest.mark.asyncio
+    async def test_from_path_large_file_offloaded(self, tmp_path):
+        # A file above the threshold is read in the executor and returns the
+        # full body unchanged.
+        from veloce.http.response import _INLINE_READ_MAX
+
+        test_file = tmp_path / "large.bin"
+        body = b"L" * (_INLINE_READ_MAX + 4096)
+        test_file.write_bytes(body)
+        resp = await FileResponse.from_path(str(test_file))
+        assert resp.body == body
+        assert len(resp.body) == _INLINE_READ_MAX + 4096
+
+    @pytest.mark.asyncio
+    async def test_from_path_directory_rejected(self, tmp_path):
+        # A non-regular path (directory) is rejected like a missing file.
+        with pytest.raises(FileNotFoundError):
+            await FileResponse.from_path(str(tmp_path))
+
 
 class TestSendFromDirectoryAsync:
     """Async version of send_from_directory."""
