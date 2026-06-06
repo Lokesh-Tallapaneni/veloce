@@ -45,13 +45,16 @@ app.config["REQUEST_TIMEOUT"] = 15     # drop a half-sent request after 15s
 app.config["KEEP_ALIVE_TIMEOUT"] = 30  # close an idle connection after 30s
 ```
 
-It serves **HTTP/1.1 only** — it performs no WebSocket upgrade
-handshake and does not implement HTTP/2. Run WebSocket routes and
-HTTP/2 workloads under uvicorn, which implements both; Veloce's
-WebSocket support is reached through the ASGI server, not the built-in
-development server. This is a deliberate scope line: hardening a
-from-scratch production server is not the project's goal when mature
-ASGI servers already exist.
+It serves **HTTP/1.1 and WebSocket** — the built-in server performs the
+RFC 6455 upgrade handshake itself, so WebSocket routes run under
+`app.run()` without an ASGI server. It does **not** implement HTTP/2;
+run HTTP/2 workloads under uvicorn, which does. One WebSocket caveat:
+native subprotocol negotiation is unsupported — `accept(subprotocol=...)`
+raises on the built-in server, because the `101 Switching Protocols`
+response is written before `accept()` runs — so use an ASGI server if
+you need to negotiate a subprotocol. Not shipping a from-scratch HTTP/2
+stack is a deliberate scope line: mature ASGI servers already implement
+it.
 
 ## Running with multiple workers
 
@@ -120,8 +123,10 @@ The per-worker state caveats in the table above apply unchanged: each
 gunicorn worker is a separate process with its own memory, so in-memory
 rate-limit buckets, caches, and `app.state` mutations are per-worker.
 
-This path serves **HTTP/1.1 only**, exactly like the built-in development
-server — WebSocket and HTTP/2 workloads still belong under uvicorn.
+This path serves **HTTP/1.1 and WebSocket** through the same built-in
+protocol as `app.run()` — only HTTP/2 workloads still belong under
+uvicorn. As on the built-in server, native subprotocol negotiation is
+unsupported.
 
 !!! note "New — runtime-verified, not yet battle-tested at scale"
     `VeloceWorker` has been exercised end-to-end on Linux (Ubuntu 24.04,
