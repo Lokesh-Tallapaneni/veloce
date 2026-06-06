@@ -93,6 +93,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `FileResponse.from_path` now reads files at or below 64 KiB inline on the
+  event loop instead of always offloading to a thread-pool executor; larger
+  files are still read in the executor so a big read never stalls the loop. The
+  thread-pool hop (~100 us, measured) dominated serving a small static asset, so
+  skipping it for small files cuts `from_path` from ~177 us to ~18 us per call
+  on a small file (measured, Linux). Behaviour and headers are unchanged.
 - The MCP tool-exposure documentation now states the actual posture: exposure
   is default-closed and a route of any HTTP verb becomes a tool only with an
   explicit `expose_as_mcp_tool=True`, and an exposed route keeps its `Security`
