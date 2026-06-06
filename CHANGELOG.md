@@ -93,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The MCP tool-exposure documentation now states the actual posture: exposure
+  is default-closed and a route of any HTTP verb becomes a tool only with an
+  explicit `expose_as_mcp_tool=True`, and an exposed route keeps its `Security`
+  / `Depends` / middleware guards on the agent-facing call. A vestigial
+  per-verb gate in the registry builder that was never reached (every exposed
+  route already required the explicit opt-in) was removed; behaviour is
+  unchanged.
 - Handlers whose dependency graph is a no-wave `Depends` chain now resolve
   through a straight-line `async` resolver generated once at registration,
   instead of the per-request `_resolve_slots` interpreter. The compiler accepts
