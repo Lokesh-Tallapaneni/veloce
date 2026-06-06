@@ -45,14 +45,20 @@ async def get_user(user_id: int):
 
 ### Safety
 
-Routes bound to a mutating verb (`POST`, `PUT`, `DELETE`, `PATCH`) are **never**
-auto-exposed. To make one callable by an agent you must opt in explicitly:
+Exposure is **default-closed**: no route is ever turned into a tool
+automatically. A route — of any HTTP verb, including a mutating `POST` / `PUT` /
+`DELETE` / `PATCH` — becomes agent-callable only when its author opts in
+explicitly with `expose_as_mcp_tool=True`:
 
 ```python
 @app.post("/users", expose_as_mcp_tool=True, mcp_description="Create a user")
 async def create_user(user: User):
     ...
 ```
+
+An exposed route keeps every guard it has as an HTTP endpoint — its `Security`
+schemes, `Depends`, and middleware all run on the agent-facing call too, so
+exposing a route never bypasses its authorization.
 
 Every exposed handler must carry a non-empty `mcp_description`. A missing
 description raises at registration time, before the server starts.

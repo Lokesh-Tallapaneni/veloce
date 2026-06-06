@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from veloce._handler_plan import build_plan
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp.plan_bridge import build_input_schema
-from veloce.contrib.mcp.safety import is_safe_to_auto_expose, require_mcp_description
+from veloce.contrib.mcp.safety import require_mcp_description
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan
@@ -142,15 +142,12 @@ def build_registry(app: Any) -> ToolRegistry:
     # collide at `registry.add`, preserving duplicate-tool-name detection.
     seen_routes: set[int] = set()
     for method, _path, info in app._collect_all_routes(include_hidden=True):
+        # Exposure is default-closed: a route becomes a tool only when its
+        # author set `expose_as_mcp_tool=True`, regardless of HTTP verb. There
+        # is no auto-exposure to gate, so reaching here means the opt-in is
+        # explicit (a mutating route included).
         if method == ROUTE_METHOD_WEBSOCKET or not info.expose_as_mcp_tool:
             continue
-        # The mutating-verb gate still applies per method, so a handler
-        # reachable only via POST must opt in explicitly (it did, to be here).
-        if not is_safe_to_auto_expose(method):
-            # An exposed mutating route is allowed, but only because the
-            # author set expose_as_mcp_tool=True; the gate exists to block
-            # *auto*-exposure, which this is not. Continue to register it.
-            pass
         route_id = id(info)
         if route_id in seen_routes:
             continue

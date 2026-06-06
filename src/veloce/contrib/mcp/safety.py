@@ -1,28 +1,18 @@
-"""MCP safety policy - which routes may become tools and what they must declare.
+"""MCP safety policy - what an exposed tool must declare.
 
-Two rules, both enforced at registry-build time (registration), never on the
-call path:
+Exposure itself is default-closed and explicit: a route becomes a tool only
+when its author passes ``expose_as_mcp_tool=True`` (regardless of HTTP verb),
+and an exposed route keeps its Security / Depends / middleware guards on the
+agent-facing call. There is no auto-exposure, so no per-verb gate is needed.
 
-- A route bound to a mutating HTTP verb (POST / PUT / DELETE / PATCH) is
-  never auto-exposed. Exposing it requires an explicit
-  ``expose_as_mcp_tool=True`` on the route, so an AI agent cannot reach a
-  state-changing endpoint the author did not deliberately open up.
-- Every MCP-exposed handler must carry a non-empty ``mcp_description`` - the
-  LLM-facing description, kept separate from the docstring. A missing or
-  blank description raises at registration so the gap is caught before the
-  server ever starts.
+This module enforces the one remaining registration-time rule: every
+MCP-exposed handler must carry a non-empty ``mcp_description`` - the LLM-facing
+description, kept separate from the docstring. A missing or blank description
+raises at registry-build time, never on the call path, so the gap is caught
+before the server ever starts.
 """
 
 from __future__ import annotations
-
-# Verbs that change server state. A route on one of these is only ever
-# exposed when the author passes `expose_as_mcp_tool=True` explicitly.
-MUTATING_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
-
-
-def is_safe_to_auto_expose(method: str) -> bool:
-    """Whether `method` may be auto-exposed without an explicit opt-in."""
-    return method.upper() not in MUTATING_METHODS
 
 
 def require_mcp_description(tool_name: str, description: str | None) -> str:
