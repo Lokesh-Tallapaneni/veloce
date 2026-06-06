@@ -47,14 +47,18 @@ app.config["KEEP_ALIVE_TIMEOUT"] = 30  # close an idle connection after 30s
 
 It serves **HTTP/1.1 and WebSocket** — the built-in server performs the
 RFC 6455 upgrade handshake itself, so WebSocket routes run under
-`app.run()` without an ASGI server. It does **not** implement HTTP/2;
-run HTTP/2 workloads under uvicorn, which does. One WebSocket caveat:
-native subprotocol negotiation is unsupported — `accept(subprotocol=...)`
-raises on the built-in server, because the `101 Switching Protocols`
-response is written before `accept()` runs — so use an ASGI server if
-you need to negotiate a subprotocol. Not shipping a from-scratch HTTP/2
-stack is a deliberate scope line: mature ASGI servers already implement
-it.
+`app.run()` without an ASGI server. It does **not** implement HTTP/2.
+For HTTP/2, either serve the app under an HTTP/2-capable ASGI server such
+as Hypercorn, or — as most deployments do — terminate HTTP/2 at a reverse
+proxy (nginx, Caddy, a cloud load balancer) that forwards HTTP/1.1 to the
+app; uvicorn itself is HTTP/1.1-only. One WebSocket caveat: native
+subprotocol negotiation is unsupported — `accept(subprotocol=...)` raises
+on the built-in server, because the `101 Switching Protocols` response is
+written before `accept()` runs — so use an ASGI server if you need to
+negotiate a subprotocol. Not shipping a from-scratch HTTP/2 stack is a
+deliberate scope line: it is a large, security-sensitive binary protocol,
+and in practice HTTP/2 is almost always terminated at a proxy that speaks
+HTTP/1.1 to the app, so the app server rarely needs to implement it.
 
 ## Running with multiple workers
 
@@ -124,9 +128,9 @@ gunicorn worker is a separate process with its own memory, so in-memory
 rate-limit buckets, caches, and `app.state` mutations are per-worker.
 
 This path serves **HTTP/1.1 and WebSocket** through the same built-in
-protocol as `app.run()` — only HTTP/2 workloads still belong under
-uvicorn. As on the built-in server, native subprotocol negotiation is
-unsupported.
+protocol as `app.run()` — for HTTP/2, put it behind a reverse proxy or
+use an HTTP/2-capable ASGI server, as above. As on the built-in server,
+native subprotocol negotiation is unsupported.
 
 !!! note "New — runtime-verified, not yet battle-tested at scale"
     `VeloceWorker` has been exercised end-to-end on Linux (Ubuntu 24.04,
