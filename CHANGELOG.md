@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `dump_cookie` now percent-encodes a literal `%` in a cookie value (as `%25`)
+  so the value survives a `dump_cookie` -> `parse_cookie` round-trip. Previously
+  `%` was in the quoting safe set, so a value containing a percent sequence (for
+  example `100%` or `%00`) was emitted unescaped and mis-decoded on parse.
 - `Signer.loads` now raises `BadData` for a token whose segments contain
   non-ASCII characters, instead of letting an `ascii`-codec `UnicodeEncodeError`
   escape (found by the new fuzzing harness).

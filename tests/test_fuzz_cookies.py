@@ -54,15 +54,13 @@ def test_cookies_from_header_matches_parse_cookie(header: str) -> None:
 # carry on the wire. Excluded by construction:
 #   * CR / LF / NUL — `dump_cookie` rejects them (header-injection defense);
 #   * lone surrogates — not UTF-8 encodable at all, so percent-quoting raises
-#     `UnicodeEncodeError` (a property of the text, not a parser defect);
-#   * a literal `%` — `dump_cookie` keeps `%` in its quoting `safe` set, so a
-#     value such as `%00` is emitted unescaped yet `parse_cookie` percent-decodes
-#     it on the way back. That asymmetry is pinned by the xfail test below; the
-#     general round-trip holds for every other value.
+#     `UnicodeEncodeError` (a property of the text, not a parser defect).
+# A literal `%` now round-trips (`dump_cookie` encodes it as `%25`), so it is
+# left in the alphabet rather than blacklisted.
 _COOKIE_VALUE_TEXT = st.text(
     alphabet=st.characters(
         min_codepoint=1,
-        blacklist_characters="\r\n%",
+        blacklist_characters="\r\n",
         blacklist_categories=("Cs",),
     ),
     max_size=120,
@@ -82,19 +80,13 @@ def test_dump_then_parse_round_trips(name: str, value: str) -> None:
     assert parsed.get(name) == value
 
 
-@pytest.mark.xfail(
-    reason="dump_cookie keeps '%' in its quoting safe set, so a literal "
-    "percent sequence in the value is emitted unescaped but parse_cookie "
-    "percent-decodes it on the way back — a dump/parse asymmetry.",
-    strict=True,
-)
 def test_literal_percent_value_round_trips() -> None:
-    """A cookie value containing a literal percent sequence should round-trip.
+    """A cookie value containing a literal percent sequence round-trips.
 
-    `dump_cookie("c", "%00")` emits `c=%00`; `parse_cookie` then decodes `%00`
-    to a NUL byte, so the value does not survive the round-trip. Fixing this
-    means dropping `%` from `dump_cookie`'s quoting safe set so a literal `%`
-    is encoded as `%25`.
+    `dump_cookie` encodes a literal `%` as `%25` (it is no longer in the quoting
+    safe set), so `parse_cookie` restores the original value instead of decoding
+    `%00` to a NUL byte.
     """
     header = dump_cookie("c", "%00", path=None)
     assert parse_cookie(header).get("c") == "%00"
+    assert parse_cookie(dump_cookie("c", "100%", path=None)).get("c") == "100%"
