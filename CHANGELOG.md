@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `veloce.contrib.redis` adds `RedisSessionStore` and `RedisRateLimiter` for
+  state shared across workers and hosts: a `SessionStore` backed by Redis (native
+  TTL expiry, sliding renewal, and a race-safe conditional write) and a
+  cross-worker fixed-window rate-limit middleware. Install the backend with
+  `pip install veloceframework[redis]`.
+- A Databases guide documents the recommended async SQLAlchemy pattern (one
+  pooled engine for the app lifetime, a per-request session dependency) and the
+  Redis session/rate-limit helpers. The deployment guide documents the built-in
+  server's `MAX_CONCURRENT_CONNECTIONS` cap.
+
 - The MCP server now negotiates the protocol version from the client's
   `initialize` request - echoing a supported revision back, or returning its
   latest supported revision otherwise - and answers the `ping` liveness method.
