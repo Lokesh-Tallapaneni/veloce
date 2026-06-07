@@ -10,10 +10,10 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Lokesh Tallapaneni", email = "lokeshtallapaneni@gmail.com" },
+    { name = "Lokesh Tallapaneni" },
 ]
 maintainers = [
-    { name = "Lokesh Tallapaneni", email = "lokeshtallapaneni@gmail.com" },
+    { name = "Lokesh Tallapaneni" },
 ]
 keywords = ["asgi", "async", "web", "framework", "http", "api", "websocket", "openapi"]
 classifiers = [

@@ -43,8 +43,9 @@ acting as a participant in it.
 ## Reporting and enforcement
 
 If you experience or witness behaviour that breaks this standard, report it
-privately to the maintainer at **lokeshtallapaneni@gmail.com**. Reports are
-handled discreetly; the reporter's identity is not shared without their consent.
+privately to the maintainer rather than in a public issue or discussion.
+Reports are handled discreetly; the reporter's identity is not shared without
+their consent.
 
 The maintainer reviews every report and decides on a response proportionate to
 what happened. Depending on severity that may be a private warning, a request
