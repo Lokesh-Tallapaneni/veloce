@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Result caching: the `cached` decorator memoises an async function's
+  JSON-serialisable return in a `Cache` backend, keyed by its arguments
+  (non-serialisable arguments such as an injected `Request` are ignored, so a
+  handler is keyed by its scalar inputs). Ships `InMemoryCache` (process-local,
+  size-bounded) and `veloce.contrib.redis.RedisCache` (shared across workers).
+  It is opt-in and self-contained - the request pipeline references none of it,
+  so an undecorated handler is unaffected.
+
 ### Fixed
 
 - `Signer.loads` now raises `BadData` for a token whose segments contain

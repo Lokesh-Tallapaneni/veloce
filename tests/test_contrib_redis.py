@@ -121,3 +121,41 @@ def test_rate_limiter_rejects_bad_config(client):
         RedisRateLimiter(client, max_requests=0)
     with pytest.raises(ValueError, match="window_seconds"):
         RedisRateLimiter(client, window_seconds=0)
+
+
+# ── RedisCache ────────────────────────────────────────────────────────
+
+
+async def test_redis_cache_round_trip(client):
+    from veloce.contrib.redis import RedisCache
+
+    cache = RedisCache(client)
+    await cache.set("k", b"value", 60)
+    assert await cache.get("k") == b"value"
+    assert await client.ttl("veloce:cache:k") > 0
+    await cache.delete("k")
+    assert await cache.get("k") is None
+
+
+async def test_redis_cache_missing_returns_none(client):
+    from veloce.contrib.redis import RedisCache
+
+    assert await RedisCache(client).get("absent") is None
+
+
+async def test_cached_decorator_with_redis_backend(client):
+    from veloce.cache import cached
+    from veloce.contrib.redis import RedisCache
+
+    cache = RedisCache(client)
+    calls = 0
+
+    @cached(cache, ttl=60)
+    async def compute(n: int) -> dict:
+        nonlocal calls
+        calls += 1
+        return {"n": n}
+
+    assert await compute(3) == {"n": 3}
+    assert await compute(3) == {"n": 3}
+    assert calls == 1
