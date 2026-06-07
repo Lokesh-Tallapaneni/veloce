@@ -172,25 +172,55 @@ app.add_middleware(RateLimitMiddleware(strategy=TokenBucket(rate=100, per=60, bu
 The default `InMemoryRateLimitBackend` counts per process. For one limit shared
 across every worker and host, use `RedisRateLimitBackend` (see below).
 
-To give specific routes their own limit, pass `overrides` — a map from a route's
-path template (exactly as registered) to a strategy. An overridden route gets its
-own per-client counter, independent of the default budget:
+To give a specific route its own limit, decorate its handler with `rate_limit`.
+The limit lives on the handler, so there is no route string to mistype:
+
+```python
+from veloce import RateLimitMiddleware, TokenBucket, rate_limit
+
+app.add_middleware(RateLimitMiddleware(strategy=TokenBucket(rate=1000, per=60)))
+
+
+@app.post("/login")
+@rate_limit(TokenBucket(rate=5, per=60))  # stricter, just for this route
+async def login(request):
+    ...
+```
+
+Put `@rate_limit` **below** the route decorator so the route registers the tagged
+handler. A decorated route gets its own per-client counter, independent of the
+default budget.
+
+For handlers you cannot decorate, the `overrides` map is the central alternative.
+Its key is the route's **full** path template as matched at runtime (the value of
+`request.url_rule`), so a route on a blueprint with `url_prefix="/api"` uses
+`"/api/login"`, not `"/login"`:
 
 ```python
 from veloce import RateLimitMiddleware, TokenBucket
 
 app.add_middleware(
     RateLimitMiddleware(
-        strategy=TokenBucket(rate=1000, per=60),          # default for every route
-        overrides={"/login": TokenBucket(rate=5, per=60)},  # stricter for /login
+        strategy=TokenBucket(rate=1000, per=60),
+        overrides={"/api/login": TokenBucket(rate=5, per=60)},
     )
 )
 ```
 
+An override key that matches no registered route raises on the first request, so
+a wrong prefix fails loudly rather than silently doing nothing. An explicit
+`overrides` entry wins over a `@rate_limit` tag on the same route.
+
+!!! note "Per-route limits resolve against the entry route"
+    Like `exclude_middleware`, a per-route limit is resolved against the route
+    matched when the request arrives. A `before_request` hook that rewrites the
+    path to a different route does not change which limit applies — rate limiting
+    runs before those hooks.
+
 !!! note "Added in version 0.4.0"
-    Selectable `strategy`/`backend` and per-route `overrides` on
-    `RateLimitMiddleware`. The bare `max_requests`/`window_seconds` form is
-    unchanged.
+    Selectable `strategy`/`backend`, the `rate_limit` per-route decorator, and the
+    per-route `overrides` map on `RateLimitMiddleware`. The bare
+    `max_requests`/`window_seconds` form is unchanged.
 
 ## Function middleware
 

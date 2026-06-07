@@ -44,6 +44,7 @@ from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, header_present
 from veloce.middleware.base import Middleware
 from veloce.ratelimit import (
+    RATE_LIMIT_ATTR,
     InMemoryRateLimitBackend,
     RateLimitBackend,
     RateLimitResult,
@@ -239,10 +240,27 @@ class RateLimitMiddleware(Middleware):
       `veloce.contrib.redis.RedisRateLimitBackend` for one limit shared across
       every worker and host.
 
-    `overrides` maps a route's path template (as registered, e.g. `/login` or
-    `/items/{item_id}`) to a strategy that replaces the default for that route.
-    An overridden route gets its own per-client counter, independent of the
-    default budget; routes without an override keep the shared default behavior.
+    Give a route its own limit by decorating its handler with `rate_limit` - the
+    limit lives on the handler, so there is no route string to mistype::
+
+        from veloce import rate_limit
+
+        @app.post("/login")
+        @rate_limit(TokenBucket(rate=5, per=60))
+        async def login(request): ...
+
+    The `overrides` map is the central alternative for handlers you cannot
+    decorate: it maps a route's *full* path template to a strategy. The key is
+    the template as matched at runtime - the value of `request.url_rule` - so a
+    blueprint route includes its `url_prefix` (`/api/login`, not `/login`); an
+    override key that matches no route raises on the first request. An explicit
+    `overrides` entry wins over a `rate_limit` tag on the same route.
+
+    Either way, an overridden route gets its own per-client counter, independent
+    of the default budget; routes without an override keep the shared default.
+    Like `exclude_middleware`, the per-route strategy is resolved against the
+    route matched at dispatch entry, so a `before_request` hook that rewrites the
+    path does not change which limit applies.
 
     Usage::
 
@@ -291,14 +309,18 @@ class RateLimitMiddleware(Middleware):
             # Pluggable algorithm + backend path. The backend runs the pure
             # strategy under its own atomic read-modify-write.
             self._backend = backend if backend is not None else InMemoryRateLimitBackend()
-            # Normalize to None when empty so the per-request path skips the
-            # lookup entirely - apps without per-route limits pay nothing.
             self._overrides: dict[str, RateLimitStrategy] | None = None
             if overrides:
                 for route, override in overrides.items():
                     if not isinstance(override, RateLimitStrategy):
                         raise TypeError(f"overrides[{route!r}] must be a RateLimitStrategy")
                 self._overrides = dict(overrides)
+            # Per-route strategies, keyed by route template, combining
+            # `@rate_limit`-tagged handlers with the explicit `overrides` map.
+            # Built once on the first request (when the route table is final);
+            # `None` until then. An empty result means no per-route limits, so
+            # the per-request path stays a single client-keyed evaluation.
+            self._route_strategies: dict[str, RateLimitStrategy] | None = None
 
     async def process_request(self, request: Request) -> Response | None:
         """Enforce per-client request rate limits."""
@@ -310,14 +332,14 @@ class RateLimitMiddleware(Middleware):
     async def _process_strategy(
         self, request: Request, strategy: RateLimitStrategy
     ) -> Response | None:
-        # No per-route overrides configured: the common path stays a single
-        # client-keyed evaluation with no extra lookup.
-        overrides = self._overrides
-        if overrides is None:
-            key = self._bucket_key(request)
-        else:
+        per_route = self._route_strategies
+        if per_route is None:
+            per_route = self._build_route_strategies(request)
+        # No per-route limits: the common path stays a single client-keyed
+        # evaluation with no extra lookup.
+        if per_route:
             route = request.url_rule
-            override = overrides.get(route) if route is not None else None
+            override = per_route.get(route) if route is not None else None
             if override is not None:
                 strategy = override
                 # Scope the key to the route so an overridden route keeps its own
@@ -325,6 +347,8 @@ class RateLimitMiddleware(Middleware):
                 key = f"{route}\x00{self._bucket_key(request)}"
             else:
                 key = self._bucket_key(request)
+        else:
+            key = self._bucket_key(request)
         # Wall-clock time so the same key on a shared backend agrees across
         # workers and hosts; the strategy refills/counts against it.
         result = await self._backend.evaluate(key, strategy, time.time())
@@ -338,6 +362,39 @@ class RateLimitMiddleware(Middleware):
             return rejected
         request._state[_RL_STATE_KEY] = result
         return None
+
+    def _build_route_strategies(self, request: Request) -> dict[str, RateLimitStrategy]:
+        # Resolve per-route strategies once, on the first request, when the route
+        # table is final. Combines `@rate_limit`-tagged handlers (discovered by
+        # scanning the routes) with the explicit `overrides` map, keyed by the
+        # route template - the value of `request.url_rule`, so a blueprint route
+        # includes its url_prefix. Explicit `overrides` win over a decorator tag.
+        app = request.app
+        if app is None:
+            # No app to scan yet (e.g. a bare unit-test request); don't cache, so
+            # the real first request resolves the table.
+            return {}
+        combined: dict[str, RateLimitStrategy] = {}
+        known: set[str] = set()
+        for _method, _path, info in app._collect_all_routes():
+            known.add(info.path_template)
+            tagged = getattr(info.handler, RATE_LIMIT_ATTR, None)
+            if isinstance(tagged, RateLimitStrategy):
+                combined[info.path_template] = tagged
+        if self._overrides is not None:
+            # Fail fast on an override key that matches no route - the silent
+            # alternative is a route the operator believes is throttled but is not.
+            unknown = sorted(key for key in self._overrides if key not in known)
+            if unknown:
+                raise ValueError(
+                    f"RateLimitMiddleware overrides reference route template(s) {unknown} "
+                    "that match no registered route; an override key is the full route "
+                    "template as registered, including any blueprint url_prefix "
+                    "(for example '/api/login', not '/login')"
+                )
+            combined.update(self._overrides)
+        self._route_strategies = combined
+        return combined
 
     async def _process_legacy(self, request: Request) -> Response | None:
         client = self._bucket_key(request)
