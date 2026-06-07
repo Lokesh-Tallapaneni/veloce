@@ -12,6 +12,7 @@ import base64
 import contextlib
 import io
 import ipaddress
+import math
 from collections.abc import Iterator, Mapping
 from typing import Any, BinaryIO, NamedTuple
 from urllib.parse import parse_qsl
@@ -701,6 +702,11 @@ class AcceptHeader:
                     try:
                         q = float(param[2:])
                     except ValueError:
+                        q = 1.0
+                    # `float()` accepts "inf"/"nan"; a non-finite q would poison
+                    # `quality()`/`best_match` comparisons, so treat it as the
+                    # default like an unparseable value.
+                    if not math.isfinite(q):
                         q = 1.0
                     seen_q = True
                     continue

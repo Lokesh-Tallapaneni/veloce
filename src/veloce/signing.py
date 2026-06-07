@@ -154,7 +154,12 @@ class Signer:
         except (ValueError, OSError) as err:
             raise BadData("malformed signature") from err
 
-        signing_input = f"{payload_b64}.{ts_b64}".encode("ascii")
+        # The base64url segments are ASCII; a non-ASCII character means a
+        # malformed token (surfaced as `BadData`), not an `ascii`-codec crash.
+        try:
+            signing_input = f"{payload_b64}.{ts_b64}".encode("ascii")
+        except UnicodeEncodeError as err:
+            raise BadData("token segments must be ASCII") from err
         # Try every accepted secret. Constant-time compare per attempt.
         if not any(
             hmac.compare_digest(sig_bytes, hmac.new(key, signing_input, hashlib.sha256).digest())

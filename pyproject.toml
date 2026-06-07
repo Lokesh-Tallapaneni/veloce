@@ -120,6 +120,7 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=5.0",
+    "hypothesis>=6.0",
     "ruff>=0.6",
     "mypy>=1.10",
     # uvicorn is now an optional extra, but the test suite still exercises the
@@ -164,6 +165,7 @@ testpaths = ["tests"]
 addopts = ["-m", "not perf"]
 markers = [
     "perf: timing/perf check — opt-in via `pytest -m perf`, off by default",
+    "fuzz: property-based parser fuzz test — run as a group with `pytest -m fuzz`",
 ]
 
 [tool.coverage.run]

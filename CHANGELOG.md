@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Signer.loads` now raises `BadData` for a token whose segments contain
+  non-ASCII characters, instead of letting an `ascii`-codec `UnicodeEncodeError`
+  escape (found by the new fuzzing harness).
+- `AcceptHeader.parse` now treats a non-finite `q` value (`q=inf` / `q=nan`) as
+  the default `1.0` rather than carrying the non-finite value into
+  `quality()` / `best_match` comparisons.
+
+### Added
+
+- A property-based fuzzing harness (Hypothesis) for the request parsers, grouped
+  under the `fuzz` pytest marker and run both in the default suite and as a
+  dedicated CI leg (`pytest -m fuzz`). It exercises the cookie parser, the
+  header and query-string parsers (`Headers`, `QueryParams`, `AcceptHeader`,
+  `Authorization`, `RangeSpec`, and the Host-header splitter), the multipart
+  form parser, the signed-token decoder, the radix router, and the WebSocket
+  frame parser, asserting that arbitrary input never raises an undeclared
+  exception, hangs, or over-allocates, and that the cookie and signing paths
+  round-trip valid values.
 ### Changed
 
 - `Veloce.run(workers=...)` now raises `ValueError` when `workers` is not `1`.
