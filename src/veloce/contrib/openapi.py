@@ -436,8 +436,14 @@ class SchemaRegistry:
 
         # Rewrite every placeholder reference in the whole document, plus the
         # `#/$defs/...` references inside the freshly materialised components.
+        # Resolve aliases through a token -> alias_token map built once, so the
+        # rewrite is linear rather than O(n^2) over the entries per token.
+        alias_by_token: dict[str, str] = {}
+        for entry in self._entries.values():
+            if entry.alias_token is not None:
+                alias_by_token[entry.token] = entry.alias_token
         resolved_token = {
-            t: (token_to_name.get(t) or token_to_name[self._alias_target(t)])
+            t: (token_to_name.get(t) or token_to_name[alias_by_token.get(t, t)])
             for t in self._all_tokens()
         }
         _rewrite_refs(document, resolved_token)
@@ -495,12 +501,6 @@ class SchemaRegistry:
         while f"{candidate}_{n}" in components:
             n += 1
         return f"{candidate}_{n}"
-
-    def _alias_target(self, token: str) -> str:
-        for entry in self._entries.values():
-            if entry.token == token and entry.alias_token is not None:
-                return entry.alias_token
-        return token
 
     def _all_tokens(self) -> list[str]:
         return [self._entries[k].token for k in self._order]
