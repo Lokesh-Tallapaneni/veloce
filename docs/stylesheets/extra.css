@@ -222,3 +222,70 @@
   vertical-align: middle;
   align-self: center;
 }
+
+/* ===================================================== Glass morphism layer --
+   Frosted, translucent treatment on the chrome (header, tabs) and the hero,
+   with translucent (non-blurred) feature cards. Gated behind @supports for
+   backdrop-filter, so a browser without it keeps the solid styling above. A
+   faint fixed brand-tinted backdrop gives the frosted panels something to blur.
+   Fills are plain-rgba tokens (no color-mix), so they never depend on a second
+   feature's support floor. */
+
+[data-md-color-scheme="default"] {
+  --vl-glass-bg:        rgba(255, 255, 255, 0.55);
+  --vl-glass-edge:      rgba(255, 255, 255, 0.70);
+  --vl-glass-shadow:    0 0.5rem 2rem rgba(27, 27, 37, 0.12);
+  --vl-glass-chrome-bg: rgba(91, 61, 240, 0.72);
+}
+[data-md-color-scheme="slate"] {
+  --vl-glass-bg:        rgba(28, 28, 40, 0.55);
+  --vl-glass-edge:      rgba(255, 255, 255, 0.12);
+  --vl-glass-shadow:    0 0.5rem 2rem rgba(0, 0, 0, 0.40);
+  --vl-glass-chrome-bg: rgba(20, 20, 31, 0.72);
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  /* Faint fixed backdrop so frosted panels read as glass over a flat page. */
+  .md-main::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(40rem 30rem at 12% -5%, var(--vl-glow), transparent 60%),
+      radial-gradient(34rem 26rem at 95% 8%, var(--md-accent-fg-color--transparent), transparent 55%);
+  }
+
+  /* Frosted sticky header + tab bar. One scheme-specific chrome token keeps the
+     two consistent with each other and avoids color-mix() (whose support floor
+     differs from backdrop-filter's). */
+  .md-header,
+  .md-tabs {
+    background-color: var(--vl-glass-chrome-bg);
+    -webkit-backdrop-filter: blur(14px) saturate(1.6);
+    backdrop-filter: blur(14px) saturate(1.6);
+  }
+
+  /* Frosted hero card — a single element, so the blur cost is negligible. */
+  .vl-hero {
+    background:
+      radial-gradient(ellipse 60% 80% at 50% 0%, var(--vl-glow), transparent 70%),
+      var(--vl-glass-bg);
+    border-color: var(--vl-glass-edge);
+    box-shadow: var(--vl-glass-shadow);
+    -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    backdrop-filter: blur(16px) saturate(1.4);
+  }
+
+  /* Feature cards: translucent fill + edge + shadow, but NO per-card
+     backdrop-filter. Blurring every card scales poorly on pages with many of
+     them (mobile Safari / low-end GPUs) for a modest gain; the shell and hero
+     carry the effect. */
+  .md-typeset .grid.cards > ul > li,
+  .md-typeset .grid > .card {
+    background: var(--vl-glass-bg);
+    border-color: var(--vl-glass-edge);
+    box-shadow: var(--vl-glass-shadow);
+  }
+}
