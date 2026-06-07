@@ -26,6 +26,7 @@ from veloce.app import URLRule, Veloce
 # Background tasks
 from veloce.background import BackgroundTask, BackgroundTasks
 from veloce.blueprints import Blueprint
+from veloce.cache import Cache, InMemoryCache, cached
 
 # Configuration
 from veloce.config import Config
@@ -314,6 +315,10 @@ __all__ = [
     # Background
     "BackgroundTask",
     "BackgroundTasks",
+    # Caching
+    "Cache",
+    "InMemoryCache",
+    "cached",
     # Static
     "StaticFiles",
     # MCP (Model Context Protocol)

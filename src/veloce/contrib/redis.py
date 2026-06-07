@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import orjson
 
+from veloce.cache import Cache
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -47,15 +48,6 @@ _HEADER_RETRY_AFTER = "Retry-After"
 _HEADER_LIMIT = "X-RateLimit-Limit"
 _HEADER_REMAINING = "X-RateLimit-Remaining"
 _HEADER_RESET = "X-RateLimit-Reset"
-
-# Increment the window counter and, only on its first hit, set the window TTL -
-# atomically, so a crash between the INCR and the EXPIRE cannot leave the key
-# without a TTL (which would leak it forever).
-_RATE_LIMIT_LUA = (
-    "local c = redis.call('incr', KEYS[1]) "
-    "if c == 1 then redis.call('expire', KEYS[1], ARGV[1]) end "
-    "return c"
-)
 
 
 def _load_redis_from_url(url: str, **kwargs: Any) -> Redis:
@@ -207,12 +199,12 @@ class RedisRateLimiter(Middleware):
         window = int(time.time()) // self.window_seconds
         key = f"{self._prefix}{self._client_key(request)}:{window}"
 
+        # Create the per-window counter carrying its TTL before incrementing, so
+        # the key always has an expiry (it can never leak) even if a crash lands
+        # between the two commands. `SET ... NX EX` is a no-op once the window key
+        # exists, so steady-state cost is the create-once plus one `INCR`.
+        await self._redis.set(key, 0, ex=self.window_seconds, nx=True)
         count = await self._redis.incr(key)
-        if count == 1:
-            # First hit of this window - bound the key's lifetime to the window
-            # so it cannot leak. Set with NX-equivalent intent (count==1 means we
-            # created it), giving a one-window TTL.
-            await self._redis.expire(key, self.window_seconds)
 
         if count > self.max_requests:
             reset = (window + 1) * self.window_seconds - int(time.time())
@@ -230,3 +222,47 @@ class RedisRateLimiter(Middleware):
             )
             return rejected
         return None
+
+
+class RedisCache(Cache):
+    """A `Cache` backed by Redis, shared across workers and hosts.
+
+    Stores the value bytes under ``<prefix><key>`` with a native Redis TTL, so
+    `veloce.cache.cached` shares one cache across every worker - unlike the
+    process-local `InMemoryCache`. The application owns the client and its pool.
+
+    Usage::
+
+        from redis.asyncio import Redis
+
+        from veloce.cache import cached
+        from veloce.contrib.redis import RedisCache
+
+        cache = RedisCache(Redis.from_url("redis://localhost:6379/0"))
+
+        @app.get("/reports/{report_id}")
+        @cached(cache, ttl=60)
+        async def report(report_id: int) -> dict: ...
+    """
+
+    __slots__ = ("_redis", "_prefix")
+
+    def __init__(self, client: Redis, *, prefix: str = "veloce:cache:") -> None:
+        self._redis = client
+        self._prefix = prefix
+
+    @classmethod
+    def from_url(cls, url: str, *, prefix: str = "veloce:cache:", **kwargs: Any) -> RedisCache:
+        """Build a cache from a Redis URL, creating the client for you."""
+        return cls(_load_redis_from_url(url, **kwargs), prefix=prefix)
+
+    async def get(self, key: str) -> bytes | None:
+        # The redis stub widens get() to `bytes | str | None` (a client may set
+        # decode_responses=True); this cache stores and reads bytes.
+        return await self._redis.get(self._prefix + key)  # type: ignore[return-value]
+
+    async def set(self, key: str, value: bytes, ttl: int) -> None:
+        await self._redis.set(self._prefix + key, value, ex=ttl)
+
+    async def delete(self, key: str) -> None:
+        await self._redis.delete(self._prefix + key)

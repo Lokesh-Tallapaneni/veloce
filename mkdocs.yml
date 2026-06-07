@@ -150,6 +150,7 @@ nav:
       - Static Files: guide/static-files.md
       - Sessions: guide/sessions.md
       - Databases: guide/databases.md
+      - Caching: guide/caching.md
       - Flask-style Helpers: guide/helpers.md
       - Security Schemes: guide/security-schemes.md
       - Passwords: guide/passwords.md
