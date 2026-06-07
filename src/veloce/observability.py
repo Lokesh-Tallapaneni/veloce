@@ -13,8 +13,11 @@ OpenTelemetry bridge uses, so logs and traces stay joinable on
 Both register a single :meth:`Veloce.add_instrumentation` hook, gate on
 ``logger.isEnabledFor`` so a muted access log does zero serialization
 work, and use the route *template* (not the concrete path) for
-aggregation safety. Register one of these instead of ``LoggingMiddleware``,
-not in addition (doing both double-logs).
+aggregation safety. An unmatched request (a 404/405 carrying no route
+template) falls back to the concrete request path in the text log,
+sanitized of control characters so it cannot forge a log line. Register
+one of these instead of ``LoggingMiddleware``, not in addition (doing
+both double-logs).
 
 Usage::
 
@@ -29,6 +32,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
+
+from veloce._internal import _LOG_SANITIZE
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
@@ -111,7 +116,12 @@ def instrument_access_log(
             return
         if not include_streamed and metrics.streamed:
             return
-        route_label = metrics.route if metrics.route is not None else metrics.path
+        # Unmatched requests carry no route template; fall back to the concrete
+        # path, sanitized so a CR/LF in an attacker-controlled URL cannot forge
+        # or split a text log line (CWE-117).
+        route_label = (
+            metrics.route if metrics.route is not None else metrics.path.translate(_LOG_SANITIZE)
+        )
         if json:
             payload = _json_payload(metrics, include_streamed=False, include_path=False)
             resolved.info("%s", app.json.dumps(payload).decode())

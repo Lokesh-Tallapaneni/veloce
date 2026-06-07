@@ -118,6 +118,11 @@ def _coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _header_value_has_crlf(value: str) -> bool:
+    """Return True if `value` carries CR, LF, or NUL (unsafe in a header)."""
+    return "\r" in value or "\n" in value or "\x00" in value
+
+
 def _reject_header_crlf(value: str, what: str) -> str:
     """Reject CR, LF, or NUL in a header field name or value.
 
@@ -125,9 +130,18 @@ def _reject_header_crlf(value: str, what: str) -> str:
     splitting / header injection. Raising - rather than silently
     stripping - surfaces the bug at the offending call site.
     """
-    if "\r" in value or "\n" in value or "\x00" in value:
+    if _header_value_has_crlf(value):
         raise ValueError(f"{what} contains an illegal control character (CR, LF, or NUL)")
     return value
+
+
+# Control characters (the C0 range plus DEL) in a request-derived value would let
+# an attacker forge or split a plain-text log line (CWE-117): a percent-decoded
+# `%0a` in the request target arrives as a real newline that a text formatter
+# writes as a new physical record. `_LOG_SANITIZE` escapes every control
+# character before it reaches a log sink; a normal method / path holds none, so
+# `str.translate` over it is a straight pass.
+_LOG_SANITIZE = str.maketrans({**{c: f"\\x{c:02x}" for c in range(0x20)}, 0x7F: "\\x7f"})
 
 
 def _encode_header_value(value: str) -> str:

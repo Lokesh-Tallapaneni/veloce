@@ -2664,14 +2664,14 @@ class Veloce(Router):
         """Register startup/shutdown event handlers.
 
         Deprecated: use `@app.on_startup` / `@app.on_shutdown` instead.
-        Scheduled for removal in v0.2.0.
+        Scheduled for removal in v1.0.0.
         """
         if event not in (LIFECYCLE_STARTUP, LIFECYCLE_SHUTDOWN):
             raise ValueError(
                 f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
             )
         warnings.warn(
-            "Veloce.on_event() is deprecated and will be removed in v0.2.0; "
+            "Veloce.on_event() is deprecated and will be removed in v1.0.0; "
             "use @app.on_startup / @app.on_shutdown instead.",
             DeprecationWarning,
             stacklevel=2,
@@ -2700,11 +2700,11 @@ class Veloce(Router):
         """Imperative event-handler registration - ASGI shape.
 
         Deprecated: call `app.on_startup(fn)` / `app.on_shutdown(fn)`
-        directly instead. Scheduled for removal in v0.2.0.
+        directly instead. Scheduled for removal in v1.0.0.
         """
         warnings.warn(
             "Veloce.add_event_handler() is deprecated and will be removed "
-            "in v0.2.0; use app.on_startup(fn) / app.on_shutdown(fn) instead.",
+            "in v1.0.0; use app.on_startup(fn) / app.on_shutdown(fn) instead.",
             DeprecationWarning,
             stacklevel=2,
         )

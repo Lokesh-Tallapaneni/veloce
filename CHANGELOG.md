@@ -23,8 +23,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It is opt-in and self-contained - the request pipeline references none of it,
   so an undecorated handler is unaffected.
 
+### Changed
+
+- The deprecated `Veloce.on_event()` and `Veloce.add_event_handler()` now state
+  removal in v1.0.0; the previously advertised v0.2.0 had already passed.
+
 ### Fixed
 
+- The unified access log (`instrument_access_log`) now escapes control characters
+  in the concrete request path it logs for unmatched (404/405) routes, so a CR/LF
+  in an attacker-controlled URL can no longer forge or split a text log line.
+- `SecurityHeadersMiddleware` now matches existing response headers
+  case-insensitively, so a handler-set lowercase security header (for example
+  `x-frame-options`) is honored as an override instead of being overwritten by
+  the default.
+- `RequestIDMiddleware` now mints a fresh id when an inbound `X-Request-ID`
+  carries control characters, instead of reflecting it and failing response
+  header emission.
+- `RateLimitMiddleware` rate-limit reset / `Retry-After` values now round a
+  sub-second remainder up to one second instead of flooring it to `0`.
+- The package `Documentation` URL now points at the documentation site
+  (`https://veloceframework.com`) rather than the source repository.
 - `dump_cookie` now percent-encodes a literal `%` in a cookie value (as `%25`)
   so the value survives a `dump_cookie` -> `parse_cookie` round-trip. Previously
   `%` was in the quoting safe set, so a value containing a percent sequence (for

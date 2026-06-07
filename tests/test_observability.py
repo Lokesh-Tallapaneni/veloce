@@ -115,6 +115,30 @@ def test_access_log_unmatched_falls_back_to_path():
     assert "/nope" in cap.records[0].getMessage()
 
 
+def test_access_log_unmatched_path_sanitizes_control_chars():
+    # A CR/LF in an unmatched (404) request path must be escaped, not written
+    # raw, so it cannot forge or split a text access-log line (CWE-117).
+    import types
+
+    app = _app()
+    logger, cap = _logger("test.obs.sanitize")
+    emit = instrument_access_log(app, logger=logger)
+    emit(
+        types.SimpleNamespace(
+            method="GET",
+            route=None,
+            path="/evil\r\nINJECTED",
+            status_code=404,
+            duration_ms=1.0,
+            streamed=False,
+        )
+    )
+    msg = cap.records[0].getMessage()
+    assert "\r" not in msg
+    assert "\n" not in msg
+    assert "\\x0a" in msg
+
+
 def test_access_log_json_mode():
     app = _app()
     logger, cap = _logger("test.obs.acc3")
