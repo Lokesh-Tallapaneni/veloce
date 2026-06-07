@@ -42,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `RateLimitMiddleware` per-route strategies (`@rate_limit` / `overrides`) now
+  rebuild when the app's route table changes, so a route registered after the
+  first request is honored instead of using a stale resolved map.
+- The `jsonable_encoder` MRO-walk cache is now bounded (FIFO past a cap), so an
+  app that mints many distinct runtime classes can no longer grow it without
+  bound. Normal apps stay below the cap and see no change.
 - The unified access log (`instrument_access_log`) now escapes control characters
   in the concrete request path it logs for unmatched (404/405) routes, so a CR/LF
   in an attacker-controlled URL can no longer forge or split a text log line.
