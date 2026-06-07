@@ -73,6 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Numerous per-request and schema-generation paths were optimized — a compiled
   feature pipeline, indexed route/encoder lookups, and bounded caches — without
   changing public behavior.
+- Route resolution gates its mounted-app, static-handler, and ASGI-mount scans on
+  the compiled pipeline flags, skipping each scan when nothing of that kind is
+  registered.
 
 ### Fixed
 
