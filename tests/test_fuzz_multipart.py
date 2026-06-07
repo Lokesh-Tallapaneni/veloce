@@ -80,7 +80,7 @@ def test_corrupted_valid_body_never_crashes(positions: list[int], replacements: 
     value=st.text(alphabet="abc 123\r\n;=", max_size=40),
 )
 def test_well_formed_single_field_round_trips(name: str, value: str) -> None:
-    """A constructed single text field is parsed back under the same name.
+    """A constructed single text field parses into valid FormData.
 
     A field value carrying the boundary marker or CRLF can legitimately
     restructure the body, so the invariant is the weaker "no crash, valid

@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Signer.loads` now raises `BadData` for a token whose segments contain
+  non-ASCII characters, instead of letting an `ascii`-codec `UnicodeEncodeError`
+  escape (found by the new fuzzing harness).
+- `AcceptHeader.parse` now treats a non-finite `q` value (`q=inf` / `q=nan`) as
+  the default `1.0` rather than carrying the non-finite value into
+  `quality()` / `best_match` comparisons.
+
 ### Added
 
 - A property-based fuzzing harness (Hypothesis) for the request parsers, grouped
