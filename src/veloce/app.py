@@ -465,11 +465,14 @@ class _URLMap:
     Lookup by endpoint name returns the list of matching rules.
     """
 
-    __slots__ = ("_app", "_cached")
+    __slots__ = ("_app", "_cached", "_by_endpoint")
 
     def __init__(self, app: Veloce) -> None:
         self._app = app
         self._cached: list[URLRule] | None = None
+        # Endpoint-name -> its rules, built alongside `_cached` so subscript is
+        # not a full scan. Lives and dies with this instance (see `_build`).
+        self._by_endpoint: dict[str, list[URLRule]] | None = None
 
     def _build(self) -> list[URLRule]:
         # Collect every (method, path, info) tuple, then group by
@@ -490,7 +493,11 @@ class _URLMap:
             else:
                 existing.methods.append(method)
         result = list(groups.values())
+        by_endpoint: dict[str, list[URLRule]] = {}
+        for rule in result:
+            by_endpoint.setdefault(rule.endpoint, []).append(rule)
         self._cached = result
+        self._by_endpoint = by_endpoint
         return result
 
     def __iter__(self) -> Any:
@@ -500,7 +507,10 @@ class _URLMap:
         return len(self._build())
 
     def __getitem__(self, endpoint: str) -> list[URLRule]:
-        return [r for r in self._build() if r.endpoint == endpoint]
+        self._build()
+        index = self._by_endpoint
+        # Return a fresh list so a caller mutating it cannot corrupt the index.
+        return list(index.get(endpoint, ())) if index is not None else []
 
     def __repr__(self) -> str:
         rules = self._build()
