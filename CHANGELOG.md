@@ -2146,15 +2146,14 @@ end-to-end smoke test of the published `veloceframework==0.1.1` wheel.
 
 Metadata-only release. No code, behaviour, or dependency changes
 against 0.1.0 — this version exists solely to correct the maintainer
-email recorded in the PyPI package metadata.
+contact recorded in the PyPI package metadata.
 
 ### Changed
 
-- `pyproject.toml`: `authors` and `maintainers` email corrected from
-  `revanthravella@gmail.com` to `lokeshtallapaneni@gmail.com`. The PyPI
-  v0.1.0 metadata is immutable, so the fix lands as 0.1.1; users on
-  v0.1.0 will pick up the corrected metadata on the next
-  `pip install --upgrade veloceframework`.
+- `pyproject.toml`: `authors` and `maintainers` metadata corrected for
+  the maintainer contact. The PyPI v0.1.0 metadata is immutable, so the
+  fix lands as 0.1.1; users on v0.1.0 will pick up the corrected
+  metadata on the next `pip install --upgrade veloceframework`.
 
 ## [0.1.0] - 2026-05-23
 
