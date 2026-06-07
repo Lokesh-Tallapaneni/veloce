@@ -43,7 +43,16 @@ from veloce import Veloce
 app = Veloce()
 app.config["REQUEST_TIMEOUT"] = 15     # drop a half-sent request after 15s
 app.config["KEEP_ALIVE_TIMEOUT"] = 30  # close an idle connection after 30s
+app.config["MAX_CONCURRENT_CONNECTIONS"] = 1000  # reject beyond this (default 1000)
 ```
+
+!!! note "Concurrent-connection cap"
+    The built-in server admits at most `MAX_CONCURRENT_CONNECTIONS` simultaneous
+    connections (default **1000**) and rejects further ones with `503`
+    immediately rather than queueing them — a deliberate memory guard. Raise it
+    for workloads holding many long-lived connections (for example a large
+    WebSocket fan-out). Uvicorn does not cap concurrency by default; under it
+    this setting has no effect.
 
 It serves **HTTP/1.1 and WebSocket** — the built-in server performs the
 RFC 6455 upgrade handshake itself, so WebSocket routes run under

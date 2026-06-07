@@ -85,6 +85,11 @@ metrics = ["prometheus_client>=0.17"]
 # floor is set by `msgspec.to_builtins`. Install with
 # `pip install veloceframework[fast]`.
 fast = ["msgspec>=0.13"]
+# Redis-backed session store and rate limiter for `veloce.contrib.redis`
+# (`RedisSessionStore`, `RedisRateLimiter`) - shared state across workers. Kept
+# optional so a single-process / in-memory deploy carries no redis dependency.
+# Install with `pip install veloceframework[redis]`.
+redis = ["redis>=4.2"]
 # Everything optional in one shot.
 all = [
     "uvicorn[standard]>=0.23",
@@ -93,6 +98,7 @@ all = [
     "opentelemetry-api>=1.20",
     "prometheus_client>=0.17",
     "msgspec>=0.13",
+    "redis>=4.2",
 ]
 
 [project.scripts]
@@ -122,6 +128,9 @@ dev = [
     # The `fast` extra's backend, so the default test run exercises the msgspec
     # path; the no-msgspec CI leg installs without it and the guarded tests skip.
     "msgspec>=0.13",
+    # In-memory Redis fake so the contrib.redis store/limiter tests run without a
+    # real Redis server.
+    "fakeredis>=2.20",
 ]
 docs = [
     "mkdocs-material[imaging]>=9.5",
@@ -216,5 +225,6 @@ module = [
     "gunicorn.*",
     "opentelemetry.*",
     "prometheus_client",
+    "redis.*",
 ]
 ignore_missing_imports = true
