@@ -129,6 +129,12 @@ _MISSING = object()
 # cannot be shadowed by a stale cached miss.
 _RESOLVED_ENCODERS: dict[type, Callable[[Any], Any] | None] = {}
 
+# Cap the resolve cache so an app that mints many distinct runtime classes (a
+# hot-reloader, per-tenant dynamic models) cannot grow it without bound. A normal
+# app encodes a small, fixed set of types and never reaches the cap, so reads
+# stay a plain dict hit; past the cap the oldest entry is dropped (FIFO).
+_MAX_RESOLVED_ENCODERS = 4096
+
 
 def _resolve_encoder(cls: type) -> Callable[[Any], Any] | None:
     """Find the encoder for `cls` by walking its MRO, memoizing the result.
@@ -156,6 +162,10 @@ def _resolve_encoder(cls: type) -> Callable[[Any], Any] | None:
         if encoder is not None:
             resolved = encoder
             break
+    if len(_RESOLVED_ENCODERS) >= _MAX_RESOLVED_ENCODERS and cls not in _RESOLVED_ENCODERS:
+        # FIFO eviction keeps memory bounded under dynamic class creation; the
+        # dropped type simply re-walks its MRO on a later encode.
+        del _RESOLVED_ENCODERS[next(iter(_RESOLVED_ENCODERS))]
     _RESOLVED_ENCODERS[cls] = resolved
     return resolved
 

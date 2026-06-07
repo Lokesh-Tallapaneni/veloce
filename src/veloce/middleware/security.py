@@ -317,10 +317,12 @@ class RateLimitMiddleware(Middleware):
                 self._overrides = dict(overrides)
             # Per-route strategies, keyed by route template, combining
             # `@rate_limit`-tagged handlers with the explicit `overrides` map.
-            # Built once on the first request (when the route table is final);
-            # `None` until then. An empty result means no per-route limits, so
-            # the per-request path stays a single client-keyed evaluation.
+            # Resolved lazily and rebuilt whenever the app's route-table
+            # generation advances, so a route added after the first request is
+            # picked up. An empty result means no per-route limits, so the
+            # per-request path stays a single client-keyed evaluation.
             self._route_strategies: dict[str, RateLimitStrategy] | None = None
+            self._route_strategies_gen: int = -1
 
     async def process_request(self, request: Request) -> Response | None:
         """Enforce per-client request rate limits."""
@@ -332,9 +334,15 @@ class RateLimitMiddleware(Middleware):
     async def _process_strategy(
         self, request: Request, strategy: RateLimitStrategy
     ) -> Response | None:
+        # Rebuild the per-route map when the app's route table changes (its
+        # generation counter is bumped on every route mutation and frozen once
+        # serving), so a route added after the first request is honored. The
+        # check is a single int compare per request.
+        app = request.app
+        gen = app._gen if app is not None else None
         per_route = self._route_strategies
-        if per_route is None:
-            per_route = self._build_route_strategies(request)
+        if per_route is None or gen != self._route_strategies_gen:
+            per_route = self._build_route_strategies(request, gen)
         # No per-route limits: the common path stays a single client-keyed
         # evaluation with no extra lookup.
         if per_route:
@@ -363,12 +371,14 @@ class RateLimitMiddleware(Middleware):
         request._state[_RL_STATE_KEY] = result
         return None
 
-    def _build_route_strategies(self, request: Request) -> dict[str, RateLimitStrategy]:
-        # Resolve per-route strategies once, on the first request, when the route
-        # table is final. Combines `@rate_limit`-tagged handlers (discovered by
-        # scanning the routes) with the explicit `overrides` map, keyed by the
-        # route template - the value of `request.url_rule`, so a blueprint route
-        # includes its url_prefix. Explicit `overrides` win over a decorator tag.
+    def _build_route_strategies(
+        self, request: Request, gen: int | None = None
+    ) -> dict[str, RateLimitStrategy]:
+        # Resolve per-route strategies for the current route table. Combines
+        # `@rate_limit`-tagged handlers (discovered by scanning the routes) with
+        # the explicit `overrides` map, keyed by the route template - the value
+        # of `request.url_rule`, so a blueprint route includes its url_prefix.
+        # Explicit `overrides` win over a decorator tag.
         app = request.app
         if app is None:
             # No app to scan yet (e.g. a bare unit-test request); don't cache, so
@@ -394,6 +404,7 @@ class RateLimitMiddleware(Middleware):
                 )
             combined.update(self._overrides)
         self._route_strategies = combined
+        self._route_strategies_gen = gen if gen is not None else -1
         return combined
 
     async def _process_legacy(self, request: Request) -> Response | None:

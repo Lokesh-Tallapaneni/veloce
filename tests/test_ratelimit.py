@@ -435,6 +435,30 @@ def test_rate_limit_decorator_applies_per_route():
         assert tc.get("/cheap", headers=_UA).status_code == 200
 
 
+def test_route_added_after_first_request_is_limited():
+    # A route registered after the per-route cache was primed must still be
+    # picked up (the cache rebuilds when the app's route generation advances).
+    from veloce import rate_limit
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(strategy=FixedWindow(100, 60)))
+
+    @app.get("/early")
+    async def early(request: Request):
+        return {"ok": True}
+
+    with TestClient(app) as tc:
+        assert tc.get("/early", headers=_UA).status_code == 200  # primes the cache
+
+        @app.get("/late")
+        @rate_limit(FixedWindow(1, 60))
+        async def late(request: Request):
+            return {"ok": True}
+
+        assert tc.get("/late", headers=_UA).status_code == 200
+        assert tc.get("/late", headers=_UA).status_code == 429
+
+
 def test_explicit_override_wins_over_decorator():
     from veloce import rate_limit
 

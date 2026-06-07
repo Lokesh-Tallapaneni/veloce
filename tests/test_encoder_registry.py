@@ -246,3 +246,17 @@ def test_orjson_default_resolves_scalar_subclass_without_registry():
     import orjson
 
     assert orjson.dumps(_MyDateTime(2024, 1, 2), default=orjson_default) == b'"2024-01-02T00:00:00"'
+
+
+def test_resolved_encoder_cache_is_bounded(monkeypatch):
+    """The MRO-walk cache evicts (FIFO) past its cap so dynamically minted
+    classes cannot grow it without bound."""
+    import veloce.encoders as enc
+
+    enc._RESOLVED_ENCODERS.clear()
+    monkeypatch.setattr(enc, "_MAX_RESOLVED_ENCODERS", 4)
+    for i in range(20):
+        cls = type(f"_Dyn{i}", (int,), {})
+        enc.jsonable_encoder(cls(i))
+    assert len(enc._RESOLVED_ENCODERS) <= 4
+    enc._RESOLVED_ENCODERS.clear()
