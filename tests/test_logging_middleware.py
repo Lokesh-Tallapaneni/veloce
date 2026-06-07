@@ -21,6 +21,25 @@ def _request(headers=None) -> Request:
     )
 
 
+async def test_request_id_rejects_malformed_inbound():
+    # A CR/LF in the inbound X-Request-ID would crash header emission when
+    # reflected; the middleware must mint a fresh id instead.
+    mw = RequestIDMiddleware()
+    req = _request(headers={"x-request-id": "ok\r\nX-Evil: 1"})
+    await mw.process_request(req)
+    rid = req._state["request_id"]
+    assert "\r" not in rid
+    assert "\n" not in rid
+    assert rid != "ok\r\nX-Evil: 1"
+
+
+async def test_request_id_preserves_valid_inbound():
+    mw = RequestIDMiddleware()
+    req = _request(headers={"x-request-id": "abc-123"})
+    await mw.process_request(req)
+    assert req._state["request_id"] == "abc-123"
+
+
 @pytest.fixture
 def access_logger_state():
     """Snapshot and restore veloce.access logger state across the test."""

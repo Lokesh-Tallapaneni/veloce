@@ -107,7 +107,7 @@ veloce = "veloce.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Lokesh-Tallapaneni/veloce"
-Documentation = "https://github.com/Lokesh-Tallapaneni/veloce"
+Documentation = "https://veloceframework.com"
 Source = "https://github.com/Lokesh-Tallapaneni/veloce"
 Issues = "https://github.com/Lokesh-Tallapaneni/veloce/issues"
 Changelog = "https://github.com/Lokesh-Tallapaneni/veloce/blob/main/CHANGELOG.md"

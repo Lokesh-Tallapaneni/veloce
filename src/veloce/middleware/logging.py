@@ -8,23 +8,12 @@ import uuid
 from typing import TYPE_CHECKING
 
 from veloce._constants import HEADER_X_REQUEST_ID
+from veloce._internal import _LOG_SANITIZE, _header_value_has_crlf
 from veloce.middleware.base import Middleware
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.request import Request
     from veloce.http.response import Response
-
-
-# Control characters (the C0 range plus DEL) in a request-derived value would
-# let an attacker forge or split access-log lines (CWE-117): on the ASGI path
-# the server percent-decodes the URL into `request.path`, so a `%0a` in the
-# request target arrives as a real newline that the plain-text formatter writes
-# as a new physical log record. Escape every control character before it reaches
-# the log sink. A normal method / path holds none, so `translate` is a straight
-# pass over the string.
-_CONTROL_ESCAPE = {c: f"\\x{c:02x}" for c in range(0x20)}
-_CONTROL_ESCAPE[0x7F] = "\\x7f"
-_LOG_SANITIZE = str.maketrans(_CONTROL_ESCAPE)
 
 
 class LoggingMiddleware(Middleware):
@@ -119,7 +108,14 @@ class RequestIDMiddleware(Middleware):
 
     async def process_request(self, request: Request) -> Response | None:
         """Attach a unique request ID to each request."""
-        request_id = request.headers.get(self._header_name_lower) or str(uuid.uuid4())
+        # An inbound id is reflected into the response header, so a malformed
+        # value (CR/LF/NUL) would fail header emission; mint a fresh id instead
+        # of trusting attacker-controlled bytes.
+        inbound = request.headers.get(self._header_name_lower)
+        if inbound and not _header_value_has_crlf(inbound):
+            request_id = inbound
+        else:
+            request_id = str(uuid.uuid4())
         request._state["request_id"] = request_id
         return None
 

@@ -24,6 +24,21 @@ def test_default_headers_present():
     assert resp.headers["referrer-policy"] == "strict-origin-when-cross-origin"
 
 
+def test_handler_lowercase_header_override_is_preserved():
+    # `Response.headers` is case-sensitive, but a handler-set lowercase
+    # `x-frame-options` must still count as an override of the default, not be
+    # silently clobbered with `DENY`.
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(SecurityHeadersMiddleware())
+
+    @app.get("/y")
+    async def y():
+        return Response(body=b"{}", headers={"x-frame-options": "SAMEORIGIN"})
+
+    resp = TestClient(app).get("/y")
+    assert resp.headers["x-frame-options"] == "SAMEORIGIN"
+
+
 def test_hsts_off_by_default():
     resp = TestClient(_app()).get("/x")
     assert "strict-transport-security" not in resp.headers

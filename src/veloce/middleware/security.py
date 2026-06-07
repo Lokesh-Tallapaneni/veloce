@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import secrets
 import time
 import uuid
@@ -408,7 +409,9 @@ class RateLimitMiddleware(Middleware):
         """Seconds until the oldest stamp in `bucket` falls out of the window."""
         if not bucket:
             return 0
-        remaining = int(bucket[0] + self.window_seconds - now)
+        # Ceil so a sub-second remainder reports >=1, never 0 while a client
+        # still has to wait (a floored 0.6s would advertise "retry now").
+        remaining = math.ceil(bucket[0] + self.window_seconds - now)
         return remaining if remaining > 0 else 0
 
     def _apply_headers(self, response: Response, limit: int, remaining: int, reset: int) -> None:
@@ -540,8 +543,11 @@ class SecurityHeadersMiddleware(Middleware):
     async def process_response(self, request: Request, response: Response) -> Response:
         """Attach security hardening headers to every response."""
         for name, value in self._headers.items():
-            # Defaults only - never clobber a value the handler chose.
-            if name not in response.headers:
+            # Defaults only - never clobber a value the handler chose. Match
+            # case-insensitively: `Response.headers` is a plain dict, so a
+            # handler-set lowercase `x-frame-options` must still count as an
+            # override of the `X-Frame-Options` default.
+            if not header_present(response.headers, name):
                 response.headers[name] = value
         return response
 

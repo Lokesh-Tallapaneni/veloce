@@ -180,6 +180,15 @@ def test_ratelimit_anonymous_traffic_does_not_share_one_bucket():
     assert second.status_code == 200
 
 
+def test_reset_after_ceils_subsecond_remainder():
+    # A sub-second remainder must round up to 1, not floor to 0, so the client
+    # is never told "retry now" while a fraction of a second still remains.
+    from collections import deque
+
+    mw = RateLimitMiddleware(max_requests=1, window_seconds=60)
+    assert mw._reset_after(deque([0.4]), 60.0) == 1
+
+
 def test_ratelimit_xff_keys_on_rightmost_hop():
     """X-Forwarded-For is parsed RIGHT-to-LEFT — the right-most hop is
     the closest (and only trustworthy) proxy. Spoofing the LEFT-most
