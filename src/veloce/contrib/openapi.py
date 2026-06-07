@@ -689,24 +689,41 @@ def _rewrite_refs(node: Any, token_to_name: dict[str, str]) -> None:
             _rewrite_refs(item, token_to_name)
 
 
-def _pydantic_to_schema(model: type[BaseModel], registry: dict[str, dict]) -> dict:
+def _pydantic_to_schema(
+    model: type[BaseModel],
+    registry: dict[str, dict],
+    mode: str = "validation",
+    by_alias: bool = True,
+) -> dict:
     """Convert a Pydantic model to a name-keyed `$ref`, extending `registry`.
 
-    Standalone validation-mode renderer for callers that build a self-contained
-    schema envelope (the MCP plan bridge inlines these into per-tool `$defs`).
-    The document-wide OpenAPI generator uses `SchemaRegistry` instead, which
-    keys on class identity and supports dual validation/serialization modes.
+    Standalone renderer for callers that build a self-contained schema envelope
+    (the MCP plan bridge inlines these into per-tool `$defs`). `mode` selects the
+    JSON Schema variant: ``"validation"`` (the default, for request inputs) or
+    ``"serialization"`` (for response/output schemas, so computed and
+    serialization-only fields are documented as clients actually receive them).
+    `by_alias` matches the property keys to how the value is dumped, so a caller
+    that emits the value without aliases (``model_dump(by_alias=False)``) can
+    request a field-name schema that the value conforms to. The document-wide
+    OpenAPI generator uses `SchemaRegistry` instead, which keys on class identity
+    and supports dual validation/serialization modes.
     """
     name = model.__name__
     if name not in registry:
         try:
-            schema = model.model_json_schema()
+            schema = model.model_json_schema(mode=mode, by_alias=by_alias)  # type: ignore[arg-type]
             _rewrite_byte_format(schema)
             if "$defs" in schema:
                 for def_name, def_schema in schema["$defs"].items():
                     registry[def_name] = def_schema
                 del schema["$defs"]
-            registry[name] = schema
+            # A recursive model renders as `{"$defs": {Name: <real object>},
+            # "$ref": ".../Name"}`: after extracting `$defs` the leftover
+            # top-level schema is a bare self-`$ref`. Overwriting the registry
+            # entry with it would clobber the real definition pulled from
+            # `$defs`, leaving an unresolvable cycle. Keep the extracted def.
+            if not (list(schema.keys()) == ["$ref"] and name in registry):
+                registry[name] = schema
         except Exception as exc:
             _logger.warning(
                 "OpenAPI schema generation failed for %s: %s. "

@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The MCP server now negotiates the protocol version from the client's
+  `initialize` request - echoing a supported revision back, or returning its
+  latest supported revision otherwise - and answers the `ping` liveness method.
+- MCP tool definitions now carry metadata derived from the route: a `title` from
+  the route `summary`, HTTP-method annotation hints (`readOnlyHint`,
+  `idempotentHint`, `destructiveHint`), and an `outputSchema` when the route
+  declares a `response_model` or the handler returns a Pydantic model. A
+  `tools/call` whose tool has an output schema returns the result as
+  `structuredContent` alongside the existing text content block.
+- An MCP tool backed by a handler that returns a `StreamingResponse` or
+  `EventSourceResponse` is now supported: the stream is drained into a single
+  tool result (a streamed JSON body is decoded, an SSE stream is returned as its
+  event-framed text), bounded by both a 5 MiB buffer limit and a drain timeout -
+  either bound yields an in-band error, so a slow or never-completing stream
+  cannot wedge the serial stdio loop. Previously such a call returned an in-band
+  error.
 - msgspec is now supported as an opt-in fast validation and serialization
   backend alongside Pydantic, installed with the `fast` extra
   (`pip install veloceframework[fast]`). A handler may type a request-body

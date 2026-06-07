@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import orjson
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, computed_field
 
 from veloce import (
     BackgroundTasks,
@@ -80,6 +81,35 @@ class FullUser(BaseModel):
     id: int
     name: str
     password: str
+
+
+class AliasedOut(BaseModel):
+    user_id: int = Field(alias="userId")
+    name: str
+
+
+class AnnotatedOut(BaseModel):
+    id: int
+    name: str
+
+
+class Node(BaseModel):
+    name: str
+    children: list[Node] = []
+
+
+Node.model_rebuild()
+
+
+# A serialization-mode model: `b` is a computed field, absent from the
+# validation schema but present in the serialization dump the client receives.
+class ComputedOut(BaseModel):
+    a: int
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def b(self) -> int:
+        return self.a + 1
 
 
 # -- Registration -----------------------------------------------------
@@ -1101,9 +1131,9 @@ def test_dependency_typed_mcpcontext_receives_context():
     assert out["result"]["content"][0]["text"] == "via_dep"
 
 
-def test_exposed_route_returning_streaming_response_yields_iserror():
-    """A route returning a StreamingResponse (no buffered body) is rejected with
-    a clear isError result, not an empty output (v1 limitation)."""
+def test_exposed_route_streaming_response_is_buffered():
+    """A route returning a StreamingResponse is drained into a single tool result
+    rather than rejected."""
     from veloce import StreamingResponse
 
     app = Veloce(openapi_url=None)
@@ -1111,17 +1141,96 @@ def test_exposed_route_returning_streaming_response_yields_iserror():
     @app.get("/stream", expose_as_mcp_tool=True, mcp_description="Stream chunks")
     async def stream() -> StreamingResponse:
         async def gen():
-            yield b"a"
-            yield b"b"
+            yield b"hello "
+            yield b"world"
 
-        return StreamingResponse(gen())
+        return StreamingResponse(gen(), content_type="text/plain")
 
     out = _call(app, "stream", {})
+    assert "error" not in out
+    assert out["result"].get("isError") is not True
+    assert out["result"]["content"][0]["text"] == "hello world"
+
+
+def test_exposed_route_streaming_json_is_decoded():
+    """A streamed JSON body is buffered and decoded back to a value."""
+    from veloce import StreamingResponse
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/numbers", expose_as_mcp_tool=True, mcp_description="Stream JSON")
+    async def numbers() -> StreamingResponse:
+        async def gen():
+            yield b'{"nums":'
+            yield b"[1,2,3]}"
+
+        return StreamingResponse(gen(), content_type="application/json")
+
+    out = _call(app, "numbers", {})
+    assert "error" not in out
+    assert orjson.loads(out["result"]["content"][0]["text"]) == {"nums": [1, 2, 3]}
+
+
+def test_exposed_route_sse_response_is_buffered():
+    """An EventSourceResponse is drained into its SSE-framed text."""
+    from veloce import EventSourceResponse, ServerSentEvent
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/events", expose_as_mcp_tool=True, mcp_description="Stream events")
+    async def events() -> EventSourceResponse:
+        async def gen():
+            yield ServerSentEvent(data="one")
+            yield ServerSentEvent(data="two")
+
+        return EventSourceResponse(gen())
+
+    out = _call(app, "events", {})
+    assert "error" not in out
+    text = out["result"]["content"][0]["text"]
+    assert "data: one" in text
+    assert "data: two" in text
+
+
+def test_pure_tool_streaming_response_is_buffered():
+    """A pure `@app.mcp_tool` returning a StreamingResponse is buffered too."""
+    from veloce import StreamingResponse
+
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Stream chunks")
+    async def stream() -> StreamingResponse:
+        async def gen():
+            yield b"chunk-1|"
+            yield b"chunk-2"
+
+        return StreamingResponse(gen(), content_type="text/plain")
+
+    out = _call(app, "stream", {})
+    assert "error" not in out
+    assert out["result"]["content"][0]["text"] == "chunk-1|chunk-2"
+
+
+def test_streaming_response_over_buffer_limit_is_in_band_error(monkeypatch):
+    """A stream past the buffer limit yields an in-band error, not unbounded use."""
+    from veloce import StreamingResponse
+    from veloce.contrib.mcp import server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "_STREAM_BUFFER_LIMIT", 8)
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/big", expose_as_mcp_tool=True, mcp_description="Oversized stream")
+    async def big() -> StreamingResponse:
+        async def gen():
+            yield b"0123456789ABCDEF"
+
+        return StreamingResponse(gen(), content_type="text/plain")
+
+    out = _call(app, "big", {})
     assert "error" not in out  # in-band tool error, not a transport error
     assert out["result"]["isError"] is True
-    text = out["result"]["content"][0]["text"]
-    assert "streaming" in text.lower()
-    assert text != ""
+    assert "buffer limit" in out["result"]["content"][0]["text"]
 
 
 def test_handler_response_background_task_runs():
@@ -1716,3 +1825,638 @@ def test_instrumentation_records_real_status_for_short_circuit_and_error():
     assert 401 in seen
     assert 500 in seen
     assert 200 not in seen
+
+
+# -- Protocol version + ping ------------------------------------------
+
+
+def _initialize(app: Veloce, params: dict) -> dict:
+    """Drive one `initialize` and return the response object."""
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params})
+    return asyncio.run(pipe.run())[0]
+
+
+def _list_tools(app: Veloce) -> dict[str, dict]:
+    """Drive one `tools/list` and return the entries keyed by tool name."""
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+    out = asyncio.run(pipe.run())[0]
+    return {tool["name"]: tool for tool in out["result"]["tools"]}
+
+
+def test_initialize_echoes_supported_protocol_version():
+    """A client's requested version is echoed back when the server supports it."""
+    app = Veloce(openapi_url=None)
+    resp = _initialize(app, {"protocolVersion": "2025-06-18"})
+    assert resp["result"]["protocolVersion"] == "2025-06-18"
+
+
+def test_initialize_falls_back_to_latest_for_unknown_version():
+    """An unrecognised requested version yields the server's latest supported."""
+    from veloce.contrib.mcp.server import LATEST_PROTOCOL_VERSION
+
+    app = Veloce(openapi_url=None)
+    resp = _initialize(app, {"protocolVersion": "1999-01-01"})
+    assert resp["result"]["protocolVersion"] == LATEST_PROTOCOL_VERSION
+
+
+def test_initialize_without_version_returns_latest():
+    """An `initialize` with no `protocolVersion` returns the latest supported."""
+    from veloce.contrib.mcp.server import LATEST_PROTOCOL_VERSION
+
+    app = Veloce(openapi_url=None)
+    resp = _initialize(app, {})
+    assert resp["result"]["protocolVersion"] == LATEST_PROTOCOL_VERSION
+
+
+def test_ping_returns_empty_result():
+    """`ping` is answered with an empty result object, not method-not-found."""
+    app = Veloce(openapi_url=None)
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 9, "method": "ping", "params": {}})
+    out = asyncio.run(pipe.run())[0]
+    assert "error" not in out
+    assert out["result"] == {}
+
+
+# -- Tool annotations + title -----------------------------------------
+
+
+def test_get_tool_is_read_only_and_idempotent():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/items", expose_as_mcp_tool=True, mcp_description="List items")
+    async def list_items() -> dict:
+        return {"items": []}
+
+    ann = _list_tools(app)["list_items"]["annotations"]
+    assert ann["readOnlyHint"] is True
+    assert ann["idempotentHint"] is True
+    assert ann["destructiveHint"] is False
+
+
+def test_post_tool_is_additive_not_idempotent():
+    app = Veloce(openapi_url=None)
+
+    @app.post("/items", expose_as_mcp_tool=True, mcp_description="Create item")
+    async def create_item() -> dict:
+        return {"ok": True}
+
+    ann = _list_tools(app)["create_item"]["annotations"]
+    assert ann["readOnlyHint"] is False
+    assert ann["idempotentHint"] is False
+    assert ann["destructiveHint"] is False
+
+
+def test_delete_tool_is_destructive_and_idempotent():
+    app = Veloce(openapi_url=None)
+
+    @app.delete("/items/{n}", expose_as_mcp_tool=True, mcp_description="Delete item")
+    async def delete_item(n: int) -> dict:
+        return {"deleted": n}
+
+    ann = _list_tools(app)["delete_item"]["annotations"]
+    assert ann["readOnlyHint"] is False
+    assert ann["idempotentHint"] is True
+    assert ann["destructiveHint"] is True
+
+
+def test_pure_tool_has_no_annotations():
+    """A pure `@app.mcp_tool` has no HTTP verb, so it carries no annotations."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    assert "annotations" not in _list_tools(app)["add"]
+
+
+def test_tool_title_from_route_summary():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/health",
+        summary="Health probe",
+        expose_as_mcp_tool=True,
+        mcp_description="Check service health",
+    )
+    async def health() -> dict:
+        return {"ok": True}
+
+    assert _list_tools(app)["health"]["title"] == "Health probe"
+
+
+def test_tool_without_summary_has_no_title():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/health", expose_as_mcp_tool=True, mcp_description="Check health")
+    async def health() -> dict:
+        return {"ok": True}
+
+    assert "title" not in _list_tools(app)["health"]
+
+
+# -- Output schema + structured content -------------------------------
+
+
+def test_output_schema_from_response_model():
+    """A route `response_model` produces a standalone object output schema."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/me",
+        response_model=PublicUser,
+        expose_as_mcp_tool=True,
+        mcp_description="Current user",
+    )
+    async def me() -> dict:
+        return {"id": 1, "name": "ada"}
+
+    schema = _list_tools(app)["me"]["outputSchema"]
+    assert schema["type"] == "object"
+    assert set(schema["properties"]) == {"id", "name"}
+
+
+def test_output_schema_inlines_nested_defs():
+    """A nested model in the output schema is inlined under `$defs`, standalone."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/customer",
+        response_model=Customer,
+        expose_as_mcp_tool=True,
+        mcp_description="A customer",
+    )
+    async def customer() -> dict:
+        return {"name": "ada", "address": {"city": "x", "zip": "1"}}
+
+    schema = _list_tools(app)["customer"]["outputSchema"]
+    assert "Address" in schema["$defs"]
+    # No OpenAPI envelope refs leak into a standalone MCP schema.
+    assert "#/components/schemas/" not in orjson.dumps(schema).decode()
+
+
+def test_scalar_tool_has_no_output_schema():
+    """A scalar / non-model return declares no output schema."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    assert "outputSchema" not in _list_tools(app)["add"]
+
+
+def test_structured_content_for_object_result():
+    """A tool with an output schema returns `structuredContent` alongside text."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/me",
+        response_model=PublicUser,
+        expose_as_mcp_tool=True,
+        mcp_description="Current user",
+    )
+    async def me() -> dict:
+        return {"id": 7, "name": "ada"}
+
+    result = _call(app, "me", {})["result"]
+    assert result["structuredContent"] == {"id": 7, "name": "ada"}
+    # The text content block is still present for back-compatibility.
+    assert orjson.loads(result["content"][0]["text"]) == {"id": 7, "name": "ada"}
+
+
+def test_no_structured_content_without_output_schema():
+    """A scalar tool (no output schema) returns only the text content block."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    result = _call(app, "add", {"a": 2, "b": 3})["result"]
+    assert "structuredContent" not in result
+    assert result["content"][0]["text"] == "5"
+
+
+def test_error_result_has_no_structured_content():
+    """A 4xx in-band error surfaces text + isError, never structuredContent."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/me",
+        response_model=PublicUser,
+        expose_as_mcp_tool=True,
+        mcp_description="Current user",
+    )
+    async def me() -> dict:
+        raise HTTPException(status_code=404, detail="gone")
+
+    result = _call(app, "me", {})["result"]
+    assert result["isError"] is True
+    assert "structuredContent" not in result
+
+
+def test_response_model_route_returning_response_emits_filtered_structured_content():
+    """A response_model route whose handler returns its own Response still emits
+    structuredContent, re-filtered through response_model so it conforms to the
+    advertised outputSchema and hidden fields do not leak."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users",
+        response_model=PublicUser,
+        expose_as_mcp_tool=True,
+        mcp_description="List users",
+    )
+    async def users() -> JSONResponse:
+        # The handler builds its own Response, bypassing the response_model
+        # filter; the body even carries a hidden field the model excludes.
+        return JSONResponse({"id": 7, "name": "ada", "password": "secret"})
+
+    # tools/list advertises the outputSchema (derived from response_model).
+    assert "outputSchema" in _list_tools(app)["users"]
+
+    result = _call(app, "users", {})["result"]
+    # The MCP spec requires conforming structuredContent when an outputSchema is
+    # declared; the body is re-run through response_model so the hidden field is
+    # filtered out while the contract is honoured.
+    assert result["structuredContent"] == {"id": 7, "name": "ada"}
+    assert "password" not in result["structuredContent"]
+    assert result.get("isError") is not True
+
+
+def test_response_model_route_streaming_response_emits_filtered_structured_content():
+    """A streamed Response on a response_model route is buffered, decoded, and
+    re-filtered through response_model so structuredContent conforms."""
+    from veloce import StreamingResponse
+
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/stream-user",
+        response_model=PublicUser,
+        expose_as_mcp_tool=True,
+        mcp_description="Stream a user",
+    )
+    async def stream_user() -> StreamingResponse:
+        async def gen():
+            yield b'{"id": 7, "name": "ada", "password": "secret"}'
+
+        return StreamingResponse(gen(), content_type="application/json")
+
+    result = _call(app, "stream_user", {})["result"]
+    assert result["structuredContent"] == {"id": 7, "name": "ada"}
+    assert "password" not in result["structuredContent"]
+    assert result.get("isError") is not True
+
+
+def test_recursive_response_model_output_schema_resolves():
+    """A self-referential response_model yields a resolvable outputSchema whose
+    $defs entry retains the model's real object body."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/tree",
+        response_model=Node,
+        expose_as_mcp_tool=True,
+        mcp_description="Get a node tree",
+    )
+    async def tree() -> Node:
+        return Node(name="root", children=[])
+
+    schema = _list_tools(app)["tree"]["outputSchema"]
+    node_def = schema["$defs"]["Node"]
+    # The real object body must survive - not be clobbered by a bare self-$ref.
+    assert "properties" in node_def
+    assert "name" in node_def["properties"]
+    assert "children" in node_def["properties"]
+
+
+def test_output_schema_renders_serialization_mode():
+    """Every key the structured result carries appears in `outputSchema`.
+
+    A computed field surfaces in the serialization-mode dump but not the
+    validation-mode schema; rendering the output schema in serialization mode
+    keeps `structuredContent` conformant to its `outputSchema`.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/computed",
+        response_model=ComputedOut,
+        expose_as_mcp_tool=True,
+        mcp_description="Computed output",
+    )
+    async def computed() -> ComputedOut:
+        return ComputedOut(a=5)
+
+    schema = _list_tools(app)["computed"]["outputSchema"]
+    result = _call(app, "computed", {})["result"]
+    structured = result["structuredContent"]
+    # The computed field reaches the client.
+    assert structured == {"a": 5, "b": 6}
+    # Every emitted key is declared in the advertised output schema.
+    for key in structured:
+        assert key in schema["properties"], key
+
+
+def test_pure_tool_nonconforming_return_is_in_band_error():
+    """A pure tool whose return does not match its declared model yields an
+    in-band error rather than advertising a schema and emitting non-conforming
+    (or absent) structured content."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Claims a model but returns a scalar")
+    async def bad() -> PublicUser:  # type: ignore[return-value]
+        return 5  # type: ignore[return-value]
+
+    # The schema is advertised from the declared return type.
+    assert "outputSchema" in _list_tools(app)["bad"]
+
+    result = _call(app, "bad", {})["result"]
+    assert result["isError"] is True
+    assert "structuredContent" not in result
+
+
+def test_pure_tool_conforming_dict_return_is_validated():
+    """A pure tool returning a dict that conforms is coerced through its model so
+    `structuredContent` is the serialization-mode dump."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Returns a conforming dict")
+    async def good() -> PublicUser:  # type: ignore[return-value]
+        return {"id": 3, "name": "ada", "extra": "dropped"}  # type: ignore[return-value]
+
+    result = _call(app, "good", {})["result"]
+    assert result["structuredContent"] == {"id": 3, "name": "ada"}
+    assert result.get("isError") is not True
+
+
+def test_response_model_route_plaintext_response_does_not_crash():
+    """A response_model route whose handler returns a non-JSON `Response` emits a
+    text block without crashing into a JSON-RPC transport error."""
+    from veloce import PlainTextResponse
+
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/text",
+        response_model=PublicUser,
+        expose_as_mcp_tool=True,
+        mcp_description="Returns plain text",
+    )
+    async def text() -> PlainTextResponse:
+        return PlainTextResponse("hello")
+
+    response = _call(app, "text", {})
+    # Must not be a JSON-RPC transport error.
+    assert "error" not in response
+    result = response["result"]
+    assert result.get("isError") is not True
+    assert result["content"][0]["text"] == "hello"
+    assert "structuredContent" not in result
+
+
+def test_response_model_route_sse_response_does_not_crash():
+    """A response_model route whose handler returns an SSE stream is drained and
+    emitted as text without crashing the re-filter."""
+    from veloce import EventSourceResponse, ServerSentEvent
+
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/sse",
+        response_model=PublicUser,
+        expose_as_mcp_tool=True,
+        mcp_description="Returns an SSE stream",
+    )
+    async def sse() -> EventSourceResponse:
+        async def gen():
+            yield ServerSentEvent(data="tick")
+
+        return EventSourceResponse(gen())
+
+    response = _call(app, "sse", {})
+    assert "error" not in response
+    result = response["result"]
+    assert result.get("isError") is not True
+    assert "structuredContent" not in result
+
+
+def test_slow_stream_times_out_in_band(monkeypatch):
+    """A streamed result that does not complete within the drain budget yields an
+    in-band error and does not hang the serve loop."""
+    from veloce import StreamingResponse
+    from veloce.contrib.mcp import server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "_STREAM_DRAIN_TIMEOUT", 0.05)
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/slow", expose_as_mcp_tool=True, mcp_description="Slow stream")
+    async def slow() -> StreamingResponse:
+        async def gen():
+            yield b"start"
+            # A small, never-completing feed: under the size cap forever.
+            while True:
+                await asyncio.sleep(0.01)
+                yield b"."
+
+        return StreamingResponse(gen(), content_type="text/plain")
+
+    result = _call(app, "slow", {})["result"]
+    assert result["isError"] is True
+    assert "timeout" in result["content"][0]["text"].lower()
+
+
+def test_oversized_stream_closes_producer_promptly(monkeypatch):
+    """The size-cap path closes the producing generator so its finally runs
+    immediately, not only at GC."""
+    from veloce import StreamingResponse
+    from veloce.contrib.mcp import server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "_STREAM_BUFFER_LIMIT", 8)
+
+    app = Veloce(openapi_url=None)
+    closed = []
+
+    @app.get("/big", expose_as_mcp_tool=True, mcp_description="Oversized stream")
+    async def big() -> StreamingResponse:
+        async def gen():
+            try:
+                yield b"0123456789ABCDEF"
+                yield b"more"
+            finally:
+                closed.append(True)
+
+        return StreamingResponse(gen(), content_type="text/plain")
+
+    result = _call(app, "big", {})["result"]
+    assert result["isError"] is True
+    assert "buffer limit" in result["content"][0]["text"]
+    # The producer's finally ran promptly, not deferred to GC.
+    assert closed == [True]
+
+
+def test_slow_stream_with_awaiting_cleanup_stays_in_budget(monkeypatch):
+    """A generator whose teardown awaits cannot re-wedge the serve loop past the
+    drain deadline: the cleanup aclose() is itself bounded."""
+    from veloce import StreamingResponse
+    from veloce.contrib.mcp import server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "_STREAM_DRAIN_TIMEOUT", 0.05)
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/slow", expose_as_mcp_tool=True, mcp_description="Slow stream")
+    async def slow() -> StreamingResponse:
+        async def gen():
+            try:
+                yield b"start"
+                while True:
+                    await asyncio.sleep(0.01)
+                    yield b"."
+            finally:
+                # An adversarial teardown that awaits far past the deadline; the
+                # bounded cleanup must not let it block the result.
+                await asyncio.sleep(10)
+
+        return StreamingResponse(gen(), content_type="text/plain")
+
+    started = time.perf_counter()
+    result = _call(app, "slow", {})["result"]
+    elapsed = time.perf_counter() - started
+    assert result["isError"] is True
+    assert "timeout" in result["content"][0]["text"].lower()
+    # Drain budget + cleanup budget, with generous slack for scheduling - far
+    # under the 10s the un-bounded teardown would have added.
+    assert elapsed < 2.0
+
+
+def test_multi_verb_route_annotations_are_conservative():
+    """A route serving several verbs is rated across all of them, not just the
+    first yielded verb."""
+    app = Veloce(openapi_url=None)
+
+    @app.route(
+        "/items/{n}",
+        methods=["GET", "DELETE"],
+        expose_as_mcp_tool=True,
+        mcp_description="Fetch or delete an item",
+    )
+    async def items(n: int) -> dict:
+        return {"n": n}
+
+    ann = _list_tools(app)["items"]["annotations"]
+    # GET alone would read read-only / non-destructive, but DELETE makes the
+    # tool neither: the conservative rating flags it across both verbs.
+    assert ann["readOnlyHint"] is False
+    assert ann["idempotentHint"] is True
+    assert ann["destructiveHint"] is True
+
+
+def test_multi_verb_additive_route_is_not_destructive():
+    """A GET+POST route is mutating but additive, so not flagged destructive."""
+    app = Veloce(openapi_url=None)
+
+    @app.route(
+        "/items",
+        methods=["GET", "POST"],
+        expose_as_mcp_tool=True,
+        mcp_description="List or create items",
+    )
+    async def items() -> dict:
+        return {"ok": True}
+
+    ann = _list_tools(app)["items"]["annotations"]
+    assert ann["readOnlyHint"] is False
+    assert ann["idempotentHint"] is False
+    assert ann["destructiveHint"] is False
+
+
+def test_output_schema_and_structured_content_agree_on_aliases():
+    """The advertised outputSchema keys match the structuredContent keys for an
+    aliased model, so the structured value conforms to its schema."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/aliased",
+        response_model=AliasedOut,
+        expose_as_mcp_tool=True,
+        mcp_description="Aliased output",
+    )
+    async def aliased() -> dict:
+        return {"userId": 7, "name": "ada"}
+
+    tool = _list_tools(app)["aliased"]
+    schema_keys = set(tool["outputSchema"]["properties"])
+    structured = _call(app, "aliased", {})["result"]["structuredContent"]
+    # response_model_by_alias defaults to False, so both the schema and the dump
+    # use field names - and every structured key is in the schema.
+    assert set(structured) <= schema_keys
+    assert schema_keys == {"user_id", "name"}
+    assert structured == {"user_id": 7, "name": "ada"}
+
+
+def test_return_annotation_route_filters_handler_response_body():
+    """A route typed only by its return annotation (no response_model) whose
+    handler builds its own Response still drops fields outside the model."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/me_resp", expose_as_mcp_tool=True, mcp_description="Current user")
+    async def me_resp() -> AnnotatedOut:
+        return JSONResponse({"id": 1, "name": "ada", "secret": "x"})
+
+    result = _call(app, "me_resp", {})["result"]
+    assert result["structuredContent"] == {"id": 1, "name": "ada"}
+    assert "secret" not in result["structuredContent"]
+
+
+def test_return_annotation_route_filters_raw_dict():
+    """A route typed only by its return annotation drops extra fields from a raw
+    dict return before emitting structuredContent."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/me_dict", expose_as_mcp_tool=True, mcp_description="Current user")
+    async def me_dict() -> AnnotatedOut:
+        return {"id": 2, "name": "grace", "secret": "y"}
+
+    result = _call(app, "me_dict", {})["result"]
+    assert result["structuredContent"] == {"id": 2, "name": "grace"}
+    assert "secret" not in result["structuredContent"]
+
+
+def test_protocol_version_2025_03_26_not_echoed():
+    """2025-03-26 is not advertised as supported (it lacks outputSchema etc.), so
+    a request for it falls back to the latest supported revision."""
+    from veloce.contrib.mcp.server import LATEST_PROTOCOL_VERSION
+
+    app = Veloce(openapi_url=None)
+    resp = _initialize(app, {"protocolVersion": "2025-03-26"})
+    assert resp["result"]["protocolVersion"] == LATEST_PROTOCOL_VERSION
+
+
+def test_response_model_exclude_drops_required_from_output_schema():
+    """A route excluding a required field advertises no `required`, so the
+    partial structuredContent still conforms to the outputSchema."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/partial",
+        response_model=FullUser,
+        response_model_exclude={"password"},
+        expose_as_mcp_tool=True,
+        mcp_description="User without password",
+    )
+    async def partial() -> dict:
+        return {"id": 1, "name": "ada", "password": "secret"}
+
+    tool = _list_tools(app)["partial"]
+    # `required` is dropped because exclude makes presence conditional.
+    assert "required" not in tool["outputSchema"]
+    result = _call(app, "partial", {})["result"]
+    assert result["structuredContent"] == {"id": 1, "name": "ada"}
+    assert "password" not in result["structuredContent"]
