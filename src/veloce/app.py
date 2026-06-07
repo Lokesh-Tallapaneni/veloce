@@ -3348,27 +3348,29 @@ class Veloce(Router):
         Raises `HTTPException` for the 404 / constraint-mismatch cases.
         """
         # Check mounted sub-apps
-        for prefix, prefix_slash, sub_app in self._mounted_apps:
-            if request.path.startswith(prefix_slash) or request.path == prefix:
-                sub_path = request.path[len(prefix) :] or "/"
-                sub_request = Request(
-                    method=request.method,
-                    path=sub_path,
-                    query_string=request.query_string,
-                    headers=request.headers,
-                    body=await request.body(),
-                    transport=request.transport,
-                    app=sub_app,
-                )
-                if hasattr(sub_app, "handle_request"):
-                    response = await sub_app.handle_request(sub_request)
-                    return await self._run_response_middleware(request, response)
+        if cp.has_mounted_apps:
+            for prefix, prefix_slash, sub_app in self._mounted_apps:
+                if request.path.startswith(prefix_slash) or request.path == prefix:
+                    sub_path = request.path[len(prefix) :] or "/"
+                    sub_request = Request(
+                        method=request.method,
+                        path=sub_path,
+                        query_string=request.query_string,
+                        headers=request.headers,
+                        body=await request.body(),
+                        transport=request.transport,
+                        app=sub_app,
+                    )
+                    if hasattr(sub_app, "handle_request"):
+                        response = await sub_app.handle_request(sub_request)
+                        return await self._run_response_middleware(request, response)
 
         # Check static files
-        for static in self._static_handlers:
-            response = await static.handle(request)
-            if response is not None:
-                return await self._run_response_middleware(request, response)
+        if cp.has_static_handlers:
+            for static in self._static_handlers:
+                response = await static.handle(request)
+                if response is not None:
+                    return await self._run_response_middleware(request, response)
 
         # Route matching - reuse the match taken before the before_request
         # hooks ran unless a hook rewrote the request path or method, in
@@ -4861,7 +4863,7 @@ class Veloce(Router):
 
         # Mounted arbitrary ASGI apps are dispatched here with the raw
         # scope - the matched prefix is moved from `path` to `root_path`.
-        if self._asgi_mounts and scope["type"] in (ASGI_SCOPE_HTTP, ASGI_SCOPE_WEBSOCKET):
+        if cp.has_asgi_mounts and scope["type"] in (ASGI_SCOPE_HTTP, ASGI_SCOPE_WEBSOCKET):
             mount = self._match_asgi_mount(scope.get("path", ""))
             if mount is not None:
                 prefix, mounted = mount
