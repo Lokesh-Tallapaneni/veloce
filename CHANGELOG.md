@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A step-by-step tutorial series under `docs/tutorial/` that builds one Tasks
+  API from a hello-world handler through path and query parameters, Pydantic
+  request bodies, dependency injection, error handling, and an in-memory
+  `TestClient` test suite, wired into the documentation navigation.
+- A top-level `examples/` directory of complete, single-file, runnable
+  applications — `crud_api.py`, `auth_jwt.py`, `websocket_chat.py`,
+  `sse_feed.py`, and `file_upload.py` — each launchable with
+  `python examples/<name>.py`, indexed by `examples/README.md`.
 - The MCP server now negotiates the protocol version from the client's
   `initialize` request - echoing a supported revision back, or returning its
   latest supported revision otherwise - and answers the `ping` liveness method.

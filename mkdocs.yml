@@ -129,6 +129,14 @@ plugins:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Tutorial:
+      - Overview: tutorial/index.md
+      - 1. Your first app: tutorial/first-app.md
+      - 2. Path & query parameters: tutorial/path-and-query-params.md
+      - 3. Request bodies: tutorial/request-body.md
+      - 4. Dependencies: tutorial/dependencies.md
+      - 5. Errors & validation: tutorial/errors-and-validation.md
+      - 6. Testing: tutorial/testing.md
   - Guide:
       - Routing: guide/routing.md
       - Requests & Responses: guide/requests-responses.md
