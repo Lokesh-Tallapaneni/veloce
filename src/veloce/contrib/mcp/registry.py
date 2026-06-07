@@ -133,15 +133,34 @@ def _output_schema_for(
     alongside the schema so a pure tool can validate its raw return against it.
     """
     model: type[BaseModel] | None = None
+    # The schema's alias usage must match how the structured value is dumped: a
+    # route `response_model` is dumped with the route's `response_model_by_alias`
+    # (default False), while a return-type model and a pure tool dump with field
+    # names. Build the schema with the matching `by_alias` so `structuredContent`
+    # conforms to the advertised `outputSchema`.
+    by_alias = False
     if route_info is not None:
         response_model = route_info.response_model
         if isinstance(response_model, type) and issubclass(response_model, BaseModel):
             model = response_model
+            by_alias = route_info.response_model_by_alias
     if model is None:
         model = _return_model(handler)
     if model is None:
         return None, None
-    return build_output_schema(model, schemas_registry), model
+    schema = build_output_schema(model, schemas_registry, by_alias=by_alias)
+    # `response_model_include` / `response_model_exclude` make field presence
+    # conditional, so the bare model's `required` no longer matches the dumped
+    # value (an excluded required field is absent). Drop `required` so a partial
+    # object still conforms to the advertised schema; the value only ever omits
+    # fields, never adds undeclared ones, so the looser schema stays sound.
+    if (
+        schema is not None
+        and route_info is not None
+        and (route_info.response_model_include or route_info.response_model_exclude)
+    ):
+        schema.pop("required", None)
+    return schema, model
 
 
 def _tool_name_from_route_name(route_name: str) -> str:

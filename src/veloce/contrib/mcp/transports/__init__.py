@@ -1,6 +1,6 @@
 """MCP transports - the wire layer between a client and the `MCPServer`.
 
-v1 ships the stdio transport only; HTTP / SSE transports are v2.
+Ships the stdio transport; the Streamable HTTP transport is not yet implemented.
 """
 
 from __future__ import annotations

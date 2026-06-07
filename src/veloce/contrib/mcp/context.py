@@ -7,8 +7,8 @@ type annotation, never by parameter name, so a plain argument named ``ctx`` /
 ``context`` stays a normal tool input). The context carries the calling tool
 name, the raw argument
 mapping, and placeholder hooks for the cancellation / progress / logging
-channels the MCP protocol defines for v2; in v1 those are inert no-ops so
-handlers written against them keep working once the channels are wired.
+channels the MCP protocol defines; these are inert no-ops on the stdio transport
+so handlers written against them keep working once the channels are wired.
 """
 
 from __future__ import annotations
@@ -40,14 +40,14 @@ class MCPContext:
 
     @property
     def cancelled(self) -> bool:
-        """Whether the caller has requested cancellation (always False in v1)."""
+        """Whether the caller has requested cancellation (no cancel channel yet)."""
         return self._cancelled
 
     async def log(self, level: str, message: str) -> None:
-        """Send a log line to the MCP client - inert in v1 (no log channel)."""
+        """Send a log line to the MCP client - inert (no log channel yet)."""
 
     async def report_progress(self, progress: float, total: float | None = None) -> None:
-        """Report progress to the MCP client - inert in v1 (no progress channel)."""
+        """Report progress to the MCP client - inert (no progress channel yet)."""
 
     def __repr__(self) -> str:
         return f"MCPContext(tool_name={self.tool_name!r})"

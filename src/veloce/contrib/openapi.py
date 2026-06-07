@@ -690,7 +690,10 @@ def _rewrite_refs(node: Any, token_to_name: dict[str, str]) -> None:
 
 
 def _pydantic_to_schema(
-    model: type[BaseModel], registry: dict[str, dict], mode: str = "validation"
+    model: type[BaseModel],
+    registry: dict[str, dict],
+    mode: str = "validation",
+    by_alias: bool = True,
 ) -> dict:
     """Convert a Pydantic model to a name-keyed `$ref`, extending `registry`.
 
@@ -699,13 +702,16 @@ def _pydantic_to_schema(
     JSON Schema variant: ``"validation"`` (the default, for request inputs) or
     ``"serialization"`` (for response/output schemas, so computed and
     serialization-only fields are documented as clients actually receive them).
-    The document-wide OpenAPI generator uses `SchemaRegistry` instead, which
-    keys on class identity and supports dual validation/serialization modes.
+    `by_alias` matches the property keys to how the value is dumped, so a caller
+    that emits the value without aliases (``model_dump(by_alias=False)``) can
+    request a field-name schema that the value conforms to. The document-wide
+    OpenAPI generator uses `SchemaRegistry` instead, which keys on class identity
+    and supports dual validation/serialization modes.
     """
     name = model.__name__
     if name not in registry:
         try:
-            schema = model.model_json_schema(mode=mode)  # type: ignore[arg-type]
+            schema = model.model_json_schema(mode=mode, by_alias=by_alias)  # type: ignore[arg-type]
             _rewrite_byte_format(schema)
             if "$defs" in schema:
                 for def_name, def_schema in schema["$defs"].items():
@@ -716,9 +722,7 @@ def _pydantic_to_schema(
             # top-level schema is a bare self-`$ref`. Overwriting the registry
             # entry with it would clobber the real definition pulled from
             # `$defs`, leaving an unresolvable cycle. Keep the extracted def.
-            if list(schema.keys()) == ["$ref"] and name in registry:
-                pass
-            else:
+            if not (list(schema.keys()) == ["$ref"] and name in registry):
                 registry[name] = schema
         except Exception as exc:
             _logger.warning(

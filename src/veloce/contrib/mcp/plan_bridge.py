@@ -107,7 +107,9 @@ def build_input_schema(
 
 
 def build_output_schema(
-    model: type[BaseModel], schemas_registry: dict[str, dict[str, Any]]
+    model: type[BaseModel],
+    schemas_registry: dict[str, dict[str, Any]],
+    by_alias: bool = True,
 ) -> dict[str, Any] | None:
     """Build a standalone MCP output JSON Schema from a Pydantic model.
 
@@ -120,10 +122,11 @@ def build_output_schema(
 
     Rendered in serialization mode so the advertised schema matches what
     `model_dump(mode="json")` emits: a computed field or serialization alias
-    that surfaces in the structured result is documented here too, keeping MCP
-    `outputSchema` aligned with the structured output the client receives.
+    that surfaces in the structured result is documented here too. `by_alias`
+    matches the schema's property keys to how the structured value will be
+    dumped, so the emitted `structuredContent` conforms to the advertised schema.
     """
-    ref = _pydantic_to_schema(model, schemas_registry, mode="serialization")
+    ref = _pydantic_to_schema(model, schemas_registry, mode="serialization", by_alias=by_alias)
     name = ref["$ref"][len(_OPENAPI_REF_PREFIX) :]
     base = schemas_registry.get(name)
     if base is None:

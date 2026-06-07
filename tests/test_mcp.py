@@ -7,7 +7,7 @@ import time
 
 import orjson
 import pytest
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 
 from veloce import (
     BackgroundTasks,
@@ -81,6 +81,16 @@ class FullUser(BaseModel):
     id: int
     name: str
     password: str
+
+
+class AliasedOut(BaseModel):
+    user_id: int = Field(alias="userId")
+    name: str
+
+
+class AnnotatedOut(BaseModel):
+    id: int
+    name: str
 
 
 class Node(BaseModel):
@@ -2365,3 +2375,88 @@ def test_multi_verb_additive_route_is_not_destructive():
     assert ann["readOnlyHint"] is False
     assert ann["idempotentHint"] is False
     assert ann["destructiveHint"] is False
+
+
+def test_output_schema_and_structured_content_agree_on_aliases():
+    """The advertised outputSchema keys match the structuredContent keys for an
+    aliased model, so the structured value conforms to its schema."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/aliased",
+        response_model=AliasedOut,
+        expose_as_mcp_tool=True,
+        mcp_description="Aliased output",
+    )
+    async def aliased() -> dict:
+        return {"userId": 7, "name": "ada"}
+
+    tool = _list_tools(app)["aliased"]
+    schema_keys = set(tool["outputSchema"]["properties"])
+    structured = _call(app, "aliased", {})["result"]["structuredContent"]
+    # response_model_by_alias defaults to False, so both the schema and the dump
+    # use field names - and every structured key is in the schema.
+    assert set(structured) <= schema_keys
+    assert schema_keys == {"user_id", "name"}
+    assert structured == {"user_id": 7, "name": "ada"}
+
+
+def test_return_annotation_route_filters_handler_response_body():
+    """A route typed only by its return annotation (no response_model) whose
+    handler builds its own Response still drops fields outside the model."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/me_resp", expose_as_mcp_tool=True, mcp_description="Current user")
+    async def me_resp() -> AnnotatedOut:
+        return JSONResponse({"id": 1, "name": "ada", "secret": "x"})
+
+    result = _call(app, "me_resp", {})["result"]
+    assert result["structuredContent"] == {"id": 1, "name": "ada"}
+    assert "secret" not in result["structuredContent"]
+
+
+def test_return_annotation_route_filters_raw_dict():
+    """A route typed only by its return annotation drops extra fields from a raw
+    dict return before emitting structuredContent."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/me_dict", expose_as_mcp_tool=True, mcp_description="Current user")
+    async def me_dict() -> AnnotatedOut:
+        return {"id": 2, "name": "grace", "secret": "y"}
+
+    result = _call(app, "me_dict", {})["result"]
+    assert result["structuredContent"] == {"id": 2, "name": "grace"}
+    assert "secret" not in result["structuredContent"]
+
+
+def test_protocol_version_2025_03_26_not_echoed():
+    """2025-03-26 is not advertised as supported (it lacks outputSchema etc.), so
+    a request for it falls back to the latest supported revision."""
+    from veloce.contrib.mcp.server import LATEST_PROTOCOL_VERSION
+
+    app = Veloce(openapi_url=None)
+    resp = _initialize(app, {"protocolVersion": "2025-03-26"})
+    assert resp["result"]["protocolVersion"] == LATEST_PROTOCOL_VERSION
+
+
+def test_response_model_exclude_drops_required_from_output_schema():
+    """A route excluding a required field advertises no `required`, so the
+    partial structuredContent still conforms to the outputSchema."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/partial",
+        response_model=FullUser,
+        response_model_exclude={"password"},
+        expose_as_mcp_tool=True,
+        mcp_description="User without password",
+    )
+    async def partial() -> dict:
+        return {"id": 1, "name": "ada", "password": "secret"}
+
+    tool = _list_tools(app)["partial"]
+    # `required` is dropped because exclude makes presence conditional.
+    assert "required" not in tool["outputSchema"]
+    result = _call(app, "partial", {})["result"]
+    assert result["structuredContent"] == {"id": 1, "name": "ada"}
+    assert "password" not in result["structuredContent"]

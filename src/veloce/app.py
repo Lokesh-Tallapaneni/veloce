@@ -2791,7 +2791,7 @@ class Veloce(Router):
 
         Assembles the tool registry from `@app.mcp_tool` registrations plus
         every route flagged `expose_as_mcp_tool=True`, then serves it over the
-        chosen transport. v1 supports `transport="stdio"` only (JSON-RPC 2.0
+        chosen transport. Supports `transport="stdio"` only (JSON-RPC 2.0
         on stdin/stdout, for subprocess use); the coroutine runs until stdin
         closes. Returns the awaitable serve coroutine so a caller may schedule
         it explicitly (`asyncio.run(app.mount_mcp())`).
@@ -2807,8 +2807,8 @@ class Veloce(Router):
 
         if transport != "stdio":
             raise ValueError(
-                f"Unsupported MCP transport {transport!r}; v1 supports 'stdio' only "
-                "(HTTP / SSE transports are planned for v2)."
+                f"Unsupported MCP transport {transport!r}; only 'stdio' is supported "
+                "(the Streamable HTTP transport is not yet implemented)."
             )
         server = MCPServer(self)
 

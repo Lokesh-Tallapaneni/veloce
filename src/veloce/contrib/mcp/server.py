@@ -45,8 +45,10 @@ LATEST_PROTOCOL_VERSION = "2025-11-25"
 
 # Revisions whose ``tools`` surface this server is compatible with. A client
 # that requests one of these gets it echoed back from ``initialize``; any other
-# request falls back to `LATEST_PROTOCOL_VERSION`.
-_SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-03-26", "2025-06-18", LATEST_PROTOCOL_VERSION})
+# request falls back to `LATEST_PROTOCOL_VERSION`. ``2025-03-26`` is excluded: it
+# predates the ``title`` / ``outputSchema`` / ``structuredContent`` fields this
+# server emits.
+_SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", LATEST_PROTOCOL_VERSION})
 
 # JSON-RPC 2.0 error codes (Sec. 5.1) plus the MCP "method not found" reuse.
 _JSONRPC_INVALID_REQUEST = -32600
@@ -257,10 +259,9 @@ class MCPServer:
         awaits forever) from wedging the serial stdio serve loop. The size cap
         bounds the *accumulated* bytes - a single chunk is materialised by the
         producer before the check, so peak memory is the cap plus the largest
-        single chunk. On either
-        bounded failure - size cap or timeout - the underlying async generator is
-        closed so the producing task does not leak, and that close is itself
-        bounded by the same deadline.
+        single chunk. On either bounded failure - size cap or timeout - the
+        underlying async generator is closed so the producing task does not leak,
+        and that close is itself bounded by the same deadline.
         """
         if not response.is_streamed:
             return
@@ -377,16 +378,27 @@ class MCPServer:
         # only, with no `structuredContent` - a non-object body has no object
         # form to advertise anyway.
         route_info = tool.route_info
-        if (
-            not model_filtered
-            and tool.output_schema is not None
-            and route_info is not None
-            and route_info.response_model is not None
-        ):
-            try:
-                shaped = self.app._apply_response_model(shaped, route_info)
-            except Exception:
-                return {"content": [{"type": "text", "text": _stringify(shaped)}]}
+        if tool.output_schema is not None:
+            if route_info is not None and route_info.response_model is not None:
+                # `_build_response` already ran the `response_model` filter for a
+                # non-`Response` return (`model_filtered`); only a handler-built
+                # `Response` body still needs it, through the route's dump
+                # settings so `structuredContent` conforms to the advertised
+                # schema and an excluded field cannot leak.
+                if not model_filtered:
+                    try:
+                        shaped = self.app._apply_response_model(shaped, route_info)
+                    except Exception:
+                        return {"content": [{"type": "text", "text": _stringify(shaped)}]}
+            elif tool.output_model is not None:
+                # The output schema came from the handler's return annotation, not
+                # a `response_model`, so `_build_response` never filtered to it -
+                # validate every return (raw value or handler-built body) through
+                # the model so a field outside it cannot leak.
+                try:
+                    shaped = tool.output_model.model_validate(shaped).model_dump(mode="json")
+                except Exception:
+                    return {"content": [{"type": "text", "text": _stringify(shaped)}]}
         return self._success_result(tool, shaped)
 
     def _success_result(self, tool: MCPTool, shaped: Any) -> dict[str, Any]:
