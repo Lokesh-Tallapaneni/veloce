@@ -26,6 +26,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frame parser, asserting that arbitrary input never raises an undeclared
   exception, hangs, or over-allocates, and that the cookie and signing paths
   round-trip valid values.
+### Changed
+
+- `Veloce.run(workers=...)` now raises `ValueError` when `workers` is not `1`.
+  The built-in development server runs a single process and never pre-forked, so
+  a worker count above one was silently ignored; it now fails loudly and points
+  to running under uvicorn (`--workers N`) or the gunicorn `VeloceWorker`. The
+  `veloce run` CLI warns and serves one process instead of forwarding the count
+  when it falls back to the built-in server.
+
+### Added
+
+- `veloce.contrib.redis` adds `RedisSessionStore` and `RedisRateLimiter` for
+  state shared across workers and hosts: a `SessionStore` backed by Redis (native
+  TTL expiry, sliding renewal, and a race-safe conditional write) and a
+  cross-worker fixed-window rate-limit middleware. Install the backend with
+  `pip install veloceframework[redis]`.
+- A Databases guide documents the recommended async SQLAlchemy pattern (one
+  pooled engine for the app lifetime, a per-request session dependency) and the
+  Redis session/rate-limit helpers. The deployment guide documents the built-in
+  server's `MAX_CONCURRENT_CONNECTIONS` cap.
 
 - The MCP server now negotiates the protocol version from the client's
   `initialize` request - echoing a supported revision back, or returning its

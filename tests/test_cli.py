@@ -61,9 +61,26 @@ def test_run_falls_back_to_native_when_uvicorn_absent(monkeypatch):
             calls.update(kwargs)
 
     monkeypatch.setattr(cli_module, "_load_app", lambda ref: _FakeApp())
-    args = build_parser().parse_args(["run", "x:y", "--port", "9001", "--workers", "2"])
+    args = build_parser().parse_args(["run", "x:y", "--port", "9001"])
     assert cli_module._cmd_run(args) == 0
-    assert calls == {"host": "127.0.0.1", "port": 9001, "workers": 2}
+    assert calls == {"host": "127.0.0.1", "port": 9001}
+
+
+def test_run_native_ignores_multiple_workers(monkeypatch, capsys):
+    # The built-in server is single-process; --workers>1 is warned and dropped
+    # (not forwarded to run(), which would reject it).
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    calls: dict = {}
+
+    class _FakeApp:
+        def run(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "_load_app", lambda ref: _FakeApp())
+    args = build_parser().parse_args(["run", "x:y", "--port", "9001", "--workers", "4"])
+    assert cli_module._cmd_run(args) == 0
+    assert "workers" not in calls
+    assert "--workers 4 is ignored" in capsys.readouterr().err
 
 
 def test_run_native_maps_all_interfaces_to_bind_all(monkeypatch):
@@ -79,7 +96,7 @@ def test_run_native_maps_all_interfaces_to_bind_all(monkeypatch):
     monkeypatch.setattr(cli_module, "_load_app", lambda ref: _FakeApp())
     args = build_parser().parse_args(["run", "x:y", "--host", "0.0.0.0", "--port", "9002"])
     assert cli_module._cmd_run(args) == 0
-    assert calls == {"port": 9002, "workers": 1, "bind_all": True}
+    assert calls == {"port": 9002, "bind_all": True}
 
 
 def test_run_reload_without_uvicorn_errors(monkeypatch):
