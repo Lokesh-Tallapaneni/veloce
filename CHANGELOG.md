@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A step-by-step tutorial series under `docs/tutorial/` that builds one Tasks
+  API from a hello-world handler through path and query parameters, Pydantic
+  request bodies, dependency injection, error handling, and an in-memory
+  `TestClient` test suite, wired into the documentation navigation.
+- A top-level `examples/` directory of complete, single-file, runnable
+  applications — `crud_api.py`, `auth_jwt.py`, `websocket_chat.py`,
+  `sse_feed.py`, and `file_upload.py` — each launchable with
+  `python examples/<name>.py`, indexed by `examples/README.md`.
 - A property-based fuzzing harness (Hypothesis) for the request parsers, grouped
   under the `fuzz` pytest marker and run both in the default suite and as a
   dedicated CI leg (`pytest -m fuzz`). It exercises the cookie parser, the
