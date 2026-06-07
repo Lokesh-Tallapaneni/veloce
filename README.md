@@ -9,6 +9,7 @@
   <a href="https://pypi.org/project/veloceframework/"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/veloceframework.svg"></a>
   <a href="https://github.com/Lokesh-Tallapaneni/veloce/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/pypi/l/veloceframework.svg"></a>
   <a href="https://github.com/Lokesh-Tallapaneni/veloce/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Lokesh-Tallapaneni/veloce/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/Lokesh-Tallapaneni/veloce/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/Lokesh-Tallapaneni/veloce/actions/workflows/docs.yml/badge.svg"></a>
 </p>
 
 ---
