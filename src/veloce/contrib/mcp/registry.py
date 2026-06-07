@@ -15,13 +15,16 @@ handler must carry a non-empty description.
 
 from __future__ import annotations
 
+import typing
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel
+
 from veloce._handler_plan import build_plan
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
-from veloce.contrib.mcp.plan_bridge import build_input_schema
+from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
 from veloce.contrib.mcp.safety import require_mcp_description
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -56,6 +59,23 @@ class MCPTool:
     # `request.method` sees the route's real verb, not the MCP origin. `None`
     # for a pure `@app.mcp_tool`, which keeps the synthetic MCP method.
     route_method: str | None = None
+    # Every HTTP method the route serves (a multi-verb route yields several).
+    # The annotation hints are computed conservatively across this whole set so
+    # a `GET`+`DELETE` route is flagged destructive even though its leading verb
+    # is `GET`. Empty for a pure `@app.mcp_tool`, which has no HTTP verb.
+    route_methods: list[str] = field(default_factory=list)
+    # The MCP `outputSchema`: a standalone JSON Schema for the structured result,
+    # derived from the route `response_model` (or, failing that, the handler's
+    # Pydantic return type). `None` when the result has no object schema (a
+    # scalar / list return, or an untyped handler), in which case `tools/call`
+    # returns only the text content block.
+    output_schema: dict[str, Any] | None = None
+    # The Pydantic model the `output_schema` was derived from, kept so a pure
+    # `@app.mcp_tool` (which has no route `response_model` to re-filter through)
+    # can validate / coerce its raw return into a value that conforms to the
+    # advertised schema before it is emitted as `structuredContent`. `None`
+    # whenever `output_schema` is `None`.
+    output_model: type[BaseModel] | None = None
 
 
 @dataclass(slots=True)
@@ -83,6 +103,47 @@ class ToolRegistry:
         return self.tools.get(name)
 
 
+def _return_model(handler: Callable) -> type[BaseModel] | None:
+    """Return the handler's Pydantic return type, or `None`.
+
+    Resolved through `get_type_hints` so a `from __future__ import annotations`
+    string annotation still yields the real class. Any resolution failure (an
+    unresolvable forward reference, an exotic annotation) degrades to `None` -
+    the tool simply carries no output schema.
+    """
+    try:
+        hints = typing.get_type_hints(handler)
+    except Exception:
+        return None
+    annotation = hints.get("return")
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
+def _output_schema_for(
+    handler: Callable, route_info: Any, schemas_registry: dict[str, dict[str, Any]]
+) -> tuple[dict[str, Any] | None, type[BaseModel] | None]:
+    """Build the tool's MCP output schema and the model it was derived from.
+
+    A route `response_model` is the authoritative output contract and wins; a
+    pure `@app.mcp_tool` (or a route with no `response_model`) falls back to the
+    handler's Pydantic return type. A non-model output (scalar, list, untyped)
+    has no object schema and yields `(None, None)`. The model is returned
+    alongside the schema so a pure tool can validate its raw return against it.
+    """
+    model: type[BaseModel] | None = None
+    if route_info is not None:
+        response_model = route_info.response_model
+        if isinstance(response_model, type) and issubclass(response_model, BaseModel):
+            model = response_model
+    if model is None:
+        model = _return_model(handler)
+    if model is None:
+        return None, None
+    return build_output_schema(model, schemas_registry), model
+
+
 def _tool_name_from_route_name(route_name: str) -> str:
     """Derive a tool name from a route name, mapping the blueprint dot to ``_``.
 
@@ -107,6 +168,7 @@ def _register_explicit_tool(
     desc = require_mcp_description(tool_name, description)
     plan = build_plan(handler)
     schema = build_input_schema(plan, registry.schemas)
+    output_schema, output_model = _output_schema_for(handler, None, registry.schemas)
     registry.add(
         MCPTool(
             name=tool_name,
@@ -114,6 +176,8 @@ def _register_explicit_tool(
             handler=handler,
             plan=plan,
             input_schema=schema,
+            output_schema=output_schema,
+            output_model=output_model,
         )
     )
 
@@ -140,23 +204,30 @@ def build_registry(app: Any) -> ToolRegistry:
     # drop a function intentionally mounted as two distinct named routes (or on
     # two blueprints). Two distinct routes that derive the same tool name still
     # collide at `registry.add`, preserving duplicate-tool-name detection.
-    seen_routes: set[int] = set()
+    # Group the yielded methods by `RouteInfo` identity, preserving first-seen
+    # order, so the route is exposed once: its leading verb drives the synthetic
+    # request method and its full verb set drives the conservative annotation
+    # hints. Dedup by identity, never by handler callable - that would drop a
+    # function intentionally mounted as two distinct named routes (or on two
+    # blueprints). Exposure stays default-closed (`expose_as_mcp_tool=True`).
+    exposed: dict[int, Any] = {}
+    methods_by_route: dict[int, list[str]] = {}
     for method, _path, info in app._collect_all_routes(include_hidden=True):
-        # Exposure is default-closed: a route becomes a tool only when its
-        # author set `expose_as_mcp_tool=True`, regardless of HTTP verb. There
-        # is no auto-exposure to gate, so reaching here means the opt-in is
-        # explicit (a mutating route included).
         if method == ROUTE_METHOD_WEBSOCKET or not info.expose_as_mcp_tool:
             continue
         route_id = id(info)
-        if route_id in seen_routes:
-            continue
-        seen_routes.add(route_id)
+        if route_id not in exposed:
+            exposed[route_id] = info
+            methods_by_route[route_id] = []
+        methods_by_route[route_id].append(method)
 
+    for route_id, info in exposed.items():
+        methods = methods_by_route[route_id]
         tool_name = _tool_name_from_route_name(info.name)
         desc = require_mcp_description(tool_name, info.mcp_description)
         plan = info.handler_plan if info.handler_plan is not None else build_plan(info.handler)
         schema = build_input_schema(plan, registry.schemas)
+        output_schema, output_model = _output_schema_for(info.handler, info, registry.schemas)
         registry.add(
             MCPTool(
                 name=tool_name,
@@ -164,12 +235,15 @@ def build_registry(app: Any) -> ToolRegistry:
                 handler=info.handler,
                 plan=plan,
                 input_schema=schema,
+                output_schema=output_schema,
+                output_model=output_model,
                 route_dep_plans=info.route_dep_plans,
                 route_info=info,
-                # `method` is the first method entry yielded for this route
-                # (deduplicated above), so a multi-method route adopts its
-                # leading verb as the synthetic request method.
-                route_method=method,
+                # The leading verb is the synthetic request method; the full set
+                # drives the annotation hints (a multi-verb route is rated
+                # conservatively across all its verbs).
+                route_method=methods[0],
+                route_methods=methods,
             )
         )
 

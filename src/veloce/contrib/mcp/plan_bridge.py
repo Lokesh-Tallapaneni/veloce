@@ -106,6 +106,35 @@ def build_input_schema(
     return schema
 
 
+def build_output_schema(
+    model: type[BaseModel], schemas_registry: dict[str, dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Build a standalone MCP output JSON Schema from a Pydantic model.
+
+    Mirrors `build_input_schema`: the model renders through the shared OpenAPI
+    converter and every referenced component is inlined under `$defs`, so the
+    schema resolves with no external envelope. The model's own object schema is
+    returned at the top level (an MCP `outputSchema` describes the structured
+    tool result, which is always a JSON object). Returns `None` if the model's
+    schema could not be produced.
+
+    Rendered in serialization mode so the advertised schema matches what
+    `model_dump(mode="json")` emits: a computed field or serialization alias
+    that surfaces in the structured result is documented here too, keeping MCP
+    `outputSchema` aligned with the structured output the client receives.
+    """
+    ref = _pydantic_to_schema(model, schemas_registry, mode="serialization")
+    name = ref["$ref"][len(_OPENAPI_REF_PREFIX) :]
+    base = schemas_registry.get(name)
+    if base is None:
+        return None
+    schema = _deepcopy_schema(base)
+    defs = _collect_defs(schema, schemas_registry)
+    if defs:
+        schema["$defs"] = defs
+    return schema
+
+
 def _collect_input_slots(
     slots: list[_Slot],
     properties: dict[str, Any],

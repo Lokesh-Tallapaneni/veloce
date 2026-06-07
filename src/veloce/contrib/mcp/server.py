@@ -1,13 +1,14 @@
 """MCPServer — dispatch JSON-RPC 2.0 method calls against the tool registry.
 
-The server is transport-agnostic: a transport (stdio in v1) hands it decoded
-JSON-RPC request objects and forwards the responses it returns. It implements
-the three Model Context Protocol methods v1 needs - ``initialize``,
-``tools/list``, and ``tools/call`` - and nothing more. A ``tools/call`` runs
-the handler through the shared `DependencyResolver`, so `Depends()` graphs,
-`yield`-style teardown, and `Security` all behave exactly as on the HTTP and
-WebSocket paths. Per-tool instrumentation fires through the same
-`app.add_instrumentation` hook the request path uses.
+The server is transport-agnostic: a transport (stdio) hands it decoded JSON-RPC
+request objects and forwards the responses it returns. It implements the Model
+Context Protocol methods this server needs - ``initialize`` (negotiating the
+protocol version), ``ping``, ``tools/list``, and ``tools/call`` - plus the
+``notifications/initialized`` ack. A ``tools/call`` runs the handler through the
+shared `DependencyResolver`, so `Depends()` graphs, `yield`-style teardown, and
+`Security` all behave exactly as on the HTTP and WebSocket paths. Per-tool
+instrumentation fires through the same `app.add_instrumentation` hook the
+request path uses.
 """
 
 from __future__ import annotations
@@ -36,9 +37,16 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
-# Model Context Protocol revision this server speaks. Sent back in the
-# ``initialize`` result so a client can confirm compatibility.
-PROTOCOL_VERSION = "2025-06-18"
+# Latest Model Context Protocol revision this server speaks. Returned from
+# ``initialize`` when the client requests a revision this server does not
+# recognise, per the MCP lifecycle spec (the client then decides whether to
+# proceed). The tools surface is stable across the supported revisions.
+LATEST_PROTOCOL_VERSION = "2025-11-25"
+
+# Revisions whose ``tools`` surface this server is compatible with. A client
+# that requests one of these gets it echoed back from ``initialize``; any other
+# request falls back to `LATEST_PROTOCOL_VERSION`.
+_SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-03-26", "2025-06-18", LATEST_PROTOCOL_VERSION})
 
 # JSON-RPC 2.0 error codes (Sec. 5.1) plus the MCP "method not found" reuse.
 _JSONRPC_INVALID_REQUEST = -32600
@@ -82,10 +90,14 @@ class MCPServer:
 
         try:
             if method == "initialize":
-                result = self._initialize()
+                result = self._initialize(params)
             elif method == "notifications/initialized":
                 # Client handshake ack - a notification, no response.
                 return None
+            elif method == "ping":
+                # Base liveness utility either side may send; the spec'd reply is
+                # an empty result object.
+                result = {}
             elif method == "tools/list":
                 result = self._tools_list()
             elif method == "tools/call":
@@ -106,23 +118,47 @@ class MCPServer:
 
     # -- Method handlers --------------------------------------------
 
-    def _initialize(self) -> dict[str, Any]:
+    def _initialize(self, params: dict[str, Any]) -> dict[str, Any]:
+        # Echo the client's requested revision when supported; otherwise return
+        # the server's latest, leaving the client to decide whether to proceed.
+        requested = params.get("protocolVersion")
+        version = (
+            requested
+            if isinstance(requested, str) and requested in _SUPPORTED_PROTOCOL_VERSIONS
+            else LATEST_PROTOCOL_VERSION
+        )
         return {
-            "protocolVersion": PROTOCOL_VERSION,
+            "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": self.server_name, "version": self.server_version},
         }
 
     def _tools_list(self) -> dict[str, Any]:
-        tools = [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "inputSchema": tool.input_schema,
-            }
-            for tool in self.registry.tools.values()
-        ]
-        return {"tools": tools}
+        return {"tools": [self._describe_tool(tool) for tool in self.registry.tools.values()]}
+
+    @staticmethod
+    def _describe_tool(tool: MCPTool) -> dict[str, Any]:
+        """Shape one registered tool into its `tools/list` entry.
+
+        Beyond the required `name` / `description` / `inputSchema`, a
+        route-backed tool carries a human-readable `title` (its route summary),
+        HTTP-derived `annotations` (read-only / idempotent / destructive hints),
+        and an `outputSchema` when its result has a declared object shape.
+        """
+        entry: dict[str, Any] = {
+            "name": tool.name,
+            "description": tool.description,
+            "inputSchema": tool.input_schema,
+        }
+        title = tool.route_info.summary if tool.route_info is not None else None
+        if title:
+            entry["title"] = title
+        annotations = _tool_annotations(tool.route_methods)
+        if annotations is not None:
+            entry["annotations"] = annotations
+        if tool.output_schema is not None:
+            entry["outputSchema"] = tool.output_schema
+        return entry
 
     async def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")
@@ -162,58 +198,243 @@ class MCPServer:
         # response.
         if isinstance(result, (_ShortCircuit, _RouteResponse)):
             response = result.response
+            try:
+                await self._drain_stream(response)
+            except (_StreamTooLarge, _StreamTimeout) as exc:
+                await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
+                return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
             await self._instrument(tool, started, response.status_code)
-            return self._result_from_response(tool, response)
+            # A `before_request` / middleware short-circuit response never went
+            # through `response_model`; only a `_RouteResponse` carries the flag.
+            model_filtered = isinstance(result, _RouteResponse) and result.model_filtered
+            return self._result_from_response(tool, response, model_filtered)
 
         try:
+            # A pure tool may return a streaming `Response`; buffer it so its
+            # body becomes the tool result, then shape it like any buffered
+            # return. `_drain_stream` is a no-op for a non-streaming value.
+            if isinstance(result, Response):
+                await self._drain_stream(result)
             shaped = self._shape_result(tool, result)
-        except _StreamingNotSupported as exc:
-            # A streamed / SSE response carries no buffered body for v1 to
-            # serialise; surface the limitation in-band rather than returning
-            # an empty result. The unsupported-streaming case is an in-band
-            # error, recorded as a 500.
+        except (_StreamTooLarge, _StreamTimeout) as exc:
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
             return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
         # A pure tool's raw return that completed without error is a genuine 200.
         await self._instrument(tool, started, status.HTTP_200_OK)
-        return {"content": [{"type": "text", "text": _stringify(shaped)}]}
+        # A pure tool's `output_schema` is advertised from its declared return
+        # type, but nothing on the pure path guarantees the handler actually
+        # returned that type. Validate / coerce the raw return through the
+        # declared model so the emitted `structuredContent` conforms to the
+        # advertised schema (the MCP MUST). A value that cannot be coerced to the
+        # schema's object shape is an in-band error, not a non-conforming result.
+        if tool.output_model is not None:
+            try:
+                shaped = tool.output_model.model_validate(shaped).model_dump(mode="json")
+            except Exception:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": ("tool result does not conform to the declared output schema"),
+                        }
+                    ],
+                    "isError": True,
+                }
+        return self._success_result(tool, shaped)
 
-    def _result_from_response(self, tool: MCPTool, response: Response) -> dict[str, Any]:
+    async def _drain_stream(self, response: Response) -> None:
+        """Buffer a streamed response into its body so it can be a tool result.
+
+        A `StreamingResponse` / `EventSourceResponse` has no single body, but an
+        MCP `tools/call` returns one result, so the stream is consumed and joined
+        into the response body; afterwards it shapes like any buffered response.
+        A non-streaming response is left untouched. Draining is bounded in both
+        size and time: a stream exceeding `_STREAM_BUFFER_LIMIT` raises
+        `_StreamTooLarge`, and one that has not completed within
+        `_STREAM_DRAIN_TIMEOUT` raises `_StreamTimeout` - both surfaced as an
+        in-band error. The size cap stops a fast runaway; the deadline stops a
+        slow or never-completing stream (a heartbeat SSE feed, a handler that
+        awaits forever) from wedging the serial stdio serve loop. The size cap
+        bounds the *accumulated* bytes - a single chunk is materialised by the
+        producer before the check, so peak memory is the cap plus the largest
+        single chunk. On either
+        bounded failure - size cap or timeout - the underlying async generator is
+        closed so the producing task does not leak, and that close is itself
+        bounded by the same deadline.
+        """
+        if not response.is_streamed:
+            return
+        chunks: list[bytes] = []
+        stream = response.iter_encoded()
+
+        async def _collect() -> None:
+            total = 0
+            async for chunk in stream:
+                piece = chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+                total += len(piece)
+                if total > _STREAM_BUFFER_LIMIT:
+                    raise _StreamTooLarge(
+                        f"streamed result exceeded the {_STREAM_BUFFER_LIMIT}-byte MCP buffer limit"
+                    )
+                chunks.append(piece)
+
+        # The collect runs as its own task so the deadline can be enforced
+        # independently of the producer's teardown. Cancelling an in-flight
+        # `async for` step runs the generator's `finally` as part of that
+        # cancellation; if that teardown awaits (a malicious / buggy
+        # `finally: await ...`), awaiting the cancellation to completion would
+        # re-wedge the serial stdio serve loop past the deadline. So the
+        # cancellation is itself bounded and the producer is abandoned if its
+        # teardown overruns the budget - the timeout's whole purpose.
+        task = asyncio.ensure_future(_collect())
+        try:
+            # `wait_for` (not `asyncio.timeout`, which is 3.11+) is fed a shield
+            # so a timeout does not synchronously await the cancellation here.
+            await asyncio.wait_for(asyncio.shield(task), _STREAM_DRAIN_TIMEOUT)
+        except asyncio.TimeoutError as exc:
+            await self._abandon_drain(task, stream)
+            raise _StreamTimeout(
+                f"streamed result did not complete within the "
+                f"{_STREAM_DRAIN_TIMEOUT}-second MCP drain timeout"
+            ) from exc
+        except _StreamTooLarge:
+            # The size cap raises from inside the task, leaving the producer
+            # suspended at its `async for`; close it under the same bound so it
+            # does not leak until GC.
+            await self._abandon_drain(task, stream)
+            raise
+        response.body = b"".join(chunks)
+        response._stream = None
+
+    @staticmethod
+    async def _abandon_drain(task: asyncio.Future[None], stream: Any) -> None:
+        """Tear down an aborted drain's collect task and producer, bounded.
+
+        Both the task cancellation and the generator `aclose()` are bounded by
+        `_STREAM_DRAIN_TIMEOUT`; a teardown that itself awaits past the budget is
+        abandoned rather than allowed to re-wedge the serial stdio serve loop.
+        """
+        # On the timeout path the task is still running its in-flight step and is
+        # cancelled here; on the size-cap path it has already raised and only the
+        # suspended producer needs closing.
+        if not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), _STREAM_DRAIN_TIMEOUT)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            except Exception:
+                _logger.exception("MCP stream drain teardown failed")
+        aclose = getattr(stream, "aclose", None)
+        if aclose is None:
+            return
+        try:
+            await asyncio.wait_for(aclose(), _STREAM_DRAIN_TIMEOUT)
+        except Exception:
+            _logger.exception("MCP stream cleanup failed")
+
+    def _result_from_response(
+        self, tool: MCPTool, response: Response, model_filtered: bool
+    ) -> dict[str, Any]:
         """Shape a route-backed tool's `Response` into the MCP call result.
 
         The response body is decoded back to a value (so the agent sees the same
         JSON the HTTP client would) and a 4xx/5xx status is flagged as an in-band
-        `isError`. A streamed / SSE response carries no buffered body, so the
-        limitation is surfaced in-band rather than yielding an empty result.
+        `isError`. A streamed response has already been buffered into its body by
+        `_drain_stream` before this runs.
+
+        `model_filtered` is `True` when the route built this response from a
+        non-`Response` handler return (so `_build_response` ran the
+        `response_model` filter over it) and `False` when the handler returned
+        its own `Response` (whose body bypassed the filter). When `False` and the
+        route declares a `response_model`, the decoded body is re-run through that
+        filter here before being emitted as `structuredContent`, so the value
+        conforms to the advertised `outputSchema` and a field the model would
+        exclude cannot leak under a schema that says it is absent.
         """
-        try:
-            shaped = self._shape_result(tool, response)
-        except _StreamingNotSupported as exc:
-            return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
-        content: dict[str, Any] = {"content": [{"type": "text", "text": _stringify(shaped)}]}
+        shaped = self._shape_result(tool, response)
+        # A 4xx/5xx is an in-band error: surface the body text and flag it,
+        # without structured content (the error body is not the tool's output
+        # shape). A success goes through the shared success shaping so a declared
+        # `outputSchema` yields `structuredContent` alongside the text block.
         if response.status_code >= 400:
-            content["isError"] = True
-        return content
+            return {"content": [{"type": "text", "text": _stringify(shaped)}], "isError": True}
+        # A handler that returned its own `Response` bypassed the route
+        # `response_model` filter, so its decoded body is not yet trusted to
+        # conform to the advertised `outputSchema`. Re-run it through the filter
+        # here so the emitted `structuredContent` both honours the MCP MUST (a
+        # declared `outputSchema` is matched by conforming structured output) and
+        # keeps the field-leak protection - a field the model excludes is dropped
+        # before it reaches the client.
+        #
+        # The body is one the handler explicitly built, so it may not be an
+        # object the `response_model` can validate at all: a `PlainTextResponse`,
+        # an SSE / streaming body decoded to text, or a JSON shape that fails
+        # `model_validate`. The HTTP path serves such a body as-is (a handler's
+        # own `Response` bypasses `response_model` there), so the re-filter must
+        # never harden a call HTTP would serve into a JSON-RPC transport error.
+        # On any re-filter failure the value is emitted as the text content block
+        # only, with no `structuredContent` - a non-object body has no object
+        # form to advertise anyway.
+        route_info = tool.route_info
+        if (
+            not model_filtered
+            and tool.output_schema is not None
+            and route_info is not None
+            and route_info.response_model is not None
+        ):
+            try:
+                shaped = self.app._apply_response_model(shaped, route_info)
+            except Exception:
+                return {"content": [{"type": "text", "text": _stringify(shaped)}]}
+        return self._success_result(tool, shaped)
+
+    def _success_result(self, tool: MCPTool, shaped: Any) -> dict[str, Any]:
+        """Build a successful tool-call result from a shaped return value.
+
+        The text content block is always present (back-compatible with clients
+        that read only `content`). `structuredContent` is added when the tool
+        declares an `outputSchema` and the value carries an object form. A body
+        that bypassed the route `response_model` has already been re-filtered by
+        the caller, so any value reaching here is trusted to conform to the
+        advertised schema - honouring the MCP requirement that a declared
+        `outputSchema` is matched by conforming structured output.
+        """
+        result: dict[str, Any] = {"content": [{"type": "text", "text": _stringify(shaped)}]}
+        if tool.output_schema is not None:
+            structured = _to_structured(shaped)
+            if structured is not None:
+                result["structuredContent"] = structured
+        return result
 
     def _shape_result(self, tool: MCPTool, result: Any) -> Any:
-        """Run a route-derived tool's return through the HTTP response shaping.
+        """Run a tool's return through the HTTP response shaping.
 
-        A pure `@app.mcp_tool` (no route) returns its value unchanged. For a
-        tool exposed from an HTTP route the handler return is shaped exactly as
-        the HTTP path shapes it: the route `response_model` filtering runs first
-        (so fields hidden on the HTTP response cannot leak over MCP), and a
-        returned `Response`/`JSONResponse` is unwrapped to its actual body - a
-        JSON body decoded back to a value, any other body to its text - rather
-        than serialised as an object repr.
+        For a tool exposed from an HTTP route the handler return is shaped
+        exactly as the HTTP path shapes it: the route `response_model` filtering
+        runs first for a non-`Response` return (so fields hidden on the HTTP
+        response cannot leak over MCP). A returned `Response`/`JSONResponse` -
+        from either a route-backed or a pure `@app.mcp_tool` - is unwrapped to
+        its actual body (a JSON body decoded back to a value, any other body to
+        its text) rather than serialised as an object repr; a streamed response
+        has been buffered into that body by `_drain_stream` first. A pure tool's
+        non-`Response` return is passed back unchanged.
+
+        This shapes the value only. A route-backed handler that returned its own
+        `Response` bypassed the `response_model` filter, so its decoded body is
+        re-run through that filter by the caller (`_result_from_response`) before
+        being advertised as schema-conformant `structuredContent`.
         """
         route_info = tool.route_info
-        if route_info is None:
-            return result
 
         # `response_model` reshapes only a non-`Response` return, mirroring
         # `app._build_response`: a handler that built its own Response already
         # chose its body.
-        if route_info.response_model is not None and not isinstance(result, Response):
+        if (
+            route_info is not None
+            and route_info.response_model is not None
+            and not isinstance(result, Response)
+        ):
             result = self.app._apply_response_model(result, route_info)
 
         if isinstance(result, Response):
@@ -348,6 +569,13 @@ class MCPServer:
 
             result = await self._bind_and_call(tool, arguments, context, resolver, request)
 
+            # `_build_response` runs the route `response_model` filter only over a
+            # non-`Response` handler return; a handler that returned its own
+            # `Response` keeps that body unfiltered. Record which case this is so
+            # the server only advertises a filtered body as schema-conformant
+            # `structuredContent`.
+            model_filtered = not isinstance(result, Response)
+
             # Shape the handler return into the final `Response` exactly as the
             # HTTP path does (`_build_response` runs the route `response_model`
             # filtering + coercion + injected-response merge), then run the
@@ -368,7 +596,7 @@ class MCPServer:
                 except Exception:
                     _logger.exception("MCP background task failed")
             await self._run_response_background(response)
-            return _RouteResponse(response)
+            return _RouteResponse(response, model_filtered)
         except _ToolInputError:
             # A malformed argument is a transport-level invalid-params error,
             # not a handled application failure - re-raise so `_tools_call`
@@ -492,8 +720,8 @@ class MCPServer:
         name (a low-cardinality label), `path` the tool name too. `status_code`
         is the call's real outcome - the shaped `Response`'s status for a
         route-backed / short-circuited call, 500 for an unhandled handler error
-        or an unsupported streaming result, 200 only on genuine success - so a
-        4xx/5xx is never misreported as 200.
+        or a stream that overran the buffer limit, 200 only on genuine success -
+        so a 4xx/5xx is never misreported as 200.
         """
         hooks = self.app._instrumentation
         if not hooks:
@@ -518,12 +746,75 @@ class MCPServer:
 # -- Helpers ----------------------------------------------------------
 
 
+# HTTP-method semantics mapped to MCP tool annotation hints. Read-only verbs do
+# not modify state; idempotent verbs are safe to retry; a mutating verb that is
+# not purely additive (PUT/PATCH/DELETE) is flagged destructive so a client can
+# prompt for consent. These are advisory hints a client may ignore.
+_READONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"})
+_NON_DESTRUCTIVE_METHODS = frozenset({"GET", "HEAD", "POST", "OPTIONS", "TRACE"})
+
+
+def _tool_annotations(methods: list[str]) -> dict[str, Any] | None:
+    """Derive MCP tool annotation hints from a route's HTTP methods.
+
+    A multi-verb route is rated conservatively across every verb it serves:
+    read-only and idempotent only when *all* verbs qualify, destructive when
+    *any* verb is non-additive (so a `GET`+`DELETE` route is flagged
+    destructive, not read-only). A pure `@app.mcp_tool` (no route) has no HTTP
+    verb to map, so it carries no annotations.
+    """
+    if not methods:
+        return None
+    verbs = {method.upper() for method in methods}
+    return {
+        "readOnlyHint": verbs <= _READONLY_METHODS,
+        "idempotentHint": verbs <= _IDEMPOTENT_METHODS,
+        "destructiveHint": not (verbs <= _NON_DESTRUCTIVE_METHODS),
+    }
+
+
+def _to_structured(value: Any) -> dict[str, Any] | None:
+    """Render a tool result as the JSON object MCP `structuredContent` requires.
+
+    A mapping passes through; a Pydantic model is dumped in JSON mode. A
+    non-object result (list, scalar) has no object form, so `None` is returned
+    and only the text content block is sent.
+    """
+    if isinstance(value, dict):
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="json")
+        if isinstance(dumped, dict):
+            return dumped
+    return None
+
+
+# Cap on the bytes buffered from a streamed tool result. A streamed response has
+# no single body, so the MCP path drains it into one (`_drain_stream`); this
+# bound stops a runaway or unbounded stream from exhausting memory - crossing it
+# yields an in-band tool error instead.
+_STREAM_BUFFER_LIMIT = 5 * 1024 * 1024
+
+# Wall-clock budget for draining a streamed tool result. The size cap alone does
+# not defend against a slow or never-completing stream that stays small (a
+# heartbeat SSE feed, a handler awaiting forever): without a deadline such a
+# stream wedges the serial stdio serve loop, blocking every later request.
+# Crossing it closes the stream and yields an in-band tool error.
+_STREAM_DRAIN_TIMEOUT = 30.0
+
+
 class _ToolInputError(Exception):
     """A malformed tool call - reported as a JSON-RPC invalid-params error."""
 
 
-class _StreamingNotSupported(Exception):
-    """A route returned a streaming/SSE response, unsupported as an MCP tool (v1)."""
+class _StreamTooLarge(Exception):
+    """A streamed tool result exceeded the buffer limit - reported in-band."""
+
+
+class _StreamTimeout(Exception):
+    """A streamed tool result outran the drain deadline - reported in-band."""
 
 
 class _ShortCircuit:
@@ -537,12 +828,21 @@ class _ShortCircuit:
 
 class _RouteResponse:
     """A route-backed tool's final `Response` (shaped + after_request-rewritten,
-    or built by an exception handler), returned in place of the raw value."""
+    or built by an exception handler), returned in place of the raw value.
 
-    __slots__ = ("response",)
+    `model_filtered` records whether the route's `response_model` filter ran over
+    the value this response carries: `True` when `_build_response` built it from
+    a non-`Response` handler return, `False` when the handler returned its own
+    `Response` (or an exception handler built it). The server uses it to decide
+    whether the decoded body may be advertised as schema-conformant
+    `structuredContent`.
+    """
 
-    def __init__(self, response: Response) -> None:
+    __slots__ = ("response", "model_filtered")
+
+    def __init__(self, response: Response, model_filtered: bool = False) -> None:
         self.response = response
+        self.model_filtered = model_filtered
 
 
 def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -571,14 +871,9 @@ def _response_body_value(response: Response) -> Any:
     A JSON-typed body is decoded back to a Python value so the tool result
     carries the same JSON the HTTP client would receive; any other body decodes
     to its text. The body bytes are the already-rendered response body, so no
-    further response-model work is needed.
-
-    A streaming / SSE response carries its payload on `_stream`, not `.body`, so
-    v1 cannot serialise it; rather than silently yielding an empty result, this
-    raises `_StreamingNotSupported`, surfaced as an in-band tool error.
+    further response-model work is needed. A streamed response has been buffered
+    into its body by `_drain_stream` before this runs.
     """
-    if response.is_streamed:
-        raise _StreamingNotSupported("streaming responses are not supported as MCP tools (v1)")
     body = response.body
     if not body:
         return ""
