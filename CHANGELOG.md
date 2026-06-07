@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `veloce.contrib.redis.RedisRateLimitBackend` (shared across workers and hosts).
   Each algorithm is a pure state transition that runs identically on either
   backend. The existing `max_requests`/`window_seconds` form is unchanged.
+  `RateLimitMiddleware` also accepts `overrides`, a map from a route's path
+  template to a strategy that replaces the default for that route; an overridden
+  route gets its own per-client counter. Routes without an override are
+  unaffected and apps that pass no `overrides` pay nothing per request.
 - Result caching: the `cached` decorator memoises an async function's
   JSON-serialisable return in a `Cache` backend, keyed by its arguments
   (non-serialisable arguments such as an injected `Request` are ignored, so a

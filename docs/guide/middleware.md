@@ -172,9 +172,25 @@ app.add_middleware(RateLimitMiddleware(strategy=TokenBucket(rate=100, per=60, bu
 The default `InMemoryRateLimitBackend` counts per process. For one limit shared
 across every worker and host, use `RedisRateLimitBackend` (see below).
 
+To give specific routes their own limit, pass `overrides` — a map from a route's
+path template (exactly as registered) to a strategy. An overridden route gets its
+own per-client counter, independent of the default budget:
+
+```python
+from veloce import RateLimitMiddleware, TokenBucket
+
+app.add_middleware(
+    RateLimitMiddleware(
+        strategy=TokenBucket(rate=1000, per=60),          # default for every route
+        overrides={"/login": TokenBucket(rate=5, per=60)},  # stricter for /login
+    )
+)
+```
+
 !!! note "Added in version 0.4.0"
-    Selectable `strategy`/`backend` on `RateLimitMiddleware`. The bare
-    `max_requests`/`window_seconds` form is unchanged.
+    Selectable `strategy`/`backend` and per-route `overrides` on
+    `RateLimitMiddleware`. The bare `max_requests`/`window_seconds` form is
+    unchanged.
 
 ## Function middleware
 
