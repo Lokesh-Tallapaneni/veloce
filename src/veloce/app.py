@@ -4363,10 +4363,26 @@ class Veloce(Router):
         Left ``None`` (the default) the serving path is byte-for-byte the
         same as plain HTTP. Production should still terminate TLS at
         uvicorn or a reverse proxy.
+
+        ``workers`` must be ``1``: the built-in server runs a single process
+        and does not pre-fork. Passing more raises ``ValueError`` - run under
+        ``uvicorn module:app --workers N`` or the gunicorn ``VeloceWorker`` for
+        multiple processes.
         """
         if host is not None and bind_all:
             raise ValueError(
                 "Veloce.run: bind_all=True conflicts with explicit host=...; pass only one"
+            )
+        # The built-in server runs in a single process - it does not pre-fork
+        # (cross-platform pre-forking needs SO_REUSEPORT, absent on Windows).
+        # Silently accepting workers>1 and running one process is a footgun, so
+        # reject it and point at the multi-process production paths.
+        if workers != 1:
+            raise ValueError(
+                "Veloce.run(workers=...) runs a single process; the built-in "
+                "development server does not spawn workers. For multiple "
+                "processes run under an ASGI server (uvicorn module:app "
+                "--workers N) or the gunicorn VeloceWorker."
             )
         if host is None:
             host = "0.0.0.0" if bind_all else "127.0.0.1"

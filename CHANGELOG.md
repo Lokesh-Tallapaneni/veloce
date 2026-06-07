@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `Veloce.run(workers=...)` now raises `ValueError` when `workers` is not `1`.
+  The built-in development server runs a single process and never pre-forked, so
+  a worker count above one was silently ignored; it now fails loudly and points
+  to running under uvicorn (`--workers N`) or the gunicorn `VeloceWorker`. The
+  `veloce run` CLI warns and serves one process instead of forwarding the count
+  when it falls back to the built-in server.
+
 ### Added
 
 - The MCP server now negotiates the protocol version from the client's
