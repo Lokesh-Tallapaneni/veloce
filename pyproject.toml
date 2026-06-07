@@ -119,6 +119,7 @@ Changelog = "https://github.com/Lokesh-Tallapaneni/veloce/blob/main/CHANGELOG.md
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.10",
     # uvicorn is now an optional extra, but the test suite still exercises the
@@ -163,6 +164,21 @@ testpaths = ["tests"]
 addopts = ["-m", "not perf"]
 markers = [
     "perf: timing/perf check — opt-in via `pytest -m perf`, off by default",
+]
+
+[tool.coverage.run]
+source = ["veloce"]
+branch = true
+
+[tool.coverage.report]
+# The 90% floor is enforced by CI via `pytest --cov-fail-under=90` (single source
+# of truth) - branch coverage currently sits ~92%, leaving headroom for small
+# dips without flaking. These exclusions keep the measured base honest.
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
 ]
 
 [tool.ruff]

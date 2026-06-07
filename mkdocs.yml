@@ -158,6 +158,7 @@ nav:
       - Testing: guide/testing.md
       - Deployment: guide/deployment.md
   - Comparison: comparison.md
+  - Versioning & Stability: policies.md
   - Benchmarks: benchmarks.md
   - API Reference: reference.md
   - Changelog: changelog.md
