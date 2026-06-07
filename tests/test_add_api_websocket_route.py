@@ -29,8 +29,9 @@ def test_add_api_websocket_route_accepts_name():
         await ws.accept()
         await ws.close()
 
-    # `name` is accepted but currently unused.
+    # `name` registers the route for reverse lookup.
     app.add_api_websocket_route("/ws", handler, name="ws_endpoint")
+    assert app.url_for("ws_endpoint") == "/ws"
 
     with TestClient(app) as client, client.websocket_connect("/ws"):
         pass

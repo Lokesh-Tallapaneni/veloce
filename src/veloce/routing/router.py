@@ -1667,8 +1667,9 @@ class Router:
     ) -> None:
         """Register an imperative WebSocket route, mirroring `add_api_route`.
 
-        The non-decorator form of `@app.websocket(path)`. `name` is
-        accepted but currently unused.
+        The non-decorator form of `@app.websocket(path)`. `name`, when given,
+        registers the route for reverse lookup so `app.url_for(name)` resolves
+        to its path.
         """
         self.add_route(path=path, handler=endpoint, methods=[ROUTE_METHOD_WEBSOCKET], name=name)
 

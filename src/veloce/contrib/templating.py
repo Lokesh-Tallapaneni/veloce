@@ -29,9 +29,9 @@ def _sync_app_jinja_helpers(env: Any) -> None:
 
     Also injects the standard template globals - `url_for`, `g`, and
     `current_app` - so templates can `{{ url_for('endpoint') }}` and
-    `{{ g.user }}` without manual context plumbing. `request` is bound
-    by `_gather_context_processors` since it's request-scoped (not
-    available outside dispatch).
+    `{{ g.user }}` without manual context plumbing. `request` is not injected
+    here; being request-scoped, it is supplied by the caller's render context
+    (e.g. `TemplateResponse("page.html", {"request": request, ...})`).
 
     Memoized per (env, app) - re-syncing is idempotent but it still
     runs three loops and several attribute lookups per render, which
@@ -77,15 +77,13 @@ def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str,
     merged: dict[str, Any] = {}
     for processor in getattr(app, "_context_processors", ()):
         result = processor()
-        # Async context processors are uncommon but legal; await only if
-        # the result is a coroutine. The templating layer is sync, so we
-        # can't actually await - async processors must be invoked from an
-        # async context; here we just skip them with a clear failure mode.
+        # The sync template path cannot await, so an async context processor's
+        # values are skipped here; close the coroutine to avoid a "coroutine was
+        # never awaited" ResourceWarning. Use the async render path
+        # (`render_async` / `_gather_context_processors_async`) to run async
+        # context processors.
         if inspect.iscoroutine(result):
-            # The user declared an async context processor but called the
-            # sync template path. Run it through asyncio.run is unsafe
-            # inside an event loop, so skip with a warning attribute.
-            result.close()  # avoid "coroutine was never awaited" warning
+            result.close()
             continue
         if isinstance(result, dict):
             merged.update(result)
