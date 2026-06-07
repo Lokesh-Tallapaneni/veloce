@@ -123,7 +123,12 @@ def dump_cookie(
     if key.lower() in _RESERVED_COOKIE_NAMES:
         raise ValueError(f"cookie name {key!r} collides with a reserved cookie-attribute keyword")
     _reject_header_crlf(value, "cookie value")
-    quoted = quote(value, safe="!#$%&'()*+/:<=>?@[]^`{|}~")
+    # `%` must NOT be in the safe set: it is the percent-encoding marker, and
+    # `parse_cookie` percent-decodes the value. Leaving a literal `%` unescaped
+    # makes a value like "100%" decode back to garbage (e.g. "%00" -> NUL), so
+    # the value would not survive a dump -> parse round-trip. Encoding it as
+    # "%25" is the inverse `unquote` restores.
+    quoted = quote(value, safe="!#$&'()*+/:<=>?@[]^`{|}~")
     parts: list[str] = [f"{wire_key}={quoted}"]
 
     if max_age is not None:
