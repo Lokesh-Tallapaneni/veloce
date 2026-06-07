@@ -42,6 +42,12 @@ from veloce._protocol_constants import URL_SCHEME_HTTPS, URL_SCHEME_WSS
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, header_present
 from veloce.middleware.base import Middleware
+from veloce.ratelimit import (
+    InMemoryRateLimitBackend,
+    RateLimitBackend,
+    RateLimitResult,
+    RateLimitStrategy,
+)
 
 # Stash key used to thread bucket state from process_request -> process_response
 # so the response path can emit X-RateLimit-* without recomputing.
@@ -218,38 +224,85 @@ class TrustedHostMiddleware(Middleware):
 
 
 class RateLimitMiddleware(Middleware):
-    """In-process token-bucket rate limiter.
+    """Per-client rate limiter with a selectable algorithm and backend.
 
-    Counters live in a per-instance dict and are NOT shared across
-    worker processes. Multi-worker deployments (`uvicorn --workers N`)
-    will see an effective limit of roughly `N x max_requests` per
-    window because each worker counts independently. For accurate
-    cross-worker limits use a reverse-proxy limiter (nginx
-    `limit_req`) or a Redis-backed implementation; the in-process
-    limiter is intended for single-worker development and small
-    deployments.
+    Two ways to configure it:
+
+    - The default `max_requests` per `window_seconds` runs a process-local
+      sliding-log limiter - simple, zero-dependency, intended for a single
+      worker. Counters are NOT shared across workers, so `uvicorn --workers N`
+      sees roughly `N x max_requests` per window.
+    - Pass a `strategy` - `FixedWindow`, `SlidingWindow`, or `TokenBucket` - to
+      choose the algorithm, and a `backend` to choose where state lives:
+      `InMemoryRateLimitBackend` (default) or
+      `veloce.contrib.redis.RedisRateLimitBackend` for one limit shared across
+      every worker and host.
+
+    Usage::
+
+        from veloce import RateLimitMiddleware, TokenBucket
+
+        app.add_middleware(RateLimitMiddleware(strategy=TokenBucket(rate=100, per=60, burst=20)))
     """
 
     def __init__(
-        self, max_requests: int = 100, window_seconds: int = 60, *, name: str | None = None
+        self,
+        max_requests: int = 100,
+        window_seconds: int = 60,
+        *,
+        strategy: RateLimitStrategy | None = None,
+        backend: RateLimitBackend | None = None,
+        name: str | None = None,
     ) -> None:
         super().__init__(name=name)
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
-        self._buckets: dict[str, deque[float]] = {}
-        self._last_sweep = time.monotonic()
-        # Lazy-allocated on first sweep so the lock binds to the running
-        # event loop, not to whatever loop is current at construction
-        # time (matches the same pattern used for `Veloce`'s first-request
-        # lock). Guards the timestamp-check + dict-rebuild + timestamp-
-        # update sequence - single-threaded asyncio already serialises
-        # this block today because it contains no `await`, but any
-        # future async cache backend that introduces an `await` inside
-        # the sweep block would otherwise open a check-then-act race.
-        self._sweep_lock: asyncio.Lock | None = None
+        self._strategy = strategy
+        if strategy is None:
+            if backend is not None:
+                raise ValueError("backend requires a strategy; pass strategy= as well")
+            # Legacy process-local sliding-log path.
+            self.max_requests = max_requests
+            self.window_seconds = window_seconds
+            self._buckets: dict[str, deque[float]] = {}
+            self._last_sweep = time.monotonic()
+            # Lazy-allocated on first sweep so the lock binds to the running
+            # event loop, not to whatever loop is current at construction
+            # time (matches the same pattern used for `Veloce`'s first-request
+            # lock). Guards the timestamp-check + dict-rebuild + timestamp-
+            # update sequence - single-threaded asyncio already serialises
+            # this block today because it contains no `await`, but any
+            # future async cache backend that introduces an `await` inside
+            # the sweep block would otherwise open a check-then-act race.
+            self._sweep_lock: asyncio.Lock | None = None
+        else:
+            # Pluggable algorithm + backend path. The backend runs the pure
+            # strategy under its own atomic read-modify-write.
+            self._backend = backend if backend is not None else InMemoryRateLimitBackend()
 
     async def process_request(self, request: Request) -> Response | None:
         """Enforce per-client request rate limits."""
+        strategy = self._strategy
+        if strategy is not None:
+            return await self._process_strategy(request, strategy)
+        return await self._process_legacy(request)
+
+    async def _process_strategy(
+        self, request: Request, strategy: RateLimitStrategy
+    ) -> Response | None:
+        # Wall-clock time so the same key on a shared backend agrees across
+        # workers and hosts; the strategy refills/counts against it.
+        result = await self._backend.evaluate(self._bucket_key(request), strategy, time.time())
+        if not result.allowed:
+            rejected = Response(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                body=b"Too Many Requests",
+                headers={HEADER_RETRY_AFTER: str(result.retry_after)},
+            )
+            self._apply_headers(rejected, result.limit, 0, result.reset)
+            return rejected
+        request._state[_RL_STATE_KEY] = result
+        return None
+
+    async def _process_legacy(self, request: Request) -> Response | None:
         client = self._bucket_key(request)
         now = time.monotonic()
         cutoff = now - self.window_seconds
@@ -298,13 +351,16 @@ class RateLimitMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Attach X-RateLimit-* headers to successful responses."""
-        bucket = request._state.get(_RL_STATE_KEY)
-        if bucket is None:
+        state = request._state.get(_RL_STATE_KEY)
+        if state is None:
             return response
-        remaining = self.max_requests - len(bucket)
+        if isinstance(state, RateLimitResult):
+            self._apply_headers(response, state.limit, state.remaining, state.reset)
+            return response
+        remaining = self.max_requests - len(state)
         if remaining < 0:
             remaining = 0
-        reset = self._reset_after(bucket, time.monotonic())
+        reset = self._reset_after(state, time.monotonic())
         self._apply_headers(response, self.max_requests, remaining, reset)
         return response
 

@@ -124,24 +124,34 @@ API.
 
 ### Cross-worker rate limiting
 
-`RedisRateLimiter` keeps
-the per-client counter in Redis, so the limit is enforced once across the whole
-cluster (the in-process `RateLimitMiddleware` counts per worker). It is a
-fixed-window counter — `max_requests` per `window_seconds`:
+`RateLimitMiddleware` chooses an algorithm with a `strategy` and where the
+counter lives with a `backend`. `RedisRateLimitBackend` keeps the per-client
+state in Redis, so the limit is enforced once across the whole cluster (the
+default `InMemoryRateLimitBackend` counts per worker):
 
 ```python
 from redis.asyncio import Redis
 
-from veloce import Veloce
-from veloce.contrib.redis import RedisRateLimiter
+from veloce import RateLimitMiddleware, TokenBucket, Veloce
+from veloce.contrib.redis import RedisRateLimitBackend
 
 app = Veloce()
 client = Redis.from_url("redis://localhost:6379/0")
-app.add_middleware(RedisRateLimiter(client, max_requests=100, window_seconds=60))
+app.add_middleware(
+    RateLimitMiddleware(
+        strategy=TokenBucket(rate=100, per=60),
+        backend=RedisRateLimitBackend(client),
+    )
+)
 ```
 
-Behind a proxy, pair it with `ProxyFix` so the limiter keys on the real client IP
-rather than the proxy's.
+Pick the algorithm that fits: `FixedWindow` (simplest), `SlidingWindow` (smooths
+the window-boundary burst), or `TokenBucket` (allows a controlled burst up to
+`burst`, default `rate`). Each runs identically on either backend. Behind a
+proxy, pair it with `ProxyFix` so the limiter keys on the real client IP rather
+than the proxy's.
+
+See [Middleware](middleware.md#rate-limiting) for the full algorithm comparison.
 
 ## What's next
 

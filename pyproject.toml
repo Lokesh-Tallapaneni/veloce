@@ -85,9 +85,10 @@ metrics = ["prometheus_client>=0.17"]
 # floor is set by `msgspec.to_builtins`. Install with
 # `pip install veloceframework[fast]`.
 fast = ["msgspec>=0.13"]
-# Redis-backed session store and rate limiter for `veloce.contrib.redis`
-# (`RedisSessionStore`, `RedisRateLimiter`) - shared state across workers. Kept
-# optional so a single-process / in-memory deploy carries no redis dependency.
+# Redis-backed session store, rate-limit backend, and cache for
+# `veloce.contrib.redis` (`RedisSessionStore`, `RedisRateLimitBackend`,
+# `RedisCache`) - shared state across workers. Kept optional so a single-process
+# / in-memory deploy carries no redis dependency.
 # Install with `pip install veloceframework[redis]`.
 redis = ["redis>=4.2"]
 # Everything optional in one shot.
