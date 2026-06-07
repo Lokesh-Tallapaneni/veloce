@@ -291,3 +291,51 @@ def test_middleware_legacy_path_still_works():
         assert tc.get("/", headers=_UA).status_code == 200
         assert tc.get("/", headers=_UA).status_code == 200
         assert tc.get("/", headers=_UA).status_code == 429
+
+
+# ── Per-route overrides ──────────────────────────────────────────────
+
+
+def _app_routes(strategy, overrides=None) -> Veloce:
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(strategy=strategy, overrides=overrides))
+
+    @app.get("/cheap")
+    async def cheap(request: Request):
+        return {"ok": True}
+
+    @app.get("/strict")
+    async def strict(request: Request):
+        return {"ok": True}
+
+    return app
+
+
+def test_override_route_uses_its_own_limit():
+    app = _app_routes(FixedWindow(100, 60), overrides={"/strict": FixedWindow(2, 60)})
+    with TestClient(app) as tc:
+        assert tc.get("/strict", headers=_UA).status_code == 200
+        assert tc.get("/strict", headers=_UA).status_code == 200
+        assert tc.get("/strict", headers=_UA).status_code == 429
+        # The non-overridden route keeps the generous default.
+        assert tc.get("/cheap", headers=_UA).status_code == 200
+
+
+def test_override_route_counter_is_independent_of_default():
+    # Exhausting the default budget must not throttle an overridden route -
+    # separate per-route counters via the route-scoped key.
+    app = _app_routes(FixedWindow(1, 60), overrides={"/strict": FixedWindow(5, 60)})
+    with TestClient(app) as tc:
+        assert tc.get("/cheap", headers=_UA).status_code == 200
+        assert tc.get("/cheap", headers=_UA).status_code == 429
+        assert tc.get("/strict", headers=_UA).status_code == 200
+
+
+def test_overrides_require_strategy():
+    with pytest.raises(ValueError, match="strategy"):
+        RateLimitMiddleware(overrides={"/x": FixedWindow(1)})
+
+
+def test_overrides_reject_non_strategy():
+    with pytest.raises(TypeError, match="RateLimitStrategy"):
+        RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/x": "nope"})

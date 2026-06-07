@@ -239,11 +239,21 @@ class RateLimitMiddleware(Middleware):
       `veloce.contrib.redis.RedisRateLimitBackend` for one limit shared across
       every worker and host.
 
+    `overrides` maps a route's path template (as registered, e.g. `/login` or
+    `/items/{item_id}`) to a strategy that replaces the default for that route.
+    An overridden route gets its own per-client counter, independent of the
+    default budget; routes without an override keep the shared default behavior.
+
     Usage::
 
         from veloce import RateLimitMiddleware, TokenBucket
 
-        app.add_middleware(RateLimitMiddleware(strategy=TokenBucket(rate=100, per=60, burst=20)))
+        app.add_middleware(
+            RateLimitMiddleware(
+                strategy=TokenBucket(rate=1000, per=60),
+                overrides={"/login": TokenBucket(rate=5, per=60)},
+            )
+        )
     """
 
     def __init__(
@@ -253,6 +263,7 @@ class RateLimitMiddleware(Middleware):
         *,
         strategy: RateLimitStrategy | None = None,
         backend: RateLimitBackend | None = None,
+        overrides: dict[str, RateLimitStrategy] | None = None,
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
@@ -260,6 +271,8 @@ class RateLimitMiddleware(Middleware):
         if strategy is None:
             if backend is not None:
                 raise ValueError("backend requires a strategy; pass strategy= as well")
+            if overrides is not None:
+                raise ValueError("overrides requires a strategy; pass strategy= as well")
             # Legacy process-local sliding-log path.
             self.max_requests = max_requests
             self.window_seconds = window_seconds
@@ -278,6 +291,14 @@ class RateLimitMiddleware(Middleware):
             # Pluggable algorithm + backend path. The backend runs the pure
             # strategy under its own atomic read-modify-write.
             self._backend = backend if backend is not None else InMemoryRateLimitBackend()
+            # Normalize to None when empty so the per-request path skips the
+            # lookup entirely - apps without per-route limits pay nothing.
+            self._overrides: dict[str, RateLimitStrategy] | None = None
+            if overrides:
+                for route, override in overrides.items():
+                    if not isinstance(override, RateLimitStrategy):
+                        raise TypeError(f"overrides[{route!r}] must be a RateLimitStrategy")
+                self._overrides = dict(overrides)
 
     async def process_request(self, request: Request) -> Response | None:
         """Enforce per-client request rate limits."""
@@ -289,9 +310,24 @@ class RateLimitMiddleware(Middleware):
     async def _process_strategy(
         self, request: Request, strategy: RateLimitStrategy
     ) -> Response | None:
+        # No per-route overrides configured: the common path stays a single
+        # client-keyed evaluation with no extra lookup.
+        overrides = self._overrides
+        if overrides is None:
+            key = self._bucket_key(request)
+        else:
+            route = request.url_rule
+            override = overrides.get(route) if route is not None else None
+            if override is not None:
+                strategy = override
+                # Scope the key to the route so an overridden route keeps its own
+                # per-client counter, separate from the default budget.
+                key = f"{route}\x00{self._bucket_key(request)}"
+            else:
+                key = self._bucket_key(request)
         # Wall-clock time so the same key on a shared backend agrees across
         # workers and hosts; the strategy refills/counts against it.
-        result = await self._backend.evaluate(self._bucket_key(request), strategy, time.time())
+        result = await self._backend.evaluate(key, strategy, time.time())
         if not result.allowed:
             rejected = Response(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
