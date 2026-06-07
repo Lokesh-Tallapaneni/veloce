@@ -36,7 +36,7 @@ jobs:
         run: uv run mypy src/veloce
 
       - name: Test
-        run: uv run pytest -q
+        run: uv run pytest -q --cov=veloce --cov-report=term-missing --cov-fail-under=90
 
   bench:
     name: dispatch micro-benchmark

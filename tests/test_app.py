@@ -502,3 +502,10 @@ def test_debug_setter_coerces_string():
     assert app.debug is False and app.config["DEBUG"] is False
     app.debug = "true"
     assert app.debug is True
+
+
+def test_run_rejects_multiple_workers():
+    """The built-in server is single-process; run(workers>1) fails loudly."""
+    app = Veloce()
+    with pytest.raises(ValueError, match="runs a single process"):
+        app.run(workers=4)
