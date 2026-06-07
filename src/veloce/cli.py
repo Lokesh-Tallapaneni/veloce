@@ -182,11 +182,20 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "and --reload support.",
         file=sys.stderr,
     )
+    # The built-in server is single-process; --workers>1 needs uvicorn or the
+    # gunicorn VeloceWorker, so warn and run one process rather than passing a
+    # count `run()` would reject.
+    if args.workers > 1:
+        print(
+            f"--workers {args.workers} is ignored by the built-in server (single "
+            "process); install veloceframework[uvicorn] for multiple workers.",
+            file=sys.stderr,
+        )
     # The native server takes `bind_all=True` rather than an all-interfaces host.
     if args.host in ("0.0.0.0", "::"):
-        app.run(port=args.port, workers=args.workers, bind_all=True)
+        app.run(port=args.port, bind_all=True)
     else:
-        app.run(host=args.host, port=args.port, workers=args.workers)
+        app.run(host=args.host, port=args.port)
     return 0
 
 

@@ -275,6 +275,24 @@ write `request.session`, and the middleware persists changes to the store.
     implementing the [`SessionStore`](../reference.md#veloce.SessionStore)
     interface, or each worker will see a different set of sessions.
 
+For multi-worker deployments, the batteries-included
+[`RedisSessionStore`](databases.md#redis-sessions-and-rate-limiting) shares
+session state across every worker and host. It uses native Redis TTLs for
+expiry, sliding renewal, and the race-safe conditional write:
+
+```python
+from redis.asyncio import Redis
+
+from veloce import ServerSessionMiddleware, Veloce
+from veloce.contrib.redis import RedisSessionStore
+
+app = Veloce()
+store = RedisSessionStore(Redis.from_url("redis://localhost:6379/0"))
+app.add_middleware(ServerSessionMiddleware, store=store)
+```
+
+Install the backend with `pip install veloceframework[redis]`.
+
 `ServerSessionMiddleware` takes the same cookie options as
 `SessionMiddleware` (`cookie_name`, `max_age`, `path`, `httponly`,
 `secure`, `samesite`) plus a `store` argument. It has no `secret_key`

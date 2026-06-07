@@ -195,6 +195,23 @@ teardown stay balanced. A `before_request` hook that rewrites the request path
 to a different route does not change which middleware run for that request - the
 entry route's `exclude_middleware` is authoritative.
 
+!!! warning "RateLimitMiddleware counts per process"
+    `RateLimitMiddleware` keeps its counters in one process, so under
+    `uvicorn --workers N` the effective limit is roughly `N x` the configured
+    one. For a shared cross-worker limit use
+    [`RedisRateLimiter`](databases.md#redis-sessions-and-rate-limiting) from
+    `veloce.contrib.redis` (`pip install veloceframework[redis]`), which keeps
+    the counter in Redis:
+
+    ```python
+    from redis.asyncio import Redis
+
+    from veloce.contrib.redis import RedisRateLimiter
+
+    client = Redis.from_url("redis://localhost:6379/0")
+    app.add_middleware(RedisRateLimiter(client, max_requests=100, window_seconds=60))
+    ```
+
 ```python
 app.add_middleware(CSRFMiddleware(secret="..."))
 app.add_middleware(RateLimitMiddleware(max_requests=100, window_seconds=60))

@@ -149,6 +149,7 @@ nav:
       - Templates: guide/templates.md
       - Static Files: guide/static-files.md
       - Sessions: guide/sessions.md
+      - Databases: guide/databases.md
       - Flask-style Helpers: guide/helpers.md
       - Security Schemes: guide/security-schemes.md
       - Passwords: guide/passwords.md
@@ -165,6 +166,7 @@ nav:
       - Testing: guide/testing.md
       - Deployment: guide/deployment.md
   - Comparison: comparison.md
+  - Versioning & Stability: policies.md
   - Benchmarks: benchmarks.md
   - API Reference: reference.md
   - Changelog: changelog.md

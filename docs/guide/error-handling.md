@@ -263,11 +263,23 @@ async def not_found(request: Request, exc: NotFound):
 When a typed handler parameter fails to parse — a bad path converter, a
 missing required query value, an invalid body — the dependency resolver
 raises [`RequestValidationError`](../reference.md#veloce.RequestValidationError),
-a `422` carrying a structured `errors` list. The default response renders
-`{"detail": [...per-field errors...]}` via
-[`request_validation_exception_handler`](../reference.md#veloce.request_validation_exception_handler).
+a `422` carrying a structured `errors` list. You do **not** need to register a
+handler to get a useful response — the default body is a structured error list,
+one entry per failed field with `loc` (where it failed), `msg`, and `type`:
 
-Register your own handler to reshape it:
+```json
+{
+  "detail": [
+    {"loc": ["query", "limit"], "msg": "Input should be a valid integer", "type": "int_parsing"}
+  ],
+  "status_code": 422
+}
+```
+
+The exported [`request_validation_exception_handler`](../reference.md#veloce.request_validation_exception_handler)
+renders the same per-field `detail` list as `{"detail": [...]}` (without the
+top-level `status_code` field the default dispatch adds). Register it explicitly,
+or reshape the response with your own handler:
 
 ```python
 from veloce import JSONResponse, Request, RequestValidationError, Veloce

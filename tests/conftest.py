@@ -1,8 +1,20 @@
 """Shared test fixtures for Veloce test suite."""
 
+import os
+
 import pytest
+from hypothesis import settings
 
 from veloce import Request, Veloce
+
+# Hypothesis profiles for the parser fuzz suite. The default keeps the
+# per-example count modest so the fuzz tests run inside the normal `pytest`
+# suite without slowing it down; the `ci` profile (selected by the CI fuzz leg
+# via HYPOTHESIS_PROFILE=ci) explores more examples to catch parser
+# regressions. A generous deadline avoids flaky timeouts under CPU contention.
+settings.register_profile("default", deadline=None)
+settings.register_profile("ci", max_examples=400, deadline=None)
+settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))
 
 
 @pytest.fixture
