@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from veloce.contrib.openapi import get_openapi_schema, setup_openapi_routes
-from veloce.contrib.redis import RedisCache, RedisRateLimiter, RedisSessionStore
+from veloce.contrib.redis import RedisCache, RedisRateLimitBackend, RedisSessionStore
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.contrib.templating import Jinja2Templates
 
 __all__ = [
     "Jinja2Templates",
     "RedisCache",
-    "RedisRateLimiter",
+    "RedisRateLimitBackend",
     "RedisSessionStore",
     "StaticFiles",
     "get_openapi_schema",

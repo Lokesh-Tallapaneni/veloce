@@ -1,53 +1,55 @@
-"""Redis-backed session store and rate limiter — shared state across workers.
+"""Redis-backed session store, rate-limit backend, and result cache — shared state.
 
-The bundled `InMemorySessionStore` and `RateLimitMiddleware` keep their state in
-one process, so a multi-worker deployment (`uvicorn --workers N`) gets per-worker
-sessions and an effective rate limit of roughly ``N x`` the configured one. These
-Redis-backed implementations share state across every worker and host.
+The bundled `InMemorySessionStore`, `RateLimitMiddleware`, and `InMemoryCache`
+keep their state in one process, so a multi-worker deployment (`uvicorn --workers
+N`) gets per-worker sessions, an effective rate limit of roughly ``N x`` the
+configured one, and a per-worker cache. These Redis-backed implementations share
+state across every worker and host.
 
 `redis` is an optional dependency; install it with ``pip install
 veloceframework[redis]``. The application owns the client and its connection
-pool - construct a ``redis.asyncio.Redis`` (or pass a URL to
-``RedisSessionStore.from_url`` / ``RedisRateLimiter.from_url``) and hand it in.
+pool - construct a ``redis.asyncio.Redis`` (or pass a URL to a ``from_url``
+classmethod) and hand it in.
 
 Usage::
 
     from redis.asyncio import Redis
 
-    from veloce import Veloce
-    from veloce.contrib.redis import RedisRateLimiter, RedisSessionStore
+    from veloce import RateLimitMiddleware, TokenBucket, Veloce
+    from veloce.contrib.redis import RedisRateLimitBackend, RedisSessionStore
     from veloce.middleware import ServerSessionMiddleware
 
     client = Redis.from_url("redis://localhost:6379/0")
     app = Veloce()
     app.add_middleware(ServerSessionMiddleware, store=RedisSessionStore(client))
-    app.add_middleware(RedisRateLimiter(client, max_requests=100, window_seconds=60))
+    app.add_middleware(
+        RateLimitMiddleware(
+            strategy=TokenBucket(rate=100, per=60),
+            backend=RedisRateLimitBackend(client),
+        )
+    )
 """
 
 from __future__ import annotations
 
-import time
+import logging
 from typing import TYPE_CHECKING, Any
 
 import orjson
 
 from veloce.cache import Cache
-from veloce.http.request import Request
-from veloce.http.response import Response
-from veloce.middleware.base import Middleware
+from veloce.ratelimit import RateLimitBackend, RateLimitResult, RateLimitStrategy
 from veloce.sessions import SessionStore
-from veloce.status import HTTP_429_TOO_MANY_REQUESTS
 
 if TYPE_CHECKING:  # pragma: no cover
     from redis.asyncio import Redis
 
-# RFC 9110 section 10.2.3 - tells a throttled client when to retry.
-_HEADER_RETRY_AFTER = "Retry-After"
-# RateLimit response headers (draft-ietf-httpapi-ratelimit-headers), matching the
-# in-process `RateLimitMiddleware` so a client sees the same surface either way.
-_HEADER_LIMIT = "X-RateLimit-Limit"
-_HEADER_REMAINING = "X-RateLimit-Remaining"
-_HEADER_RESET = "X-RateLimit-Reset"
+_logger = logging.getLogger(__name__)
+
+# Cap the optimistic-lock retries so a single very hot key under heavy
+# multi-connection contention cannot livelock a coroutine; past this the backend
+# degrades to one best-effort non-transactional update.
+_MAX_WATCH_RETRIES = 8
 
 
 def _load_redis_from_url(url: str, **kwargs: Any) -> Redis:
@@ -56,7 +58,7 @@ def _load_redis_from_url(url: str, **kwargs: Any) -> Redis:
         from redis.asyncio import Redis
     except ImportError as exc:  # pragma: no cover - exercised via the install hint
         raise RuntimeError(
-            "RedisSessionStore/RedisRateLimiter need the 'redis' package. "
+            "The Redis-backed contrib helpers need the 'redis' package. "
             "Install it with: pip install veloceframework[redis]"
         ) from exc
     return Redis.from_url(url, **kwargs)
@@ -123,105 +125,82 @@ class RedisSessionStore(SessionStore):
         return bool(await self._redis.expire(self._key(session_id), max_age))
 
 
-class RedisRateLimiter(Middleware):
-    """Cross-worker fixed-window rate limiter backed by Redis.
+class RedisRateLimitBackend(RateLimitBackend):
+    """A `RateLimitBackend` backed by Redis, shared across workers and hosts.
 
-    Unlike the in-process `RateLimitMiddleware`, the counter lives in Redis, so
-    every worker and host enforces one shared limit. It is a fixed-window
-    counter: each client gets at most ``max_requests`` per ``window_seconds``,
-    and the window resets on a wall-clock boundary (a burst spanning a boundary
-    can briefly admit up to ``2 x max_requests`` - the standard fixed-window
-    trade-off; use a reverse-proxy limiter when stricter smoothing is required).
+    Pair it with any strategy (`FixedWindow`, `SlidingWindow`, `TokenBucket`) on
+    `RateLimitMiddleware` to enforce one limit across every worker and host,
+    rather than the per-worker count of the default `InMemoryRateLimitBackend`.
 
-    The per-window counter is a single ``INCR`` with an ``EXPIRE`` set on first
-    use, so each check is one round trip (two on the first request of a window).
+    Each check runs the strategy inside a ``WATCH``/``MULTI`` transaction: the
+    client's state is read under a watch, the pure strategy computes the next
+    state, and the write commits only if no concurrent request changed the key -
+    otherwise it retries. This keeps the read-modify-write atomic without a Lua
+    script. State is stored as JSON under ``<prefix><key>`` with the strategy's
+    TTL, so idle clients expire on their own.
 
     Usage::
 
         from redis.asyncio import Redis
 
-        from veloce.contrib.redis import RedisRateLimiter
+        from veloce import RateLimitMiddleware, TokenBucket
+        from veloce.contrib.redis import RedisRateLimitBackend
 
         client = Redis.from_url("redis://localhost:6379/0")
-        app.add_middleware(RedisRateLimiter(client, max_requests=100, window_seconds=60))
+        app.add_middleware(
+            RateLimitMiddleware(
+                strategy=TokenBucket(rate=100, per=60),
+                backend=RedisRateLimitBackend(client),
+            )
+        )
     """
 
-    def __init__(
-        self,
-        client: Redis,
-        max_requests: int = 100,
-        window_seconds: int = 60,
-        *,
-        prefix: str = "veloce:ratelimit:",
-        name: str | None = None,
-    ) -> None:
-        super().__init__(name=name)
-        if max_requests < 1:
-            raise ValueError("RedisRateLimiter max_requests must be >= 1")
-        if window_seconds < 1:
-            raise ValueError("RedisRateLimiter window_seconds must be >= 1")
+    __slots__ = ("_redis", "_prefix", "_watch_error")
+
+    def __init__(self, client: Redis, *, prefix: str = "veloce:ratelimit:") -> None:
+        # redis is present whenever this backend is constructed; importing the
+        # exception class here (not per request) keeps the module importable
+        # without redis installed while giving the retry loop a concrete type.
+        from redis.exceptions import WatchError
+
         self._redis = client
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
         self._prefix = prefix
+        self._watch_error = WatchError
 
     @classmethod
     def from_url(
-        cls,
-        url: str,
-        *,
-        max_requests: int = 100,
-        window_seconds: int = 60,
-        prefix: str = "veloce:ratelimit:",
-        name: str | None = None,
-        **connection_kwargs: Any,
-    ) -> RedisRateLimiter:
-        """Build the limiter from a Redis URL, creating the client for you.
+        cls, url: str, *, prefix: str = "veloce:ratelimit:", **kwargs: Any
+    ) -> RedisRateLimitBackend:
+        """Build the backend from a Redis URL, creating the client for you."""
+        return cls(_load_redis_from_url(url, **kwargs), prefix=prefix)
 
-        Limiter options are explicit keywords; any extra keyword (``password``,
-        ``ssl``, ...) is forwarded to ``redis.asyncio.Redis.from_url``.
-        """
-        return cls(
-            _load_redis_from_url(url, **connection_kwargs),
-            max_requests=max_requests,
-            window_seconds=window_seconds,
-            prefix=prefix,
-            name=name,
-        )
-
-    def _client_key(self, request: Request) -> str:
-        # The direct peer address; behind a proxy, pair with `ProxyFix` so
-        # `client_host` is the real client rather than the proxy.
-        return request.client_host or "unknown"
-
-    async def process_request(self, request: Request) -> Response | None:
-        """Reject the request with 429 once the per-window count is exceeded."""
-        window = int(time.time()) // self.window_seconds
-        key = f"{self._prefix}{self._client_key(request)}:{window}"
-
-        # Create the per-window counter carrying its TTL before incrementing, so
-        # the key always has an expiry (it can never leak) even if a crash lands
-        # between the two commands. `SET ... NX EX` is a no-op once the window key
-        # exists, so steady-state cost is the create-once plus one `INCR`.
-        await self._redis.set(key, 0, ex=self.window_seconds, nx=True)
-        count = await self._redis.incr(key)
-
-        if count > self.max_requests:
-            reset = (window + 1) * self.window_seconds - int(time.time())
-            if reset < 1:
-                reset = 1
-            rejected = Response(
-                status_code=HTTP_429_TOO_MANY_REQUESTS,
-                body=b"Too Many Requests",
-                headers={
-                    _HEADER_RETRY_AFTER: str(reset),
-                    _HEADER_LIMIT: str(self.max_requests),
-                    _HEADER_REMAINING: "0",
-                    _HEADER_RESET: str(reset),
-                },
-            )
-            return rejected
-        return None
+    async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
+        redis_key = self._prefix + key
+        async with self._redis.pipeline() as pipe:
+            for _ in range(_MAX_WATCH_RETRIES):
+                try:
+                    await pipe.watch(redis_key)
+                    raw = await pipe.get(redis_key)
+                    state = orjson.loads(raw) if raw is not None else None
+                    result, new_state, ttl = strategy.evaluate(state, now)
+                    pipe.multi()
+                    pipe.set(redis_key, orjson.dumps(new_state), ex=ttl)
+                    await pipe.execute()
+                    return result
+                except self._watch_error:
+                    # A concurrent request changed the key between WATCH and
+                    # EXEC; re-read and recompute against the fresh state.
+                    continue
+        # Sustained contention on this key exhausted the atomic retries. Fall back
+        # to one non-transactional read-modify-write (last-writer-wins) so the
+        # request is served instead of livelocking; the limit may be exceeded by
+        # the number of racing writers in this rare window.
+        _logger.warning("rate-limit WATCH contention on %r; using non-atomic fallback", redis_key)
+        raw = await self._redis.get(redis_key)
+        state = orjson.loads(raw) if raw is not None else None
+        result, new_state, ttl = strategy.evaluate(state, now)
+        await self._redis.set(redis_key, orjson.dumps(new_state), ex=ttl)
+        return result
 
 
 class RedisCache(Cache):

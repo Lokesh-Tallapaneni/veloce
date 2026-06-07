@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Selectable rate-limit algorithms on `RateLimitMiddleware` via a `strategy`
+  argument - `FixedWindow`, `SlidingWindow`, or `TokenBucket` (a `burst=1` token
+  bucket is a strict leaky bucket) - and a `backend` argument choosing where the
+  per-client state lives: `InMemoryRateLimitBackend` (default, process-local) or
+  `veloce.contrib.redis.RedisRateLimitBackend` (shared across workers and hosts).
+  Each algorithm is a pure state transition that runs identically on either
+  backend. The existing `max_requests`/`window_seconds` form is unchanged.
 - Result caching: the `cached` decorator memoises an async function's
   JSON-serialisable return in a `Cache` backend, keyed by its arguments
   (non-serialisable arguments such as an injected `Request` are ignored, so a
@@ -55,11 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `veloce.contrib.redis` adds `RedisSessionStore` and `RedisRateLimiter` for
+- `veloce.contrib.redis` adds `RedisSessionStore` and `RedisRateLimitBackend` for
   state shared across workers and hosts: a `SessionStore` backed by Redis (native
   TTL expiry, sliding renewal, and a race-safe conditional write) and a
-  cross-worker fixed-window rate-limit middleware. Install the backend with
-  `pip install veloceframework[redis]`.
+  cross-worker rate-limit backend (atomic per-client state via a `WATCH`/`MULTI`
+  transaction). Install the backend with `pip install veloceframework[redis]`.
 - A Databases guide documents the recommended async SQLAlchemy pattern (one
   pooled engine for the app lifetime, a per-request session dependency) and the
   Redis session/rate-limit helpers. The deployment guide documents the built-in

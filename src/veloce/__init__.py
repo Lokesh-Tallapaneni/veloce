@@ -167,6 +167,17 @@ from veloce.passwords import (
     verify_password,
     verify_password_async,
 )
+
+# Rate-limit algorithms and backends (selectable via RateLimitMiddleware)
+from veloce.ratelimit import (
+    FixedWindow,
+    InMemoryRateLimitBackend,
+    RateLimitBackend,
+    RateLimitResult,
+    RateLimitStrategy,
+    SlidingWindow,
+    TokenBucket,
+)
 from veloce.routing.converters import Converter, register_converter
 from veloce.routing.params import Body, Cookie, File, Form, Header, Path, Query
 
@@ -277,6 +288,14 @@ __all__ = [
     "GZipMiddleware",
     "TrustedHostMiddleware",
     "RateLimitMiddleware",
+    # Rate-limit algorithms and backends
+    "RateLimitStrategy",
+    "FixedWindow",
+    "SlidingWindow",
+    "TokenBucket",
+    "RateLimitBackend",
+    "InMemoryRateLimitBackend",
+    "RateLimitResult",
     "HTTPSRedirectMiddleware",
     "SecurityHeadersMiddleware",
     "CSPMiddleware",

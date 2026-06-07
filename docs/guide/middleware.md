@@ -74,7 +74,7 @@ Veloce ships the following middleware, all importable from the top-level
 | `SecurityHeadersMiddleware` | Attach common hardening response headers to every response    |
 | `CSPMiddleware`             | Content-Security-Policy with a per-request nonce and report-only support |
 | `ConditionalGetMiddleware`  | Emit `304 Not Modified` for satisfied GET/HEAD preconditions  |
-| `RateLimitMiddleware`       | In-process token-bucket rate limiter                          |
+| `RateLimitMiddleware`       | Per-client rate limiter with a selectable algorithm and backend |
 | `WebSocketOriginMiddleware` | Reject cross-site WebSocket handshakes (CSWSH)                |
 | `LoggingMiddleware`         | Structured request/response access logging                    |
 | `RequestIDMiddleware`       | Assign a unique request ID and echo it in the response        |
@@ -143,6 +143,39 @@ thread pool; latency-sensitive types (`text/event-stream` by default, via
 `latency_sensitive_types`) are passed through uncompressed so server-sent
 events are never merged or delayed.
 
+### Rate limiting
+
+`RateLimitMiddleware` limits requests per client. Used with no arguments it runs
+a process-local sliding-log limiter — `max_requests` per `window_seconds`:
+
+```python
+from veloce import RateLimitMiddleware
+
+app.add_middleware(RateLimitMiddleware(max_requests=100, window_seconds=60))
+```
+
+Pass a `strategy` to choose the algorithm, and a `backend` to choose where the
+per-client state lives:
+
+```python
+from veloce import RateLimitMiddleware, TokenBucket
+
+app.add_middleware(RateLimitMiddleware(strategy=TokenBucket(rate=100, per=60, burst=20)))
+```
+
+| Strategy        | Behavior                                                                 |
+| --------------- | ------------------------------------------------------------------------ |
+| `FixedWindow`   | `limit` per fixed `window`; cheapest, but allows a burst at the boundary  |
+| `SlidingWindow` | `limit` per rolling `window`; smooths the boundary burst with two counters |
+| `TokenBucket`   | refills `rate` per `per` seconds, allowing a burst up to `burst` (default `rate`); `burst=1` is a strict leaky bucket |
+
+The default `InMemoryRateLimitBackend` counts per process. For one limit shared
+across every worker and host, use `RedisRateLimitBackend` (see below).
+
+!!! note "Added in version 0.4.0"
+    Selectable `strategy`/`backend` on `RateLimitMiddleware`. The bare
+    `max_requests`/`window_seconds` form is unchanged.
+
 ## Function middleware
 
 For one-off logic, register a function with `@app.middleware("http")`.
@@ -195,21 +228,27 @@ teardown stay balanced. A `before_request` hook that rewrites the request path
 to a different route does not change which middleware run for that request - the
 entry route's `exclude_middleware` is authoritative.
 
-!!! warning "RateLimitMiddleware counts per process"
-    `RateLimitMiddleware` keeps its counters in one process, so under
-    `uvicorn --workers N` the effective limit is roughly `N x` the configured
-    one. For a shared cross-worker limit use
-    [`RedisRateLimiter`](databases.md#redis-sessions-and-rate-limiting) from
+!!! warning "RateLimitMiddleware counts per process by default"
+    The default `InMemoryRateLimitBackend` keeps its state in one process, so
+    under `uvicorn --workers N` the effective limit is roughly `N x` the
+    configured one. For a shared cross-worker limit pass a
+    [`RedisRateLimitBackend`](databases.md#redis-sessions-and-rate-limiting) from
     `veloce.contrib.redis` (`pip install veloceframework[redis]`), which keeps
-    the counter in Redis:
+    the state in Redis:
 
     ```python
     from redis.asyncio import Redis
 
-    from veloce.contrib.redis import RedisRateLimiter
+    from veloce import RateLimitMiddleware, TokenBucket
+    from veloce.contrib.redis import RedisRateLimitBackend
 
     client = Redis.from_url("redis://localhost:6379/0")
-    app.add_middleware(RedisRateLimiter(client, max_requests=100, window_seconds=60))
+    app.add_middleware(
+        RateLimitMiddleware(
+            strategy=TokenBucket(rate=100, per=60),
+            backend=RedisRateLimitBackend(client),
+        )
+    )
     ```
 
 ```python
