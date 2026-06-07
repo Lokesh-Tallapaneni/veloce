@@ -46,6 +46,17 @@ def test_url_map_lookup_by_endpoint():
     assert matches[0].rule == "/users/{id}"
 
 
+def test_url_map_lookup_unknown_endpoint_is_empty():
+    assert _make_app().url_map["does_not_exist"] == []
+
+
+def test_url_map_lookup_returns_fresh_list():
+    # Mutating a returned list must not corrupt the endpoint index.
+    url_map = _make_app().url_map
+    url_map["user_detail"].clear()
+    assert len(url_map["user_detail"]) == 1
+
+
 def test_url_map_len_counts_unique_rules():
     app = _make_app()
     assert len(app.url_map) == 3

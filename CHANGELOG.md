@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The deprecated `Veloce.on_event()` and `Veloce.add_event_handler()` now state
   removal in v1.0.0; the previously advertised v0.2.0 had already passed.
+- `app.url_map[endpoint]` resolves through a prebuilt endpoint index instead of
+  filtering the whole rule list on each subscript. Behavior is unchanged.
 - OpenAPI schema generation resolves component aliases through a prebuilt map,
   making the reference-rewrite pass linear instead of quadratic in the number of
   schema components. Output is unchanged.
