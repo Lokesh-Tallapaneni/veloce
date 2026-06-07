@@ -339,3 +339,119 @@ def test_overrides_require_strategy():
 def test_overrides_reject_non_strategy():
     with pytest.raises(TypeError, match="RateLimitStrategy"):
         RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/x": "nope"})
+
+
+def _req(app, path):
+    return Request(method="GET", path=path, query_string="", headers={}, body=b"", app=app)
+
+
+def test_unknown_override_key_raises_on_first_request():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/cheap")
+    async def cheap(request: Request):
+        return {}
+
+    mw = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/nope": FixedWindow(1)})
+    with pytest.raises(ValueError, match="match no registered route"):
+        mw._build_route_strategies(_req(app, "/cheap"))
+
+
+def test_valid_override_key_passes_validation():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/strict")
+    async def strict(request: Request):
+        return {}
+
+    mw = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/strict": FixedWindow(1)})
+    built = mw._build_route_strategies(_req(app, "/strict"))
+    assert "/strict" in built
+    assert mw._route_strategies is built
+
+
+def test_blueprint_override_key_needs_prefix():
+    from veloce import Blueprint
+
+    app = Veloce(openapi_url=None)
+    bp = Blueprint("api", url_prefix="/api")
+
+    @bp.get("/login")
+    async def login(request: Request):
+        return {}
+
+    app.register_blueprint(bp)
+    # The bare "/login" matches no route; the prefixed "/api/login" does.
+    bad = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/login": FixedWindow(1)})
+    with pytest.raises(ValueError, match="match no registered route"):
+        bad._build_route_strategies(_req(app, "/api/login"))
+    ok = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/api/login": FixedWindow(1)})
+    assert "/api/login" in ok._build_route_strategies(_req(app, "/api/login"))
+
+
+# ── @rate_limit decorator ────────────────────────────────────────────
+
+
+def test_rate_limit_decorator_tags_handler():
+    from veloce import rate_limit
+    from veloce.ratelimit import RATE_LIMIT_ATTR
+
+    strat = FixedWindow(5, 60)
+
+    @rate_limit(strat)
+    async def handler(request):
+        return {}
+
+    assert getattr(handler, RATE_LIMIT_ATTR) is strat
+
+
+def test_rate_limit_decorator_requires_strategy():
+    from veloce import rate_limit
+
+    with pytest.raises(TypeError, match="RateLimitStrategy"):
+        rate_limit("nope")
+
+
+def test_rate_limit_decorator_applies_per_route():
+    from veloce import rate_limit
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(strategy=FixedWindow(100, 60)))
+
+    @app.get("/cheap")
+    async def cheap(request: Request):
+        return {"ok": True}
+
+    @app.get("/strict")
+    @rate_limit(FixedWindow(2, 60))
+    async def strict(request: Request):
+        return {"ok": True}
+
+    with TestClient(app) as tc:
+        assert tc.get("/strict", headers=_UA).status_code == 200
+        assert tc.get("/strict", headers=_UA).status_code == 200
+        assert tc.get("/strict", headers=_UA).status_code == 429
+        # The undecorated route keeps the generous default.
+        assert tc.get("/cheap", headers=_UA).status_code == 200
+
+
+def test_explicit_override_wins_over_decorator():
+    from veloce import rate_limit
+
+    app = Veloce(openapi_url=None)
+    # Decorator says 100/min, overrides says 1/min - the explicit map wins.
+    app.add_middleware(
+        RateLimitMiddleware(
+            strategy=FixedWindow(1000, 60),
+            overrides={"/strict": FixedWindow(1, 60)},
+        )
+    )
+
+    @app.get("/strict")
+    @rate_limit(FixedWindow(100, 60))
+    async def strict(request: Request):
+        return {"ok": True}
+
+    with TestClient(app) as tc:
+        assert tc.get("/strict", headers=_UA).status_code == 200
+        assert tc.get("/strict", headers=_UA).status_code == 429

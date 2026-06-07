@@ -18,11 +18,20 @@ Select an algorithm by passing a strategy to `RateLimitMiddleware`::
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TypeVar
 
 # Per-client algorithm state persisted between requests. It round-trips through
 # the backend as JSON, so its values are plain numbers (ints widen to float).
 RateLimitState = dict[str, float]
+
+# Attribute `rate_limit` stamps on a handler so `RateLimitMiddleware` can
+# discover its per-route strategy. functools.wraps copies a function's __dict__,
+# so the tag survives well-behaved decorators applied above it.
+RATE_LIMIT_ATTR = "_veloce_rate_limit"
+
+T_handler = TypeVar("T_handler", bound=Callable[..., object])
 
 
 @dataclass(slots=True)
@@ -234,3 +243,30 @@ class InMemoryRateLimitBackend(RateLimitBackend):
             del self._states[k]
         if len(self._states) >= self._max_keys:
             del self._states[next(iter(self._states))]
+
+
+def rate_limit(strategy: RateLimitStrategy) -> Callable[[T_handler], T_handler]:
+    """Attach a per-route rate-limit `strategy` to a handler.
+
+    A decorated handler is limited by `strategy` with its own per-client counter,
+    overriding the `RateLimitMiddleware` default; undecorated handlers keep the
+    default. Because the limit lives on the handler, there is no route string to
+    mistype. Place it below the route decorator so the route registers the tagged
+    handler.
+
+    Usage::
+
+        from veloce import TokenBucket, rate_limit
+
+        @app.post("/login")
+        @rate_limit(TokenBucket(rate=5, per=60))
+        async def login(request): ...
+    """
+    if not isinstance(strategy, RateLimitStrategy):
+        raise TypeError("rate_limit() requires a RateLimitStrategy")
+
+    def decorator(func: T_handler) -> T_handler:
+        setattr(func, RATE_LIMIT_ATTR, strategy)
+        return func
+
+    return decorator

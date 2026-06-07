@@ -177,6 +177,7 @@ from veloce.ratelimit import (
     RateLimitStrategy,
     SlidingWindow,
     TokenBucket,
+    rate_limit,
 )
 from veloce.routing.converters import Converter, register_converter
 from veloce.routing.params import Body, Cookie, File, Form, Header, Path, Query
@@ -296,6 +297,7 @@ __all__ = [
     "RateLimitBackend",
     "InMemoryRateLimitBackend",
     "RateLimitResult",
+    "rate_limit",
     "HTTPSRedirectMiddleware",
     "SecurityHeadersMiddleware",
     "CSPMiddleware",

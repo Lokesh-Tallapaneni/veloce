@@ -15,10 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `veloce.contrib.redis.RedisRateLimitBackend` (shared across workers and hosts).
   Each algorithm is a pure state transition that runs identically on either
   backend. The existing `max_requests`/`window_seconds` form is unchanged.
-  `RateLimitMiddleware` also accepts `overrides`, a map from a route's path
-  template to a strategy that replaces the default for that route; an overridden
-  route gets its own per-client counter. Routes without an override are
-  unaffected and apps that pass no `overrides` pay nothing per request.
+  Per-route limits: decorate a handler with `rate_limit(strategy)` to give that
+  route its own limit (no route string to mistype), or pass `RateLimitMiddleware`
+  an `overrides` map from a route's full path template to a strategy for handlers
+  you cannot decorate. An overridden route gets its own per-client counter; an
+  override key matching no route raises on the first request, and an explicit
+  `overrides` entry wins over a `rate_limit` tag. Routes without a per-route limit
+  are unaffected and pay nothing per request.
 - Result caching: the `cached` decorator memoises an async function's
   JSON-serialisable return in a `Cache` backend, keyed by its arguments
   (non-serialisable arguments such as an injected `Request` are ignored, so a
