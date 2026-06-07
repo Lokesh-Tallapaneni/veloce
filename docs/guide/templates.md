@@ -8,12 +8,8 @@ tags: [templates, jinja2, html, rendering]
 Veloce renders HTML with [Jinja2](https://jinja.palletsprojects.com/). You can
 use the class-based [`Jinja2Templates`](../reference.md#veloce.Jinja2Templates)
 API explicitly, or the Flask-style [`render_template`](../reference.md#veloce.render_template)
-shortcut once a template folder is configured on the app. Jinja2 is an optional
-dependency — install it alongside Veloce.
-
-```bash
-pip install veloceframework jinja2
-```
+shortcut once a template folder is configured on the app. Jinja2 ships with
+Veloce as a runtime dependency, so `pip install veloceframework` is all you need.
 
 ## A first template
 

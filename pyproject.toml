@@ -59,9 +59,11 @@ dependencies = [
 # absent (its `--reload` then needs this extra). Install with
 # `pip install veloceframework[uvicorn]` to deploy under `uvicorn your:app`.
 uvicorn = ["uvicorn[standard]>=0.23"]
-# WebSocket apps need the `websockets` library — pull it in via
-# `pip install veloceframework[ws]`. Kept optional so REST-only deploys
-# do not download the WS implementation.
+# Veloce's built-in server implements the WebSocket protocol itself, so it needs
+# nothing extra. This extra provides the `websockets` library for deploying as an
+# ASGI app under a server that relies on it for WebSocket framing - e.g. plain
+# `uvicorn` (the `[uvicorn]` extra's `uvicorn[standard]` already bundles it).
+# Install with `pip install veloceframework[ws]`.
 ws = ["websockets>=12"]
 # gunicorn process supervision for the optional `veloce.workers.VeloceWorker`
 # worker class. POSIX-only — gunicorn does not run on Windows — so this extra
