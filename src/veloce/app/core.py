@@ -322,6 +322,39 @@ class Veloce(
         self.secret_key: str | None = None  # Secret key
         self.extensions: dict[str, Any] = {}  # Extensions registry
         self._lifespan = lifespan
+        self._init_runtime_state()
+        # `exception_handlers=` ctor mapping - keys are
+        # exception classes or integer status codes.
+        for _key, _handler in (exception_handlers or {}).items():
+            self.add_exception_handler(_key, _handler)
+        # ASGI shape `middleware=` ctor list - each entry is
+        # a middleware instance applied in the given order.
+        for _mw in middleware or []:
+            self.add_middleware(_mw)
+        self._init_registries()
+        # `template_folder`: when set, build a Jinja2Templates
+        # and bind it on `app._templates` so `render_template(name, ...)`
+        # works without manual wiring. Relative paths resolve under
+        # `package_root` (same convention as static_folder).
+        self.template_folder: str | None = template_folder
+        self._templates: Any = None
+        if template_folder is not None:
+            from veloce.contrib.templating import Jinja2Templates
+
+            tdir = template_folder
+            if not os.path.isabs(tdir):
+                tdir = os.path.join(self.package_root, tdir)
+            self._templates = Jinja2Templates(directory=tdir)
+
+    def _init_runtime_state(self) -> None:
+        """Initialise the app's internal runtime and pipeline state.
+
+        The lifecycle bookkeeping, middleware ledger, compiled feature
+        pipeline specs, instrumentation / MCP / error-handler tables, and the
+        route-introspection caches. Arg-free: every value is an empty
+        container, a sentinel, or a FeatureSpec whose enabled/build lambdas
+        read app state lazily at request time. Called once from __init__.
+        """
         self._lifespan_cm: Any = None
         # Setup lock: flipped True on the first dispatch (under
         # `_first_request_lock`) so late route/hook/blueprint registration -
@@ -511,14 +544,15 @@ class Veloce(
         # classes per request would grow this unboundedly; not a target
         # workload.
         self._exc_handler_cache: dict[type, Callable | None] = {}
-        # `exception_handlers=` ctor mapping - keys are
-        # exception classes or integer status codes.
-        for _key, _handler in (exception_handlers or {}).items():
-            self.add_exception_handler(_key, _handler)
-        # ASGI shape `middleware=` ctor list - each entry is
-        # a middleware instance applied in the given order.
-        for _mw in middleware or []:
-            self.add_middleware(_mw)
+
+    def _init_registries(self) -> None:
+        """Initialise the per-app hook, mount, template, and URL registries.
+
+        The request and blueprint hooks, mount lists, template and URL
+        processor registries, and the lazily-built helpers (webhooks router,
+        JSON provider, aborter, static config). Arg-free; called once from
+        __init__ after the constructor-time handler/middleware registration.
+        """
         self._on_startup: list[Callable] = []
         self._on_shutdown: list[Callable] = []
         self._static_handlers: list[StaticFiles] = []
@@ -605,21 +639,6 @@ class Veloce(
         # `app.static(prefix=app.static_url_path, directory=app.static_folder)`.
         self.static_folder: str = "static"
         self.static_url_path: str = "/static"
-        # `template_folder`: when set, build a Jinja2Templates
-        # and bind it on `app._templates` so `render_template(name, ...)`
-        # works without manual wiring. Relative paths resolve under
-        # `package_root` (same convention as static_folder).
-        self.template_folder: str | None = template_folder
-        self._templates: Any = None
-        if template_folder is not None:
-            from veloce.contrib.templating import Jinja2Templates
-
-            tdir = template_folder
-            if not os.path.isabs(tdir):
-                tdir = os.path.join(self.package_root, tdir)
-            self._templates = Jinja2Templates(directory=tdir)
-
-    # -- Middleware ------------------------------------------------
 
     # -- Properties ---------------------------------------------
 
