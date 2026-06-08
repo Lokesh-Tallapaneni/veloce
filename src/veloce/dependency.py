@@ -353,6 +353,62 @@ class SecurityScopes:
 
 # -- Resolver ----------------------------------------------
 
+# Returned by `_resolve_scalar_param` for a path slot with no value, no default,
+# and not optional: the caller leaves the kwarg unset so the handler default
+# applies. A query slot raises `missing` instead, so it never returns this.
+_PARAM_MISSING: Any = object()
+
+
+def _resolve_scalar_param(
+    slot: Any, request: Request, path_params: dict[str, str], *, allow_query: bool
+) -> Any:
+    """Resolve a scalar path-or-query parameter to its coerced value.
+
+    A path binding wins when the matched params include the name; a `K_QUERY`
+    slot (`allow_query=True`) then falls back to the query string, a `K_PATH`
+    slot does not. With no value, a default or optional yields that; otherwise a
+    query slot raises `missing` and a path slot returns `_PARAM_MISSING`.
+    """
+    name = slot.name
+    if name in path_params:
+        return _coerce_value(path_params[name], slot.target_type or str, name, "path")
+    if allow_query and name in request.query_params:
+        return _coerce_value(request.query_params[name], slot.target_type or str, name, "query")
+    if slot.has_default:
+        return slot.default
+    if slot.is_optional:
+        return None
+    if allow_query:
+        raise RequestValidationError(
+            [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
+        )
+    return _PARAM_MISSING
+
+
+def _resolve_list_param(slot: Any, request: Request, path_params: dict[str, str]) -> Any:
+    """Resolve a list-typed path-or-query parameter to a coerced list.
+
+    A single path value becomes a one-element list; a query key yields every
+    value the URL carried (`?tag=a&tag=b` -> ["a", "b"]). Falls back to the
+    default / optional, else raises `missing`.
+    """
+    name = slot.name
+    if name in path_params:
+        return [_coerce_value(path_params[name], slot.list_inner, name, "path")]
+    if name in request.query_params:
+        # MultiDict.getall returns every value the URL carried for this key.
+        return [
+            _coerce_value(v, slot.list_inner, name, "query")
+            for v in request.query_params.getall(name)
+        ]
+    if slot.has_default:
+        return slot.default
+    if slot.is_optional:
+        return None
+    raise RequestValidationError(
+        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
+    )
+
 
 class DependencyResolver:
     """Walks a `HandlerPlan` to produce kwargs for a handler.
@@ -573,6 +629,25 @@ class DependencyResolver:
         request: Request,
         path_params: dict[str, str],
     ) -> dict[str, Any]:
+        """Walk a plan's slots in order, binding each handler kwarg by slot kind.
+
+        The interpreter that backs the codegen fast paths (trivial / request-only
+        / `compile_param_resolver` / `compile_graph_resolver` in `resolve_plan`);
+        it runs only for plans those reject - batched dependency waves, Security
+        scopes, yield teardowns, overrides, an MCP context, or body models. Each
+        kind binds through a named helper, so adding a kind is one branch plus one
+        binder. The map, by group:
+
+        - framework injections: `K_REQUEST` / `K_WEBSOCKET` (the connection),
+          `K_BG_TASKS` -> `_bind_background_tasks`, `K_RESPONSE` ->
+          `_bind_injected_response`, `K_SECURITY_SCOPES` (the live scope stack);
+        - dependencies: `K_DEPENDS` -> `_run_dep_waves` (batched) or
+          `_exec_depends` (inline, in slot order);
+        - markers and body: `K_PARAM_MARKER` -> `_resolve_marker`, `K_BODY_MODEL`
+          -> `_resolve_body_model`, `K_UPLOAD_FILE` -> `_resolve_upload_file`;
+        - path / query parameters: `K_QUERY_LIST` -> `_resolve_list_param`,
+          `K_QUERY` / `K_PATH` -> `_resolve_scalar_param`.
+        """
         slots = plan.slots
         kwargs: dict[str, Any] = {}
         # Precomputed at registration. `wave_trigger` maps the earliest batched
@@ -594,6 +669,7 @@ class DependencyResolver:
             kind = slot.kind
             name = slot.name
 
+            # ── Framework injections ──────────────────────────────
             if kind == K_REQUEST:
                 kwargs[name] = request
                 i += 1
@@ -607,24 +683,12 @@ class DependencyResolver:
                 continue
 
             if kind == K_BG_TASKS:
-                if request._background_tasks is None:
-                    request._background_tasks = BackgroundTasks()
-                kwargs[name] = request._background_tasks
+                kwargs[name] = self._bind_background_tasks(request)
                 i += 1
                 continue
 
             if kind == K_RESPONSE:
-                # Response injection. One Response per
-                # request, shared between the handler and any dependency
-                # that also declares the parameter. `status_code = 0` is
-                # the "not set by the handler" sentinel the dispatcher
-                # checks before merging.
-                injected = request._state.get("_injected_response")
-                if injected is None:
-                    injected = Response()
-                    injected.status_code = 0
-                    request._state["_injected_response"] = injected
-                kwargs[name] = injected
+                kwargs[name] = self._bind_injected_response(request)
                 i += 1
                 continue
 
@@ -637,6 +701,7 @@ class DependencyResolver:
                 i += 1
                 continue
 
+            # ── Dependencies ──────────────────────────────────────
             if kind == K_DEPENDS:
                 # Topological batching (see `compute_dep_waves`): every batched
                 # parallel-safe dep is resolved at the earliest batched slot,
@@ -654,19 +719,14 @@ class DependencyResolver:
                     # and there is nothing to do but advance.
                     waves = wave_trigger.get(i)
                     if waves is not None:
-                        for wave in waves:
-                            group = [slots[w] for w in wave]
-                            results = await asyncio.gather(
-                                *(self._exec_depends(s, request, path_params) for s in group)
-                            )
-                            for s, r in zip(group, results, strict=True):
-                                kwargs[s.name] = r
+                        await self._run_dep_waves(waves, slots, request, path_params, kwargs)
                     i += 1
                     continue
                 kwargs[name] = await self._exec_depends(slot, request, path_params)
                 i += 1
                 continue
 
+            # ── Markers and request body ──────────────────────────
             if kind == K_PARAM_MARKER:
                 kwargs[name] = await self._resolve_marker(slot, request, path_params)
                 i += 1
@@ -678,36 +738,13 @@ class DependencyResolver:
                 continue
 
             if kind == K_UPLOAD_FILE:
-                form = await request.form()
-                upload = form.get(name)
-                if upload is None and slot.is_optional:
-                    kwargs[name] = None
-                elif upload is not None:
-                    kwargs[name] = upload
-                # else: leave unset (handler default will apply if any)
+                await self._resolve_upload_file(slot, request, kwargs)
                 i += 1
                 continue
 
+            # ── Path and query parameters ─────────────────────────
             if kind == K_QUERY_LIST:
-                # Lists may come from path or query; prefer path.
-                if name in path_params:
-                    raw = path_params[name]
-                    kwargs[name] = [_coerce_value(raw, slot.list_inner, name, "path")]
-                elif name in request.query_params:
-                    # MultiDict.getall returns every value the URL carried
-                    # for this key. `?tag=a&tag=b` -> ["a", "b"].
-                    values = request.query_params.getall(name)
-                    kwargs[name] = [
-                        _coerce_value(v, slot.list_inner, name, "query") for v in values
-                    ]
-                elif slot.has_default:
-                    kwargs[name] = slot.default
-                elif slot.is_optional:
-                    kwargs[name] = None
-                else:
-                    raise RequestValidationError(
-                        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
-                    )
+                kwargs[name] = _resolve_list_param(slot, request, path_params)
                 i += 1
                 continue
 
@@ -723,37 +760,15 @@ class DependencyResolver:
                     kwargs[name] = mcp_context
                     i += 1
                     continue
-                # Path-or-query: a handler param that wasn't otherwise tagged.
-                # Path bindings win if the route's matched params include this
-                # name; else fall back to query string.
-                if name in path_params:
-                    kwargs[name] = _coerce_value(
-                        path_params[name], slot.target_type or str, name, "path"
-                    )
-                elif name in request.query_params:
-                    val = request.query_params[name]
-                    kwargs[name] = _coerce_value(val, slot.target_type or str, name, "query")
-                elif slot.has_default:
-                    kwargs[name] = slot.default
-                elif slot.is_optional:
-                    kwargs[name] = None
-                else:
-                    raise RequestValidationError(
-                        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
-                    )
+                kwargs[name] = _resolve_scalar_param(slot, request, path_params, allow_query=True)
                 i += 1
                 continue
 
             # K_PATH is not currently emitted by build_plan; future-proof.
             if kind == K_PATH:
-                if name in path_params:
-                    kwargs[name] = _coerce_value(
-                        path_params[name], slot.target_type or str, name, "path"
-                    )
-                elif slot.has_default:
-                    kwargs[name] = slot.default
-                elif slot.is_optional:
-                    kwargs[name] = None
+                val = _resolve_scalar_param(slot, request, path_params, allow_query=False)
+                if val is not _PARAM_MISSING:
+                    kwargs[name] = val
                 i += 1
                 continue
 
@@ -762,6 +777,66 @@ class DependencyResolver:
             i += 1
 
         return kwargs
+
+    async def _run_dep_waves(
+        self,
+        waves: list[list[int]],
+        slots: list[Any],
+        request: Request,
+        path_params: dict[str, str],
+        kwargs: dict[str, Any],
+    ) -> None:
+        """Resolve batched dependency waves concurrently into `kwargs`.
+
+        Each wave is gathered, then its results are written, before the next wave
+        runs, so a wave that reuses a cached result always follows the wave that
+        filled it (see `compute_dep_waves`). Entered only when a plan has batched
+        parallel-safe deps; a linear chain never reaches here.
+        """
+        for wave in waves:
+            group = [slots[w] for w in wave]
+            results = await asyncio.gather(
+                *(self._exec_depends(s, request, path_params) for s in group)
+            )
+            for s, r in zip(group, results, strict=True):
+                kwargs[s.name] = r
+
+    @staticmethod
+    def _bind_background_tasks(request: Request) -> BackgroundTasks:
+        """Lazily attach and return the request's `BackgroundTasks` queue."""
+        if request._background_tasks is None:
+            request._background_tasks = BackgroundTasks()
+        return request._background_tasks
+
+    @staticmethod
+    def _bind_injected_response(request: Request) -> Response:
+        """Lazily create and return the per-request injected `Response`.
+
+        One `Response` per request, shared between the handler and any dependency
+        that also declares the parameter. `status_code = 0` is the "not set by the
+        handler" sentinel the dispatcher checks before merging.
+        """
+        injected = request._state.get("_injected_response")
+        if injected is None:
+            injected = Response()
+            injected.status_code = 0
+            request._state["_injected_response"] = injected
+        return injected
+
+    async def _resolve_upload_file(
+        self, slot: Any, request: Request, kwargs: dict[str, Any]
+    ) -> None:
+        """Bind an uploaded file from the multipart form, if present.
+
+        Binds the upload when the field is present, `None` when it is absent and
+        optional, and leaves the kwarg unset otherwise so the handler default
+        applies.
+        """
+        upload = (await request.form()).get(slot.name)
+        if upload is not None:
+            kwargs[slot.name] = upload
+        elif slot.is_optional:
+            kwargs[slot.name] = None
 
     def _parallel_dep_group_end(self, slots: list[Any], start: int) -> int:
         """Compat shim. The grouping is precomputed at registration

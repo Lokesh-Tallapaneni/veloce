@@ -15,7 +15,7 @@ class TestNoDeprecatedEventLoop:
     def test_no_get_event_loop_in_app(self):
         import inspect
 
-        import veloce.app as mod
+        import veloce.app.core as mod
 
         source = inspect.getsource(mod)
         assert "get_event_loop()" not in source, (

@@ -159,7 +159,7 @@ def test_no_hook_skips_the_clock_read():
     """The advertised zero-cost guarantee: with no hook registered the
     request path does not even read `perf_counter`."""
     app = _app()
-    with patch("veloce.app.time.perf_counter") as clock:
+    with patch("veloce.app.dispatch.time.perf_counter") as clock:
         app.test_client().get("/items/4")
     assert not clock.called
 

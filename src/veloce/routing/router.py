@@ -1031,34 +1031,7 @@ class Router:
         # Reject a duplicate path parameter before building any tree node or
         # regex, so both the radix and regex branches get one clear error.
         _check_duplicate_params(full_path)
-        has_trailing_slash = full_path.endswith("/") and full_path != "/"
-
-        # Classify once, at registration. A path the radix tree cannot
-        # express (partial-segment params, multi-brace segments, raw regex
-        # converters, greedy `:path` with a suffix) goes onto the regex
-        # fallback; everything else stays on the unchanged tree fast path.
-        regex_route: RegexRoute | None = None
-        if is_regex_path(full_path):
-            regex_route = self._regex_route_index.get(full_path)
-            if regex_route is None:
-                pattern = build_route_regex(full_path)
-                param_names = list(pattern.groupindex)
-                regex_route = RegexRoute(full_path, pattern, param_names)
-                self._regex_routes.append(regex_route)
-                self._regex_route_index[full_path] = regex_route
-            else:
-                param_names = regex_route.param_names
-            if strict_slashes is False:
-                regex_route.tolerant_slash = True
-            node = None
-        else:
-            segments = self._split_path(full_path)
-            node, param_names = self._insert_path_into_tree(self._root, segments, full_path)
-
-            if has_trailing_slash:
-                node.trailing_slash = True
-            if strict_slashes is False:
-                node.tolerant_slash = True
+        node, regex_route, param_names = self._classify_route_path(full_path, strict_slashes)
 
         route_name = name or handler.__name__
         # Merge router-level dependencies (registered at Router.__init__)
@@ -1119,34 +1092,7 @@ class Router:
         else:
             assert node is not None
             handler_table = node.handlers
-        # Two-pass commit so a multi-method registration is atomic. The
-        # `on_duplicate='error'` policy raises a DuplicateRouteError; if we
-        # committed each method as we went, a collision on a *later* verb would
-        # leave the *earlier* verbs already mutated into the handler table,
-        # diverging from the caller's view (which catches the error expecting an
-        # unchanged router). Pass 1 evaluates the policy for every method and
-        # raises before any mutation; only once all methods pass do we mutate.
-        replaceable: list[tuple[str, RouteInfo]] = []
-        for method in methods:
-            mkey = method.upper()
-            existing = handler_table.get(mkey)
-            if existing is not None and not self._allow_duplicate(existing, route_info):
-                # May raise DuplicateRouteError on the 'error' policy; nothing
-                # has been mutated yet, so the router is left fully unchanged.
-                self._on_duplicate_route(full_path, mkey, existing, route_info)
-                # warn/override allowed the replace - remember the displaced
-                # route so pass 2 can drop its reverse entry after the check.
-                replaceable.append((mkey, existing))
-        # Pass 2: every method passed the policy, so commit them all. The
-        # named-route reverse entry below is written only after this point, so a
-        # caught DuplicateRouteError cannot leave url_for() polluted.
-        for mkey, existing in replaceable:
-            # The policy allowed the replace (warn/override). Drop the displaced
-            # route's reverse entry when it had a different name, so
-            # url_for(old_name) stops resolving to a dead route.
-            self._drop_replaced_route_name(existing, route_name, handler_table, mkey)
-        for method in methods:
-            handler_table[method.upper()] = route_info
+        self._commit_route_methods(methods, handler_table, full_path, route_info, route_name)
 
         # Register the named route for url_for only once the route is committed
         # to the handler table above. The reverse entry reflects the route that
@@ -1155,6 +1101,78 @@ class Router:
         # so a re-registered name re-derives from its new template.
         self._named_routes[route_name] = (full_path, param_names)
         self._reverse_converters.pop(route_name, None)
+
+    def _classify_route_path(
+        self, full_path: str, strict_slashes: bool | None
+    ) -> tuple[RadixNode | None, RegexRoute | None, list[str]]:
+        """Place a path on the regex fallback or the radix tree.
+
+        A path the radix tree cannot express (partial-segment params, multi-brace
+        segments, raw regex converters, greedy `:path` with a suffix) is compiled
+        to a `RegexRoute`; everything else is inserted into the tree. Return the
+        radix leaf (or `None` for a regex route), the `RegexRoute` (or `None` for
+        a tree route), and the ordered parameter names - exactly one of the two
+        node results is non-`None`.
+        """
+        has_trailing_slash = full_path.endswith("/") and full_path != "/"
+        if is_regex_path(full_path):
+            regex_route = self._regex_route_index.get(full_path)
+            if regex_route is None:
+                pattern = build_route_regex(full_path)
+                param_names = list(pattern.groupindex)
+                regex_route = RegexRoute(full_path, pattern, param_names)
+                self._regex_routes.append(regex_route)
+                self._regex_route_index[full_path] = regex_route
+            else:
+                param_names = regex_route.param_names
+            if strict_slashes is False:
+                regex_route.tolerant_slash = True
+            return None, regex_route, param_names
+
+        segments = self._split_path(full_path)
+        node, param_names = self._insert_path_into_tree(self._root, segments, full_path)
+        if has_trailing_slash:
+            node.trailing_slash = True
+        if strict_slashes is False:
+            node.tolerant_slash = True
+        return node, None, param_names
+
+    def _commit_route_methods(
+        self,
+        methods: list[str],
+        handler_table: dict[str, RouteInfo],
+        full_path: str,
+        route_info: RouteInfo,
+        route_name: str,
+    ) -> None:
+        """Commit a route's methods into the handler table atomically.
+
+        Two-pass so a multi-method registration is all-or-nothing. Pass 1
+        evaluates the duplicate policy for every method and raises
+        `DuplicateRouteError` before any mutation, so a collision on a later verb
+        leaves the router fully unchanged (the caller catches the error expecting
+        an untouched router). Pass 2 drops any displaced reverse entries, then
+        writes the handlers. The named-route reverse entry is written by the
+        caller only after this returns, so a raised policy never pollutes
+        `url_for`.
+        """
+        replaceable: list[tuple[str, RouteInfo]] = []
+        for method in methods:
+            mkey = method.upper()
+            existing = handler_table.get(mkey)
+            if existing is not None and not self._allow_duplicate(existing, route_info):
+                # Nothing has been mutated yet, so a raise here leaves the router
+                # unchanged.
+                self._on_duplicate_route(full_path, mkey, existing, route_info)
+                # warn/override allowed the replace - remember the displaced
+                # route so pass 2 can drop its reverse entry after the check.
+                replaceable.append((mkey, existing))
+        for mkey, existing in replaceable:
+            # Drop the displaced route's reverse entry when it had a different
+            # name, so url_for(old_name) stops resolving to a dead route.
+            self._drop_replaced_route_name(existing, route_name, handler_table, mkey)
+        for method in methods:
+            handler_table[method.upper()] = route_info
 
     # -- Matching -------------------------------------------------
 
