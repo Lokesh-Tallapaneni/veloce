@@ -141,6 +141,9 @@ nav:
   - Guide:
       - Routing: guide/routing.md
       - Requests & Responses: guide/requests-responses.md
+      - Responses (Advanced): guide/responses-advanced.md
+      - JSON & Encoding: guide/encoding.md
+      - HTTP Data Structures: guide/datastructures.md
       - OpenAPI, Metadata & Docs: guide/openapi.md
       - Lifespan & Events: guide/lifespan.md
       - Configuration: guide/configuration.md
@@ -163,6 +166,7 @@ nav:
       - File Uploads: guide/file-uploads.md
       - Class-based Views: guide/class-based-views.md
       - Middleware: guide/middleware.md
+      - CORS: guide/cors.md
       - Behind a Proxy: guide/behind-a-proxy.md
       - Background Tasks: guide/background-tasks.md
       - Server-Sent Events: guide/sse.md
@@ -170,10 +174,21 @@ nav:
       - Observability: guide/observability.md
       - WebSockets: guide/websockets.md
       - MCP (AI Tools): guide/mcp.md
+      - Debugging: guide/debugging.md
       - Testing: guide/testing.md
   - Deployment:
       - Overview: guide/deployment.md
+      - Run a Server Manually: deployment/manually.md
+      - Server Workers: deployment/workers.md
       - Docker: deployment/docker.md
+      - HTTPS: deployment/https.md
+      - Deployment Concepts: deployment/concepts.md
+      - Versioning & Pinning: deployment/versions.md
+  - How-To:
+      - Conditional OpenAPI: how-to/conditional-openapi.md
+      - Extending OpenAPI: how-to/extending-openapi.md
+      - Configure Swagger UI: how-to/configure-swagger-ui.md
+      - 401 vs 403 Auth Errors: how-to/auth-error-status.md
   - Migrating from FastAPI: surpass/migrating-from-fastapi.md
   - Comparison: comparison.md
   - Versioning & Stability: policies.md
