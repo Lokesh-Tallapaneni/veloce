@@ -629,6 +629,25 @@ class DependencyResolver:
         request: Request,
         path_params: dict[str, str],
     ) -> dict[str, Any]:
+        """Walk a plan's slots in order, binding each handler kwarg by slot kind.
+
+        The interpreter that backs the codegen fast paths (trivial / request-only
+        / `compile_param_resolver` / `compile_graph_resolver` in `resolve_plan`);
+        it runs only for plans those reject - batched dependency waves, Security
+        scopes, yield teardowns, overrides, an MCP context, or body models. Each
+        kind binds through a named helper, so adding a kind is one branch plus one
+        binder. The map, by group:
+
+        - framework injections: `K_REQUEST` / `K_WEBSOCKET` (the connection),
+          `K_BG_TASKS` -> `_bind_background_tasks`, `K_RESPONSE` ->
+          `_bind_injected_response`, `K_SECURITY_SCOPES` (the live scope stack);
+        - dependencies: `K_DEPENDS` -> `_run_dep_waves` (batched) or
+          `_exec_depends` (inline, in slot order);
+        - markers and body: `K_PARAM_MARKER` -> `_resolve_marker`, `K_BODY_MODEL`
+          -> `_resolve_body_model`, `K_UPLOAD_FILE` -> `_resolve_upload_file`;
+        - path / query parameters: `K_QUERY_LIST` -> `_resolve_list_param`,
+          `K_QUERY` / `K_PATH` -> `_resolve_scalar_param`.
+        """
         slots = plan.slots
         kwargs: dict[str, Any] = {}
         # Precomputed at registration. `wave_trigger` maps the earliest batched
@@ -650,6 +669,7 @@ class DependencyResolver:
             kind = slot.kind
             name = slot.name
 
+            # ── Framework injections ──────────────────────────────
             if kind == K_REQUEST:
                 kwargs[name] = request
                 i += 1
@@ -681,6 +701,7 @@ class DependencyResolver:
                 i += 1
                 continue
 
+            # ── Dependencies ──────────────────────────────────────
             if kind == K_DEPENDS:
                 # Topological batching (see `compute_dep_waves`): every batched
                 # parallel-safe dep is resolved at the earliest batched slot,
@@ -705,6 +726,7 @@ class DependencyResolver:
                 i += 1
                 continue
 
+            # ── Markers and request body ──────────────────────────
             if kind == K_PARAM_MARKER:
                 kwargs[name] = await self._resolve_marker(slot, request, path_params)
                 i += 1
@@ -720,6 +742,7 @@ class DependencyResolver:
                 i += 1
                 continue
 
+            # ── Path and query parameters ─────────────────────────
             if kind == K_QUERY_LIST:
                 kwargs[name] = _resolve_list_param(slot, request, path_params)
                 i += 1
