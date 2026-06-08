@@ -454,6 +454,11 @@ class Router:
         # 404/403/422 shape every route shares).
         self.router_responses: dict[int, dict[str, Any]] = dict(responses or {})
         self._root = RadixNode()
+        # (method, exact-path) -> RouteInfo for literal, strict paths, so a
+        # literal path resolves in one hash lookup instead of a radix walk.
+        # Built lazily on first match and dropped to None on any registration;
+        # every non-literal shape falls through to the tree (see match()).
+        self._static_routes: dict[tuple[str, str], RouteInfo] | None = None
         # Route name -> (path_template, param_names), for url_for reverse lookup.
         self._named_routes: dict[str, tuple[str, list[str]]] = {}
         # Route name -> {param_name: converter}, derived from the template on the
@@ -490,6 +495,9 @@ class Router:
         accept or reject the same shapes (notably the greedy `:path`
         converter must be the final segment).
         """
+        # Any tree mutation invalidates the literal-path fast map; it rebuilds
+        # lazily on the next match() against the final node state.
+        self._static_routes = None
         param_names: list[str] = []
         total = len(segments)
         for idx, seg in enumerate(segments):
@@ -1197,13 +1205,44 @@ class Router:
             return RouteMatch(route_info=info, path_params=params)
         return None
 
-    def match(self, method: str, path: str) -> RouteMatch | None:
-        """Match a request path. Radix tree first, regex fallback on a miss.
+    def _build_static_routes(self) -> dict[tuple[str, str], RouteInfo]:
+        """Map (method, exact-path) -> RouteInfo for literal, strict paths.
 
-        O(k) where k = path depth on the tree fast path. The regex fallback
-        runs only when the tree misses **and** regex routes are registered;
-        the tree always wins over regex when both could match.
+        A literal path resolves to a node reached purely through static segments,
+        so its match is fixed at registration. A node's param/wildcard children
+        only ever match *longer* paths, so they do not affect the node's own
+        handler for the exact path - only the slash-redirect flags do. Nodes with
+        `trailing_slash` or `tolerant_slash` are therefore excluded and fall
+        through to the tree, which keeps the exact slash semantics. Methods are
+        stored uppercase (as in `RadixNode.handlers`), so a lowercase or
+        HEAD->GET request misses here and resolves on the tree.
         """
+        smap: dict[tuple[str, str], RouteInfo] = {}
+        stack: list[tuple[RadixNode, str]] = [(self._root, "")]
+        while stack:
+            node, prefix = stack.pop()
+            if node.handlers and not node.trailing_slash and not node.tolerant_slash:
+                path = prefix or "/"
+                for method, info in node.handlers.items():
+                    smap[(method, path)] = info
+            for seg, child in node.static_children.items():
+                stack.append((child, prefix + "/" + seg))
+        return smap
+
+    def match(self, method: str, path: str) -> RouteMatch | None:
+        """Match a request path. Static map, then radix tree, then regex.
+
+        O(1) for a literal path (the static map), else O(k) on the tree where
+        k = path depth. The regex fallback runs only when the tree misses
+        **and** regex routes are registered; the tree always wins over regex
+        when both could match.
+        """
+        smap = self._static_routes
+        if smap is None:
+            smap = self._static_routes = self._build_static_routes()
+        info = smap.get((method, path))
+        if info is not None:
+            return RouteMatch(route_info=info, path_params={})
         match = self._match_tree(method, path)
         if match is not None:
             return match
