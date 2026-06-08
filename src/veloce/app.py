@@ -3200,84 +3200,24 @@ class Veloce(Router):
                 type(exc)
             )
             if handler:
-                response = await self._dispatch_exc_handler(handler, request, exc)
-                if cp.http_post is not None:
-                    response = await self._run_response_phase(
-                        cp.http_post, request, response, excluded
-                    )
-                return response
-
-            # `ValidationError` / `RequestValidationError` carry a
-            # structured `.errors` list - emit it verbatim (the
-            # shape `{"detail": [ {loc, msg, type}, ... ]}`) rather than
-            # the stringified repr stored in `exc.detail`.
-            structured = getattr(exc, "errors", None)
-            detail_payload: Any = structured if structured is not None else exc.detail
-            response = JSONResponse(
-                {"detail": detail_payload, "status_code": exc.status_code},
-                status_code=exc.status_code,
-                headers=exc.headers,
-            )
-            if cp.http_post is not None:
-                response = await self._run_response_phase(cp.http_post, request, response, excluded)
-            return response
+                return await self._run_exc_handler_response(request, exc, handler, cp, excluded)
+            return await self._default_http_exception_response(request, exc, cp, excluded)
         except Exception as exc:
             _exc = exc
             handler = self._find_exception_handler(type(exc))
             if handler:
-                response = await self._dispatch_exc_handler(handler, request, exc)
-                if cp.http_post is not None:
-                    response = await self._run_response_phase(
-                        cp.http_post, request, response, excluded
-                    )
-                return response
-
-            # This exception was not handled by any registered handler and is
-            # becoming a server error. Record its low-cardinality class name
-            # (never the message) on request state so the post-dispatch
-            # instrumentation hook can surface it as `RequestMetrics.error_type`
-            # without the exception object reaching the observability layer.
+                return await self._run_exc_handler_response(request, exc, handler, cp, excluded)
+            # Record the exception's low-cardinality class name (never the
+            # message) so the post-dispatch instrumentation hook can surface it
+            # as `RequestMetrics.error_type` without the exception object reaching
+            # the observability layer.
             request._state["_error_type"] = type(exc).__qualname__
-
-            # PROPAGATE_EXCEPTIONS: when set (or implicitly
-            # when both DEBUG and TESTING are on), let the exception
-            # escape the handler. Test suites use this to see real
-            # tracebacks instead of "Internal Server Error" responses.
+            # PROPAGATE_EXCEPTIONS (or implicit DEBUG+TESTING) lets the exception
+            # escape so test suites see real tracebacks; kept inline so the bare
+            # `raise` re-raises the active exception with its original traceback.
             if self._should_propagate_exceptions():
                 raise
-
-            if self.debug:
-                # Serve the rich HTML traceback only to a client that prefers
-                # HTML (a browser); curl / CLI / programmatic clients keep the
-                # plain-text traceback they got before this page existed, so
-                # the debug-mode Content-Type contract is unchanged for them.
-                if _prefers_html(request):
-                    body = render_traceback_html(exc).encode()
-                    content_type = MIME_TEXT_HTML_UTF8
-                else:
-                    body = "".join(
-                        traceback.format_exception(type(exc), exc, exc.__traceback__)
-                    ).encode()
-                    content_type = MIME_TEXT_PLAIN_UTF8
-                response = Response(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    body=body,
-                    content_type=content_type,
-                )
-                if cp.http_post is not None:
-                    response = await self._run_response_phase(
-                        cp.http_post, request, response, excluded
-                    )
-                return response
-
-            return await self._handle_error(
-                request,
-                status.HTTP_500_INTERNAL_SERVER_ERROR,
-                JSONResponse(
-                    {"detail": MSG_INTERNAL_SERVER_ERROR},
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                ),
-            )
+            return await self._shape_server_error(request, exc, cp, excluded)
         finally:
             # Yield-dependency teardowns first - they conceptually wrap the
             # request (the resource was acquired before the handler ran and
@@ -3330,6 +3270,75 @@ class Veloce(Router):
                 request_tearing_down.send(self, exc=_exc)
             except Exception:
                 self.logger.exception("signal receiver raised an exception")
+
+    async def _run_exc_handler_response(
+        self,
+        request: Request,
+        exc: Exception,
+        handler: Callable,
+        cp: CompiledPipeline,
+        excluded: bool,
+    ) -> Response:
+        """Run a registered exception handler and apply the response phase."""
+        response = await self._dispatch_exc_handler(handler, request, exc)
+        if cp.http_post is not None:
+            response = await self._run_response_phase(cp.http_post, request, response, excluded)
+        return response
+
+    async def _default_http_exception_response(
+        self, request: Request, exc: HTTPException, cp: CompiledPipeline, excluded: bool
+    ) -> Response:
+        """Shape an unhandled `HTTPException` into the default JSON error body.
+
+        A `ValidationError` / `RequestValidationError` carries a structured
+        `.errors` list - emitted verbatim as `{"detail": [...]}` - rather than
+        the stringified repr stored in `exc.detail`.
+        """
+        structured = getattr(exc, "errors", None)
+        detail_payload: Any = structured if structured is not None else exc.detail
+        response: Response = JSONResponse(
+            {"detail": detail_payload, "status_code": exc.status_code},
+            status_code=exc.status_code,
+            headers=exc.headers,
+        )
+        if cp.http_post is not None:
+            response = await self._run_response_phase(cp.http_post, request, response, excluded)
+        return response
+
+    async def _shape_server_error(
+        self, request: Request, exc: Exception, cp: CompiledPipeline, excluded: bool
+    ) -> Response:
+        """Shape an unhandled, non-propagated exception into a 500 response.
+
+        In debug mode this serves the rich HTML traceback to an HTML client and
+        the plain-text traceback to curl / CLI / programmatic clients, keeping
+        the debug-mode Content-Type contract unchanged for each.
+        """
+        if self.debug:
+            if _prefers_html(request):
+                body = render_traceback_html(exc).encode()
+                content_type = MIME_TEXT_HTML_UTF8
+            else:
+                body = "".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                ).encode()
+                content_type = MIME_TEXT_PLAIN_UTF8
+            response = Response(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                body=body,
+                content_type=content_type,
+            )
+            if cp.http_post is not None:
+                response = await self._run_response_phase(cp.http_post, request, response, excluded)
+            return response
+        return await self._handle_error(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            JSONResponse(
+                {"detail": MSG_INTERNAL_SERVER_ERROR},
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+        )
 
     async def _run_before_hooks(self, request: Request) -> tuple[Response | None, str | None]:
         """Run before_request hooks; return `(short_circuit_response, bp_name)`.
