@@ -663,24 +663,12 @@ class DependencyResolver:
                 continue
 
             if kind == K_BG_TASKS:
-                if request._background_tasks is None:
-                    request._background_tasks = BackgroundTasks()
-                kwargs[name] = request._background_tasks
+                kwargs[name] = self._bind_background_tasks(request)
                 i += 1
                 continue
 
             if kind == K_RESPONSE:
-                # Response injection. One Response per
-                # request, shared between the handler and any dependency
-                # that also declares the parameter. `status_code = 0` is
-                # the "not set by the handler" sentinel the dispatcher
-                # checks before merging.
-                injected = request._state.get("_injected_response")
-                if injected is None:
-                    injected = Response()
-                    injected.status_code = 0
-                    request._state["_injected_response"] = injected
-                kwargs[name] = injected
+                kwargs[name] = self._bind_injected_response(request)
                 i += 1
                 continue
 
@@ -728,13 +716,7 @@ class DependencyResolver:
                 continue
 
             if kind == K_UPLOAD_FILE:
-                form = await request.form()
-                upload = form.get(name)
-                if upload is None and slot.is_optional:
-                    kwargs[name] = None
-                elif upload is not None:
-                    kwargs[name] = upload
-                # else: leave unset (handler default will apply if any)
+                await self._resolve_upload_file(slot, request, kwargs)
                 i += 1
                 continue
 
@@ -795,6 +777,43 @@ class DependencyResolver:
             )
             for s, r in zip(group, results, strict=True):
                 kwargs[s.name] = r
+
+    @staticmethod
+    def _bind_background_tasks(request: Request) -> BackgroundTasks:
+        """Lazily attach and return the request's `BackgroundTasks` queue."""
+        if request._background_tasks is None:
+            request._background_tasks = BackgroundTasks()
+        return request._background_tasks
+
+    @staticmethod
+    def _bind_injected_response(request: Request) -> Response:
+        """Lazily create and return the per-request injected `Response`.
+
+        One `Response` per request, shared between the handler and any dependency
+        that also declares the parameter. `status_code = 0` is the "not set by the
+        handler" sentinel the dispatcher checks before merging.
+        """
+        injected = request._state.get("_injected_response")
+        if injected is None:
+            injected = Response()
+            injected.status_code = 0
+            request._state["_injected_response"] = injected
+        return injected
+
+    async def _resolve_upload_file(
+        self, slot: Any, request: Request, kwargs: dict[str, Any]
+    ) -> None:
+        """Bind an uploaded file from the multipart form, if present.
+
+        Binds the upload when the field is present, `None` when it is absent and
+        optional, and leaves the kwarg unset otherwise so the handler default
+        applies.
+        """
+        upload = (await request.form()).get(slot.name)
+        if upload is not None:
+            kwargs[slot.name] = upload
+        elif slot.is_optional:
+            kwargs[slot.name] = None
 
     def _parallel_dep_group_end(self, slots: list[Any], start: int) -> int:
         """Compat shim. The grouping is precomputed at registration
