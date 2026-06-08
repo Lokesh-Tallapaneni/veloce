@@ -76,6 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Route resolution gates its mounted-app, static-handler, and ASGI-mount scans on
   the compiled pipeline flags, skipping each scan when nothing of that kind is
   registered.
+- Literal request paths resolve through a registration-time exact-match map in one
+  hash lookup instead of a radix-tree walk, falling through to the tree for
+  parameterized, wildcard, and slash-redirect routes (literal `match()` ~1.7x
+  faster, ~3x on deep literal paths).
 
 ### Fixed
 

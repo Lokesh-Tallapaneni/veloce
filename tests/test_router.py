@@ -58,6 +58,50 @@ class TestStaticRoutes:
         assert "POST" in allowed
 
 
+class TestStaticRouteFastMap:
+    """The literal-path fast map must stay behavior-identical to the radix tree
+    and invalidate on every registration."""
+
+    def test_literal_uses_fast_map_with_empty_params(self, router):
+        match = router.match("GET", "/users")
+        assert match is not None
+        assert match.path_params == {}
+        assert router._static_routes is not None
+        assert ("GET", "/users") in router._static_routes
+
+    def test_registration_invalidates_map(self, router):
+        assert router.match("GET", "/users") is not None
+        assert router._static_routes is not None
+
+        @router.get("/late")
+        async def late(request): ...
+
+        assert router._static_routes is None
+        match = router.match("GET", "/late")
+        assert match is not None
+        assert match.path_params == {}
+
+    def test_param_route_falls_through(self, router):
+        match = router.match("GET", "/users/42")
+        assert match is not None
+        assert match.path_params == {"user_id": "42"}
+
+    def test_head_falls_back_to_get(self, router):
+        assert router.match("HEAD", "/users") is not None
+
+    def test_lowercase_method_resolves(self, router):
+        assert router.match("get", "/users") is not None
+
+    def test_trailing_slash_route_not_served_for_bare_path(self):
+        r = Router()
+
+        @r.get("/ts/")
+        async def ts(request): ...
+
+        assert r.match("GET", "/ts/") is not None
+        assert r.match("GET", "/ts") is None
+
+
 class TestPathParams:
     def test_single_param(self, router):
         match = router.match("GET", "/users/42")
