@@ -1,5 +1,5 @@
 ---
-description: Authentication schemes in Veloce — HTTP Basic, Bearer, API key, and OAuth2 schemes used as dependencies, with full login and current-user examples.
+description: Authentication schemes in Veloce — HTTP Basic, Digest, Bearer, API key, and OAuth2 schemes used as dependencies, with an end-to-end OAuth2-password + JWT login flow and the Swagger Authorize button.
 tags: [security, authentication, oauth2, dependency-injection]
 ---
 
@@ -96,6 +96,56 @@ it is included in the `WWW-Authenticate: Basic realm="..."` header on a
     encrypted) on every request. Only use it over HTTPS. See the
     [OWASP Authentication cheat sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)
     for guidance.
+
+## HTTP Digest
+
+[`HTTPDigest`](../reference.md#veloce.HTTPDigest) parses an
+`Authorization: Digest ...` header (RFC 7616) into an
+[`HTTPDigestCredentials`](../reference.md#veloce.HTTPDigestCredentials) — a
+struct of the named fields `username`, `realm`, `nonce`, `uri`, `response`,
+`qop`, `nc`, `cnonce`, `opaque`, and `algorithm`. When the header is missing
+or not a Digest credential it raises a `401` carrying a
+`WWW-Authenticate: Digest realm="...", qop="...", nonce="...", algorithm=...`
+challenge with a fresh random nonce.
+
+```python
+import hashlib
+import secrets
+
+from veloce import Depends, HTTPDigest, HTTPException, Veloce
+from veloce.security import HTTPDigestCredentials
+
+app = Veloce()
+digest = HTTPDigest(realm="Admin area")
+
+# HA1 = MD5/SHA-256(username:realm:password); the password never crosses
+# the wire — Digest's whole point.
+_HA1 = {
+    "alice": hashlib.sha256(b"alice:Admin area:wonderland").hexdigest(),
+}
+
+
+def verify_digest(creds: HTTPDigestCredentials = Depends(digest)) -> str:
+    ha1 = _HA1.get(creds.username)
+    if ha1 is None:
+        raise HTTPException(401, "Unknown user")
+    ha2 = hashlib.sha256(f"GET:{creds.uri}".encode()).hexdigest()
+    expected = hashlib.sha256(
+        f"{ha1}:{creds.nonce}:{creds.nc}:{creds.cnonce}:{creds.qop}:{ha2}".encode()
+    ).hexdigest()
+    if not secrets.compare_digest(creds.response, expected):
+        raise HTTPException(401, "Invalid digest response")
+    return creds.username
+```
+
+!!! warning "Digest parses, it does not verify"
+    `HTTPDigest` only parses the field list and emits the challenge. It does
+    not compute or compare the response hash — your application owns the
+    secret (HA1) and must compute the expected digest itself, as shown above.
+    Server-side nonce replay tracking is also your responsibility. The
+    constructor takes `qop` (default `"auth"`), `algorithm` (default
+    `"SHA-256"`, RFC 7616 Sec. 3.2 preferred over MD5), `auto_error`, and an
+    optional `nonce_factory` callable.
 
 ## HTTP Bearer
 
@@ -388,6 +438,182 @@ distinct subclass of [`JWTError`](../reference.md#veloce.JWTError):
 A successful decode returns a read-only
 [`Claims`](../reference.md#veloce.Claims) mapping.
 
+## End-to-end: OAuth2 password flow with JWT
+
+The pieces above assemble into a complete login-and-protect flow with no
+external dependency: a `/token` endpoint verifies a hashed password and signs
+a JWT, an `OAuth2PasswordBearer` scheme extracts the token on protected
+routes, a `get_current_user` dependency decodes it, and a layered
+`get_current_active_user` dependency rejects disabled accounts.
+
+```python title="app.py"
+import time
+
+from veloce import (
+    Depends,
+    HTTPException,
+    OAuth2PasswordBearer,
+    Veloce,
+    decode_jwt,
+    encode_jwt,
+    hash_password,
+    verify_password,
+)
+from veloce.security import OAuth2PasswordRequestForm
+
+SECRET = "change-me-in-production"
+ALGORITHM = "HS256"
+
+app = Veloce()
+oauth2 = OAuth2PasswordBearer(token_url="/token")
+
+# A real app reads users from a database. The password is stored hashed.
+_USERS = {
+    "alice": {
+        "username": "alice",
+        "password_hash": hash_password("wonderland"),
+        "disabled": False,
+    },
+}
+
+
+@app.post("/token")
+async def login(request):
+    form = await OAuth2PasswordRequestForm.from_request(request)
+    user = _USERS.get(form.username)
+    if user is None or not verify_password(user["password_hash"], form.password):
+        raise HTTPException(
+            401,
+            "Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    claims = {"sub": user["username"], "exp": int(time.time()) + 3600}
+    token = encode_jwt(claims, SECRET, alg=ALGORITHM)
+    return {"access_token": token, "token_type": "bearer"}
+
+
+def get_current_user(token: str = Depends(oauth2)) -> dict:
+    try:
+        claims = decode_jwt(token, SECRET, algorithms=[ALGORITHM])
+    except Exception as err:
+        raise HTTPException(
+            401,
+            "Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from err
+    user = _USERS.get(claims["sub"])
+    if user is None:
+        raise HTTPException(401, "User no longer exists")
+    return user
+
+
+def get_current_active_user(user: dict = Depends(get_current_user)) -> dict:
+    if user["disabled"]:
+        raise HTTPException(400, "Inactive user")
+    return user
+
+
+@app.get("/users/me")
+async def read_me(user: dict = Depends(get_current_active_user)):
+    return {"username": user["username"]}
+
+
+if __name__ == "__main__":
+    app.run(port=8000)
+```
+
+The flow runs end-to-end in-process with the [`TestClient`](testing.md): post
+form credentials to `/token`, then send the returned token as a Bearer header.
+
+```python
+from veloce import TestClient
+
+# app from the block above
+client = TestClient(app)
+
+token_resp = client.post("/token", data={"username": "alice", "password": "wonderland"})
+assert token_resp.status_code == 200
+access_token = token_resp.json()["access_token"]
+
+me = client.get("/users/me", headers={"Authorization": f"Bearer {access_token}"})
+assert me.status_code == 200
+assert me.json() == {"username": "alice"}
+
+denied = client.get("/users/me", headers={"Authorization": "Bearer not-a-jwt"})
+assert denied.status_code == 401
+```
+
+!!! warning "Catch `JWTError`, not bare `Exception`, in production"
+    The example catches `Exception` so it stays short. In real code catch
+    [`JWTError`](../reference.md#veloce.JWTError) (the base of every decode
+    failure) so genuine bugs are not converted into a `401`. `decode_jwt`
+    raises `ValueError` for a misconfigured (empty) secret — a programmer
+    error you want to surface, not swallow.
+
+!!! warning "Set a real `SECRET_KEY`"
+    Sign with a high-entropy secret loaded from the environment, never a
+    literal in source. Wrap it in [`Secret`](#wrapping-secrets) so it cannot
+    leak through logs. Rotating the secret invalidates every outstanding
+    token.
+
+## Interactive docs and the Authorize button
+
+When a route depends on a security scheme, Veloce's generated OpenAPI schema
+gains a `components.securitySchemes` entry and the operation gains a
+`security` requirement, so the Swagger UI at `/docs` renders an **Authorize**
+button. The scheme that drives the password flow above emits an `oauth2`
+entry whose `password` flow advertises the `tokenUrl` and `scopes` you
+configured:
+
+```json
+{
+  "components": {
+    "securitySchemes": {
+      "OAuth2PasswordBearer": {
+        "type": "oauth2",
+        "flows": {
+          "password": {"tokenUrl": "/token", "scopes": {}}
+        }
+      }
+    }
+  }
+}
+```
+
+The scheme is keyed by its class name (`OAuth2PasswordBearer`,
+`HTTPBearer`, `HTTPBasic`, `HTTPDigest`, `APIKeyHeader`, ...), so reusing the
+same scheme class across routes reuses one `securitySchemes` entry. Scopes
+declared with [`Security`](#scopes-with-security) appear in the per-operation
+`security` list; plain `Depends` requirements list an empty scope array.
+
+Inspect the emitted schema directly with `app.openapi()`:
+
+```python
+from veloce import Depends, OAuth2PasswordBearer, Veloce
+
+app = Veloce(title="Demo", version="1.0.0")
+oauth2 = OAuth2PasswordBearer(token_url="/token")
+
+
+@app.get("/users/me")
+async def me(token: str = Depends(oauth2)):
+    return {"token": token}
+
+
+schema = app.openapi()
+scheme = schema["components"]["securitySchemes"]["OAuth2PasswordBearer"]
+assert scheme["type"] == "oauth2"
+assert scheme["flows"]["password"]["tokenUrl"] == "/token"
+assert schema["paths"]["/users/me"]["get"]["security"] == [{"OAuth2PasswordBearer": []}]
+```
+
+!!! note "Pre-filling OAuth2 credentials"
+    Pass `swagger_ui_init_oauth=` to [`Veloce`](../reference.md#veloce.Veloce)
+    to seed the Authorize dialog (for example a default `clientId`). The
+    Authorize button only appears for schemes reached through `Depends` or
+    `Security`; a scheme constructed but never used as a dependency emits no
+    OpenAPI metadata.
+
 ## Password-reset tokens
 
 [`make_reset_token`](../reference.md#veloce.make_reset_token) and
@@ -423,6 +649,8 @@ explicit `.reveal()`. Equality is constant-time, the wrapper is unhashable,
 and the JSON encoder refuses to serialise it.
 
 ```python
+import os
+
 from veloce import Secret
 
 token = Secret(os.environ["API_TOKEN"])
@@ -432,10 +660,10 @@ send(token.reveal())    # the real value
 
 ## Next steps
 
-- [Passwords](passwords.md) — hash and verify passwords for your login
-  endpoint.
-- [Signing](signing.md) — issue tamper-proof, time-limited tokens to hand
-  back from `/token`.
+- [Passwords](passwords.md) — hash and verify passwords for the `/token`
+  endpoint with `hash_password` / `verify_password`.
+- [Signing](signing.md) — issue tamper-proof, time-limited tokens as an
+  alternative to JWTs.
 - [Dependency injection](dependency-injection.md) — how `Depends` and
   `Security` resolve, including `yield` teardown and overrides.
 - The [API reference](../reference.md) documents the full signature of

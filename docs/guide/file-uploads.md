@@ -1,6 +1,6 @@
 ---
 description: Receive multipart/form-data uploads with UploadFile and FormData, read and save uploaded files, and bind form fields and files as handler parameters.
-tags: [uploads, multipart, forms, UploadFile, FormData]
+tags: [uploads, multipart, UploadFile, FormData]
 ---
 
 # File uploads
@@ -9,6 +9,9 @@ Veloce parses `multipart/form-data` and `application/x-www-form-urlencoded`
 bodies on demand. Uploaded files arrive as [`UploadFile`](../reference.md#veloce.UploadFile)
 objects with an async read/write interface; text fields and files together
 live in a [`FormData`](../reference.md#veloce.FormData) multi-value mapping.
+
+The multipart parser ships with Veloce. There is no `python-multipart`
+dependency to install — form and file handling works out of the box.
 
 ```python
 from veloce import Request, Veloce
@@ -91,8 +94,6 @@ async def attachments(request: Request):
     no multipart body at all). In production the lookup raises a plain
     `KeyError`. Use `files.get("avatar")` or `files.get_upload("avatar")` to
     avoid the exception entirely.
-
-    !!! note "Added in version 0.4.0"
 
 ## The UploadFile object
 
@@ -225,6 +226,43 @@ async def avatar(avatar: UploadFile | None = None):
 See [Parameters](parameters.md) for the full set of declarative
 markers and their shared validation options.
 
+!!! warning "Form and a body model cannot share one handler"
+    A `Form()`/`File()`/`UploadFile` parameter reads the body as
+    `multipart/form-data` or `application/x-www-form-urlencoded`; a Pydantic
+    (or `msgspec`) body model reads it as JSON. A single request body has one
+    content type, so the two are mutually exclusive on the same handler.
+    Mixing them does not error at registration — at runtime the form parser
+    returns an empty `FormData` for a JSON body (and JSON parsing fails on a
+    form body), so one of the two parameters resolves as missing. Split the
+    endpoint, or send the structured fields as individual `Form()` fields.
+
+### Shapes Veloce does not bind
+
+Two FastAPI-style shapes are accepted by the type system but are **not**
+wired to multipart binding in Veloce. They are listed here so the divergence
+is explicit.
+
+| Shape | What FastAPI does | What Veloce does |
+| --- | --- | --- |
+| `data: bytes = File()` | Reads the part's raw bytes into `data`. | Binds the `UploadFile` object, then tries to coerce it to `bytes` — it does not read the content. Use `UploadFile` and `await upload.read()`. |
+| `files: list[UploadFile]` | Binds every part sharing the field name. | Falls through to query-list binding, not multipart. Read repeated uploads with `(await request.files()).getlist("field")`. |
+
+!!! note
+    To accept many files under one field name, reach into the form directly:
+
+    ```python
+    from veloce import Request, Veloce
+
+    app = Veloce()
+
+
+    @app.post("/gallery")
+    async def gallery(request: Request):
+        files = await request.files()
+        uploads = files.getlist("photos")
+        return {"count": len(uploads)}
+    ```
+
 ## Limits
 
 The multipart parser caps the number of parts and the size of each part
@@ -283,26 +321,26 @@ async def create_item(name: str = Form(), file: UploadFile = File()):
     return {"name": name, "filename": file.filename, "size": len(data)}
 
 
-def test_upload():
-    client = TestClient(app)
-    response = client.post(
-        "/items",
-        data={"name": "report"},
-        files={"file": ("report.txt", b"hello world")},
-    )
-    assert response.status_code == 200
-    assert response.json() == {
-        "name": "report",
-        "filename": "report.txt",
-        "size": 11,
-    }
+client = TestClient(app)
+
+response = client.post(
+    "/items",
+    data={"name": "report"},
+    files={"file": ("report.txt", b"hello world")},
+)
+assert response.status_code == 200
+assert response.json() == {
+    "name": "report",
+    "filename": "report.txt",
+    "size": 11,
+}
 ```
 
 ## Next steps
 
 - [Parameters](parameters.md) — `Form`, `File`, and the other declarative
   markers.
-- [Requests & responses](requests-responses.md) — the rest of the
+- [Requests and responses](requests-responses.md) — the rest of the
   `Request` API and the response shapes a handler can return.
 - [Testing](testing.md) — driving the app with `TestClient`.
 - API reference: [`UploadFile`](../reference.md#veloce.UploadFile),

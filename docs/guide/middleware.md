@@ -34,6 +34,56 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"])
 Middleware can also be passed when constructing the app, via the
 `middleware=[...]` argument to `Veloce(...)`.
 
+## Veloce middleware vs ASGI middleware
+
+`add_middleware` accepts two distinct shapes, and it tells them apart by
+what the class subclasses:
+
+- A [`Middleware`](../reference.md#veloce.Middleware) subclass (or
+  instance) is **Veloce-native middleware**. It defines
+  `process_request(request)` and/or `process_response(request, response)`
+  and runs inside Veloce's own pipeline, with access to the parsed
+  [`Request`](../reference.md#veloce.Request) and per-route
+  [exclusion](#excluding-middleware-per-route). Every built-in in the
+  [table below](#built-in-middleware) is this shape.
+- Any other class is treated as a **standard ASGI middleware**: Veloce
+  constructs it as `MiddlewareClass(app, **options)` when the ASGI stack
+  is assembled, so it wraps the whole application at the scope/receive/send
+  level. This is the seam for third-party ASGI middleware — tracing,
+  profiling, observability — that expects to wrap an ASGI app.
+
+```python
+from veloce import Middleware, Request, Response, Veloce
+
+app = Veloce()
+
+
+# Veloce-native: split request/response hooks.
+class StampMiddleware(Middleware):
+    async def process_response(self, request: Request, response: Response) -> Response:
+        response.headers["X-Stamped"] = "1"
+        return response
+
+
+app.add_middleware(StampMiddleware)
+
+# ASGI: a class taking (app, **options); Veloce passes the wrapped app in.
+# `SomeTracingMiddleware` here stands in for any third-party ASGI middleware.
+app.add_middleware(SomeTracingMiddleware, service_name="api")
+```
+
+!!! note
+    Veloce-native middleware runs against the parsed `Request`/`Response`,
+    so it is the right place for almost everything. Reach for an ASGI
+    middleware class only when you are plugging in a third-party component
+    that is already written to the ASGI interface.
+
+!!! warning "`BaseHTTPMiddleware` goes through `add_http_middleware`"
+    A [`BaseHTTPMiddleware`](#class-based-middleware) subclass is a
+    dispatch-shape middleware, not an ASGI app. Passing one to
+    `add_middleware` raises `TypeError` — register it with
+    [`add_http_middleware`](#class-based-middleware) instead.
+
 ### CORS preflight and Private Network Access
 
 `CORSMiddleware` answers a preflight (`OPTIONS` with an `Origin`) with a
@@ -56,6 +106,10 @@ app.add_middleware(
     )
 )
 ```
+
+For the full parameter table — `allow_origins`, `allow_origin_regex`,
+`allow_methods`, `allow_headers`, `allow_credentials`, `expose_headers`,
+`max_age` — and the credentials/wildcard rule, see [CORS](cors.md).
 
 ## Built-in middleware
 
@@ -88,6 +142,30 @@ are also exported, along with the `rotate_csrf_token` helper used with
 see [Sessions](sessions.md). For configuring cookie attributes through
 `app.config`, see [Configuration](configuration.md#built-in-defaults).
 
+### Trusted hosts
+
+`TrustedHostMiddleware` validates the `Host` header against an allow-list and
+rejects anything else with a `400` — defence against Host-header injection. It
+takes a single positional `allowed_hosts` list and supports literal names, the
+catch-all `*`, and subdomain wildcards like `*.example.com` (which match
+`api.example.com` but never the bare `example.com`):
+
+```python
+from veloce import TrustedHostMiddleware, Veloce
+
+app = Veloce()
+
+app.add_middleware(
+    TrustedHostMiddleware(allowed_hosts=["example.com", "*.example.com"])
+)
+```
+
+!!! warning "No `www_redirect`"
+    Unlike some other frameworks, `TrustedHostMiddleware` does not redirect a
+    bare apex host to its `www.` form — there is no `www_redirect` option. The
+    middleware only allows or rejects; to canonicalise a host, add an explicit
+    redirect in a handler or a `before_request` hook.
+
 ### Content-Security-Policy with a nonce
 
 `CSPMiddleware` emits a `Content-Security-Policy` (and/or
@@ -119,7 +197,8 @@ report-only policy.
 
 `ConditionalGetMiddleware` evaluates `If-None-Match` / `If-Modified-Since`
 against a buffered `GET`/`HEAD` response and downgrades a matching request
-to `304 Not Modified` with an empty body (RFC 9110 Sec. 13). With
+to `304 Not Modified` with an empty body
+([RFC 9110 §13](https://www.rfc-editor.org/rfc/rfc9110#section-13)). With
 `auto_etag` (the default) it also synthesises a weak `ETag` for a buffered,
 non-empty `200` that lacks one. Register it **after** `GZipMiddleware` so a
 synthesised ETag reflects the compressed bytes:
@@ -320,6 +399,7 @@ exclusions run every registered middleware and pay no extra per-request cost.
 
 ## See also
 
+- [CORS](cors.md) — the full `CORSMiddleware` parameter reference.
 - [Sessions](sessions.md) — `SessionMiddleware` and `ServerSessionMiddleware`.
 - [Configuration](configuration.md) — the `SESSION_COOKIE_*` keys.
 - [Deployment](deployment.md)

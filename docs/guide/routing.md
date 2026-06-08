@@ -192,6 +192,140 @@ app = Veloce(on_duplicate="override") # replace silently
 Including the same router twice carries the same handler and is an idempotent
 re-mount, never reported as a conflict.
 
+## Path operation configuration
+
+Every route decorator accepts a set of OpenAPI knobs that shape how the
+operation appears in the generated schema and the docs UI. They are
+metadata-only — they do not change how a request is matched or dispatched.
+
+```python title="app.py"
+from veloce import Veloce
+
+app = Veloce()
+
+
+@app.post(
+    "/items",
+    tags=["items"],
+    summary="Create an item",
+    response_description="The created item",
+    status_code=201,
+)
+async def create_item(name: str):
+    """Add a new item to the catalogue.
+
+    The full request body is validated before this handler runs.
+    """
+    return {"name": name}
+```
+
+The handler's docstring becomes the operation `description`, so an
+operation's prose lives next to the code it documents.
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `tags` | `[]` | OpenAPI tags for the operation, combined with the router-level tags. |
+| `summary` | route name | Short one-line summary shown in the docs UI. |
+| `description` | handler docstring | Long-form description; falls back to `handler.__doc__`. |
+| `deprecated` | `False` | Marks the operation deprecated in the schema. |
+| `response_description` | `"Successful Response"` | Description of the `200`/`status_code` response. |
+| `status_code` | `200` | Default success status code for the response. |
+| `operation_id` | `"{name}_{method}"` | Explicit OpenAPI `operationId`; pin it for stable client codegen. |
+| `include_in_schema` | `True` | Register the route but omit it from the OpenAPI document when `False`. |
+| `openapi_extra` | `None` | Arbitrary dict deep-merged onto this route's operation object. |
+
+A docstring is the idiomatic way to document an operation:
+
+```python
+@app.get("/health")
+async def health():
+    """Report whether the service is up.
+
+    Used by the load balancer's health check.
+    """
+    return {"status": "ok"}
+```
+
+!!! warning "Docstring is used whole — no summary split"
+    Veloce uses the entire docstring as the operation `description`. It does
+    **not** treat the first line as `summary` and the rest as `description`.
+    Set `summary=` explicitly when you want a short title; otherwise the
+    summary defaults to the route name, not the docstring's first line.
+
+### Deprecating and hiding routes
+
+`deprecated=True` keeps the route live but flags it in the schema; clients
+and the docs UI render it struck through. `include_in_schema=False` keeps
+the route fully functional but drops it from the OpenAPI document entirely:
+
+```python
+@app.get("/legacy", deprecated=True)
+async def legacy():
+    return {"detail": "use /v2 instead"}
+
+
+@app.get("/internal/metrics", include_in_schema=False)
+async def metrics():
+    return {"requests": 1234}
+```
+
+### Stable operation IDs
+
+`operation_id` defaults to `"{name}_{method}"` (e.g. `get_user_get`).
+Duplicate auto-generated IDs are disambiguated with a numeric suffix and a
+warning. Pin `operation_id=` to get a stable identifier for generated
+clients:
+
+```python
+@app.get("/users/{user_id}", operation_id="readUser")
+async def get_user(user_id: int):
+    return {"id": user_id}
+```
+
+### Extending the operation object
+
+`openapi_extra` is deep-merged onto the operation object, so you can attach
+fields Veloce does not surface directly. Dict keys merge recursively; list
+values overwrite:
+
+```python
+@app.get(
+    "/report",
+    openapi_extra={"x-internal": True, "responses": {"503": {"description": "Down"}}},
+)
+async def report():
+    return {"ok": True}
+```
+
+!!! note
+    These options live on every method decorator (`get`, `post`, ...) and on
+    `Router` routes. Route-level `tags` are appended to the router's `tags`;
+    a route-level `operation_id` or `summary` overrides any inherited value.
+
+Build the document and inspect the configured operation directly with the
+in-memory client:
+
+```python
+from veloce import TestClient, Veloce
+
+app = Veloce()
+
+
+@app.post("/items", tags=["items"], summary="Create an item", status_code=201)
+async def create_item(name: str):
+    """Add a new item to the catalogue."""
+    return {"name": name}
+
+
+client = TestClient(app)
+
+schema = client.get("/openapi.json").json()
+op = schema["paths"]["/items"]["post"]
+assert op["summary"] == "Create an item"
+assert op["tags"] == ["items"]
+assert op["description"] == "Add a new item to the catalogue."
+```
+
 ## Reverse URLs
 
 Build a URL for a named route instead of hard-coding paths:
