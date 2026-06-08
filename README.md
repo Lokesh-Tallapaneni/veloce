@@ -133,10 +133,9 @@ reproducible; run the suite locally before quoting them.
 
 ## Project status
 
-`0.3.0` is the current release. The public API surface — the
-names exported from `veloce/__init__.py` — is what this version commits
-to; releases follow [semantic
-versioning](https://semver.org/).
+Veloce follows [semantic versioning](https://semver.org/): the public
+API surface — the names exported from `veloce/__init__.py` — is what each
+release commits to. The current version is shown by the PyPI badge above.
 
 ## License
 
