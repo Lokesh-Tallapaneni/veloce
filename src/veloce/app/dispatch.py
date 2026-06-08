@@ -189,6 +189,7 @@ class DispatchMixin:
         _openapi_setup: bool
         _log_background_task_error: Callable[..., Any]
         _run_teardown_hooks: Callable[..., Any]
+        _select_teardown_request_hooks: Callable[..., Any]
         get_allowed_methods: Callable[..., Any]
         _dependency_overrides: Any
         _override_subplans: Any
@@ -571,24 +572,15 @@ class DispatchMixin:
                 except Exception:
                     self.logger.exception("yield-dependency teardown raised")
 
-            # Teardown hooks - always run, even on exceptions. Kept inline
-            # (rather than calling `_run_request_teardown`) so a request with no
-            # teardown hooks pays zero extra coroutine awaits on the hot path;
-            # the MCP tool path replays the identical teardown via that helper.
+            # Teardown hooks - always run, even on exceptions. The cheap
+            # attribute guard stays inline so a request with no teardown hooks
+            # pays zero extra coroutine awaits on the hot path; only once hooks
+            # exist is the shared selector consulted. The MCP tool path replays
+            # the identical teardown via `_run_request_teardown`.
             if self._teardown_request_hooks or self._bp_teardown_hooks:
-                if (
-                    self._bp_teardown_hooks
-                    and _bp_name is not None
-                    and _bp_name in self._bp_teardown_hooks
-                ):
-                    _td_hooks: list[Callable] = list(self._teardown_request_hooks)
-                    _td_hooks.extend(self._bp_teardown_hooks[_bp_name])
-                else:
-                    _td_hooks = list(self._teardown_request_hooks)
-            else:
-                _td_hooks = ()  # type: ignore[assignment]
-            if _td_hooks:
-                await self._run_teardown_hooks(_td_hooks, _exc, "teardown_request")
+                _td_hooks = self._select_teardown_request_hooks(_bp_name)
+                if _td_hooks:
+                    await self._run_teardown_hooks(_td_hooks, _exc, "teardown_request")
 
             # `teardown_appcontext` fires when the app context pops; in
             # veloce that happens at the end of each request (no separate

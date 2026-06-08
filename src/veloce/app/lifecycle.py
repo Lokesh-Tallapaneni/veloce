@@ -152,6 +152,21 @@ class LifecycleMixin:
         self._gen += 1
         return func
 
+    def _select_teardown_request_hooks(self, bp_name: str | None) -> list[Callable]:
+        """Return the `teardown_request` hooks to run, app-level first.
+
+        A matched blueprint's hooks are appended after the app-level ones (gated
+        by the request's blueprint name). Returns an empty list when nothing is
+        registered, so the caller runs no teardown. Shared by the HTTP dispatch
+        `finally` and the MCP tool-call path so the two select identically.
+        """
+        if not (self._teardown_request_hooks or self._bp_teardown_hooks):
+            return []
+        hooks = list(self._teardown_request_hooks)
+        if self._bp_teardown_hooks and bp_name is not None and bp_name in self._bp_teardown_hooks:
+            hooks.extend(self._bp_teardown_hooks[bp_name])
+        return hooks
+
     async def _run_request_teardown(self, exc: BaseException | None, bp_name: str | None) -> None:
         """Run `teardown_request` + `teardown_appcontext` for one request.
 
@@ -162,18 +177,7 @@ class LifecycleMixin:
         dispatch `finally` and the MCP tool-call path so a route exposed as an
         MCP tool gets the same cleanup an HTTP request gets.
         """
-        if self._teardown_request_hooks or self._bp_teardown_hooks:
-            if (
-                self._bp_teardown_hooks
-                and bp_name is not None
-                and bp_name in self._bp_teardown_hooks
-            ):
-                td_hooks: list[Callable] = list(self._teardown_request_hooks)
-                td_hooks.extend(self._bp_teardown_hooks[bp_name])
-            else:
-                td_hooks = list(self._teardown_request_hooks)
-        else:
-            td_hooks = ()  # type: ignore[assignment]
+        td_hooks = self._select_teardown_request_hooks(bp_name)
         if td_hooks:
             await self._run_teardown_hooks(td_hooks, exc, "teardown_request")
 
