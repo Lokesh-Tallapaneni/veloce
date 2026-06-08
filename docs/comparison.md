@@ -106,6 +106,77 @@ Differences to watch for:
 - WSGI middleware does not plug into the ASGI surface directly. Replace it with the equivalent Veloce or ASGI middleware.
 - Sessions are signed cookies by default with an optional server-side backend. The signing key lives in `app.config["SECRET_KEY"]`, matching Flask.
 
+## Mounting a WSGI app
+
+Veloce ships no `WSGIMiddleware`. Starlette and FastAPI expose one to run a
+WSGI application (Flask, Django) inside the ASGI app; Veloce has no equivalent
+class. Instead, wrap the WSGI app in any ASGI-to-WSGI bridge (for example
+[`a2wsgi`](https://pypi.org/project/a2wsgi/)) and mount the resulting ASGI app
+with [`app.mount`](reference.md#veloce.Veloce.mount). A mounted non-Veloce ASGI
+app is dispatched at the ASGI layer: the prefix is stripped from the request
+path and moved onto `root_path`, so the WSGI app sees a root-relative request.
+
+```python
+from a2wsgi import WSGIMiddleware
+from flask import Flask
+
+from veloce import Veloce
+
+flask_app = Flask(__name__)
+
+
+@flask_app.get("/legacy")
+def legacy():
+    return "served by Flask"
+
+
+app = Veloce()
+app.mount("/wsgi", WSGIMiddleware(flask_app))
+
+
+if __name__ == "__main__":
+    app.run(port=8000)
+```
+
+!!! warning "No `lifespan` fan-out to ASGI mounts"
+    A mounted non-Veloce ASGI app receives only `http` and `websocket` scopes —
+    Veloce does **not** drive the ASGI `lifespan` cycle into it. A bridged WSGI
+    app must not depend on ASGI startup/shutdown events. Mount prefixes must not
+    overlap, and a mounted app owns its whole subtree — a native route registered
+    under the same prefix is unreachable.
+
+## CORS private-network access
+
+Veloce's [`CORSMiddleware`](reference.md#veloce.CORSMiddleware) implements the
+[Private Network Access](https://wicg.github.io/private-network-access/) (PNA)
+preflight handshake, which is not part of Starlette's CORS middleware. Pass
+`allow_private_network=True` (default `False`); when a preflight carries
+`Access-Control-Request-Private-Network: true`, the response echoes
+`Access-Control-Allow-Private-Network: true`. The grant is only emitted for that
+specific preflight signal, not on every response.
+
+```python
+from veloce import Veloce
+from veloce.middleware import CORSMiddleware
+
+app = Veloce()
+app.add_middleware(
+    CORSMiddleware(
+        allow_origins=["https://app.example.com"],
+        allow_private_network=True,
+    )
+)
+
+
+if __name__ == "__main__":
+    app.run(port=8000)
+```
+
+!!! note
+    PNA only applies to preflighted cross-origin requests from a more-public
+    context to a more-private one. Leave `allow_private_network` at its `False`
+    default unless a browser actually sends the request-private-network signal.
+
 ## See also
 
 - [Getting started](getting-started.md)
