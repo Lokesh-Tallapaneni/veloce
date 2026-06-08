@@ -654,13 +654,7 @@ class DependencyResolver:
                     # and there is nothing to do but advance.
                     waves = wave_trigger.get(i)
                     if waves is not None:
-                        for wave in waves:
-                            group = [slots[w] for w in wave]
-                            results = await asyncio.gather(
-                                *(self._exec_depends(s, request, path_params) for s in group)
-                            )
-                            for s, r in zip(group, results, strict=True):
-                                kwargs[s.name] = r
+                        await self._run_dep_waves(waves, slots, request, path_params, kwargs)
                     i += 1
                     continue
                 kwargs[name] = await self._exec_depends(slot, request, path_params)
@@ -762,6 +756,29 @@ class DependencyResolver:
             i += 1
 
         return kwargs
+
+    async def _run_dep_waves(
+        self,
+        waves: list[list[int]],
+        slots: list[Any],
+        request: Request,
+        path_params: dict[str, str],
+        kwargs: dict[str, Any],
+    ) -> None:
+        """Resolve batched dependency waves concurrently into `kwargs`.
+
+        Each wave is gathered, then its results are written, before the next wave
+        runs, so a wave that reuses a cached result always follows the wave that
+        filled it (see `compute_dep_waves`). Entered only when a plan has batched
+        parallel-safe deps; a linear chain never reaches here.
+        """
+        for wave in waves:
+            group = [slots[w] for w in wave]
+            results = await asyncio.gather(
+                *(self._exec_depends(s, request, path_params) for s in group)
+            )
+            for s, r in zip(group, results, strict=True):
+                kwargs[s.name] = r
 
     def _parallel_dep_group_end(self, slots: list[Any], start: int) -> int:
         """Compat shim. The grouping is precomputed at registration
