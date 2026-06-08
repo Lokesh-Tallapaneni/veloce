@@ -16,6 +16,23 @@ import pytest
 from veloce import EventLoopWatchdog, Veloce
 from veloce.watchdog import _classify_block
 
+
+async def _wait_for_log(
+    caplog, needle: str, *, attempts: int = 150, interval: float = 0.02
+) -> bool:
+    """Poll `caplog` until a record contains `needle`, or the attempts run out.
+
+    The watchdog reports from a separate thread, so a busy runner may take a few
+    extra loop ticks to schedule it; polling keeps the test fast on a healthy
+    machine without flaking under load.
+    """
+    for _ in range(attempts):
+        if any(needle in r.getMessage() for r in caplog.records):
+            return True
+        await asyncio.sleep(interval)
+    return False
+
+
 # ── classification (deterministic, no timing) ─────────────────────────
 
 
@@ -40,11 +57,11 @@ async def test_watchdog_warns_when_the_loop_is_blocked(caplog):
             # Blocking the loop is the whole point — that is what the
             # watchdog must catch.
             time.sleep(0.25)  # noqa: ASYNC251
-            await asyncio.sleep(0.1)  # let the watchdog thread report
+            reported = await _wait_for_log(caplog, "event loop blocked")
     finally:
         watchdog.stop()
 
-    assert any("event loop blocked" in r.getMessage() for r in caplog.records)
+    assert reported
 
 
 async def test_watchdog_report_names_the_blocking_frame(caplog):
@@ -54,7 +71,7 @@ async def test_watchdog_report_names_the_blocking_frame(caplog):
     try:
         with caplog.at_level(logging.WARNING, logger="veloce.watchdog"):
             time.sleep(0.25)  # noqa: ASYNC251 — deliberately blocks the loop
-            await asyncio.sleep(0.1)
+            await _wait_for_log(caplog, "event loop blocked")
     finally:
         watchdog.stop()
 
