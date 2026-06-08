@@ -184,12 +184,19 @@ nav:
       - HTTPS: deployment/https.md
       - Deployment Concepts: deployment/concepts.md
       - Versioning & Pinning: deployment/versions.md
+      - Single-Binary (PyInstaller): deployment/single-binary.md
   - How-To:
       - Conditional OpenAPI: how-to/conditional-openapi.md
       - Extending OpenAPI: how-to/extending-openapi.md
       - Configure Swagger UI: how-to/configure-swagger-ui.md
       - 401 vs 403 Auth Errors: how-to/auth-error-status.md
-  - Migrating from FastAPI: surpass/migrating-from-fastapi.md
+      - Generating Clients & SDKs: how-to/generate-clients.md
+      - GraphQL: how-to/graphql.md
+      - Customising the Request or Route: how-to/custom-request-route.md
+  - Why Veloce:
+      - Performance: surpass/performance.md
+      - Native Server Deep Dive: surpass/native-server.md
+      - Migrating from FastAPI: surpass/migrating-from-fastapi.md
   - Comparison: comparison.md
   - Versioning & Stability: policies.md
   - Benchmarks: benchmarks.md
