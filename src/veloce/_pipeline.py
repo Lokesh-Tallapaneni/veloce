@@ -98,6 +98,7 @@ class CompiledPipeline:
         "has_mounted_apps",
         "has_static_handlers",
         "has_asgi_mounts",
+        "is_bare",
     )
 
     # Slot annotations (no runtime cost - `__slots__` owns storage). Each HTTP
@@ -115,6 +116,12 @@ class CompiledPipeline:
     has_mounted_apps: bool
     has_static_handlers: bool
     has_asgi_mounts: bool
+    # True when no app-level feature the straight-line dispatch fast path would
+    # skip is active: no request/response/around/finish phase, no mounted/static/
+    # ASGI sub-apps, no before/after/teardown hooks (app or blueprint), no
+    # url-value preprocessors, no middleware. Rides the same generation counter,
+    # so hook/middleware registration must bump `_gen` to keep it fresh.
+    is_bare: bool
 
 
 # Phase id -> the `CompiledPipeline` slot it fuses into. Kept beside the phase
@@ -166,6 +173,27 @@ def compile_pipeline(app: Veloce) -> CompiledPipeline:
     cp.has_mounted_apps = bool(app._mounted_apps)
     cp.has_static_handlers = bool(app._static_handlers)
     cp.has_asgi_mounts = bool(app._asgi_mounts)
+    # Straight-line dispatch eligibility for the whole app: every feature the
+    # fast path would skip must be absent. Computed here so dispatch reads one
+    # boolean instead of probing each list per request.
+    cp.is_bare = (
+        cp.http_pre is None
+        and cp.http_post is None
+        and cp.http_around is None
+        and cp.http_finish is None
+        and not cp.has_mounted_apps
+        and not cp.has_static_handlers
+        and not cp.has_asgi_mounts
+        and not app._before_request_hooks
+        and not app._after_request_hooks
+        and not app._bp_before_hooks
+        and not app._bp_after_hooks
+        and not app._teardown_request_hooks
+        and not app._teardown_appcontext_hooks
+        and not app._bp_teardown_hooks
+        and not app._url_value_preprocessors
+        and not app._middlewares
+    )
     return cp
 
 

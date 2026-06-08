@@ -2156,6 +2156,7 @@ class Veloce(Router):
         """Register a function to run before each request."""
         self._assert_mutable()
         self._before_request_hooks.append(func)
+        self._gen += 1
         return func
 
     def shell_context_processor(self, func: Callable) -> Callable:
@@ -2203,6 +2204,7 @@ class Veloce(Router):
         """Register a function to run after each request."""
         self._assert_mutable()
         self._after_request_hooks.append(func)
+        self._gen += 1
         return func
 
     def teardown_request(self, func: Callable) -> Callable:
@@ -2210,12 +2212,14 @@ class Veloce(Router):
         Called with an optional exception argument, even if an exception occurred."""
         self._assert_mutable()
         self._teardown_request_hooks.append(func)
+        self._gen += 1
         return func
 
     def teardown_appcontext(self, func: Callable) -> Callable:
         """Register a function to run on app-context teardown."""
         self._assert_mutable()
         self._teardown_appcontext_hooks.append(func)
+        self._gen += 1
         return func
 
     async def _run_request_teardown(self, exc: BaseException | None, bp_name: str | None) -> None:
@@ -2361,6 +2365,7 @@ class Veloce(Router):
         """
         self._assert_mutable()
         self._url_value_preprocessors.append(func)
+        self._gen += 1
         return func
 
     def url_for(self, name: str, **path_params: Any) -> str:
@@ -2478,6 +2483,15 @@ class Veloce(Router):
             self._bp_teardown_hooks.setdefault(bp_name, []).extend(
                 blueprint._teardown_request_hooks
             )
+        # Keep the compiled `is_bare` flag fresh when a blueprint contributes
+        # hooks but no routes (a route-bearing blueprint already bumps `_gen`
+        # through route registration).
+        if (
+            blueprint._before_request_hooks
+            or blueprint._after_request_hooks
+            or blueprint._teardown_request_hooks
+        ):
+            self._gen += 1
 
         # URL processors (L7) - wrapped so they only fire for endpoints
         # belonging to the blueprint. The endpoint string is the first
@@ -3055,6 +3069,29 @@ class Veloce(Router):
             if match is not None:
                 request.endpoint = match.route_info.name
                 request._state["url_rule"] = match.route_info.path_template
+
+            # Straight-line fast path: with no app-level feature active
+            # (`cp.is_bare`) and a fast-eligible matched route, the request-phase
+            # middleware, before/after hooks, route re-resolution, and dependency
+            # resolver are all no-ops, so invoke the handler directly and skip
+            # the orchestration. Coercion (`_build_response`), one-shot
+            # `after_this_request` callbacks (`_run_after_hooks`), background-task
+            # scheduling, and the surrounding exception ladder / teardown stay
+            # shared with the slow path below, so behaviour is identical. The
+            # response phase is skipped because `is_bare` guarantees `http_post`
+            # is `None` (no response middleware to run).
+            if cp.is_bare and match is not None and match.route_info.is_fast_eligible:
+                route_info = match.route_info
+                if route_info.is_request_only_plan:
+                    result = await route_info.handler(
+                        **{route_info.handler_plan.slots[0].name: request}
+                    )
+                else:
+                    result = await route_info.handler()
+                response = self._build_response(request, match, result)
+                response = await self._run_after_hooks(request, response, None)
+                self._schedule_background_tasks(request, response)
+                return response
 
             # Run middleware (request phase). A route with no exclusions - the
             # common case - iterates the compile-time fused `process_request`
