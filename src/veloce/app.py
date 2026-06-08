@@ -8,7 +8,6 @@ import contextlib
 import functools
 import inspect
 import os
-import signal
 import sys
 import time
 import traceback
@@ -89,10 +88,9 @@ from veloce._protocol_constants import (
     ROUTE_METHOD_WEBSOCKET,
     TRACE_HEADER_TRACEPARENT,
     TRACE_HEADER_TRACESTATE,
-    URL_SCHEME_HTTP,
-    URL_SCHEME_HTTPS,
     build_trace_carrier,
 )
+from veloce._serving import ServingMixin
 from veloce.blueprints import _endpoint_blueprint
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.debug import render_traceback_html
@@ -124,8 +122,6 @@ from veloce.signals import (
 from veloce.websocket import WebSocket
 
 if TYPE_CHECKING:  # pragma: no cover
-    import ssl
-
     from veloce._contexts import _AppContext, _LifespanManager, _TestRequestContext
     from veloce._pipeline import WsHandshakeChecks
 
@@ -404,7 +400,7 @@ class _URLMap:
         return f"<URLMap with {len(rules)} rule{'s' if len(rules) != 1 else ''}>"
 
 
-class Veloce(BackgroundTasksMixin, Router):
+class Veloce(ServingMixin, BackgroundTasksMixin, Router):
     """Ultra-fast async web framework.
 
     Usage::
@@ -4022,183 +4018,6 @@ class Veloce(BackgroundTasksMixin, Router):
 
             self.openapi_schema = get_openapi_schema(self)
         return self.openapi_schema
-
-    def run(
-        self,
-        host: str | None = None,
-        port: int = 8000,
-        workers: int = 1,
-        access_log: bool = True,
-        ssl_context: ssl.SSLContext | None = None,
-        bind_all: bool = False,
-    ) -> None:
-        """Start the built-in **development** server.
-
-        Veloce's from-scratch HTTP server is intended for local
-        development only. For production, run the app under a hardened
-        ASGI server - ``uvicorn your_module:app`` - which veloce is fully
-        compatible with through its ASGI ``__call__`` interface.
-        ``run()`` logs a reminder of this on startup.
-
-        ``host`` resolves to ``"127.0.0.1"`` when unset so the dev server
-        is reachable only from the local machine. Pass ``bind_all=True``
-        to opt in to all-interfaces binding (``"0.0.0.0"``). ``host`` and
-        ``bind_all=True`` are mutually exclusive - passing both raises
-        ``ValueError`` to avoid silent privilege widening. Binding to
-        ``0.0.0.0`` exposes the dev server to every reachable network -
-        including remote attackers if the machine is on a public network
-        - so it should be used only in trusted environments and never
-        with ``debug=True``.
-
-        ``ssl_context`` - an ``ssl.SSLContext`` - turns on HTTPS for local
-        testing; it is handed straight to ``loop.create_server(ssl=...)``.
-        Left ``None`` (the default) the serving path is byte-for-byte the
-        same as plain HTTP. Production should still terminate TLS at
-        uvicorn or a reverse proxy.
-
-        ``workers`` must be ``1``: the built-in server runs a single process
-        and does not pre-fork. Passing more raises ``ValueError`` - run under
-        ``uvicorn module:app --workers N`` or the gunicorn ``VeloceWorker`` for
-        multiple processes.
-        """
-        if host is not None and bind_all:
-            raise ValueError(
-                "Veloce.run: bind_all=True conflicts with explicit host=...; pass only one"
-            )
-        # The built-in server runs in a single process - it does not pre-fork
-        # (cross-platform pre-forking needs SO_REUSEPORT, absent on Windows).
-        # Silently accepting workers>1 and running one process is a footgun, so
-        # reject it and point at the multi-process production paths.
-        if workers != 1:
-            raise ValueError(
-                "Veloce.run(workers=...) runs a single process; the built-in "
-                "development server does not spawn workers. For multiple "
-                "processes run under an ASGI server (uvicorn module:app "
-                "--workers N) or the gunicorn VeloceWorker."
-            )
-        if host is None:
-            host = "0.0.0.0" if bind_all else "127.0.0.1"
-        self._setup_openapi()
-
-        # The from-scratch server is dev-grade - make the production
-        # recommendation impossible to miss.
-        self.logger.warning(
-            "veloce's built-in server (app.run()) is for local development only - "
-            "run under uvicorn (or another hardened ASGI server) in production."
-        )
-
-        # Debug tracebacks leak source and internals - binding a non-local
-        # host with debug=True exposes them to the network.
-        if self.debug and host not in ("127.0.0.1", "::1", "localhost"):
-            self.logger.warning(
-                "debug=True with a non-local bind (host=%r) exposes debug "
-                "tracebacks to the network - set debug=False for any deployment "
-                "reachable beyond localhost.",
-                host,
-            )
-
-        # Use uvloop if available (2-4x faster event loop)
-        try:
-            import uvloop
-
-            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-        except ImportError:
-            pass
-
-        if access_log:
-            scheme = URL_SCHEME_HTTPS if ssl_context is not None else URL_SCHEME_HTTP
-            print(f"\n  Veloce v{self.version}")
-            print(f"  Listening on {scheme}://{host}:{port}")
-            print("  Press Ctrl+C to stop\n")
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        try:
-            loop.run_until_complete(self._serve(host, port, access_log, ssl_context))
-        except KeyboardInterrupt:
-            pass
-        finally:
-            # Graceful shutdown: drain pending tasks, run lifecycle hooks
-            loop.run_until_complete(self._graceful_shutdown(loop))
-            loop.close()
-
-    async def _serve(self, host: str, port: int, access_log: bool, ssl_context: Any = None) -> None:
-        """Create the server and run forever."""
-        # Deferred: serving.protocol imports `veloce.status`, which triggers
-        # `veloce/__init__` -> back to this app module. Hoisting would
-        # circle at package import time. Both call sites below share the
-        # same break.
-        from veloce.serving.protocol import HttpProtocol
-
-        loop = asyncio.get_running_loop()
-        # Run startup hooks
-        await self._run_lifecycle(LIFECYCLE_STARTUP)
-
-        # `ssl=None` (the default) makes `create_server` behave exactly as
-        # the plain-HTTP path; TLS cost is paid only when a context is set.
-        server = await loop.create_server(
-            lambda: HttpProtocol(self, loop),
-            host,
-            port,
-            reuse_port=True,
-            ssl=ssl_context,
-        )
-        # Handle signals for graceful shutdown
-        shutdown_event = asyncio.Event()
-
-        def _signal_handler() -> None:
-            server.close()
-            shutdown_event.set()
-
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError):
-                loop.add_signal_handler(sig, _signal_handler)
-
-        async with server:
-            await shutdown_event.wait()
-
-    async def _graceful_shutdown(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Two-phase graceful shutdown, then run the shutdown lifecycle.
-
-        Phase one quiesces every live connection: each finishes the request it
-        is already dispatching and then closes at the request boundary instead
-        of being cancelled mid-pipeline. A connection accepted in the shutdown
-        window serves at most its first request. Phase two is the existing hard
-        fallback - any dispatch still running past the drain window is awaited
-        with a timeout, then cancelled - so a stuck handler can never hang the
-        process.
-        """
-        # Deferred: same `veloce.status` -> `veloce/__init__` cycle that
-        # the matching import in `_serve` breaks. These are the only two
-        # call sites; not worth a structural refactor.
-        from veloce.serving.protocol import HttpProtocol
-
-        # Phase one: flip every live connection's drain flag so each self-
-        # quiesces at its own request boundary - no abrupt mid-pipeline cancel.
-        HttpProtocol.start_graceful_drain()
-
-        # Phase two (hard fallback): give in-flight dispatch tasks a bounded
-        # window to finish draining, then cancel any straggler so shutdown
-        # cannot block forever on a handler that ignores the drain.
-        if HttpProtocol._active_tasks:
-            await asyncio.wait(
-                HttpProtocol._active_tasks,
-                timeout=30,
-            )
-
-        # Cancel any still-running tasks
-        for task in HttpProtocol._active_tasks:
-            task.cancel()
-        HttpProtocol._active_tasks.clear()
-
-        # Clear the process-wide drain latch. Shutdown is terminal in
-        # production, but a single interpreter that serves again (notably the
-        # test harness) must not inherit a stuck "draining" state.
-        HttpProtocol.reset_graceful_drain()
-
-        # Run shutdown lifecycle hooks
-        await self._run_lifecycle(LIFECYCLE_SHUTDOWN)
 
     async def _run_handler(self, handler: Callable[..., Any]) -> None:
         """Invoke a lifecycle handler, offloading sync ones to a thread.
