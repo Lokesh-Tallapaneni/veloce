@@ -141,7 +141,7 @@ async def test_head_empty_body_with_content_length_on_fast_route():
     )
     assert received["status"] == 200
     assert b"".join(received["chunks"]) == b""
-    assert received["headers"][b"content-length"] == b'17'  # len('{"hello":"world"}')
+    assert received["headers"][b"content-length"] == b"17"  # len('{"hello":"world"}')
 
 
 async def test_before_request_hook_disables_fast_path_and_runs():
