@@ -1111,7 +1111,7 @@ class HttpProtocol(asyncio.Protocol):
 
         try:
             if getattr(response, "is_event_source", False):
-                await response.stream_to(self.transport, drain=self.drain)  # type: ignore[attr-defined]
+                await response.stream_to(self.transport, drain=self.drain)
                 self.transport.close()
                 return False
             if isinstance(response, StreamingResponse):
