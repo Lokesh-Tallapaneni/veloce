@@ -2824,30 +2824,15 @@ class Veloce(ServingMixin, BackgroundTasksMixin, TemplatingMixin, Router):
                 self._schedule_background_tasks(request, response)
                 return response
 
-            # Run middleware (request phase). A route with no exclusions - the
-            # common case - iterates the compile-time fused `process_request`
-            # chain (`cp.http_pre`), which is `None` when no middleware exists so
-            # the loop is skipped with zero awaits. A route declaring
-            # `exclude_middleware` runs a memoised filtered chain of middleware
-            # objects and stashes the matching response-phase chain on
-            # `request._state` for symmetric skip.
-            if match is not None and match.route_info.excluded_middleware is not None:
-                filtered = self._route_middleware_chains(match.route_info)
-                # `_route_middleware_chains` only returns `None` when the route
-                # excludes nothing, which the guard above already ruled out.
-                request._state[_MW_RESPONSE_CHAIN_KEY] = filtered[1]  # type: ignore[index]
-                excluded = True
-                for mw in filtered[0]:  # type: ignore[index]
-                    early_response = await mw.process_request(request)
-                    if early_response is not None:
-                        return await self._run_response_middleware(request, early_response)
-            elif cp.http_pre is not None:
-                for process_request in cp.http_pre:
-                    early_response = await process_request(request)
-                    if early_response is not None:
-                        return await self._run_response_phase(
-                            cp.http_post, request, early_response, False
-                        )
+            # Phase: request-phase middleware. Skipped entirely - no awaited
+            # frame - when no middleware applies (the common case). Runs even on a
+            # route miss so e.g. a CORS preflight is still answered.
+            if cp.http_pre is not None or (
+                match is not None and match.route_info.excluded_middleware is not None
+            ):
+                early_response, excluded = await self._run_request_phase(request, match, cp)
+                if early_response is not None:
+                    return early_response
 
             # Run before_request hooks (app-level then matched blueprint).
             # A non-None return short-circuits. `_bp_name` is recorded as the
@@ -3001,6 +2986,36 @@ class Veloce(ServingMixin, BackgroundTasksMixin, TemplatingMixin, Router):
                 request_tearing_down.send(self, exc=_exc)
             except Exception:
                 self.logger.exception("signal receiver raised an exception")
+
+    async def _run_request_phase(
+        self, request: Request, match: Any, cp: CompiledPipeline
+    ) -> tuple[Response | None, bool]:
+        """Run the request-phase middleware; return `(early_response, excluded)`.
+
+        A route declaring `exclude_middleware` runs a memoised filtered chain and
+        stashes the matching response-phase chain on `request._state` for
+        symmetric skip; otherwise the compile-time fused `process_request` chain
+        runs. A returned non-`None` response has already been through the response
+        phase and should be returned to the client as-is. `excluded` is `True`
+        only on the filtered-chain path, so the response phase mirrors the skip.
+        """
+        if match is not None and match.route_info.excluded_middleware is not None:
+            # `_route_middleware_chains` only returns `None` when the route
+            # excludes nothing, which the caller's guard already ruled out.
+            filtered = self._route_middleware_chains(match.route_info)
+            request._state[_MW_RESPONSE_CHAIN_KEY] = filtered[1]  # type: ignore[index]
+            for mw in filtered[0]:  # type: ignore[index]
+                early = await mw.process_request(request)
+                if early is not None:
+                    return await self._run_response_middleware(request, early), True
+            return None, True
+        # Reached only when `cp.http_pre` is set (the caller's guard); `or ()`
+        # keeps the loop typed without a redundant None-check.
+        for process_request in cp.http_pre or ():
+            early = await process_request(request)
+            if early is not None:
+                return await self._run_response_phase(cp.http_post, request, early, False), False
+        return None, False
 
     async def _run_exc_handler_response(
         self,
