@@ -20,7 +20,6 @@ from pydantic import BaseModel as _PydanticBaseModel
 from typing_extensions import Doc
 
 from veloce import status
-from veloce._background import BackgroundTasksMixin
 from veloce._constants import (
     HEADER_ACCEPT,
     HEADER_ALLOW,
@@ -90,10 +89,11 @@ from veloce._protocol_constants import (
     TRACE_HEADER_TRACESTATE,
     build_trace_carrier,
 )
-from veloce._serving import ServingMixin
-from veloce._templating import TemplatingMixin
-from veloce._urls import URLRule as URLRule
-from veloce._urls import _URLMap
+from veloce.app.background import BackgroundTasksMixin
+from veloce.app.serving import ServingMixin
+from veloce.app.templating import TemplatingMixin
+from veloce.app.urls import URLRule as URLRule
+from veloce.app.urls import _URLMap
 from veloce.blueprints import _endpoint_blueprint
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.debug import render_traceback_html
@@ -125,8 +125,8 @@ from veloce.signals import (
 from veloce.websocket import WebSocket
 
 if TYPE_CHECKING:  # pragma: no cover
-    from veloce._contexts import _AppContext, _LifespanManager, _TestRequestContext
     from veloce._pipeline import WsHandshakeChecks
+    from veloce.app.contexts import _AppContext, _LifespanManager, _TestRequestContext
 
 
 # Cache of `(wants_request, wants_exc)` flags per exception handler - the
@@ -1576,9 +1576,9 @@ class Veloce(ServingMixin, BackgroundTasksMixin, TemplatingMixin, Router):
         write into `g` without going through `handle_request`. Nestable:
         the previous binding (if any) is restored on exit.
         """
-        # Lazy import: `veloce._contexts` transitively pulls `veloce.http`, which
+        # Lazy import: `veloce.app.contexts` transitively pulls `veloce.http`, which
         # is not yet importable at app module-load time (app -> _contexts -> http).
-        from veloce._contexts import _AppContext
+        from veloce.app.contexts import _AppContext
 
         return _AppContext(self)
 
@@ -1598,7 +1598,9 @@ class Veloce(ServingMixin, BackgroundTasksMixin, TemplatingMixin, Router):
         dispatch pipeline. Strict subset of what `handle_request` does:
         no middleware, no DI, no handler.
         """
-        from veloce._contexts import _TestRequestContext  # lazy: breaks app->_contexts->http cycle
+        from veloce.app.contexts import (
+            _TestRequestContext,  # lazy: breaks app->_contexts->http cycle
+        )
 
         return _TestRequestContext(
             self,
@@ -4040,7 +4042,7 @@ class Veloce(ServingMixin, BackgroundTasksMixin, TemplatingMixin, Router):
         Useful for tests and for embedding the app where you want
         startup/shutdown without an ASGI server in the loop.
         """
-        from veloce._contexts import _LifespanManager  # lazy: breaks app->_contexts->http cycle
+        from veloce.app.contexts import _LifespanManager  # lazy: breaks app->_contexts->http cycle
 
         return _LifespanManager(self)
 

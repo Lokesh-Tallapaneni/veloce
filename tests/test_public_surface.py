@@ -315,3 +315,16 @@ def test_every_subpackage_export_is_importable():
         module = importlib.import_module(module_name)
         missing = [name for name in module.__all__ if not hasattr(module, name)]
         assert not missing, f"{module_name}: not importable: {missing}"
+
+
+# `veloce.app` is a package whose implementation lives in `veloce.app.core`;
+# these names must stay reachable as `veloce.app.X` regardless of how the package
+# is split internally (public `Veloce`/`URLRule` plus the private names that
+# tests and internal modules reach through the module path).
+VELOCE_APP_PATHS = ("Veloce", "URLRule", "_URLMap", "_exc_handler_sig_cache")
+
+
+def test_veloce_app_paths_resolve():
+    app = importlib.import_module("veloce.app")
+    missing = [name for name in VELOCE_APP_PATHS if not hasattr(app, name)]
+    assert not missing, f"veloce.app.X paths broken by an internal split: {missing}"
