@@ -15,12 +15,6 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from typing_extensions import Doc
 
-from veloce import status
-from veloce._constants import (
-    HEADER_ALLOW,
-    MIME_TEXT_PLAIN,
-    MSG_INTERNAL_SERVER_ERROR,
-)
 from veloce._internal import (
     MIME_HTML,
     _coerce_bool,
@@ -43,14 +37,13 @@ from veloce._pipeline import (
 )
 from veloce._protocol_constants import (
     HTTP_METHOD_GET,
-    HTTP_METHOD_HEAD,
-    HTTP_METHOD_OPTIONS,
     LIFECYCLE_SHUTDOWN,
     LIFECYCLE_STARTUP,
 )
 from veloce.app.asgi import AsgiMixin
 from veloce.app.background import BackgroundTasksMixin
 from veloce.app.dispatch import DispatchMixin
+from veloce.app.errors import ErrorsMixin
 from veloce.app.serving import ServingMixin
 from veloce.app.templating import TemplatingMixin
 from veloce.app.urls import URLRule as URLRule
@@ -58,14 +51,12 @@ from veloce.app.urls import _URLMap
 from veloce.blueprints import _endpoint_blueprint
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.exceptions import (
-    HTTPException,
     SetupError,
 )
 from veloce.helpers import g
 from veloce.http.datastructures import State
 from veloce.http.request import Request
 from veloce.http.response import (
-    JSONResponse,
     Response,
 )
 from veloce.middleware import BaseHTTPMiddleware, Middleware
@@ -133,7 +124,15 @@ def _raise_unwind_errors(errors: list[BaseException]) -> None:
     raise first
 
 
-class Veloce(AsgiMixin, DispatchMixin, ServingMixin, BackgroundTasksMixin, TemplatingMixin, Router):
+class Veloce(
+    AsgiMixin,
+    DispatchMixin,
+    ErrorsMixin,
+    ServingMixin,
+    BackgroundTasksMixin,
+    TemplatingMixin,
+    Router,
+):
     """Ultra-fast async web framework.
 
     Usage::
@@ -1466,178 +1465,6 @@ class Veloce(AsgiMixin, DispatchMixin, ServingMixin, BackgroundTasksMixin, Templ
                     "@app.middleware('http') is the decorator form"
                 )
             self.add_middleware(middleware_class_or_type, **kwargs)
-
-    # -- Exception handlers ---------------------------------------
-
-    def register_error_handler(self, code_or_exception: int | type, func: Callable) -> None:
-        """Register an error handler without a decorator."""
-        self._assert_mutable()
-        if isinstance(code_or_exception, int):
-            self._status_handlers[code_or_exception] = func
-        else:
-            self._exception_handlers[code_or_exception] = func
-            # The MRO-walk cache is invalidated on any registration so a
-            # newly-added handler for a base class takes effect for the
-            # already-cached subclasses.
-            self._exc_handler_cache.clear()
-
-    def _should_propagate_exceptions(self) -> bool:
-        """Whether unhandled exceptions should re-raise out of dispatch.
-
-        True when `app.config["PROPAGATE_EXCEPTIONS"]` is explicitly set,
-        or implicitly when both DEBUG and TESTING are enabled.
-        """
-        explicit = self.config.get("PROPAGATE_EXCEPTIONS")
-        if explicit is not None:
-            return bool(explicit)
-        return self.debug and _coerce_bool(self.config.get("TESTING"))
-
-    def _find_exception_handler(self, exc_type: type) -> Callable | None:
-        """Walk `exc_type`'s MRO looking for a registered handler.
-
-        Handlers registered against a base class catch every subclass -
-        e.g. `@app.exception_handler(HTTPException)` catches every
-        `NotFound`, `Forbidden`, etc. raised through `abort()`. The
-        lookup result is cached per exception type; the cache is cleared
-        on every `register_error_handler` call.
-        """
-        cached = self._exc_handler_cache.get(exc_type, _MISSING)
-        if cached is not _MISSING:
-            return cached
-        for cls in exc_type.__mro__:
-            handler = self._exception_handlers.get(cls)
-            if handler is not None:
-                self._exc_handler_cache[exc_type] = handler
-                return handler
-        self._exc_handler_cache[exc_type] = None
-        return None
-
-    def exception_handler(self, exc_class_or_status: type | int) -> Callable:
-        """Register a custom exception handler by exception type or status code."""
-
-        def decorator(func: Callable) -> Callable:
-            self.register_error_handler(exc_class_or_status, func)
-            return func
-
-        return decorator
-
-    # Veloce names this `errorhandler` (one word, no underscore). The
-    # alias keeps calling code readable; semantics are identical.
-    errorhandler = exception_handler
-
-    def add_exception_handler(self, exc_class_or_status: type | int, handler: Callable) -> None:
-        """Imperative exception-handler registration - ASGI shape.
-
-        The non-decorator form of `@app.exception_handler(...)`.
-        Accepts an exception class (matched by MRO at dispatch time) or
-        an int HTTP status code.
-        """
-        self.register_error_handler(exc_class_or_status, handler)
-
-    def log_exception(self, exc: BaseException) -> None:
-        """Log an exception with traceback.
-
-        Routes the exception through the app logger at ERROR level.
-        Used internally before falling back to a 500 response; exposed
-        publicly so error-handler code can re-log via the same path.
-        """
-        self.logger.error("Exception on request", exc_info=exc)
-
-    async def handle_http_exception(
-        self, exc: HTTPException, request: Request | None = None
-    ) -> Response:
-        """Build the response for an `HTTPException`.
-
-        Walks registered status-code + class handlers first (matching
-        `abort()` semantics), falling back to JSON `{"detail": exc.detail}`
-        with `exc.headers` applied. Useful for code paths outside the
-        normal request cycle (e.g. background tasks) that want
-        framework-consistent error shapes.
-
-        Pass `request=` when calling from inside a request scope so the
-        registered error handler receives the real failing request
-        (with the actual `path`, `method`, `path_params`, `state`, etc.)
-        instead of a synthetic `GET /`. Callers without a request (the
-        original out-of-band use case) can omit it.
-        """
-        handler = self._status_handlers.get(exc.status_code) or self._find_exception_handler(
-            type(exc)
-        )
-        if handler is not None:
-            if request is None:
-                from veloce.http.request import Request as _Req
-
-                request = _Req(
-                    method=HTTP_METHOD_GET, path="/", query_string="", headers={}, body=b""
-                )
-            result = await self._call_exc_handler(handler, request, exc)
-            if isinstance(result, Response):
-                return result
-            return self._coerce_response(result)
-        structured = getattr(exc, "errors", None)
-        return JSONResponse(
-            {"detail": structured if structured is not None else (exc.detail or "Error")},
-            status_code=exc.status_code,
-            headers=exc.headers,
-        )
-
-    def make_default_options_response(
-        self, path: str, allowed_methods: list[str] | None = None
-    ) -> Response:
-        """Build the auto-OPTIONS response for `path`.
-
-        Returns a 200 response with an empty body and an `Allow` header
-        listing every method registered for `path`, augmented with
-        `HEAD` (whenever `GET` is supported) and `OPTIONS` itself per
-        RFC 9110 Sec. 9.3.7. Callers that register an explicit OPTIONS
-        handler can use this to compose the default `Allow` set. Pass
-        `allowed_methods` when the registered set is already known to skip
-        the redundant `get_allowed_methods` lookup.
-        """
-        allowed = allowed_methods if allowed_methods is not None else self.get_allowed_methods(path)
-        advertised = list(allowed)
-        if HTTP_METHOD_GET in advertised and HTTP_METHOD_HEAD not in advertised:
-            advertised.append(HTTP_METHOD_HEAD)
-        if HTTP_METHOD_OPTIONS not in advertised:
-            advertised.append(HTTP_METHOD_OPTIONS)
-        return Response(
-            status_code=status.HTTP_200_OK,
-            body=b"",
-            content_type=MIME_TEXT_PLAIN,
-            headers={HEADER_ALLOW: ", ".join(advertised)},
-        )
-
-    async def handle_user_exception(
-        self, exc: BaseException, request: Request | None = None
-    ) -> Response:
-        """Dispatch an arbitrary exception.
-
-        `HTTPException` -> `handle_http_exception`. Otherwise walks
-        registered class handlers (MRO); on no match, logs via
-        `log_exception` and returns 500. Pass `request=` to propagate
-        the real failing request to the registered handler; omit to
-        get a synthetic `GET /` for out-of-band callers (background
-        tasks, CLI hooks).
-        """
-        if isinstance(exc, HTTPException):
-            return await self.handle_http_exception(exc, request=request)
-        handler = self._find_exception_handler(type(exc))
-        if handler is not None:
-            if request is None:
-                from veloce.http.request import Request as _Req
-
-                request = _Req(
-                    method=HTTP_METHOD_GET, path="/", query_string="", headers={}, body=b""
-                )
-            result = await self._call_exc_handler(handler, request, exc)
-            if isinstance(result, Response):
-                return result
-            return self._coerce_response(result)
-        self.log_exception(exc)
-        return JSONResponse(
-            {"detail": MSG_INTERNAL_SERVER_ERROR},
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
 
     @property
     def view_functions(self) -> dict[str, Callable]:
