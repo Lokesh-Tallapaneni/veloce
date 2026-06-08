@@ -114,6 +114,29 @@ async def by_tags(request: Request, tag: list[str] = []):
     return {"tags": tag}   # /tags?tag=a&tag=b -> ["a", "b"]
 ```
 
+A `bool`-annotated query, path, header, or cookie parameter is coerced from
+the raw string. The value is true only when it lower-cases to one of `true`,
+`1`, or `yes`; every other string (including `false`, `0`, `no`, `off`, and the
+empty string) coerces to `False`.
+
+```python
+from veloce import Request, Veloce
+
+app = Veloce()
+
+
+@app.get("/items")
+async def list_items(request: Request, archived: bool = False):
+    return {"archived": archived}   # /items?archived=yes -> True
+```
+
+!!! warning "Bool coercion accepts a fixed token set"
+    Unlike FastAPI, which treats `on`/`off` as valid bool tokens, Veloce only
+    recognises `true`, `1`, and `yes` (case-insensitively) as `True`. Anything
+    else is `False` — there is no `422` for an unrecognised value, so a typo
+    like `archived=ture` silently reads as `False`. The same token set applies
+    to `Query`, `Path`, `Header`, and `Cookie` parameters.
+
 ## Path
 
 [`Path`](../reference.md#veloce.Path) annotates a value taken from a path

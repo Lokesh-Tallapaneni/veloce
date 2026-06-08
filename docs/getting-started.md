@@ -120,8 +120,25 @@ This shows the three pillars you will use constantly:
 ## Interactive API docs
 
 When OpenAPI is enabled (the default), Veloce generates an OpenAPI 3.1
-schema and serves Swagger UI and ReDoc for it. Pass `title=` and
-`version=` to `Veloce(...)` to control the document metadata.
+schema and serves Swagger UI and ReDoc for it. With the running app, open:
+
+- [http://localhost:8000/docs](http://localhost:8000/docs) — Swagger UI.
+- [http://localhost:8000/redoc](http://localhost:8000/redoc) — ReDoc.
+- [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json) —
+  the raw OpenAPI 3.1 schema.
+
+Pass `title=` and `version=` to `Veloce(...)` to control the document
+metadata. The three paths are configurable through `docs_url`, `redoc_url`,
+and `openapi_url`:
+
+```python
+app = Veloce(docs_url="/swagger", redoc_url="/api-docs", openapi_url="/schema.json")
+```
+
+!!! note "Disable a UI with `None`, not an empty string"
+    Set `docs_url=None` or `redoc_url=None` to switch a UI off entirely.
+    Veloce uses `None` as the sentinel — an empty string is not the disable
+    value.
 
 ## Next steps
 
