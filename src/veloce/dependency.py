@@ -353,6 +353,62 @@ class SecurityScopes:
 
 # -- Resolver ----------------------------------------------
 
+# Returned by `_resolve_scalar_param` for a path slot with no value, no default,
+# and not optional: the caller leaves the kwarg unset so the handler default
+# applies. A query slot raises `missing` instead, so it never returns this.
+_PARAM_MISSING: Any = object()
+
+
+def _resolve_scalar_param(
+    slot: Any, request: Request, path_params: dict[str, str], *, allow_query: bool
+) -> Any:
+    """Resolve a scalar path-or-query parameter to its coerced value.
+
+    A path binding wins when the matched params include the name; a `K_QUERY`
+    slot (`allow_query=True`) then falls back to the query string, a `K_PATH`
+    slot does not. With no value, a default or optional yields that; otherwise a
+    query slot raises `missing` and a path slot returns `_PARAM_MISSING`.
+    """
+    name = slot.name
+    if name in path_params:
+        return _coerce_value(path_params[name], slot.target_type or str, name, "path")
+    if allow_query and name in request.query_params:
+        return _coerce_value(request.query_params[name], slot.target_type or str, name, "query")
+    if slot.has_default:
+        return slot.default
+    if slot.is_optional:
+        return None
+    if allow_query:
+        raise RequestValidationError(
+            [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
+        )
+    return _PARAM_MISSING
+
+
+def _resolve_list_param(slot: Any, request: Request, path_params: dict[str, str]) -> Any:
+    """Resolve a list-typed path-or-query parameter to a coerced list.
+
+    A single path value becomes a one-element list; a query key yields every
+    value the URL carried (`?tag=a&tag=b` -> ["a", "b"]). Falls back to the
+    default / optional, else raises `missing`.
+    """
+    name = slot.name
+    if name in path_params:
+        return [_coerce_value(path_params[name], slot.list_inner, name, "path")]
+    if name in request.query_params:
+        # MultiDict.getall returns every value the URL carried for this key.
+        return [
+            _coerce_value(v, slot.list_inner, name, "query")
+            for v in request.query_params.getall(name)
+        ]
+    if slot.has_default:
+        return slot.default
+    if slot.is_optional:
+        return None
+    raise RequestValidationError(
+        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
+    )
+
 
 class DependencyResolver:
     """Walks a `HandlerPlan` to produce kwargs for a handler.
@@ -683,25 +739,7 @@ class DependencyResolver:
                 continue
 
             if kind == K_QUERY_LIST:
-                # Lists may come from path or query; prefer path.
-                if name in path_params:
-                    raw = path_params[name]
-                    kwargs[name] = [_coerce_value(raw, slot.list_inner, name, "path")]
-                elif name in request.query_params:
-                    # MultiDict.getall returns every value the URL carried
-                    # for this key. `?tag=a&tag=b` -> ["a", "b"].
-                    values = request.query_params.getall(name)
-                    kwargs[name] = [
-                        _coerce_value(v, slot.list_inner, name, "query") for v in values
-                    ]
-                elif slot.has_default:
-                    kwargs[name] = slot.default
-                elif slot.is_optional:
-                    kwargs[name] = None
-                else:
-                    raise RequestValidationError(
-                        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
-                    )
+                kwargs[name] = _resolve_list_param(slot, request, path_params)
                 i += 1
                 continue
 
@@ -717,37 +755,15 @@ class DependencyResolver:
                     kwargs[name] = mcp_context
                     i += 1
                     continue
-                # Path-or-query: a handler param that wasn't otherwise tagged.
-                # Path bindings win if the route's matched params include this
-                # name; else fall back to query string.
-                if name in path_params:
-                    kwargs[name] = _coerce_value(
-                        path_params[name], slot.target_type or str, name, "path"
-                    )
-                elif name in request.query_params:
-                    val = request.query_params[name]
-                    kwargs[name] = _coerce_value(val, slot.target_type or str, name, "query")
-                elif slot.has_default:
-                    kwargs[name] = slot.default
-                elif slot.is_optional:
-                    kwargs[name] = None
-                else:
-                    raise RequestValidationError(
-                        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
-                    )
+                kwargs[name] = _resolve_scalar_param(slot, request, path_params, allow_query=True)
                 i += 1
                 continue
 
             # K_PATH is not currently emitted by build_plan; future-proof.
             if kind == K_PATH:
-                if name in path_params:
-                    kwargs[name] = _coerce_value(
-                        path_params[name], slot.target_type or str, name, "path"
-                    )
-                elif slot.has_default:
-                    kwargs[name] = slot.default
-                elif slot.is_optional:
-                    kwargs[name] = None
+                val = _resolve_scalar_param(slot, request, path_params, allow_query=False)
+                if val is not _PARAM_MISSING:
+                    kwargs[name] = val
                 i += 1
                 continue
 
