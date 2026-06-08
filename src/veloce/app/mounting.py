@@ -1,0 +1,130 @@
+"""Sub-application and static mounting mixed into Veloce.
+
+Holds `mount` (Veloce sub-app, ASGI app, or `StaticFiles` at a prefix),
+`mount_static` (the Veloce static-file handler), and the per-request
+`_match_asgi_mount` lookup the ASGI dispatcher uses to route a path into a
+mounted ASGI app. A mixin on `Veloce`; registration is setup-only and the match
+is a small prefix scan over the registered mounts.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from veloce.contrib.staticfiles import StaticFiles
+
+
+class MountingMixin:
+    """Sub-app / ASGI / static mounting, mixed into `Veloce`."""
+
+    if TYPE_CHECKING:
+        # Attributes / methods the host application (Veloce) provides.
+        _mounted_apps: Any
+        _asgi_mounts: Any
+        _static_handlers: Any
+        _register_feature_state: Any
+
+    def mount(self, prefix: str, app: Any) -> None:
+        """Mount a sub-application at a path prefix.
+
+        A veloce sub-app is dispatched through the parent's request
+        pipeline. Any other ASGI application - an ASGI micro-app, an
+        instrumentation shim - is dispatched at the ASGI layer instead:
+        the matched prefix is stripped from the scope's `path` and moved
+        onto `root_path`, so the mounted app sees a normal root-relative
+        request.
+
+        Lifecycle: a mounted *Veloce* sub-app has its startup and shutdown
+        driven by the parent - the parent runs each child's startup after its
+        own during `lifespan`/`run()` startup, and tears children down in
+        reverse on shutdown, so a child's `on_startup` / lifespan resources
+        initialise and release without a separate ASGI lifespan. A mounted
+        non-Veloce *ASGI* app receives `http` and `websocket` scopes only:
+        the parent does not fan the `lifespan` cycle out to it, so it must
+        not depend on ASGI `lifespan` events for its setup. A mounted ASGI
+        app owns its entire prefix subtree - a native route registered under
+        the same prefix is unreachable.
+
+        Prefixes must not overlap: registering a prefix equal to, nested
+        under, or containing an existing mount raises `ValueError`, since
+        overlapping mounts would shadow each other in a confusing,
+        order-dependent way.
+        """
+        # Imported here (not at module top) to break the app.core <-> app.mounting
+        # import cycle; `mount` is a setup-time call, never on the request path.
+        from veloce.app.core import Veloce
+
+        prefix = prefix.rstrip("/")
+        # A request path always starts with "/"; normalise a prefix given
+        # without one so the mount is not silently unreachable.
+        if prefix and not prefix.startswith("/"):
+            prefix = "/" + prefix
+        # Reject an overlapping registration. Two prefixes overlap when
+        # one is a path-segment ancestor of the other (or they are
+        # equal) - mounts are matched in registration order, so an
+        # overlap means one mount silently shadows the other.
+        for existing, _existing_slash, _ in (*self._mounted_apps, *self._asgi_mounts):
+            if (
+                prefix == existing
+                or prefix.startswith(existing + "/")
+                or existing.startswith(prefix + "/")
+            ):
+                raise ValueError(
+                    f"mount prefix {prefix or '/'!r} overlaps the "
+                    f"already-mounted prefix {existing or '/'!r}"
+                )
+        entry = (prefix, prefix + "/", app)
+        if isinstance(app, Veloce):
+            self._register_feature_state(self._mounted_apps, entry)
+            return
+        # `StaticFiles` looks ASGI-shaped (it's an object you'd
+        # naturally hand to `mount`), but it speaks Veloce's
+        # `.handle(request)` protocol, not ASGI. Without a special
+        # case, `app.mount("/static", StaticFiles(...))` would register
+        # successfully and then 500 every request when the ASGI
+        # dispatcher tries `await mounted(scope, receive, send)`. Route
+        # it through the static-handler list with the mount prefix as
+        # the lookup prefix instead.
+        if isinstance(app, StaticFiles):
+            app.prefix = prefix.rstrip("/")
+            self._register_feature_state(self._static_handlers, app)
+            return
+        # Anything else must be callable in the ASGI shape. Catching
+        # non-callables here surfaces the mistake at registration
+        # instead of as a per-request 500 later.
+        if not callable(app):
+            raise TypeError(
+                f"mount({prefix or '/'!r}, ...) expected an ASGI application "
+                f"(callable taking `(scope, receive, send)`), a `Veloce` sub-app, "
+                f"or a `StaticFiles` instance - got "
+                f"{type(app).__name__} which is none of those. "
+                f"For Veloce's own static-file handler, prefer "
+                f"`app.mount_static(prefix=..., directory=...)`."
+            )
+        self._register_feature_state(self._asgi_mounts, entry)
+
+    def _match_asgi_mount(self, path: str) -> tuple[str, Any] | None:
+        """Return the `(prefix, app)` whose prefix owns `path`, if any."""
+        for prefix, prefix_slash, mounted in self._asgi_mounts:
+            if path == prefix or path.startswith(prefix_slash):
+                return prefix, mounted
+        return None
+
+    def mount_static(
+        self,
+        prefix: str = "/static",
+        directory: str = "static",
+        html: bool = False,
+        must_exist: bool = True,
+    ) -> None:
+        """Mount a static file directory.
+
+        The directory must exist and be readable at wiring time (a typo
+        otherwise 404s every asset silently); pass ``must_exist=False`` to
+        downgrade the check to a warning when the directory is created after
+        the app is constructed.
+        """
+        self._register_feature_state(
+            self._static_handlers,
+            StaticFiles(directory=directory, prefix=prefix, html=html, must_exist=must_exist),
+        )
