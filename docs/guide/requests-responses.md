@@ -1,15 +1,22 @@
 ---
-description: Read request bodies, headers, cookies, and form data; return JSON, HTML, file, redirect, or streaming responses with Pydantic models and response_model shaping.
-tags: [request, response, json, pydantic]
+description: >-
+  Read request fields, headers, cookies, query, the raw body, the stream, and form data, then build responses with status codes, a Response constructed directly, sync streaming, NDJSON, and response cookies and headers.
+tags: [request, response, streaming, status]
 ---
 
-# Requests & Responses
+# Requests and responses
 
-## The Request object
+[`Request`](../reference.md#veloce.Request) exposes the incoming message; the
+[`Response`](../reference.md#veloce.Response) family builds what goes back. A
+handler can return a plain value and let Veloce coerce it, or construct a
+response itself for full control over status, body, and headers.
 
-Annotate a parameter as `Request` to receive the incoming request:
+## Reading the request
 
-```python
+Annotate a parameter as `Request` and Veloce passes the live request in. All
+parsing is lazy — properties you never read cost nothing.
+
+```python title="app.py"
 from veloce import Request, Veloce
 
 app = Veloce()
@@ -21,47 +28,219 @@ async def inspect(request: Request):
         "method": request.method,
         "path": request.path,
         "query": dict(request.query_params),
-        "user_agent": request.headers.get("user-agent"),
+        "user_agent": request.headers.get("user-agent", ""),
+        "host": request.host,
+        "client": request.client.host if request.client else None,
     }
 ```
 
-`request.headers` and `request.query_params` are multi-value mappings:
-`headers["x"]` returns the first value, `headers.getlist("x")` returns
-all of them.
+- `request.query_params` and `request.headers` are multi-value mappings:
+  `headers["x"]` (or `.get("x")`) returns the first value, `headers.getlist("x")`
+  returns every value.
+- `request.client` is an `Address(host, port)` or `None` for synthetic requests.
+- `request.state` is a per-request scratch namespace — use `request.state.foo`
+  for your own data, never a bare attribute on `request`.
+
+### Cookies and query parameters
+
+`request.cookies` parses the `Cookie` header lazily; `request.query_params`
+parses the URL query string.
+
+```python title="app.py"
+from veloce import Request, Veloce
+
+app = Veloce()
+
+
+@app.get("/search")
+async def search(request: Request):
+    term = request.query_params.get("q", "")
+    tags = request.query_params.getlist("tag")
+    session_id = request.cookies.get("session_id")
+    return {"q": term, "tags": tags, "session_id": session_id}
+```
+
+```python
+from veloce import Request, TestClient, Veloce
+
+app = Veloce()
+
+
+@app.get("/search")
+async def search(request: Request):
+    return {
+        "q": request.query_params.get("q", ""),
+        "tags": request.query_params.getlist("tag"),
+        "session_id": request.cookies.get("session_id"),
+    }
+
+
+client = TestClient(app)
+client.cookies["session_id"] = "xyz"
+
+resp = client.get("/search?q=veloce&tag=a&tag=b")
+assert resp.status_code == 200
+assert resp.json() == {"q": "veloce", "tags": ["a", "b"], "session_id": "xyz"}
+```
+
+## Reading the raw body
+
+The body accessors are awaitable so the same code works whether the body is
+already buffered or still streaming in.
+
+- `await request.body()` — the full body as `bytes`.
+- `await request.json()` — the body parsed as JSON (raises `400` on malformed
+  JSON, returns `None` for an empty body).
+- `await request.text()` — the body decoded as UTF-8.
+- `await request.get_data(as_text=True)` — the body decoded via the
+  `Content-Type` charset.
+
+```python title="app.py"
+from veloce import Request, Veloce
+
+app = Veloce()
+
+
+@app.post("/echo")
+async def echo(request: Request):
+    raw = await request.body()
+    return {"length": len(raw), "content_type": request.content_type}
+
+
+@app.post("/echo-json")
+async def echo_json(request: Request):
+    payload = await request.json()
+    return {"received": payload}
+```
+
+!!! note
+    `request.json()` and `request.body()` are `async` to match the
+    `await request.json()` idiom. Veloce buffers the body before dispatch, so on
+    the in-memory and ASGI paths the await resolves immediately. The synchronous
+    `request.get_json()` / `request.data` accessors exist for Flask muscle
+    memory but raise `RuntimeError` if the body has not been buffered yet.
+
+### Streaming the request body
+
+`request.stream()` async-iterates the body in chunks. On the raw HTTP/1.1
+server each chunk is yielded as the socket delivers it, so a large upload is
+processed without buffering it whole.
+
+```python title="app.py"
+from veloce import Request, Veloce
+
+app = Veloce()
+
+
+@app.post("/upload")
+async def upload(request: Request):
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+    return {"bytes": total}
+```
+
+### Form data
+
+`await request.form()` parses both `application/x-www-form-urlencoded` and
+`multipart/form-data` bodies into a `FormData` mapping.
+
+```python title="app.py"
+from veloce import Request, Veloce
+
+app = Veloce()
+
+
+@app.post("/login")
+async def login(request: Request):
+    form = await request.form()
+    return {"user": form.get("username")}
+```
+
+!!! tip
+    For typed, validated bodies prefer a Pydantic model parameter or the
+    [`Form`](../reference.md#veloce.Form) marker — see
+    [Parameters](parameters.md) and [File uploads](file-uploads.md). Reach for
+    `request.form()` only when you want the raw mapping.
 
 ## Returning responses
 
-A handler can return several shapes — Veloce coerces each to a response.
+A handler can return several shapes; Veloce coerces each to a `Response`.
 
-### Dict shortcut (JSON)
+| Return value | Becomes |
+| --- | --- |
+| `dict` / `list` | `JSONResponse` with status `200`. |
+| `str` | `text/html` response. |
+| `bytes` | `text/html` response. |
+| Pydantic model | `JSONResponse` of `model_dump()`. |
+| `Response` instance | Used as-is. |
+| `(body, status)` tuple | `body` coerced, then status applied. |
+| `(body, status, headers)` tuple | `body` coerced, status and headers applied. |
 
-Return a `dict` (or any JSON-serialisable value) and Veloce wraps it in a
-JSON response with a `200` status:
+```python title="app.py"
+from veloce import Request, Veloce
 
-```python
+app = Veloce()
+
+
 @app.get("/dict")
 async def as_dict(request: Request):
-    return {"json": True}            # -> JSON response
+    return {"json": True}
+
+
+@app.get("/created")
+async def created(request: Request):
+    return {"created": True}, 201
+
+
+@app.get("/with-headers")
+async def with_headers(request: Request):
+    return {"ok": True}, 201, {"X-Trace": "abc"}
 ```
 
-### Tuple shortcut (body, status, headers)
+In the `(body, status)` tuple the second element may be an `int` status, in
+`(body, status, headers)` the third is a headers dict. A bare `str` body still
+becomes `text/html`, so `("<b>hi</b>", 201)` is an HTML `201`.
 
-Return a tuple to set an explicit status code — and, optionally, a
-headers mapping — alongside the body:
+### Status codes
 
-```python
-@app.get("/tuple")
-async def as_tuple(request: Request):
-    return {"created": True}, 201    # -> JSON with an explicit status
+Import [`status`](../reference.md) for named status constants
+instead of bare integers — they read better and are RFC-named.
+
+```python title="app.py"
+from veloce import Request, Veloce, status
+
+app = Veloce()
+
+
+@app.post("/items", status_code=status.HTTP_201_CREATED)
+async def create_item(request: Request):
+    return {"id": 1}
+
+
+@app.get("/teapot")
+async def teapot(request: Request):
+    return {"detail": "no coffee here"}, status.HTTP_418_IM_A_TEAPOT
 ```
 
-### Response classes
+`@app.get(..., status_code=...)` sets the default status for the route; a tuple
+or an explicit `Response` overrides it per return.
 
-For explicit control over the content type and status, return a response
-object:
+### Returning a Response directly
 
-```python
-from veloce import HTMLResponse, JSONResponse
+Construct a response object when you need explicit control over the body bytes,
+content type, status, and headers. The base `Response` takes `body=` (bytes) and
+`content_type=`.
+
+```python title="app.py"
+from veloce import HTMLResponse, JSONResponse, PlainTextResponse, Request, Response, Veloce
+
+app = Veloce()
+
+
+@app.get("/raw")
+async def raw(request: Request):
+    return Response(body=b"\x00\x01\x02", content_type="application/octet-stream")
 
 
 @app.get("/html")
@@ -69,103 +248,253 @@ async def html(request: Request):
     return HTMLResponse("<h1>Hello from Veloce</h1>")
 
 
+@app.get("/text")
+async def text(request: Request):
+    return PlainTextResponse("plain", status_code=200)
+
+
 @app.get("/json")
 async def json(request: Request):
     return JSONResponse({"ok": True}, status_code=200)
 ```
 
-Other response classes include `PlainTextResponse`, `RedirectResponse`,
-`FileResponse`, and `ORJSONResponse` / `UJSONResponse`.
+- `Response(body=..., content_type=...)` takes raw `bytes` — it does not encode
+  a string for you. Use `HTMLResponse` / `PlainTextResponse` for `str` content.
+- `JSONResponse(data, status_code=...)` and `HTMLResponse(content, status_code=...)`
+  take their payload as the first positional argument.
+- Other classes: [`RedirectResponse`](../reference.md#veloce.RedirectResponse),
+  [`FileResponse`](../reference.md#veloce.FileResponse),
+  [`ORJSONResponse`](../reference.md#veloce.ORJSONResponse),
+  [`UJSONResponse`](../reference.md#veloce.UJSONResponse).
 
-### Streaming responses
+!!! warning "`Response` body is bytes, not text"
+    `Response(body=...)` expects `bytes`. Passing a `str` raises when the
+    response is encoded — pass `body=b"hello"`, or use
+    `HTMLResponse`/`PlainTextResponse`, which encode UTF-8 for you.
+    `content_type=` controls only the header, never the encoding.
 
-For large or open-ended payloads, return a `StreamingResponse` over an
-async iterator — Veloce sends each chunk as soon as it's produced,
-without buffering the whole body in memory:
+### Response cookies and headers
 
-```python
-from veloce import StreamingResponse
+Mutate headers on the `Response` object, and set cookies with `set_cookie()` so
+multiple `Set-Cookie` values append correctly.
 
+```python title="app.py"
+from veloce import JSONResponse, Request, Veloce
 
-async def numbers():
-    for i in range(1000):
-        yield f"{i}\n"
+app = Veloce()
 
 
-@app.get("/stream")
-async def stream(request: Request):
-    return StreamingResponse(numbers(), content_type="text/plain")
+@app.get("/set")
+async def set_things(request: Request):
+    resp = JSONResponse({"ok": True})
+    resp.headers["X-App"] = "veloce"
+    resp.set_cookie("session_id", "abc123", httponly=True, samesite="Lax", max_age=3600)
+    return resp
 ```
 
-## Request bodies with Pydantic
-
-Annotate a parameter with a Pydantic model — Veloce parses and validates
-the body before the handler runs. Invalid input produces a structured
-`422` automatically:
-
 ```python
+from veloce import JSONResponse, Request, TestClient, Veloce
+
+app = Veloce()
+
+
+@app.get("/set")
+async def set_things(request: Request):
+    resp = JSONResponse({"ok": True})
+    resp.headers["X-App"] = "veloce"
+    resp.set_cookie("session_id", "abc123", httponly=True)
+    return resp
+
+
+client = TestClient(app)
+
+resp = client.get("/set")
+assert resp.status_code == 200
+assert resp.headers["X-App"] == "veloce"
+assert resp.cookies["session_id"] == "abc123"
+```
+
+- `set_cookie()` defaults to `samesite="Lax"` and `path="/"`. Pass
+  `secure=True` and `samesite="None"` together for cross-site cookies.
+- `delete_cookie(key, ...)` expires a cookie — pass the same `path`/`domain`/
+  `secure`/`samesite` flags it was set with, or the browser keeps both.
+
+!!! warning "Set cookies through `set_cookie()`"
+    Do not assign `response.headers["Set-Cookie"] = ...` directly — that
+    overwrites any cookie another middleware already set. `set_cookie()` appends
+    correctly so every cookie survives.
+
+### Shaping output with `response_model`
+
+Pass `response_model=` on the route to validate and filter the handler's return
+value through a model. Veloce dumps the result through it, so undeclared fields
+drop and the OpenAPI response schema documents the public shape.
+
+```python title="app.py"
 from pydantic import BaseModel
 
+from veloce import Request, Veloce
 
-class UserCreate(BaseModel):
-    name: str
-    email: str
-    age: int = 0
+app = Veloce()
 
 
-@app.post("/users")
-async def create_user(user: UserCreate):
-    return {"stored": user.model_dump()}
-```
-
-## Shaping output with `response_model`
-
-`response_model` runs the return value through a model on the way out —
-useful for trimming internal fields:
-
-```python
-class UserPublic(BaseModel):
+class UserOut(BaseModel):
     id: int
     name: str
 
 
-@app.get("/users/{user_id}", response_model=UserPublic)
-async def get_user(user_id: int):
-    # extra keys like "password_hash" are dropped from the response
-    return {"id": user_id, "name": "ada", "password_hash": "..."}
+@app.get("/users/{user_id}", response_model=UserOut)
+async def get_user(request: Request, user_id: int):
+    # The extra "password" field is dropped by response_model.
+    return {"id": user_id, "name": "Ada", "password": "secret"}
 ```
-
-## Errors
-
-Raise `HTTPException` anywhere to stop with a status code and message:
 
 ```python
-from veloce import HTTPException
+from pydantic import BaseModel
+
+from veloce import Request, TestClient, Veloce
+
+app = Veloce()
 
 
-@app.get("/users/{user_id}")
-async def get_user(user_id: int):
-    if user_id != 1:
-        raise HTTPException(404, f"User {user_id} not found")
-    return {"id": user_id}
+class UserOut(BaseModel):
+    id: int
+    name: str
+
+
+@app.get("/users/{user_id}", response_model=UserOut)
+async def get_user(request: Request, user_id: int):
+    return {"id": user_id, "name": "Ada", "password": "secret"}
+
+
+client = TestClient(app)
+
+resp = client.get("/users/1")
+assert resp.status_code == 200
+assert resp.json() == {"id": 1, "name": "Ada"}
 ```
 
-Register a custom handler to control the error payload:
+`response_model` also accepts `list[Model]` (each element is dumped) and the
+filter flags `response_model_exclude_unset`, `response_model_exclude_none`,
+`response_model_exclude_defaults`, `response_model_by_alias`,
+`response_model_include`, and `response_model_exclude`.
+
+!!! warning "`response_model` is never inferred from the return annotation"
+    Unlike FastAPI, Veloce does not read the handler's `-> UserOut` return
+    annotation to pick a response model. A return annotation is ignored for
+    output shaping; you must pass `response_model=UserOut` explicitly, or the
+    handler's value is serialised as-is with no field filtering.
+
+!!! warning "A `Union` response model neither filters nor documents"
+    Only a Pydantic model or `list[Model]` is reshaped at runtime. A
+    `response_model=A | B` (or `Union[A, B]`) falls through unfiltered — the
+    return value is serialised as-is — and the response schema is omitted from
+    OpenAPI rather than rendered as an `anyOf`. Declare a single concrete output
+    model per route.
+
+## Streaming responses
+
+[`StreamingResponse`](../reference.md#veloce.StreamingResponse) sends chunks as
+they are produced, without buffering the whole body. It accepts an async
+iterator **or** a plain sync generator. `str` chunks are encoded to UTF-8
+automatically.
+
+```python title="app.py"
+from veloce import Request, StreamingResponse, Veloce
+
+app = Veloce()
+
+
+@app.get("/stream")
+async def stream(request: Request):
+    def chunks():
+        for i in range(1000):
+            yield f"line {i}\n"
+
+    return StreamingResponse(chunks(), content_type="text/plain")
+```
+
+The default `content_type` is `application/octet-stream`; set it to match your
+payload.
+
+### Streaming JSON Lines (NDJSON)
+
+For newline-delimited JSON, encode each record on its own line and stream them
+with the `application/x-ndjson` content type so clients can parse the response
+record-by-record.
+
+```python title="app.py"
+import orjson
+
+from veloce import Request, StreamingResponse, Veloce
+
+app = Veloce()
+
+
+@app.get("/events.ndjson")
+async def events(request: Request):
+    async def rows():
+        for i in range(3):
+            yield orjson.dumps({"seq": i}) + b"\n"
+
+    return StreamingResponse(rows(), content_type="application/x-ndjson")
+```
 
 ```python
-from veloce import JSONResponse
+import orjson
+
+from veloce import Request, StreamingResponse, TestClient, Veloce
+
+app = Veloce()
 
 
-@app.exception_handler(HTTPException)
-async def on_http_error(request: Request, exc: HTTPException):
-    return JSONResponse(
-        {"error": exc.detail, "path": request.path},
-        status_code=exc.status_code,
-    )
+@app.get("/events.ndjson")
+async def events(request: Request):
+    async def rows():
+        for i in range(3):
+            yield orjson.dumps({"seq": i}) + b"\n"
+
+    return StreamingResponse(rows(), content_type="application/x-ndjson")
+
+
+client = TestClient(app)
+
+resp = client.get("/events.ndjson")
+assert resp.status_code == 200
+lines = [orjson.loads(line) for line in resp.body.splitlines()]
+assert lines == [{"seq": 0}, {"seq": 1}, {"seq": 2}]
 ```
 
-## See also
+!!! note
+    A streaming response has no `Content-Length`; it is sent with chunked
+    transfer encoding. For Server-Sent Events use
+    [`EventSourceResponse`](../reference.md#veloce.EventSourceResponse) instead —
+    see [Server-sent events](sse.md).
 
-- [Routing](routing.md)
-- [Dependency injection](dependency-injection.md)
-- [Testing](testing.md)
+## A complete program
+
+This runs on the no-uvicorn path with `app.run()`.
+
+```python title="app.py"
+from veloce import Request, Veloce, status
+
+app = Veloce()
+
+
+@app.post("/items", status_code=status.HTTP_201_CREATED)
+async def create_item(request: Request):
+    payload = await request.json()
+    return {"stored": payload}, status.HTTP_201_CREATED
+
+
+if __name__ == "__main__":
+    app.run(port=8000)
+```
+
+## Next steps
+
+- [Parameters](parameters.md) — validate query, path, header, and form inputs.
+- [File uploads](file-uploads.md) — `UploadFile`, multipart forms, and size limits.
+- [Server-sent events](sse.md) — push streams with `EventSourceResponse`.
+- [Caching](caching.md) — ETags, conditional requests, and `Cache-Control`.
+- Full signatures are in the [API reference](../reference.md).

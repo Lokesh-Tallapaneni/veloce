@@ -57,6 +57,21 @@ annotation tells Veloce to coerce the URL segment to an integer **before** your
 handler runs. Request `/tasks/abc` and you get a `422` response — `"abc"` is
 not an `int` — without writing any validation yourself.
 
+!!! warning "404 vs 422 — annotation coerces, converter matches"
+    Where the type lives changes the failure code. A handler **annotation**
+    (`task_id: int`) coerces *after* the route matches, so a bad value is a
+    `422`. An inline **converter** (`/tasks/{task_id:int}`) is part of matching,
+    so a non-integer segment never selects the route — `/tasks/abc` then becomes
+    a `404`. FastAPI returns `422` in both cases; Veloce distinguishes them.
+    Use the annotation form when you want a validation error, the converter form
+    when a wrong type should not match the route at all.
+
+!!! note "Static routes always win"
+    If you later add `/tasks/recent` alongside `/tasks/{task_id}`, the literal
+    `recent` route always matches first — Veloce's radix tree tries exact
+    segments before parameters, so registration order does not matter. You never
+    have to register specific routes before general ones.
+
 ## Query parameters
 
 `limit` and `q` are **not** in the path, so Veloce reads them from the query

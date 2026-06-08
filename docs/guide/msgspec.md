@@ -1,3 +1,8 @@
+---
+description: Validate request bodies and serialise responses with msgspec.Struct instead of Pydantic on hot paths, chosen per endpoint by type.
+tags: [msgspec, performance, validation, serialisation]
+---
+
 # msgspec (fast backend)
 
 Veloce validates request bodies and serializes responses with Pydantic by
@@ -94,3 +99,9 @@ Reach for `msgspec.Struct` on validation- or serialization-heavy endpoints where
 the body/response is the bottleneck. Keep Pydantic where you rely on its
 ecosystem — validators, computed fields, settings, `model_config`, or
 FastAPI-compatible model reuse. Both can be used in the same application.
+
+## Next steps
+
+- [Request models](request-models.md) — declare and validate bodies with Pydantic, the default backend.
+- [Requests and responses](requests-responses.md) — response shaping, tuple shorthands, and custom response classes.
+- Full signatures are in the [API reference](../reference.md).

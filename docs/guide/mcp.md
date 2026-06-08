@@ -1,3 +1,8 @@
+---
+description: Expose Veloce handlers as Model Context Protocol tools with mcp_tool, expose_as_mcp_tool, and mount_mcp so an AI agent can call them over JSON-RPC 2.0.
+tags: [mcp, tools, agents, jsonrpc]
+---
+
 # MCP (Model Context Protocol)
 
 Veloce can expose your handlers as [Model Context Protocol](https://modelcontextprotocol.io)
@@ -214,10 +219,17 @@ input closes - exactly as when the app is served by an ASGI server.
 ## Instrumentation
 
 Each tool call fires the same `app.add_instrumentation` hooks an HTTP request
-does. The `RequestMetrics` record carries `method="tools/call"`, `route` and
-`path` set to the tool name, the call duration, and the call's real
-`status_code` - the shaped response's status for a route-backed or
-short-circuited call, `500` for an unhandled handler error, `200` only on
-genuine success - so a metrics exporter can record tool usage and error rates
-with no extra wiring.
-```
+does, so a metrics exporter records tool usage and error rates with no extra
+wiring. The `RequestMetrics` record carries:
+
+- `method="tools/call"`, with `route` and `path` set to the tool name.
+- the call duration.
+- the call's real `status_code` — the shaped response's status for a
+  route-backed or short-circuited call, `500` for an unhandled handler error,
+  `200` only on genuine success.
+
+## Next steps
+
+- [Dependency injection](dependency-injection.md) — `Depends()` and `Security()`, which run in tools exactly as in routes.
+- [Request models](request-models.md) — body models that become a tool's input schema.
+- Full signatures are in the [API reference](../reference.md).

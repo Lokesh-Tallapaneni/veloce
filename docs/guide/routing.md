@@ -84,6 +84,32 @@ async def report(day):
 
 Use `register_converter` to add your own.
 
+### Static segments win over parameters
+
+When a static path and a parameterised path overlap at the same position, the
+static one always matches first. The radix tree tries an exact-segment lookup
+before scanning parameter children, so registration order is irrelevant:
+
+```python
+@app.get("/users/me")
+async def me(request: Request):
+    return {"user": "current"}
+
+
+@app.get("/users/{user_id}")
+async def get_user(user_id: int):
+    return {"id": user_id}
+```
+
+`/users/me` resolves to `me()` even though `/users/{user_id}` could also match,
+and even if `get_user` were registered first.
+
+!!! note "No ordering footgun"
+    Unlike a regex router where the first registered pattern wins, Veloce's
+    match precedence is structural: an exact segment is tried before any
+    parameter child, and the legacy `*` wildcard is tried last. You do not have
+    to register specific routes before general ones.
+
 ### Constrained converters
 
 The `int`, `float`, and `str` converters accept arguments, so a bound takes
