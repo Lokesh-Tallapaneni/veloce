@@ -80,6 +80,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hash lookup instead of a radix-tree walk, falling through to the tree for
   parameterized, wildcard, and slash-redirect routes (literal `match()` ~1.7x
   faster, ~3x on deep literal paths).
+- Requests to feature-free apps take a straight-line dispatch fast path: when no
+  middleware, request/response hooks, mounts, or url-value preprocessors are
+  registered and the matched route is an async trivial or request-only handler
+  with no response model, custom response class, non-default status, host or
+  subdomain constraint, defaults, or middleware exclusion, the middleware, hook,
+  route-resolution, and dependency-resolution orchestration is skipped while
+  coercion, `after_this_request` callbacks, background tasks, exception handling,
+  and teardown remain shared (~6-8% lower per-request dispatch time on those
+  routes, in-process A/B).
 
 ### Fixed
 

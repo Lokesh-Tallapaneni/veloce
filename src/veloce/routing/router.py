@@ -201,6 +201,7 @@ class RouteInfo:
         "route_dep_plans",
         "is_trivial_plan",
         "is_request_only_plan",
+        "is_fast_eligible",
         "subdomain",
         "host",
         "expose_as_mcp_tool",
@@ -305,6 +306,12 @@ class RouteInfo:
         # Set by `add_route` once the plans are built.
         self.is_trivial_plan = False
         self.is_request_only_plan = False
+        # True when this route can take the straight-line dispatch fast path:
+        # an async trivial/request-only plan with no response_model, custom
+        # response_class, non-default status, subdomain/host constraint,
+        # defaults, or middleware exclusion. Set by `_attach_plans`; left False
+        # for synthetic routes that bypass it.
+        self.is_fast_eligible = False
         # MCP exposure (contrib.mcp). `expose_as_mcp_tool` opts this route
         # into the MCP tool registry; `mcp_description` is the LLM-facing
         # description (separate from the docstring), required by the MCP
@@ -851,6 +858,22 @@ class Router:
         # kwargs = {"request": request} directly.
         route_info.is_request_only_plan = (
             len(slots) == 1 and slots[0].kind == K_REQUEST and not has_deps
+        )
+        # Straight-line dispatch eligibility: an async handler with a trivial or
+        # request-only plan and none of the per-route features the fast path
+        # cannot honour. WebSocket routes never enter HTTP dispatch, so they are
+        # excluded outright.
+        route_info.is_fast_eligible = (
+            not is_ws
+            and route_info.handler_plan.is_coro
+            and (route_info.is_trivial_plan or route_info.is_request_only_plan)
+            and route_info.response_model is None
+            and route_info.response_class is None
+            and route_info.status_code == HTTP_200_OK
+            and route_info.subdomain is None
+            and route_info.host is None
+            and not route_info.defaults
+            and route_info.excluded_middleware is None
         )
 
     def add_route(
