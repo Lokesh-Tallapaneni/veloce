@@ -3477,9 +3477,10 @@ def test_scoped_tool_rejected_without_principal():
         return "wiped"
 
     # No principal set (unauthenticated): a scoped tool cannot be satisfied.
-    result = _call(app, "wipe", {})["result"]
-    assert result["isError"] is True
-    assert "insufficient_scope" in result["content"][0]["text"]
+    out = _call(app, "wipe", {})
+    assert out["error"]["code"] == -32003
+    assert "insufficient_scope" in out["error"]["message"]
+    assert out["error"]["data"]["requiredScopes"] == ["admin"]
 
 
 def test_scoped_tool_rejected_with_insufficient_scope():
@@ -3490,9 +3491,9 @@ def test_scoped_tool_rejected_with_insufficient_scope():
         return "wiped"
 
     set_principal(Principal(subject="u1", scopes=frozenset({"read"})))
-    result = _call(app, "wipe", {})["result"]
-    assert result["isError"] is True
-    assert "insufficient_scope" in result["content"][0]["text"]
+    out = _call(app, "wipe", {})
+    assert out["error"]["code"] == -32003
+    assert "insufficient_scope" in out["error"]["message"]
 
 
 def test_scoped_tool_allowed_with_scope():
@@ -3580,6 +3581,14 @@ def _verify(token: str):
     return None
 
 
+def _auth(**kw) -> MCPAuth:
+    """MCPAuth with the spec-required metadata filled in (verify defaults to _verify)."""
+    kw.setdefault("verify", _verify)
+    kw.setdefault("resource_server_url", "https://api.example.com/mcp")
+    kw.setdefault("authorization_servers", ["https://auth.example.com"])
+    return MCPAuth(**kw)
+
+
 def _mcp_call_body(name: str, arguments: dict | None = None) -> dict:
     return {
         "jsonrpc": "2.0",
@@ -3596,7 +3605,7 @@ def test_http_auth_missing_token_is_401():
     async def add(a: int, b: int) -> int:
         return a + b
 
-    app.mount_mcp(transport="http", auth=MCPAuth(verify=_verify))
+    app.mount_mcp(transport="http", auth=_auth())
     resp = app.test_client().post("/mcp", json=_mcp_call_body("add", {"a": 1, "b": 2}))
     assert resp.status_code == 401
     assert "Bearer" in resp.headers.get("www-authenticate", "")
@@ -3610,7 +3619,7 @@ def test_http_auth_invalid_token_is_401():
     async def add(a: int, b: int) -> int:
         return a + b
 
-    app.mount_mcp(transport="http", auth=MCPAuth(verify=_verify))
+    app.mount_mcp(transport="http", auth=_auth())
     resp = app.test_client().post(
         "/mcp",
         json=_mcp_call_body("add", {"a": 1, "b": 2}),
@@ -3626,7 +3635,7 @@ def test_http_auth_valid_token_dispatches():
     async def add(a: int, b: int) -> int:
         return a + b
 
-    app.mount_mcp(transport="http", auth=MCPAuth(verify=_verify))
+    app.mount_mcp(transport="http", auth=_auth())
     resp = app.test_client().post(
         "/mcp",
         json=_mcp_call_body("add", {"a": 2, "b": 3}),
@@ -3644,7 +3653,7 @@ def test_http_auth_endpoint_scope_is_403():
         return a + b
 
     # Endpoint requires mcp:tools; the 'noscope' principal lacks it.
-    app.mount_mcp(transport="http", auth=MCPAuth(verify=_verify, required_scopes=["mcp:tools"]))
+    app.mount_mcp(transport="http", auth=_auth(required_scopes=["mcp:tools"]))
     resp = app.test_client().post(
         "/mcp",
         json=_mcp_call_body("add", {"a": 1, "b": 2}),
@@ -3662,7 +3671,7 @@ def test_http_auth_principal_visible_to_tool():
         p = current_principal()
         return p.subject if p else "anon"
 
-    app.mount_mcp(transport="http", auth=MCPAuth(verify=_verify))
+    app.mount_mcp(transport="http", auth=_auth())
     resp = app.test_client().post(
         "/mcp", json=_mcp_call_body("whoami"), headers={"authorization": "Bearer good"}
     )
@@ -3676,14 +3685,15 @@ def test_http_auth_per_tool_scope_uses_token_scopes():
     async def wipe() -> str:
         return "wiped"
 
-    # Token grants mcp:tools but not admin, so the per-tool scope check rejects.
-    app.mount_mcp(transport="http", auth=MCPAuth(verify=_verify))
+    # Token grants mcp:tools but not admin, so the per-tool scope check rejects
+    # with an HTTP 403 + insufficient_scope challenge.
+    app.mount_mcp(transport="http", auth=_auth())
     resp = app.test_client().post(
         "/mcp", json=_mcp_call_body("wipe"), headers={"authorization": "Bearer good"}
     )
-    result = orjson.loads(resp.body)["result"]
-    assert result["isError"] is True
-    assert "insufficient_scope" in result["content"][0]["text"]
+    assert resp.status_code == 403
+    assert "insufficient_scope" in resp.headers.get("www-authenticate", "")
+    assert orjson.loads(resp.body)["error"]["code"] == -32003
 
 
 def test_http_protected_resource_metadata_served():
@@ -3720,8 +3730,143 @@ def test_http_auth_async_verifier():
         p = current_principal()
         return p.subject if p else "anon"
 
-    app.mount_mcp(transport="http", auth=MCPAuth(verify=averify))
+    app.mount_mcp(transport="http", auth=_auth(verify=averify))
     resp = app.test_client().post(
         "/mcp", json=_mcp_call_body("whoami"), headers={"authorization": "Bearer ok"}
     )
     assert orjson.loads(resp.body)["result"]["content"][0]["text"] == "async-agent"
+
+
+# -- Hardening: single is_mcp check, Origin, metadata, provenance -----
+
+
+def test_exclude_middleware_and_is_mcp_cover_transport_and_replay():
+    app = Veloce(openapi_url=None)
+
+    from veloce import Middleware
+
+    class Auth(Middleware):
+        async def process_request(self, request):
+            if request.is_mcp:  # replayed tool call → transport already authed
+                return None
+            return JSONResponse({"detail": "no"}, status_code=401)
+
+    app.add_middleware(Auth)
+
+    @app.get("/order/{n}", expose_as_mcp_tool=True, mcp_description="Get order")
+    async def order(n: int) -> dict:
+        return {"n": n}
+
+    # exclude_middleware drops Auth from the /mcp transport route (it has its own
+    # auth); `if request.is_mcp` drops it from the replayed tool call. No paths.
+    app.mount_mcp(transport="http", auth=_auth(), exclude_middleware=["Auth"])
+    resp = app.test_client().post(
+        "/mcp", json=_mcp_call_body("order", {"n": 7}), headers={"authorization": "Bearer good"}
+    )
+    assert resp.status_code == 200
+    assert orjson.loads(orjson.loads(resp.body)["result"]["content"][0]["text"]) == {"n": 7}
+
+
+def test_origin_validation():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", allowed_origins=["https://app.example.com"])
+    client = app.test_client()
+    body = _mcp_call_body("add", {"a": 1, "b": 1})
+
+    # A browser Origin outside the allowlist is rejected (DNS-rebinding defense).
+    bad = client.post("/mcp", json=body, headers={"origin": "https://evil.example"})
+    assert bad.status_code == 403
+    # An allowed Origin passes.
+    ok = client.post("/mcp", json=body, headers={"origin": "https://app.example.com"})
+    assert ok.status_code == 200
+    # No Origin header (a non-browser client) passes.
+    none = client.post("/mcp", json=body)
+    assert none.status_code == 200
+
+
+def test_mcpauth_requires_metadata():
+    with pytest.raises(ValueError, match="resource_server_url"):
+        MCPAuth(verify=_verify, authorization_servers=["https://auth.example.com"])
+    with pytest.raises(ValueError, match="authorization_servers"):
+        MCPAuth(verify=_verify, resource_server_url="https://api.example.com/mcp")
+
+
+def test_principal_token_not_in_repr():
+    p = Principal(subject="u", token="super-secret-token-value")
+    assert "super-secret-token-value" not in repr(p)
+
+
+def test_tool_argument_cannot_spoof_header_or_cookie():
+    app = Veloce(openapi_url=None)
+
+    from veloce import Request
+
+    @app.get(
+        "/probe", expose_as_mcp_resource=False, mcp_description="Probe", expose_as_mcp_tool=True
+    )
+    async def probe(request: Request) -> dict:
+        # A Security scheme reading a header / cookie (HTTPBearer, APIKeyHeader,
+        # APIKeyCookie) must NOT see an agent-supplied value: tool arguments are
+        # never seeded into the synthetic request's headers or cookies.
+        return {
+            "auth": request.headers.get("authorization"),
+            "api_key": request.headers.get("x-api-key"),
+            "cookie": request.cookies.get("session"),
+        }
+
+    out = _call(
+        app,
+        "probe",
+        {"authorization": "Bearer spoofed", "x_api_key": "forged", "session": "hijacked"},
+    )
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"auth": None, "api_key": None, "cookie": None}
+
+
+def test_origin_empty_allowlist_rejects_all_browsers():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    # An explicit empty allowlist denies every browser Origin (it does not
+    # silently disable the check).
+    app.mount_mcp(transport="http", allowed_origins=[])
+    body = _mcp_call_body("add", {"a": 1, "b": 1})
+    blocked = app.test_client().post("/mcp", json=body, headers={"origin": "https://any.example"})
+    assert blocked.status_code == 403
+    # A non-browser client (no Origin) is still allowed.
+    assert app.test_client().post("/mcp", json=body).status_code == 200
+
+
+def test_http_log_level_does_not_bleed_across_requests():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Log then return")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.log("info", "hello")
+        return "ok"
+
+    app.mount_mcp(transport="http")
+    client = app.test_client()
+    # One HTTP client raises the log floor to `error`...
+    client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "logging/setLevel",
+            "params": {"level": "error"},
+        },
+    )
+    # ...which must NOT carry into a separate request (the level is per-request,
+    # not shared on the one MCPServer the HTTP transport reuses).
+    resp = client.post("/mcp", json=_mcp_call_body("work"), headers={"accept": "text/event-stream"})
+    messages = [e for e in _parse_sse(resp.body) if e.get("method") == "notifications/message"]
+    assert len(messages) == 1  # the info log is emitted; the other request's setLevel did not bleed

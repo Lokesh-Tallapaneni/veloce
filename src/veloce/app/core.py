@@ -1714,6 +1714,8 @@ class Veloce(
         path: str = "/mcp",
         auth: Any = None,
         principal: Any = None,
+        allowed_origins: Sequence[str] | None = None,
+        exclude_middleware: Sequence[str] | None = None,
     ) -> Any:
         """Build the MCP server and serve the registered tools.
 
@@ -1737,8 +1739,10 @@ class Veloce(
         with any ASGI server (or `app.run()`) as usual. Pass `auth` (a
         `veloce.contrib.mcp.MCPAuth`) to make the endpoint an OAuth 2.1 resource
         server - validating the bearer token on every request and serving the
-        RFC 9728 metadata. Call this after the tool / resource / prompt routes are
-        registered.
+        RFC 9728 metadata. `allowed_origins` enables `Origin` validation
+        (DNS-rebinding defense); `exclude_middleware` names app middleware the
+        transport routes opt out of (an app-wide auth middleware `auth` replaces).
+        Call this after the tool / resource / prompt routes are registered.
         """
         from veloce.contrib.mcp.server import MCPServer
 
@@ -1759,7 +1763,16 @@ class Veloce(
         if transport == "http":
             from veloce.contrib.mcp.transports.http import register_http_transport
 
-            register_http_transport(self, MCPServer(self), path=path, auth=auth)
+            register_http_transport(
+                self,
+                MCPServer(self),
+                path=path,
+                auth=auth,
+                allowed_origins=(
+                    frozenset(allowed_origins) if allowed_origins is not None else None
+                ),
+                exclude_middleware=exclude_middleware,
+            )
             return None
 
         raise ValueError(

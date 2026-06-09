@@ -64,6 +64,21 @@ class MCPAuth:
         self.required_scopes = frozenset(self.required_scopes)
         self.authorization_servers = tuple(self.authorization_servers)
         self.scopes_supported = tuple(self.scopes_supported)
+        # The MCP authorization spec requires the protected-resource metadata to
+        # carry the canonical resource URI (so a client can audience-bind its token
+        # per RFC 8707) and at least one authorization server (so it can discover
+        # where to obtain a token). Enforce both, rather than serving an incomplete
+        # metadata document a compliant client cannot act on.
+        if not self.resource_server_url:
+            raise ValueError(
+                "MCPAuth requires resource_server_url (the canonical MCP server "
+                "URI), so the token audience can be bound to this server."
+            )
+        if not self.authorization_servers:
+            raise ValueError(
+                "MCPAuth requires at least one authorization_servers entry, so a "
+                "client can discover where to obtain a token (RFC 9728)."
+            )
 
     def metadata(self) -> dict[str, object]:
         """Build the RFC 9728 protected-resource metadata document."""

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP HTTP transport hardening: `mount_mcp(transport="http", allowed_origins=[...])`
+  validates the `Origin` header (DNS-rebinding defense), and
+  `exclude_middleware=[...]` drops named app middleware from the `/mcp` + metadata
+  routes (so an app-wide auth middleware the transport's own `auth` replaces does
+  not run on it).
 - MCP authorization: `mount_mcp(transport="http", auth=MCPAuth(...))` makes the
   endpoint an OAuth 2.1 resource server — a user-supplied `verify` callable
   validates the bearer token on every request, the RFC 9728 protected-resource
@@ -50,11 +55,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emits the matching typed MCP content block (base64), and a binary resource read
   returns its bytes as a `blob`.
 
+### Fixed
+
+- MCP: the `logging/setLevel` minimum is now scoped per request (a ContextVar like
+  the progress/notification channel) rather than on the shared `MCPServer`, so one
+  HTTP client's level change no longer raises the notification floor for others.
+- MCP: a resource read short-circuited by an auth guard (`401`/`403`) maps to a
+  forbidden error rather than an internal error.
+
 ### Security
 
 - MCP: a pure `@app.mcp_tool` handler error (and the defensive internal-error path)
   surfaces a generic message unless `app.debug` is set, so an exception carrying a
   secret is not returned verbatim to the agent.
+- MCP: a tool argument can no longer masquerade as an `Authorization`/`Cookie`
+  header on the replayed request, so a `Security` scheme cannot read agent-supplied
+  input as a credential; `Principal.token` is excluded from `repr()`; `MCPAuth`
+  requires `resource_server_url` + `authorization_servers`; and an insufficient
+  scope is reported uniformly across tools/resources/prompts (HTTP 403 with a
+  `WWW-Authenticate` challenge over the JSON transport).
 
 ## [0.4.0] - 2026-06-08
 

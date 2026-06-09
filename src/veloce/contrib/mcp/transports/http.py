@@ -17,17 +17,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
 from veloce.contrib.mcp.server import (
+    _JSONRPC_FORBIDDEN,
     _JSONRPC_INTERNAL_ERROR,
     MCPServer,
     _error,
     _notifier_var,
 )
 from veloce.http.response import JSONResponse, Response
-from veloce.principal import Principal, set_principal
+from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -44,19 +46,33 @@ _STREAM_END = object()
 
 
 def register_http_transport(
-    app: Any, server: MCPServer, path: str = "/mcp", auth: MCPAuth | None = None
+    app: Any,
+    server: MCPServer,
+    path: str = "/mcp",
+    auth: MCPAuth | None = None,
+    allowed_origins: frozenset[str] | None = None,
+    exclude_middleware: Sequence[str] | None = None,
 ) -> None:
     """Mount the Streamable HTTP transport for `server` at `path` on `app`.
 
     When `auth` is given the endpoint becomes an OAuth 2.1 resource server: each
     request is authenticated before dispatch, and the RFC 9728 protected-resource
     metadata is served so a client can discover the authorization server.
+    `allowed_origins` enables `Origin` validation (DNS-rebinding defense).
+    `exclude_middleware` names app middleware the transport routes opt out of -
+    typically an app-wide auth middleware the transport's own `auth` replaces.
     """
 
     async def mcp_endpoint(request: Request) -> Response:
-        return await _handle_http(server, request, auth)
+        return await _handle_http(server, request, auth, allowed_origins)
 
-    app.add_route(path, mcp_endpoint, methods=["POST"], include_in_schema=False)
+    app.add_route(
+        path,
+        mcp_endpoint,
+        methods=["POST"],
+        include_in_schema=False,
+        exclude_middleware=exclude_middleware,
+    )
 
     if auth is not None:
 
@@ -68,11 +84,25 @@ def register_http_transport(
             mcp_metadata,
             methods=["GET"],
             include_in_schema=False,
+            exclude_middleware=exclude_middleware,
         )
 
 
-async def _handle_http(server: MCPServer, request: Request, auth: MCPAuth | None) -> Response:
+async def _handle_http(
+    server: MCPServer,
+    request: Request,
+    auth: MCPAuth | None,
+    allowed_origins: frozenset[str] | None = None,
+) -> Response:
     """Authenticate, then dispatch one JSON-RPC message from an HTTP POST body."""
+    # Origin validation guards against DNS-rebinding attacks from a browser (MCP
+    # 2025-11-25 transport requirement). A request with no `Origin` (a non-browser
+    # client) is allowed; a browser-set `Origin` outside the allowlist is rejected.
+    if allowed_origins is not None:
+        origin = request.headers.get("origin")
+        if origin is not None and origin not in allowed_origins:
+            return JSONResponse({"error": "origin not allowed"}, status_code=403)
+
     if auth is not None:
         principal, challenge = await _authenticate(auth, request)
         if challenge is not None:
@@ -92,13 +122,30 @@ async def _handle_http(server: MCPServer, request: Request, auth: MCPAuth | None
     is_request = "id" in message and isinstance(message.get("method"), str)
     accepts_sse = "text/event-stream" in request.headers.get("accept", "")
     if is_request and accepts_sse:
-        return _stream_response(server, message)
+        return _stream_response(server, message, current_principal())
 
     response = await server.handle_message(message)
     if response is None:
         # A notification or a response carries no reply (JSON-RPC 2.0 Sec. 4.1).
         return Response(status_code=202)
+    # An authorization failure (insufficient scope) is surfaced as an HTTP 403 with
+    # an RFC 6750 scope challenge, not a 200 carrying a JSON-RPC error, so a client
+    # can drive a step-up authorization flow. This applies to the JSON path only;
+    # an SSE request (handled above) has already committed a 200 stream, so its
+    # forbidden error is delivered in-band as the JSON-RPC error event.
+    error = response.get("error")
+    if isinstance(error, dict) and error.get("code") == _JSONRPC_FORBIDDEN:
+        scopes = (error.get("data") or {}).get("requiredScopes") or []
+        return _forbidden(response, scopes)
     return JSONResponse(response)
+
+
+def _forbidden(response: dict[str, Any], scopes: list[str]) -> Response:
+    """Build an HTTP 403 with a `WWW-Authenticate` insufficient-scope challenge."""
+    parts = ['Bearer error="insufficient_scope"']
+    if scopes:
+        parts.append(f'scope="{" ".join(scopes)}"')
+    return JSONResponse(response, status_code=403, headers={"WWW-Authenticate": ", ".join(parts)})
 
 
 async def _authenticate(
@@ -142,7 +189,9 @@ def _challenge(auth: MCPAuth, status_code: int, error: str) -> Response:
     )
 
 
-def _stream_response(server: MCPServer, message: dict[str, Any]) -> EventSourceResponse:
+def _stream_response(
+    server: MCPServer, message: dict[str, Any], principal: Principal | None
+) -> EventSourceResponse:
     """Answer one request as an SSE stream: its notifications then its response.
 
     The request is dispatched in a background task whose context carries an
@@ -158,6 +207,10 @@ def _stream_response(server: MCPServer, message: dict[str, Any]) -> EventSourceR
 
     async def runner() -> None:
         token = _notifier_var.set(sink)
+        # The runner task inherits the request's context (and its principal), but
+        # re-bind explicitly so identity is correct regardless of how the task was
+        # scheduled.
+        set_principal(principal)
         try:
             response = await server.handle_message(message)
             if response is not None:

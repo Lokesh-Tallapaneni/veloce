@@ -84,6 +84,12 @@ _notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = 
     "_mcp_notifier", default=None
 )
 
+# The current call's `logging/setLevel` minimum, scoped per request like the
+# notifier so one HTTP client's level change cannot raise the floor for another.
+# `None` until set (emit all). The serial stdio loop sets it once in its serve
+# task, where it persists for the connection.
+_log_level_var: ContextVar[str | None] = ContextVar("_mcp_log_level", default=None)
+
 
 class MCPServer:
     """Serve a Veloce app's MCP tools over JSON-RPC 2.0.
@@ -101,7 +107,6 @@ class MCPServer:
         "server_name",
         "server_version",
         "_call_timeout",
-        "_log_level",
     )
 
     def __init__(
@@ -123,8 +128,6 @@ class MCPServer:
         # is cancelled and surfaced as an in-band tool error. `None` disables it.
         config = getattr(app, "config", None)
         self._call_timeout = config.get("MCP_CALL_TIMEOUT") if config is not None else None
-        # The client's `logging/setLevel` minimum; `None` until set (emit all).
-        self._log_level: str | None = None
 
     @staticmethod
     def set_notifier(notifier: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
@@ -188,7 +191,9 @@ class MCPServer:
         except _ResourceError as exc:
             return _error(msg_id, exc.code, str(exc))
         except _AuthorizationError as exc:
-            return _error(msg_id, _JSONRPC_FORBIDDEN, str(exc))
+            return _error(
+                msg_id, _JSONRPC_FORBIDDEN, str(exc), {"requiredScopes": sorted(exc.scopes)}
+            )
         except asyncio.TimeoutError:
             # A resources/read or prompts/get that overran the per-call budget
             # (a tools/call surfaces its own timeout in-band before here).
@@ -270,12 +275,11 @@ class MCPServer:
             raise _ToolInputError("tools/call 'arguments' must be an object")
 
         started = time.perf_counter()
+        # An authorization failure is a protocol-level forbidden error (uniform
+        # across tools, resources, and prompts), not a normal tool result.
         if _principal_lacks_scopes(tool.required_scopes):
             await self._instrument(tool, started, status.HTTP_403_FORBIDDEN)
-            return {
-                "content": [{"type": "text", "text": _insufficient_scope(tool.required_scopes)}],
-                "isError": True,
-            }
+            raise _AuthorizationError(tool.required_scopes)
 
         progress_token = _progress_token(params)
         try:
@@ -615,7 +619,7 @@ class MCPServer:
             raise _ResourceError(_JSONRPC_RESOURCE_NOT_FOUND, f"Unknown resource: {uri}")
         resource, arguments = matched
         if _principal_lacks_scopes(resource.tool.required_scopes):
-            raise _AuthorizationError(_insufficient_scope(resource.tool.required_scopes))
+            raise _AuthorizationError(resource.tool.required_scopes)
 
         try:
             result = await self._run_invoke(resource.tool, arguments, _progress_token(params))
@@ -635,11 +639,15 @@ class MCPServer:
         except (_StreamTooLarge, _StreamTimeout) as exc:
             raise _ResourceError(_JSONRPC_INTERNAL_ERROR, str(exc)) from exc
         if response.status_code >= 400:
-            code = (
-                _JSONRPC_RESOURCE_NOT_FOUND
-                if response.status_code == status.HTTP_404_NOT_FOUND
-                else _JSONRPC_INTERNAL_ERROR
-            )
+            if response.status_code == status.HTTP_404_NOT_FOUND:
+                code = _JSONRPC_RESOURCE_NOT_FOUND
+            elif response.status_code in (
+                status.HTTP_401_UNAUTHORIZED,
+                status.HTTP_403_FORBIDDEN,
+            ):
+                code = _JSONRPC_FORBIDDEN
+            else:
+                code = _JSONRPC_INTERNAL_ERROR
             raise _ResourceError(code, _stringify(_response_body_value(response)))
         return {"contents": [_resource_contents(uri, response)]}
 
@@ -664,7 +672,7 @@ class MCPServer:
         if prompt is None:
             raise _ToolInputError(f"Unknown prompt: {name}")
         if _principal_lacks_scopes(prompt.tool.required_scopes):
-            raise _AuthorizationError(_insufficient_scope(prompt.tool.required_scopes))
+            raise _AuthorizationError(prompt.tool.required_scopes)
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             raise _ToolInputError("prompts/get 'arguments' must be an object")
@@ -682,7 +690,7 @@ class MCPServer:
         level = params.get("level")
         if not isinstance(level, str) or level not in _LOG_RANKS:
             raise _ToolInputError("logging/setLevel requires a valid RFC 5424 'level'")
-        self._log_level = level
+        _log_level_var.set(level)
         return {}
 
     def _error_text(self, exc: Exception, generic: str) -> str:
@@ -742,7 +750,7 @@ class MCPServer:
             arguments,
             notifier=_notifier_var.get(),
             progress_token=progress_token,
-            log_level=self._log_level,
+            log_level=_log_level_var.get(),
         )
         resolver = DependencyResolver()
         resolver._overrides = self.app._dependency_overrides
@@ -1220,7 +1228,15 @@ class _ResourceError(Exception):
 
 
 class _AuthorizationError(Exception):
-    """The principal lacks a required scope - reported as a forbidden error."""
+    """The principal lacks a required scope - reported as a forbidden error.
+
+    Carries the required scopes so the HTTP transport can surface them in an
+    RFC 6750 `WWW-Authenticate` insufficient-scope challenge.
+    """
+
+    def __init__(self, scopes: frozenset[str]) -> None:
+        super().__init__(_insufficient_scope(scopes))
+        self.scopes = scopes
 
 
 def _principal_lacks_scopes(required: frozenset[str]) -> bool:
@@ -1293,8 +1309,11 @@ def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, 
     return params
 
 
-def _error(msg_id: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
+def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": msg_id, "error": error}
 
 
 def _progress_token(params: dict[str, Any]) -> str | int | None:

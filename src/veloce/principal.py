@@ -40,8 +40,9 @@ class Principal:
     # The full set of token / identity claims, for application-specific use.
     claims: dict[str, Any] = field(default_factory=dict)
     # The raw credential the principal was established from, if the application
-    # needs it (e.g. to call an upstream API as the user). Never logged.
-    token: str | None = None
+    # needs it (e.g. to call an upstream API as the user). `repr=False` keeps the
+    # secret out of `repr()` / log lines that render the principal.
+    token: str | None = field(default=None, repr=False)
 
     def has_scope(self, scope: str) -> bool:
         """Return whether the principal was granted `scope`."""

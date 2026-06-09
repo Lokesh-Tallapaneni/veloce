@@ -849,8 +849,9 @@ class Request:
         route through `Depends` / middleware for an agent call, rather than a real
         HTTP request. Authentication middleware that checks a browser credential
         (a session cookie, an `Authorization` header) should return early on these
-        - the MCP transport authenticates the agent separately - while business
-        middleware can run unchanged.
+        - the MCP transport authenticates the agent separately. The transport
+        request itself (`POST /mcp`) opts such middleware out via
+        `mount_mcp(..., exclude_middleware=[...])`.
         """
         return bool(self._state.get("_mcp")) if self._state else False
 

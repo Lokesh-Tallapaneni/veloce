@@ -488,19 +488,49 @@ def get_current_user():
 
 An exposed route's `Depends`, `Security`, and middleware **run** on the agent call
 (the lifecycle is replayed), but the synthetic MCP request carries no browser
-credential — so an auth middleware that reads a session cookie or `Authorization`
-header should defer to the transport on MCP calls via `request.is_mcp`:
+credential. So an app-wide auth middleware needs to step aside in two places, each
+with a first-class mechanism (no path matching):
 
 ```python
 class AuthMiddleware(Middleware):
     async def process_request(self, request):
-        if request.is_mcp:           # the MCP transport already authenticated
+        if request.is_mcp:           # a replayed tool call — transport already authed
             return None
         ...                          # your normal HTTP session/cookie check
+
+app.add_middleware(AuthMiddleware)
+
+# Drop the same middleware from the /mcp transport route (it has its own MCPAuth):
+app.mount_mcp(transport="http", auth=MCPAuth(...), exclude_middleware=["AuthMiddleware"])
 ```
 
-Business middleware and dependencies (a DB session, request-id injection) need no
-change — they run identically on both doors.
+`exclude_middleware` covers the `POST /mcp` request; `request.is_mcp` covers the
+replayed tool calls. Business middleware and dependencies (a DB session, request-id
+injection) need no change — they run identically on both doors. (`exclude_middleware`
+matches `Middleware`-class middleware by name; a dispatch-style `@app.middleware("http")`
+wrapper should check `request.is_mcp` itself.)
+
+!!! warning "Tool arguments are not credentials"
+    Veloce does **not** seed an agent's tool arguments into the synthetic request's
+    headers or cookies, so a `Security` scheme that reads a header or cookie
+    (`HTTPBearer`, `APIKeyHeader`, `APIKeyCookie`) cannot be satisfied by agent
+    input — it simply sees nothing. Tool arguments *do* feed `query` and `form`
+    (those are legitimate `Query(...)` / `Form(...)` input channels), so an
+    `APIKeyQuery`-style scheme would read agent-controlled input. The rule stands:
+    **MCP authorization comes from the validated `Principal` and `mcp_scopes`,
+    never from a request header, cookie, or query value.**
+
+### Hardening the HTTP transport
+
+- **Origin validation** (DNS-rebinding defense, required by the MCP transport
+  spec): `app.mount_mcp(transport="http", allowed_origins=["https://app.example.com"])`
+  rejects a browser request whose `Origin` is outside the allowlist (a request with
+  no `Origin`, i.e. a non-browser client, is allowed).
+- **`MCPAuth` requires** `resource_server_url` and at least one
+  `authorization_servers` entry — the metadata a compliant client needs to
+  audience-bind and obtain a token.
+- An insufficient-scope failure surfaces as an HTTP **403** with a
+  `WWW-Authenticate` scope challenge over the JSON transport.
 
 ## Instrumentation
 
