@@ -266,10 +266,9 @@ registered.
 
 A tool handler (or one of its dependencies) may declare a parameter typed
 `MCPContext` to receive the per-call context; it is matched by that type
-annotation, not by the parameter's name. It
-carries the calling tool name and the raw argument mapping, plus inert
-placeholders for the cancellation / progress / logging channels that later
-protocol versions define.
+annotation, not by the parameter's name. It carries the calling tool name and the
+raw argument mapping, and channels for live progress and log notifications back to
+the client.
 
 ```python
 from veloce import MCPContext
@@ -282,6 +281,35 @@ async def whoami(ctx: MCPContext) -> str:
 
 The context parameter is not part of the tool's input schema - the agent never
 supplies it.
+
+### Progress and logging
+
+`await ctx.report_progress(done, total)` sends a `notifications/progress` message
+to the client mid-call, and `await ctx.log(level, message)` sends a
+`notifications/message`. Both work in tools, resource reads, and prompts:
+
+```python
+@app.mcp_tool(description="Process a batch of records")
+async def process(count: int, ctx: MCPContext) -> dict:
+    for i in range(count):
+        await ctx.report_progress(i + 1, count)
+        await ctx.log("info", f"processed record {i + 1}")
+    return {"processed": count}
+```
+
+Progress is only sent when the client opts in by attaching a `progressToken` to
+the call (per the MCP progress utility); without one, `report_progress` is a no-op.
+Log messages use RFC 5424 levels (`debug`, `info`, `notice`, `warning`, `error`,
+`critical`, `alert`, `emergency`); the client can raise the minimum with
+`logging/setLevel`, and a message below it is dropped.
+
+### Call timeout
+
+The stdio transport serves calls one at a time, so a handler that blocks forever
+would wedge every later call. Set `app.config["MCP_CALL_TIMEOUT"]` to a number of
+seconds to bound each call: a call that overruns it is cancelled and surfaced as an
+error (in-band `isError` for a tool, a JSON-RPC error for a resource read or
+prompt). It is unset (no timeout) by default.
 
 ## Dependency injection
 

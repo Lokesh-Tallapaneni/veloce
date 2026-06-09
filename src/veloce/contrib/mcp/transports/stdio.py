@@ -58,6 +58,11 @@ class StdioTransport:
         to the Language Server Protocol, not MCP. One JSON line in, one JSON
         line out. Do not "fix" this into header framing.
         """
+        # Wire the outbound one-way channel so a handler's progress / log
+        # notifications reach the client. The loop is serial - a notification is
+        # written while the handler runs, before the call's own response - so a
+        # direct write never races the loop's response write.
+        self.server.set_notifier(self._emit_notification)
         while True:
             line = await self._read_line()
             if line is None:
@@ -68,6 +73,10 @@ class StdioTransport:
             response = await self._dispatch_line(stripped)
             if response is not None:
                 await self._write_line(orjson.dumps(response))
+
+    async def _emit_notification(self, message: dict[str, Any]) -> None:
+        """Write one server-initiated JSON-RPC notification line to the client."""
+        await self._write_line(orjson.dumps(message))
 
     async def _dispatch_line(self, line: bytes) -> dict[str, Any] | None:
         try:

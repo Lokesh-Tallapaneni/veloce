@@ -1,14 +1,17 @@
 """MCPServer — dispatch JSON-RPC 2.0 method calls against the tool registry.
 
 The server is transport-agnostic: a transport (stdio) hands it decoded JSON-RPC
-request objects and forwards the responses it returns. It implements the Model
-Context Protocol methods this server needs - ``initialize`` (negotiating the
-protocol version), ``ping``, ``tools/list``, and ``tools/call`` - plus the
+request objects, forwards the responses it returns, and supplies the outbound sink
+(`set_notifier`) the server pushes one-way notifications through. It implements
+``initialize`` (negotiating the protocol version), ``ping``, the tool methods
+(``tools/list`` / ``tools/call``), the resource methods (``resources/list`` /
+``resources/templates/list`` / ``resources/read``), the prompt methods
+(``prompts/list`` / ``prompts/get``), ``logging/setLevel``, and the
 ``notifications/initialized`` ack. A ``tools/call`` runs the handler through the
 shared `DependencyResolver`, so `Depends()` graphs, `yield`-style teardown, and
-`Security` all behave exactly as on the HTTP and WebSocket paths. Per-tool
-instrumentation fires through the same `app.add_instrumentation` hook the
-request path uses.
+`Security` all behave exactly as on the HTTP and WebSocket paths; resource reads
+and prompt renders replay the same invocation path. Per-tool instrumentation fires
+through the same `app.add_instrumentation` hook the request path uses.
 """
 
 from __future__ import annotations
@@ -17,13 +20,14 @@ import asyncio
 import base64
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import orjson
 
 from veloce import status
 from veloce._internal import _is_async_callable, is_json_mimetype, offload
-from veloce.contrib.mcp.context import MCPContext
+from veloce.contrib.mcp.context import _LOG_RANKS, MCPContext
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
@@ -73,7 +77,17 @@ class MCPServer:
     surfaces before any client connects.
     """
 
-    __slots__ = ("app", "prompts", "registry", "resources", "server_name", "server_version")
+    __slots__ = (
+        "app",
+        "prompts",
+        "registry",
+        "resources",
+        "server_name",
+        "server_version",
+        "_call_timeout",
+        "_log_level",
+        "_notifier",
+    )
 
     def __init__(
         self,
@@ -88,6 +102,21 @@ class MCPServer:
         self.prompts = prompts if prompts is not None else build_prompt_registry(app)
         self.server_name = getattr(app, "title", None) or "Veloce"
         self.server_version = getattr(app, "version", None) or "0.1.0"
+        # Optional per-call wall-clock budget (`MCP_CALL_TIMEOUT` seconds in
+        # `app.config`). The stdio serve loop is serial, so a handler that awaits
+        # forever wedges every later call; when set, a call exceeding the budget
+        # is cancelled and surfaced as an in-band tool error. `None` disables it.
+        config = getattr(app, "config", None)
+        self._call_timeout = config.get("MCP_CALL_TIMEOUT") if config is not None else None
+        # The client's `logging/setLevel` minimum; `None` until set (emit all).
+        self._log_level: str | None = None
+        # Outbound notification sink, wired by the transport via `set_notifier`.
+        # `None` off a transport - `MCPContext.log` / `report_progress` are inert.
+        self._notifier: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+
+    def set_notifier(self, notifier: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        """Wire the transport's outbound one-way notification sink."""
+        self._notifier = notifier
 
     # -- JSON-RPC dispatch ------------------------------------------
 
@@ -130,6 +159,8 @@ class MCPServer:
                 result = self._prompts_list()
             elif method == "prompts/get":
                 result = await self._prompts_get(params)
+            elif method == "logging/setLevel":
+                result = self._set_log_level(params)
             else:
                 if is_notification:
                     return None
@@ -138,9 +169,13 @@ class MCPServer:
             return _error(msg_id, _JSONRPC_INVALID_PARAMS, str(exc))
         except _ResourceError as exc:
             return _error(msg_id, exc.code, str(exc))
+        except asyncio.TimeoutError:
+            # A resources/read or prompts/get that overran the per-call budget
+            # (a tools/call surfaces its own timeout in-band before here).
+            return _error(msg_id, _JSONRPC_INTERNAL_ERROR, "request exceeded the MCP call timeout")
         except Exception as exc:  # pragma: no cover - defensive
             _logger.exception("MCP method %s raised", method)
-            return _error(msg_id, _JSONRPC_INTERNAL_ERROR, str(exc))
+            return _error(msg_id, _JSONRPC_INTERNAL_ERROR, self._error_text(exc, "internal error"))
 
         if is_notification:
             return None
@@ -161,7 +196,10 @@ class MCPServer:
         # least one, so a client does not probe a primitive this server has
         # nothing to serve for. `subscribe`/`listChanged` are off - resources are
         # served on demand, with no update notifications on the serial loop.
-        capabilities: dict[str, Any] = {"tools": {"listChanged": False}}
+        # `logging` is always advertised: any tool may emit a log message through
+        # `MCPContext.log`, and the client may raise the minimum with
+        # ``logging/setLevel``.
+        capabilities: dict[str, Any] = {"tools": {"listChanged": False}, "logging": {}}
         if self.resources.resources:
             capabilities["resources"] = {"subscribe": False, "listChanged": False}
         if self.prompts.prompts:
@@ -211,11 +249,23 @@ class MCPServer:
         if not isinstance(arguments, dict):
             raise _ToolInputError("tools/call 'arguments' must be an object")
 
+        progress_token = _progress_token(params)
         started = time.perf_counter()
         try:
-            result = await self._invoke(tool, arguments)
+            result = await self._run_invoke(tool, arguments, progress_token)
         except _ToolInputError:
             raise
+        except asyncio.TimeoutError:
+            await self._instrument(tool, started, status.HTTP_504_GATEWAY_TIMEOUT)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"tool call exceeded the {self._call_timeout}s timeout",
+                    }
+                ],
+                "isError": True,
+            }
         except Exception as exc:
             # A pure `@app.mcp_tool` (no route) has no exception-handler
             # machinery to run through, so its handler error is surfaced
@@ -226,7 +276,12 @@ class MCPServer:
             # An unhandled handler error is a 500, recorded as such.
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
             return {
-                "content": [{"type": "text", "text": str(exc)}],
+                "content": [
+                    {
+                        "type": "text",
+                        "text": self._error_text(exc, "the tool raised an internal error"),
+                    }
+                ],
                 "isError": True,
             }
 
@@ -534,7 +589,7 @@ class MCPServer:
         resource, arguments = matched
 
         try:
-            result = await self._invoke(resource.tool, arguments)
+            result = await self._run_invoke(resource.tool, arguments, _progress_token(params))
         except _ToolInputError as exc:
             # A path-parameter value the URI carries that the route cannot coerce
             # (a non-int `{user_id}`) is an invalid-params read, not a 404.
@@ -583,15 +638,55 @@ class MCPServer:
         if not isinstance(arguments, dict):
             raise _ToolInputError("prompts/get 'arguments' must be an object")
 
-        result = await self._invoke(prompt.tool, arguments)
+        result = await self._run_invoke(prompt.tool, arguments, _progress_token(params))
         out: dict[str, Any] = {"messages": _normalize_prompt_messages(result)}
         if prompt.description:
             out["description"] = prompt.description
         return out
 
+    # -- Logging ----------------------------------------------------
+
+    def _set_log_level(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Set the minimum level for ``notifications/message`` (logging/setLevel)."""
+        level = params.get("level")
+        if not isinstance(level, str) or level not in _LOG_RANKS:
+            raise _ToolInputError("logging/setLevel requires a valid RFC 5424 'level'")
+        self._log_level = level
+        return {}
+
+    def _error_text(self, exc: Exception, generic: str) -> str:
+        """Error text for an in-band / internal error payload, gated by debug.
+
+        A pure `@app.mcp_tool` (and the defensive internal-error path) does not run
+        through the app's exception handlers, so an exception's raw message could
+        carry a secret - a DSN, a token, a path. With `app.debug` off a generic
+        message is surfaced instead; with debug on the real message aids
+        development. A route-backed tool is unaffected: its exceptions already go
+        through `handle_user_exception`, which gates the body on debug itself.
+        """
+        return str(exc) if getattr(self.app, "debug", False) else generic
+
     # -- Invocation -------------------------------------------------
 
-    async def _invoke(self, tool: MCPTool, arguments: dict[str, Any]) -> Any:
+    async def _run_invoke(
+        self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None
+    ) -> Any:
+        """Invoke a tool, applying the optional per-call timeout.
+
+        With no `MCP_CALL_TIMEOUT` configured the handler runs unbounded (the
+        common case, zero overhead); otherwise it is cancelled past the budget and
+        the `asyncio.TimeoutError` is surfaced by the caller (in-band for a tool
+        call, a JSON-RPC error for a resource read or prompt render).
+        """
+        if self._call_timeout is None:
+            return await self._invoke(tool, arguments, progress_token)
+        return await asyncio.wait_for(
+            self._invoke(tool, arguments, progress_token), self._call_timeout
+        )
+
+    async def _invoke(
+        self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None = None
+    ) -> Any:
         """Resolve DI and call the handler, draining teardowns afterwards.
 
         The handler runs inside the same request-context binding the HTTP path
@@ -611,7 +706,13 @@ class MCPServer:
         tool result. A pure `@app.mcp_tool` (no route) has no such lifecycle and
         its return value is passed back unchanged.
         """
-        context = MCPContext(tool.name, arguments)
+        context = MCPContext(
+            tool.name,
+            arguments,
+            notifier=self._notifier,
+            progress_token=progress_token,
+            log_level=self._log_level,
+        )
         resolver = DependencyResolver()
         resolver._overrides = self.app._dependency_overrides
         resolver._override_subplans = self.app._override_subplans
@@ -1137,6 +1238,21 @@ def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, 
 
 def _error(msg_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
+
+
+def _progress_token(params: dict[str, Any]) -> str | int | None:
+    """Return the call's `_meta.progressToken`, or `None` when none was sent.
+
+    A client opts into progress notifications by attaching a `progressToken` to a
+    request's `_meta`; without one the server reports no progress (per the MCP
+    progress utility).
+    """
+    meta = params.get("_meta")
+    if isinstance(meta, dict):
+        token = meta.get("progressToken")
+        if isinstance(token, (str, int)) and not isinstance(token, bool):
+            return token
+    return None
 
 
 def _response_body_value(response: Response) -> Any:

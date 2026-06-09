@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP progress and logging: `MCPContext.report_progress(...)` and
+  `MCPContext.log(...)` now send live `notifications/progress` and
+  `notifications/message` to the client (progress requires the client's
+  `progressToken`); the server handles `logging/setLevel` and advertises the
+  `logging` capability.
+- MCP per-call timeout: set `app.config["MCP_CALL_TIMEOUT"]` (seconds) to bound each
+  tool call, resource read, and prompt render; an overrun is cancelled and surfaced
+  as an in-band tool error or a JSON-RPC error. Unset (no timeout) by default.
 - MCP prompts: register a reusable prompt template with `@app.mcp_prompt(...)`. The
   callable's parameters become the prompt's arguments and its return (a string or a
   list of role/content messages) becomes the rendered messages; the server answers
@@ -23,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP non-text tool content: a tool returning an `image/*` or `audio/*` response
   emits the matching typed MCP content block (base64), and a binary resource read
   returns its bytes as a `blob`.
+
+### Security
+
+- MCP: a pure `@app.mcp_tool` handler error (and the defensive internal-error path)
+  surfaces a generic message unless `app.debug` is set, so an exception carrying a
+  secret is not returned verbatim to the agent.
 
 ## [0.4.0] - 2026-06-08
 
