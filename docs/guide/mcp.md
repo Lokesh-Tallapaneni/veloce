@@ -9,11 +9,11 @@ Veloce can expose your handlers as [Model Context Protocol](https://modelcontext
 tools, so an AI agent can call them over JSON-RPC 2.0. Every Veloce route can
 also be a tool an agent invokes.
 
-The integration lives in `veloce.contrib.mcp`. It supports **tools** and
-**resources** over the **stdio** transport (the framing an MCP client uses when it
-launches your server as a subprocess), negotiates the protocol version with the
-client, and exposes tool metadata (annotations, title, output schema). Prompts and
-the Streamable HTTP transport are planned for a later release.
+The integration lives in `veloce.contrib.mcp`. It supports **tools**,
+**resources**, and **prompts** over the **stdio** transport (the framing an MCP
+client uses when it launches your server as a subprocess), negotiates the protocol
+version with the client, and exposes tool metadata (annotations, title, output
+schema). The Streamable HTTP transport is planned for a later release.
 
 ## Registering an MCP-only tool
 
@@ -221,6 +221,47 @@ file) as a base64 `blob`.
 The server advertises the `resources` capability only when at least one resource
 is registered.
 
+## Prompts
+
+A **prompt** is the MCP primitive for a reusable, parameterised message template a
+user invokes. Register one with `@app.mcp_prompt(...)`: the callable's parameters
+become the prompt's arguments, and its return becomes the messages `prompts/get`
+returns.
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+
+
+@app.mcp_prompt(description="Summarise a topic in three bullet points")
+async def summarise(topic: str) -> str:
+    return f"Summarise {topic} in three bullet points."
+# prompts/list -> {"name": "summarise", "arguments": [{"name": "topic", "required": true}]}
+# prompts/get {"name": "summarise", "arguments": {"topic": "MCP"}}
+#   -> messages: [{"role": "user", "content": {"type": "text", "text": "Summarise MCP ..."}}]
+```
+
+Return a plain string for a single user message, or a list of `{"role", "content"}`
+messages (with `role` either `user` or `assistant`) for a multi-turn template:
+
+```python
+@app.mcp_prompt(description="A guided code review")
+async def review(language: str) -> list:
+    return [
+        {"role": "assistant", "content": "I'll review the code you paste next."},
+        {"role": "user", "content": f"Review this {language} code for bugs."},
+    ]
+```
+
+A prompt's parameters resolve exactly as a tool's do: `Depends()` and `MCPContext`
+parameters are injected (and never advertised as prompt arguments), and a parameter
+with a default is an optional argument. As with tools and resources, a non-empty
+`description` is required, and `namespace=` prefixes the prompt name.
+
+The server advertises the `prompts` capability only when at least one prompt is
+registered.
+
 ## The MCP context
 
 A tool handler (or one of its dependencies) may declare a parameter typed
@@ -294,8 +335,9 @@ if __name__ == "__main__":
 
 Point your MCP client at this script as a subprocess command; it will receive
 `initialize` (negotiating the protocol version with the client), `ping`,
-`tools/list`, `tools/call`, and — when resources are registered — `resources/list`,
-`resources/templates/list`, and `resources/read`, and respond on stdout.
+`tools/list`, `tools/call`, and — when resources or prompts are registered —
+`resources/list`, `resources/templates/list`, `resources/read`, `prompts/list`, and
+`prompts/get`, and respond on stdout.
 
 The serve loop runs inside the app's lifespan, so every `@app.on_startup`
 handler (database pools, `app.state`, caches) and the lifespan context manager

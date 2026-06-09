@@ -522,6 +522,11 @@ class Veloce(
         # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
         # tool registry is assembled.
         self._mcp_tools: list[tuple[Callable, str | None, str | None, str | None]] = []
+        # MCP prompt registrations (contrib.mcp). Each entry is
+        # `(handler, name, description, namespace)`, recorded by
+        # `@app.mcp_prompt(...)` and consumed once at `mount_mcp` time when the
+        # prompt registry is assembled.
+        self._mcp_prompts: list[tuple[Callable, str | None, str | None, str | None]] = []
         # Dev-mode event-loop blocking watchdog - armed during startup only
         # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
         # (and free) for every other app.
@@ -1661,13 +1666,45 @@ class Veloce(
 
         return decorator
 
+    def mcp_prompt(
+        self,
+        description: str,
+        *,
+        name: str | None = None,
+        namespace: str | None = None,
+    ) -> Callable:
+        """Register an MCP prompt template fetchable by an AI agent (contrib.mcp).
+
+        The decorated callable's parameters become the prompt's arguments, and its
+        return - a string, or a list of role/content messages - becomes the
+        messages ``prompts/get`` returns. `Depends()` params resolve through the
+        same dependency machinery routes use, with an `MCPContext` standing in for
+        the HTTP `Request`. `description` is the required LLM-facing text;
+        `namespace` prefixes the prompt name (`<namespace>_<name>`).
+
+        Usage::
+
+            @app.mcp_prompt(description="Summarise a topic in three bullets")
+            async def summarise(topic: str) -> str:
+                return f"Summarise {topic} in three bullet points."
+        """
+        from veloce.contrib.mcp.safety import require_mcp_description
+
+        def decorator(func: Callable) -> Callable:
+            require_mcp_description(name or func.__name__, description)
+            self._mcp_prompts.append((func, name, description, namespace))
+            return func
+
+        return decorator
+
     def mount_mcp(self, transport: str = "stdio") -> Any:
         """Build the MCP server and serve the registered tools.
 
         Assembles the tool registry from `@app.mcp_tool` registrations plus
         every route flagged `expose_as_mcp_tool=True`, the resource registry from
-        every read-only route flagged `expose_as_mcp_resource=True`, then serves
-        them over the chosen transport. Supports `transport="stdio"` only
+        every read-only route flagged `expose_as_mcp_resource=True`, and the
+        prompt registry from `@app.mcp_prompt` registrations, then serves them
+        over the chosen transport. Supports `transport="stdio"` only
         (JSON-RPC 2.0 on stdin/stdout, for subprocess use); the coroutine runs
         until stdin closes. Returns the awaitable serve coroutine so a caller may
         schedule it explicitly (`asyncio.run(app.mount_mcp())`).

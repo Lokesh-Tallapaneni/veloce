@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP prompts: register a reusable prompt template with `@app.mcp_prompt(...)`. The
+  callable's parameters become the prompt's arguments and its return (a string or a
+  list of role/content messages) becomes the rendered messages; the server answers
+  `prompts/list` and `prompts/get`, with `Depends`/`MCPContext` resolved as in a
+  tool, and advertises the `prompts` capability when at least one is registered.
 - MCP resources: expose a read-only (`GET`/`HEAD`) route as a Model Context
   Protocol resource with `expose_as_mcp_resource=True` and `mcp_resource_uri=...`
   (a static URI, or a URI template such as `users://{user_id}` binding the route's

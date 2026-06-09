@@ -12,14 +12,16 @@ HTTP-derived annotation hints (read-only / idempotent / destructive), a `title`,
 and - where the result has a declared object shape - an `outputSchema` whose
 structured value `tools/call` returns alongside the text block. A read-only route
 flagged ``expose_as_mcp_resource=True`` is served as a resource (``resources/list``,
-``resources/templates/list``, ``resources/read``); a tool returning an image or
-audio response emits the matching typed content block. Prompts and the Streamable
-HTTP transport are not yet implemented.
+``resources/templates/list``, ``resources/read``); a ``@app.mcp_prompt`` callable is
+served as a prompt template (``prompts/list``, ``prompts/get``); and a tool returning
+an image or audio response emits the matching typed content block. The Streamable
+HTTP transport is not yet implemented.
 """
 
 from __future__ import annotations
 
 from veloce.contrib.mcp.context import MCPContext
+from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import MCPTool, ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import (
     MCPResource,
@@ -31,12 +33,15 @@ from veloce.contrib.mcp.transports.stdio import StdioTransport, serve_stdio
 
 __all__ = [
     "MCPContext",
+    "MCPPrompt",
     "MCPResource",
     "MCPServer",
     "MCPTool",
+    "PromptRegistry",
     "ResourceRegistry",
     "StdioTransport",
     "ToolRegistry",
+    "build_prompt_registry",
     "build_registry",
     "build_resource_registry",
     "serve_stdio",

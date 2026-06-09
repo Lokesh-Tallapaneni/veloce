@@ -25,6 +25,7 @@ from veloce import status
 from veloce._internal import _is_async_callable, is_json_mimetype, offload
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
+from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import MCPResource, ResourceRegistry, build_resource_registry
 from veloce.dependency import DependencyResolver
@@ -72,17 +73,19 @@ class MCPServer:
     surfaces before any client connects.
     """
 
-    __slots__ = ("app", "registry", "resources", "server_name", "server_version")
+    __slots__ = ("app", "prompts", "registry", "resources", "server_name", "server_version")
 
     def __init__(
         self,
         app: Any,
         registry: ToolRegistry | None = None,
         resources: ResourceRegistry | None = None,
+        prompts: PromptRegistry | None = None,
     ) -> None:
         self.app = app
         self.registry = registry if registry is not None else build_registry(app)
         self.resources = resources if resources is not None else build_resource_registry(app)
+        self.prompts = prompts if prompts is not None else build_prompt_registry(app)
         self.server_name = getattr(app, "title", None) or "Veloce"
         self.server_version = getattr(app, "version", None) or "0.1.0"
 
@@ -123,6 +126,10 @@ class MCPServer:
                 result = self._resource_templates_list()
             elif method == "resources/read":
                 result = await self._resources_read(params)
+            elif method == "prompts/list":
+                result = self._prompts_list()
+            elif method == "prompts/get":
+                result = await self._prompts_get(params)
             else:
                 if is_notification:
                     return None
@@ -157,6 +164,8 @@ class MCPServer:
         capabilities: dict[str, Any] = {"tools": {"listChanged": False}}
         if self.resources.resources:
             capabilities["resources"] = {"subscribe": False, "listChanged": False}
+        if self.prompts.prompts:
+            capabilities["prompts"] = {"listChanged": False}
         return {
             "protocolVersion": version,
             "capabilities": capabilities,
@@ -549,6 +558,36 @@ class MCPServer:
             )
             raise _ResourceError(code, _stringify(_response_body_value(response)))
         return {"contents": [_resource_contents(uri, response)]}
+
+    # -- Prompts ----------------------------------------------------
+
+    def _prompts_list(self) -> dict[str, Any]:
+        return {"prompts": [_describe_prompt(p) for p in self.prompts.prompts.values()]}
+
+    async def _prompts_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Render one prompt by name, replaying its callable through `_invoke`.
+
+        The callable runs through the same pure-tool invocation path (DI graph,
+        `MCPContext`, teardowns), and its return - a string or a list of
+        role/content messages - is normalised into the MCP messages
+        ``prompts/get`` returns. An unknown name or a malformed argument is an
+        invalid-params error.
+        """
+        name = params.get("name")
+        if not isinstance(name, str):
+            raise _ToolInputError("prompts/get requires a string 'name'")
+        prompt = self.prompts.get(name)
+        if prompt is None:
+            raise _ToolInputError(f"Unknown prompt: {name}")
+        arguments = params.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            raise _ToolInputError("prompts/get 'arguments' must be an object")
+
+        result = await self._invoke(prompt.tool, arguments)
+        out: dict[str, Any] = {"messages": _normalize_prompt_messages(result)}
+        if prompt.description:
+            out["description"] = prompt.description
+        return out
 
     # -- Invocation -------------------------------------------------
 
@@ -967,6 +1006,55 @@ def _resource_contents(uri: str, response: Response) -> dict[str, Any]:
     else:
         entry["blob"] = base64.b64encode(body).decode("ascii")
     return entry
+
+
+# Valid MCP prompt message roles; an unrecognised role from a handler-built
+# message falls back to "user".
+_PROMPT_ROLES = frozenset({"user", "assistant"})
+
+
+def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
+    """Shape a prompt into its `prompts/list` entry."""
+    entry: dict[str, Any] = {"name": prompt.name, "description": prompt.description}
+    if prompt.arguments:
+        entry["arguments"] = prompt.arguments
+    return entry
+
+
+def _user_text_message(text: str) -> dict[str, Any]:
+    """Build a user-role MCP prompt message carrying a single text block."""
+    return {"role": "user", "content": {"type": "text", "text": text}}
+
+
+def _normalize_prompt_message(item: Any) -> dict[str, Any]:
+    """Normalise one prompt message item into an MCP prompt message.
+
+    A string is a user text message; a mapping is read as a ``{"role", "content"}``
+    message whose string content is wrapped into a text content block and whose
+    unrecognised role falls back to user. Any other item is stringified.
+    """
+    if isinstance(item, str):
+        return _user_text_message(item)
+    if isinstance(item, dict):
+        role = item.get("role")
+        content = item.get("content")
+        if isinstance(content, str):
+            content = {"type": "text", "text": content}
+        return {"role": role if role in _PROMPT_ROLES else "user", "content": content}
+    return _user_text_message(_stringify(item))
+
+
+def _normalize_prompt_messages(result: Any) -> list[dict[str, Any]]:
+    """Normalise a prompt callable's return into MCP prompt messages.
+
+    A string becomes a single user text message; a list becomes one message per
+    item; any other return is stringified into a single user message.
+    """
+    if isinstance(result, str):
+        return [_user_text_message(result)]
+    if isinstance(result, list):
+        return [_normalize_prompt_message(item) for item in result]
+    return [_user_text_message(_stringify(result))]
 
 
 # Cap on the bytes buffered from a streamed tool result. A streamed response has

@@ -2841,3 +2841,210 @@ def test_non_binary_response_still_emits_text_block():
     result = _call(app, "data2", {})["result"]
     assert result["content"][0]["type"] == "text"
     assert orjson.loads(result["content"][0]["text"]) == {"value": 42}
+
+
+# -- Prompts ----------------------------------------------------------
+
+
+def _list_prompts(app: Veloce) -> dict[str, dict]:
+    """Drive one `prompts/list` and return the entries keyed by prompt name."""
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "prompts/list", "params": {}})
+    out = asyncio.run(pipe.run())[0]
+    return {p["name"]: p for p in out["result"]["prompts"]}
+
+
+def _get_prompt(app: Veloce, name: str, arguments: dict | None = None) -> dict:
+    """Drive one `prompts/get` and return the single response object."""
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "prompts/get",
+            "params": {"name": name, "arguments": arguments or {}},
+        }
+    )
+    return asyncio.run(pipe.run())[0]
+
+
+def test_prompt_is_listed_with_arguments():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Summarise a topic")
+    async def summarise(topic: str, style: str = "concise") -> str:
+        return f"Summarise {topic} ({style})."
+
+    listed = _list_prompts(app)
+    assert "summarise" in listed
+    entry = listed["summarise"]
+    assert entry["description"] == "Summarise a topic"
+    args = {a["name"]: a for a in entry["arguments"]}
+    assert args["topic"]["required"] is True
+    # A parameter with a default is an optional argument.
+    assert args["style"]["required"] is False
+
+
+def test_prompt_get_string_return_is_user_message():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Greeting")
+    async def greet() -> str:
+        return "Hello there."
+
+    out = _get_prompt(app, "greet")
+    assert "error" not in out
+    result = out["result"]
+    assert result["description"] == "Greeting"
+    assert result["messages"] == [
+        {"role": "user", "content": {"type": "text", "text": "Hello there."}}
+    ]
+
+
+def test_prompt_get_passes_arguments():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Summarise a topic")
+    async def summarise(topic: str) -> str:
+        return f"Summarise {topic} in three bullet points."
+
+    result = _get_prompt(app, "summarise", {"topic": "veloce"})["result"]
+    text = result["messages"][0]["content"]["text"]
+    assert text == "Summarise veloce in three bullet points."
+
+
+def test_prompt_get_message_list_is_normalised():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="A two-turn exchange")
+    async def chat() -> list:
+        return [
+            {"role": "assistant", "content": "How can I help?"},
+            {"role": "user", "content": {"type": "text", "text": "Explain MCP."}},
+        ]
+
+    messages = _get_prompt(app, "chat")["result"]["messages"]
+    assert messages[0] == {
+        "role": "assistant",
+        "content": {"type": "text", "text": "How can I help?"},
+    }
+    assert messages[1] == {
+        "role": "user",
+        "content": {"type": "text", "text": "Explain MCP."},
+    }
+
+
+def test_prompt_unknown_name_is_invalid_params():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Greeting")
+    async def greet() -> str:
+        return "hi"
+
+    out = _get_prompt(app, "nope")
+    assert out["error"]["code"] == -32602
+
+
+def test_prompt_missing_required_argument_is_invalid_params():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Summarise a topic")
+    async def summarise(topic: str) -> str:
+        return f"Summarise {topic}."
+
+    out = _get_prompt(app, "summarise", {})
+    assert out["error"]["code"] == -32602
+
+
+def test_prompt_dependency_is_resolved():
+    app = Veloce(openapi_url=None)
+
+    def tone() -> str:
+        return "friendly"
+
+    @app.mcp_prompt(description="Greeting in a tone")
+    async def greet(style: str = Depends(tone)) -> str:
+        return f"Say hello in a {style} tone."
+
+    # `style` is injected, so it is not advertised as a prompt argument.
+    assert _list_prompts(app)["greet"].get("arguments", []) == []
+    text = _get_prompt(app, "greet")["result"]["messages"][0]["content"]["text"]
+    assert text == "Say hello in a friendly tone."
+
+
+def test_prompt_context_is_injected():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Echo the prompt name")
+    async def whoami(ctx: MCPContext) -> str:
+        return ctx.tool_name
+
+    # The context parameter is not advertised as an argument.
+    assert _list_prompts(app)["whoami"].get("arguments", []) == []
+    text = _get_prompt(app, "whoami")["result"]["messages"][0]["content"]["text"]
+    assert text == "whoami"
+
+
+def test_prompt_sync_handler_is_offloaded():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Sync greeting")
+    def greet(name: str) -> str:
+        return f"Hello, {name}."
+
+    text = _get_prompt(app, "greet", {"name": "ada"})["result"]["messages"][0]["content"]["text"]
+    assert text == "Hello, ada."
+
+
+def test_prompt_namespace_prefixes_name():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Namespaced", namespace="docs")
+    async def intro() -> str:
+        return "Intro."
+
+    assert "docs_intro" in _list_prompts(app)
+
+
+def test_prompt_duplicate_name_raises():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="One")
+    async def greet() -> str:
+        return "one"
+
+    app._mcp_prompts.append((greet, "greet", "Two", None))
+    with pytest.raises(ValueError, match="Duplicate MCP prompt"):
+        _server(app)
+
+
+def test_prompt_missing_description_raises():
+    app = Veloce(openapi_url=None)
+
+    with pytest.raises(ValueError, match="description"):
+
+        @app.mcp_prompt(description="")
+        async def bad() -> str:
+            return "x"
+
+
+def test_initialize_advertises_prompts_when_present():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Greeting")
+    async def greet() -> str:
+        return "hi"
+
+    caps = _initialize(app, {})["result"]["capabilities"]
+    assert caps["prompts"] == {"listChanged": False}
+
+
+def test_initialize_omits_prompts_capability_when_none():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    caps = _initialize(app, {})["result"]["capabilities"]
+    assert "prompts" not in caps
