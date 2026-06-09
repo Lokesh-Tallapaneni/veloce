@@ -21,6 +21,7 @@ transport (``mount_mcp()``) and the Streamable HTTP transport
 
 from __future__ import annotations
 
+from veloce.contrib.mcp.auth import MCPAuth
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import MCPTool, ToolRegistry, build_registry
@@ -34,6 +35,7 @@ from veloce.contrib.mcp.transports.http import register_http_transport
 from veloce.contrib.mcp.transports.stdio import StdioTransport, serve_stdio
 
 __all__ = [
+    "MCPAuth",
     "MCPContext",
     "MCPPrompt",
     "MCPResource",

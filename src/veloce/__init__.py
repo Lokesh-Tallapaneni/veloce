@@ -168,6 +168,9 @@ from veloce.passwords import (
     verify_password_async,
 )
 
+# Principal (authenticated identity, shared across HTTP and MCP)
+from veloce.principal import Principal, current_principal, set_principal
+
 # Rate-limit algorithms and backends (selectable via RateLimitMiddleware)
 from veloce.ratelimit import (
     FixedWindow,
@@ -411,6 +414,10 @@ __all__ = [
     "has_app_context",
     "has_request_context",
     "stream_with_context",
+    # Principal (authenticated identity)
+    "Principal",
+    "current_principal",
+    "set_principal",
     # Templating
     "Jinja2Templates",
     "render_template",

@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
 from veloce.contrib.mcp.server import (
     _JSONRPC_INTERNAL_ERROR,
     MCPServer,
@@ -26,6 +27,7 @@ from veloce.contrib.mcp.server import (
     _notifier_var,
 )
 from veloce.http.response import JSONResponse, Response
+from veloce.principal import Principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -41,17 +43,45 @@ _JSONRPC_PARSE_ERROR = -32700
 _STREAM_END = object()
 
 
-def register_http_transport(app: Any, server: MCPServer, path: str = "/mcp") -> None:
-    """Mount the Streamable HTTP transport for `server` at `path` on `app`."""
+def register_http_transport(
+    app: Any, server: MCPServer, path: str = "/mcp", auth: MCPAuth | None = None
+) -> None:
+    """Mount the Streamable HTTP transport for `server` at `path` on `app`.
+
+    When `auth` is given the endpoint becomes an OAuth 2.1 resource server: each
+    request is authenticated before dispatch, and the RFC 9728 protected-resource
+    metadata is served so a client can discover the authorization server.
+    """
 
     async def mcp_endpoint(request: Request) -> Response:
-        return await _handle_http(server, request)
+        return await _handle_http(server, request, auth)
 
     app.add_route(path, mcp_endpoint, methods=["POST"], include_in_schema=False)
 
+    if auth is not None:
 
-async def _handle_http(server: MCPServer, request: Request) -> Response:
-    """Dispatch one JSON-RPC message from an HTTP POST body."""
+        async def mcp_metadata(request: Request) -> Response:
+            return JSONResponse(auth.metadata())
+
+        app.add_route(
+            PROTECTED_RESOURCE_METADATA_PATH,
+            mcp_metadata,
+            methods=["GET"],
+            include_in_schema=False,
+        )
+
+
+async def _handle_http(server: MCPServer, request: Request, auth: MCPAuth | None) -> Response:
+    """Authenticate, then dispatch one JSON-RPC message from an HTTP POST body."""
+    if auth is not None:
+        principal, challenge = await _authenticate(auth, request)
+        if challenge is not None:
+            return challenge
+        # Publish the identity for the duration of this request so the dispatched
+        # tool / resource (and any business dependency) reads it through
+        # `current_principal`; the SSE runner task copies this context.
+        set_principal(principal)
+
     try:
         message = await request.json()
     except Exception:
@@ -69,6 +99,47 @@ async def _handle_http(server: MCPServer, request: Request) -> Response:
         # A notification or a response carries no reply (JSON-RPC 2.0 Sec. 4.1).
         return Response(status_code=202)
     return JSONResponse(response)
+
+
+async def _authenticate(
+    auth: MCPAuth, request: Request
+) -> tuple[Principal | None, Response | None]:
+    """Validate the request's bearer token; return `(principal, challenge)`.
+
+    A missing or invalid token yields a `401` challenge; a valid token missing the
+    endpoint's required scopes yields a `403`. On success the challenge is `None`.
+    """
+    header = request.headers.get("authorization", "")
+    scheme, _, raw_token = header.partition(" ")
+    token = raw_token.strip()
+    if scheme.lower() != "bearer" or not token:
+        return None, _challenge(auth, 401, "invalid_token")
+
+    try:
+        outcome = auth.verify(token)
+        if asyncio.iscoroutine(outcome):
+            outcome = await outcome
+        principal = cast("Principal | None", outcome)
+    except Exception:
+        _logger.exception("MCP token verification raised")
+        principal = None
+    if principal is None:
+        return None, _challenge(auth, 401, "invalid_token")
+
+    if auth.required_scopes and not principal.has_scopes(auth.required_scopes):
+        return None, _challenge(auth, 403, "insufficient_scope")
+    return principal, None
+
+
+def _challenge(auth: MCPAuth, status_code: int, error: str) -> Response:
+    """Build a `401`/`403` response with the RFC 6750 `WWW-Authenticate` challenge."""
+    parts = [f'Bearer error="{error}"', f'resource_metadata="{PROTECTED_RESOURCE_METADATA_PATH}"']
+    if error == "insufficient_scope" and auth.required_scopes:
+        parts.append(f'scope="{" ".join(sorted(auth.required_scopes))}"')
+    body = {"error": error}
+    return JSONResponse(
+        body, status_code=status_code, headers={"WWW-Authenticate": ", ".join(parts)}
+    )
 
 
 def _stream_response(server: MCPServer, message: dict[str, Any]) -> EventSourceResponse:

@@ -38,6 +38,7 @@ from veloce.exceptions import RequestValidationError
 from veloce.helpers import _current_app_var, _current_request_var, g
 from veloce.http.response import Response
 from veloce.instrumentation import RequestMetrics
+from veloce.principal import current_principal
 from veloce.routing.router import RouteMatch
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -68,6 +69,11 @@ _JSONRPC_INTERNAL_ERROR = -32603
 # range), returned when ``resources/read`` names a URI the registry cannot
 # resolve or whose route answers 404.
 _JSONRPC_RESOURCE_NOT_FOUND = -32002
+
+# Server-defined "forbidden" code, returned when the request principal lacks a
+# tool's / resource's required authorization scopes (the JSON-RPC analogue of an
+# HTTP 403 insufficient_scope).
+_JSONRPC_FORBIDDEN = -32003
 
 # The current call's outbound notification sink, scoped per request so a handler's
 # progress / log notifications reach the right client. A ContextVar (not an
@@ -181,6 +187,8 @@ class MCPServer:
             return _error(msg_id, _JSONRPC_INVALID_PARAMS, str(exc))
         except _ResourceError as exc:
             return _error(msg_id, exc.code, str(exc))
+        except _AuthorizationError as exc:
+            return _error(msg_id, _JSONRPC_FORBIDDEN, str(exc))
         except asyncio.TimeoutError:
             # A resources/read or prompts/get that overran the per-call budget
             # (a tools/call surfaces its own timeout in-band before here).
@@ -261,8 +269,15 @@ class MCPServer:
         if not isinstance(arguments, dict):
             raise _ToolInputError("tools/call 'arguments' must be an object")
 
-        progress_token = _progress_token(params)
         started = time.perf_counter()
+        if _principal_lacks_scopes(tool.required_scopes):
+            await self._instrument(tool, started, status.HTTP_403_FORBIDDEN)
+            return {
+                "content": [{"type": "text", "text": _insufficient_scope(tool.required_scopes)}],
+                "isError": True,
+            }
+
+        progress_token = _progress_token(params)
         try:
             result = await self._run_invoke(tool, arguments, progress_token)
         except _ToolInputError:
@@ -599,6 +614,8 @@ class MCPServer:
         if matched is None:
             raise _ResourceError(_JSONRPC_RESOURCE_NOT_FOUND, f"Unknown resource: {uri}")
         resource, arguments = matched
+        if _principal_lacks_scopes(resource.tool.required_scopes):
+            raise _AuthorizationError(_insufficient_scope(resource.tool.required_scopes))
 
         try:
             result = await self._run_invoke(resource.tool, arguments, _progress_token(params))
@@ -646,6 +663,8 @@ class MCPServer:
         prompt = self.prompts.get(name)
         if prompt is None:
             raise _ToolInputError(f"Unknown prompt: {name}")
+        if _principal_lacks_scopes(prompt.tool.required_scopes):
+            raise _AuthorizationError(_insufficient_scope(prompt.tool.required_scopes))
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             raise _ToolInputError("prompts/get 'arguments' must be an object")
@@ -746,6 +765,10 @@ class MCPServer:
         else:
             request = _build_request(tool.name, arguments)
         request.app = self.app
+        # Mark the synthetic request so auth middleware can recognise a replayed
+        # MCP call (`request.is_mcp`) and defer to the transport's authentication
+        # rather than re-checking a browser credential the agent never sends.
+        request._state["_mcp"] = True
 
         # Bind the request context exactly as `handle_request` does: the
         # `current_app` / `request` contextvars plus a fresh `g`. Letting the
@@ -1194,6 +1217,28 @@ class _ResourceError(Exception):
     def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class _AuthorizationError(Exception):
+    """The principal lacks a required scope - reported as a forbidden error."""
+
+
+def _principal_lacks_scopes(required: frozenset[str]) -> bool:
+    """Return whether the current principal is missing any of `required`.
+
+    A tool / resource with no required scopes is always allowed. Otherwise the
+    request principal (set by the transport's authentication) must hold every
+    required scope; an absent principal can satisfy no non-empty requirement.
+    """
+    if not required:
+        return False
+    principal = current_principal()
+    return principal is None or not principal.has_scopes(required)
+
+
+def _insufficient_scope(required: frozenset[str]) -> str:
+    """Build the error text for a missing-scope rejection."""
+    return f"insufficient_scope: requires {sorted(required)}"
 
 
 class _StreamTooLarge(Exception):

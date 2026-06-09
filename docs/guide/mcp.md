@@ -406,13 +406,101 @@ prompts. The client `POST`s one JSON-RPC message to the route and gets one reply
   response. A request without it gets a single JSON response.
 - A notification (a message with no `id`) is answered with `202 Accepted` and no body.
 
-The endpoint is an ordinary Veloce route, so protect it the way you protect any
-route — middleware, `Depends`, a security scheme:
+## Authentication and authorization
 
-!!! warning "Authentication is yours to add"
-    The transport adds no authentication. Mounting it exposes every registered
-    tool, resource, and prompt at the route. Put it behind your auth (an OAuth
-    Resource-Server check, an API key) before deploying it on a public network.
+MCP authenticates at the **transport**, not per tool call, following the MCP OAuth
+2.1 model: the agent presents a bearer token on every request, the server validates
+it (as an OAuth 2.1 *resource server*), and per-tool **scopes** decide which tools
+that token may call.
+
+### Authenticating the HTTP transport
+
+Pass an `MCPAuth` to `mount_mcp`. You supply a `verify` callable that validates a
+bearer token and returns a `Principal` (or `None` to reject) — Veloce never parses
+tokens or does crypto itself. It then validates the token on every `/mcp` request
+(`401` if missing/invalid), serves the [RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728)
+protected-resource metadata so a client can discover the authorization server, and
+publishes the `Principal` for the call.
+
+```python
+from veloce import Principal
+from veloce.contrib.mcp import MCPAuth
+
+
+def verify(token: str) -> Principal | None:
+    claims = validate_with_your_auth_server(token)   # your logic / library
+    if claims is None:
+        return None
+    return Principal(subject=claims["sub"], scopes=set(claims["scope"].split()))
+
+
+app.mount_mcp(transport="http", auth=MCPAuth(
+    verify=verify,
+    required_scopes=["mcp:tools"],                    # every call needs this
+    resource_server_url="https://api.example.com/mcp",
+    authorization_servers=["https://auth.example.com"],
+))
+```
+
+!!! warning "Validate the token's audience"
+    Your `verify` MUST confirm the token was issued for *this* server (its audience
+    / `resource`), per [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707). Accepting
+    a token minted for another service — or forwarding it onward — is the
+    spec-forbidden "token passthrough" anti-pattern.
+
+For the **stdio** transport there is no OAuth handshake — the process is launched
+locally and trusted — so pass a static identity instead:
+`app.mount_mcp(principal=Principal(subject="local", scopes={"mcp:tools"}))`.
+
+### Per-tool scopes
+
+Declare the scopes a tool, resource, or prompt requires; a principal lacking them
+is rejected (`insufficient_scope`) before the handler runs:
+
+```python
+@app.mcp_tool(description="Delete a user", scopes=["users:write"])
+async def delete_user(id: int): ...
+
+@app.get("/admin/stats", expose_as_mcp_tool=True,
+         mcp_description="Service stats", mcp_scopes=["admin:read"])
+async def stats(): ...
+```
+
+### The unified principal
+
+Both doors populate one identity. Your HTTP auth calls `set_principal(...)`; the
+MCP transport sets it from the validated token. All downstream code reads the same
+`current_principal()`, so authorization and identity-aware dependencies are written
+once and run over HTTP and MCP alike:
+
+```python
+from veloce import current_principal
+
+
+def get_current_user():
+    p = current_principal()          # set by HTTP auth OR MCP transport
+    if p is None:
+        raise Unauthorized()
+    return load_user(p.subject)
+```
+
+### Reconciling existing middleware and dependencies
+
+An exposed route's `Depends`, `Security`, and middleware **run** on the agent call
+(the lifecycle is replayed), but the synthetic MCP request carries no browser
+credential — so an auth middleware that reads a session cookie or `Authorization`
+header should defer to the transport on MCP calls via `request.is_mcp`:
+
+```python
+class AuthMiddleware(Middleware):
+    async def process_request(self, request):
+        if request.is_mcp:           # the MCP transport already authenticated
+            return None
+        ...                          # your normal HTTP session/cookie check
+```
+
+Business middleware and dependencies (a DB session, request-id injection) need no
+change — they run identically on both doors.
 
 ## Instrumentation
 

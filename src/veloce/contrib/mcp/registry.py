@@ -76,6 +76,10 @@ class MCPTool:
     # advertised schema before it is emitted as `structuredContent`. `None`
     # whenever `output_schema` is `None`.
     output_model: type[BaseModel] | None = None
+    # MCP authorization scopes the request principal must hold to invoke this
+    # tool / read this resource. Empty means no per-tool requirement; a non-empty
+    # set is checked before invocation and a miss yields an authorization error.
+    required_scopes: frozenset[str] = frozenset()
 
 
 @dataclass(slots=True)
@@ -180,6 +184,7 @@ def _register_explicit_tool(
     name: str | None,
     description: str | None,
     namespace: str | None,
+    scopes: frozenset[str] | None = None,
 ) -> None:
     """Add an `@app.mcp_tool`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -197,6 +202,7 @@ def _register_explicit_tool(
             input_schema=schema,
             output_schema=output_schema,
             output_model=output_model,
+            required_scopes=scopes or frozenset(),
         )
     )
 
@@ -231,6 +237,7 @@ def _tool_from_route(
         route_info=info,
         route_method=methods[0],
         route_methods=methods,
+        required_scopes=info.mcp_scopes or frozenset(),
     )
 
 
@@ -239,10 +246,15 @@ def build_registry(app: Any) -> ToolRegistry:
     registry = ToolRegistry()
 
     # Explicit @app.mcp_tool registrations, recorded on the app at decoration
-    # time as `(handler, name, description, namespace)` tuples.
-    for handler, name, description, namespace in getattr(app, "_mcp_tools", ()):
+    # time as `(handler, name, description, namespace, scopes)` tuples.
+    for handler, name, description, namespace, scopes in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
-            registry, handler, name=name, description=description, namespace=namespace
+            registry,
+            handler,
+            name=name,
+            description=description,
+            namespace=namespace,
+            scopes=scopes,
         )
 
     # Routes flagged for exposure. Walk every route (including those hidden

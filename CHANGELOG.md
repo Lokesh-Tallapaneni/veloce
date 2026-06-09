@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP authorization: `mount_mcp(transport="http", auth=MCPAuth(...))` makes the
+  endpoint an OAuth 2.1 resource server — a user-supplied `verify` callable
+  validates the bearer token on every request, the RFC 9728 protected-resource
+  metadata is served, and a missing/invalid token returns `401` (insufficient
+  endpoint scope returns `403`) with a `WWW-Authenticate` challenge. Declarative
+  per-tool scopes (`@app.mcp_tool(scopes=...)`, `mcp_scopes=` on exposed routes)
+  are enforced against the request principal.
+- `Principal` + `current_principal()` / `set_principal()`: a unified authenticated
+  identity populated by HTTP auth or the MCP transport, so authorization and
+  identity-aware dependencies read one source across both doors.
+- `Request.is_mcp` marks a replayed MCP tool/resource call, so auth middleware can
+  defer to the transport on agent calls while business middleware runs unchanged.
 - MCP Streamable HTTP transport: `app.mount_mcp(transport="http", path="/mcp")`
   mounts the MCP server as a `POST` route, so it can run as a remote/hosted server
   under any ASGI server. A request with `Accept: text/event-stream` is answered with

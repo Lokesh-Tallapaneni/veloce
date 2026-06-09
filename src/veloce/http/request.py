@@ -842,6 +842,19 @@ class Request:
         return self._state.get("url_rule") if self._state else None
 
     @property
+    def is_mcp(self) -> bool:
+        """Return whether this request is a replayed MCP tool / resource call.
+
+        `True` when the request was synthesised by the MCP integration to replay a
+        route through `Depends` / middleware for an agent call, rather than a real
+        HTTP request. Authentication middleware that checks a browser credential
+        (a session cookie, an `Authorization` header) should return early on these
+        - the MCP transport authenticates the agent separately - while business
+        middleware can run unchanged.
+        """
+        return bool(self._state.get("_mcp")) if self._state else False
+
+    @property
     def blueprint(self) -> str | None:
         """Return the name of the blueprint that owns the matched route.
 

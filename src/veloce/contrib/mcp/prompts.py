@@ -83,6 +83,7 @@ def _register_prompt(
     name: str | None,
     description: str | None,
     namespace: str | None,
+    scopes: frozenset[str] | None = None,
 ) -> None:
     """Add an `@app.mcp_prompt`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -96,6 +97,7 @@ def _register_prompt(
         handler=handler,
         plan=plan,
         input_schema=input_schema,
+        required_scopes=scopes or frozenset(),
     )
     registry.add(
         MCPPrompt(
@@ -110,6 +112,13 @@ def _register_prompt(
 def build_prompt_registry(app: Any) -> PromptRegistry:
     """Assemble the prompt registry from `@app.mcp_prompt` registrations."""
     registry = PromptRegistry()
-    for handler, name, description, namespace in getattr(app, "_mcp_prompts", ()):
-        _register_prompt(registry, handler, name=name, description=description, namespace=namespace)
+    for handler, name, description, namespace, scopes in getattr(app, "_mcp_prompts", ()):
+        _register_prompt(
+            registry,
+            handler,
+            name=name,
+            description=description,
+            namespace=namespace,
+            scopes=scopes,
+        )
     return registry
