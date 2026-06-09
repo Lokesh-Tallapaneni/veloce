@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP Streamable HTTP transport: `app.mount_mcp(transport="http", path="/mcp")`
+  mounts the MCP server as a `POST` route, so it can run as a remote/hosted server
+  under any ASGI server. A request with `Accept: text/event-stream` is answered with
+  an SSE stream of the call's progress/log notifications followed by the JSON-RPC
+  response; otherwise a single JSON response. The route is protected by whatever
+  middleware and dependencies the app applies to it.
 - MCP progress and logging: `MCPContext.report_progress(...)` and
   `MCPContext.log(...)` now send live `notifications/progress` and
   `notifications/message` to the client (progress requires the client's

@@ -1697,38 +1697,48 @@ class Veloce(
 
         return decorator
 
-    def mount_mcp(self, transport: str = "stdio") -> Any:
+    def mount_mcp(self, transport: str = "stdio", *, path: str = "/mcp") -> Any:
         """Build the MCP server and serve the registered tools.
 
-        Assembles the tool registry from `@app.mcp_tool` registrations plus
-        every route flagged `expose_as_mcp_tool=True`, the resource registry from
-        every read-only route flagged `expose_as_mcp_resource=True`, and the
-        prompt registry from `@app.mcp_prompt` registrations, then serves them
-        over the chosen transport. Supports `transport="stdio"` only
-        (JSON-RPC 2.0 on stdin/stdout, for subprocess use); the coroutine runs
-        until stdin closes. Returns the awaitable serve coroutine so a caller may
-        schedule it explicitly (`asyncio.run(app.mount_mcp())`).
+        Assembles the tool registry from `@app.mcp_tool` registrations plus every
+        route flagged `expose_as_mcp_tool=True`, the resource registry from every
+        read-only route flagged `expose_as_mcp_resource=True`, and the prompt
+        registry from `@app.mcp_prompt` registrations, then serves them over the
+        chosen transport.
 
-        The serve loop runs inside the app's `lifespan_context()`, so the same
-        startup sequence an ASGI server enters - the lifespan context manager
-        plus every `on_startup` handler (DB pools, `app.state`, caches) - runs
-        before the first tool is served, and the matching shutdown sequence
-        runs after stdin closes.
+        `transport="stdio"` (the default) serves JSON-RPC 2.0 on stdin/stdout for
+        subprocess use and returns an awaitable serve coroutine that runs until
+        stdin closes, inside the app's `lifespan_context()` - so every
+        `on_startup` handler runs before the first tool is served. Schedule it
+        explicitly (`asyncio.run(app.mount_mcp())`).
+
+        `transport="http"` mounts the Streamable HTTP transport as a `POST` route
+        at `path` (default `/mcp`) on this app and returns `None`; serve the app
+        with any ASGI server (or `app.run()`) as usual. Protect the route with the
+        app's own middleware / dependencies - the transport adds no auth. Call this
+        after the tool / resource / prompt routes are registered.
         """
         from veloce.contrib.mcp.server import MCPServer
-        from veloce.contrib.mcp.transports.stdio import serve_stdio
 
-        if transport != "stdio":
-            raise ValueError(
-                f"Unsupported MCP transport {transport!r}; only 'stdio' is supported "
-                "(the Streamable HTTP transport is not yet implemented)."
-            )
-        server = MCPServer(self)
+        if transport == "stdio":
+            from veloce.contrib.mcp.transports.stdio import serve_stdio
 
-        async def _serve() -> None:
-            async with self.lifespan_context():
-                await serve_stdio(server)
+            server = MCPServer(self)
 
-        return _serve()
+            async def _serve() -> None:
+                async with self.lifespan_context():
+                    await serve_stdio(server)
+
+            return _serve()
+
+        if transport == "http":
+            from veloce.contrib.mcp.transports.http import register_http_transport
+
+            register_http_transport(self, MCPServer(self), path=path)
+            return None
+
+        raise ValueError(
+            f"Unsupported MCP transport {transport!r}; supported transports are 'stdio' and 'http'."
+        )
 
     # -- ASGI compatibility layer ---------------------------------

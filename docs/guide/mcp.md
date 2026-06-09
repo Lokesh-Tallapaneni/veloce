@@ -10,10 +10,11 @@ tools, so an AI agent can call them over JSON-RPC 2.0. Every Veloce route can
 also be a tool an agent invokes.
 
 The integration lives in `veloce.contrib.mcp`. It supports **tools**,
-**resources**, and **prompts** over the **stdio** transport (the framing an MCP
-client uses when it launches your server as a subprocess), negotiates the protocol
-version with the client, and exposes tool metadata (annotations, title, output
-schema). The Streamable HTTP transport is planned for a later release.
+**resources**, and **prompts** over both the **stdio** transport (the framing an
+MCP client uses when it launches your server as a subprocess) and the **Streamable
+HTTP** transport (a mounted route, for a remote/hosted server). It negotiates the
+protocol version with the client and exposes tool metadata (annotations, title,
+output schema).
 
 ## Registering an MCP-only tool
 
@@ -371,6 +372,47 @@ The serve loop runs inside the app's lifespan, so every `@app.on_startup`
 handler (database pools, `app.state`, caches) and the lifespan context manager
 run before the first tool is served, and the matching shutdown runs after the
 input closes - exactly as when the app is served by an ASGI server.
+
+## Serving over HTTP
+
+For a remote (hosted) MCP server, mount the **Streamable HTTP** transport. It adds
+a single `POST` route to your app, so you serve it with any ASGI server (or
+`app.run()`) like the rest of your application:
+
+```python
+import asyncio
+
+from veloce import Veloce
+
+app = Veloce()
+
+
+@app.mcp_tool(description="Add two integers")
+async def add(a: int, b: int) -> int:
+    return a + b
+
+
+app.mount_mcp(transport="http", path="/mcp")  # default path is "/mcp"
+
+if __name__ == "__main__":
+    asyncio.run(app.run())
+```
+
+Call `mount_mcp(transport="http")` **after** registering your tools, resources, and
+prompts. The client `POST`s one JSON-RPC message to the route and gets one reply:
+
+- A request with `Accept: text/event-stream` is answered with an SSE stream that
+  carries the call's progress / log notifications followed by the JSON-RPC
+  response. A request without it gets a single JSON response.
+- A notification (a message with no `id`) is answered with `202 Accepted` and no body.
+
+The endpoint is an ordinary Veloce route, so protect it the way you protect any
+route — middleware, `Depends`, a security scheme:
+
+!!! warning "Authentication is yours to add"
+    The transport adds no authentication. Mounting it exposes every registered
+    tool, resource, and prompt at the route. Put it behind your auth (an OAuth
+    Resource-Server check, an API key) before deploying it on a public network.
 
 ## Instrumentation
 

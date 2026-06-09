@@ -14,8 +14,9 @@ structured value `tools/call` returns alongside the text block. A read-only rout
 flagged ``expose_as_mcp_resource=True`` is served as a resource (``resources/list``,
 ``resources/templates/list``, ``resources/read``); a ``@app.mcp_prompt`` callable is
 served as a prompt template (``prompts/list``, ``prompts/get``); and a tool returning
-an image or audio response emits the matching typed content block. The Streamable
-HTTP transport is not yet implemented.
+an image or audio response emits the matching typed content block. Both the stdio
+transport (``mount_mcp()``) and the Streamable HTTP transport
+(``mount_mcp(transport="http")``) are supported.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from veloce.contrib.mcp.resources import (
     build_resource_registry,
 )
 from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.transports.http import register_http_transport
 from veloce.contrib.mcp.transports.stdio import StdioTransport, serve_stdio
 
 __all__ = [
@@ -44,5 +46,6 @@ __all__ = [
     "build_prompt_registry",
     "build_registry",
     "build_resource_registry",
+    "register_http_transport",
     "serve_stdio",
 ]

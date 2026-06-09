@@ -798,7 +798,7 @@ def test_instrumentation_fires_on_tool_call():
 def test_mount_mcp_rejects_unknown_transport():
     app = Veloce(openapi_url=None)
     with pytest.raises(ValueError, match="transport"):
-        app.mount_mcp(transport="http")
+        app.mount_mcp(transport="carrier-pigeon")
 
 
 def test_duplicate_tool_name_raises():
@@ -3253,3 +3253,195 @@ def test_pure_tool_error_text_shown_with_debug():
     result = _call(app, "boom", {})["result"]
     assert result["isError"] is True
     assert result["content"][0]["text"] == "a helpful development message"
+
+
+# -- Streamable HTTP transport ----------------------------------------
+
+
+def _parse_sse(body: bytes) -> list[dict]:
+    """Extract the JSON payloads from the `data:` lines of an SSE body."""
+    events: list[dict] = []
+    for raw in body.split(b"\n"):
+        line = raw.strip()
+        if line.startswith(b"data:"):
+            events.append(orjson.loads(line[len(b"data:") :].strip()))
+    return events
+
+
+def test_http_tool_call_returns_json():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "add", "arguments": {"a": 2, "b": 3}},
+        },
+    )
+    assert resp.status_code == 200
+    body = orjson.loads(resp.body)
+    assert body["result"]["content"][0]["text"] == "5"
+
+
+def test_http_initialize_returns_capabilities():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", path="/rpc")
+    resp = app.test_client().post(
+        "/rpc", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    body = orjson.loads(resp.body)
+    assert body["result"]["serverInfo"]["name"]
+    assert "tools" in body["result"]["capabilities"]
+
+
+def test_http_notification_returns_202():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    # A notification (no id) carries no reply.
+    resp = app.test_client().post(
+        "/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}
+    )
+    assert resp.status_code == 202
+    assert resp.body == b""
+
+
+def test_http_parse_error_is_400():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp", content=b"{not json", headers={"content-type": "application/json"}
+    )
+    assert resp.status_code == 400
+    assert orjson.loads(resp.body)["error"]["code"] == -32700
+
+
+def test_http_unknown_method_is_json_error():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "does/not/exist", "params": {}}
+    )
+    body = orjson.loads(resp.body)
+    assert body["error"]["code"] == -32601
+
+
+def test_http_resource_read_over_http():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{user_id}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        return {"id": user_id}
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {"uri": "users://9"},
+        },
+    )
+    body = orjson.loads(resp.body)
+    assert orjson.loads(body["result"]["contents"][0]["text"]) == {"id": 9}
+
+
+def test_http_sse_streams_progress_then_response():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work with progress")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 2)
+        await ctx.report_progress(2, 2)
+        return "done"
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "work", "arguments": {}, "_meta": {"progressToken": "p1"}},
+        },
+        headers={"accept": "text/event-stream"},
+    )
+    assert "text/event-stream" in resp.content_type
+    events = _parse_sse(resp.body)
+    progresses = [e for e in events if e.get("method") == "notifications/progress"]
+    assert len(progresses) == 2
+    assert progresses[0]["params"]["progressToken"] == "p1"
+    # The final SSE event is the JSON-RPC response, after the progress events.
+    response = events[-1]
+    assert response["id"] == 1
+    assert response["result"]["content"][0]["text"] == "done"
+
+
+def test_http_sse_concurrent_calls_do_not_cross_notifications():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Echo a label as progress")
+    async def echo(label: str, ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 1, message=label)
+        return label
+
+    app.mount_mcp(transport="http")
+    client = app.test_client()
+
+    def call(label: str) -> list[dict]:
+        resp = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "echo",
+                    "arguments": {"label": label},
+                    "_meta": {"progressToken": label},
+                },
+            },
+            headers={"accept": "text/event-stream"},
+        )
+        return _parse_sse(resp.body)
+
+    # Each call's progress notification carries only its own token, never the
+    # other call's - the per-request notifier scoping holds.
+    a_events = call("a")
+    b_events = call("b")
+    a_tokens = {e["params"]["progressToken"] for e in a_events if e.get("method")}
+    b_tokens = {e["params"]["progressToken"] for e in b_events if e.get("method")}
+    assert a_tokens == {"a"}
+    assert b_tokens == {"b"}

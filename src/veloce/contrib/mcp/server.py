@@ -21,6 +21,7 @@ import base64
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 import orjson
@@ -68,6 +69,15 @@ _JSONRPC_INTERNAL_ERROR = -32603
 # resolve or whose route answers 404.
 _JSONRPC_RESOURCE_NOT_FOUND = -32002
 
+# The current call's outbound notification sink, scoped per request so a handler's
+# progress / log notifications reach the right client. A ContextVar (not an
+# instance attribute) keeps concurrent calls isolated on the Streamable HTTP
+# transport, where many requests share one `MCPServer`; the serial stdio transport
+# sets it once per serve task. `None` means no channel is wired (off-transport).
+_notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = ContextVar(
+    "_mcp_notifier", default=None
+)
+
 
 class MCPServer:
     """Serve a Veloce app's MCP tools over JSON-RPC 2.0.
@@ -86,7 +96,6 @@ class MCPServer:
         "server_version",
         "_call_timeout",
         "_log_level",
-        "_notifier",
     )
 
     def __init__(
@@ -110,13 +119,16 @@ class MCPServer:
         self._call_timeout = config.get("MCP_CALL_TIMEOUT") if config is not None else None
         # The client's `logging/setLevel` minimum; `None` until set (emit all).
         self._log_level: str | None = None
-        # Outbound notification sink, wired by the transport via `set_notifier`.
-        # `None` off a transport - `MCPContext.log` / `report_progress` are inert.
-        self._notifier: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
-    def set_notifier(self, notifier: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
-        """Wire the transport's outbound one-way notification sink."""
-        self._notifier = notifier
+    @staticmethod
+    def set_notifier(notifier: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        """Wire the current context's outbound one-way notification sink.
+
+        Sets the per-request `_notifier_var`; the stdio transport calls this once
+        in its serve task, while the Streamable HTTP transport sets the var per
+        request so concurrent calls never cross notifications.
+        """
+        _notifier_var.set(notifier)
 
     # -- JSON-RPC dispatch ------------------------------------------
 
@@ -709,7 +721,7 @@ class MCPServer:
         context = MCPContext(
             tool.name,
             arguments,
-            notifier=self._notifier,
+            notifier=_notifier_var.get(),
             progress_token=progress_token,
             log_level=self._log_level,
         )
