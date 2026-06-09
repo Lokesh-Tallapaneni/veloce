@@ -201,6 +201,39 @@ def _register_explicit_tool(
     )
 
 
+def _tool_from_route(
+    info: Any, methods: list[str], schemas_registry: dict[str, dict[str, Any]]
+) -> MCPTool:
+    """Build the `MCPTool` for one exposed route.
+
+    Shared by the tool registry walk and the resource registry (a resource is a
+    read-only route invoked through the same handler-replay path as a tool), so
+    both derive the tool name, description, input/output schema, and the
+    route-replay fields (`route_info`, `route_method`, `route_dep_plans`) one
+    way. `methods` is the route's full verb set (a multi-verb route shares one
+    `RouteInfo`); its leading verb drives the synthetic request method and the
+    whole set drives the conservative annotation hints.
+    """
+    tool_name = _tool_name_from_route_name(info.name)
+    desc = require_mcp_description(tool_name, info.mcp_description)
+    plan = info.handler_plan if info.handler_plan is not None else build_plan(info.handler)
+    schema = build_input_schema(plan, schemas_registry)
+    output_schema, output_model = _output_schema_for(info.handler, info, schemas_registry)
+    return MCPTool(
+        name=tool_name,
+        description=desc,
+        handler=info.handler,
+        plan=plan,
+        input_schema=schema,
+        output_schema=output_schema,
+        output_model=output_model,
+        route_dep_plans=info.route_dep_plans,
+        route_info=info,
+        route_method=methods[0],
+        route_methods=methods,
+    )
+
+
 def build_registry(app: Any) -> ToolRegistry:
     """Assemble the tool registry from explicit tools plus exposed routes."""
     registry = ToolRegistry()
@@ -241,29 +274,6 @@ def build_registry(app: Any) -> ToolRegistry:
         methods_by_route[route_id].append(method)
 
     for route_id, info in exposed.items():
-        methods = methods_by_route[route_id]
-        tool_name = _tool_name_from_route_name(info.name)
-        desc = require_mcp_description(tool_name, info.mcp_description)
-        plan = info.handler_plan if info.handler_plan is not None else build_plan(info.handler)
-        schema = build_input_schema(plan, registry.schemas)
-        output_schema, output_model = _output_schema_for(info.handler, info, registry.schemas)
-        registry.add(
-            MCPTool(
-                name=tool_name,
-                description=desc,
-                handler=info.handler,
-                plan=plan,
-                input_schema=schema,
-                output_schema=output_schema,
-                output_model=output_model,
-                route_dep_plans=info.route_dep_plans,
-                route_info=info,
-                # The leading verb is the synthetic request method; the full set
-                # drives the annotation hints (a multi-verb route is rated
-                # conservatively across all its verbs).
-                route_method=methods[0],
-                route_methods=methods,
-            )
-        )
+        registry.add(_tool_from_route(info, methods_by_route[route_id], registry.schemas))
 
     return registry

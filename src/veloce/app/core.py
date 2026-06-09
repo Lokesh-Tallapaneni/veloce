@@ -1665,11 +1665,12 @@ class Veloce(
         """Build the MCP server and serve the registered tools.
 
         Assembles the tool registry from `@app.mcp_tool` registrations plus
-        every route flagged `expose_as_mcp_tool=True`, then serves it over the
-        chosen transport. Supports `transport="stdio"` only (JSON-RPC 2.0
-        on stdin/stdout, for subprocess use); the coroutine runs until stdin
-        closes. Returns the awaitable serve coroutine so a caller may schedule
-        it explicitly (`asyncio.run(app.mount_mcp())`).
+        every route flagged `expose_as_mcp_tool=True`, the resource registry from
+        every read-only route flagged `expose_as_mcp_resource=True`, then serves
+        them over the chosen transport. Supports `transport="stdio"` only
+        (JSON-RPC 2.0 on stdin/stdout, for subprocess use); the coroutine runs
+        until stdin closes. Returns the awaitable serve coroutine so a caller may
+        schedule it explicitly (`asyncio.run(app.mount_mcp())`).
 
         The serve loop runs inside the app's `lifespan_context()`, so the same
         startup sequence an ASGI server enters - the lifespan context manager

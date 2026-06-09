@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 
 import orjson
@@ -2460,3 +2461,383 @@ def test_response_model_exclude_drops_required_from_output_schema():
     result = _call(app, "partial", {})["result"]
     assert result["structuredContent"] == {"id": 1, "name": "ada"}
     assert "password" not in result["structuredContent"]
+
+
+# -- Resources --------------------------------------------------------
+
+
+def _list_resources(app: Veloce) -> dict[str, dict]:
+    """Drive one `resources/list` and return the entries keyed by URI."""
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/list", "params": {}})
+    out = asyncio.run(pipe.run())[0]
+    return {r["uri"]: r for r in out["result"]["resources"]}
+
+
+def _list_resource_templates(app: Veloce) -> dict[str, dict]:
+    """Drive one `resources/templates/list` and return the entries keyed by template."""
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/templates/list", "params": {}})
+    out = asyncio.run(pipe.run())[0]
+    return {r["uriTemplate"]: r for r in out["result"]["resourceTemplates"]}
+
+
+def _read_resource(app: Veloce, uri: str) -> dict:
+    """Drive one `resources/read` and return the single response object."""
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/read", "params": {"uri": uri}})
+    return asyncio.run(pipe.run())[0]
+
+
+def test_static_resource_is_listed():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        summary="App settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app/settings",
+        mcp_description="The application settings",
+    )
+    async def settings() -> dict:
+        return {"debug": False}
+
+    listed = _list_resources(app)
+    assert "config://app/settings" in listed
+    entry = listed["config://app/settings"]
+    assert entry["name"] == "settings"
+    assert entry["title"] == "App settings"
+    assert entry["description"] == "The application settings"
+    # A static resource is not advertised as a template.
+    assert "config://app/settings" not in _list_resource_templates(app)
+
+
+def test_template_resource_is_listed_as_template():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{user_id}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        return {"id": user_id}
+
+    templates = _list_resource_templates(app)
+    assert "users://{user_id}" in templates
+    # A template is not advertised under the concrete-URI list.
+    assert _list_resources(app) == {}
+
+
+def test_static_resource_read_returns_text_contents():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app/settings",
+        mcp_description="The application settings",
+    )
+    async def settings() -> dict:
+        return {"debug": False, "name": "veloce"}
+
+    out = _read_resource(app, "config://app/settings")
+    assert "error" not in out
+    contents = out["result"]["contents"]
+    assert len(contents) == 1
+    entry = contents[0]
+    assert entry["uri"] == "config://app/settings"
+    assert orjson.loads(entry["text"]) == {"debug": False, "name": "veloce"}
+
+
+def test_template_resource_read_invokes_handler_with_path_param():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{user_id}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        # The value arrives coerced to int, exactly as on the HTTP path.
+        return {"id": user_id, "doubled": user_id * 2}
+
+    out = _read_resource(app, "users://21")
+    assert "error" not in out
+    entry = out["result"]["contents"][0]
+    assert entry["uri"] == "users://21"
+    assert orjson.loads(entry["text"]) == {"id": 21, "doubled": 42}
+
+
+def test_resource_read_unknown_uri_is_resource_not_found():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app/settings",
+        mcp_description="Settings",
+    )
+    async def settings() -> dict:
+        return {}
+
+    out = _read_resource(app, "config://does/not/exist")
+    assert out["error"]["code"] == -32002
+
+
+def test_resource_read_route_404_is_resource_not_found():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{user_id}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        raise HTTPException(status_code=404, detail="no such user")
+
+    out = _read_resource(app, "users://7")
+    assert out["error"]["code"] == -32002
+
+
+def test_resource_read_template_coercion_failure_is_invalid_params():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{user_id}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        return {"id": user_id}
+
+    # `abc` cannot coerce to the `user_id: int` path parameter.
+    out = _read_resource(app, "users://abc")
+    assert out["error"]["code"] == -32602
+
+
+def test_resource_read_runs_route_dependency_guard():
+    app = Veloce(openapi_url=None)
+
+    def deny() -> None:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    @app.get(
+        "/secret",
+        dependencies=[Depends(deny)],
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="secret://data",
+        mcp_description="Guarded data",
+    )
+    async def secret() -> dict:
+        return {"top": "secret"}
+
+    out = _read_resource(app, "secret://data")
+    # The guard runs on the resource read, so the read fails rather than
+    # returning the protected body.
+    assert "error" in out
+    assert "result" not in out
+
+
+def test_initialize_advertises_resources_when_present():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="Settings",
+    )
+    async def settings() -> dict:
+        return {}
+
+    caps = _initialize(app, {})["result"]["capabilities"]
+    assert caps["resources"] == {"subscribe": False, "listChanged": False}
+
+
+def test_initialize_omits_resources_capability_when_none():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    caps = _initialize(app, {})["result"]["capabilities"]
+    assert "resources" not in caps
+
+
+def test_resource_on_mutating_route_is_rejected():
+    app = Veloce(openapi_url=None)
+
+    @app.post(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="Settings",
+    )
+    async def settings() -> dict:
+        return {}
+
+    with pytest.raises(ValueError, match="read-only"):
+        _server(app)
+
+
+def test_resource_without_uri_is_rejected():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/settings", expose_as_mcp_resource=True, mcp_description="Settings")
+    async def settings() -> dict:
+        return {}
+
+    with pytest.raises(ValueError, match="mcp_resource_uri"):
+        _server(app)
+
+
+def test_resource_uri_template_variable_mismatch_is_rejected():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{wrong_name}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        return {"id": user_id}
+
+    with pytest.raises(ValueError, match="must match its path parameters"):
+        _server(app)
+
+
+def test_resource_missing_description_is_rejected():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+    )
+    async def settings() -> dict:
+        return {}
+
+    with pytest.raises(ValueError, match="description"):
+        _server(app)
+
+
+def test_duplicate_resource_uri_is_rejected():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/a",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="A",
+    )
+    async def a() -> dict:
+        return {}
+
+    @app.get(
+        "/b",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="B",
+    )
+    async def b() -> dict:
+        return {}
+
+    with pytest.raises(ValueError, match="Duplicate MCP resource URI"):
+        _server(app)
+
+
+def test_resource_read_response_model_filters_fields():
+    """A resource route's `response_model` filters the body the agent reads, so a
+    field outside the model never leaks over a resource read."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/me",
+        response_model=PublicUser,
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://me",
+        mcp_description="Current user",
+    )
+    async def me() -> dict:
+        return {"id": 1, "name": "ada", "password": "s3cret"}
+
+    out = _read_resource(app, "users://me")
+    payload = orjson.loads(out["result"]["contents"][0]["text"])
+    assert payload == {"id": 1, "name": "ada"}
+    assert "password" not in payload
+
+
+def test_resource_read_binary_returns_blob():
+    app = Veloce(openapi_url=None)
+    png = b"\x89PNG\r\n\x1a\n\x00\x00binary"
+
+    @app.get(
+        "/logo",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="assets://logo.png",
+        mcp_description="The logo image",
+    )
+    async def logo() -> Response:
+        return Response(body=png, content_type="image/png")
+
+    out = _read_resource(app, "assets://logo.png")
+    entry = out["result"]["contents"][0]
+    assert entry["mimeType"] == "image/png"
+    assert "text" not in entry
+    assert base64.b64decode(entry["blob"]) == png
+
+
+# -- Non-text tool content (image / audio) ----------------------------
+
+
+def test_pure_tool_image_response_emits_image_block():
+    app = Veloce(openapi_url=None)
+    png = b"\x89PNG\r\n\x1a\nfake-image-bytes"
+
+    @app.mcp_tool(description="Render a chart")
+    async def chart() -> Response:
+        return Response(body=png, content_type="image/png")
+
+    result = _call(app, "chart", {})["result"]
+    block = result["content"][0]
+    assert block["type"] == "image"
+    assert block["mimeType"] == "image/png"
+    assert base64.b64decode(block["data"]) == png
+    # An image body has no text form, so no decoded-text block is emitted.
+    assert len(result["content"]) == 1
+
+
+def test_route_tool_audio_response_emits_audio_block():
+    app = Veloce(openapi_url=None)
+    wav = b"RIFF....WAVEfake-audio"
+
+    @app.get("/say", expose_as_mcp_tool=True, mcp_description="Synthesize speech")
+    async def say() -> Response:
+        return Response(body=wav, content_type="audio/wav")
+
+    result = _call(app, "say", {})["result"]
+    block = result["content"][0]
+    assert block["type"] == "audio"
+    assert block["mimeType"] == "audio/wav"
+    assert base64.b64decode(block["data"]) == wav
+    assert "structuredContent" not in result
+
+
+def test_non_binary_response_still_emits_text_block():
+    """A JSON/text response is unaffected by the non-text shaping path."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/data2", expose_as_mcp_tool=True, mcp_description="Raw data")
+    async def data2() -> JSONResponse:
+        return JSONResponse({"value": 42})
+
+    result = _call(app, "data2", {})["result"]
+    assert result["content"][0]["type"] == "text"
+    assert orjson.loads(result["content"][0]["text"]) == {"value": 42}

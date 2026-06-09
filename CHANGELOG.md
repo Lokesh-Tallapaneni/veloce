@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MCP resources: expose a read-only (`GET`/`HEAD`) route as a Model Context
+  Protocol resource with `expose_as_mcp_resource=True` and `mcp_resource_uri=...`
+  (a static URI, or a URI template such as `users://{user_id}` binding the route's
+  path parameters). The server answers `resources/list`, `resources/templates/list`,
+  and `resources/read`, replaying the route's dependencies, security, and
+  `response_model` through the shared invocation path; it advertises the
+  `resources` capability when at least one resource is registered.
+- MCP non-text tool content: a tool returning an `image/*` or `audio/*` response
+  emits the matching typed MCP content block (base64), and a binary resource read
+  returns its bytes as a `blob`.
+
 ## [0.4.0] - 2026-06-08
 
 ### Added

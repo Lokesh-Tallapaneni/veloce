@@ -14,6 +14,7 @@ request path uses.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -25,6 +26,7 @@ from veloce._internal import _is_async_callable, is_json_mimetype, offload
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
+from veloce.contrib.mcp.resources import MCPResource, ResourceRegistry, build_resource_registry
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import RequestValidationError
 from veloce.helpers import _current_app_var, _current_request_var, g
@@ -56,6 +58,11 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 _JSONRPC_INVALID_PARAMS = -32602
 _JSONRPC_INTERNAL_ERROR = -32603
 
+# MCP "Resource not found" code (server-defined, outside the JSON-RPC reserved
+# range), returned when ``resources/read`` names a URI the registry cannot
+# resolve or whose route answers 404.
+_JSONRPC_RESOURCE_NOT_FOUND = -32002
+
 
 class MCPServer:
     """Serve a Veloce app's MCP tools over JSON-RPC 2.0.
@@ -65,11 +72,17 @@ class MCPServer:
     surfaces before any client connects.
     """
 
-    __slots__ = ("app", "registry", "server_name", "server_version")
+    __slots__ = ("app", "registry", "resources", "server_name", "server_version")
 
-    def __init__(self, app: Any, registry: ToolRegistry | None = None) -> None:
+    def __init__(
+        self,
+        app: Any,
+        registry: ToolRegistry | None = None,
+        resources: ResourceRegistry | None = None,
+    ) -> None:
         self.app = app
         self.registry = registry if registry is not None else build_registry(app)
+        self.resources = resources if resources is not None else build_resource_registry(app)
         self.server_name = getattr(app, "title", None) or "Veloce"
         self.server_version = getattr(app, "version", None) or "0.1.0"
 
@@ -104,12 +117,20 @@ class MCPServer:
                 result = self._tools_list()
             elif method == "tools/call":
                 result = await self._tools_call(params)
+            elif method == "resources/list":
+                result = self._resources_list()
+            elif method == "resources/templates/list":
+                result = self._resource_templates_list()
+            elif method == "resources/read":
+                result = await self._resources_read(params)
             else:
                 if is_notification:
                     return None
                 return _error(msg_id, _JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
         except _ToolInputError as exc:
             return _error(msg_id, _JSONRPC_INVALID_PARAMS, str(exc))
+        except _ResourceError as exc:
+            return _error(msg_id, exc.code, str(exc))
         except Exception as exc:  # pragma: no cover - defensive
             _logger.exception("MCP method %s raised", method)
             return _error(msg_id, _JSONRPC_INTERNAL_ERROR, str(exc))
@@ -129,9 +150,16 @@ class MCPServer:
             if isinstance(requested, str) and requested in _SUPPORTED_PROTOCOL_VERSIONS
             else LATEST_PROTOCOL_VERSION
         )
+        # `tools` is always advertised; `resources` only when the app exposes at
+        # least one, so a client does not probe a primitive this server has
+        # nothing to serve for. `subscribe`/`listChanged` are off - resources are
+        # served on demand, with no update notifications on the serial loop.
+        capabilities: dict[str, Any] = {"tools": {"listChanged": False}}
+        if self.resources.resources:
+            capabilities["resources"] = {"subscribe": False, "listChanged": False}
         return {
             "protocolVersion": version,
-            "capabilities": {"tools": {"listChanged": False}},
+            "capabilities": capabilities,
             "serverInfo": {"name": self.server_name, "version": self.server_version},
         }
 
@@ -217,6 +245,12 @@ class MCPServer:
             # return. `_drain_stream` is a no-op for a non-streaming value.
             if isinstance(result, Response):
                 await self._drain_stream(result)
+                # An image/audio Response has no text form; return the typed
+                # content block directly, reporting the response's own status.
+                binary = _binary_result(result)
+                if binary is not None:
+                    await self._instrument(tool, started, result.status_code)
+                    return binary
             shaped = self._shape_result(tool, result)
         except (_StreamTooLarge, _StreamTimeout) as exc:
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -353,6 +387,11 @@ class MCPServer:
         conforms to the advertised `outputSchema` and a field the model would
         exclude cannot leak under a schema that says it is absent.
         """
+        # An image/audio body has no text form; emit it as the matching typed
+        # MCP content block (base64) rather than a decoded-text block.
+        binary = _binary_result(response)
+        if binary is not None:
+            return binary
         shaped = self._shape_result(tool, response)
         # A 4xx/5xx is an in-band error: surface the body text and flag it,
         # without structured content (the error body is not the tool's output
@@ -452,6 +491,64 @@ class MCPServer:
         if isinstance(result, Response):
             return _response_body_value(result)
         return result
+
+    # -- Resources --------------------------------------------------
+
+    def _resources_list(self) -> dict[str, Any]:
+        return {"resources": [_describe_resource(r) for r in self.resources.statics()]}
+
+    def _resource_templates_list(self) -> dict[str, Any]:
+        return {
+            "resourceTemplates": [
+                _describe_resource_template(r) for r in self.resources.templates()
+            ]
+        }
+
+    async def _resources_read(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Read one resource by URI, replaying its route through `_invoke`.
+
+        The URI is matched against the registry (a static URI exactly, a template
+        by its compiled pattern), the route's path-parameter values are recovered
+        from the URI, and the handler runs through the same request lifecycle a
+        tool call replays. The response body becomes the resource contents: a
+        JSON/`text/*` body as `text`, any other media type as a base64 `blob`. An
+        unknown URI - or a route answering 404 - is a resource-not-found error; a
+        handler 4xx/5xx surfaces as a JSON-RPC error, since a resource read has no
+        in-band error channel.
+        """
+        uri = params.get("uri")
+        if not isinstance(uri, str):
+            raise _ToolInputError("resources/read requires a string 'uri'")
+        matched = self.resources.match(uri)
+        if matched is None:
+            raise _ResourceError(_JSONRPC_RESOURCE_NOT_FOUND, f"Unknown resource: {uri}")
+        resource, arguments = matched
+
+        try:
+            result = await self._invoke(resource.tool, arguments)
+        except _ToolInputError as exc:
+            # A path-parameter value the URI carries that the route cannot coerce
+            # (a non-int `{user_id}`) is an invalid-params read, not a 404.
+            raise _ResourceError(_JSONRPC_INVALID_PARAMS, str(exc)) from exc
+
+        # A resource is always route-backed, so `_invoke` yields a
+        # `_RouteResponse` (or a `_ShortCircuit` from a middleware / before_request
+        # guard); both carry the `Response` whose body is the resource contents.
+        response = result.response if isinstance(result, (_ShortCircuit, _RouteResponse)) else None
+        if response is None:
+            raise _ResourceError(_JSONRPC_INTERNAL_ERROR, f"Resource {uri} produced no response")
+        try:
+            await self._drain_stream(response)
+        except (_StreamTooLarge, _StreamTimeout) as exc:
+            raise _ResourceError(_JSONRPC_INTERNAL_ERROR, str(exc)) from exc
+        if response.status_code >= 400:
+            code = (
+                _JSONRPC_RESOURCE_NOT_FOUND
+                if response.status_code == status.HTTP_404_NOT_FOUND
+                else _JSONRPC_INTERNAL_ERROR
+            )
+            raise _ResourceError(code, _stringify(_response_body_value(response)))
+        return {"contents": [_resource_contents(uri, response)]}
 
     # -- Invocation -------------------------------------------------
 
@@ -803,6 +900,75 @@ def _to_structured(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def _binary_result(response: Response) -> dict[str, Any] | None:
+    """Shape an image/audio response body into a typed MCP content block.
+
+    MCP defines first-class `image` and `audio` content blocks carrying the bytes
+    as base64 with their media type. A body of either kind has no useful text
+    form, so it is emitted as that typed block instead of a garbled decoded-text
+    block; any other media type returns `None` and the caller shapes it as text /
+    structured content as before. A 4xx/5xx still flags `isError` so an error is
+    never read as a successful result.
+    """
+    mimetype = response.mimetype
+    if mimetype.startswith("image/"):
+        kind = "image"
+    elif mimetype.startswith("audio/"):
+        kind = "audio"
+    else:
+        return None
+    block = {
+        "type": kind,
+        "data": base64.b64encode(response.body or b"").decode("ascii"),
+        "mimeType": mimetype,
+    }
+    result: dict[str, Any] = {"content": [block]}
+    if response.status_code >= 400:
+        result["isError"] = True
+    return result
+
+
+def _describe_resource(resource: MCPResource) -> dict[str, Any]:
+    """Shape a static resource into its `resources/list` entry."""
+    entry: dict[str, Any] = {
+        "uri": resource.uri,
+        "name": resource.name,
+        "description": resource.description,
+    }
+    if resource.title:
+        entry["title"] = resource.title
+    return entry
+
+
+def _describe_resource_template(resource: MCPResource) -> dict[str, Any]:
+    """Shape a template resource into its `resources/templates/list` entry."""
+    entry: dict[str, Any] = {
+        "uriTemplate": resource.uri,
+        "name": resource.name,
+        "description": resource.description,
+    }
+    if resource.title:
+        entry["title"] = resource.title
+    return entry
+
+
+def _resource_contents(uri: str, response: Response) -> dict[str, Any]:
+    """Shape a resource route's response body into one MCP resource-contents entry.
+
+    A JSON or `text/*` body is returned as `text` (the value an agent reads); any
+    other media type is returned as a base64 `blob`. The entry carries the read
+    URI and the response's media type.
+    """
+    mimetype = response.mimetype
+    body = response.body or b""
+    entry: dict[str, Any] = {"uri": uri, "mimeType": mimetype}
+    if is_json_mimetype(mimetype) or mimetype.startswith("text/"):
+        entry["text"] = body.decode("utf-8", "replace")
+    else:
+        entry["blob"] = base64.b64encode(body).decode("ascii")
+    return entry
+
+
 # Cap on the bytes buffered from a streamed tool result. A streamed response has
 # no single body, so the MCP path drains it into one (`_drain_stream`); this
 # bound stops a runaway or unbounded stream from exhausting memory - crossing it
@@ -819,6 +985,14 @@ _STREAM_DRAIN_TIMEOUT = 30.0
 
 class _ToolInputError(Exception):
     """A malformed tool call - reported as a JSON-RPC invalid-params error."""
+
+
+class _ResourceError(Exception):
+    """A ``resources/read`` failure, reported as a JSON-RPC error with `code`."""
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class _StreamTooLarge(Exception):

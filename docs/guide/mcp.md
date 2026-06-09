@@ -9,11 +9,11 @@ Veloce can expose your handlers as [Model Context Protocol](https://modelcontext
 tools, so an AI agent can call them over JSON-RPC 2.0. Every Veloce route can
 also be a tool an agent invokes.
 
-The integration lives in `veloce.contrib.mcp`. It supports **tools** over the
-**stdio** transport (the framing an MCP client uses when it launches your server
-as a subprocess), negotiates the protocol version with the client, and exposes
-tool metadata (annotations, title, output schema). Resources, prompts, and the
-Streamable HTTP transport are planned for a later release.
+The integration lives in `veloce.contrib.mcp`. It supports **tools** and
+**resources** over the **stdio** transport (the framing an MCP client uses when it
+launches your server as a subprocess), negotiates the protocol version with the
+client, and exposes tool metadata (annotations, title, output schema). Prompts and
+the Streamable HTTP transport are planned for a later release.
 
 ## Registering an MCP-only tool
 
@@ -136,6 +136,91 @@ async def get_user(user_id: int) -> User:
 # tools/call -> structuredContent {"id": ..., "name": ...} plus the text block
 ```
 
+## Non-text tool content
+
+A tool whose handler returns an `image/*` or `audio/*` response emits the matching
+typed MCP content block — the bytes as base64 with their media type — instead of a
+text block, so an agent receives a real image or audio result:
+
+```python
+from veloce import Response, Veloce
+
+app = Veloce()
+
+
+@app.mcp_tool(description="Render the latest chart as a PNG")
+async def chart() -> Response:
+    png_bytes = b"\x89PNG\r\n\x1a\n"  # ... your rendered PNG bytes
+    return Response(body=png_bytes, content_type="image/png")
+# tools/call -> content: [{"type": "image", "data": "<base64>", "mimeType": "image/png"}]
+```
+
+Any other media type is shaped as before (a JSON or text body becomes a text
+block).
+
+!!! note "Added in version 0.5"
+    Image/audio tool content blocks and the resources primitive below.
+
+## Resources
+
+A **resource** is the MCP primitive for data an agent reads by URI, the
+counterpart to a tool it calls. Expose a read-only (`GET`/`HEAD`) route as a
+resource with `expose_as_mcp_resource=True` and an `mcp_resource_uri`. A route
+with no path parameters takes a static URI:
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+
+
+@app.get(
+    "/settings",
+    expose_as_mcp_resource=True,
+    mcp_resource_uri="config://app/settings",
+    mcp_description="The application settings",
+)
+async def settings() -> dict:
+    return {"debug": False}
+# resources/list -> {"uri": "config://app/settings", "name": "settings", ...}
+# resources/read {"uri": "config://app/settings"} -> contents text {"debug": false}
+```
+
+A route **with** path parameters takes a URI template whose variables bind those
+parameters exactly (one variable per path parameter). It is advertised through
+`resources/templates/list`, and `resources/read` recovers the parameter values
+from the concrete URI:
+
+```python
+@app.get(
+    "/users/{user_id}",
+    expose_as_mcp_resource=True,
+    mcp_resource_uri="users://{user_id}",
+    mcp_description="A user record",
+)
+async def user(user_id: int) -> dict:
+    return {"id": user_id}
+# resources/templates/list -> {"uriTemplate": "users://{user_id}", ...}
+# resources/read {"uri": "users://42"} -> the handler runs with user_id=42
+```
+
+A resource read replays the route through the same request lifecycle a tool call
+does, so its `Depends`, `Security`, middleware, and `response_model` all run — a
+field outside the response model never reaches the agent, and a guard that rejects
+the call fails the read. The response body becomes the resource contents: a JSON or
+`text/*` body is returned as `text`, and any other media type (an image, a binary
+file) as a base64 `blob`.
+
+!!! warning "Resources are read-only"
+    Only a `GET`/`HEAD` route may be a resource; exposing a mutating route this way
+    raises at startup. Expose a mutating route as a tool
+    (`expose_as_mcp_tool=True`) instead. As with tools, exposure is
+    default-closed: a route is a resource only when its author opts in, and an
+    `mcp_description` is required.
+
+The server advertises the `resources` capability only when at least one resource
+is registered.
+
 ## The MCP context
 
 A tool handler (or one of its dependencies) may declare a parameter typed
@@ -209,7 +294,8 @@ if __name__ == "__main__":
 
 Point your MCP client at this script as a subprocess command; it will receive
 `initialize` (negotiating the protocol version with the client), `ping`,
-`tools/list`, and `tools/call` and respond on stdout.
+`tools/list`, `tools/call`, and — when resources are registered — `resources/list`,
+`resources/templates/list`, and `resources/read`, and respond on stdout.
 
 The serve loop runs inside the app's lifespan, so every `@app.on_startup`
 handler (database pools, `app.state`, caches) and the lifespan context manager
