@@ -206,6 +206,9 @@ class RouteInfo:
         "host",
         "expose_as_mcp_tool",
         "mcp_description",
+        "expose_as_mcp_resource",
+        "mcp_resource_uri",
+        "mcp_scopes",
         "excluded_middleware",
         "_mw_chain_cache",
     )
@@ -241,6 +244,9 @@ class RouteInfo:
         host: str | None = None,
         expose_as_mcp_tool: bool = False,
         mcp_description: str | None = None,
+        expose_as_mcp_resource: bool = False,
+        mcp_resource_uri: str | None = None,
+        mcp_scopes: Sequence[str] | None = None,
         excluded_middleware: frozenset[str] | None = None,
     ) -> None:
         self.handler = handler
@@ -318,6 +324,17 @@ class RouteInfo:
         # safety policy at registry-build time.
         self.expose_as_mcp_tool = expose_as_mcp_tool
         self.mcp_description = mcp_description
+        # MCP resource exposure (contrib.mcp). `expose_as_mcp_resource` opts a
+        # read-only (GET/HEAD) route into the MCP resource registry;
+        # `mcp_resource_uri` is its resource URI - a static URI for a route with
+        # no path parameters, or a URI template (e.g. `users://{user_id}`) whose
+        # variables bind the route's path parameters.
+        self.expose_as_mcp_resource = expose_as_mcp_resource
+        self.mcp_resource_uri = mcp_resource_uri
+        # MCP authorization scopes required to call this route as a tool / read it
+        # as a resource. `None` means no scope requirement; a non-empty set is
+        # enforced against the request principal's granted scopes.
+        self.mcp_scopes = frozenset(mcp_scopes) if mcp_scopes else None
         # Named middleware this route opts out of. `None` (the common case)
         # means "run every registered middleware" - the dispatch hot path
         # then iterates the app's middleware list directly with zero extra
@@ -612,6 +629,9 @@ class Router:
         "host",
         "expose_as_mcp_tool",
         "mcp_description",
+        "expose_as_mcp_resource",
+        "mcp_resource_uri",
+        "mcp_scopes",
         "excluded_middleware",
     )
 
@@ -793,6 +813,9 @@ class Router:
             host=info.host,
             expose_as_mcp_tool=info.expose_as_mcp_tool,
             mcp_description=info.mcp_description,
+            expose_as_mcp_resource=info.expose_as_mcp_resource,
+            mcp_resource_uri=info.mcp_resource_uri,
+            mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
             excluded_middleware=info.excluded_middleware,
         )
 
@@ -1010,6 +1033,21 @@ class Router:
             str | None,
             Doc("LLM-facing description for the route's MCP tool, required when exposed as one."),
         ] = None,
+        expose_as_mcp_resource: Annotated[
+            bool,
+            Doc("Expose the read-only route as an MCP resource in the contrib MCP registry."),
+        ] = False,
+        mcp_resource_uri: Annotated[
+            str | None,
+            Doc(
+                "Resource URI for the route's MCP resource: a static URI, or a URI "
+                "template (`users://{user_id}`) binding its path parameters."
+            ),
+        ] = None,
+        mcp_scopes: Annotated[
+            Sequence[str] | None,
+            Doc("Authorization scopes required to call this route over MCP."),
+        ] = None,
         exclude_middleware: Annotated[
             Sequence[str] | None,
             Doc("Names of middleware this route opts out of."),
@@ -1074,6 +1112,9 @@ class Router:
             host=host,
             expose_as_mcp_tool=expose_as_mcp_tool,
             mcp_description=mcp_description,
+            expose_as_mcp_resource=expose_as_mcp_resource,
+            mcp_resource_uri=mcp_resource_uri,
+            mcp_scopes=mcp_scopes,
             excluded_middleware=frozenset(exclude_middleware) if exclude_middleware else None,
         )
 
@@ -1579,6 +1620,21 @@ class Router:
             str | None,
             Doc("LLM-facing description for the route's MCP tool, required when exposed as one."),
         ] = None,
+        expose_as_mcp_resource: Annotated[
+            bool,
+            Doc("Expose the read-only route as an MCP resource in the contrib MCP registry."),
+        ] = False,
+        mcp_resource_uri: Annotated[
+            str | None,
+            Doc(
+                "Resource URI for the route's MCP resource: a static URI, or a URI "
+                "template (`users://{user_id}`) binding its path parameters."
+            ),
+        ] = None,
+        mcp_scopes: Annotated[
+            Sequence[str] | None,
+            Doc("Authorization scopes required to call this route over MCP."),
+        ] = None,
         exclude_middleware: Annotated[
             Sequence[str] | None,
             Doc("Names of middleware this route opts out of."),
@@ -1625,6 +1681,9 @@ class Router:
                 host=host,
                 expose_as_mcp_tool=expose_as_mcp_tool,
                 mcp_description=mcp_description,
+                expose_as_mcp_resource=expose_as_mcp_resource,
+                mcp_resource_uri=mcp_resource_uri,
+                mcp_scopes=mcp_scopes,
                 exclude_middleware=exclude_middleware,
             )
             return func
@@ -2063,4 +2122,7 @@ def _readd_route(
         host=info.host,
         expose_as_mcp_tool=info.expose_as_mcp_tool,
         mcp_description=info.mcp_description,
+        expose_as_mcp_resource=info.expose_as_mcp_resource,
+        mcp_resource_uri=info.mcp_resource_uri,
+        mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
     )

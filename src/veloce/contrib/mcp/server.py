@@ -1,35 +1,44 @@
 """MCPServer — dispatch JSON-RPC 2.0 method calls against the tool registry.
 
 The server is transport-agnostic: a transport (stdio) hands it decoded JSON-RPC
-request objects and forwards the responses it returns. It implements the Model
-Context Protocol methods this server needs - ``initialize`` (negotiating the
-protocol version), ``ping``, ``tools/list``, and ``tools/call`` - plus the
+request objects, forwards the responses it returns, and supplies the outbound sink
+(`set_notifier`) the server pushes one-way notifications through. It implements
+``initialize`` (negotiating the protocol version), ``ping``, the tool methods
+(``tools/list`` / ``tools/call``), the resource methods (``resources/list`` /
+``resources/templates/list`` / ``resources/read``), the prompt methods
+(``prompts/list`` / ``prompts/get``), ``logging/setLevel``, and the
 ``notifications/initialized`` ack. A ``tools/call`` runs the handler through the
 shared `DependencyResolver`, so `Depends()` graphs, `yield`-style teardown, and
-`Security` all behave exactly as on the HTTP and WebSocket paths. Per-tool
-instrumentation fires through the same `app.add_instrumentation` hook the
-request path uses.
+`Security` all behave exactly as on the HTTP and WebSocket paths; resource reads
+and prompt renders replay the same invocation path. Per-tool instrumentation fires
+through the same `app.add_instrumentation` hook the request path uses.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 import orjson
 
 from veloce import status
 from veloce._internal import _is_async_callable, is_json_mimetype, offload
-from veloce.contrib.mcp.context import MCPContext
+from veloce.contrib.mcp.context import _LOG_RANKS, MCPContext
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
+from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
+from veloce.contrib.mcp.resources import MCPResource, ResourceRegistry, build_resource_registry
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import RequestValidationError
 from veloce.helpers import _current_app_var, _current_request_var, g
 from veloce.http.response import Response
 from veloce.instrumentation import RequestMetrics
+from veloce.principal import current_principal
 from veloce.routing.router import RouteMatch
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -56,6 +65,31 @@ _JSONRPC_METHOD_NOT_FOUND = -32601
 _JSONRPC_INVALID_PARAMS = -32602
 _JSONRPC_INTERNAL_ERROR = -32603
 
+# MCP "Resource not found" code (server-defined, outside the JSON-RPC reserved
+# range), returned when ``resources/read`` names a URI the registry cannot
+# resolve or whose route answers 404.
+_JSONRPC_RESOURCE_NOT_FOUND = -32002
+
+# Server-defined "forbidden" code, returned when the request principal lacks a
+# tool's / resource's required authorization scopes (the JSON-RPC analogue of an
+# HTTP 403 insufficient_scope).
+_JSONRPC_FORBIDDEN = -32003
+
+# The current call's outbound notification sink, scoped per request so a handler's
+# progress / log notifications reach the right client. A ContextVar (not an
+# instance attribute) keeps concurrent calls isolated on the Streamable HTTP
+# transport, where many requests share one `MCPServer`; the serial stdio transport
+# sets it once per serve task. `None` means no channel is wired (off-transport).
+_notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = ContextVar(
+    "_mcp_notifier", default=None
+)
+
+# The current call's `logging/setLevel` minimum, scoped per request like the
+# notifier so one HTTP client's level change cannot raise the floor for another.
+# `None` until set (emit all). The serial stdio loop sets it once in its serve
+# task, where it persists for the connection.
+_log_level_var: ContextVar[str | None] = ContextVar("_mcp_log_level", default=None)
+
 
 class MCPServer:
     """Serve a Veloce app's MCP tools over JSON-RPC 2.0.
@@ -65,13 +99,45 @@ class MCPServer:
     surfaces before any client connects.
     """
 
-    __slots__ = ("app", "registry", "server_name", "server_version")
+    __slots__ = (
+        "app",
+        "prompts",
+        "registry",
+        "resources",
+        "server_name",
+        "server_version",
+        "_call_timeout",
+    )
 
-    def __init__(self, app: Any, registry: ToolRegistry | None = None) -> None:
+    def __init__(
+        self,
+        app: Any,
+        registry: ToolRegistry | None = None,
+        resources: ResourceRegistry | None = None,
+        prompts: PromptRegistry | None = None,
+    ) -> None:
         self.app = app
         self.registry = registry if registry is not None else build_registry(app)
+        self.resources = resources if resources is not None else build_resource_registry(app)
+        self.prompts = prompts if prompts is not None else build_prompt_registry(app)
         self.server_name = getattr(app, "title", None) or "Veloce"
         self.server_version = getattr(app, "version", None) or "0.1.0"
+        # Optional per-call wall-clock budget (`MCP_CALL_TIMEOUT` seconds in
+        # `app.config`). The stdio serve loop is serial, so a handler that awaits
+        # forever wedges every later call; when set, a call exceeding the budget
+        # is cancelled and surfaced as an in-band tool error. `None` disables it.
+        config = getattr(app, "config", None)
+        self._call_timeout = config.get("MCP_CALL_TIMEOUT") if config is not None else None
+
+    @staticmethod
+    def set_notifier(notifier: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        """Wire the current context's outbound one-way notification sink.
+
+        Sets the per-request `_notifier_var`; the stdio transport calls this once
+        in its serve task, while the Streamable HTTP transport sets the var per
+        request so concurrent calls never cross notifications.
+        """
+        _notifier_var.set(notifier)
 
     # -- JSON-RPC dispatch ------------------------------------------
 
@@ -104,15 +170,37 @@ class MCPServer:
                 result = self._tools_list()
             elif method == "tools/call":
                 result = await self._tools_call(params)
+            elif method == "resources/list":
+                result = self._resources_list()
+            elif method == "resources/templates/list":
+                result = self._resource_templates_list()
+            elif method == "resources/read":
+                result = await self._resources_read(params)
+            elif method == "prompts/list":
+                result = self._prompts_list()
+            elif method == "prompts/get":
+                result = await self._prompts_get(params)
+            elif method == "logging/setLevel":
+                result = self._set_log_level(params)
             else:
                 if is_notification:
                     return None
                 return _error(msg_id, _JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
         except _ToolInputError as exc:
             return _error(msg_id, _JSONRPC_INVALID_PARAMS, str(exc))
+        except _ResourceError as exc:
+            return _error(msg_id, exc.code, str(exc))
+        except _AuthorizationError as exc:
+            return _error(
+                msg_id, _JSONRPC_FORBIDDEN, str(exc), {"requiredScopes": sorted(exc.scopes)}
+            )
+        except asyncio.TimeoutError:
+            # A resources/read or prompts/get that overran the per-call budget
+            # (a tools/call surfaces its own timeout in-band before here).
+            return _error(msg_id, _JSONRPC_INTERNAL_ERROR, "request exceeded the MCP call timeout")
         except Exception as exc:  # pragma: no cover - defensive
             _logger.exception("MCP method %s raised", method)
-            return _error(msg_id, _JSONRPC_INTERNAL_ERROR, str(exc))
+            return _error(msg_id, _JSONRPC_INTERNAL_ERROR, self._error_text(exc, "internal error"))
 
         if is_notification:
             return None
@@ -129,9 +217,21 @@ class MCPServer:
             if isinstance(requested, str) and requested in _SUPPORTED_PROTOCOL_VERSIONS
             else LATEST_PROTOCOL_VERSION
         )
+        # `tools` is always advertised; `resources` only when the app exposes at
+        # least one, so a client does not probe a primitive this server has
+        # nothing to serve for. `subscribe`/`listChanged` are off - resources are
+        # served on demand, with no update notifications on the serial loop.
+        # `logging` is always advertised: any tool may emit a log message through
+        # `MCPContext.log`, and the client may raise the minimum with
+        # ``logging/setLevel``.
+        capabilities: dict[str, Any] = {"tools": {"listChanged": False}, "logging": {}}
+        if self.resources.resources:
+            capabilities["resources"] = {"subscribe": False, "listChanged": False}
+        if self.prompts.prompts:
+            capabilities["prompts"] = {"listChanged": False}
         return {
             "protocolVersion": version,
-            "capabilities": {"tools": {"listChanged": False}},
+            "capabilities": capabilities,
             "serverInfo": {"name": self.server_name, "version": self.server_version},
         }
 
@@ -175,10 +275,28 @@ class MCPServer:
             raise _ToolInputError("tools/call 'arguments' must be an object")
 
         started = time.perf_counter()
+        # An authorization failure is a protocol-level forbidden error (uniform
+        # across tools, resources, and prompts), not a normal tool result.
+        if _principal_lacks_scopes(tool.required_scopes):
+            await self._instrument(tool, started, status.HTTP_403_FORBIDDEN)
+            raise _AuthorizationError(tool.required_scopes)
+
+        progress_token = _progress_token(params)
         try:
-            result = await self._invoke(tool, arguments)
+            result = await self._run_invoke(tool, arguments, progress_token)
         except _ToolInputError:
             raise
+        except asyncio.TimeoutError:
+            await self._instrument(tool, started, status.HTTP_504_GATEWAY_TIMEOUT)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"tool call exceeded the {self._call_timeout}s timeout",
+                    }
+                ],
+                "isError": True,
+            }
         except Exception as exc:
             # A pure `@app.mcp_tool` (no route) has no exception-handler
             # machinery to run through, so its handler error is surfaced
@@ -189,7 +307,12 @@ class MCPServer:
             # An unhandled handler error is a 500, recorded as such.
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
             return {
-                "content": [{"type": "text", "text": str(exc)}],
+                "content": [
+                    {
+                        "type": "text",
+                        "text": self._error_text(exc, "the tool raised an internal error"),
+                    }
+                ],
                 "isError": True,
             }
 
@@ -217,6 +340,12 @@ class MCPServer:
             # return. `_drain_stream` is a no-op for a non-streaming value.
             if isinstance(result, Response):
                 await self._drain_stream(result)
+                # An image/audio Response has no text form; return the typed
+                # content block directly, reporting the response's own status.
+                binary = _binary_result(result)
+                if binary is not None:
+                    await self._instrument(tool, started, result.status_code)
+                    return binary
             shaped = self._shape_result(tool, result)
         except (_StreamTooLarge, _StreamTimeout) as exc:
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -353,6 +482,11 @@ class MCPServer:
         conforms to the advertised `outputSchema` and a field the model would
         exclude cannot leak under a schema that says it is absent.
         """
+        # An image/audio body has no text form; emit it as the matching typed
+        # MCP content block (base64) rather than a decoded-text block.
+        binary = _binary_result(response)
+        if binary is not None:
+            return binary
         shaped = self._shape_result(tool, response)
         # A 4xx/5xx is an in-band error: surface the body text and flag it,
         # without structured content (the error body is not the tool's output
@@ -453,9 +587,145 @@ class MCPServer:
             return _response_body_value(result)
         return result
 
+    # -- Resources --------------------------------------------------
+
+    def _resources_list(self) -> dict[str, Any]:
+        return {"resources": [_describe_resource(r) for r in self.resources.statics()]}
+
+    def _resource_templates_list(self) -> dict[str, Any]:
+        return {
+            "resourceTemplates": [
+                _describe_resource_template(r) for r in self.resources.templates()
+            ]
+        }
+
+    async def _resources_read(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Read one resource by URI, replaying its route through `_invoke`.
+
+        The URI is matched against the registry (a static URI exactly, a template
+        by its compiled pattern), the route's path-parameter values are recovered
+        from the URI, and the handler runs through the same request lifecycle a
+        tool call replays. The response body becomes the resource contents: a
+        JSON/`text/*` body as `text`, any other media type as a base64 `blob`. An
+        unknown URI - or a route answering 404 - is a resource-not-found error; a
+        handler 4xx/5xx surfaces as a JSON-RPC error, since a resource read has no
+        in-band error channel.
+        """
+        uri = params.get("uri")
+        if not isinstance(uri, str):
+            raise _ToolInputError("resources/read requires a string 'uri'")
+        matched = self.resources.match(uri)
+        if matched is None:
+            raise _ResourceError(_JSONRPC_RESOURCE_NOT_FOUND, f"Unknown resource: {uri}")
+        resource, arguments = matched
+        if _principal_lacks_scopes(resource.tool.required_scopes):
+            raise _AuthorizationError(resource.tool.required_scopes)
+
+        try:
+            result = await self._run_invoke(resource.tool, arguments, _progress_token(params))
+        except _ToolInputError as exc:
+            # A path-parameter value the URI carries that the route cannot coerce
+            # (a non-int `{user_id}`) is an invalid-params read, not a 404.
+            raise _ResourceError(_JSONRPC_INVALID_PARAMS, str(exc)) from exc
+
+        # A resource is always route-backed, so `_invoke` yields a
+        # `_RouteResponse` (or a `_ShortCircuit` from a middleware / before_request
+        # guard); both carry the `Response` whose body is the resource contents.
+        response = result.response if isinstance(result, (_ShortCircuit, _RouteResponse)) else None
+        if response is None:
+            raise _ResourceError(_JSONRPC_INTERNAL_ERROR, f"Resource {uri} produced no response")
+        try:
+            await self._drain_stream(response)
+        except (_StreamTooLarge, _StreamTimeout) as exc:
+            raise _ResourceError(_JSONRPC_INTERNAL_ERROR, str(exc)) from exc
+        if response.status_code >= 400:
+            if response.status_code == status.HTTP_404_NOT_FOUND:
+                code = _JSONRPC_RESOURCE_NOT_FOUND
+            elif response.status_code in (
+                status.HTTP_401_UNAUTHORIZED,
+                status.HTTP_403_FORBIDDEN,
+            ):
+                code = _JSONRPC_FORBIDDEN
+            else:
+                code = _JSONRPC_INTERNAL_ERROR
+            raise _ResourceError(code, _stringify(_response_body_value(response)))
+        return {"contents": [_resource_contents(uri, response)]}
+
+    # -- Prompts ----------------------------------------------------
+
+    def _prompts_list(self) -> dict[str, Any]:
+        return {"prompts": [_describe_prompt(p) for p in self.prompts.prompts.values()]}
+
+    async def _prompts_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Render one prompt by name, replaying its callable through `_invoke`.
+
+        The callable runs through the same pure-tool invocation path (DI graph,
+        `MCPContext`, teardowns), and its return - a string or a list of
+        role/content messages - is normalised into the MCP messages
+        ``prompts/get`` returns. An unknown name or a malformed argument is an
+        invalid-params error.
+        """
+        name = params.get("name")
+        if not isinstance(name, str):
+            raise _ToolInputError("prompts/get requires a string 'name'")
+        prompt = self.prompts.get(name)
+        if prompt is None:
+            raise _ToolInputError(f"Unknown prompt: {name}")
+        if _principal_lacks_scopes(prompt.tool.required_scopes):
+            raise _AuthorizationError(prompt.tool.required_scopes)
+        arguments = params.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            raise _ToolInputError("prompts/get 'arguments' must be an object")
+
+        result = await self._run_invoke(prompt.tool, arguments, _progress_token(params))
+        out: dict[str, Any] = {"messages": _normalize_prompt_messages(result)}
+        if prompt.description:
+            out["description"] = prompt.description
+        return out
+
+    # -- Logging ----------------------------------------------------
+
+    def _set_log_level(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Set the minimum level for ``notifications/message`` (logging/setLevel)."""
+        level = params.get("level")
+        if not isinstance(level, str) or level not in _LOG_RANKS:
+            raise _ToolInputError("logging/setLevel requires a valid RFC 5424 'level'")
+        _log_level_var.set(level)
+        return {}
+
+    def _error_text(self, exc: Exception, generic: str) -> str:
+        """Error text for an in-band / internal error payload, gated by debug.
+
+        A pure `@app.mcp_tool` (and the defensive internal-error path) does not run
+        through the app's exception handlers, so an exception's raw message could
+        carry a secret - a DSN, a token, a path. With `app.debug` off a generic
+        message is surfaced instead; with debug on the real message aids
+        development. A route-backed tool is unaffected: its exceptions already go
+        through `handle_user_exception`, which gates the body on debug itself.
+        """
+        return str(exc) if getattr(self.app, "debug", False) else generic
+
     # -- Invocation -------------------------------------------------
 
-    async def _invoke(self, tool: MCPTool, arguments: dict[str, Any]) -> Any:
+    async def _run_invoke(
+        self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None
+    ) -> Any:
+        """Invoke a tool, applying the optional per-call timeout.
+
+        With no `MCP_CALL_TIMEOUT` configured the handler runs unbounded (the
+        common case, zero overhead); otherwise it is cancelled past the budget and
+        the `asyncio.TimeoutError` is surfaced by the caller (in-band for a tool
+        call, a JSON-RPC error for a resource read or prompt render).
+        """
+        if self._call_timeout is None:
+            return await self._invoke(tool, arguments, progress_token)
+        return await asyncio.wait_for(
+            self._invoke(tool, arguments, progress_token), self._call_timeout
+        )
+
+    async def _invoke(
+        self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None = None
+    ) -> Any:
         """Resolve DI and call the handler, draining teardowns afterwards.
 
         The handler runs inside the same request-context binding the HTTP path
@@ -475,7 +745,13 @@ class MCPServer:
         tool result. A pure `@app.mcp_tool` (no route) has no such lifecycle and
         its return value is passed back unchanged.
         """
-        context = MCPContext(tool.name, arguments)
+        context = MCPContext(
+            tool.name,
+            arguments,
+            notifier=_notifier_var.get(),
+            progress_token=progress_token,
+            log_level=_log_level_var.get(),
+        )
         resolver = DependencyResolver()
         resolver._overrides = self.app._dependency_overrides
         resolver._override_subplans = self.app._override_subplans
@@ -497,6 +773,10 @@ class MCPServer:
         else:
             request = _build_request(tool.name, arguments)
         request.app = self.app
+        # Mark the synthetic request so auth middleware can recognise a replayed
+        # MCP call (`request.is_mcp`) and defer to the transport's authentication
+        # rather than re-checking a browser credential the agent never sends.
+        request._state["_mcp"] = True
 
         # Bind the request context exactly as `handle_request` does: the
         # `current_app` / `request` contextvars plus a fresh `g`. Letting the
@@ -803,6 +1083,124 @@ def _to_structured(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def _binary_result(response: Response) -> dict[str, Any] | None:
+    """Shape an image/audio response body into a typed MCP content block.
+
+    MCP defines first-class `image` and `audio` content blocks carrying the bytes
+    as base64 with their media type. A body of either kind has no useful text
+    form, so it is emitted as that typed block instead of a garbled decoded-text
+    block; any other media type returns `None` and the caller shapes it as text /
+    structured content as before. A 4xx/5xx still flags `isError` so an error is
+    never read as a successful result.
+    """
+    mimetype = response.mimetype
+    if mimetype.startswith("image/"):
+        kind = "image"
+    elif mimetype.startswith("audio/"):
+        kind = "audio"
+    else:
+        return None
+    block = {
+        "type": kind,
+        "data": base64.b64encode(response.body or b"").decode("ascii"),
+        "mimeType": mimetype,
+    }
+    result: dict[str, Any] = {"content": [block]}
+    if response.status_code >= 400:
+        result["isError"] = True
+    return result
+
+
+def _describe_resource(resource: MCPResource) -> dict[str, Any]:
+    """Shape a static resource into its `resources/list` entry."""
+    entry: dict[str, Any] = {
+        "uri": resource.uri,
+        "name": resource.name,
+        "description": resource.description,
+    }
+    if resource.title:
+        entry["title"] = resource.title
+    return entry
+
+
+def _describe_resource_template(resource: MCPResource) -> dict[str, Any]:
+    """Shape a template resource into its `resources/templates/list` entry."""
+    entry: dict[str, Any] = {
+        "uriTemplate": resource.uri,
+        "name": resource.name,
+        "description": resource.description,
+    }
+    if resource.title:
+        entry["title"] = resource.title
+    return entry
+
+
+def _resource_contents(uri: str, response: Response) -> dict[str, Any]:
+    """Shape a resource route's response body into one MCP resource-contents entry.
+
+    A JSON or `text/*` body is returned as `text` (the value an agent reads); any
+    other media type is returned as a base64 `blob`. The entry carries the read
+    URI and the response's media type.
+    """
+    mimetype = response.mimetype
+    body = response.body or b""
+    entry: dict[str, Any] = {"uri": uri, "mimeType": mimetype}
+    if is_json_mimetype(mimetype) or mimetype.startswith("text/"):
+        entry["text"] = body.decode("utf-8", "replace")
+    else:
+        entry["blob"] = base64.b64encode(body).decode("ascii")
+    return entry
+
+
+# Valid MCP prompt message roles; an unrecognised role from a handler-built
+# message falls back to "user".
+_PROMPT_ROLES = frozenset({"user", "assistant"})
+
+
+def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
+    """Shape a prompt into its `prompts/list` entry."""
+    entry: dict[str, Any] = {"name": prompt.name, "description": prompt.description}
+    if prompt.arguments:
+        entry["arguments"] = prompt.arguments
+    return entry
+
+
+def _user_text_message(text: str) -> dict[str, Any]:
+    """Build a user-role MCP prompt message carrying a single text block."""
+    return {"role": "user", "content": {"type": "text", "text": text}}
+
+
+def _normalize_prompt_message(item: Any) -> dict[str, Any]:
+    """Normalise one prompt message item into an MCP prompt message.
+
+    A string is a user text message; a mapping is read as a ``{"role", "content"}``
+    message whose string content is wrapped into a text content block and whose
+    unrecognised role falls back to user. Any other item is stringified.
+    """
+    if isinstance(item, str):
+        return _user_text_message(item)
+    if isinstance(item, dict):
+        role = item.get("role")
+        content = item.get("content")
+        if isinstance(content, str):
+            content = {"type": "text", "text": content}
+        return {"role": role if role in _PROMPT_ROLES else "user", "content": content}
+    return _user_text_message(_stringify(item))
+
+
+def _normalize_prompt_messages(result: Any) -> list[dict[str, Any]]:
+    """Normalise a prompt callable's return into MCP prompt messages.
+
+    A string becomes a single user text message; a list becomes one message per
+    item; any other return is stringified into a single user message.
+    """
+    if isinstance(result, str):
+        return [_user_text_message(result)]
+    if isinstance(result, list):
+        return [_normalize_prompt_message(item) for item in result]
+    return [_user_text_message(_stringify(result))]
+
+
 # Cap on the bytes buffered from a streamed tool result. A streamed response has
 # no single body, so the MCP path drains it into one (`_drain_stream`); this
 # bound stops a runaway or unbounded stream from exhausting memory - crossing it
@@ -819,6 +1217,44 @@ _STREAM_DRAIN_TIMEOUT = 30.0
 
 class _ToolInputError(Exception):
     """A malformed tool call - reported as a JSON-RPC invalid-params error."""
+
+
+class _ResourceError(Exception):
+    """A ``resources/read`` failure, reported as a JSON-RPC error with `code`."""
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class _AuthorizationError(Exception):
+    """The principal lacks a required scope - reported as a forbidden error.
+
+    Carries the required scopes so the HTTP transport can surface them in an
+    RFC 6750 `WWW-Authenticate` insufficient-scope challenge.
+    """
+
+    def __init__(self, scopes: frozenset[str]) -> None:
+        super().__init__(_insufficient_scope(scopes))
+        self.scopes = scopes
+
+
+def _principal_lacks_scopes(required: frozenset[str]) -> bool:
+    """Return whether the current principal is missing any of `required`.
+
+    A tool / resource with no required scopes is always allowed. Otherwise the
+    request principal (set by the transport's authentication) must hold every
+    required scope; an absent principal can satisfy no non-empty requirement.
+    """
+    if not required:
+        return False
+    principal = current_principal()
+    return principal is None or not principal.has_scopes(required)
+
+
+def _insufficient_scope(required: frozenset[str]) -> str:
+    """Build the error text for a missing-scope rejection."""
+    return f"insufficient_scope: requires {sorted(required)}"
 
 
 class _StreamTooLarge(Exception):
@@ -873,8 +1309,26 @@ def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, 
     return params
 
 
-def _error(msg_id: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
+def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": msg_id, "error": error}
+
+
+def _progress_token(params: dict[str, Any]) -> str | int | None:
+    """Return the call's `_meta.progressToken`, or `None` when none was sent.
+
+    A client opts into progress notifications by attaching a `progressToken` to a
+    request's `_meta`; without one the server reports no progress (per the MCP
+    progress utility).
+    """
+    meta = params.get("_meta")
+    if isinstance(meta, dict):
+        token = meta.get("progressToken")
+        if isinstance(token, (str, int)) and not isinstance(token, bool):
+            return token
+    return None
 
 
 def _response_body_value(response: Response) -> Any:

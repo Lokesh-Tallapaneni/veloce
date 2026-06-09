@@ -9,11 +9,12 @@ Veloce can expose your handlers as [Model Context Protocol](https://modelcontext
 tools, so an AI agent can call them over JSON-RPC 2.0. Every Veloce route can
 also be a tool an agent invokes.
 
-The integration lives in `veloce.contrib.mcp`. It supports **tools** over the
-**stdio** transport (the framing an MCP client uses when it launches your server
-as a subprocess), negotiates the protocol version with the client, and exposes
-tool metadata (annotations, title, output schema). Resources, prompts, and the
-Streamable HTTP transport are planned for a later release.
+The integration lives in `veloce.contrib.mcp`. It supports **tools**,
+**resources**, and **prompts** over both the **stdio** transport (the framing an
+MCP client uses when it launches your server as a subprocess) and the **Streamable
+HTTP** transport (a mounted route, for a remote/hosted server). It negotiates the
+protocol version with the client and exposes tool metadata (annotations, title,
+output schema).
 
 ## Registering an MCP-only tool
 
@@ -136,14 +137,139 @@ async def get_user(user_id: int) -> User:
 # tools/call -> structuredContent {"id": ..., "name": ...} plus the text block
 ```
 
+## Non-text tool content
+
+A tool whose handler returns an `image/*` or `audio/*` response emits the matching
+typed MCP content block — the bytes as base64 with their media type — instead of a
+text block, so an agent receives a real image or audio result:
+
+```python
+from veloce import Response, Veloce
+
+app = Veloce()
+
+
+@app.mcp_tool(description="Render the latest chart as a PNG")
+async def chart() -> Response:
+    png_bytes = b"\x89PNG\r\n\x1a\n"  # ... your rendered PNG bytes
+    return Response(body=png_bytes, content_type="image/png")
+# tools/call -> content: [{"type": "image", "data": "<base64>", "mimeType": "image/png"}]
+```
+
+Any other media type is shaped as before (a JSON or text body becomes a text
+block).
+
+!!! note "Added in version 0.5"
+    Image/audio tool content blocks and the resources primitive below.
+
+## Resources
+
+A **resource** is the MCP primitive for data an agent reads by URI, the
+counterpart to a tool it calls. Expose a read-only (`GET`/`HEAD`) route as a
+resource with `expose_as_mcp_resource=True` and an `mcp_resource_uri`. A route
+with no path parameters takes a static URI:
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+
+
+@app.get(
+    "/settings",
+    expose_as_mcp_resource=True,
+    mcp_resource_uri="config://app/settings",
+    mcp_description="The application settings",
+)
+async def settings() -> dict:
+    return {"debug": False}
+# resources/list -> {"uri": "config://app/settings", "name": "settings", ...}
+# resources/read {"uri": "config://app/settings"} -> contents text {"debug": false}
+```
+
+A route **with** path parameters takes a URI template whose variables bind those
+parameters exactly (one variable per path parameter). It is advertised through
+`resources/templates/list`, and `resources/read` recovers the parameter values
+from the concrete URI:
+
+```python
+@app.get(
+    "/users/{user_id}",
+    expose_as_mcp_resource=True,
+    mcp_resource_uri="users://{user_id}",
+    mcp_description="A user record",
+)
+async def user(user_id: int) -> dict:
+    return {"id": user_id}
+# resources/templates/list -> {"uriTemplate": "users://{user_id}", ...}
+# resources/read {"uri": "users://42"} -> the handler runs with user_id=42
+```
+
+A resource read replays the route through the same request lifecycle a tool call
+does, so its `Depends`, `Security`, middleware, and `response_model` all run — a
+field outside the response model never reaches the agent, and a guard that rejects
+the call fails the read. The response body becomes the resource contents: a JSON or
+`text/*` body is returned as `text`, and any other media type (an image, a binary
+file) as a base64 `blob`.
+
+!!! warning "Resources are read-only"
+    Only a `GET`/`HEAD` route may be a resource; exposing a mutating route this way
+    raises at startup. Expose a mutating route as a tool
+    (`expose_as_mcp_tool=True`) instead. As with tools, exposure is
+    default-closed: a route is a resource only when its author opts in, and an
+    `mcp_description` is required.
+
+The server advertises the `resources` capability only when at least one resource
+is registered.
+
+## Prompts
+
+A **prompt** is the MCP primitive for a reusable, parameterised message template a
+user invokes. Register one with `@app.mcp_prompt(...)`: the callable's parameters
+become the prompt's arguments, and its return becomes the messages `prompts/get`
+returns.
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+
+
+@app.mcp_prompt(description="Summarise a topic in three bullet points")
+async def summarise(topic: str) -> str:
+    return f"Summarise {topic} in three bullet points."
+# prompts/list -> {"name": "summarise", "arguments": [{"name": "topic", "required": true}]}
+# prompts/get {"name": "summarise", "arguments": {"topic": "MCP"}}
+#   -> messages: [{"role": "user", "content": {"type": "text", "text": "Summarise MCP ..."}}]
+```
+
+Return a plain string for a single user message, or a list of `{"role", "content"}`
+messages (with `role` either `user` or `assistant`) for a multi-turn template:
+
+```python
+@app.mcp_prompt(description="A guided code review")
+async def review(language: str) -> list:
+    return [
+        {"role": "assistant", "content": "I'll review the code you paste next."},
+        {"role": "user", "content": f"Review this {language} code for bugs."},
+    ]
+```
+
+A prompt's parameters resolve exactly as a tool's do: `Depends()` and `MCPContext`
+parameters are injected (and never advertised as prompt arguments), and a parameter
+with a default is an optional argument. As with tools and resources, a non-empty
+`description` is required, and `namespace=` prefixes the prompt name.
+
+The server advertises the `prompts` capability only when at least one prompt is
+registered.
+
 ## The MCP context
 
 A tool handler (or one of its dependencies) may declare a parameter typed
 `MCPContext` to receive the per-call context; it is matched by that type
-annotation, not by the parameter's name. It
-carries the calling tool name and the raw argument mapping, plus inert
-placeholders for the cancellation / progress / logging channels that later
-protocol versions define.
+annotation, not by the parameter's name. It carries the calling tool name and the
+raw argument mapping, and channels for live progress and log notifications back to
+the client.
 
 ```python
 from veloce import MCPContext
@@ -156,6 +282,35 @@ async def whoami(ctx: MCPContext) -> str:
 
 The context parameter is not part of the tool's input schema - the agent never
 supplies it.
+
+### Progress and logging
+
+`await ctx.report_progress(done, total)` sends a `notifications/progress` message
+to the client mid-call, and `await ctx.log(level, message)` sends a
+`notifications/message`. Both work in tools, resource reads, and prompts:
+
+```python
+@app.mcp_tool(description="Process a batch of records")
+async def process(count: int, ctx: MCPContext) -> dict:
+    for i in range(count):
+        await ctx.report_progress(i + 1, count)
+        await ctx.log("info", f"processed record {i + 1}")
+    return {"processed": count}
+```
+
+Progress is only sent when the client opts in by attaching a `progressToken` to
+the call (per the MCP progress utility); without one, `report_progress` is a no-op.
+Log messages use RFC 5424 levels (`debug`, `info`, `notice`, `warning`, `error`,
+`critical`, `alert`, `emergency`); the client can raise the minimum with
+`logging/setLevel`, and a message below it is dropped.
+
+### Call timeout
+
+The stdio transport serves calls one at a time, so a handler that blocks forever
+would wedge every later call. Set `app.config["MCP_CALL_TIMEOUT"]` to a number of
+seconds to bound each call: a call that overruns it is cancelled and surfaced as an
+error (in-band `isError` for a tool, a JSON-RPC error for a resource read or
+prompt). It is unset (no timeout) by default.
 
 ## Dependency injection
 
@@ -209,12 +364,173 @@ if __name__ == "__main__":
 
 Point your MCP client at this script as a subprocess command; it will receive
 `initialize` (negotiating the protocol version with the client), `ping`,
-`tools/list`, and `tools/call` and respond on stdout.
+`tools/list`, `tools/call`, and — when resources or prompts are registered —
+`resources/list`, `resources/templates/list`, `resources/read`, `prompts/list`, and
+`prompts/get`, and respond on stdout.
 
 The serve loop runs inside the app's lifespan, so every `@app.on_startup`
 handler (database pools, `app.state`, caches) and the lifespan context manager
 run before the first tool is served, and the matching shutdown runs after the
 input closes - exactly as when the app is served by an ASGI server.
+
+## Serving over HTTP
+
+For a remote (hosted) MCP server, mount the **Streamable HTTP** transport. It adds
+a single `POST` route to your app, so you serve it with any ASGI server (or
+`app.run()`) like the rest of your application:
+
+```python
+import asyncio
+
+from veloce import Veloce
+
+app = Veloce()
+
+
+@app.mcp_tool(description="Add two integers")
+async def add(a: int, b: int) -> int:
+    return a + b
+
+
+app.mount_mcp(transport="http", path="/mcp")  # default path is "/mcp"
+
+if __name__ == "__main__":
+    asyncio.run(app.run())
+```
+
+Call `mount_mcp(transport="http")` **after** registering your tools, resources, and
+prompts. The client `POST`s one JSON-RPC message to the route and gets one reply:
+
+- A request with `Accept: text/event-stream` is answered with an SSE stream that
+  carries the call's progress / log notifications followed by the JSON-RPC
+  response. A request without it gets a single JSON response.
+- A notification (a message with no `id`) is answered with `202 Accepted` and no body.
+
+## Authentication and authorization
+
+MCP authenticates at the **transport**, not per tool call, following the MCP OAuth
+2.1 model: the agent presents a bearer token on every request, the server validates
+it (as an OAuth 2.1 *resource server*), and per-tool **scopes** decide which tools
+that token may call.
+
+### Authenticating the HTTP transport
+
+Pass an `MCPAuth` to `mount_mcp`. You supply a `verify` callable that validates a
+bearer token and returns a `Principal` (or `None` to reject) — Veloce never parses
+tokens or does crypto itself. It then validates the token on every `/mcp` request
+(`401` if missing/invalid), serves the [RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728)
+protected-resource metadata so a client can discover the authorization server, and
+publishes the `Principal` for the call.
+
+```python
+from veloce import Principal
+from veloce.contrib.mcp import MCPAuth
+
+
+def verify(token: str) -> Principal | None:
+    claims = validate_with_your_auth_server(token)   # your logic / library
+    if claims is None:
+        return None
+    return Principal(subject=claims["sub"], scopes=set(claims["scope"].split()))
+
+
+app.mount_mcp(transport="http", auth=MCPAuth(
+    verify=verify,
+    required_scopes=["mcp:tools"],                    # every call needs this
+    resource_server_url="https://api.example.com/mcp",
+    authorization_servers=["https://auth.example.com"],
+))
+```
+
+!!! warning "Validate the token's audience"
+    Your `verify` MUST confirm the token was issued for *this* server (its audience
+    / `resource`), per [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707). Accepting
+    a token minted for another service — or forwarding it onward — is the
+    spec-forbidden "token passthrough" anti-pattern.
+
+For the **stdio** transport there is no OAuth handshake — the process is launched
+locally and trusted — so pass a static identity instead:
+`app.mount_mcp(principal=Principal(subject="local", scopes={"mcp:tools"}))`.
+
+### Per-tool scopes
+
+Declare the scopes a tool, resource, or prompt requires; a principal lacking them
+is rejected (`insufficient_scope`) before the handler runs:
+
+```python
+@app.mcp_tool(description="Delete a user", scopes=["users:write"])
+async def delete_user(id: int): ...
+
+@app.get("/admin/stats", expose_as_mcp_tool=True,
+         mcp_description="Service stats", mcp_scopes=["admin:read"])
+async def stats(): ...
+```
+
+### The unified principal
+
+Both doors populate one identity. Your HTTP auth calls `set_principal(...)`; the
+MCP transport sets it from the validated token. All downstream code reads the same
+`current_principal()`, so authorization and identity-aware dependencies are written
+once and run over HTTP and MCP alike:
+
+```python
+from veloce import current_principal
+
+
+def get_current_user():
+    p = current_principal()          # set by HTTP auth OR MCP transport
+    if p is None:
+        raise Unauthorized()
+    return load_user(p.subject)
+```
+
+### Reconciling existing middleware and dependencies
+
+An exposed route's `Depends`, `Security`, and middleware **run** on the agent call
+(the lifecycle is replayed), but the synthetic MCP request carries no browser
+credential. So an app-wide auth middleware needs to step aside in two places, each
+with a first-class mechanism (no path matching):
+
+```python
+class AuthMiddleware(Middleware):
+    async def process_request(self, request):
+        if request.is_mcp:           # a replayed tool call — transport already authed
+            return None
+        ...                          # your normal HTTP session/cookie check
+
+app.add_middleware(AuthMiddleware)
+
+# Drop the same middleware from the /mcp transport route (it has its own MCPAuth):
+app.mount_mcp(transport="http", auth=MCPAuth(...), exclude_middleware=["AuthMiddleware"])
+```
+
+`exclude_middleware` covers the `POST /mcp` request; `request.is_mcp` covers the
+replayed tool calls. Business middleware and dependencies (a DB session, request-id
+injection) need no change — they run identically on both doors. (`exclude_middleware`
+matches `Middleware`-class middleware by name; a dispatch-style `@app.middleware("http")`
+wrapper should check `request.is_mcp` itself.)
+
+!!! warning "Tool arguments are not credentials"
+    Veloce does **not** seed an agent's tool arguments into the synthetic request's
+    headers or cookies, so a `Security` scheme that reads a header or cookie
+    (`HTTPBearer`, `APIKeyHeader`, `APIKeyCookie`) cannot be satisfied by agent
+    input — it simply sees nothing. Tool arguments *do* feed `query` and `form`
+    (those are legitimate `Query(...)` / `Form(...)` input channels), so an
+    `APIKeyQuery`-style scheme would read agent-controlled input. The rule stands:
+    **MCP authorization comes from the validated `Principal` and `mcp_scopes`,
+    never from a request header, cookie, or query value.**
+
+### Hardening the HTTP transport
+
+- **Origin validation** (DNS-rebinding defense, required by the MCP transport
+  spec): `app.mount_mcp(transport="http", allowed_origins=["https://app.example.com"])`
+  rejects a browser request whose `Origin` is outside the allowlist (a request with
+  no `Origin`, i.e. a non-browser client, is allowed).
+- **`MCPAuth` requires** `resource_server_url` and at least one
+  `authorization_servers` entry — the metadata a compliant client needs to
+  audience-bind and obtain a token.
+- An insufficient-scope failure surfaces as an HTTP **403** with a
+  `WWW-Authenticate` scope challenge over the JSON transport.
 
 ## Instrumentation
 

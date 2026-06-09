@@ -35,7 +35,7 @@ from veloce.background import BackgroundTasks
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.openapi import _pydantic_to_schema, _python_type_to_schema
 from veloce.dependency import SecurityScopes, _coerce_value
-from veloce.http.datastructures import Cookies, FormData, Headers, QueryParams
+from veloce.http.datastructures import FormData, QueryParams
 from veloce.http.request import Request
 from veloce.http.response import Response
 
@@ -404,10 +404,20 @@ def _build_request(
     # against it (and `Body(embed=True)` finds its key inside the dict).
     request._json = arguments
 
-    # Scalar arguments feed the string-keyed value sources a Query / Header /
-    # Cookie / Form marker reads. Headers are case-insensitive and an un-aliased
-    # `Header` param looks up its hyphenated name, so the argument name is
-    # registered under both its raw and hyphenated forms.
+    # Scalar arguments feed the query / form value sources a `Query` / `Form`
+    # marker reads (and the whole mapping feeds the JSON body above). Headers and
+    # cookies are deliberately NOT seeded from tool arguments: an agent has no HTTP
+    # headers or cookies, so letting a tool argument populate them would let it
+    # masquerade as transport-authenticated input - a `Security` scheme
+    # (`HTTPBearer`, `APIKeyHeader`, `APIKeyCookie`) would then read attacker
+    # controlled data as a credential. Over MCP, authentication is the validated
+    # principal, never a request header/cookie, so these stay empty.
+    #
+    # Query and form ARE seeded by necessity - they are the legitimate
+    # `Query(...)` / `Form(...)` tool-input channels - so a query/form-based
+    # `Security` scheme (e.g. `APIKeyQuery`) would still read agent-supplied input.
+    # That is inherent to those being inputs; the `Principal` / `mcp_scopes` model
+    # is the intended authorization gate over MCP, not request-derived schemes.
     scalars: list[tuple[str, str]] = []
     for name, value in arguments.items():
         text = _scalar_str(value)
@@ -415,14 +425,6 @@ def _build_request(
             scalars.append((name, text))
     request._query_params = QueryParams(scalars)
     request._form = FormData(scalars)
-    request._cookies = Cookies(scalars)
-    header_items: list[tuple[str, str]] = []
-    for name, text in scalars:
-        header_items.append((name, text))
-        hyphenated = name.replace("_", "-")
-        if hyphenated != name:
-            header_items.append((hyphenated, text))
-    request.headers = Headers(header_items)
     return request
 
 

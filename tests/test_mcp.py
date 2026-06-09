@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 
 import orjson
@@ -16,10 +17,14 @@ from veloce import (
     HTTPException,
     JSONResponse,
     MCPContext,
+    Principal,
     Response,
     SecurityScopes,
     Veloce,
+    current_principal,
+    set_principal,
 )
+from veloce.contrib.mcp import MCPAuth
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
@@ -797,7 +802,7 @@ def test_instrumentation_fires_on_tool_call():
 def test_mount_mcp_rejects_unknown_transport():
     app = Veloce(openapi_url=None)
     with pytest.raises(ValueError, match="transport"):
-        app.mount_mcp(transport="http")
+        app.mount_mcp(transport="carrier-pigeon")
 
 
 def test_duplicate_tool_name_raises():
@@ -808,7 +813,7 @@ def test_duplicate_tool_name_raises():
         return 1
 
     # A second tool resolving to the same name collides at registry build.
-    app._mcp_tools.append((dup, "dup", "Two", None))
+    app._mcp_tools.append((dup, "dup", "Two", None, None))
     with pytest.raises(ValueError, match="Duplicate"):
         build_registry(app)
 
@@ -2460,3 +2465,1408 @@ def test_response_model_exclude_drops_required_from_output_schema():
     result = _call(app, "partial", {})["result"]
     assert result["structuredContent"] == {"id": 1, "name": "ada"}
     assert "password" not in result["structuredContent"]
+
+
+# -- Resources --------------------------------------------------------
+
+
+def _list_resources(app: Veloce) -> dict[str, dict]:
+    """Drive one `resources/list` and return the entries keyed by URI."""
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/list", "params": {}})
+    out = asyncio.run(pipe.run())[0]
+    return {r["uri"]: r for r in out["result"]["resources"]}
+
+
+def _list_resource_templates(app: Veloce) -> dict[str, dict]:
+    """Drive one `resources/templates/list` and return the entries keyed by template."""
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/templates/list", "params": {}})
+    out = asyncio.run(pipe.run())[0]
+    return {r["uriTemplate"]: r for r in out["result"]["resourceTemplates"]}
+
+
+def _read_resource(app: Veloce, uri: str) -> dict:
+    """Drive one `resources/read` and return the single response object."""
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/read", "params": {"uri": uri}})
+    return asyncio.run(pipe.run())[0]
+
+
+def test_static_resource_is_listed():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        summary="App settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app/settings",
+        mcp_description="The application settings",
+    )
+    async def settings() -> dict:
+        return {"debug": False}
+
+    listed = _list_resources(app)
+    assert "config://app/settings" in listed
+    entry = listed["config://app/settings"]
+    assert entry["name"] == "settings"
+    assert entry["title"] == "App settings"
+    assert entry["description"] == "The application settings"
+    # A static resource is not advertised as a template.
+    assert "config://app/settings" not in _list_resource_templates(app)
+
+
+def test_template_resource_is_listed_as_template():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{user_id}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        return {"id": user_id}
+
+    templates = _list_resource_templates(app)
+    assert "users://{user_id}" in templates
+    # A template is not advertised under the concrete-URI list.
+    assert _list_resources(app) == {}
+
+
+def test_static_resource_read_returns_text_contents():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app/settings",
+        mcp_description="The application settings",
+    )
+    async def settings() -> dict:
+        return {"debug": False, "name": "veloce"}
+
+    out = _read_resource(app, "config://app/settings")
+    assert "error" not in out
+    contents = out["result"]["contents"]
+    assert len(contents) == 1
+    entry = contents[0]
+    assert entry["uri"] == "config://app/settings"
+    assert orjson.loads(entry["text"]) == {"debug": False, "name": "veloce"}
+
+
+def test_template_resource_read_invokes_handler_with_path_param():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{user_id}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        # The value arrives coerced to int, exactly as on the HTTP path.
+        return {"id": user_id, "doubled": user_id * 2}
+
+    out = _read_resource(app, "users://21")
+    assert "error" not in out
+    entry = out["result"]["contents"][0]
+    assert entry["uri"] == "users://21"
+    assert orjson.loads(entry["text"]) == {"id": 21, "doubled": 42}
+
+
+def test_resource_read_unknown_uri_is_resource_not_found():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app/settings",
+        mcp_description="Settings",
+    )
+    async def settings() -> dict:
+        return {}
+
+    out = _read_resource(app, "config://does/not/exist")
+    assert out["error"]["code"] == -32002
+
+
+def test_resource_read_route_404_is_resource_not_found():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{user_id}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        raise HTTPException(status_code=404, detail="no such user")
+
+    out = _read_resource(app, "users://7")
+    assert out["error"]["code"] == -32002
+
+
+def test_resource_read_template_coercion_failure_is_invalid_params():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{user_id}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        return {"id": user_id}
+
+    # `abc` cannot coerce to the `user_id: int` path parameter.
+    out = _read_resource(app, "users://abc")
+    assert out["error"]["code"] == -32602
+
+
+def test_resource_read_runs_route_dependency_guard():
+    app = Veloce(openapi_url=None)
+
+    def deny() -> None:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    @app.get(
+        "/secret",
+        dependencies=[Depends(deny)],
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="secret://data",
+        mcp_description="Guarded data",
+    )
+    async def secret() -> dict:
+        return {"top": "secret"}
+
+    out = _read_resource(app, "secret://data")
+    # The guard runs on the resource read, so the read fails rather than
+    # returning the protected body.
+    assert "error" in out
+    assert "result" not in out
+
+
+def test_initialize_advertises_resources_when_present():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="Settings",
+    )
+    async def settings() -> dict:
+        return {}
+
+    caps = _initialize(app, {})["result"]["capabilities"]
+    assert caps["resources"] == {"subscribe": False, "listChanged": False}
+
+
+def test_initialize_omits_resources_capability_when_none():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    caps = _initialize(app, {})["result"]["capabilities"]
+    assert "resources" not in caps
+
+
+def test_resource_on_mutating_route_is_rejected():
+    app = Veloce(openapi_url=None)
+
+    @app.post(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="Settings",
+    )
+    async def settings() -> dict:
+        return {}
+
+    with pytest.raises(ValueError, match="read-only"):
+        _server(app)
+
+
+def test_resource_without_uri_is_rejected():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/settings", expose_as_mcp_resource=True, mcp_description="Settings")
+    async def settings() -> dict:
+        return {}
+
+    with pytest.raises(ValueError, match="mcp_resource_uri"):
+        _server(app)
+
+
+def test_resource_uri_template_variable_mismatch_is_rejected():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{wrong_name}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        return {"id": user_id}
+
+    with pytest.raises(ValueError, match="must match its path parameters"):
+        _server(app)
+
+
+def test_resource_missing_description_is_rejected():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+    )
+    async def settings() -> dict:
+        return {}
+
+    with pytest.raises(ValueError, match="description"):
+        _server(app)
+
+
+def test_duplicate_resource_uri_is_rejected():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/a",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="A",
+    )
+    async def a() -> dict:
+        return {}
+
+    @app.get(
+        "/b",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="B",
+    )
+    async def b() -> dict:
+        return {}
+
+    with pytest.raises(ValueError, match="Duplicate MCP resource URI"):
+        _server(app)
+
+
+def test_resource_read_response_model_filters_fields():
+    """A resource route's `response_model` filters the body the agent reads, so a
+    field outside the model never leaks over a resource read."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/me",
+        response_model=PublicUser,
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://me",
+        mcp_description="Current user",
+    )
+    async def me() -> dict:
+        return {"id": 1, "name": "ada", "password": "s3cret"}
+
+    out = _read_resource(app, "users://me")
+    payload = orjson.loads(out["result"]["contents"][0]["text"])
+    assert payload == {"id": 1, "name": "ada"}
+    assert "password" not in payload
+
+
+def test_resource_read_binary_returns_blob():
+    app = Veloce(openapi_url=None)
+    png = b"\x89PNG\r\n\x1a\n\x00\x00binary"
+
+    @app.get(
+        "/logo",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="assets://logo.png",
+        mcp_description="The logo image",
+    )
+    async def logo() -> Response:
+        return Response(body=png, content_type="image/png")
+
+    out = _read_resource(app, "assets://logo.png")
+    entry = out["result"]["contents"][0]
+    assert entry["mimeType"] == "image/png"
+    assert "text" not in entry
+    assert base64.b64decode(entry["blob"]) == png
+
+
+# -- Non-text tool content (image / audio) ----------------------------
+
+
+def test_pure_tool_image_response_emits_image_block():
+    app = Veloce(openapi_url=None)
+    png = b"\x89PNG\r\n\x1a\nfake-image-bytes"
+
+    @app.mcp_tool(description="Render a chart")
+    async def chart() -> Response:
+        return Response(body=png, content_type="image/png")
+
+    result = _call(app, "chart", {})["result"]
+    block = result["content"][0]
+    assert block["type"] == "image"
+    assert block["mimeType"] == "image/png"
+    assert base64.b64decode(block["data"]) == png
+    # An image body has no text form, so no decoded-text block is emitted.
+    assert len(result["content"]) == 1
+
+
+def test_route_tool_audio_response_emits_audio_block():
+    app = Veloce(openapi_url=None)
+    wav = b"RIFF....WAVEfake-audio"
+
+    @app.get("/say", expose_as_mcp_tool=True, mcp_description="Synthesize speech")
+    async def say() -> Response:
+        return Response(body=wav, content_type="audio/wav")
+
+    result = _call(app, "say", {})["result"]
+    block = result["content"][0]
+    assert block["type"] == "audio"
+    assert block["mimeType"] == "audio/wav"
+    assert base64.b64decode(block["data"]) == wav
+    assert "structuredContent" not in result
+
+
+def test_non_binary_response_still_emits_text_block():
+    """A JSON/text response is unaffected by the non-text shaping path."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/data2", expose_as_mcp_tool=True, mcp_description="Raw data")
+    async def data2() -> JSONResponse:
+        return JSONResponse({"value": 42})
+
+    result = _call(app, "data2", {})["result"]
+    assert result["content"][0]["type"] == "text"
+    assert orjson.loads(result["content"][0]["text"]) == {"value": 42}
+
+
+# -- Prompts ----------------------------------------------------------
+
+
+def _list_prompts(app: Veloce) -> dict[str, dict]:
+    """Drive one `prompts/list` and return the entries keyed by prompt name."""
+    pipe = _Pipe(_server(app))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "prompts/list", "params": {}})
+    out = asyncio.run(pipe.run())[0]
+    return {p["name"]: p for p in out["result"]["prompts"]}
+
+
+def _get_prompt(app: Veloce, name: str, arguments: dict | None = None) -> dict:
+    """Drive one `prompts/get` and return the single response object."""
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "prompts/get",
+            "params": {"name": name, "arguments": arguments or {}},
+        }
+    )
+    return asyncio.run(pipe.run())[0]
+
+
+def test_prompt_is_listed_with_arguments():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Summarise a topic")
+    async def summarise(topic: str, style: str = "concise") -> str:
+        return f"Summarise {topic} ({style})."
+
+    listed = _list_prompts(app)
+    assert "summarise" in listed
+    entry = listed["summarise"]
+    assert entry["description"] == "Summarise a topic"
+    args = {a["name"]: a for a in entry["arguments"]}
+    assert args["topic"]["required"] is True
+    # A parameter with a default is an optional argument.
+    assert args["style"]["required"] is False
+
+
+def test_prompt_get_string_return_is_user_message():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Greeting")
+    async def greet() -> str:
+        return "Hello there."
+
+    out = _get_prompt(app, "greet")
+    assert "error" not in out
+    result = out["result"]
+    assert result["description"] == "Greeting"
+    assert result["messages"] == [
+        {"role": "user", "content": {"type": "text", "text": "Hello there."}}
+    ]
+
+
+def test_prompt_get_passes_arguments():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Summarise a topic")
+    async def summarise(topic: str) -> str:
+        return f"Summarise {topic} in three bullet points."
+
+    result = _get_prompt(app, "summarise", {"topic": "veloce"})["result"]
+    text = result["messages"][0]["content"]["text"]
+    assert text == "Summarise veloce in three bullet points."
+
+
+def test_prompt_get_message_list_is_normalised():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="A two-turn exchange")
+    async def chat() -> list:
+        return [
+            {"role": "assistant", "content": "How can I help?"},
+            {"role": "user", "content": {"type": "text", "text": "Explain MCP."}},
+        ]
+
+    messages = _get_prompt(app, "chat")["result"]["messages"]
+    assert messages[0] == {
+        "role": "assistant",
+        "content": {"type": "text", "text": "How can I help?"},
+    }
+    assert messages[1] == {
+        "role": "user",
+        "content": {"type": "text", "text": "Explain MCP."},
+    }
+
+
+def test_prompt_unknown_name_is_invalid_params():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Greeting")
+    async def greet() -> str:
+        return "hi"
+
+    out = _get_prompt(app, "nope")
+    assert out["error"]["code"] == -32602
+
+
+def test_prompt_missing_required_argument_is_invalid_params():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Summarise a topic")
+    async def summarise(topic: str) -> str:
+        return f"Summarise {topic}."
+
+    out = _get_prompt(app, "summarise", {})
+    assert out["error"]["code"] == -32602
+
+
+def test_prompt_dependency_is_resolved():
+    app = Veloce(openapi_url=None)
+
+    def tone() -> str:
+        return "friendly"
+
+    @app.mcp_prompt(description="Greeting in a tone")
+    async def greet(style: str = Depends(tone)) -> str:
+        return f"Say hello in a {style} tone."
+
+    # `style` is injected, so it is not advertised as a prompt argument.
+    assert _list_prompts(app)["greet"].get("arguments", []) == []
+    text = _get_prompt(app, "greet")["result"]["messages"][0]["content"]["text"]
+    assert text == "Say hello in a friendly tone."
+
+
+def test_prompt_context_is_injected():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Echo the prompt name")
+    async def whoami(ctx: MCPContext) -> str:
+        return ctx.tool_name
+
+    # The context parameter is not advertised as an argument.
+    assert _list_prompts(app)["whoami"].get("arguments", []) == []
+    text = _get_prompt(app, "whoami")["result"]["messages"][0]["content"]["text"]
+    assert text == "whoami"
+
+
+def test_prompt_sync_handler_is_offloaded():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Sync greeting")
+    def greet(name: str) -> str:
+        return f"Hello, {name}."
+
+    text = _get_prompt(app, "greet", {"name": "ada"})["result"]["messages"][0]["content"]["text"]
+    assert text == "Hello, ada."
+
+
+def test_prompt_namespace_prefixes_name():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Namespaced", namespace="docs")
+    async def intro() -> str:
+        return "Intro."
+
+    assert "docs_intro" in _list_prompts(app)
+
+
+def test_prompt_duplicate_name_raises():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="One")
+    async def greet() -> str:
+        return "one"
+
+    app._mcp_prompts.append((greet, "greet", "Two", None, None))
+    with pytest.raises(ValueError, match="Duplicate MCP prompt"):
+        _server(app)
+
+
+def test_prompt_missing_description_raises():
+    app = Veloce(openapi_url=None)
+
+    with pytest.raises(ValueError, match="description"):
+
+        @app.mcp_prompt(description="")
+        async def bad() -> str:
+            return "x"
+
+
+def test_initialize_advertises_prompts_when_present():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Greeting")
+    async def greet() -> str:
+        return "hi"
+
+    caps = _initialize(app, {})["result"]["capabilities"]
+    assert caps["prompts"] == {"listChanged": False}
+
+
+def test_initialize_omits_prompts_capability_when_none():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    caps = _initialize(app, {})["result"]["capabilities"]
+    assert "prompts" not in caps
+
+
+# -- Progress / logging notifications ---------------------------------
+
+
+def test_progress_notification_emitted_with_token():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work with progress")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 2)
+        await ctx.report_progress(2, 2)
+        return "done"
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "work", "arguments": {}, "_meta": {"progressToken": "p1"}},
+        }
+    )
+    out = asyncio.run(pipe.run())
+
+    progresses = [m for m in out if m.get("method") == "notifications/progress"]
+    assert len(progresses) == 2
+    assert progresses[0]["params"] == {"progressToken": "p1", "progress": 1, "total": 2}
+    # The result is written after the in-call progress notifications.
+    result = next(m for m in out if m.get("id") == 1)
+    assert result["result"]["content"][0]["text"] == "done"
+    assert out[-1] is result
+
+
+def test_progress_is_noop_without_token():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work with progress")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 2)
+        return "done"
+
+    # No `_meta.progressToken`, so the client did not opt into progress.
+    out = asyncio.run(_drive_call(app, "work"))
+    assert [m for m in out if m.get("method") == "notifications/progress"] == []
+
+
+def test_log_notification_emitted():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Log then return")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.log("info", "working")
+        return "ok"
+
+    out = asyncio.run(_drive_call(app, "work"))
+    messages = [m for m in out if m.get("method") == "notifications/message"]
+    assert len(messages) == 1
+    assert messages[0]["params"]["level"] == "info"
+    assert messages[0]["params"]["data"] == "working"
+
+
+def test_log_filtered_below_set_level():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Log then return")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.log("info", "noisy")
+        return "ok"
+
+    pipe = _Pipe(_server(app))
+    # Raise the minimum to `error`, then call: the `info` log is below it.
+    pipe.feed(
+        {"jsonrpc": "2.0", "id": 1, "method": "logging/setLevel", "params": {"level": "error"}}
+    )
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "work", "arguments": {}},
+        }
+    )
+    out = asyncio.run(pipe.run())
+
+    assert next(m for m in out if m.get("id") == 1)["result"] == {}
+    assert [m for m in out if m.get("method") == "notifications/message"] == []
+
+
+def test_logging_set_level_rejects_invalid_level():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {"jsonrpc": "2.0", "id": 1, "method": "logging/setLevel", "params": {"level": "verbose"}}
+    )
+    out = asyncio.run(pipe.run())
+    assert out[0]["error"]["code"] == -32602
+
+
+def test_logging_capability_advertised():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    caps = _initialize(app, {})["result"]["capabilities"]
+    assert caps["logging"] == {}
+
+
+def _drive_call(app: Veloce, name: str, arguments: dict | None = None):
+    """Drive one `tools/call` through the transport and return every written line."""
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments or {}},
+        }
+    )
+    return pipe.run()
+
+
+# -- Per-call timeout (MCP_CALL_TIMEOUT) ------------------------------
+
+
+def test_tool_call_timeout_is_in_band_error():
+    app = Veloce(openapi_url=None)
+    app.config["MCP_CALL_TIMEOUT"] = 0.05
+
+    @app.mcp_tool(description="Hangs forever")
+    async def hang() -> str:
+        await asyncio.sleep(10)
+        return "never"
+
+    result = _call(app, "hang", {})["result"]
+    assert result["isError"] is True
+    assert "timeout" in result["content"][0]["text"].lower()
+
+
+def test_resource_read_timeout_is_error():
+    app = Veloce(openapi_url=None)
+    app.config["MCP_CALL_TIMEOUT"] = 0.05
+
+    @app.get(
+        "/slow",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="slow://data",
+        mcp_description="Slow resource",
+    )
+    async def slow() -> dict:
+        await asyncio.sleep(10)
+        return {}
+
+    out = _read_resource(app, "slow://data")
+    assert out["error"]["code"] == -32603
+
+
+def test_no_timeout_by_default_completes():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Brief await")
+    async def brief() -> str:
+        await asyncio.sleep(0.01)
+        return "ok"
+
+    # With no MCP_CALL_TIMEOUT configured, the call runs unbounded and completes.
+    result = _call(app, "brief", {})["result"]
+    assert result["content"][0]["text"] == "ok"
+
+
+# -- Error-text gating (debug) ----------------------------------------
+
+
+def test_pure_tool_error_text_is_generic_without_debug():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Leaks a secret in its error")
+    async def boom() -> str:
+        raise RuntimeError("postgres://user:hunter2@db/secret")
+
+    result = _call(app, "boom", {})["result"]
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    # The raw exception text (carrying a credential) is not surfaced.
+    assert "hunter2" not in text
+    assert text == "the tool raised an internal error"
+
+
+def test_pure_tool_error_text_shown_with_debug():
+    app = Veloce(openapi_url=None, debug=True)
+
+    @app.mcp_tool(description="Surfaces its error in debug")
+    async def boom() -> str:
+        raise RuntimeError("a helpful development message")
+
+    result = _call(app, "boom", {})["result"]
+    assert result["isError"] is True
+    assert result["content"][0]["text"] == "a helpful development message"
+
+
+# -- Streamable HTTP transport ----------------------------------------
+
+
+def _parse_sse(body: bytes) -> list[dict]:
+    """Extract the JSON payloads from the `data:` lines of an SSE body."""
+    events: list[dict] = []
+    for raw in body.split(b"\n"):
+        line = raw.strip()
+        if line.startswith(b"data:"):
+            events.append(orjson.loads(line[len(b"data:") :].strip()))
+    return events
+
+
+def test_http_tool_call_returns_json():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "add", "arguments": {"a": 2, "b": 3}},
+        },
+    )
+    assert resp.status_code == 200
+    body = orjson.loads(resp.body)
+    assert body["result"]["content"][0]["text"] == "5"
+
+
+def test_http_initialize_returns_capabilities():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", path="/rpc")
+    resp = app.test_client().post(
+        "/rpc", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    body = orjson.loads(resp.body)
+    assert body["result"]["serverInfo"]["name"]
+    assert "tools" in body["result"]["capabilities"]
+
+
+def test_http_notification_returns_202():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    # A notification (no id) carries no reply.
+    resp = app.test_client().post(
+        "/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}
+    )
+    assert resp.status_code == 202
+    assert resp.body == b""
+
+
+def test_http_parse_error_is_400():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp", content=b"{not json", headers={"content-type": "application/json"}
+    )
+    assert resp.status_code == 400
+    assert orjson.loads(resp.body)["error"]["code"] == -32700
+
+
+def test_http_unknown_method_is_json_error():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "does/not/exist", "params": {}}
+    )
+    body = orjson.loads(resp.body)
+    assert body["error"]["code"] == -32601
+
+
+def test_http_resource_read_over_http():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/users/{user_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="users://{user_id}",
+        mcp_description="A user record",
+    )
+    async def user(user_id: int) -> dict:
+        return {"id": user_id}
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/read",
+            "params": {"uri": "users://9"},
+        },
+    )
+    body = orjson.loads(resp.body)
+    assert orjson.loads(body["result"]["contents"][0]["text"]) == {"id": 9}
+
+
+def test_http_sse_streams_progress_then_response():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work with progress")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 2)
+        await ctx.report_progress(2, 2)
+        return "done"
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "work", "arguments": {}, "_meta": {"progressToken": "p1"}},
+        },
+        headers={"accept": "text/event-stream"},
+    )
+    assert "text/event-stream" in resp.content_type
+    events = _parse_sse(resp.body)
+    progresses = [e for e in events if e.get("method") == "notifications/progress"]
+    assert len(progresses) == 2
+    assert progresses[0]["params"]["progressToken"] == "p1"
+    # The final SSE event is the JSON-RPC response, after the progress events.
+    response = events[-1]
+    assert response["id"] == 1
+    assert response["result"]["content"][0]["text"] == "done"
+
+
+def test_http_sse_concurrent_calls_do_not_cross_notifications():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Echo a label as progress")
+    async def echo(label: str, ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 1, message=label)
+        return label
+
+    app.mount_mcp(transport="http")
+    client = app.test_client()
+
+    def call(label: str) -> list[dict]:
+        resp = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "echo",
+                    "arguments": {"label": label},
+                    "_meta": {"progressToken": label},
+                },
+            },
+            headers={"accept": "text/event-stream"},
+        )
+        return _parse_sse(resp.body)
+
+    # Each call's progress notification carries only its own token, never the
+    # other call's - the per-request notifier scoping holds.
+    a_events = call("a")
+    b_events = call("b")
+    a_tokens = {e["params"]["progressToken"] for e in a_events if e.get("method")}
+    b_tokens = {e["params"]["progressToken"] for e in b_events if e.get("method")}
+    assert a_tokens == {"a"}
+    assert b_tokens == {"b"}
+
+
+# -- Principal + per-tool scopes --------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_principal():
+    """Keep the principal contextvar from leaking between tests."""
+    set_principal(None)
+    yield
+    set_principal(None)
+
+
+def test_principal_has_scopes():
+    p = Principal(subject="u1", scopes=frozenset({"a", "b"}))
+    assert p.has_scope("a")
+    assert p.has_scopes(["a", "b"])
+    assert not p.has_scopes(["a", "c"])
+
+
+def test_scoped_tool_rejected_without_principal():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Privileged", scopes=["admin"])
+    async def wipe() -> str:
+        return "wiped"
+
+    # No principal set (unauthenticated): a scoped tool cannot be satisfied.
+    out = _call(app, "wipe", {})
+    assert out["error"]["code"] == -32003
+    assert "insufficient_scope" in out["error"]["message"]
+    assert out["error"]["data"]["requiredScopes"] == ["admin"]
+
+
+def test_scoped_tool_rejected_with_insufficient_scope():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Privileged", scopes=["admin"])
+    async def wipe() -> str:
+        return "wiped"
+
+    set_principal(Principal(subject="u1", scopes=frozenset({"read"})))
+    out = _call(app, "wipe", {})
+    assert out["error"]["code"] == -32003
+    assert "insufficient_scope" in out["error"]["message"]
+
+
+def test_scoped_tool_allowed_with_scope():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Privileged", scopes=["admin"])
+    async def wipe() -> str:
+        return "wiped"
+
+    set_principal(Principal(subject="u1", scopes=frozenset({"admin", "read"})))
+    result = _call(app, "wipe", {})["result"]
+    assert result.get("isError") is not True
+    assert result["content"][0]["text"] == "wiped"
+
+
+def test_scoped_resource_forbidden_without_scope():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/secret",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="secret://data",
+        mcp_description="Secret data",
+        mcp_scopes=["secrets:read"],
+    )
+    async def secret() -> dict:
+        return {"value": 1}
+
+    set_principal(Principal(scopes=frozenset({"other"})))
+    out = _read_resource(app, "secret://data")
+    assert out["error"]["code"] == -32003
+    assert "insufficient_scope" in out["error"]["message"]
+
+
+def test_scoped_prompt_forbidden_without_scope():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Privileged prompt", scopes=["prompts:use"])
+    async def secret() -> str:
+        return "secret"
+
+    set_principal(Principal(scopes=frozenset()))
+    out = _get_prompt(app, "secret")
+    assert out["error"]["code"] == -32003
+
+
+def test_tool_reads_current_principal():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Echo the caller subject")
+    async def whoami() -> str:
+        p = current_principal()
+        return p.subject if p else "anon"
+
+    set_principal(Principal(subject="alice"))
+    assert _call(app, "whoami", {})["result"]["content"][0]["text"] == "alice"
+
+
+def test_request_is_mcp_true_over_mcp():
+    app = Veloce(openapi_url=None)
+
+    from veloce import Request
+
+    @app.get("/probe", expose_as_mcp_tool=True, mcp_description="Probe")
+    async def probe(request: Request) -> dict:
+        return {"is_mcp": request.is_mcp}
+
+    # Over MCP the replayed request is flagged.
+    out = _call(app, "probe", {})
+    assert orjson.loads(out["result"]["content"][0]["text"]) == {"is_mcp": True}
+    # Over HTTP it is a real request, not an MCP replay.
+    http = app.test_client().get("/probe")
+    assert http.json()["is_mcp"] is False
+
+
+# -- HTTP transport authentication (OAuth Resource Server) ------------
+
+
+def _verify(token: str):
+    """A toy verifier: 'good' -> a scoped principal, anything else -> reject."""
+    if token == "good":
+        return Principal(subject="agent-1", scopes=frozenset({"mcp:tools"}))
+    if token == "noscope":
+        return Principal(subject="agent-2", scopes=frozenset())
+    return None
+
+
+def _auth(**kw) -> MCPAuth:
+    """MCPAuth with the spec-required metadata filled in (verify defaults to _verify)."""
+    kw.setdefault("verify", _verify)
+    kw.setdefault("resource_server_url", "https://api.example.com/mcp")
+    kw.setdefault("authorization_servers", ["https://auth.example.com"])
+    return MCPAuth(**kw)
+
+
+def _mcp_call_body(name: str, arguments: dict | None = None) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": arguments or {}},
+    }
+
+
+def test_http_auth_missing_token_is_401():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", auth=_auth())
+    resp = app.test_client().post("/mcp", json=_mcp_call_body("add", {"a": 1, "b": 2}))
+    assert resp.status_code == 401
+    assert "Bearer" in resp.headers.get("www-authenticate", "")
+    assert "oauth-protected-resource" in resp.headers.get("www-authenticate", "")
+
+
+def test_http_auth_invalid_token_is_401():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", auth=_auth())
+    resp = app.test_client().post(
+        "/mcp",
+        json=_mcp_call_body("add", {"a": 1, "b": 2}),
+        headers={"authorization": "Bearer wrong"},
+    )
+    assert resp.status_code == 401
+
+
+def test_http_auth_valid_token_dispatches():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", auth=_auth())
+    resp = app.test_client().post(
+        "/mcp",
+        json=_mcp_call_body("add", {"a": 2, "b": 3}),
+        headers={"authorization": "Bearer good"},
+    )
+    assert resp.status_code == 200
+    assert orjson.loads(resp.body)["result"]["content"][0]["text"] == "5"
+
+
+def test_http_auth_endpoint_scope_is_403():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    # Endpoint requires mcp:tools; the 'noscope' principal lacks it.
+    app.mount_mcp(transport="http", auth=_auth(required_scopes=["mcp:tools"]))
+    resp = app.test_client().post(
+        "/mcp",
+        json=_mcp_call_body("add", {"a": 1, "b": 2}),
+        headers={"authorization": "Bearer noscope"},
+    )
+    assert resp.status_code == 403
+    assert "insufficient_scope" in resp.headers.get("www-authenticate", "")
+
+
+def test_http_auth_principal_visible_to_tool():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Echo subject")
+    async def whoami() -> str:
+        p = current_principal()
+        return p.subject if p else "anon"
+
+    app.mount_mcp(transport="http", auth=_auth())
+    resp = app.test_client().post(
+        "/mcp", json=_mcp_call_body("whoami"), headers={"authorization": "Bearer good"}
+    )
+    assert orjson.loads(resp.body)["result"]["content"][0]["text"] == "agent-1"
+
+
+def test_http_auth_per_tool_scope_uses_token_scopes():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Privileged", scopes=["admin"])
+    async def wipe() -> str:
+        return "wiped"
+
+    # Token grants mcp:tools but not admin, so the per-tool scope check rejects
+    # with an HTTP 403 + insufficient_scope challenge.
+    app.mount_mcp(transport="http", auth=_auth())
+    resp = app.test_client().post(
+        "/mcp", json=_mcp_call_body("wipe"), headers={"authorization": "Bearer good"}
+    )
+    assert resp.status_code == 403
+    assert "insufficient_scope" in resp.headers.get("www-authenticate", "")
+    assert orjson.loads(resp.body)["error"]["code"] == -32003
+
+
+def test_http_protected_resource_metadata_served():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(
+        transport="http",
+        auth=MCPAuth(
+            verify=_verify,
+            resource_server_url="https://api.example.com/mcp",
+            authorization_servers=["https://auth.example.com"],
+            scopes_supported=["mcp:tools"],
+        ),
+    )
+    resp = app.test_client().get("/.well-known/oauth-protected-resource")
+    doc = orjson.loads(resp.body)
+    assert doc["resource"] == "https://api.example.com/mcp"
+    assert doc["authorization_servers"] == ["https://auth.example.com"]
+    assert doc["scopes_supported"] == ["mcp:tools"]
+
+
+def test_http_auth_async_verifier():
+    app = Veloce(openapi_url=None)
+
+    async def averify(token: str):
+        return Principal(subject="async-agent") if token == "ok" else None
+
+    @app.mcp_tool(description="Echo subject")
+    async def whoami() -> str:
+        p = current_principal()
+        return p.subject if p else "anon"
+
+    app.mount_mcp(transport="http", auth=_auth(verify=averify))
+    resp = app.test_client().post(
+        "/mcp", json=_mcp_call_body("whoami"), headers={"authorization": "Bearer ok"}
+    )
+    assert orjson.loads(resp.body)["result"]["content"][0]["text"] == "async-agent"
+
+
+# -- Hardening: single is_mcp check, Origin, metadata, provenance -----
+
+
+def test_exclude_middleware_and_is_mcp_cover_transport_and_replay():
+    app = Veloce(openapi_url=None)
+
+    from veloce import Middleware
+
+    class Auth(Middleware):
+        async def process_request(self, request):
+            if request.is_mcp:  # replayed tool call → transport already authed
+                return None
+            return JSONResponse({"detail": "no"}, status_code=401)
+
+    app.add_middleware(Auth)
+
+    @app.get("/order/{n}", expose_as_mcp_tool=True, mcp_description="Get order")
+    async def order(n: int) -> dict:
+        return {"n": n}
+
+    # exclude_middleware drops Auth from the /mcp transport route (it has its own
+    # auth); `if request.is_mcp` drops it from the replayed tool call. No paths.
+    app.mount_mcp(transport="http", auth=_auth(), exclude_middleware=["Auth"])
+    resp = app.test_client().post(
+        "/mcp", json=_mcp_call_body("order", {"n": 7}), headers={"authorization": "Bearer good"}
+    )
+    assert resp.status_code == 200
+    assert orjson.loads(orjson.loads(resp.body)["result"]["content"][0]["text"]) == {"n": 7}
+
+
+def test_origin_validation():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", allowed_origins=["https://app.example.com"])
+    client = app.test_client()
+    body = _mcp_call_body("add", {"a": 1, "b": 1})
+
+    # A browser Origin outside the allowlist is rejected (DNS-rebinding defense).
+    bad = client.post("/mcp", json=body, headers={"origin": "https://evil.example"})
+    assert bad.status_code == 403
+    # An allowed Origin passes.
+    ok = client.post("/mcp", json=body, headers={"origin": "https://app.example.com"})
+    assert ok.status_code == 200
+    # No Origin header (a non-browser client) passes.
+    none = client.post("/mcp", json=body)
+    assert none.status_code == 200
+
+
+def test_mcpauth_requires_metadata():
+    with pytest.raises(ValueError, match="resource_server_url"):
+        MCPAuth(verify=_verify, authorization_servers=["https://auth.example.com"])
+    with pytest.raises(ValueError, match="authorization_servers"):
+        MCPAuth(verify=_verify, resource_server_url="https://api.example.com/mcp")
+
+
+def test_principal_token_not_in_repr():
+    p = Principal(subject="u", token="super-secret-token-value")
+    assert "super-secret-token-value" not in repr(p)
+
+
+def test_tool_argument_cannot_spoof_header_or_cookie():
+    app = Veloce(openapi_url=None)
+
+    from veloce import Request
+
+    @app.get(
+        "/probe", expose_as_mcp_resource=False, mcp_description="Probe", expose_as_mcp_tool=True
+    )
+    async def probe(request: Request) -> dict:
+        # A Security scheme reading a header / cookie (HTTPBearer, APIKeyHeader,
+        # APIKeyCookie) must NOT see an agent-supplied value: tool arguments are
+        # never seeded into the synthetic request's headers or cookies.
+        return {
+            "auth": request.headers.get("authorization"),
+            "api_key": request.headers.get("x-api-key"),
+            "cookie": request.cookies.get("session"),
+        }
+
+    out = _call(
+        app,
+        "probe",
+        {"authorization": "Bearer spoofed", "x_api_key": "forged", "session": "hijacked"},
+    )
+    payload = orjson.loads(out["result"]["content"][0]["text"])
+    assert payload == {"auth": None, "api_key": None, "cookie": None}
+
+
+def test_origin_empty_allowlist_rejects_all_browsers():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    # An explicit empty allowlist denies every browser Origin (it does not
+    # silently disable the check).
+    app.mount_mcp(transport="http", allowed_origins=[])
+    body = _mcp_call_body("add", {"a": 1, "b": 1})
+    blocked = app.test_client().post("/mcp", json=body, headers={"origin": "https://any.example"})
+    assert blocked.status_code == 403
+    # A non-browser client (no Origin) is still allowed.
+    assert app.test_client().post("/mcp", json=body).status_code == 200
+
+
+def test_http_log_level_does_not_bleed_across_requests():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Log then return")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.log("info", "hello")
+        return "ok"
+
+    app.mount_mcp(transport="http")
+    client = app.test_client()
+    # One HTTP client raises the log floor to `error`...
+    client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "logging/setLevel",
+            "params": {"level": "error"},
+        },
+    )
+    # ...which must NOT carry into a separate request (the level is per-request,
+    # not shared on the one MCPServer the HTTP transport reuses).
+    resp = client.post("/mcp", json=_mcp_call_body("work"), headers={"accept": "text/event-stream"})
+    messages = [e for e in _parse_sse(resp.body) if e.get("method") == "notifications/message"]
+    assert len(messages) == 1  # the info log is emitted; the other request's setLevel did not bleed

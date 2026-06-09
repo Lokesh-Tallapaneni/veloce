@@ -8,7 +8,7 @@ import functools
 import os
 import sys
 import weakref
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Annotated, Any
 
 from typing_extensions import Doc
@@ -521,7 +521,16 @@ class Veloce(
         # `(handler, name, description, namespace)`, recorded by
         # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
         # tool registry is assembled.
-        self._mcp_tools: list[tuple[Callable, str | None, str | None, str | None]] = []
+        self._mcp_tools: list[
+            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None]
+        ] = []
+        # MCP prompt registrations (contrib.mcp). Each entry is
+        # `(handler, name, description, namespace, scopes)`, recorded by
+        # `@app.mcp_prompt(...)` and consumed once at `mount_mcp` time when the
+        # prompt registry is assembled.
+        self._mcp_prompts: list[
+            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None]
+        ] = []
         # Dev-mode event-loop blocking watchdog - armed during startup only
         # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
         # (and free) for every other app.
@@ -1635,6 +1644,7 @@ class Veloce(
         *,
         name: str | None = None,
         namespace: str | None = None,
+        scopes: Sequence[str] | None = None,
     ) -> Callable:
         """Register an MCP-only tool callable by an AI agent (contrib.mcp).
 
@@ -1654,43 +1664,119 @@ class Veloce(
         """
         from veloce.contrib.mcp.safety import require_mcp_description
 
+        scope_set = frozenset(scopes) if scopes else None
+
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
-            self._mcp_tools.append((func, name, description, namespace))
+            self._mcp_tools.append((func, name, description, namespace, scope_set))
             return func
 
         return decorator
 
-    def mount_mcp(self, transport: str = "stdio") -> Any:
+    def mcp_prompt(
+        self,
+        description: str,
+        *,
+        name: str | None = None,
+        namespace: str | None = None,
+        scopes: Sequence[str] | None = None,
+    ) -> Callable:
+        """Register an MCP prompt template fetchable by an AI agent (contrib.mcp).
+
+        The decorated callable's parameters become the prompt's arguments, and its
+        return - a string, or a list of role/content messages - becomes the
+        messages ``prompts/get`` returns. `Depends()` params resolve through the
+        same dependency machinery routes use, with an `MCPContext` standing in for
+        the HTTP `Request`. `description` is the required LLM-facing text;
+        `namespace` prefixes the prompt name (`<namespace>_<name>`).
+
+        Usage::
+
+            @app.mcp_prompt(description="Summarise a topic in three bullets")
+            async def summarise(topic: str) -> str:
+                return f"Summarise {topic} in three bullet points."
+        """
+        from veloce.contrib.mcp.safety import require_mcp_description
+
+        scope_set = frozenset(scopes) if scopes else None
+
+        def decorator(func: Callable) -> Callable:
+            require_mcp_description(name or func.__name__, description)
+            self._mcp_prompts.append((func, name, description, namespace, scope_set))
+            return func
+
+        return decorator
+
+    def mount_mcp(
+        self,
+        transport: str = "stdio",
+        *,
+        path: str = "/mcp",
+        auth: Any = None,
+        principal: Any = None,
+        allowed_origins: Sequence[str] | None = None,
+        exclude_middleware: Sequence[str] | None = None,
+    ) -> Any:
         """Build the MCP server and serve the registered tools.
 
-        Assembles the tool registry from `@app.mcp_tool` registrations plus
-        every route flagged `expose_as_mcp_tool=True`, then serves it over the
-        chosen transport. Supports `transport="stdio"` only (JSON-RPC 2.0
-        on stdin/stdout, for subprocess use); the coroutine runs until stdin
-        closes. Returns the awaitable serve coroutine so a caller may schedule
-        it explicitly (`asyncio.run(app.mount_mcp())`).
+        Assembles the tool registry from `@app.mcp_tool` registrations plus every
+        route flagged `expose_as_mcp_tool=True`, the resource registry from every
+        read-only route flagged `expose_as_mcp_resource=True`, and the prompt
+        registry from `@app.mcp_prompt` registrations, then serves them over the
+        chosen transport.
 
-        The serve loop runs inside the app's `lifespan_context()`, so the same
-        startup sequence an ASGI server enters - the lifespan context manager
-        plus every `on_startup` handler (DB pools, `app.state`, caches) - runs
-        before the first tool is served, and the matching shutdown sequence
-        runs after stdin closes.
+        `transport="stdio"` (the default) serves JSON-RPC 2.0 on stdin/stdout for
+        subprocess use and returns an awaitable serve coroutine that runs until
+        stdin closes, inside the app's `lifespan_context()` - so every
+        `on_startup` handler runs before the first tool is served. Schedule it
+        explicitly (`asyncio.run(app.mount_mcp())`). A local subprocess is trusted,
+        so authentication is from the environment: pass a `principal` (a
+        `veloce.Principal`) to establish the identity / scopes the served tools run
+        under.
+
+        `transport="http"` mounts the Streamable HTTP transport as a `POST` route
+        at `path` (default `/mcp`) on this app and returns `None`; serve the app
+        with any ASGI server (or `app.run()`) as usual. Pass `auth` (a
+        `veloce.contrib.mcp.MCPAuth`) to make the endpoint an OAuth 2.1 resource
+        server - validating the bearer token on every request and serving the
+        RFC 9728 metadata. `allowed_origins` enables `Origin` validation
+        (DNS-rebinding defense); `exclude_middleware` names app middleware the
+        transport routes opt out of (an app-wide auth middleware `auth` replaces).
+        Call this after the tool / resource / prompt routes are registered.
         """
         from veloce.contrib.mcp.server import MCPServer
-        from veloce.contrib.mcp.transports.stdio import serve_stdio
 
-        if transport != "stdio":
-            raise ValueError(
-                f"Unsupported MCP transport {transport!r}; only 'stdio' is supported "
-                "(the Streamable HTTP transport is not yet implemented)."
+        if transport == "stdio":
+            from veloce.contrib.mcp.transports.stdio import serve_stdio
+            from veloce.principal import set_principal
+
+            server = MCPServer(self)
+
+            async def _serve() -> None:
+                if principal is not None:
+                    set_principal(principal)
+                async with self.lifespan_context():
+                    await serve_stdio(server)
+
+            return _serve()
+
+        if transport == "http":
+            from veloce.contrib.mcp.transports.http import register_http_transport
+
+            register_http_transport(
+                self,
+                MCPServer(self),
+                path=path,
+                auth=auth,
+                allowed_origins=(
+                    frozenset(allowed_origins) if allowed_origins is not None else None
+                ),
+                exclude_middleware=exclude_middleware,
             )
-        server = MCPServer(self)
+            return None
 
-        async def _serve() -> None:
-            async with self.lifespan_context():
-                await serve_stdio(server)
-
-        return _serve()
+        raise ValueError(
+            f"Unsupported MCP transport {transport!r}; supported transports are 'stdio' and 'http'."
+        )
 
     # -- ASGI compatibility layer ---------------------------------

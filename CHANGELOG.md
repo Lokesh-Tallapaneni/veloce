@@ -6,6 +6,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MCP HTTP transport hardening: `mount_mcp(transport="http", allowed_origins=[...])`
+  validates the `Origin` header (DNS-rebinding defense), and
+  `exclude_middleware=[...]` drops named app middleware from the `/mcp` + metadata
+  routes (so an app-wide auth middleware the transport's own `auth` replaces does
+  not run on it).
+- MCP authorization: `mount_mcp(transport="http", auth=MCPAuth(...))` makes the
+  endpoint an OAuth 2.1 resource server — a user-supplied `verify` callable
+  validates the bearer token on every request, the RFC 9728 protected-resource
+  metadata is served, and a missing/invalid token returns `401` (insufficient
+  endpoint scope returns `403`) with a `WWW-Authenticate` challenge. Declarative
+  per-tool scopes (`@app.mcp_tool(scopes=...)`, `mcp_scopes=` on exposed routes)
+  are enforced against the request principal.
+- `Principal` + `current_principal()` / `set_principal()`: a unified authenticated
+  identity populated by HTTP auth or the MCP transport, so authorization and
+  identity-aware dependencies read one source across both doors.
+- `Request.is_mcp` marks a replayed MCP tool/resource call, so auth middleware can
+  defer to the transport on agent calls while business middleware runs unchanged.
+- MCP Streamable HTTP transport: `app.mount_mcp(transport="http", path="/mcp")`
+  mounts the MCP server as a `POST` route, so it can run as a remote/hosted server
+  under any ASGI server. A request with `Accept: text/event-stream` is answered with
+  an SSE stream of the call's progress/log notifications followed by the JSON-RPC
+  response; otherwise a single JSON response. The route is protected by whatever
+  middleware and dependencies the app applies to it.
+- MCP progress and logging: `MCPContext.report_progress(...)` and
+  `MCPContext.log(...)` now send live `notifications/progress` and
+  `notifications/message` to the client (progress requires the client's
+  `progressToken`); the server handles `logging/setLevel` and advertises the
+  `logging` capability.
+- MCP per-call timeout: set `app.config["MCP_CALL_TIMEOUT"]` (seconds) to bound each
+  tool call, resource read, and prompt render; an overrun is cancelled and surfaced
+  as an in-band tool error or a JSON-RPC error. Unset (no timeout) by default.
+- MCP prompts: register a reusable prompt template with `@app.mcp_prompt(...)`. The
+  callable's parameters become the prompt's arguments and its return (a string or a
+  list of role/content messages) becomes the rendered messages; the server answers
+  `prompts/list` and `prompts/get`, with `Depends`/`MCPContext` resolved as in a
+  tool, and advertises the `prompts` capability when at least one is registered.
+- MCP resources: expose a read-only (`GET`/`HEAD`) route as a Model Context
+  Protocol resource with `expose_as_mcp_resource=True` and `mcp_resource_uri=...`
+  (a static URI, or a URI template such as `users://{user_id}` binding the route's
+  path parameters). The server answers `resources/list`, `resources/templates/list`,
+  and `resources/read`, replaying the route's dependencies, security, and
+  `response_model` through the shared invocation path; it advertises the
+  `resources` capability when at least one resource is registered.
+- MCP non-text tool content: a tool returning an `image/*` or `audio/*` response
+  emits the matching typed MCP content block (base64), and a binary resource read
+  returns its bytes as a `blob`.
+
+### Fixed
+
+- MCP: the `logging/setLevel` minimum is now scoped per request (a ContextVar like
+  the progress/notification channel) rather than on the shared `MCPServer`, so one
+  HTTP client's level change no longer raises the notification floor for others.
+- MCP: a resource read short-circuited by an auth guard (`401`/`403`) maps to a
+  forbidden error rather than an internal error.
+
+### Security
+
+- MCP: a pure `@app.mcp_tool` handler error (and the defensive internal-error path)
+  surfaces a generic message unless `app.debug` is set, so an exception carrying a
+  secret is not returned verbatim to the agent.
+- MCP: a tool argument can no longer masquerade as an `Authorization`/`Cookie`
+  header on the replayed request, so a `Security` scheme cannot read agent-supplied
+  input as a credential; `Principal.token` is excluded from `repr()`; `MCPAuth`
+  requires `resource_server_url` + `authorization_servers`; and an insufficient
+  scope is reported uniformly across tools/resources/prompts (HTTP 403 with a
+  `WWW-Authenticate` challenge over the JSON transport).
+
 ## [0.4.0] - 2026-06-08
 
 ### Added
