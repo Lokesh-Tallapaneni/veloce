@@ -10,140 +10,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `veloce new NAME [--template minimal|api|web]` scaffolds a new project, and
-  `veloce generate KIND NAME` (alias `g`) emits a single boilerplate file for
-  `route`, `blueprint`, `middleware`, `model`, or `security`. Generated projects
-  import the public API and pass `ruff` and `mypy` out of the box. The
-  scaffolders are stdlib-only (no template-engine dependency) and load lazily, so
-  `veloce --version` / `--help` do not import the framework.
-- `get_flashed_messages` is now injected as a Jinja template global alongside
-  `url_for`, `g`, and `current_app`, so a template can call
-  `{% for m in get_flashed_messages() %}` without registering it manually. It
-  returns an empty list outside a request, so renders that reference it never
-  raise an undefined-global error.
-- `SessionMiddleware` and `ServerSessionMiddleware` resolve constructor
-  arguments left out against `app.config` on the first request: `secret_key`
-  from `SECRET_KEY`, `cookie_name` from `SESSION_COOKIE_NAME`, the cookie
-  `path` from `APPLICATION_ROOT`, `httponly`/`secure`/`samesite` from the
-  `SESSION_COOKIE_*` keys, `permanent_lifetime` from
-  `PERMANENT_SESSION_LIFETIME`, and `max_cookie_size` from `MAX_COOKIE_SIZE`.
-  Explicit arguments always win. `app.secret_key` is now a live property bound
-  to `config["SECRET_KEY"]`, so `app.secret_key = "..."` followed by a bare
-  `app.add_middleware(SessionMiddleware)` is a complete session setup;
-  `use_secure_defaults()` therefore now affects the emitted session cookie.
-  Constructing `SessionMiddleware` without any secret raises `RuntimeError` on
-  the first request instead of `TypeError` at construction.
-- `send_file` / `async_send_file` called without `max_age=` during a request
-  now apply the app's `SEND_FILE_MAX_AGE_DEFAULT` as the
-  `Cache-Control: public, max-age=...` lifetime. The key defaults to `None`
-  (no header), so behaviour is unchanged unless it is set.
+- `veloce new NAME [--template minimal|api|web]` scaffolds a project, and `veloce generate KIND NAME` (alias `g`) emits a single file. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `get_flashed_messages` is auto-injected as a Jinja global, so templates call it without manual registration. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `SessionMiddleware` / `ServerSessionMiddleware` resolve unset constructor arguments from `app.config` on the first request. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- `app.secret_key` is a live property bound to `config["SECRET_KEY"]`, so it alone configures `SessionMiddleware`. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- `send_file` / `async_send_file` apply `SEND_FILE_MAX_AGE_DEFAULT` when called without `max_age=`. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
 
 ### Security
 
-- `CORSMiddleware(allow_origin_regex=...)` with no explicit `allow_origins` no
-  longer defaults the origin list to `["*"]`. Previously the wildcard
-  short-circuited origin matching before the regex was consulted, so a
-  regex-only configuration echoed `Access-Control-Allow-Origin: *` to every
-  origin. A regex-only config now gates strictly by the regex.
+- `CORSMiddleware(allow_origin_regex=...)` gates strictly by the regex instead of defaulting `allow_origins` to `["*"]`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
 
 ### Changed
 
-- `APIRouter` now aliases `Router` instead of `Blueprint`, so
-  `APIRouter(prefix="/items", tags=["items"])` constructs directly. Code that
-  instantiated `APIRouter` with a positional group name should construct
-  `Blueprint` (the named route group with hooks and scoped error handlers)
-  under its own name; `app.include_router` accepts both.
-- A `yield`-dependency teardown failure is no longer only logged: the
-  aggregated failure is delivered to `got_request_exception` receivers, and
-  under `PROPAGATE_EXCEPTIONS` (or the implicit `DEBUG` + `TESTING` test mode)
-  it re-raises out of dispatch. The default response behaviour is unchanged —
-  the already-built response is still returned.
-- `MAX_CONTENT_LENGTH` now defaults to `104857600` (100 MiB) instead of `None`
-  (unlimited). Request bodies are buffered in memory, so an unbounded default let
-  a single large request exhaust process memory; the cap bounds that exposure
-  while staying generous for typical uploads. Endpoints that accept larger bodies
-  must raise `MAX_CONTENT_LENGTH` (or set it to `None` for unlimited). The
-  enforcement mechanism is unchanged on both the ASGI and native transports.
+- `APIRouter` now aliases `Router` (was `Blueprint`); construct `Blueprint` for a named route group. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- `MAX_CONTENT_LENGTH` defaults to `104857600` (100 MiB); set it to `None` for unlimited. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- A failing `yield`-dependency teardown now reaches `got_request_exception` and re-raises under `PROPAGATE_EXCEPTIONS`. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
 
 ### Fixed
 
-- Trailer fields of a chunked request on the built-in server are no longer
-  prepended to the next pipelined request's headers. The parser delivers
-  trailers through the same callback as ordinary headers, after the header
-  buffer had already been handed to the in-flight request; they are now
-  dropped once counted against the header-size caps, and a trailer named
-  `content-length` can no longer feed the next request's body-size guard.
-- `PROPAGATE_EXCEPTIONS` loaded from an env file as the string `"false"` (or
-  `"0"`, `"off"`) now reads as off. The value was previously truth-tested, so
-  any non-empty string — including `"false"` — enabled propagation.
-- `@app.endpoint(name)` now reclassifies the route for dispatch exactly as
-  registration does. Attaching a sync view to a route stubbed by
-  `add_url_rule` previously kept the stub's fast-path eligibility, so the
-  dispatcher awaited the sync handler (a `TypeError`) instead of offloading
-  it; route-level dependency plans and a previously cached `view_functions`
-  snapshot also now refresh.
-- `security_audit()` no longer claims session signing "falls back to weak
-  defaults" when `SECRET_KEY` is unset; the warning now describes the actual
-  behaviour (config-backed session middleware cannot sign without a key).
-- The Swagger UI docs page (`/docs`) no longer fails with "No layout defined for
-  StandaloneLayout". The template loaded only `swagger-ui-bundle.js` but selected
-  `layout: "StandaloneLayout"`, which is defined by the separate standalone-preset
-  script that was never included. The embedded docs now use `BaseLayout` (provided
-  by the bundle) and drop the unloaded preset reference.
-- A `@rate_limit` decorator on a route registered with `include_in_schema=False`
-  (a login form POST, an internal endpoint) is now honored. `RateLimitMiddleware`
-  discovered per-route strategies through the schema-only route view, so a tag on
-  a hidden route was silently dropped and the endpoint fell back to the global
-  limit. The scan now includes hidden routes. Per-route limits still require the
-  strategy API (`RateLimitMiddleware(strategy=...)`); the legacy
-  `max_requests`/`window_seconds` path enforces only the flat global ceiling.
-- A trailing-slash redirect generated inside a mounted Veloce sub-app now carries
-  the mount prefix in its `Location` (e.g. `/sub/ping/`, not a bare `/ping/`), so
-  a client following the redirect reaches the sub-app route instead of a `404` on
-  the parent. The target is built from the request's `root_path` + path; a
-  top-level app (empty `root_path`) is unchanged.
-- A `query_string` carrying raw non-ASCII bytes (an un-percent-encoded UTF-8
-  query) over ASGI now returns `400 Bad Request` instead of raising
-  `UnicodeDecodeError` out of dispatch as a `500`.
-- `multipart/form-data` bodies that fail to parse mid-body (truncated parts,
-  malformed delimiters) now raise `BadRequest` (400) instead of returning the
-  partial form with `200 OK`, matching the rejection already applied to a
-  malformed boundary.
-- `StreamingResponse` over the native server no longer truncates the body when
-  the producer yields an empty `bytes` chunk. An empty yield previously encoded
-  as `0\r\n\r\n`, the chunked last-chunk terminator, which ended the stream early
-  and desynced keep-alive framing; empty chunks are now skipped.
-- Registering the slashed and unslashed forms of a path (`/users` and `/users/`)
-  no longer makes the second registration flip the first to a slash redirect.
-  Both forms share one radix node; the slash-strictness flags are now tracked per
-  form, so each variant resolves to its own handler.
-- Blueprint routes registered with `exclude_middleware=[...]` now keep the
-  exclusion after `register_blueprint`. The re-registration path previously
-  dropped the field, so a route that opted out of a middleware silently had it
-  run again once spliced onto the app.
-- A plain mutable parameter default (`tags: list[str] = []`, `opts: dict = {}`)
-  is no longer shared across requests. The default was returned by identity, so
-  one request's in-place mutation leaked into the next; each request now receives
-  an independent copy. The shared-mutable-default warning, previously emitted only
-  for explicit `Query(default=[])` markers, now also covers plain defaults.
-- `ProxyFix` with a `Forwarded: host="[2001:db8::1]:8443"` directive no longer
-  strips the IPv6 brackets and port before splicing the value into the Host
-  header, which produced a malformed authority in redirects and OpenAPI server
-  URLs. The bracket-stripping now applies only to the `for`/`by` node
-  identifiers (RFC 7239 Sec. 6); the `host` authority is kept verbatim.
-- A `HEAD` request served by the native server (`Veloce.run()`) no longer sends
-  the response body. The body strip previously existed only on the ASGI emit
-  path, so the native server returned the full payload after the `Content-Length`
-  header (RFC 9110 Sec. 9.3.2), corrupting keep-alive framing. The header section
-  and advertised length are kept; the body is now omitted.
-- The native server no longer drops a WebSocket frame that the client pipelines
-  into the same TCP segment as the handshake. The post-handshake bytes were never
-  fed to the frame parser, so the first message was silently lost and the
-  connection hung; they are now delivered to the connection.
-- A non-WebSocket `Upgrade` request (e.g. `Upgrade: h2c`) on the native server
-  now returns `400 Bad Request` without running the matching route handler.
-  Previously the request was dispatched before the `400` was written, so side
-  effects committed for a request the client was told had failed.
+- `/docs` renders with `BaseLayout` instead of the unloaded `StandaloneLayout`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `@rate_limit` is honored on `include_in_schema=False` routes (with the strategy API). ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `@app.endpoint(name)` reclassifies the route so a sync view is offloaded, not awaited. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- `PROPAGATE_EXCEPTIONS=false` (and `0`/`off`) from an env file now reads as off. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- `security_audit()` no longer claims session signing falls back to weak defaults when `SECRET_KEY` is unset. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- The native server drops chunked-request trailer fields instead of prepending them to the next request. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- A mounted sub-app's trailing-slash redirect carries the mount prefix in its `Location`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- A non-ASCII `query_string` over ASGI returns `400` instead of raising a `500`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- A `multipart/form-data` body that fails mid-parse returns `400`, not a partial `200`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `StreamingResponse` on the native server no longer truncates on an empty `bytes` chunk. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- Registering `/users` and `/users/` no longer flips the first to a slash redirect. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- Blueprint routes keep `exclude_middleware=[...]` after `register_blueprint`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- A mutable parameter default (`tags: list[str] = []`) is no longer shared across requests. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `ProxyFix` keeps the brackets and port of a `Forwarded` IPv6 `host`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- A native-server `HEAD` response no longer sends a body, keeping `Content-Length`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- The native server no longer drops a WebSocket frame pipelined into the handshake segment. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- A non-WebSocket `Upgrade` (e.g. `h2c`) returns `400` without running the route handler. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
 
 ## [0.5.0] - 2026-06-10
 
