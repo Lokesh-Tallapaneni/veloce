@@ -378,7 +378,7 @@ class Jinja2Templates:
         return self._resolve_template(self.env, name)
 
 
-# -- Module-level helpers ---------------------------------------------
+# ── Module-level helpers ──────────────────────────────────
 
 
 def render_template(template_name: str | Sequence[str], **context: Any) -> str:

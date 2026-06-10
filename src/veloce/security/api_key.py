@@ -1,4 +1,4 @@
-"""API Key authentication schemes - header, query, cookie."""
+"""API Key authentication schemes — header, query, cookie."""
 
 from __future__ import annotations
 

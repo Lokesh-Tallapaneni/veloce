@@ -1,4 +1,4 @@
-"""Test and outside-request context factories mixed into Veloce.
+"""Testing support — test-client and outside-request context factories, mixed into Veloce.
 
 Holds the thin factory methods that build the in-memory test clients
 (`test_client` / `async_test_client`) and the outside-request context managers

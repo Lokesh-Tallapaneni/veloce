@@ -1,4 +1,4 @@
-"""Sub-application and static mounting mixed into Veloce.
+"""Mounting — sub-application and static mounts, mixed into Veloce.
 
 Holds `mount` (Veloce sub-app, ASGI app, or `StaticFiles` at a prefix),
 `mount_static` (the Veloce static-file handler), and the per-request
@@ -17,7 +17,7 @@ from veloce.contrib.staticfiles import StaticFiles
 class MountingMixin:
     """Sub-app / ASGI / static mounting, mixed into `Veloce`."""
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host application (Veloce) provides.
         _mounted_apps: Any
         _asgi_mounts: Any

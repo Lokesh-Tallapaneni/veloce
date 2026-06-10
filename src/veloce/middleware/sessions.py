@@ -1,4 +1,4 @@
-"""Cookie-based session middleware - signed + timestamped payload.
+"""Cookie-based session middleware — signed + timestamped payload.
 
 The cookie body is produced by `veloce.signing.Signer`, which embeds a
 server-side timestamp so `max_age` can be enforced on the server (the

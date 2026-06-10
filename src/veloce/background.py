@@ -1,4 +1,4 @@
-"""Background tasks - run work after response is sent."""
+"""Background tasks — run work after response is sent."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Static file serving with caching, ETag, and Last-Modified support.
+"""Static files — file serving with caching, ETag, and Last-Modified support.
 
 All file I/O runs in the executor so the event loop is never blocked.
 Conditional GET responses follow RFC 9110 Sec. 13.1.
@@ -461,8 +461,9 @@ class StaticFiles:
             # affects a `precompressed=False` handler.
             return Response(status_code=HTTP_406_NOT_ACCEPTABLE, body=b"Not Acceptable")
 
-        # stat_result was populated by the existence check above; reuse it.
-        assert stat_result is not None  # narrowed by the `not is_file` returns
+        # stat_result was populated by the existence check above (the
+        # `not is_file` returns narrowed it); reuse it.
+        assert stat_result is not None
         mtime = stat_result.st_mtime
         size = stat_result.st_size
         cache_key = file_path

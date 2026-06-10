@@ -1,4 +1,4 @@
-"""Conditional GET - synthesize/forward validators and emit 304s.
+"""Conditional GET — synthesize/forward validators and emit 304s.
 
 Honors conditional requests per RFC 9110 Sec. 13: when a buffered ``GET``
 or ``HEAD`` response carries (or, optionally, is given a synthesized weak)

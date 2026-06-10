@@ -45,6 +45,9 @@ RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 
 _logger = logging.getLogger(__name__)
 
+# ── Module constants and helpers ───────────────────────────
+
+
 # Valid `on_duplicate` policies for a router. `"error"` raises, `"warn"` logs
 # and replaces, `"override"` replaces silently.
 _DUPLICATE_POLICIES = frozenset({"error", "warn", "override"})
@@ -106,6 +109,26 @@ def _check_duplicate_params(full_path: str) -> None:
         seen.add(ph.name)
 
 
+# Converter specificity - lower = more restrictive = tried first during
+# match. Ensures `/items/{id:int}` beats `/items/{slug:str}` regardless
+# of registration order. The sort runs once per `add_route` call (at app
+# startup), never on the per-request match path.
+_CONVERTER_PRIORITY: dict[type, int] = {
+    UUIDConverter: 0,
+    IntConverter: 1,
+    FloatConverter: 2,
+    StringConverter: 3,
+    PathConverter: 4,
+}
+
+
+def _converter_sort_key(node: RadixNode) -> int:
+    return _CONVERTER_PRIORITY.get(type(node.converter), 3)
+
+
+# ── Radix tree structures ──────────────────────────────────
+
+
 class RadixNode:
     """A node in the radix tree."""
 
@@ -158,21 +181,7 @@ class RadixNode:
         self.converter: _Converter | None = None
 
 
-# Converter specificity - lower = more restrictive = tried first during
-# match. Ensures `/items/{id:int}` beats `/items/{slug:str}` regardless
-# of registration order. The sort runs once per `add_route` call (at app
-# startup), never on the per-request match path.
-_CONVERTER_PRIORITY: dict[type, int] = {
-    UUIDConverter: 0,
-    IntConverter: 1,
-    FloatConverter: 2,
-    StringConverter: 3,
-    PathConverter: 4,
-}
-
-
-def _converter_sort_key(node: RadixNode) -> int:
-    return _CONVERTER_PRIORITY.get(type(node.converter), 3)
+# ── Route metadata ─────────────────────────────────────────
 
 
 class RouteInfo:
@@ -363,6 +372,9 @@ class RouteMatch:
         self.path_params = path_params
 
 
+# ── Regex fallback routes ──────────────────────────────────
+
+
 def _openapi_path_from_template(template: str) -> str:
     """Reduce a brace template to its OpenAPI path form (`{name}` per param).
 
@@ -410,6 +422,9 @@ class RegexRoute:
     def openapi_path(self) -> str:
         """OpenAPI-style path string built from the template (`/users/{id}`)."""
         return _openapi_path_from_template(self.template)
+
+
+# ── Router ─────────────────────────────────────────────────
 
 
 class Router:
@@ -506,7 +521,7 @@ class Router:
         # reuses one compiled pattern instead of appending a duplicate.
         self._regex_route_index: dict[str, RegexRoute] = {}
 
-    # -- Route registration ---------------------------------------
+    # ── Route registration ────────────────────────────────
 
     def _split_path(self, path: str) -> tuple[str, ...]:
         """Split path into segments (cached)."""
@@ -1227,7 +1242,7 @@ class Router:
         for method in methods:
             handler_table[method.upper()] = route_info
 
-    # -- Matching -------------------------------------------------
+    # ── Matching ──────────────────────────────────────────
 
     @staticmethod
     def _regex_route_match(route: RegexRoute, path: str) -> re.Match[str] | None:
@@ -1524,7 +1539,7 @@ class Router:
                 methods.update(dict.fromkeys(route.handlers))
         return list(methods)
 
-    # -- Decorator API --------------------------------------------
+    # ── Decorator API ─────────────────────────────────────
 
     def route(
         self,
@@ -1686,6 +1701,7 @@ class Router:
         """
 
         def decorator(func: RouteHandler) -> RouteHandler:
+            """Register `func` for the route and return it unchanged."""
             self.add_route(
                 path=path,
                 handler=func,
@@ -1808,6 +1824,7 @@ class Router:
         from veloce.websocket import build_listener_handler
 
         def decorator(func: RouteHandler | Callable[..., Any]) -> RouteHandler | Callable[..., Any]:
+            """Build the listener handler, register it, and return `func`."""
             handler = build_listener_handler(
                 func,
                 receive=receive,
@@ -1871,7 +1888,7 @@ class Router:
             **kwargs,
         )
 
-    # -- Reverse URL lookup ---------------------------------------
+    # ── Reverse URL lookup ────────────────────────────────
 
     def url_for(self, name: str, **path_params: Any) -> str:
         """Reverse URL lookup by route name (`url_for`).
@@ -1967,7 +1984,7 @@ class Router:
     # alias so calling code reads cleanly.
     url_path_for = url_for
 
-    # -- Introspection and merge ----------------------------------
+    # ── Introspection and merge ───────────────────────────
 
     def _collect_all_routes(self, include_hidden: bool = False) -> list[tuple[str, str, RouteInfo]]:
         """Collect routes as (method, path, info) tuples.

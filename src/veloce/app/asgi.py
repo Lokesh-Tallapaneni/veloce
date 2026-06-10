@@ -150,7 +150,7 @@ _BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExcepti
 class AsgiMixin:
     """The ASGI transport + response-emit layer, mixed into Veloce."""
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host application (Veloce) provides.
         config: Any
         logger: Any

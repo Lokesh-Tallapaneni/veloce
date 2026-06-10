@@ -1,4 +1,4 @@
-"""Internal protocol and routing vocabulary constants.
+"""Protocol vocabulary — internal protocol and routing constants.
 
 These names centralize wire-level ASGI tokens, HTTP method names, auth-scheme
 names, and a few framework-level protocol invariants that are repeated across

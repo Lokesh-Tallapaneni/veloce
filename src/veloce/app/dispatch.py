@@ -82,6 +82,9 @@ if TYPE_CHECKING:  # pragma: no cover
     pass
 
 
+# ── Dispatch-scoped module state ───────────────────────────
+
+
 # Cache of `(wants_request, wants_exc)` flags per exception handler - the
 # `inspect.signature` walk inside `_call_exc_handler` repeats on every
 # raised exception otherwise. WeakKey so handler GC reclaims the entry.
@@ -95,6 +98,9 @@ _exc_handler_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool
 # `_run_response_middleware` keeps walking the full list with zero lookup
 # cost beyond a single dict miss.
 _MW_RESPONSE_CHAIN_KEY = "_mw_response_chain"
+
+
+# ── Module helpers ─────────────────────────────────────────
 
 
 def _prefers_html(request: Request) -> bool:
@@ -157,7 +163,7 @@ class DispatchMixin:
     `_first_request_fired`) onto the composed `Veloce`, which carries a `__dict__`.
     """
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host application (Veloce) provides.
         config: Any
         logger: Any
@@ -200,6 +206,8 @@ class DispatchMixin:
         _static_handlers: Any
         _mw_version: Any
         redirect_slashes: bool
+
+    # ── Entry point and core dispatch ──────────────────────
 
     async def handle_request(
         self, request: Request, cp: CompiledPipeline | None = None
@@ -652,6 +660,8 @@ class DispatchMixin:
                 except Exception:
                     self.logger.exception("signal receiver raised an exception")
 
+    # ── Request phase and error shaping ────────────────────
+
     async def _run_request_phase(
         self, request: Request, match: Any, cp: CompiledPipeline
     ) -> tuple[Response | None, bool]:
@@ -750,6 +760,8 @@ class DispatchMixin:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             ),
         )
+
+    # ── Hooks and route resolution ─────────────────────────
 
     async def _run_before_hooks(self, request: Request) -> tuple[Response | None, str | None]:
         """Run before_request hooks; return `(short_circuit_response, bp_name)`.
@@ -951,6 +963,8 @@ class DispatchMixin:
             for proc in self._url_value_preprocessors:
                 proc(endpoint, path_params)
 
+    # ── Dependencies and response building ─────────────────
+
     async def _resolve_dependencies(
         self, request: Request, match: Any
     ) -> tuple[dict, DependencyResolver | None]:
@@ -1105,6 +1119,8 @@ class DispatchMixin:
                 bg_task = asyncio.get_running_loop().create_task(coro)
                 bg_task.add_done_callback(self._log_background_task_error)
 
+    # ── Error handling and handler invocation ──────────────
+
     async def _handle_error(
         self, request: Request, status_code: int, default: Response
     ) -> Response:
@@ -1220,6 +1236,8 @@ class DispatchMixin:
                 )
             )
         return self._coerce_response(result)
+
+    # ── Response shaping ───────────────────────────────────
 
     def _apply_response_model(self, result: Any, route_info: Any) -> Any:
         """Route the handler return through `response_model` + dump flags.
@@ -1376,6 +1394,8 @@ class DispatchMixin:
                 return resp
         return JSONResponse(result)
 
+    # ── Middleware phases ──────────────────────────────────
+
     async def _run_request_middleware(
         self, request: Request, chain: list[Middleware] | None = None
     ) -> Response | None:
@@ -1464,6 +1484,8 @@ class DispatchMixin:
             response = await mw.process_response(request, response)
         return response
 
+    # ── Instrumentation ────────────────────────────────────
+
     async def _run_instrumentation(
         self,
         request: Request,
@@ -1525,4 +1547,4 @@ class DispatchMixin:
             except Exception:
                 self.logger.exception("instrumentation hook raised an exception")
 
-    # -- Server ---------------------------------------------------
+    # ── Server ────────────────────────────────────────────

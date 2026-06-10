@@ -1,4 +1,4 @@
-"""Prometheus metrics exporter - request counters and a duration histogram.
+"""Prometheus metrics exporter — request counters and a duration histogram.
 
 This is an **optional** integration that turns each finished HTTP request into
 Prometheus time series using Veloce's existing instrumentation hook

@@ -1,4 +1,4 @@
-"""Model Context Protocol integration - every Veloce route is also an AI tool.
+"""Model Context Protocol integration — every Veloce route is also an AI tool.
 
 `veloce.contrib.mcp` exposes a Veloce app's handlers as Model Context Protocol
 tools so an AI agent can call them over JSON-RPC 2.0. Register MCP-only tools

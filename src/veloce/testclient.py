@@ -71,6 +71,8 @@ from veloce.status import (
     WS_1000_NORMAL_CLOSURE,
 )
 
+# ── Shared module helpers ─────────────────────────────────
+
 # Set-Cookie header-name match is case-insensitive; precompute the lowercased
 # form once so the per-header scan in `TestResponse` and the cookie-jar update
 # do not recompute it on every header.
@@ -545,6 +547,9 @@ async def _collect_response(app: Any, scope: dict[str, Any], receive: Any) -> Te
     return TestResponse(status_code, b"".join(body_chunks), raw_headers)
 
 
+# ── Sync client ───────────────────────────────────────────
+
+
 class TestClient:
     """Sync test client - drives the app through its ASGI surface.
 
@@ -595,7 +600,7 @@ class TestClient:
             self._loop.run_until_complete(app._run_lifecycle(LIFECYCLE_STARTUP))
             self._lifespan_run = True
 
-    # -- Cookie management (conventional shape) -----------------------
+    # ── Cookie management (conventional shape) ────────────
 
     @property
     def cookies(self) -> _TestClientCookies:
@@ -656,7 +661,7 @@ class TestClient:
 
         self._cookies[mw.cookie_name] = mw._signer.dumps(dict(sess))
 
-    # -- Header / cookie plumbing -------------------------------------
+    # ── Header / cookie plumbing ──────────────────────────
 
     def _build_headers(self, extra: dict[str, str] | None) -> dict[str, str]:
         return _build_request_headers(self._base_headers, self._cookies, extra)
@@ -665,7 +670,7 @@ class TestClient:
         # Cookies the server sent persist on the client across calls.
         _apply_set_cookie_to_jar(self._cookies, response.raw_headers)
 
-    # -- ASGI dispatch ------------------------------------------------
+    # ── ASGI dispatch ─────────────────────────────────────
 
     async def _send_one_request(
         self,
@@ -716,7 +721,7 @@ class TestClient:
             )
         )
 
-    # -- Method shortcuts ---------------------------------------------
+    # ── Method shortcuts ──────────────────────────────────
 
     def get(
         self,
@@ -725,6 +730,7 @@ class TestClient:
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
+        """Send a GET request and return the response."""
         qs = urlencode(params) if params else ""
         return self._make_request(
             HTTP_METHOD_GET,
@@ -854,6 +860,7 @@ class TestClient:
         headers: dict[str, str] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
+        """Send a DELETE request and return the response."""
         return self._make_request(
             HTTP_METHOD_DELETE, path, headers=headers, follow_redirects=follow_redirects
         )
@@ -864,6 +871,7 @@ class TestClient:
         headers: dict[str, str] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
+        """Send a HEAD request and return the response."""
         return self._make_request(
             HTTP_METHOD_HEAD, path, headers=headers, follow_redirects=follow_redirects
         )
@@ -874,6 +882,7 @@ class TestClient:
         headers: dict[str, str] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
+        """Send an OPTIONS request and return the response."""
         return self._make_request(
             HTTP_METHOD_OPTIONS, path, headers=headers, follow_redirects=follow_redirects
         )
@@ -927,7 +936,7 @@ class TestClient:
             follow_redirects=follow_redirects,
         )
 
-    # -- WebSocket ----------------------------------------------------
+    # ── WebSocket ─────────────────────────────────────────
 
     def websocket_connect(
         self,
@@ -944,7 +953,7 @@ class TestClient:
         """
         return _WebSocketSession(self, path, subprotocols, headers)
 
-    # -- Lifecycle ----------------------------------------------------
+    # ── Lifecycle ─────────────────────────────────────────
 
     def close(self) -> None:
         """Run shutdown lifecycle and close the loop if we own it."""
@@ -964,6 +973,9 @@ class TestClient:
         if self._owns_loop and not self._loop.is_closed():
             with contextlib.suppress(Exception):
                 self._loop.close()
+
+
+# ── WebSocket session ─────────────────────────────────────
 
 
 class _WebSocketSession:
@@ -1062,11 +1074,13 @@ class _WebSocketSession:
         self._client._loop.run_until_complete(_close())
 
     def send_text(self, data: str) -> None:
+        """Send a text frame to the websocket handler."""
         self._client._loop.run_until_complete(
             self._to_handler.put({"type": ASGI_EVENT_WS_RECEIVE, "text": data})
         )
 
     def send_bytes(self, data: bytes) -> None:
+        """Send a binary frame to the websocket handler."""
         self._client._loop.run_until_complete(
             self._to_handler.put({"type": ASGI_EVENT_WS_RECEIVE, "bytes": data})
         )
@@ -1083,16 +1097,23 @@ class _WebSocketSession:
         return self._client._loop.run_until_complete(_r())
 
     def receive_text(self) -> str:
+        """Receive the next text frame sent by the handler."""
         return self._receive("text")
 
     def receive_bytes(self) -> bytes:
+        """Receive the next binary frame sent by the handler."""
         return self._receive("bytes")
 
     def receive_json(self) -> Any:
+        """Receive the next text frame and parse it as JSON."""
         return orjson.loads(self.receive_text())
 
     def send_json(self, data: Any) -> None:
+        """Send `data` to the handler as a JSON-encoded text frame."""
         self.send_text(orjson.dumps(data).decode("utf-8"))
+
+
+# ── Cookie jar view ───────────────────────────────────────
 
 
 class _TestClientCookies:
@@ -1149,6 +1170,9 @@ class _TestClientCookies:
         return f"<TestClient cookies: {self._client._cookies}>"
 
 
+# ── Async client ──────────────────────────────────────────
+
+
 class AsyncTestClient:
     """Async in-memory test client - drives the app through its ASGI surface.
 
@@ -1186,7 +1210,7 @@ class AsyncTestClient:
         # client has been entered as a context manager.
         self._entered = False
 
-    # -- Async context manager ----------------------------------------
+    # ── Async context manager ─────────────────────────────
 
     async def __aenter__(self) -> AsyncTestClient:
         self._entered = True
@@ -1206,7 +1230,7 @@ class AsyncTestClient:
             self._lifespan_run = False
         self._entered = False
 
-    # -- Cookie management --------------------------------------------
+    # ── Cookie management ─────────────────────────────────
 
     @property
     def cookies(self) -> _TestClientCookies:
@@ -1221,7 +1245,7 @@ class AsyncTestClient:
         """Remove a cookie from the jar. No-op if not present."""
         self._cookies.pop(key, None)
 
-    # -- Header / cookie plumbing -------------------------------------
+    # ── Header / cookie plumbing ──────────────────────────
 
     def _build_headers(self, extra: dict[str, str] | None) -> dict[str, str]:
         return _build_request_headers(self._base_headers, self._cookies, extra)
@@ -1229,7 +1253,7 @@ class AsyncTestClient:
     def _update_cookies(self, response: TestResponse) -> None:
         _apply_set_cookie_to_jar(self._cookies, response.raw_headers)
 
-    # -- ASGI dispatch ------------------------------------------------
+    # ── ASGI dispatch ─────────────────────────────────────
 
     async def _send_one_request(
         self,
@@ -1308,7 +1332,7 @@ class AsyncTestClient:
             body = content
         return body, hdrs
 
-    # -- Method shortcuts ---------------------------------------------
+    # ── Method shortcuts ──────────────────────────────────
 
     async def get(
         self,
@@ -1317,6 +1341,7 @@ class AsyncTestClient:
         params: dict[str, str] | Sequence[tuple[str, str]] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
+        """Send a GET request and return the response."""
         qs = urlencode(params) if params else ""
         return await self._make_request(
             HTTP_METHOD_GET,
@@ -1412,6 +1437,7 @@ class AsyncTestClient:
         headers: dict[str, str] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
+        """Send a DELETE request and return the response."""
         return await self._make_request(
             HTTP_METHOD_DELETE, path, headers=headers, follow_redirects=follow_redirects
         )
@@ -1422,6 +1448,7 @@ class AsyncTestClient:
         headers: dict[str, str] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
+        """Send a HEAD request and return the response."""
         return await self._make_request(
             HTTP_METHOD_HEAD, path, headers=headers, follow_redirects=follow_redirects
         )
@@ -1432,6 +1459,7 @@ class AsyncTestClient:
         headers: dict[str, str] | None = None,
         follow_redirects: bool | None = None,
     ) -> TestResponse:
+        """Send an OPTIONS request and return the response."""
         return await self._make_request(
             HTTP_METHOD_OPTIONS, path, headers=headers, follow_redirects=follow_redirects
         )

@@ -1,4 +1,4 @@
-"""HTTP and validation exceptions - plus default exception handlers.
+"""HTTP and validation exceptions — plus default exception handlers.
 
 Each named HTTP exception below corresponds to a status code from RFC 9110
 (HTTP Semantics) and RFC 6585 (Additional HTTP Status Codes). The subclass
@@ -45,7 +45,7 @@ from veloce.status import (
     WS_1000_NORMAL_CLOSURE,
 )
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.response import Response
 
 
@@ -95,7 +95,7 @@ class HTTPException(Exception):
         super().__init__(self.detail)
 
 
-# -- 4xx - Client errors (RFC 9110 Sec. 15.5) -----------------------------
+# ── 4xx - Client errors (RFC 9110 Sec. 15.5) ──────────────
 
 
 class BadRequest(HTTPException):
@@ -225,7 +225,7 @@ class TooManyRequests(HTTPException):
     description = "Too Many Requests"
 
 
-# -- 5xx - Server errors (RFC 9110 Sec. 15.6) -----------------------------
+# ── 5xx - Server errors (RFC 9110 Sec. 15.6) ──────────────
 
 
 class InternalServerError(HTTPException):
@@ -254,7 +254,7 @@ class GatewayTimeout(HTTPException):
     description = "Gateway Timeout"
 
 
-# -- Validation -------------------------------------------------------
+# ── Validation ────────────────────────────────────────────
 
 
 class ValidationError(UnprocessableEntity):
@@ -289,7 +289,7 @@ class RequestValidationError(ValidationError):
     """
 
 
-# -- WebSocket exceptions ---------------------------------------------
+# ── WebSocket exceptions ──────────────────────────────────
 
 
 class WebSocketDisconnect(Exception):
@@ -325,7 +325,7 @@ class WebSocketRequestValidationError(RequestValidationError):
     """
 
 
-# -- Other exception families -----------------------------------------
+# ── Other exception families ──────────────────────────────
 
 
 class BuildError(LookupError):
@@ -393,7 +393,7 @@ class ConfigurationError(RuntimeError):
     """
 
 
-# -- Lookup table - status code -> subclass ----------------------------
+# ── Lookup table - status code -> subclass ────────────────
 
 _BY_CODE: dict[int, type[HTTPException]] = {
     HTTP_400_BAD_REQUEST: BadRequest,
@@ -434,7 +434,7 @@ def exception_for_status(status_code: int) -> type[HTTPException]:
     return _BY_CODE.get(status_code, HTTPException)
 
 
-# -- Default exception handlers --------------------------------------
+# ── Default exception handlers ────────────────────────────
 
 
 async def http_exception_handler(request: Any, exc: HTTPException) -> Response:

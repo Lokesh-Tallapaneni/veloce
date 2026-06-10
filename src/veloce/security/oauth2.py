@@ -1,4 +1,4 @@
-"""OAuth2 - authentication schemes.
+"""OAuth2 — authentication schemes.
 
 Some constructor parameters use camelCase (`authorizationUrl`, `tokenUrl`,
 `refreshUrl`, `openIdConnectUrl`) rather than the project's snake_case

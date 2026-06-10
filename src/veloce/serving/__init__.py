@@ -1,4 +1,4 @@
-"""Serving sub-package - HTTP protocol implementation."""
+"""Serving sub-package — HTTP protocol implementation."""
 
 from __future__ import annotations
 

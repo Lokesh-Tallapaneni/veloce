@@ -1,4 +1,4 @@
-"""HTTP date helpers - `http_date` / `parse_date` (RFC 9110 Sec. 5.6.7).
+"""HTTP date helpers — `http_date` / `parse_date` (RFC 9110 Sec. 5.6.7).
 
 RFC 9110 mandates the IMF-fixdate form for HTTP date headers
 (`Date`, `Last-Modified`, `Expires`, `If-Modified-Since`, ...):

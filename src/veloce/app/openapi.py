@@ -1,4 +1,4 @@
-"""OpenAPI schema and docs setup mixed into Veloce.
+"""OpenAPI setup — schema and docs-page wiring, mixed into Veloce.
 
 Holds the lazy schema build (`openapi`) and the route registration that wires the
 JSON schema endpoint and the Swagger / ReDoc UIs (`_setup_openapi`). A mixin on
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 class OpenAPIMixin:
     """OpenAPI schema build and docs-route registration, mixed into `Veloce`."""
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes the host application (Veloce) provides.
         openapi_schema: Any
         _openapi_setup: bool

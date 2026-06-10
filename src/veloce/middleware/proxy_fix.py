@@ -1,4 +1,4 @@
-"""Trust reverse-proxy `X-Forwarded-*` / `Forwarded` headers.
+"""Proxy fix — trust reverse-proxy `X-Forwarded-*` / `Forwarded` headers.
 
 When veloce sits behind a reverse proxy (nginx, Caddy, ALB, Cloudflare,
 ...), the immediate TCP peer is the proxy - not the original client. The

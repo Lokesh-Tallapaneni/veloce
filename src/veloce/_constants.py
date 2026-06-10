@@ -1,4 +1,4 @@
-"""Shared string-literal constants - one canonical spelling per duplicated value.
+"""Shared string-literal constants — one canonical spelling per duplicated value.
 
 Centralises the MIME types, Title-Case HTTP header names, and verbatim
 error/log message strings that appear in two or more places across the

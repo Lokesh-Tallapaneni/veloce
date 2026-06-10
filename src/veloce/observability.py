@@ -1,4 +1,4 @@
-"""Observability - structured access logging driven by RequestMetrics.
+"""Observability — structured access logging driven by RequestMetrics.
 
 Optional helpers that turn each finished HTTP request into a log record,
 sourced from the same low-cardinality :class:`RequestMetrics` record the

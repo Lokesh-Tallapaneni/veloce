@@ -111,6 +111,38 @@ def header_present(headers: Mapping[str, str], name: str) -> bool:
     return header_key(headers, name) is not None
 
 
+def _format_content_disposition(disposition: str, filename: str) -> str:
+    """Build a safe RFC 6266 ``Content-Disposition`` header value.
+
+    An ASCII name whose characters are all RFC 9110 quoted-string members
+    (HTAB, SP, and the printable range 0x21-0x7E) is emitted verbatim as
+    ``filename="..."`` with spaces and punctuation preserved - only ``\\``
+    and ``"`` are escaped (backslash first). A non-ASCII name, or one that
+    holds a control character, is emitted only as the RFC 5987
+    ``filename*=UTF-8''...`` form; there is no lossy legacy ``filename=``
+    slot. A CR/LF in the name is rejected outright so it cannot inject a
+    header.
+    """
+    _reject_header_crlf(filename, "filename")
+    quotable = filename.isascii() and all(
+        c == "\t" or c == " " or "\x21" <= c <= "\x7e" for c in filename
+    )
+    if quotable:
+        # RFC 9110 Sec. 5.6.4 quoted-string escape: backslash first so an
+        # original backslash is not doubled again when escaping the quote.
+        escaped = filename.replace("\\", "\\\\").replace('"', '\\"')
+        param = f'filename="{escaped}"'
+    else:
+        param = f"filename*=UTF-8''{quote(filename, safe='')}"
+    return f"{disposition}; {param}"
+
+
+def _read_file_bytes(path: str) -> bytes:
+    """Read a whole file's bytes - run in an executor for large reads."""
+    with open(path, "rb") as f:
+        return f.read()
+
+
 class Response:
     """Base HTTP response.
 
@@ -154,7 +186,7 @@ class Response:
         # direct attribute load (no `getattr` fallback to None).
         self._stream: Any = None
 
-    # -- `body` -------------------------------------------------------
+    # ── `body` ────────────────────────────────────────────
     # Backed by `_body` so the setter can invalidate the encode cache.
     # Middleware that mutates `response.body = new_bytes` after a prior
     # `.encode()` call would otherwise emit stale bytes + wrong
@@ -171,7 +203,7 @@ class Response:
         self._body = value
         self._encoded = None
 
-    # -- `media_type` alias --------------------------------------------
+    # ── `media_type` alias ────────────────────────────────
     # ASGI servers name this attribute `media_type`; veloce's
     # canonical name is `content_type`. Expose both names so code that
     # uses either name reads and writes cleanly.
@@ -189,7 +221,7 @@ class Response:
         # takes effect on the next `encode()` call.
         self._encoded = None
 
-    # -- `mimetype` ---------------------------------------------------
+    # ── `mimetype` ────────────────────────────────────────
     # `mimetype` is the bare media type, with no parameters.
     # Setting it preserves the existing `charset` parameter.
 
@@ -231,7 +263,7 @@ class Response:
         self.content_type = f"{value}; charset={cs}" if had_charset else value
         self._encoded = None
 
-    # -- `status` line ------------------------------------------------
+    # ── `status` line ─────────────────────────────────────
     # `response.status` is the full status line
     # ("200 OK"), with `status_code` as the bare int. veloce's
     # canonical field is `status_code`; `status` is the string view.
@@ -1468,38 +1500,6 @@ class StreamingResponse(Response):
             if drain is not None:
                 await drain()
         transport.write(b"0\r\n\r\n")
-
-
-def _format_content_disposition(disposition: str, filename: str) -> str:
-    """Build a safe RFC 6266 ``Content-Disposition`` header value.
-
-    An ASCII name whose characters are all RFC 9110 quoted-string members
-    (HTAB, SP, and the printable range 0x21-0x7E) is emitted verbatim as
-    ``filename="..."`` with spaces and punctuation preserved - only ``\\``
-    and ``"`` are escaped (backslash first). A non-ASCII name, or one that
-    holds a control character, is emitted only as the RFC 5987
-    ``filename*=UTF-8''...`` form; there is no lossy legacy ``filename=``
-    slot. A CR/LF in the name is rejected outright so it cannot inject a
-    header.
-    """
-    _reject_header_crlf(filename, "filename")
-    quotable = filename.isascii() and all(
-        c == "\t" or c == " " or "\x21" <= c <= "\x7e" for c in filename
-    )
-    if quotable:
-        # RFC 9110 Sec. 5.6.4 quoted-string escape: backslash first so an
-        # original backslash is not doubled again when escaping the quote.
-        escaped = filename.replace("\\", "\\\\").replace('"', '\\"')
-        param = f'filename="{escaped}"'
-    else:
-        param = f"filename*=UTF-8''{quote(filename, safe='')}"
-    return f"{disposition}; {param}"
-
-
-def _read_file_bytes(path: str) -> bytes:
-    """Read a whole file's bytes - run in an executor for large reads."""
-    with open(path, "rb") as f:
-        return f.read()
 
 
 # Files at or below this size are read inline on the event loop by

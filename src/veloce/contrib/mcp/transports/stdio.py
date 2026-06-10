@@ -1,4 +1,4 @@
-"""JSON-RPC 2.0 over stdio - newline-delimited JSON on stdin / stdout.
+"""JSON-RPC 2.0 over stdio — newline-delimited JSON on stdin / stdout.
 
 Each line on stdin is one JSON-RPC request object; each response is written
 as one JSON line to stdout. This is the framing an MCP client launching the

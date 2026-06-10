@@ -23,7 +23,7 @@ from veloce.safe import safe_join
 from veloce.signals import message_flashed
 from veloce.status import HTTP_200_OK, HTTP_302_FOUND, HTTP_403_FORBIDDEN
 
-# -- Context vars ------------------------------------------
+# ── Context vars ──────────────────────────────────────────
 
 # The active app is stashed on this ContextVar by `Veloce.handle_request`.
 # `current_app` is a proxy that resolves to the active app on every
@@ -41,7 +41,7 @@ _current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
 )
 
 
-# -- Proxy classes -----------------------------------------
+# ── Proxy classes ─────────────────────────────────────────
 
 
 class _ContextProxy:
@@ -227,7 +227,7 @@ class _RequestGlobals:
         self._ctx_var.set(None)
 
 
-# -- Aborter -----------------------------------------------
+# ── Aborter ───────────────────────────────────────────────
 
 
 def _default_detail(code: int) -> str:
@@ -266,22 +266,7 @@ class Aborter:
         raise cls(status_code=code, detail=detail, headers=headers)
 
 
-# -- Singletons --------------------------------------------
-
-# `from veloce import current_app`.
-current_app = _CurrentAppProxy()
-
-# `from veloce import request`.
-request = _CurrentRequestProxy()
-
-# `from veloce import session`.
-session = _SessionProxy()
-
-# `from veloce import g`.
-g = _RequestGlobals()
-
-
-# -- Context introspection ---------------------------------
+# ── Context introspection ─────────────────────────────────
 
 
 def has_app_context() -> bool:
@@ -304,7 +289,7 @@ def has_request_context() -> bool:
     return _current_request_var.get() is not None
 
 
-# -- abort() -----------------------------------------------
+# ── abort() ───────────────────────────────────────────────
 
 
 def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = None) -> NoReturn:
@@ -325,7 +310,7 @@ def abort(status_code: int, detail: str = "", headers: dict[str, str] | None = N
     raise cls(status_code=status_code, detail=detail, headers=headers)
 
 
-# -- after_this_request() ----------------------------------
+# ── after_this_request() ──────────────────────────────────
 
 
 def after_this_request(func: Any) -> Any:
@@ -348,7 +333,7 @@ def after_this_request(func: Any) -> Any:
     return func
 
 
-# -- send_file() -------------------------------------------
+# ── send_file() ───────────────────────────────────────────
 
 
 def _attachment_name(resolved: str, as_attachment: bool, download_name: str | None) -> str | None:
@@ -473,7 +458,7 @@ async def async_send_file(
     return _finish_send_file(resp, strip_etag)
 
 
-# -- redirect() --------------------------------------------
+# ── redirect() ────────────────────────────────────────────
 
 
 def redirect(
@@ -493,7 +478,7 @@ def redirect(
     return RedirectResponse(location, status_code=code, headers=headers)
 
 
-# -- jsonify() ---------------------------------------------
+# ── jsonify() ─────────────────────────────────────────────
 
 
 def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
@@ -524,7 +509,7 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
     return JSONResponse(data)
 
 
-# -- make_response() ---------------------------------------
+# ── make_response() ───────────────────────────────────────
 
 
 def make_response(
@@ -564,7 +549,7 @@ def make_response(
     return JSONResponse(body, status_code=status_code, headers=headers)
 
 
-# -- send_from_directory() ---------------------------------
+# ── send_from_directory() ─────────────────────────────────
 
 
 def send_from_directory(
@@ -618,7 +603,7 @@ async def send_from_directory_async(
     )
 
 
-# -- flash() / get_flashed_messages() ----------------------
+# ── flash() / get_flashed_messages() ──────────────────────
 
 
 def _flash_store() -> Any:
@@ -693,7 +678,7 @@ def get_flashed_messages(
     return [msg for _, msg in flashes]
 
 
-# -- stream_with_context() ---------------------------------
+# ── stream_with_context() ─────────────────────────────────
 
 
 def stream_with_context(generator: Any) -> Any:
@@ -731,3 +716,18 @@ def stream_with_context(generator: Any) -> Any:
             _current_app_var.reset(tok_app)
 
     return _ctx_keeping()
+
+
+# ── Singletons ────────────────────────────────────────────
+
+# `from veloce import current_app`.
+current_app = _CurrentAppProxy()
+
+# `from veloce import request`.
+request = _CurrentRequestProxy()
+
+# `from veloce import session`.
+session = _SessionProxy()
+
+# `from veloce import g`.
+g = _RequestGlobals()

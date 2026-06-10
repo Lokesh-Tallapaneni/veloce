@@ -1,4 +1,4 @@
-"""Resolver codegen - registration-time codegen for handler resolution.
+"""Resolver codegen — registration-time codegen for handler resolution.
 
 Runs at registration time only: the generated resolver is built once when a
 route is registered and never recompiled on the request path.
@@ -180,7 +180,7 @@ def compile_graph_resolver(
     return ns["_resolver"]
 
 
-# -- Compilability pre-check --------------------------------------------------
+# ── Compilability pre-check ───────────────────────────────
 def _graph_compilable(plan: HandlerPlan, seen: set[int]) -> bool:
     """Whether `plan` and its whole sub-graph compile to a straight-line resolver.
 
@@ -224,7 +224,7 @@ def _graph_compilable(plan: HandlerPlan, seen: set[int]) -> bool:
     return True
 
 
-# -- Graph emission -----------------------------------------------------------
+# ── Graph emission ────────────────────────────────────────
 def _emit_graph_slot(
     lines: list[str], ns: dict[str, Any], slot: Any, target: str, ctx: dict[str, Any]
 ) -> None:
@@ -316,7 +316,7 @@ def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, An
     return var
 
 
-# -- Parameter / marker emission (shared with the param-only compiler) --------
+# ── Parameter / marker emission (shared with the param-only compiler) ──
 def _emit_scalar_param(
     lines: list[str], ns: dict[str, Any], j: int, slot: Any, target: str = "k"
 ) -> None:

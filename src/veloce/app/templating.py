@@ -15,7 +15,7 @@ class TemplatingMixin:
 
     __slots__ = ()
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes the host application (`Veloce`) provides.
         jinja_env: Any
         _template_filters: Any
@@ -31,7 +31,7 @@ class TemplatingMixin:
         self._context_processors.append(func)
         return func
 
-    # -- Jinja2 helper registration -------------------------------
+    # ── Jinja2 helper registration ────────────────────────
 
     def template_filter(self, name: str | None = None) -> Callable:
         """Register a function as a Jinja filter.

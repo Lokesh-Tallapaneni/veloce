@@ -1,4 +1,4 @@
-"""Streamable HTTP transport - the MCP remote transport on a mounted route.
+"""Streamable HTTP transport — the MCP remote transport on a mounted route.
 
 A single ``POST`` endpoint accepts one JSON-RPC message and replies through the
 same transport-agnostic `MCPServer.handle_message` the stdio transport uses, so

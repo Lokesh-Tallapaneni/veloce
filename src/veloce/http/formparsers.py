@@ -1,4 +1,4 @@
-"""Multipart form-data parser - RFC 2046 boundary-delimited bodies."""
+"""Multipart form-data parser — RFC 2046 boundary-delimited bodies."""
 
 from __future__ import annotations
 

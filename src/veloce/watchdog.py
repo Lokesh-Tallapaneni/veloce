@@ -1,4 +1,4 @@
-"""Event-loop watchdog - a development-mode detector for blocking calls.
+"""Event-loop watchdog — a development-mode detector for blocking calls.
 
 A coroutine that makes a *blocking* call - a synchronous database driver,
 `time.sleep`, a CPU-heavy loop - freezes the whole event loop: every

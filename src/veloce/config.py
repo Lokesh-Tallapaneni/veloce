@@ -197,7 +197,7 @@ class Config(dict[str, Any]):
         # which would admit keys the documented ASCII contract forbids.
         return all(("A" <= c <= "Z") or ("0" <= c <= "9") or c == "_" for c in name)
 
-    # -- from_mapping -------------------------------------------------
+    # ── from_mapping ──────────────────────────────────────
 
     def from_mapping(self, mapping: Mapping[str, Any] | None = None, **kwargs: Any) -> bool:
         """Bulk-update from `mapping` and/or kwargs.
@@ -215,7 +215,7 @@ class Config(dict[str, Any]):
                 self[k] = v
         return True
 
-    # -- from_object --------------------------------------------------
+    # ── from_object ───────────────────────────────────────
 
     def from_object(self, obj: object | str) -> bool:
         """Import UPPERCASE attributes from a module, class, instance, or dotted-path string.
@@ -230,7 +230,7 @@ class Config(dict[str, Any]):
                 self[name] = getattr(obj, name)
         return True
 
-    # -- from_pyfile --------------------------------------------------
+    # ── from_pyfile ───────────────────────────────────────
 
     def from_pyfile(self, filename: str, silent: bool = False) -> bool:
         """Execute a Python file and pull UPPERCASE module-level names.
@@ -257,7 +257,7 @@ class Config(dict[str, Any]):
                 self[name] = getattr(module, name)
         return True
 
-    # -- from_env_file ------------------------------------------------
+    # ── from_env_file ─────────────────────────────────────
 
     def from_env_file(self, filename: str = ".env", silent: bool = False) -> bool:
         """Load ``KEY=VALUE`` pairs from a dotenv-style ``.env`` file.
@@ -280,7 +280,7 @@ class Config(dict[str, Any]):
             raise
         return self.from_mapping(_parse_env_lines(lines, source=filename))
 
-    # -- from_envvar --------------------------------------------------
+    # ── from_envvar ───────────────────────────────────────
 
     def from_envvar(self, varname: str, silent: bool = False) -> bool:
         """Read a filename from `os.environ[varname]` and `from_pyfile` it."""
@@ -291,7 +291,7 @@ class Config(dict[str, Any]):
             raise RuntimeError(f"environment variable {varname!r} is not set; cannot load config")
         return self.from_pyfile(path, silent=silent)
 
-    # -- from_prefixed_env --------------------------------------------
+    # ── from_prefixed_env ─────────────────────────────────
 
     def from_prefixed_env(
         self,
@@ -330,7 +330,7 @@ class Config(dict[str, Any]):
             cursor[segments[-1]] = value
         return True
 
-    # -- from_file ----------------------------------------------------
+    # ── from_file ─────────────────────────────────────────
 
     def from_file(
         self,
@@ -359,7 +359,7 @@ class Config(dict[str, Any]):
             )
         return self.from_mapping(data)
 
-    # -- get_namespace ------------------------------------------------
+    # ── get_namespace ─────────────────────────────────────
 
     def get_namespace(
         self, namespace: str, *, lowercase: bool = True, trim_namespace: bool = True

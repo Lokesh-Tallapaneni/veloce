@@ -1,4 +1,4 @@
-"""Application package gateway.
+"""Application package — gateway preserving the `veloce.app` import paths.
 
 The implementation lives in `veloce.app.core`, `veloce.app.dispatch`, and the
 focused sibling modules (`contexts`, `serving`, `templating`, `background`,
