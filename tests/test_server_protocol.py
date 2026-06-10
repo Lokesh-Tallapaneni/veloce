@@ -281,6 +281,45 @@ def test_pipelined_responses_preserve_request_order():
         loop.close()
 
 
+def test_chunked_trailers_do_not_leak_into_next_pipelined_request():
+    """Trailer fields of a chunked body (RFC 9112 section 7.1.2) arrive via
+    the same parser callback as ordinary headers, after the header buffer was
+    already handed to the in-flight request. They must not be prepended to
+    the next pipelined request's header block."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        @app.post("/upload")
+        async def upload(request):  # noqa: ANN001, ANN202
+            body = await request.body()
+            return {"got": len(body)}
+
+        @app.get("/next")
+        async def next_route(request):  # noqa: ANN001, ANN202
+            return {"trailer": request.headers.get("x-trailer")}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        # A chunked POST whose terminating chunk carries a trailer field,
+        # pipelined with a follow-up GET in the same buffer.
+        proto.data_received(
+            b"POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+            b"5\r\nhello\r\n0\r\nX-Trailer: leaked\r\n\r\n"
+            b"GET /next HTTP/1.1\r\nHost: x\r\n\r\n"
+        )
+
+        _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        assert b'"got":5' in emitted
+        assert b'"trailer":null' in emitted, "trailer field leaked into the next request"
+    finally:
+        loop.close()
+
+
 def test_split_packet_pipelined_followup_dispatches_with_real_url():
     """Request B's bytes straddle A's dispatch completion (the realistic
     multi-packet pipelining case). A reused parser populates self.url with B's

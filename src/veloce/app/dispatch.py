@@ -593,15 +593,29 @@ class DispatchMixin:
             # Yield-dependency teardowns first - they conceptually wrap the
             # request (the resource was acquired before the handler ran and
             # must be released regardless of outcome). `run_teardowns`
-            # re-raises aggregated teardown failures (PEP 654 group); they are
-            # logged here rather than allowed to break the response cycle.
-            # `run_teardowns` is async; the common no-yield-dep case has
-            # an empty stack, so skip the coroutine + await entirely.
+            # re-raises aggregated teardown failures (PEP 654 group). A
+            # failure here happens after the response was built, so by
+            # default it must not break the response cycle - but it must
+            # not vanish either: the post-yield code is where commits and
+            # releases live. It is logged, then surfaced through
+            # `got_request_exception` so error trackers see it, and under
+            # PROPAGATE_EXCEPTIONS (or implicit DEBUG+TESTING) it re-raises
+            # so test suites fail on a broken teardown instead of passing
+            # on the already-built response. `run_teardowns` is async; the
+            # common no-yield-dep case has an empty stack, so skip the
+            # coroutine + await entirely.
             if resolver is not None and resolver._teardowns:
                 try:
                     await resolver.run_teardowns(_exc)
-                except Exception:
+                except Exception as teardown_exc:
                     self.logger.exception("yield-dependency teardown raised")
+                    if got_request_exception._subs:
+                        try:
+                            got_request_exception.send(self, exception=teardown_exc)
+                        except Exception:
+                            self.logger.exception("signal receiver raised an exception")
+                    if self._should_propagate_exceptions():
+                        raise
 
             # Teardown hooks - always run, even on exceptions. The cheap
             # attribute guard stays inline so a request with no teardown hooks

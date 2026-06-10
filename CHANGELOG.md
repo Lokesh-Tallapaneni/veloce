@@ -19,6 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{% for m in get_flashed_messages() %}` without registering it manually. It
   returns an empty list outside a request, so renders that reference it never
   raise an undefined-global error.
+- `SessionMiddleware` and `ServerSessionMiddleware` resolve constructor
+  arguments left out against `app.config` on the first request: `secret_key`
+  from `SECRET_KEY`, `cookie_name` from `SESSION_COOKIE_NAME`, the cookie
+  `path` from `APPLICATION_ROOT`, `httponly`/`secure`/`samesite` from the
+  `SESSION_COOKIE_*` keys, `permanent_lifetime` from
+  `PERMANENT_SESSION_LIFETIME`, and `max_cookie_size` from `MAX_COOKIE_SIZE`.
+  Explicit arguments always win. `app.secret_key` is now a live property bound
+  to `config["SECRET_KEY"]`, so `app.secret_key = "..."` followed by a bare
+  `app.add_middleware(SessionMiddleware)` is a complete session setup;
+  `use_secure_defaults()` therefore now affects the emitted session cookie.
+  Constructing `SessionMiddleware` without any secret raises `RuntimeError` on
+  the first request instead of `TypeError` at construction.
+- `send_file` / `async_send_file` called without `max_age=` during a request
+  now apply the app's `SEND_FILE_MAX_AGE_DEFAULT` as the
+  `Cache-Control: public, max-age=...` lifetime. The key defaults to `None`
+  (no header), so behaviour is unchanged unless it is set.
 
 ### Security
 
@@ -30,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `APIRouter` now aliases `Router` instead of `Blueprint`, so
+  `APIRouter(prefix="/items", tags=["items"])` constructs directly. Code that
+  instantiated `APIRouter` with a positional group name should construct
+  `Blueprint` (the named route group with hooks and scoped error handlers)
+  under its own name; `app.include_router` accepts both.
+- A `yield`-dependency teardown failure is no longer only logged: the
+  aggregated failure is delivered to `got_request_exception` receivers, and
+  under `PROPAGATE_EXCEPTIONS` (or the implicit `DEBUG` + `TESTING` test mode)
+  it re-raises out of dispatch. The default response behaviour is unchanged —
+  the already-built response is still returned.
 - `MAX_CONTENT_LENGTH` now defaults to `104857600` (100 MiB) instead of `None`
   (unlimited). Request bodies are buffered in memory, so an unbounded default let
   a single large request exhaust process memory; the cap bounds that exposure
@@ -39,6 +65,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Trailer fields of a chunked request on the built-in server are no longer
+  prepended to the next pipelined request's headers. The parser delivers
+  trailers through the same callback as ordinary headers, after the header
+  buffer had already been handed to the in-flight request; they are now
+  dropped once counted against the header-size caps, and a trailer named
+  `content-length` can no longer feed the next request's body-size guard.
+- `PROPAGATE_EXCEPTIONS` loaded from an env file as the string `"false"` (or
+  `"0"`, `"off"`) now reads as off. The value was previously truth-tested, so
+  any non-empty string — including `"false"` — enabled propagation.
+- `@app.endpoint(name)` now reclassifies the route for dispatch exactly as
+  registration does. Attaching a sync view to a route stubbed by
+  `add_url_rule` previously kept the stub's fast-path eligibility, so the
+  dispatcher awaited the sync handler (a `TypeError`) instead of offloading
+  it; route-level dependency plans and a previously cached `view_functions`
+  snapshot also now refresh.
+- `security_audit()` no longer claims session signing "falls back to weak
+  defaults" when `SECRET_KEY` is unset; the warning now describes the actual
+  behaviour (config-backed session middleware cannot sign without a key).
 - The Swagger UI docs page (`/docs`) no longer fails with "No layout defined for
   StandaloneLayout". The template loaded only `swagger-ui-bundle.js` but selected
   `layout: "StandaloneLayout"`, which is defined by the separate standalone-preset

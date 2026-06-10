@@ -385,6 +385,13 @@ def _build_send_file_args(
     if isinstance(etag, str):
         headers[HEADER_ETAG] = etag
 
+    if max_age is None:
+        # `SEND_FILE_MAX_AGE_DEFAULT` supplies the app-wide default when the
+        # caller does not pass `max_age=`. Resolved through the context var so
+        # the helper keeps working (with no Cache-Control) outside a request.
+        app = _current_app_var.get()
+        if app is not None:
+            max_age = app.config.get("SEND_FILE_MAX_AGE_DEFAULT")
     if max_age is not None:
         headers[HEADER_CACHE_CONTROL] = f"public, max-age={max_age}"
 

@@ -177,7 +177,7 @@ keyword arguments:
 
 | Argument             | Default        | Meaning                                                        |
 |----------------------|----------------|----------------------------------------------------------------|
-| `secret_key`         | (required)     | A string, or a list of strings for rotation (first one signs). |
+| `secret_key`         | `SECRET_KEY` config | A string, or a list of strings for rotation (first one signs). |
 | `cookie_name`        | `"session"`    | Name of the session cookie.                                    |
 | `max_age`            | `86400 * 14`   | Cookie lifetime in seconds for normal sessions.               |
 | `path`               | `"/"`          | Cookie `Path` attribute.                                       |
@@ -193,12 +193,31 @@ keyword arguments:
 | `chunked`            | `False`        | Split an oversized signed value across numbered cookies and reassemble it. |
 | `max_chunks`         | `8`            | Upper bound on chunk cookies; larger sessions are dropped with a warning. |
 
+Arguments left out fall back to `app.config` on the first request:
+`secret_key` to `SECRET_KEY` (also settable as `app.secret_key`),
+`cookie_name` to `SESSION_COOKIE_NAME`, `path` to `APPLICATION_ROOT`,
+`httponly` / `secure` / `samesite` to the matching `SESSION_COOKIE_*` keys,
+`permanent_lifetime` to `PERMANENT_SESSION_LIFETIME`, and `max_cookie_size`
+to `MAX_COOKIE_SIZE`. An explicit argument always wins over config, and a
+config key left at its default keeps the middleware default shown above. So
+the shortest complete setup is:
+
+```python
+app = Veloce()
+app.secret_key = "change-me-in-production"
+app.add_middleware(SessionMiddleware)
+```
+
+Without either a `secret_key=` argument or a configured `SECRET_KEY`, the
+first request raises `RuntimeError`.
+
 `cookie_prefix` enforces the [RFC 6265bis](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis)
 name-prefix invariants: both prefixes require `secure=True`, and `"host"`
 additionally requires `path="/"` and `domain=None`. `partitioned=True`
 (CHIPS) requires `secure=True` and `samesite="none"`. A violation raises
 `ValueError` at construction. `ServerSessionMiddleware` accepts the same
-`domain`, `cookie_prefix`, and `partitioned` arguments.
+`domain`, `cookie_prefix`, and `partitioned` arguments, and resolves its
+own omitted cookie settings from the same config keys.
 
 !!! warning "Set secure=True behind HTTPS"
     `secure=False` is the development default. In production, serve over

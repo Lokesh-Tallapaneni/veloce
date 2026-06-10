@@ -42,6 +42,66 @@ Each row is a FastAPI idiom and its Veloce equivalent. The behavioural rows
 | `WSGIMiddleware` | Not provided | Veloce is ASGI-and-native only. |
 | `generate_unique_id_function=...` | `operation_id=...` + auto-disambiguation | Set IDs per route; collisions are suffixed. |
 | `TestClient(app, raise_server_exceptions=...)` | `TestClient(app)` + `PROPAGATE_EXCEPTIONS` config | Different propagation control (below). |
+| `APIRouter(prefix=..., tags=...)` | Same spelling — `APIRouter` aliases `Router` | `include_router` registers it; named groups with hooks use `Blueprint` (below). |
+| `RequestValidationError` outside `HTTPException` | Subclasses `HTTPException` | Behavioural — a broad `HTTPException` handler also catches 422s (below). |
+| `def` dependency runs in the threadpool | Runs inline on the event loop | Behavioural — pass `Depends(fn, offload=True)` for blocking sync work. |
+| `return "text"` serialises to JSON | `str`/`bytes` return as `text/html` | Behavioural — wrap in `JSONResponse` (or return a dict) for JSON strings. |
+
+## Routers and route groups
+
+`APIRouter` is Veloce's `Router` under the FastAPI name, and the familiar
+shape works unchanged:
+
+```python
+from veloce import APIRouter, Veloce
+
+router = APIRouter(prefix="/items", tags=["items"])
+
+
+@router.get("/")
+async def list_items():
+    return []
+
+
+app = Veloce()
+app.include_router(router)
+```
+
+Veloce also has [`Blueprint`](../reference.md#veloce.Blueprint) — a *named*
+route group carrying its own request hooks and scoped error handlers
+(Flask's primitive). Reach for it when a group needs per-group
+`before_request` / `errorhandler` behaviour; plain prefix-and-tags grouping
+needs only `APIRouter` / `Router`.
+
+## Exception-handler scope includes validation errors
+
+In Veloce, [`RequestValidationError`](../reference.md#veloce.RequestValidationError)
+(and `ValidationError`) subclass `HTTPException`, so a handler registered for
+`HTTPException` also intercepts 422 validation failures. A FastAPI app that
+relies on validation errors bypassing its `HTTPException` handler should
+register a dedicated `RequestValidationError` handler first — the most
+specific class wins. Note also that `from veloce import ValidationError` is
+Veloce's exception, not Pydantic's: the two are different classes.
+
+## Sync dependencies run inline
+
+FastAPI offloads every `def` dependency to its threadpool. Veloce runs sync
+dependencies inline on the event loop — faster for the pure-computation
+case, but a blocking call (a synchronous DB driver, `requests`) will stall
+the loop. Mark those explicitly:
+
+```python
+from veloce import Depends
+
+
+def lookup_user(user_id: int):  # blocking I/O inside
+    ...
+
+
+@app.get("/users/{user_id}")
+async def show(user=Depends(lookup_user, offload=True)):
+    return user
+```
 
 ## OAuth2 `token_url`
 

@@ -32,6 +32,11 @@ from veloce.signing import BadSignature, Signer
 # `__name__` (which would resolve to "veloce.middleware.sessions").
 _logger = logging.getLogger("veloce.sessions")
 
+# Marks a constructor argument the caller left out, so it can be resolved
+# against `app.config` on the first request. `None` cannot serve as the
+# marker - it is a meaningful value for several settings (e.g. `samesite`).
+_UNSET: Any = object()
+
 # RFC 6265 Sec. 6.1 only mandates 4096 bytes per cookie (name + value + attrs);
 # browsers and proxies enforce this inconsistently, so 4093 is the de-facto
 # safe ceiling (4096 - 3 bytes of separator overhead some impls reserve).
@@ -109,6 +114,23 @@ def _reassemble_chunks(cookies: Any, base_name: str, max_chunks: int) -> str | N
     return "".join(parts)
 
 
+def _cfg_or(cfg: Any, key: str, fallback: Any) -> Any:
+    """The config value for `key` when set (non-None), else `fallback`."""
+    value = cfg.get(key)
+    return fallback if value is None else value
+
+
+def _build_signer(secret_key: str | list[str]) -> Signer:
+    """Build the session signer; a list rotates secrets (the first one signs)."""
+    keys = [secret_key] if isinstance(secret_key, str) else list(secret_key)
+    if not keys:
+        raise ValueError("secret_key must be a non-empty string or list of strings")
+    signer = Signer(keys[0], salt="veloce.session")
+    for fallback in keys[1:]:
+        signer.add_fallback_secret(fallback, salt="veloce.session")
+    return signer
+
+
 def _wire_name(cookie_prefix: Literal["host", "secure"] | None, cookie_name: str) -> str:
     """Apply the RFC 6265bis name prefix to the configured cookie name.
 
@@ -156,6 +178,15 @@ def _begin_session_response(
 class SessionMiddleware(Middleware):
     """Server-side session stored in a signed, timestamped cookie.
 
+    Constructor arguments left out fall back to the app's config on the first
+    request: `secret_key` to `SECRET_KEY` (also settable as `app.secret_key`),
+    `cookie_name` to `SESSION_COOKIE_NAME`, `path` to `APPLICATION_ROOT`,
+    `httponly`/`secure`/`samesite` to the `SESSION_COOKIE_*` keys,
+    `permanent_lifetime` to `PERMANENT_SESSION_LIFETIME`, and
+    `max_cookie_size` to `MAX_COOKIE_SIZE`. An explicit argument always wins
+    over config. Without either a `secret_key=` argument or a configured
+    `SECRET_KEY`, the first request raises.
+
     Set `renew_on_access=True` for sliding expiry: a session that was only read
     during a request has its cookie re-signed with a fresh `Max-Age` on the way
     out, so an active user is not logged out at the fixed `max_age`. Default is
@@ -171,16 +202,16 @@ class SessionMiddleware(Middleware):
 
     def __init__(
         self,
-        secret_key: str | list[str],
-        cookie_name: str = "session",
+        secret_key: str | list[str] | None = None,
+        cookie_name: str = _UNSET,
         max_age: int = 86400 * 14,
-        path: str = "/",
-        httponly: bool = True,
-        secure: bool = False,
-        samesite: str = "lax",
+        path: str = _UNSET,
+        httponly: bool = _UNSET,
+        secure: bool = _UNSET,
+        samesite: str | None = _UNSET,
         domain: str | None = None,
-        permanent_lifetime: int = 86400 * 31,
-        max_cookie_size: int = _DEFAULT_MAX_COOKIE_SIZE,
+        permanent_lifetime: int = _UNSET,
+        max_cookie_size: int = _UNSET,
         vary_on_cookie: bool = True,
         persist_on_status: Callable[[int], bool] | None = None,
         cookie_prefix: Literal["host", "secure"] | None = None,
@@ -191,9 +222,45 @@ class SessionMiddleware(Middleware):
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
-        keys = [secret_key] if isinstance(secret_key, str) else list(secret_key)
-        if not keys:
-            raise ValueError("secret_key must be a non-empty string or list of strings")
+        # Arguments left out resolve against `app.config` on the first
+        # request: SECRET_KEY, SESSION_COOKIE_NAME, APPLICATION_ROOT (cookie
+        # path), SESSION_COOKIE_HTTPONLY, SESSION_COOKIE_SECURE,
+        # SESSION_COOKIE_SAMESITE, PERMANENT_SESSION_LIFETIME and
+        # MAX_COOKIE_SIZE. The library defaults are installed now as working
+        # stand-ins, so the object is fully formed at construction and
+        # behaves exactly as before when no config key overrides them.
+        self._deferred_settings = {
+            setting
+            for setting, value in (
+                ("cookie_name", cookie_name),
+                ("path", path),
+                ("httponly", httponly),
+                ("secure", secure),
+                ("samesite", samesite),
+                ("permanent_lifetime", permanent_lifetime),
+                ("max_cookie_size", max_cookie_size),
+            )
+            if value is _UNSET
+        }
+        if secret_key is None:
+            self._deferred_settings.add("secret_key")
+        self._pending_config = bool(self._deferred_settings)
+        if cookie_name is _UNSET:
+            cookie_name = "session"
+        if path is _UNSET:
+            path = "/"
+        if httponly is _UNSET:
+            httponly = True
+        if secure is _UNSET:
+            secure = False
+        if samesite is _UNSET:
+            samesite = "lax"
+        if permanent_lifetime is _UNSET:
+            permanent_lifetime = 86400 * 31
+        if max_cookie_size is _UNSET:
+            max_cookie_size = _DEFAULT_MAX_COOKIE_SIZE
+        # Explicit misconfiguration still fails at wiring time; when settings
+        # were deferred, `_resolve_config` re-validates the final combination.
         _validate_cookie_security(
             cookie_prefix=cookie_prefix,
             partitioned=partitioned,
@@ -202,9 +269,8 @@ class SessionMiddleware(Middleware):
             secure=secure,
             samesite=samesite,
         )
-        self._signer = Signer(keys[0], salt="veloce.session")
-        for fallback in keys[1:]:
-            self._signer.add_fallback_secret(fallback, salt="veloce.session")
+        if secret_key is not None:
+            self._signer = _build_signer(secret_key)
         self.cookie_name = cookie_name
         self.max_age = max_age
         self.path = path
@@ -245,8 +311,59 @@ class SessionMiddleware(Middleware):
         self.chunked = chunked
         self.max_chunks = max_chunks
 
+    def _resolve_config(self, request: Request) -> None:
+        """Overlay app-config values onto settings left unset at construction.
+
+        Runs once, on the first request through the middleware. Explicit
+        constructor arguments always win; a setting left out takes the app's
+        config value when one is set and keeps the library default otherwise.
+        The dependent fields are re-derived and the final combination is
+        re-validated.
+        """
+        app = request.app
+        cfg = app.config if app is not None else {}
+        deferred = self._deferred_settings
+        if "secret_key" in deferred:
+            secret = cfg.get("SECRET_KEY")
+            if not secret:
+                raise RuntimeError(
+                    "SessionMiddleware has no secret key - pass secret_key= at "
+                    "construction or set app.secret_key (config['SECRET_KEY']) "
+                    "before the first request."
+                )
+            self._signer = _build_signer(secret)
+        if "cookie_name" in deferred:
+            self.cookie_name = _cfg_or(cfg, "SESSION_COOKIE_NAME", self.cookie_name)
+        if "path" in deferred:
+            self.path = _cfg_or(cfg, "APPLICATION_ROOT", self.path)
+        if "httponly" in deferred:
+            self.httponly = _cfg_or(cfg, "SESSION_COOKIE_HTTPONLY", self.httponly)
+        if "secure" in deferred:
+            self.secure = _cfg_or(cfg, "SESSION_COOKIE_SECURE", self.secure)
+        if "samesite" in deferred:
+            self.samesite = _cfg_or(cfg, "SESSION_COOKIE_SAMESITE", self.samesite)
+        if "permanent_lifetime" in deferred:
+            self.permanent_lifetime = _cfg_or(
+                cfg, "PERMANENT_SESSION_LIFETIME", self.permanent_lifetime
+            )
+        if "max_cookie_size" in deferred:
+            self.max_cookie_size = _cfg_or(cfg, "MAX_COOKIE_SIZE", self.max_cookie_size)
+        self._samesite_cap = self.samesite.capitalize() if self.samesite else None
+        self._wire_cookie_name = _wire_name(self.cookie_prefix, self.cookie_name)
+        _validate_cookie_security(
+            cookie_prefix=self.cookie_prefix,
+            partitioned=self.partitioned,
+            domain=self.domain,
+            path=self.path,
+            secure=self.secure,
+            samesite=self.samesite,
+        )
+        self._pending_config = False
+
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the signed cookie into request state."""
+        if self._pending_config:
+            self._resolve_config(request)
         session_data: dict[str, Any] = {}
         is_new = True
         cookie_val = request.cookies.get(self._wire_cookie_name)
@@ -296,6 +413,8 @@ class SessionMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back into the signed cookie."""
+        if self._pending_config:
+            self._resolve_config(request)
         session = request._state.get("session")
         begun = _begin_session_response(self.vary_on_cookie, session, response)
         # No session attached (handler bypassed middleware?) -> nothing to do.
@@ -513,12 +632,12 @@ class ServerSessionMiddleware(Middleware):
     def __init__(
         self,
         store: SessionStore | None = None,
-        cookie_name: str = "session",
+        cookie_name: str = _UNSET,
         max_age: int = 86400 * 14,
-        path: str = "/",
-        httponly: bool = True,
-        secure: bool = False,
-        samesite: str = "lax",
+        path: str = _UNSET,
+        httponly: bool = _UNSET,
+        secure: bool = _UNSET,
+        samesite: str | None = _UNSET,
         domain: str | None = None,
         vary_on_cookie: bool = True,
         persist_on_status: Callable[[int], bool] | None = None,
@@ -528,6 +647,30 @@ class ServerSessionMiddleware(Middleware):
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
+        # Cookie settings left out resolve against `app.config` on the first
+        # request (see SessionMiddleware); library defaults stand in until then.
+        self._deferred_settings = {
+            setting
+            for setting, value in (
+                ("cookie_name", cookie_name),
+                ("path", path),
+                ("httponly", httponly),
+                ("secure", secure),
+                ("samesite", samesite),
+            )
+            if value is _UNSET
+        }
+        self._pending_config = bool(self._deferred_settings)
+        if cookie_name is _UNSET:
+            cookie_name = "session"
+        if path is _UNSET:
+            path = "/"
+        if httponly is _UNSET:
+            httponly = True
+        if secure is _UNSET:
+            secure = False
+        if samesite is _UNSET:
+            samesite = "lax"
         _validate_cookie_security(
             cookie_prefix=cookie_prefix,
             partitioned=partitioned,
@@ -557,8 +700,40 @@ class ServerSessionMiddleware(Middleware):
         # Read/write must share the prefixed wire name (see SessionMiddleware).
         self._wire_cookie_name = _wire_name(cookie_prefix, cookie_name)
 
+    def _resolve_config(self, request: Request) -> None:
+        """Overlay app-config values onto cookie settings left unset.
+
+        Same contract as `SessionMiddleware._resolve_config`, for the
+        settings this middleware shares (cookie name, path, flags).
+        """
+        app = request.app
+        cfg = app.config if app is not None else {}
+        deferred = self._deferred_settings
+        if "cookie_name" in deferred:
+            self.cookie_name = _cfg_or(cfg, "SESSION_COOKIE_NAME", self.cookie_name)
+        if "path" in deferred:
+            self.path = _cfg_or(cfg, "APPLICATION_ROOT", self.path)
+        if "httponly" in deferred:
+            self.httponly = _cfg_or(cfg, "SESSION_COOKIE_HTTPONLY", self.httponly)
+        if "secure" in deferred:
+            self.secure = _cfg_or(cfg, "SESSION_COOKIE_SECURE", self.secure)
+        if "samesite" in deferred:
+            self.samesite = _cfg_or(cfg, "SESSION_COOKIE_SAMESITE", self.samesite)
+        self._wire_cookie_name = _wire_name(self.cookie_prefix, self.cookie_name)
+        _validate_cookie_security(
+            cookie_prefix=self.cookie_prefix,
+            partitioned=self.partitioned,
+            domain=self.domain,
+            path=self.path,
+            secure=self.secure,
+            samesite=self.samesite,
+        )
+        self._pending_config = False
+
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the server-side store by cookie id."""
+        if self._pending_config:
+            self._resolve_config(request)
         data: dict[str, Any] | None = None
         session_id = request.cookies.get(self._wire_cookie_name)
         if session_id:
@@ -576,6 +751,8 @@ class ServerSessionMiddleware(Middleware):
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Save the modified session back to the server-side store."""
+        if self._pending_config:
+            self._resolve_config(request)
         session = request._state.get("session")
         begun = _begin_session_response(self.vary_on_cookie, session, response)
         if begun is None:

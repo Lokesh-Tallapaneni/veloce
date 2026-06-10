@@ -185,6 +185,58 @@ async def test_yield_dep_teardown_exception_does_not_break_response():
 
 
 @pytest.mark.asyncio
+async def test_yield_dep_teardown_exception_fires_got_request_exception():
+    """A swallowed teardown failure is still observable: it is delivered to
+    `got_request_exception` receivers so error trackers see it even though
+    the already-built response is returned unchanged."""
+    from veloce.signals import got_request_exception
+
+    app = Veloce(debug=True, openapi_url=None)
+    seen: list[BaseException | None] = []
+
+    def on_exc(sender, **kw):
+        seen.append(kw.get("exception"))
+
+    got_request_exception.connect(on_exc, weak=False)
+    try:
+
+        def db() -> Iterator[str]:
+            yield "session"
+            raise RuntimeError("commit failed")
+
+        @app.get("/x")
+        async def handler(s: str = Depends(db)):
+            return {"ok": True}
+
+        resp = await app.handle_request(_req("/x"))
+        assert resp.status_code == 200
+        assert len(seen) == 1
+        assert seen[0] is not None
+    finally:
+        got_request_exception.disconnect(on_exc)
+
+
+@pytest.mark.asyncio
+async def test_yield_dep_teardown_exception_propagates_when_configured():
+    """Under PROPAGATE_EXCEPTIONS the aggregated teardown failure re-raises,
+    so a test suite fails on a broken teardown instead of passing on the
+    already-built response."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["PROPAGATE_EXCEPTIONS"] = True
+
+    def db() -> Iterator[str]:
+        yield "session"
+        raise RuntimeError("commit failed")
+
+    @app.get("/x")
+    async def handler(s: str = Depends(db)):
+        return {"ok": True}
+
+    with pytest.raises(Exception):  # noqa: B017 - 3.11 raises an ExceptionGroup
+        await app.handle_request(_req("/x"))
+
+
+@pytest.mark.asyncio
 async def test_yield_dep_state_does_not_leak_across_requests():
     """The resolver's teardown stack must be cleared between requests so
     a stale entry from request N doesn't fire on request N+1."""

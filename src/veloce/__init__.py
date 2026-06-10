@@ -259,9 +259,11 @@ except Exception:
     # `veloce.__version__` is never undefined.
     __version__ = "0.5.0"
 
-# some users reach for `APIRouter`; it is the same primitive as
-# Veloce's `Blueprint` (a mountable group of routes + hooks).
-APIRouter = Blueprint
+# `APIRouter` aliases `Router`, whose constructor takes the keyword
+# surface that name implies (`prefix=`, `tags=`, `dependencies=`,
+# `responses=`). Route groups that need a name, hooks, or scoped error
+# handlers use `Blueprint`; both register via `app.include_router`.
+APIRouter = Router
 
 __all__ = [
     # Core
