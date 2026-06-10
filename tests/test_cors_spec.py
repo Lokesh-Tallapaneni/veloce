@@ -88,6 +88,18 @@ def test_regex_matches_subdomain_pattern():
     assert resp2.headers.get("access-control-allow-origin") is None
 
 
+def test_regex_only_config_does_not_default_to_wildcard():
+    """`allow_origin_regex` with no explicit `allow_origins` must gate by the
+    regex, not fall back to the `*` default and echo `*` to every origin."""
+    client = TestClient(_make_app(allow_origin_regex=r"https://app\.example\.com"))
+
+    resp = client.get("/x", headers={"origin": "https://app.example.com"})
+    assert resp.headers.get("access-control-allow-origin") == "https://app.example.com"
+
+    hostile = client.get("/x", headers={"origin": "https://evil.example"})
+    assert hostile.headers.get("access-control-allow-origin") is None
+
+
 # ── Vary: Origin ───────────────────────────────────────────────────────
 
 

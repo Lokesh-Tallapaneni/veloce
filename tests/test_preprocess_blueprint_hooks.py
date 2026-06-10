@@ -106,3 +106,38 @@ def test_process_response_runs_matched_blueprint_hooks_reversed():
     asyncio.run(app.process_response(_make_request("bp.handler"), Response()))
     # Reversed: app-level reverse-iterates first, then bp bucket reverse-iterates.
     assert fired == ["app", "bp"]
+
+
+def test_blueprint_teardown_runs_when_resolve_exits_early_without_before_hooks():
+    """A blueprint `teardown_request` still fires when `_resolve_route` short-circuits
+    (here a subdomain mismatch -> 404) on an app with no before_request hooks. The
+    dispatch fast path must still derive `bp_name` from the matched endpoint even
+    when the (absent) before-hook coroutine is skipped, otherwise the finally-block
+    teardown selection cannot find the blueprint's hook."""
+    app = Veloce(openapi_url=None)
+    bp = Blueprint("bp", url_prefix="/bp")
+    fired: list[str] = []
+
+    @bp.teardown_request
+    def bp_teardown(exc):
+        fired.append("bp")
+
+    @bp.get("/x", subdomain="api")
+    def handler():
+        return {}
+
+    app.register_blueprint(bp)
+
+    import asyncio
+
+    req = Request(
+        method="GET",
+        path="/bp/x",
+        query_string="",
+        headers={"host": "other.example.com"},
+        body=b"",
+    )
+    resp = asyncio.run(app.handle_request(req))
+    assert resp.status_code == 404
+    # Teardown fired despite the early 404 return, because `bp_name` was derived.
+    assert fired == ["bp"]

@@ -243,7 +243,7 @@ if __name__ == "__main__":
 | `REQUEST_TIMEOUT` | `30` | Slowloris guard: once a request's bytes start, the whole request line, headers, and body must complete within this budget or the connection is dropped with `408`. |
 | `KEEP_ALIVE_TIMEOUT` | `75` | Idle keep-alive timeout: an open connection with no request in flight is closed after this many seconds. |
 | `MAX_CONCURRENT_CONNECTIONS` | `1000` | Per-process cap on simultaneously-open connections; a connection over the cap is refused with `503`. |
-| `MAX_CONTENT_LENGTH` | `None` | Maximum request body size. An over-limit declared `Content-Length` is refused with `413` before any body is read. |
+| `MAX_CONTENT_LENGTH` | `104857600` (100 MiB) | Maximum request body size. An over-limit declared `Content-Length` is refused with `413` before any body is read. Set `None` for unlimited. |
 | `REQUEST_HANDLER_TIMEOUT` | `30` | Per-request handler timeout; a handler exceeding it yields `504 Gateway Timeout`. |
 
 The slowloris and idle timers are mutually exclusive per connection: the idle `KEEP_ALIVE_TIMEOUT`

@@ -68,6 +68,26 @@ def test_urlencoded_form_field_cap_rejects_overflow():
         assert over.status_code == 413
 
 
+def test_urlencoded_non_utf8_body_is_bad_request_not_413():
+    """A non-UTF-8 urlencoded body is a malformed request (400), not a
+    field-count overflow (413): `UnicodeDecodeError` subclasses `ValueError`,
+    so the decode must sit outside the field-count guard."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/form")
+    async def handle(request: Request):
+        await request.form()
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/form",
+            content=b"a=\xff\xfe",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    assert resp.status_code == 400
+
+
 def test_auth_property_cached_across_repeat_access():
     app = Veloce(openapi_url=None)
     observed = {}

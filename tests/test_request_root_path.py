@@ -65,3 +65,41 @@ async def test_mounted_veloce_subapp_sees_mount_prefix_as_root_path():
         Request(method="GET", path="/gateway/whoami", query_string="", headers={}, body=b"")
     )
     assert orjson.loads(resp.body) == {"root_path": "/gateway", "script_root": "/gateway"}
+
+
+@pytest.mark.asyncio
+async def test_mounted_subapp_slash_redirect_keeps_mount_prefix():
+    """A trailing-slash redirect inside a mounted sub-app must point at the
+    parent-visible path (with the mount prefix), not the sub-app-local path."""
+    sub = Veloce(openapi_url=None)
+
+    @sub.get("/ping/")
+    async def ping():
+        return {"ok": True}
+
+    app = Veloce(openapi_url=None)
+    app.mount("/sub", sub)
+
+    # Request the slash-less variant; the sub-app redirects to the slash form.
+    resp = await app.handle_request(
+        Request(method="GET", path="/sub/ping", query_string="", headers={}, body=b"")
+    )
+    assert resp.status_code == 307
+    # Location must carry the mount prefix, not a bare "/ping/".
+    assert resp.headers["Location"] == "/sub/ping/"
+
+
+@pytest.mark.asyncio
+async def test_top_level_slash_redirect_unaffected():
+    """A top-level app (root_path == "") still redirects to a bare path."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/items/")
+    async def items():
+        return {"ok": True}
+
+    resp = await app.handle_request(
+        Request(method="GET", path="/items", query_string="", headers={}, body=b"")
+    )
+    assert resp.status_code == 307
+    assert resp.headers["Location"] == "/items/"

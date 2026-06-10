@@ -1740,8 +1740,8 @@ SWAGGER_HTML = (
     const ui = SwaggerUIBundle({{
         url: "{openapi_url}",
         dom_id: '#swagger-ui',
-        presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
-        layout: "StandaloneLayout",
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: "BaseLayout",
         {ui_params}
     }});
     {init_oauth}

@@ -1,15 +1,21 @@
 """`veloce` command-line interface.
 
-Two subcommands today:
+Subcommands:
 
+- `veloce new NAME [--template minimal|api|web]` - scaffold a new project.
+- `veloce generate KIND NAME` (alias `g`) - emit a single boilerplate file
+  (`route`, `blueprint`, `middleware`, `model`, `security`).
 - `veloce run app:app [--host --port --reload --workers]` - serve the
   app under uvicorn when it is installed (the optional `[uvicorn]` extra),
   otherwise fall back to veloce's built-in `app.run()` server.
 - `veloce routes app:app` - print the route table (method, path, name).
-  Useful for sanity-checking a blueprint mount without `curl`ing each
-  path.
+- `veloce check app:app` - run a pre-deploy security audit.
+- `veloce shell app:app` - a REPL with the app loaded.
+- `veloce custom app:app -- ...` - run an `app.cli` (Click) command.
 
-Built on `argparse` (stdlib) - keeps the dep surface small. The
+Built on `argparse` (stdlib) - keeps the dep surface small. The `new` and
+`generate` scaffolders import `veloce._scaffold` lazily so the framework is
+not loaded for `veloce --version` / `--help`. The
 "module:attribute" reference syntax is the same one ASGI servers use,
 so the same string passed to `--app` works with `uvicorn` directly.
 
@@ -31,6 +37,7 @@ import io
 import os
 import sys
 import warnings
+from pathlib import Path
 from typing import Any
 
 from veloce._constants import MSG_APP_REFERENCE_FORM
@@ -286,6 +293,47 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_new(args: argparse.Namespace) -> int:
+    """`veloce new` - scaffold a new project directory."""
+    # Imported lazily: scaffolding is a one-shot command, so the framework load
+    # it triggers is acceptable here but must not happen for `--version`/`--help`.
+    from veloce._scaffold import ScaffoldError, scaffold_project
+
+    dest_root = Path(args.dir)
+    try:
+        written = scaffold_project(args.name, args.template, dest_root, force=args.force)
+    except ScaffoldError as err:
+        raise SystemExit(str(err)) from err
+
+    project_dir = dest_root / args.name
+    print(f"Created {args.template} project: {project_dir}")
+    for path in written:
+        print(f"  {path.relative_to(dest_root)}")
+    print("\nNext steps:")
+    print(f"  cd {args.name}")
+    print("  pip install -r requirements.txt")
+    print("  veloce run app:app --reload")
+    return 0
+
+
+def _cmd_generate(args: argparse.Namespace) -> int:
+    """`veloce generate` - emit a single boilerplate file."""
+    from veloce._scaffold import ScaffoldError, generate_file
+
+    try:
+        target, content = generate_file(
+            args.kind, args.name, Path(args.dir), force=args.force, to_stdout=args.stdout
+        )
+    except ScaffoldError as err:
+        raise SystemExit(str(err)) from err
+
+    if target is None:
+        sys.stdout.write(content)
+        return 0
+    print(f"Created {target}")
+    return 0
+
+
 # -- Parser construction -------------------------------------
 
 
@@ -530,6 +578,57 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
         version=f"veloce {_resolve_version()}",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_new = sub.add_parser("new", help="Scaffold a new Veloce project.")
+    p_new.add_argument("name", help="Project name (also the directory created).")
+    p_new.add_argument(
+        "--template",
+        "-t",
+        default="minimal",
+        metavar="NAME",
+        help="Project template: minimal, api, or web (default: minimal).",
+    )
+    p_new.add_argument(
+        "--dir",
+        default=".",
+        metavar="PATH",
+        help="Parent directory to create the project in (default: current directory).",
+    )
+    p_new.add_argument(
+        "--force",
+        action="store_true",
+        help="Write into a target directory that already exists and is not empty.",
+    )
+    p_new.set_defaults(func=_cmd_new)
+
+    p_gen = sub.add_parser(
+        "generate",
+        aliases=["g"],
+        help="Generate a single boilerplate file.",
+    )
+    p_gen.add_argument(
+        "kind",
+        metavar="KIND",
+        help="What to generate: route, blueprint, middleware, model, or security.",
+    )
+    p_gen.add_argument("name", help="Name for the generated symbol and file.")
+    p_gen.add_argument(
+        "--dir",
+        default=".",
+        metavar="PATH",
+        help="Directory to write the file into (default: current directory).",
+    )
+    p_gen.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print the generated file to stdout instead of writing it.",
+    )
+    p_gen.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing file.",
+    )
+    p_gen.set_defaults(func=_cmd_generate)
 
     p_run = sub.add_parser(
         "run", help="Run the app under uvicorn (or the built-in server if uvicorn is absent)."

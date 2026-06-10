@@ -29,6 +29,17 @@ def test_if_match_multiple_etags():
     assert r.if_match == ('"v1"', '"v2"', 'W/"weak"')
 
 
+def test_if_match_comma_inside_quoted_tag_not_split():
+    """RFC 9110 §8.8.3 etagc permits a comma inside the opaque tag."""
+    r = _req({"if-match": '"abc,def"'})
+    assert r.if_match == ('"abc,def"',)
+
+
+def test_if_match_quoted_comma_with_list():
+    r = _req({"if-match": '"a,b", "c"'})
+    assert r.if_match == ('"a,b"', '"c"')
+
+
 # ── if_unmodified_since ──────────────────────────────────────────────
 
 

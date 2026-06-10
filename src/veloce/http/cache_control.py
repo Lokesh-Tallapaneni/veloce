@@ -73,10 +73,12 @@ class CacheControl:
                 k = _to_attr(k.strip().lower())
                 v = unquote_value(v)
                 if k in _INT_DIRECTIVES:
-                    try:
+                    # RFC 9111 Sec. 5.2 delta-seconds is `1*DIGIT`; numeric
+                    # directives are documented as int-or-None, so a malformed
+                    # value (`max-age=abc`) is dropped rather than stored as a
+                    # str on an int attribute.
+                    if v.isdigit():
                         self._directives[k] = int(v)
-                    except ValueError:
-                        self._directives[k] = v
                 else:
                     self._directives[k] = v
             else:

@@ -137,7 +137,11 @@ class Config(dict[str, Any]):
             "SERVER_NAME": None,
             "APPLICATION_ROOT": "/",
             "PREFERRED_URL_SCHEME": URL_SCHEME_HTTP,
-            "MAX_CONTENT_LENGTH": None,
+            # Default request-body ceiling. The body is buffered in memory, so an
+            # unbounded default lets one large request OOM the process; 100 MiB is
+            # generous for typical uploads while bounding that exposure. Set a
+            # larger value (or `None` for unlimited) for large-upload endpoints.
+            "MAX_CONTENT_LENGTH": 100 * 1024 * 1024,
             "MAX_FORM_PARTS": 1000,
             "MAX_FORM_PART_SIZE": 10 * 1024 * 1024,
             "MAX_FORM_FILES": None,

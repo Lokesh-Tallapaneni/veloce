@@ -76,3 +76,15 @@ def test_if_none_match_empty_header_returns_empty_tuple():
 def test_if_none_match_strips_whitespace_around_entries():
     req = _req({"if-none-match": '  "a"  ,  "b"  '})
     assert req.if_none_match == ('"a"', '"b"')
+
+
+def test_if_none_match_comma_inside_quoted_tag_not_split():
+    """RFC 9110 §8.8.3 etagc permits a comma inside the opaque tag, so a
+    quoted tag containing a comma must stay one entry."""
+    req = _req({"if-none-match": '"abc,def"'})
+    assert req.if_none_match == ('"abc,def"',)
+
+
+def test_if_none_match_quoted_comma_with_list():
+    req = _req({"if-none-match": '"a,b", "c", W/"d,e"'})
+    assert req.if_none_match == ('"a,b"', '"c"', 'W/"d,e"')

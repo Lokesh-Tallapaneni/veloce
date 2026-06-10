@@ -289,8 +289,7 @@ from veloce import Veloce
 from veloce.middleware.sessions import SessionMiddleware
 
 app = Veloce()
-app.config["SECRET_KEY"] = "test-secret-do-not-ship"
-app.add_middleware(SessionMiddleware)
+app.add_middleware(SessionMiddleware, secret_key="test-secret-do-not-ship")
 
 
 @app.get("/whoami")

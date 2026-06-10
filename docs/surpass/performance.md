@@ -1,9 +1,8 @@
 ---
 description: >-
-  Why Veloce is fast and the measured proof — radix-tree routing, the compiled dependency-graph
-  resolver, HandlerPlan precompilation, the zero-cost feature pipeline, JSONResponse.from_bytes,
-  the msgspec backend, and the FastAPI-anchored throughput, memory, and cold-start numbers.
-tags: [performance, dispatch, benchmarks, msgspec]
+  Why Veloce is fast — radix-tree routing, the compiled dependency-graph resolver, HandlerPlan
+  precompilation, the zero-cost feature pipeline, JSONResponse.from_bytes, and the msgspec backend.
+tags: [performance, dispatch, msgspec]
 ---
 
 # Performance
@@ -13,10 +12,9 @@ can be moved off it. Routing is a radix tree, the dependency graph compiles to a
 straight-line resolver, parameter reflection happens once at registration, and
 disabled features cost zero per request.
 
-This page explains each mechanism
-against the real source and then states the measured numbers — every figure is
-benchmarked, with the methodology and caveats spelled out and cross-linked to
-[Benchmarks](../benchmarks.md).
+This page explains each mechanism against the real source. To measure dispatch
+cost yourself, see [Benchmarks](../benchmarks.md) — it documents the bench suite
+and the methodology for reproducing numbers locally on your own hardware.
 
 !!! note
     The framework is rarely the bottleneck in a real application — the database
@@ -235,75 +233,14 @@ if __name__ == "__main__":
     app.run(port=8000)
 ```
 
-Measured against Pydantic, the msgspec backend is roughly **5.9x** faster on
-isolated serialisation and roughly **1.27x** faster end-to-end through the full
-request path. See the [msgspec backend](../guide/msgspec.md) guide for the
-validation-error shape difference and when the trade-off is worth it.
-
-## Measured results
-
-Every number below is a measurement, not a projection. The methodology and the
-caveats that bound it are in [Benchmarks](../benchmarks.md); read that page
-before quoting any figure.
-
-### Throughput against FastAPI and Flask
-
-Across 35 scenarios, anchored to FastAPI on the same machine, Veloce's geometric
-mean throughput is about **2.0x** FastAPI — `1.92x` at 16 connections, `2.03x` at
-64, and `2.06x` at 256. Veloce wins **every one** of the 35 scenarios, with zero
-regressions. Against Flask the geometric mean is about **5.3x**.
-
-| Metric | Measured |
-| --- | --- |
-| Throughput vs FastAPI (geomean, 35 scenarios) | `~2.0x` |
-| At 16 / 64 / 256 connections | `1.92x` / `2.03x` / `2.06x` |
-| Scenarios won vs FastAPI | `35 / 35` (0 regressions) |
-| Throughput vs Flask (geomean) | `~5.3x` |
-
-!!! warning "Use the geomean, not a single scenario"
-    Per-scenario run-to-run variance is about **±5%**, so a cherry-picked
-    scenario can over- or under-state the gap. The **FastAPI-anchored
-    35-scenario geometric mean** is the figure to quote; a lone scenario is not.
-
-### Eleven-framework arena
-
-In an 11-framework run ranked by geometric-mean requests per second, Veloce
-places **2nd of 11**. It trails only aiohttp — a bare async HTTP server with no
-routing, validation, or dependency injection — and ranks ahead of Cython-backed
-BlackSheep, Starlette, Litestar, Sanic, FastAPI, Tornado, Quart, Flask, and
-Django.
-
-!!! note
-    aiohttp does no routing, validation, or dependency injection, so it is not a
-    like-for-like comparison. Among full request frameworks that validate input
-    and resolve dependencies, Veloce is the fastest in this run.
-
-### Memory and cold start
-
-Under sustained real-server load Veloce holds about **154 MB** RSS against
-FastAPI's **171 MB** — roughly **10% lower**. Per-request retention is about
-**0 bytes**: RSS plateaus rather than climbing, so there is no leak. Under
-`tracemalloc`, FastAPI retained about **10x** more per request than Veloce.
-
-Cold start — importing the package and building a minimal app — is about
-**147 ms** for Veloce versus **244 ms** for FastAPI, roughly **1.65x** faster.
-
-| Metric | Veloce | FastAPI |
-| --- | --- | --- |
-| RSS under sustained load | `~154 MB` | `~171 MB` |
-| Per-request retention | `~0 bytes` (plateaus) | `~10x` Veloce (tracemalloc) |
-| Cold start (import + minimal app) | `~147 ms` | `~244 ms` |
-
-!!! warning "Single-box methodology"
-    The benchmarks run the load generator and the servers on one host, on
-    disjoint pinned cores. Sharing the box makes **absolute** RPS a few percent
-    low, so treat the absolute throughput as a floor. The **relative** numbers —
-    every ratio above — are valid because both sides run under identical
-    conditions in the same process invocation.
+On serialisation-heavy endpoints the msgspec backend can lower encode/decode
+cost relative to Pydantic; measure it on your own workload before adopting it.
+See the [msgspec backend](../guide/msgspec.md) guide for the validation-error
+shape difference and when the trade-off is worth it.
 
 ## Next steps
 
-- [Benchmarks](../benchmarks.md) — the full methodology, the bench suite layout, and how to reproduce these numbers locally.
+- [Benchmarks](../benchmarks.md) — the full methodology, the bench suite layout, and how to run the dispatch benches locally.
 - [msgspec backend](../guide/msgspec.md) — opt an endpoint into msgspec validation and serialisation.
 - [Migrating from FastAPI](migrating-from-fastapi.md) — the divergence map and the Veloce-only wins.
 - [Native server deep dive](native-server.md) — the `HttpProtocol` request loop and its hardening knobs.

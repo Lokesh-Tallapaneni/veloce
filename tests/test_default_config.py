@@ -24,7 +24,7 @@ def test_default_config_values():
 def test_config_reads_never_keyerror_on_defaults():
     app = Veloce()
     # Previously a bare read could KeyError; now seeded keys return values.
-    assert app.config["MAX_CONTENT_LENGTH"] is None
+    assert app.config["MAX_CONTENT_LENGTH"] == 100 * 1024 * 1024
     assert app.config["SESSION_COOKIE_NAME"] == "session"
 
 

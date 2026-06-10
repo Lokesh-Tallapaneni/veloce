@@ -42,13 +42,40 @@ def test_over_limit_returns_413():
     assert body["limit"] == 100
 
 
-def test_unset_max_content_length_allows_any_size():
-    """When MAX_CONTENT_LENGTH isn't configured, large bodies pass through."""
-    client = TestClient(_app(max_size=None))
+def test_explicit_none_max_content_length_allows_any_size():
+    """Setting MAX_CONTENT_LENGTH=None explicitly restores unlimited bodies."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["MAX_CONTENT_LENGTH"] = None
+
+    @app.post("/echo")
+    async def echo(request: Request):
+        return {"received": len(await request.body())}
+
+    client = TestClient(app)
     big = b"x" * 1_000_000
     resp = client.post("/echo", content=big)
     assert resp.status_code == 200
     assert resp.json() == {"received": 1_000_000}
+
+
+def test_default_limit_rejects_oversized_declared_length():
+    """With no explicit config, the default 100 MiB cap rejects an over-limit
+    declared Content-Length cheaply (DoS protection is on by default)."""
+    import asyncio
+
+    app = _app(max_size=None)  # no explicit config -> default 100 MiB
+    req = Request(
+        method="POST",
+        path="/echo",
+        query_string="",
+        headers={
+            "content-length": str(200 * 1024 * 1024),
+            "content-type": "application/octet-stream",
+        },
+        body=b"",
+    )
+    resp = asyncio.new_event_loop().run_until_complete(app.handle_request(req))
+    assert resp.status_code == 413
 
 
 def test_declared_content_length_over_limit_rejected_cheaply():

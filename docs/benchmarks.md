@@ -1,6 +1,6 @@
 ---
 description: Veloce performance benchmarks — request throughput, latency, memory usage, and how to run the benchmark suite locally.
-tags: [benchmarks, performance, fastest, comparison]
+tags: [benchmarks, performance]
 ---
 
 # Benchmarks

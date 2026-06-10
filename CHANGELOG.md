@@ -6,6 +6,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `veloce new NAME [--template minimal|api|web]` scaffolds a new project, and
+  `veloce generate KIND NAME` (alias `g`) emits a single boilerplate file for
+  `route`, `blueprint`, `middleware`, `model`, or `security`. Generated projects
+  import the public API and pass `ruff` and `mypy` out of the box. The
+  scaffolders are stdlib-only (no template-engine dependency) and load lazily, so
+  `veloce --version` / `--help` do not import the framework.
+- `get_flashed_messages` is now injected as a Jinja template global alongside
+  `url_for`, `g`, and `current_app`, so a template can call
+  `{% for m in get_flashed_messages() %}` without registering it manually. It
+  returns an empty list outside a request, so renders that reference it never
+  raise an undefined-global error.
+
+### Security
+
+- `CORSMiddleware(allow_origin_regex=...)` with no explicit `allow_origins` no
+  longer defaults the origin list to `["*"]`. Previously the wildcard
+  short-circuited origin matching before the regex was consulted, so a
+  regex-only configuration echoed `Access-Control-Allow-Origin: *` to every
+  origin. A regex-only config now gates strictly by the regex.
+
+### Changed
+
+- `MAX_CONTENT_LENGTH` now defaults to `104857600` (100 MiB) instead of `None`
+  (unlimited). Request bodies are buffered in memory, so an unbounded default let
+  a single large request exhaust process memory; the cap bounds that exposure
+  while staying generous for typical uploads. Endpoints that accept larger bodies
+  must raise `MAX_CONTENT_LENGTH` (or set it to `None` for unlimited). The
+  enforcement mechanism is unchanged on both the ASGI and native transports.
+
+### Fixed
+
+- The Swagger UI docs page (`/docs`) no longer fails with "No layout defined for
+  StandaloneLayout". The template loaded only `swagger-ui-bundle.js` but selected
+  `layout: "StandaloneLayout"`, which is defined by the separate standalone-preset
+  script that was never included. The embedded docs now use `BaseLayout` (provided
+  by the bundle) and drop the unloaded preset reference.
+- A `@rate_limit` decorator on a route registered with `include_in_schema=False`
+  (a login form POST, an internal endpoint) is now honored. `RateLimitMiddleware`
+  discovered per-route strategies through the schema-only route view, so a tag on
+  a hidden route was silently dropped and the endpoint fell back to the global
+  limit. The scan now includes hidden routes. Per-route limits still require the
+  strategy API (`RateLimitMiddleware(strategy=...)`); the legacy
+  `max_requests`/`window_seconds` path enforces only the flat global ceiling.
+- A trailing-slash redirect generated inside a mounted Veloce sub-app now carries
+  the mount prefix in its `Location` (e.g. `/sub/ping/`, not a bare `/ping/`), so
+  a client following the redirect reaches the sub-app route instead of a `404` on
+  the parent. The target is built from the request's `root_path` + path; a
+  top-level app (empty `root_path`) is unchanged.
+- A `query_string` carrying raw non-ASCII bytes (an un-percent-encoded UTF-8
+  query) over ASGI now returns `400 Bad Request` instead of raising
+  `UnicodeDecodeError` out of dispatch as a `500`.
+- `multipart/form-data` bodies that fail to parse mid-body (truncated parts,
+  malformed delimiters) now raise `BadRequest` (400) instead of returning the
+  partial form with `200 OK`, matching the rejection already applied to a
+  malformed boundary.
+- `StreamingResponse` over the native server no longer truncates the body when
+  the producer yields an empty `bytes` chunk. An empty yield previously encoded
+  as `0\r\n\r\n`, the chunked last-chunk terminator, which ended the stream early
+  and desynced keep-alive framing; empty chunks are now skipped.
+- Registering the slashed and unslashed forms of a path (`/users` and `/users/`)
+  no longer makes the second registration flip the first to a slash redirect.
+  Both forms share one radix node; the slash-strictness flags are now tracked per
+  form, so each variant resolves to its own handler.
+- Blueprint routes registered with `exclude_middleware=[...]` now keep the
+  exclusion after `register_blueprint`. The re-registration path previously
+  dropped the field, so a route that opted out of a middleware silently had it
+  run again once spliced onto the app.
+- A plain mutable parameter default (`tags: list[str] = []`, `opts: dict = {}`)
+  is no longer shared across requests. The default was returned by identity, so
+  one request's in-place mutation leaked into the next; each request now receives
+  an independent copy. The shared-mutable-default warning, previously emitted only
+  for explicit `Query(default=[])` markers, now also covers plain defaults.
+- `ProxyFix` with a `Forwarded: host="[2001:db8::1]:8443"` directive no longer
+  strips the IPv6 brackets and port before splicing the value into the Host
+  header, which produced a malformed authority in redirects and OpenAPI server
+  URLs. The bracket-stripping now applies only to the `for`/`by` node
+  identifiers (RFC 7239 Sec. 6); the `host` authority is kept verbatim.
+- A `HEAD` request served by the native server (`Veloce.run()`) no longer sends
+  the response body. The body strip previously existed only on the ASGI emit
+  path, so the native server returned the full payload after the `Content-Length`
+  header (RFC 9110 Sec. 9.3.2), corrupting keep-alive framing. The header section
+  and advertised length are kept; the body is now omitted.
+- The native server no longer drops a WebSocket frame that the client pipelines
+  into the same TCP segment as the handshake. The post-handshake bytes were never
+  fed to the frame parser, so the first message was silently lost and the
+  connection hung; they are now delivered to the connection.
+- A non-WebSocket `Upgrade` request (e.g. `Upgrade: h2c`) on the native server
+  now returns `400 Bad Request` without running the matching route handler.
+  Previously the request was dispatched before the `400` was written, so side
+  effects committed for a request the client was told had failed.
+
 ## [0.5.0] - 2026-06-10
 
 ### Added

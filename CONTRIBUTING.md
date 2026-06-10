@@ -7,26 +7,55 @@ development environment, the checks your change must pass, and how to propose it
 
 Veloce targets Python 3.10+.
 
+The project uses [uv](https://docs.astral.sh/uv/) for environment management.
+With it installed, `uv sync --all-extras --dev` sets up a locked environment
+with all dev tooling, and you can run any command below through
+`uv run <command>`:
+
 ```bash
 git clone https://github.com/Lokesh-Tallapaneni/veloce.git
 cd veloce
-pip install -e ".[dev]"
+uv sync --all-extras --dev
 ```
 
-The project uses [uv](https://docs.astral.sh/uv/) for environment management;
-if you have it installed, `uv sync --all-extras --dev` sets up a locked
-environment and you can run any command below through `uv run <command>`.
+The dev tooling lives in the PEP 735 `[dependency-groups]` table (not a `dev`
+extra), so a plain `pip install -e ".[dev]"` will not pull it in. Without uv,
+install the package plus the dev group with pip 25.1 or newer:
+
+```bash
+pip install -e . --group dev
+```
+
+Then run the commands below directly (without the `uv run` prefix).
+
+The repository ships a `.pre-commit-config.yaml` that runs `ruff check --fix`,
+`ruff format`, and basic hygiene hooks. Install it once so lint and formatting
+are fixed before each commit instead of failing in CI:
+
+```bash
+pre-commit install
+```
 
 ## Quality gates
 
-Every change must pass the full gate set before it is submitted. These are the
-same checks CI runs on each pull request:
+Every change must pass the full gate set before it is submitted:
 
 ```bash
-pytest                          # full test suite
 ruff check .                    # lint
 ruff format --check .           # formatting
 mypy src/veloce                 # static types
+pytest                          # full test suite
+```
+
+CI runs two more gates on each pull request; reproduce them locally before you
+submit:
+
+```bash
+# Coverage floor: CI fails the build below 90%.
+pytest --cov=veloce --cov-fail-under=90
+
+# Parser fuzzing: CI runs the hypothesis leg with a larger example budget.
+HYPOTHESIS_PROFILE=ci pytest -m fuzz
 ```
 
 - Tests use `pytest-asyncio` in auto mode: write async tests as plain

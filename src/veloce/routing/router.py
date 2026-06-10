@@ -120,6 +120,7 @@ class RadixNode:
         "is_param",
         "is_wildcard",
         "trailing_slash",
+        "unslashed_variant",
         "tolerant_slash",
         "converter",
     )
@@ -143,6 +144,12 @@ class RadixNode:
         self.is_param = False
         self.is_wildcard = False
         self.trailing_slash = False
+        # `/foo` and `/foo/` collapse to the same node, so the two strictness
+        # flags are tracked independently: `trailing_slash` records that the
+        # slashed form was registered, `unslashed_variant` the unslashed form.
+        # When both are set the node serves both shapes and neither strictness
+        # gate fires - registering one form must not flip the other to a 404.
+        self.unslashed_variant = False
         # When True, the slashed and unslashed forms both match without
         # redirect - set by `strict_slashes=False` on `add_route`.
         self.tolerant_slash = False
@@ -1172,8 +1179,13 @@ class Router:
 
         segments = self._split_path(full_path)
         node, param_names = self._insert_path_into_tree(self._root, segments, full_path)
+        # `/foo` and `/foo/` share this node. Record which form was registered
+        # without clearing the other, so registering one variant never flips the
+        # already-registered variant's slash strictness.
         if has_trailing_slash:
             node.trailing_slash = True
+        else:
+            node.unslashed_variant = True
         if strict_slashes is False:
             node.tolerant_slash = True
         return node, None, param_names
@@ -1296,8 +1308,10 @@ class Router:
         handler for the exact path - only the slash-redirect flags do. Nodes with
         `trailing_slash` or `tolerant_slash` are therefore excluded and fall
         through to the tree, which keeps the exact slash semantics. Methods are
-        stored uppercase (as in `RadixNode.handlers`), so a lowercase or
-        HEAD->GET request misses here and resolves on the tree.
+        stored uppercase (as in `RadixNode.handlers`), so a lowercase request
+        misses here and resolves on the tree. A GET-only literal also gets a
+        HEAD alias to its GET RouteInfo (RFC 9110 Sec. 9.3.2), so HEAD requests
+        resolve here rather than re-running the tree's HEAD->GET fallback.
         """
         smap: dict[tuple[str, str], RouteInfo] = {}
         stack: list[tuple[RadixNode, str]] = [(self._root, "")]
@@ -1307,6 +1321,15 @@ class Router:
                 path = prefix or "/"
                 for method, info in node.handlers.items():
                     smap[(method, path)] = info
+                # RFC 9110 Sec. 9.3.2: HEAD falls back to GET. The body strip
+                # is transport-level (the ASGI/native emit checks the request
+                # method), so aliasing HEAD to the GET RouteInfo here is
+                # behaviorally identical to the tree's per-request fallback and
+                # spares HEAD requests the split + tree walk.
+                if HTTP_METHOD_HEAD not in node.handlers:
+                    get_info = node.handlers.get(HTTP_METHOD_GET)
+                    if get_info is not None:
+                        smap[(HTTP_METHOD_HEAD, path)] = get_info
             for seg, child in node.static_children.items():
                 stack.append((child, prefix + "/" + seg))
         return smap
@@ -1343,12 +1366,20 @@ class Router:
         if result is None:
             return None
 
-        # Trailing slash strictness: route registered with slash only matches slashed requests.
-        # `tolerant_slash` (per-route `strict_slashes=False`) skips this gate.
+        # Trailing slash strictness: a route registered with slash only matches
+        # slashed requests, and vice versa. `tolerant_slash` (per-route
+        # `strict_slashes=False`) skips this gate. When both the slashed and
+        # unslashed forms were registered, the node serves both shapes, so
+        # neither gate fires.
         if not result.tolerant_slash:
-            if result.trailing_slash and not request_has_slash:
+            if result.trailing_slash and not result.unslashed_variant and not request_has_slash:
                 return None
-            if not result.trailing_slash and request_has_slash and result.handlers:
+            if (
+                result.unslashed_variant
+                and not result.trailing_slash
+                and request_has_slash
+                and result.handlers
+            ):
                 return None
 
         # Handlers are stored uppercase - RFC-conforming clients send the
@@ -1465,11 +1496,16 @@ class Router:
         methods: dict[str, None] = {}
         node = self._match_node(self._root, segments, 0, params)
         if node is not None:
-            # Respect trailing slash matching (skipped when tolerant_slash is set).
+            # Respect trailing slash matching (skipped when tolerant_slash is
+            # set, and when both slash forms were registered on this node).
             slash_miss = (
-                not node.tolerant_slash and node.trailing_slash and not request_has_slash
+                not node.tolerant_slash
+                and node.trailing_slash
+                and not node.unslashed_variant
+                and not request_has_slash
             ) or (
                 not node.tolerant_slash
+                and node.unslashed_variant
                 and not node.trailing_slash
                 and request_has_slash
                 and node.handlers
@@ -2064,6 +2100,8 @@ class Router:
                 # handler-table commit below, so order does not matter.
                 if node.trailing_slash:
                     cur.trailing_slash = True
+                if node.unslashed_variant:
+                    cur.unslashed_variant = True
                 if node.tolerant_slash:
                     cur.tolerant_slash = True
 
@@ -2125,4 +2163,5 @@ def _readd_route(
         expose_as_mcp_resource=info.expose_as_mcp_resource,
         mcp_resource_uri=info.mcp_resource_uri,
         mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
+        exclude_middleware=(list(info.excluded_middleware) if info.excluded_middleware else None),
     )

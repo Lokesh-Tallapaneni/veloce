@@ -181,12 +181,15 @@ templates = Jinja2Templates(directory="templates", autoescape=True)
 
 ## Built-in template globals
 
-When a template is rendered inside a request, Veloce makes three names
+When a template is rendered inside a request, Veloce makes four names
 available without adding them to the context:
 
 - `url_for` — build a URL for a named route, e.g. `{{ url_for('hello', name='world') }}`.
 - `g` — the per-request [application-context object](helpers.md).
 - `current_app` — the active application.
+- `get_flashed_messages` — read the messages queued with `flash()`, e.g.
+  `{% for m in get_flashed_messages() %}{{ m }}{% endfor %}`. It returns an
+  empty list outside a request.
 
 ```html title="templates/nav.html"
 <a href="{{ url_for('hello', name='world') }}">Say hello</a>

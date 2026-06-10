@@ -181,6 +181,65 @@ def test_param_base_accepts_factory_directly():
     assert ParamBase(default_factory=set).resolve_default() == set()
 
 
+# ── Plain (non-marker) mutable defaults ───────────────────────────────
+
+
+def test_plain_list_default_is_per_request_via_handler():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/items")
+    async def handler(tags: list[str] = []) -> dict:
+        # A bare `= []` default must not be shared across requests.
+        tags.append("x")
+        return {"tags": tags}
+
+    client = TestClient(app)
+    first = client.get("/items").json()
+    second = client.get("/items").json()
+    # If the default were shared by identity, the second request would see
+    # ["x", "x"]; the registration-time copying factory keeps them isolated.
+    assert first == {"tags": ["x"]}
+    assert second == {"tags": ["x"]}
+
+
+def test_plain_scalar_mutable_default_is_per_request():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/cfg")
+    async def handler(opts: dict = {}) -> dict:
+        opts["seen"] = opts.get("seen", 0) + 1
+        return opts
+
+    client = TestClient(app)
+    assert client.get("/cfg").json() == {"seen": 1}
+    assert client.get("/cfg").json() == {"seen": 1}
+
+
+def test_plain_list_default_warns_at_registration():
+    def handler(tags: list[str] = []):
+        return tags
+
+    with pytest.warns(UserWarning, match="default_factory=list"):
+        build_plan(handler)
+
+
+def test_plain_scalar_dict_default_warns_at_registration():
+    def handler(opts: dict = {}):
+        return opts
+
+    with pytest.warns(UserWarning, match="default_factory=dict"):
+        build_plan(handler)
+
+
+def test_plain_immutable_scalar_default_does_not_warn():
+    def handler(q: str = ""):
+        return q
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        build_plan(handler)
+
+
 # ── OpenAPI ───────────────────────────────────────────────────────────
 
 

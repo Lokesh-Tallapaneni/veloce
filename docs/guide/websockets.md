@@ -104,6 +104,13 @@ When the peer closes, the close code and reason are exposed on the connection,
 and the raised `WebSocketDisconnect` carries the peer's close code:
 
 ```python
+import logging
+
+from veloce import WebSocket, WebSocketDisconnect
+
+log = logging.getLogger(__name__)
+
+
 @app.websocket("/chat")
 async def chat(ws: WebSocket):
     await ws.accept()
@@ -167,15 +174,18 @@ connection open, while the idle window closing raises `WebSocketDisconnect`.
 
 `idle_timeout` only fires while a receive is in flight, and a peer that
 vanishes without sending a TCP FIN/RST (common behind NAT and load balancers)
-can leave a connection half-open indefinitely. On the raw-transport serving
-path, pass `heartbeat=<seconds>` to actively probe the peer:
+can leave a connection half-open indefinitely. The fix is an active probe:
+pass `heartbeat=<seconds>` when constructing a raw-transport `WebSocket`.
+
+`heartbeat` is a construction-time option, so it applies to connections you
+build by hand off the raw-transport path rather than to the live `WebSocket`
+the framework hands an `@app.websocket` handler:
 
 ```python
-@app.websocket("/chat")
-async def chat(ws: WebSocket):
-    ws = WebSocket(transport, headers, heartbeat=20)
-    await ws.accept()
-    ...
+from veloce import WebSocket
+
+ws = WebSocket(transport, headers, heartbeat=20)
+await ws.accept()  # arms the probe automatically
 ```
 
 After `accept()` a timer sends an application PING carrying a token every
@@ -184,7 +194,7 @@ frame) before the next tick; any inbound byte defers the probe, so a busy
 connection never pays for needless pings. Two consecutive idle windows with no
 matching PONG drop the connection and record `1006` on `ws.close_code` (the
 reserved abnormal-closure code is recorded but never sent on the wire). Call
-`ws.start_heartbeat()` to arm the timer for a connection you build by hand.
+`ws.start_heartbeat()` to arm the timer when you wire the transport yourself.
 
 !!! note "Added in version 0.4"
     `heartbeat` is opt-in and raw-transport only. The default `None` preserves

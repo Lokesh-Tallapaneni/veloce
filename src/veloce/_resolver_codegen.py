@@ -329,7 +329,15 @@ def _emit_scalar_param(
     ns[f"_t{j}"] = slot.target_type or str
     ns[f"_hd{j}"] = slot.has_default
     ns[f"_io{j}"] = slot.is_optional
-    ns[f"_d{j}"] = slot.default
+    # A plain mutable default is wrapped in a copying factory at registration so
+    # each request gets its own value (see `_guard_plain_mutable_default`); emit
+    # a fresh call for it, and read an immutable default inline.
+    if slot.default_factory is not None:
+        ns[f"_df{j}"] = slot.default_factory
+        default_expr = f"_df{j}()"
+    else:
+        ns[f"_d{j}"] = slot.default
+        default_expr = f"_d{j}"
 
     lines.append(f"    _v = path_params.get({name!r}, _M)")
     lines.append("    if _v is not _M:")
@@ -342,7 +350,7 @@ def _emit_scalar_param(
             f"            {target}[{name!r}] = _cv(_qp[{name!r}], _t{j}, {name!r}, 'query')"
         )
         lines.append(f"        elif _hd{j}:")
-        lines.append(f"            {target}[{name!r}] = _d{j}")
+        lines.append(f"            {target}[{name!r}] = {default_expr}")
         lines.append(f"        elif _io{j}:")
         lines.append(f"            {target}[{name!r}] = None")
         lines.append("        else:")
@@ -352,7 +360,7 @@ def _emit_scalar_param(
         )
     else:  # K_PATH - no query fallback, no missing-required error
         lines.append(f"    elif _hd{j}:")
-        lines.append(f"        {target}[{name!r}] = _d{j}")
+        lines.append(f"        {target}[{name!r}] = {default_expr}")
         lines.append(f"    elif _io{j}:")
         lines.append(f"        {target}[{name!r}] = None")
 

@@ -68,5 +68,25 @@ def test_current_app_attribute_in_template(tmp_path):
         _unbind(token)
 
 
+def test_get_flashed_messages_available_in_template(tmp_path):
+    """A template may call `get_flashed_messages()` without manual registration.
+
+    Outside a request the helper returns an empty list, so the render must
+    succeed rather than raising `jinja2.UndefinedError` for an unknown global.
+    """
+    app = Veloce(openapi_url=None)
+    templates = Jinja2Templates(directory=str(tmp_path))
+    app._templates = templates
+
+    token = _bind(app)
+    try:
+        out = templates.render_string(
+            "{% for m in get_flashed_messages() %}{{ m }}{% endfor %}OK", {}
+        )
+        assert out == "OK"
+    finally:
+        _unbind(token)
+
+
 # Pull `Any` in for the type-checker
 from typing import Any  # noqa: E402

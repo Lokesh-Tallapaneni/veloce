@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import logging
 import tempfile
 from typing import Any
 
@@ -14,8 +13,6 @@ from veloce._constants import MIME_TEXT_PLAIN
 from veloce._header_parsing import parse_header_params
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.datastructures import FormData, Headers, UploadFile
-
-_logger = logging.getLogger(__name__)
 
 # Multipart-parsing safety limits - guard against algorithmic-complexity
 # DoS from a body crafted with pathologically many or oversized parts.
@@ -331,7 +328,11 @@ def parse_multipart_form(
             parser.write(body)
             parser.finalize()
         except FormParserError as exc:
-            _logger.warning("Multipart form parse error (partial data returned): %s", exc)
+            # A mid-body parse failure (truncated part, malformed delimiter)
+            # leaves the form incomplete. Returning the partial result with a
+            # 200 would silently drop the missing fields/files, so reject the
+            # whole body with 400 — the same posture as a malformed boundary.
+            raise BadRequest("multipart/form-data body is malformed") from exc
     except BaseException:
         for value in result.values():
             if isinstance(value, UploadFile):

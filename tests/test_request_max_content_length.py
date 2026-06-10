@@ -10,11 +10,11 @@ def test_none_when_no_app_bound():
     assert req.max_content_length is None
 
 
-def test_none_when_config_unset():
+def test_default_when_config_unset():
     app = Veloce()
     req = Request(method="GET", path="/", query_string="", headers={}, body=b"", app=app)
-    # MAX_CONTENT_LENGTH defaults to None in the seeded config.
-    assert req.max_content_length is None
+    # MAX_CONTENT_LENGTH defaults to 100 MiB in the seeded config.
+    assert req.max_content_length == 100 * 1024 * 1024
 
 
 def test_reads_configured_limit():
@@ -27,6 +27,6 @@ def test_reads_configured_limit():
 def test_reflects_config_changes():
     app = Veloce()
     req = Request(method="GET", path="/", query_string="", headers={}, body=b"", app=app)
-    assert req.max_content_length is None
+    assert req.max_content_length == 100 * 1024 * 1024
     app.config["MAX_CONTENT_LENGTH"] = 4096
     assert req.max_content_length == 4096
