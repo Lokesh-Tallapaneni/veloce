@@ -66,6 +66,60 @@ async def test_endpoint_decorator_replaces_handler():
     assert orjson.loads(resp.body) == {"v": "new"}
 
 
+@pytest.mark.asyncio
+async def test_endpoint_decorator_reclassifies_sync_handler():
+    """Attaching a sync view to a stub route must reclassify the route -
+    the stub is async (fast-path eligible on a bare app), the replacement is
+    sync and must be offloaded, never awaited."""
+    app = Veloce(openapi_url=None)
+    app.add_url_rule("/x", endpoint="my_view")
+
+    @app.endpoint("my_view")
+    def sync_handler():
+        return {"v": "sync"}
+
+    info = next(i for _m, _p, i in app._collect_all_routes() if i.name == "my_view")
+    assert info.is_fast_eligible is False
+
+    import orjson
+
+    resp = await app.handle_request(_req())
+    assert orjson.loads(resp.body) == {"v": "sync"}
+
+
+@pytest.mark.asyncio
+async def test_endpoint_decorator_keeps_async_fast_path():
+    """An async replacement stays fast-path eligible on a bare app."""
+    app = Veloce(openapi_url=None)
+    app.add_url_rule("/x", endpoint="my_view")
+
+    @app.endpoint("my_view")
+    async def async_handler():
+        return {"v": "async"}
+
+    info = next(i for _m, _p, i in app._collect_all_routes() if i.name == "my_view")
+    assert info.is_fast_eligible is True
+
+    import orjson
+
+    resp = await app.handle_request(_req())
+    assert orjson.loads(resp.body) == {"v": "async"}
+
+
+def test_endpoint_decorator_refreshes_view_functions():
+    """A `view_functions` snapshot taken before `@app.endpoint` must not pin
+    the displaced stub in the cache."""
+    app = Veloce(openapi_url=None)
+    app.add_url_rule("/x", endpoint="my_view", view_func=lambda: {})
+    assert "my_view" in app.view_functions  # primes the cache
+
+    @app.endpoint("my_view")
+    async def new_handler():
+        return {}
+
+    assert app.view_functions["my_view"] is new_handler
+
+
 def test_endpoint_decorator_unknown_name_raises():
     app = Veloce(openapi_url=None)
 

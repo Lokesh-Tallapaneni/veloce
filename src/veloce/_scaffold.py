@@ -524,6 +524,21 @@ class ScaffoldError(Exception):
     """A scaffolding request could not be fulfilled (bad target, collision)."""
 
 
+def _ensure_parent_dir(target: Path) -> None:
+    """Create `target.parent`, mapping any path-chain error to `ScaffoldError`.
+
+    `mkdir(parents=True)` leaks a raw `FileExistsError` / `NotADirectoryError`
+    when an ancestor component is a file (e.g. `--dir` points through a file);
+    surface a clean `ScaffoldError` instead.
+    """
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as err:
+        raise ScaffoldError(
+            f"cannot create {target.parent}: a path component is not a directory"
+        ) from err
+
+
 def scaffold_project(
     name: str, template: str, dest_root: Path, *, force: bool = False
 ) -> list[Path]:
@@ -537,16 +552,19 @@ def scaffold_project(
             f"unknown template {template!r}; choose one of {', '.join(PROJECT_TEMPLATE_NAMES)}"
         )
     project_dir = dest_root / name
-    if project_dir.exists() and any(project_dir.iterdir()) and not force:
-        raise ScaffoldError(
-            f"{project_dir} already exists and is not empty; pass --force to overwrite"
-        )
+    if project_dir.exists():
+        if not project_dir.is_dir():
+            raise ScaffoldError(f"{project_dir} exists and is not a directory")
+        if any(project_dir.iterdir()) and not force:
+            raise ScaffoldError(
+                f"{project_dir} already exists and is not empty; pass --force to overwrite"
+            )
 
     snake, pascal = _snake(name), _pascal(name)
     written: list[Path] = []
     for rel_path, raw in PROJECT_TEMPLATES[template].items():
         target = project_dir / rel_path
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_parent_dir(target)
         content = "" if raw == "" else _render(raw, project=name, snake=snake, pascal=pascal)
         target.write_text(content, encoding="utf-8")
         written.append(target)
@@ -567,9 +585,11 @@ def generate_file(
     content = _render(GENERATORS[kind], project=name, snake=snake, pascal=pascal)
     if to_stdout:
         return None, content
+    if dest_dir.exists() and not dest_dir.is_dir():
+        raise ScaffoldError(f"{dest_dir} exists and is not a directory")
     target = dest_dir / f"{snake}.py"
     if target.exists() and not force:
         raise ScaffoldError(f"{target} already exists; pass --force to overwrite")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_parent_dir(target)
     target.write_text(content, encoding="utf-8")
     return target, content

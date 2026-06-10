@@ -775,3 +775,39 @@ def test_generate_refuses_existing_file_without_force(tmp_path):
     (tmp_path / "thing.py").write_text("x", encoding="utf-8")
     with pytest.raises(SystemExit, match="already exists"):
         main(["generate", "model", "thing", "--dir", str(tmp_path)])
+
+
+def test_new_rejects_a_file_target(tmp_path):
+    (tmp_path / "demo").write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit, match="not a directory"):
+        main(["new", "demo", "--dir", str(tmp_path)])
+
+
+def test_generate_rejects_a_file_as_dir(tmp_path):
+    target = tmp_path / "afile"
+    target.write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit, match="not a directory"):
+        main(["generate", "model", "thing", "--dir", str(target)])
+
+
+def test_new_post_create_hints_are_uv_native(tmp_path, capsys):
+    main(["new", "demo", "--template", "minimal", "--dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "requirements.txt" not in out  # the project is uv-native, no such file
+    assert "uv run" in out
+    assert str(tmp_path / "demo") in out  # the cd path honors --dir, not a bare name
+
+
+def test_new_rejects_target_under_a_file(tmp_path):
+    """An ancestor of the target being a file is a clean error, not a raw OS one."""
+    afile = tmp_path / "afile"
+    afile.write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit, match="not a directory"):
+        main(["new", "demo", "--dir", str(afile / "subdir")])
+
+
+def test_generate_rejects_dir_under_a_file(tmp_path):
+    afile = tmp_path / "afile"
+    afile.write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit, match="not a directory"):
+        main(["generate", "model", "thing", "--dir", str(afile / "subdir")])

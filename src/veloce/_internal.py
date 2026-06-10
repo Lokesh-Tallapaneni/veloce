@@ -118,6 +118,19 @@ def _coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _coerce_int(value: Any, *, name: str) -> int:
+    """Interpret a config value as an int, including dotenv-style strings.
+
+    `from_env_file` stores values as plain strings, so `MAX_COOKIE_SIZE=2048`
+    arrives as `"2048"`. A real int passes through; an unparseable value raises a
+    clear error naming the config key rather than crashing later on `<` / `max()`.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError) as err:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from err
+
+
 def _header_value_has_crlf(value: str) -> bool:
     """Return True if `value` carries CR, LF, or NUL (unsafe in a header)."""
     return "\r" in value or "\n" in value or "\x00" in value

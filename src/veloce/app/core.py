@@ -34,6 +34,7 @@ from veloce._pipeline import (
 )
 from veloce._protocol_constants import (
     HTTP_METHOD_GET,
+    ROUTE_METHOD_WEBSOCKET,
 )
 from veloce.app.asgi import AsgiMixin
 from veloce.app.background import BackgroundTasksMixin
@@ -319,7 +320,6 @@ class Veloce(
         # config key from the constructor arg - this is the single source of
         # truth, keeping `app.debug` and `config["DEBUG"]` from drifting apart.
         self.config["DEBUG"] = debug
-        self.secret_key: str | None = None  # Secret key
         self.extensions: dict[str, Any] = {}  # Extensions registry
         self._lifespan = lifespan
         self._init_runtime_state()
@@ -673,6 +673,20 @@ class Veloce(
         self.config["DEBUG"] = _coerce_bool(value)
 
     @property
+    def secret_key(self) -> str | None:
+        """Session-signing secret; bound to `config['SECRET_KEY']`.
+
+        `SessionMiddleware` constructed without an explicit `secret_key=`
+        resolves it from here on the first request, so `app.secret_key = ...`
+        and `config['SECRET_KEY']` are one and the same setting.
+        """
+        return self.config.get("SECRET_KEY")
+
+    @secret_key.setter
+    def secret_key(self, value: str | None) -> None:
+        self.config["SECRET_KEY"] = value
+
+    @property
     def url_map(self) -> _URLMap:
         """Read-only mapping of registered URL rules.
 
@@ -895,7 +909,10 @@ class Veloce(
         if self.debug:
             warnings.append("DEBUG is enabled - disable it before deploying to production.")
         if not self.config.get("SECRET_KEY"):
-            warnings.append("SECRET_KEY is not set - session signing falls back to weak defaults.")
+            warnings.append(
+                "SECRET_KEY is not set - session middleware that does not pass "
+                "its own secret_key= cannot sign cookies (set app.secret_key)."
+            )
         has_session = any(isinstance(m, SessionMiddleware) for m in self._middlewares)
         if has_session and not self.config.get("SESSION_COOKIE_SECURE"):
             warnings.append(
@@ -1261,25 +1278,17 @@ class Veloce(
                     info.handler = func
                     info.description = info.description or (func.__doc__ or "")
                     replaced = True
-                    # Recompute the pre-built handler plan since the
-                    # callable changed.
-                    try:
-                        from veloce._handler_plan import K_REQUEST, build_plan
-
-                        plan = build_plan(func)
-                        info.handler_plan = plan
-                        info.is_trivial_plan = plan is not None and len(plan.slots) == 0
-                        info.is_request_only_plan = (
-                            plan is not None
-                            and len(plan.slots) == 1
-                            and plan.slots[0].kind == K_REQUEST
-                        )
-                    except Exception:
-                        info.handler_plan = None
-                        info.is_trivial_plan = False
-                        info.is_request_only_plan = False
+                    # Rebuild the plans through the same path registration
+                    # uses, so every dispatch flag - including
+                    # `is_fast_eligible`, which depends on the handler being a
+                    # coroutine function - reflects the replacement handler
+                    # rather than the stub it displaced.
+                    self._finalize_plans(info, is_ws=_method.upper() == ROUTE_METHOD_WEBSOCKET)
             if not replaced:
                 raise ValueError(f"No route registered for endpoint {name!r}")
+            # The name -> handler map served by `view_functions` may have been
+            # built against the stub; drop it so the next read sees `func`.
+            self._cached_view_functions = None
             return func
 
         return decorator

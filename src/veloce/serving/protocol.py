@@ -148,6 +148,7 @@ class HttpProtocol(asyncio.Protocol):
         "_keep_alive_handle",
         "_request_timer",
         "_header_bytes_total",
+        "_headers_done",
         "_oversized",
         "_counted",
         "_request_queue",
@@ -217,6 +218,12 @@ class HttpProtocol(asyncio.Protocol):
         self._keep_alive_handle: asyncio.TimerHandle | None = None
         self._request_timer: asyncio.TimerHandle | None = None
         self._header_bytes_total: int = 0
+        # True between headers-complete and message-complete. Chunked trailer
+        # fields (RFC 9112 section 7.1.2) arrive through the same `on_header`
+        # callback as ordinary headers; this flag marks them as belonging to
+        # the in-flight message so they are never appended to the cleared
+        # header buffer that the *next* pipelined request will fill.
+        self._headers_done: bool = False
         # Once a header/URL cap trips we reject the connection but httptools
         # may keep delivering buffered callbacks; this flag short-circuits
         # them so we don't double-emit an error response.
@@ -298,6 +305,14 @@ class HttpProtocol(asyncio.Protocol):
             )
             return
         self._header_bytes_total += field_size
+        # Trailer fields of a chunked body arrive here after headers-complete.
+        # They belong to the in-flight message, not the next pipelined
+        # request's header block, and nothing downstream consumes them - drop
+        # them once they have been counted against the size caps above, and
+        # before the Content-Length capture below so a trailer named
+        # `content-length` cannot poison the next request's early-413 guard.
+        if self._headers_done:
+            return
         name = name.lower()
         # Capture the two headers the dispatch path needs so headers-complete
         # reads a slot instead of rescanning the list. `Content-Length` is kept
@@ -395,6 +410,7 @@ class HttpProtocol(asyncio.Protocol):
         self.url = b""
         self.headers = []
         self._header_bytes_total = 0
+        self._headers_done = True
         self._raw_content_length = None
         self._has_expect_continue = False
         self._request_queue.append((request, source, keep_alive))
@@ -585,6 +601,11 @@ class HttpProtocol(asyncio.Protocol):
             self._reject_413()
 
     def on_message_complete(self) -> None:
+        # The message (incl. any chunked trailers) is over: the next on_url /
+        # on_header callbacks belong to a pipelined follow-up, so reopen the
+        # header phase and zero the size budget that trailers counted against.
+        self._headers_done = False
+        self._header_bytes_total = 0
         # The body finished arriving in time - stand the slowloris guard down
         # and signal EOF to the in-flight source so a streaming consumer ends.
         if self._request_timer is not None:

@@ -309,10 +309,13 @@ def _cmd_new(args: argparse.Namespace) -> int:
     print(f"Created {args.template} project: {project_dir}")
     for path in written:
         print(f"  {path.relative_to(dest_root)}")
+    # The generated project is uv-native (pyproject with `[tool.uv] package=false`,
+    # no requirements.txt). Print the real path (correct under `--dir`) and the
+    # uv commands its README documents.
     print("\nNext steps:")
-    print(f"  cd {args.name}")
-    print("  pip install -r requirements.txt")
-    print("  veloce run app:app --reload")
+    print(f"  cd {project_dir}")
+    print("  uv run veloce run app:app --reload")
+    print("  uv run pytest")
     return 0
 
 

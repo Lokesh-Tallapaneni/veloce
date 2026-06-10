@@ -62,6 +62,46 @@ def test_max_age_sets_cache_control(tmp_path):
     assert resp.headers["Cache-Control"] == "public, max-age=3600"
 
 
+def test_no_cache_control_outside_request_context(tmp_path):
+    """Without an active app there is no config to consult - same as before."""
+    resp = send_file(_make_file(tmp_path))
+    assert "Cache-Control" not in resp.headers
+
+
+async def test_max_age_default_from_config(tmp_path):
+    """`SEND_FILE_MAX_AGE_DEFAULT` supplies Cache-Control when the caller
+    does not pass `max_age=` and a request is in flight."""
+    from veloce import Request, Veloce
+
+    app = Veloce(openapi_url=None)
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 1234
+    path = _make_file(tmp_path)
+
+    @app.get("/f")
+    async def f():
+        return await async_send_file(path)
+
+    req = Request(method="GET", path="/f", query_string="", headers={}, body=b"")
+    resp = await app.handle_request(req)
+    assert resp.headers["Cache-Control"] == "public, max-age=1234"
+
+
+async def test_explicit_max_age_beats_config_default(tmp_path):
+    from veloce import Request, Veloce
+
+    app = Veloce(openapi_url=None)
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 1234
+    path = _make_file(tmp_path)
+
+    @app.get("/f")
+    async def f():
+        return await async_send_file(path, max_age=60)
+
+    req = Request(method="GET", path="/f", query_string="", headers={}, body=b"")
+    resp = await app.handle_request(req)
+    assert resp.headers["Cache-Control"] == "public, max-age=60"
+
+
 async def test_async_returns_file_response(tmp_path):
     resp = await async_send_file(_make_file(tmp_path))
     assert isinstance(resp, FileResponse)

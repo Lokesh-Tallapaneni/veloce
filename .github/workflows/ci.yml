@@ -38,6 +38,49 @@ jobs:
       - name: Test
         run: uv run pytest -q --cov=veloce --cov-report=term-missing --cov-fail-under=90
 
+  windows:
+    name: test (windows, py3.12)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      # The native dev server (Veloce.run) has Windows-specific paths — the
+      # stdlib-asyncio fallback (uvloop is excluded on win32), signal
+      # handling, and socket-option guards — that the ubuntu matrix never
+      # executes. Coverage is enforced by the ubuntu legs; this leg gates on
+      # the tests alone.
+      - name: Test
+        run: uv run pytest -q
+
+  no-msgspec:
+    name: test without msgspec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          uv sync --all-extras --dev
+          uv pip uninstall msgspec
+
+      # The msgspec-guarded tests skip and the Pydantic-only paths must stay
+      # green, so a change that imports msgspec unconditionally fails here.
+      - name: Test
+        run: uv run pytest -q
+
   fuzz:
     name: parser fuzzing (hypothesis)
     runs-on: ubuntu-latest

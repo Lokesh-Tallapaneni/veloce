@@ -76,7 +76,9 @@ class ErrorsMixin:
         """
         explicit = self.config.get("PROPAGATE_EXCEPTIONS")
         if explicit is not None:
-            return bool(explicit)
+            # Coerced, not truth-tested: env-file loaders store strings, and
+            # `bool("false")` is True.
+            return _coerce_bool(explicit)
         return self.debug and _coerce_bool(self.config.get("TESTING"))
 
     def _find_exception_handler(self, exc_type: type) -> Callable | None:

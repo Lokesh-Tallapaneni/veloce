@@ -50,7 +50,7 @@ The defaults are:
 | `TESTING` | `False` | Mark the app as under test. |
 | `SECRET_KEY` | `None` | Key for signing sessions and tokens. |
 | `SERVER_NAME` | `None` | Host (and optional port) used for URL building. |
-| `APPLICATION_ROOT` | `"/"` | Mount path of the application. |
+| `APPLICATION_ROOT` | `"/"` | Mount path of the application; also the default `Path` of the session cookie. |
 | `PREFERRED_URL_SCHEME` | `"http"` | Scheme used when generating external URLs. |
 | `MAX_CONTENT_LENGTH` | `104857600` (100 MiB) | Maximum request body size in bytes. The body is buffered in memory, so the default bounds a large-request OOM; raise it for large-upload endpoints, or set `None` for unlimited. |
 | `MAX_FORM_PARTS` | `1000` | Maximum number of multipart form parts. |
@@ -60,16 +60,16 @@ The defaults are:
 | `MAX_FORM_FILE_SIZE` | `None` | Per-file size limit in bytes; overrides `MAX_FORM_PART_SIZE` for file parts. |
 | `MAX_FORM_FIELD_SIZE` | `None` | Per-text-field size limit in bytes; overrides `MAX_FORM_PART_SIZE` for text parts. |
 | `MAX_FORM_FIELD_MEMORY` | `None` | Cumulative resident-memory ceiling (bytes) across all text fields, including field-name bytes. |
-| `MAX_COOKIE_SIZE` | `4093` | Warning threshold for emitted cookie size. |
+| `MAX_COOKIE_SIZE` | `4093` | Size ceiling for the emitted session cookie. |
 | `SESSION_COOKIE_NAME` | `"session"` | Name of the session cookie. |
 | `SESSION_COOKIE_HTTPONLY` | `True` | Set `HttpOnly` on the session cookie. |
 | `SESSION_COOKIE_SECURE` | `False` | Set `Secure` on the session cookie. |
-| `SESSION_COOKIE_SAMESITE` | `None` | `SameSite` attribute for the session cookie. |
+| `SESSION_COOKIE_SAMESITE` | `None` | `SameSite` attribute for the session cookie (`None` keeps the middleware default, `lax`). |
 | `PERMANENT_SESSION_LIFETIME` | `2678400` | Lifetime of a permanent session in seconds (31 days). |
 | `JSON_SORT_KEYS` | `True` | Sort keys when serialising JSON. |
 | `JSONIFY_PRETTYPRINT_REGULAR` | `False` | Pretty-print JSON responses. |
 | `PROPAGATE_EXCEPTIONS` | `None` | Re-raise unhandled exceptions out of dispatch. |
-| `SEND_FILE_MAX_AGE_DEFAULT` | `None` | Default cache lifetime for served files. |
+| `SEND_FILE_MAX_AGE_DEFAULT` | `None` | Default `Cache-Control: max-age` for `send_file` / `async_send_file` when the caller passes no `max_age=`. |
 | `REQUEST_HANDLER_TIMEOUT` | `30` | Per-handler timeout in seconds. |
 | `KEEP_ALIVE_TIMEOUT` | `75` | Keep-alive timeout in seconds. |
 | `REQUEST_TIMEOUT` | `30` | Request read timeout in seconds. |
@@ -84,8 +84,16 @@ A few of these keys drive framework behaviour directly. `MAX_CONTENT_LENGTH`
 bounds the request body the server will read. `PROPAGATE_EXCEPTIONS`
 controls whether unhandled exceptions re-raise: when it is left at `None`,
 exceptions propagate only if both `DEBUG` and `TESTING` are `True` (useful
-so test runs surface the real traceback). `JSON_SORT_KEYS` affects the
-ordering of keys in JSON responses.
+so test runs surface the real traceback). Boolean keys loaded from an env
+file arrive as strings and are coerced (`"false"`, `"0"`, `"off"` read as
+off). `JSON_SORT_KEYS` affects the ordering of keys in JSON responses.
+
+The `SECRET_KEY`, `SESSION_COOKIE_*`, `PERMANENT_SESSION_LIFETIME`,
+`MAX_COOKIE_SIZE`, and `APPLICATION_ROOT` keys are consumed by the session
+middlewares: any setting not passed explicitly to `SessionMiddleware` /
+`ServerSessionMiddleware` resolves from config on the first request, so
+`app.secret_key = "..."` plus a bare `app.add_middleware(SessionMiddleware)`
+is a complete setup. Explicit constructor arguments always win over config.
 
 !!! warning "Set a real SECRET_KEY before using sessions"
     `SECRET_KEY` defaults to `None`. Signed sessions, flash messages, and

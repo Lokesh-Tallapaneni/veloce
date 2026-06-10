@@ -593,15 +593,34 @@ class DispatchMixin:
             # Yield-dependency teardowns first - they conceptually wrap the
             # request (the resource was acquired before the handler ran and
             # must be released regardless of outcome). `run_teardowns`
-            # re-raises aggregated teardown failures (PEP 654 group); they are
-            # logged here rather than allowed to break the response cycle.
-            # `run_teardowns` is async; the common no-yield-dep case has
-            # an empty stack, so skip the coroutine + await entirely.
+            # re-raises aggregated teardown failures (PEP 654 group). A
+            # failure here happens after the response was built, so by
+            # default it must not break the response cycle - but it must
+            # not vanish either: the post-yield code is where commits and
+            # releases live. It is logged, then surfaced through
+            # `got_request_exception` so error trackers see it, and under
+            # PROPAGATE_EXCEPTIONS (or implicit DEBUG+TESTING) it re-raises
+            # so test suites fail on a broken teardown instead of passing
+            # on the already-built response. `run_teardowns` is async; the
+            # common no-yield-dep case has an empty stack, so skip the
+            # coroutine + await entirely.
+            # A yield-teardown failure that PROPAGATE_EXCEPTIONS must re-raise is
+            # deferred to the end of this `finally`, so the teardown hooks and
+            # signals below still run - the teardown contract holds even when the
+            # thing that failed is a yield-dependency teardown.
+            _teardown_to_propagate: BaseException | None = None
             if resolver is not None and resolver._teardowns:
                 try:
                     await resolver.run_teardowns(_exc)
-                except Exception:
+                except Exception as teardown_exc:
                     self.logger.exception("yield-dependency teardown raised")
+                    if got_request_exception._subs:
+                        try:
+                            got_request_exception.send(self, exception=teardown_exc)
+                        except Exception:
+                            self.logger.exception("signal receiver raised an exception")
+                    if self._should_propagate_exceptions():
+                        _teardown_to_propagate = teardown_exc
 
             # Teardown hooks - always run, even on exceptions. The cheap
             # attribute guard stays inline so a request with no teardown hooks
@@ -637,6 +656,11 @@ class DispatchMixin:
                         request_tearing_down.send(self, exc=_exc)
                 except Exception:
                     self.logger.exception("signal receiver raised an exception")
+
+            # Deferred from the yield-teardown block above: re-raise the teardown
+            # failure now that the teardown hooks and signals have all run.
+            if _teardown_to_propagate is not None:
+                raise _teardown_to_propagate
 
     async def _run_request_phase(
         self, request: Request, match: Any, cp: CompiledPipeline

@@ -146,10 +146,8 @@ async def send_notification(user_id: int, message: str):
 
 
 @app.post("/notify/{user_id}")
-async def notify(request: Request, user_id: int):
-    tasks = BackgroundTasks()
+async def notify(user_id: int, tasks: BackgroundTasks):
     tasks.add_task(send_notification, user_id, "Welcome!")
-    request._background_tasks = tasks
     return {"status": "notification queued"}
 
 

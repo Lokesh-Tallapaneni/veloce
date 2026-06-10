@@ -337,8 +337,21 @@ exception when the request itself failed) so a broken teardown — a
 transaction that fails to commit or roll back, say — is observable rather
 than silently swallowed.
 
-The dispatcher logs the aggregated group so a failing teardown does not
-break the response cycle.
+Teardown runs after the response has been built, so by default a teardown
+failure does not change what the client receives: the dispatcher logs the
+aggregated group and delivers it to
+[`got_request_exception`](signals.md) receivers, so an error
+tracker subscribed to that signal sees the failure
+even though the request returned its normal status. Under
+`PROPAGATE_EXCEPTIONS` (or the implicit `DEBUG` + `TESTING` test mode) the
+failure re-raises out of dispatch instead, so a test suite fails on a broken
+teardown rather than passing on the already-built response.
+
+!!! warning "A 200 response does not prove the teardown ran clean"
+    Work done after `yield` — a transaction commit, a connection release —
+    happens after the response status is fixed. Monitor
+    `got_request_exception` (or run tests with `PROPAGATE_EXCEPTIONS`) to
+    catch teardown failures.
 
 !!! note
     The aggregated `BaseExceptionGroup` is raised on Python 3.11+ (PEP 654);

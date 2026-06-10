@@ -63,6 +63,7 @@ from veloce._internal import (
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
 from veloce.encoders import orjson_default
 from veloce.http.cache_control import CacheControl
+from veloce.http.cookies import dump_cookie
 from veloce.http.dates import http_date, parse_date
 from veloce.http.header_set import HeaderSet
 from veloce.status import (
@@ -346,8 +347,6 @@ class Response:
         if isinstance(expires, str):
             expires_str = expires
             dump_expires = None
-
-        from veloce.http.cookies import dump_cookie  # breaks http.response -> http.cookies cycle
 
         cookie = dump_cookie(
             key,

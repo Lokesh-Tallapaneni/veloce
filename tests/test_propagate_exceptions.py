@@ -112,6 +112,35 @@ async def test_registered_handler_still_wins_over_propagate():
 
 
 @pytest.mark.asyncio
+async def test_propagate_exceptions_env_string_false_is_off():
+    """An env-file loader stores `PROPAGATE_EXCEPTIONS=false` as the string
+    `"false"`; it must read as off, not as a truthy non-empty string."""
+    app = Veloce(openapi_url=None)
+    app.config["PROPAGATE_EXCEPTIONS"] = "false"
+
+    @app.get("/boom")
+    async def boom():
+        raise RuntimeError("synthetic")
+
+    resp = await app.handle_request(_req("/boom"))
+    assert resp.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_propagate_exceptions_env_string_true_reraises():
+    """The string `"true"` from an env source enables propagation."""
+    app = Veloce(openapi_url=None)
+    app.config["PROPAGATE_EXCEPTIONS"] = "true"
+
+    @app.get("/boom")
+    async def boom():
+        raise RuntimeError("synthetic")
+
+    with pytest.raises(RuntimeError, match="synthetic"):
+        await app.handle_request(_req("/boom"))
+
+
+@pytest.mark.asyncio
 async def test_http_exception_not_propagated():
     """The PROPAGATE flag only affects the generic `except Exception`
     branch. HTTPExceptions are framework-managed and always produce a

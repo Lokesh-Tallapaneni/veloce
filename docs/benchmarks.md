@@ -49,19 +49,6 @@ python -m bench.comparative.bench json-hello
 python -m bench.comparative.bench path-param
 ```
 
-Run the per-component perf audit, which breaks dispatch down into the
-router, request parsing, response encoding, and handler-call stages:
-
-```bash
-python bench/perf_audit.py
-```
-
-Run the direct Veloce-vs-FastAPI dispatch comparison at the ASGI layer:
-
-```bash
-python bench/bench_vs_fastapi.py
-```
-
 ## What the comparison measures
 
 Each bench prints one or more of:
@@ -81,15 +68,6 @@ standalone.
 | Script | What it measures |
 |--------|------------------|
 | `bench/dispatch_bench.py` | End-to-end requests/second for static, path-param, and POST-body routes through the in-memory `TestClient`. Supports `--min-rps` for CI regression gating. |
-| `bench/bench_vs_fastapi.py` | Veloce vs FastAPI dispatch latency, root and path-param shapes, with warmup and GC discipline. Veloce is timed through both its internal `handle_request` API and its ASGI `__call__`; FastAPI is timed at the ASGI layer only. |
-| `bench/perf_audit.py` | Per-component nanosecond cost — router lookup, request construction, response encoding, dependency resolution. |
-| `bench/bench_dispatch_breakdown.py` | Stage-by-stage breakdown of a single dispatch into router match, plan resolution, handler call, and response emit. |
-| `bench/bench_request_only.py` | `DependencyResolver.resolve_plan` cost versus a proposed fast path for request-only handlers (a single `Request` slot, no route deps) that skips the resolver. |
-| `bench/bench_asgi_emit.py` | Cost of emitting an ASGI response — header serialisation, body send. |
-| `bench/bench_split_path.py` | Cost of the path-splitting routine used by the radix-tree router. |
-| `bench/bench_int_converter.py` | Path converter cost for `int` parameters. |
-| `bench/bench_uuid_converter.py` | Path converter cost for `uuid` parameters. |
-| `bench/bench_empty_loops.py` | Per-iteration cost of empty list/dict patterns in the dispatch path — bare `for`, `if`-guarded loops, and a `None`-sentinel variant. |
 | `bench/hot_dispatch_bench.py` | Tight loop over the resolved hot path, no setup per iteration. |
 | `bench/mem_dispatch_bench.py` | Peak allocation per dispatched request via `tracemalloc`. |
 | `bench/profile_dispatch.py` | `cProfile` driver for one dispatch path — use to attribute time to specific frames. |
