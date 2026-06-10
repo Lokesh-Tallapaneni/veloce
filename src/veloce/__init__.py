@@ -257,7 +257,7 @@ except Exception:
     # Editable install before metadata is materialised, or an
     # unsupported runtime. Fall back to a hand-maintained constant so
     # `veloce.__version__` is never undefined.
-    __version__ = "0.4.0"
+    __version__ = "0.5.0"
 
 # some users reach for `APIRouter`; it is the same primitive as
 # Veloce's `Blueprint` (a mountable group of routes + hooks).
