@@ -1,18 +1,20 @@
 ---
 description: >-
   Migrate a FastAPI app to Veloce — a divergence map covering the install name, OAuth2 token_url,
-  whole-body params, explicit response_model, Response(body=/content_type=), TestClient signature,
-  and the Veloce-only wins like native app.run() and the in-memory TestClient.
+  whole-body params, and explicit response_model.
 tags: [migration, fastapi, divergence, compatibility]
 ---
 
 # Migrating from FastAPI
 
 Veloce is not built on Starlette, so most FastAPI code runs unchanged but a
-handful of names and behaviours diverge. This page maps every divergence to its
-Veloce form, then lists what Veloce adds beyond FastAPI. Most rows are one-line
-edits; the behavioural ones (whole-body params, `response_model` inference) bite
-silently, so read those first.
+handful of names and behaviours diverge.
+
+This page maps every divergence to its Veloce form, then lists what Veloce adds
+beyond FastAPI.
+
+Most rows are one-line edits; the behavioural ones (whole-body params,
+`response_model` inference) bite silently, so read those first.
 
 ```bash
 pip install veloceframework
@@ -62,9 +64,16 @@ async def me(token: str = Depends(oauth2)):
 The advanced schemes —
 [`OAuth2AuthorizationCodeBearer`](../reference.md#veloce.OAuth2AuthorizationCodeBearer)
 and [`OpenIdConnect`](../reference.md#veloce.OpenIdConnect) — keep the camelCase
-spelling (`authorizationUrl`, `tokenUrl`, `refreshUrl`, `openIdConnectUrl`)
-because those are the field names the OpenAPI security-scheme object defines, so
-a scheme copied from a standard OpenAPI document maps over without renaming.
+spelling because those are the field names the OpenAPI security-scheme object
+defines, so a scheme copied from a standard OpenAPI document maps over without
+renaming. The camelCase fields are:
+
+| Field | Spelling |
+| --- | --- |
+| authorization URL | `authorizationUrl` |
+| token URL | `tokenUrl` |
+| refresh URL | `refreshUrl` |
+| OpenID Connect URL | `openIdConnectUrl` |
 
 ```python
 from veloce import Veloce
@@ -121,7 +130,7 @@ Veloce does not read the return annotation. A `-> Item` hint documents nothing
 and filters nothing; pass `response_model=` on the route to shape and prune the
 output.
 
-```python
+```python hl_lines="18"
 from pydantic import BaseModel
 
 from veloce import TestClient, Veloce
@@ -192,8 +201,13 @@ from veloce import Veloce
 app = Veloce(docs_url=None, redoc_url=None, openapi_url=None)
 ```
 
-`docs_url`, `redoc_url`, and `openapi_url` each default to their usual paths
-(`/docs`, `/redoc`, `/openapi.json`); set any to `None` to remove just that one.
+Each knob defaults to its usual path; set any to `None` to remove just that one.
+
+| Knob | Default path |
+| --- | --- |
+| `docs_url` | `/docs` |
+| `redoc_url` | `/redoc` |
+| `openapi_url` | `/openapi.json` |
 
 ## `Response(body=, content_type=)`
 
@@ -237,7 +251,7 @@ Veloce's [`TestClient`](../reference.md#veloce.TestClient) signature is
 unhandled handler exception re-raise into the test instead of becoming a `500`,
 set the config instead.
 
-```python
+```python hl_lines="4"
 from veloce import TestClient, Veloce
 
 app = Veloce()

@@ -56,11 +56,19 @@ app = Veloce()
 app.mount("/assets", StaticFiles(directory="static"))
 ```
 
-The constructor signature is `StaticFiles(directory, prefix="/static",
-html=False, directory_index=False, must_exist=True, precompressed=False,
-redirect_status=307)`. `directory` is required and resolved to an absolute path;
-it must exist and be readable unless `must_exist=False` is passed. The other
-options are covered below.
+The constructor accepts these options:
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `directory` | required | resolved to an absolute path; it must exist and be readable unless `must_exist=False` is passed |
+| `prefix` | `"/static"` | the serving prefix |
+| `html` | `False` | serve `index.html` for the prefix root and map extensionless paths to their `.html` files |
+| `directory_index` | `False` | generate an HTML listing for a directory with no `index.html` |
+| `must_exist` | `True` | require the directory to exist and be readable at construction |
+| `precompressed` | `False` | serve a precompressed sibling when the client advertises a matching `Accept-Encoding` |
+| `redirect_status` | `307` | status used for the trailing-slash redirect |
+
+The other options are covered below.
 
 !!! note
     `mount_static` and `mount` register a static handler; they do **not** create
@@ -87,21 +95,25 @@ This is enough to host a small static site: `public/index.html` answers `/`, and
 
 ### Directory index and trailing-slash redirect
 
-In `html=True` mode a directory that contains an `index.html` is served as a
-page. A request without a trailing slash (`/docs`) first redirects to the
-slash-terminated form (`/docs/`) so the browser resolves the page's relative
-links against the directory rather than its parent; the slash-terminated request
-then serves `docs/index.html`. The redirect is `307 Temporary Redirect` by
-default and preserves the query string. Pass `redirect_status=308` for a
-cacheable permanent redirect (only `307` and `308` are accepted — a redirect
-that changes the request method would be wrong for a GET asset):
-
 ```python title="app.py"
 from veloce import StaticFiles, Veloce
 
 app = Veloce()
 app.mount("/", StaticFiles(directory="public", html=True, redirect_status=308))
 ```
+
+In `html=True` mode a directory that contains an `index.html` is served as a
+page.
+
+A request without a trailing slash (`/docs`) first redirects to the
+slash-terminated form (`/docs/`) so the browser resolves the page's relative
+links against the directory rather than its parent; the slash-terminated request
+then serves `docs/index.html`.
+
+The redirect is `307 Temporary Redirect` by
+default and preserves the query string. Pass `redirect_status=308` for a
+cacheable permanent redirect (only `307` and `308` are accepted — a redirect
+that changes the request method would be wrong for a GET asset).
 
 When `directory_index=True` is also set, an `index.html` still takes precedence
 over a generated listing; the listing is only produced for directories that have
@@ -138,19 +150,19 @@ app.mount("/files", StaticFiles(directory="downloads", directory_index=True))
 
 ## Precompressed variants
 
-Set `precompressed=True` to serve a precompressed sibling when the client
-advertises a matching `Accept-Encoding`. With `app.css` on disk alongside
-`app.css.br` and/or `app.css.gz`, a request for `/static/app.css` from a client
-that accepts `br` (or `gzip`) is answered with the compressed file and the
-appropriate `Content-Encoding`, while the `Content-Type` stays that of the
-original (`text/css`):
-
 ```python title="app.py"
 from veloce import StaticFiles, Veloce
 
 app = Veloce()
 app.mount("/static", StaticFiles(directory="dist", precompressed=True))
 ```
+
+Set `precompressed=True` to serve a precompressed sibling when the client
+advertises a matching `Accept-Encoding`. With `app.css` on disk alongside
+`app.css.br` and/or `app.css.gz`, a request for `/static/app.css` from a client
+that accepts `br` (or `gzip`) is answered with the compressed file and the
+appropriate `Content-Encoding`, while the `Content-Type` stays that of the
+original (`text/css`).
 
 The variants must be generated ahead of time (this is a serve-only feature; it
 never compresses on the fly). `br` is preferred over `gzip` when the client's

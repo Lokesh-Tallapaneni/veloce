@@ -1,7 +1,7 @@
 ---
 description: >-
   Serve a GraphQL endpoint in Veloce by mounting a GraphQL ASGI app at a prefix with app.mount — the
-  sub-application pattern, the ASGI-mount lifecycle, and serving the tree under an ASGI server.
+  sub-application pattern.
 tags: [graphql, mount, asgi, sub-applications]
 ---
 
@@ -9,9 +9,12 @@ tags: [graphql, mount, asgi, sub-applications]
 
 Veloce has no built-in GraphQL layer, and it does not need one. A GraphQL library that exposes an
 ASGI application — Strawberry, Ariadne, graphql-core via its ASGI wrapper — mounts straight onto a
-Veloce app with [`app.mount`](../reference.md#veloce.Veloce.mount). The GraphQL app owns its prefix
-subtree and runs at the ASGI layer; your REST routes keep running through the normal pipeline. This
-page covers the mount integration; the GraphQL-library specifics are intentionally minimal.
+Veloce app with [`app.mount`](../reference.md#veloce.Veloce.mount).
+
+The GraphQL app owns its prefix subtree and runs at the ASGI layer; your REST routes keep running
+through the normal pipeline.
+
+This page covers the mount integration; the GraphQL-library specifics are intentionally minimal.
 
 ## Mount a GraphQL ASGI app at a prefix
 

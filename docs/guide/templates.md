@@ -25,7 +25,7 @@ Create a `templates/` directory next to your app module with a file
 Construct a `Jinja2Templates` pointed at that directory and return a rendered
 response from a handler:
 
-```python title="app.py"
+```python title="app.py" hl_lines="10 11 12 13"
 from veloce import Jinja2Templates, Request, Veloce
 
 app = Veloce()
@@ -57,17 +57,21 @@ templates.TemplateResponse(["user_dashboard.html", "dashboard.html"], context)
 In production (`auto_reload` disabled) the resolved candidate list is cached so
 the on-disk lookup runs once per distinct list. The cache is bounded by the
 `Jinja2Templates.RESOLVED_CACHE_MAX` class attribute (default `1024`, FIFO
-eviction of the oldest entry). Override it on the class or instance if you build
-fallback lists from many request-derived names:
+eviction of the oldest entry).
+
+Override it on the class or instance if you build fallback lists from many
+request-derived names:
 
 ```python
 templates.RESOLVED_CACHE_MAX = 256
 ```
 
-`TemplateResponse` also accepts `media_type=...` to override the
-`Content-Type` (it defaults to `text/html`) and `background=...` to attach a
-[background task](background-tasks.md) — a callable, a `BackgroundTask`, or a
-`BackgroundTasks` — that runs after the response is sent.
+`TemplateResponse` also accepts two optional keyword arguments:
+
+| Argument | Effect |
+| --- | --- |
+| `media_type=...` | Override the `Content-Type` (it defaults to `text/html`). |
+| `background=...` | Attach a [background task](background-tasks.md) — a callable, a `BackgroundTask`, or a `BackgroundTasks` — that runs after the response is sent. |
 
 !!! note
     Pass the `request` object in the context (`{"request": request, ...}`) as
@@ -83,7 +87,7 @@ and [`stream_template`](../reference.md#veloce.stream_template) — look up a
 `Jinja2Templates` instance bound to the active application. The simplest way to
 bind one is to pass `template_folder` to the `Veloce` constructor:
 
-```python title="app.py"
+```python title="app.py" hl_lines="3 9"
 from veloce import Request, Veloce, render_template
 
 app = Veloce(template_folder="templates")
@@ -271,7 +275,7 @@ incrementally instead of buffering the whole string. [`stream_template`](../refe
 returns an iterator of string chunks; wrap it in a
 [`StreamingResponse`](../reference.md#veloce.StreamingResponse):
 
-```python title="app.py"
+```python title="app.py" hl_lines="10"
 from veloce import Request, StreamingResponse, Veloce, stream_template
 
 app = Veloce(template_folder="templates")

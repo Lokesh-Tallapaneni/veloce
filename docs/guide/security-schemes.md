@@ -102,9 +102,22 @@ it is included in the `WWW-Authenticate: Basic realm="..."` header on a
 [`HTTPDigest`](../reference.md#veloce.HTTPDigest) parses an
 `Authorization: Digest ...` header (RFC 7616) into an
 [`HTTPDigestCredentials`](../reference.md#veloce.HTTPDigestCredentials) — a
-struct of the named fields `username`, `realm`, `nonce`, `uri`, `response`,
-`qop`, `nc`, `cnonce`, `opaque`, and `algorithm`. When the header is missing
-or not a Digest credential it raises a `401` carrying a
+struct of the named fields:
+
+| Field |
+| --- |
+| `username` |
+| `realm` |
+| `nonce` |
+| `uri` |
+| `response` |
+| `qop` |
+| `nc` |
+| `cnonce` |
+| `opaque` |
+| `algorithm` |
+
+When the header is missing or not a Digest credential it raises a `401` carrying a
 `WWW-Authenticate: Digest realm="...", qop="...", nonce="...", algorithm=...`
 challenge with a fresh random nonce.
 
@@ -432,9 +445,20 @@ what defeats algorithm-confusion attacks. `decode_jwt` validates `exp`
 and `nbf` (with optional `leeway`) and can additionally check `audience`,
 `issuer`, and a `require` list of claim names. Each failure raises a
 distinct subclass of [`JWTError`](../reference.md#veloce.JWTError):
-`ExpiredSignatureError`, `ImmatureSignatureError`, `InvalidSignatureError`,
-`InvalidAudienceError`, `InvalidIssuerError`, `MissingClaimError`,
-`UnsupportedAlgorithmError`, and `InvalidTokenError` for a malformed token.
+
+| Subclass |
+| --- |
+| `ExpiredSignatureError` |
+| `ImmatureSignatureError` |
+| `InvalidSignatureError` |
+| `InvalidAudienceError` |
+| `InvalidIssuerError` |
+| `MissingClaimError` |
+| `UnsupportedAlgorithmError` |
+| `InvalidTokenError` |
+
+`InvalidTokenError` covers a malformed token.
+
 A successful decode returns a read-only
 [`Claims`](../reference.md#veloce.Claims) mapping.
 

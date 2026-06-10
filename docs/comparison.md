@@ -69,16 +69,25 @@ Read each cell as "what ships in the core distribution with no third-party packa
 
 ## Migrating from FastAPI
 
-The public surface overlaps closely. The names `Depends`, `Security`,
-`SecurityScopes`, `Body`, `Query`, `Path`, `Header`, `Cookie`, `Form`,
-`File`, `UploadFile`, `HTTPException`, `JSONResponse`,
-`StreamingResponse`, `FileResponse`, and `TestClient` exist in Veloce
-with comparable semantics. Most route handlers move across with only
-an import change:
-
 ```python
 from veloce import Veloce, Depends, HTTPException
 ```
+
+Most route handlers move across with only an import change.
+
+The public surface overlaps closely. These names exist in Veloce with
+comparable semantics:
+
+| | |
+|---|---|
+| `Depends` | `Security` |
+| `SecurityScopes` | `Body` |
+| `Query` | `Path` |
+| `Header` | `Cookie` |
+| `Form` | `File` |
+| `UploadFile` | `HTTPException` |
+| `JSONResponse` | `StreamingResponse` |
+| `FileResponse` | `TestClient` |
 
 Differences to watch for:
 
@@ -89,15 +98,15 @@ Differences to watch for:
 
 ## Migrating from Flask
 
+```python
+from veloce import Veloce, Blueprint, g, flash, get_flashed_messages
+```
+
 Veloce keeps the Flask helpers that are async-safe. `g`, `flash`, and
 `get_flashed_messages` are backed by `contextvars`, so they are
 per-request safe under concurrent handlers. `Blueprint` supports
 nesting and URL prefixes. `current_app`, `url_for`, and the Jinja2
 globals are wired the same way.
-
-```python
-from veloce import Veloce, Blueprint, g, flash, get_flashed_messages
-```
 
 Differences to watch for:
 

@@ -1200,6 +1200,7 @@ class JSONResponse(Response):
         data: Any,
         status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
+        background: Any = None,
     ) -> None:
         try:
             body = orjson.dumps(data, default=orjson_default)
@@ -1210,6 +1211,7 @@ class JSONResponse(Response):
             body=body,
             content_type=type(self).default_media_type,
             headers=headers,
+            background=background,
         )
 
     @classmethod
@@ -1315,12 +1317,14 @@ class HTMLResponse(Response):
         content: str,
         status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
+        background: Any = None,
     ) -> None:
         super().__init__(
             status_code=status_code,
             body=content.encode("utf-8"),
             content_type=MIME_HTML,
             headers=headers,
+            background=background,
         )
 
 
@@ -1334,12 +1338,14 @@ class PlainTextResponse(Response):
         content: str,
         status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
+        background: Any = None,
     ) -> None:
         super().__init__(
             status_code=status_code,
             body=content.encode("utf-8"),
             content_type=MIME_PLAIN,
             headers=headers,
+            background=background,
         )
 
 
@@ -1530,6 +1536,13 @@ class FileResponse(Response):
             hdrs[HEADER_CONTENT_DISPOSITION] = _format_content_disposition(
                 content_disposition_type, filename
             )
+        elif content_disposition_type != HEADER_VALUE_ATTACHMENT:
+            # No filename, but the caller explicitly chose a non-default
+            # disposition (e.g. `inline`): honour it with a bare
+            # `Content-Disposition: inline`. The default `attachment` stays
+            # unset without a filename, so a plain `FileResponse(path)` does
+            # not force a download on every file it serves.
+            hdrs[HEADER_CONTENT_DISPOSITION] = content_disposition_type
 
         if HEADER_LAST_MODIFIED not in hdrs and "last-modified" not in hdrs:
             hdrs[HEADER_LAST_MODIFIED] = http_date(st.st_mtime)

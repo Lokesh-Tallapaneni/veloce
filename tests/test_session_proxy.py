@@ -69,3 +69,26 @@ def test_session_proxy_raises_without_middleware():
 
     # No SessionMiddleware → Request.session raises, proxy propagates it.
     assert errors and "SessionMiddleware" in errors[0]
+
+
+def test_session_proxy_setattr_forwards_to_session():
+    # `session.permanent = True` must forward through the proxy to the
+    # underlying Session (whose `permanent` property is backed by `_permanent`),
+    # rather than raising AttributeError on the slotted proxy.
+    from veloce.sessions import Session
+
+    app = Veloce()
+    captured: dict = {}
+
+    @app.get("/x")
+    async def x(req: Request):
+        req._state["session"] = Session()
+        session.permanent = True
+        captured["permanent"] = req._state["session"].permanent
+        captured["raw"] = req._state["session"]["_permanent"]
+        return {}
+
+    with TestClient(app) as client:
+        client.get("/x")
+
+    assert captured == {"permanent": True, "raw": True}

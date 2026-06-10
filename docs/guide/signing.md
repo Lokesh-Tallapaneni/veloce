@@ -6,11 +6,13 @@ tags: [security, signing, hmac, tokens]
 # Signing
 
 [`Signer`](../reference.md#veloce.Signer) turns a JSON-serialisable value into
-a signed, timestamped, URL-safe token and verifies it later. Use it when
-the server hands a value to the client, the client returns it, and the
+a signed, timestamped, URL-safe token and verifies it later.
+
+Use it when the server hands a value to the client, the client returns it, and the
 server needs to know the value was not tampered with — password-reset
-links, email-confirmation tokens, signed cookies, and similar. Signing
-is built on HMAC-SHA256 ([RFC 2104](https://www.rfc-editor.org/rfc/rfc2104))
+links, email-confirmation tokens, signed cookies, and similar.
+
+Signing is built on HMAC-SHA256 ([RFC 2104](https://www.rfc-editor.org/rfc/rfc2104))
 from the standard library.
 
 ```python
@@ -29,9 +31,10 @@ assert data == {"user_id": 42}
     `from veloce import Signer`. This guide imports from
     `veloce.signing` to keep the source module explicit.
 
-A token is not encryption — the payload is signed, not hidden. Anyone can
-read the value inside a token; they just cannot change it without the
-secret. Do not put data in a token that the client must not see.
+!!! warning
+    A token is not encryption — the payload is signed, not hidden. Anyone can
+    read the value inside a token; they just cannot change it without the
+    secret. Do not put data in a token that the client must not see.
 
 ## Signing and reading values
 

@@ -7,10 +7,15 @@ tags: [responses, cookies, headers, status]
 
 By default a handler that returns a dict or model is serialised to a
 [`JSONResponse`](../reference.md#veloce.JSONResponse), with status `200` and the
-headers Veloce computes for you. This page covers the levers for taking that
-control back: picking a different [`Response`](../reference.md#veloce.Response)
-class, documenting extra status codes in the OpenAPI schema, setting cookies and
-headers with typed helpers, and changing the status code from inside the handler.
+headers Veloce computes for you.
+
+This page covers the levers for taking that control back:
+
+- picking a different [`Response`](../reference.md#veloce.Response) class
+- documenting extra status codes in the OpenAPI schema
+- setting cookies and headers with typed helpers
+- changing the status code from inside the handler
+
 For the basics of returning a response, see [Requests and responses](requests-responses.md).
 
 ## Choosing a response class

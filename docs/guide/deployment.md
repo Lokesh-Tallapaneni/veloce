@@ -54,20 +54,25 @@ app.config["MAX_CONCURRENT_CONNECTIONS"] = 1000  # reject beyond this (default 1
     WebSocket fan-out). Uvicorn does not cap concurrency by default; under it
     this setting has no effect.
 
-It serves **HTTP/1.1 and WebSocket** — the built-in server performs the
-RFC 6455 upgrade handshake itself, so WebSocket routes run under
-`app.run()` without an ASGI server. It does **not** implement HTTP/2.
-For HTTP/2, either serve the app under an HTTP/2-capable ASGI server such
-as Hypercorn, or — as most deployments do — terminate HTTP/2 at a reverse
-proxy (nginx, Caddy, a cloud load balancer) that forwards HTTP/1.1 to the
-app; uvicorn itself is HTTP/1.1-only. One WebSocket caveat: native
-subprotocol negotiation is unsupported — `accept(subprotocol=...)` raises
-on the built-in server, because the `101 Switching Protocols` response is
-written before `accept()` runs — so use an ASGI server if you need to
-negotiate a subprotocol. Not shipping a from-scratch HTTP/2 stack is a
-deliberate scope line: it is a large, security-sensitive binary protocol,
-and in practice HTTP/2 is almost always terminated at a proxy that speaks
-HTTP/1.1 to the app, so the app server rarely needs to implement it.
+It serves **HTTP/1.1 and WebSocket**.
+
+- It performs the RFC 6455 upgrade handshake itself, so WebSocket routes
+  run under `app.run()` without an ASGI server.
+- It does **not** implement HTTP/2. For HTTP/2, either serve the app under
+  an HTTP/2-capable ASGI server such as Hypercorn, or — as most deployments
+  do — terminate HTTP/2 at a reverse proxy (nginx, Caddy, a cloud load
+  balancer) that forwards HTTP/1.1 to the app; uvicorn itself is
+  HTTP/1.1-only.
+- Native subprotocol negotiation is unsupported — `accept(subprotocol=...)`
+  raises on the built-in server, because the `101 Switching Protocols`
+  response is written before `accept()` runs — so use an ASGI server if you
+  need to negotiate a subprotocol.
+
+!!! note "Why no built-in HTTP/2"
+    Not shipping a from-scratch HTTP/2 stack is a deliberate scope line: it
+    is a large, security-sensitive binary protocol, and in practice HTTP/2
+    is almost always terminated at a proxy that speaks HTTP/1.1 to the app,
+    so the app server rarely needs to implement it.
 
 ## Running with multiple workers
 

@@ -7,7 +7,9 @@ tags: [lifespan, startup, shutdown, events]
 
 A **lifespan** is code that runs once when the application starts and once when
 it stops — open a database pool, warm a cache, connect a message broker, then
-release all of it on the way down. Veloce gives you two surfaces: a single
+release all of it on the way down.
+
+Veloce gives you two surfaces: a single
 [`lifespan=`](../reference.md#veloce.Veloce) async context manager passed to the
 constructor, or the [`on_startup`](../reference.md#veloce.Veloce.on_startup) /
 [`on_shutdown`](../reference.md#veloce.Veloce.on_shutdown) handler decorators.

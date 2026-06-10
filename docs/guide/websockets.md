@@ -239,10 +239,13 @@ async def chat(ws):
 
 `allowed` is a single origin string or an iterable of allowed origins.
 Comparison is `.rstrip("/").lower()` on both sides, so
-`"https://app.example.com"` matches `"https://APP.example.com/"`. The
-literal `"*"` is the explicit "accept any origin" escape hatch — and it
+`"https://app.example.com"` matches `"https://APP.example.com/"`.
+
+The literal `"*"` is the explicit "accept any origin" escape hatch — and it
 **also accepts a missing or `null` `Origin`**, so reach for it only
-when another check covers the same surface. `Origin: null` (sandboxed
+when another check covers the same surface.
+
+`Origin: null` (sandboxed
 iframes, `file://` pages) is otherwise rejected, as is a missing
 header — branch on `ws.origin is None` explicitly if you need to allow
 non-browser clients.
@@ -291,11 +294,12 @@ each route needs a different allow-list, or when you want
 strict-by-default missing-`Origin` rejection. Pick the middleware when
 one policy covers everything.
 
-> **Heads-up:** `app.use_secure_defaults()` does **not** register
-> `WebSocketOriginMiddleware`. The helper sets cookie defaults and
-> registers `SecurityHeadersMiddleware` (which is purely HTTP). Add a
-> `WebSocketOriginMiddleware` explicitly — there is no allow-list it
-> could infer from the app.
+!!! warning "Heads-up"
+    `app.use_secure_defaults()` does **not** register
+    `WebSocketOriginMiddleware`. The helper sets cookie defaults and
+    registers `SecurityHeadersMiddleware` (which is purely HTTP). Add a
+    `WebSocketOriginMiddleware` explicitly — there is no allow-list it
+    could infer from the app.
 
 ## Handshake data and dependencies
 

@@ -9,9 +9,12 @@ Every built-in security scheme — [`HTTPBasic`](../reference.md#veloce.HTTPBasi
 [`HTTPBearer`](../reference.md#veloce.HTTPBearer),
 [`OAuth2PasswordBearer`](../reference.md#veloce.OAuth2PasswordBearer), and the
 API-key schemes — rejects a missing or malformed credential with **401
-Unauthorized** and a `WWW-Authenticate` challenge header. Veloce never returns
-403 for absent authentication. A 403 is something your handler raises once it
-knows *who* the caller is but decides they may not perform the action.
+Unauthorized** and a `WWW-Authenticate` challenge header.
+
+Veloce never returns 403 for absent authentication.
+
+A 403 is something your handler raises once it knows *who* the caller is but
+decides they may not perform the action.
 
 This page covers when each status fires and how to control it.
 

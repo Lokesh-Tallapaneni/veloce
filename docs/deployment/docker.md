@@ -132,20 +132,22 @@ CMD uvicorn main:app --host 0.0.0.0 --port 8000
 
 Exec form makes the server process PID 1, so `docker stop`'s `SIGTERM` reaches
 it directly and the ASGI lifespan `shutdown` event (and Veloce's shutdown
-hooks) runs before the container exits. Shell form wraps the command in
-`/bin/sh -c`, which does not forward signals, so the container is killed
-ungracefully after the stop timeout.
+hooks) runs before the container exits.
+
+Shell form wraps the command in `/bin/sh -c`, which does not forward signals, so
+the container is killed ungracefully after the stop timeout.
 
 ## Behind a load balancer
 
 A container almost always sits behind a reverse proxy or cloud load balancer
-that terminates TLS and forwards over HTTP/1.1. Add
-[`ProxyFix`](../guide/middleware.md) so the app trusts the proxy's
+that terminates TLS and forwards over HTTP/1.1.
+
+Add [`ProxyFix`](../guide/middleware.md) so the app trusts the proxy's
 `X-Forwarded-*` headers — without it, `request.client.host` is the proxy's IP
 and `request.url` reports `http`, breaking client-IP logging and any
 `https`-scheme redirect.
 
-```python title="main.py"
+```python title="main.py" hl_lines="7"
 from veloce import ProxyFix, Veloce
 
 app = Veloce()

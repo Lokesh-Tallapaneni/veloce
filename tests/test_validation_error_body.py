@@ -65,6 +65,22 @@ def test_body_model_validation_structured_detail():
     assert any("price" in entry.get("loc", []) for entry in detail)
 
 
+def test_body_model_validation_loc_prefixed_with_body():
+    """A single body model's field error is located under "body", consistent
+    with a `Body(...)` marker param and the whole-body error cases."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/items")
+    async def create(item: Item):
+        return {}
+
+    with TestClient(app) as client:
+        resp = client.post("/items", json={"name": "widget"})  # missing price
+
+    detail = resp.json()["detail"]
+    assert detail[0]["loc"] == ["body", "price"]
+
+
 def test_detail_is_not_a_stringified_repr():
     app = Veloce(openapi_url=None)
 

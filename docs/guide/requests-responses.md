@@ -88,12 +88,12 @@ assert resp.json() == {"q": "veloce", "tags": ["a", "b"], "session_id": "xyz"}
 The body accessors are awaitable so the same code works whether the body is
 already buffered or still streaming in.
 
-- `await request.body()` — the full body as `bytes`.
-- `await request.json()` — the body parsed as JSON (raises `400` on malformed
-  JSON, returns `None` for an empty body).
-- `await request.text()` — the body decoded as UTF-8.
-- `await request.get_data(as_text=True)` — the body decoded via the
-  `Content-Type` charset.
+| Accessor | Returns |
+| --- | --- |
+| `await request.body()` | the full body as `bytes`. |
+| `await request.json()` | the body parsed as JSON (raises `400` on malformed JSON, returns `None` for an empty body). |
+| `await request.text()` | the body decoded as UTF-8. |
+| `await request.get_data(as_text=True)` | the body decoded via the `Content-Type` charset. |
 
 ```python title="app.py"
 from veloce import Request, Veloce
@@ -199,8 +199,11 @@ async def with_headers(request: Request):
 ```
 
 In the `(body, status)` tuple the second element may be an `int` status, in
-`(body, status, headers)` the third is a headers dict. A bare `str` body still
-becomes `text/html`, so `("<b>hi</b>", 201)` is an HTML `201`.
+`(body, status, headers)` the third is a headers dict.
+
+!!! note
+    A bare `str` body still becomes `text/html`, so `("<b>hi</b>", 201)` is an
+    HTML `201`.
 
 ### Status codes
 
@@ -229,10 +232,11 @@ or an explicit `Response` overrides it per return.
 ### Returning a Response directly
 
 Construct a response object when you need explicit control over the body bytes,
-content type, status, and headers. The base `Response` takes `body=` (bytes) and
-`content_type=`.
+content type, status, and headers.
 
-```python title="app.py"
+The base `Response` takes `body=` (bytes) and `content_type=`.
+
+```python title="app.py" hl_lines="6 7 8"
 from veloce import HTMLResponse, JSONResponse, PlainTextResponse, Request, Response, Veloce
 
 app = Veloce()
@@ -374,10 +378,18 @@ assert resp.status_code == 200
 assert resp.json() == {"id": 1, "name": "Ada"}
 ```
 
-`response_model` also accepts `list[Model]` (each element is dumped) and the
-filter flags `response_model_exclude_unset`, `response_model_exclude_none`,
-`response_model_exclude_defaults`, `response_model_by_alias`,
-`response_model_include`, and `response_model_exclude`.
+`response_model` also accepts `list[Model]` — each element is dumped.
+
+It also accepts these filter flags:
+
+| Filter flag |
+| --- |
+| `response_model_exclude_unset` |
+| `response_model_exclude_none` |
+| `response_model_exclude_defaults` |
+| `response_model_by_alias` |
+| `response_model_include` |
+| `response_model_exclude` |
 
 !!! warning "`response_model` is never inferred from the return annotation"
     Unlike FastAPI, Veloce does not read the handler's `-> UserOut` return

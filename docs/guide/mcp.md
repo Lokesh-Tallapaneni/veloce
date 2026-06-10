@@ -73,8 +73,9 @@ description raises at registration time, before the server starts.
 An exposed route is invoked inside the same request context an HTTP request
 runs in: `current_app`, `g`, and the `request` proxy are bound, and the app's
 request middleware (`Middleware.process_request`) and `@app.before_request`
-hooks run before the handler, in the same order they run on the HTTP path. A
-middleware or hook that returns a response (an auth `401`, for example)
+hooks run before the handler, in the same order they run on the HTTP path.
+
+A middleware or hook that returns a response (an auth `401`, for example)
 short-circuits the call - the handler is not invoked, `teardown_request` still
 runs, and the response becomes the tool result, surfaced as an error when its
 status is `4xx`/`5xx`.
@@ -82,10 +83,12 @@ status is `4xx`/`5xx`.
 The synthetic `request` carries the wrapped route's real HTTP method and rule
 path, so a handler, dependency, or hook that branches on `request.method` /
 `request.path` sees the route's own values (the concrete path-parameter values
-remain on `request.path_params`). A client-supplied parameter declared inside a
-`Depends` dependency - including a body model - is advertised in the tool's
-input schema, so `tools/list` and `tools/call` agree on the accepted inputs. A
-route's rule `defaults=` fill any handler argument the call does not supply.
+remain on `request.path_params`).
+
+A client-supplied parameter declared inside a `Depends` dependency - including a
+body model - is advertised in the tool's input schema, so `tools/list` and
+`tools/call` agree on the accepted inputs. A route's rule `defaults=` fill any
+handler argument the call does not supply.
 
 ### Streaming responses
 
@@ -468,11 +471,6 @@ async def stats(): ...
 
 ### The unified principal
 
-Both doors populate one identity. Your HTTP auth calls `set_principal(...)`; the
-MCP transport sets it from the validated token. All downstream code reads the same
-`current_principal()`, so authorization and identity-aware dependencies are written
-once and run over HTTP and MCP alike:
-
 ```python
 from veloce import current_principal
 
@@ -484,12 +482,12 @@ def get_current_user():
     return load_user(p.subject)
 ```
 
-### Reconciling existing middleware and dependencies
+Both doors populate one identity. Your HTTP auth calls `set_principal(...)`; the
+MCP transport sets it from the validated token. All downstream code reads the same
+`current_principal()`, so authorization and identity-aware dependencies are written
+once and run over HTTP and MCP alike.
 
-An exposed route's `Depends`, `Security`, and middleware **run** on the agent call
-(the lifecycle is replayed), but the synthetic MCP request carries no browser
-credential. So an app-wide auth middleware needs to step aside in two places, each
-with a first-class mechanism (no path matching):
+### Reconciling existing middleware and dependencies
 
 ```python
 class AuthMiddleware(Middleware):
@@ -503,6 +501,11 @@ app.add_middleware(AuthMiddleware)
 # Drop the same middleware from the /mcp transport route (it has its own MCPAuth):
 app.mount_mcp(transport="http", auth=MCPAuth(...), exclude_middleware=["AuthMiddleware"])
 ```
+
+An exposed route's `Depends`, `Security`, and middleware **run** on the agent call
+(the lifecycle is replayed), but the synthetic MCP request carries no browser
+credential. So an app-wide auth middleware needs to step aside in two places, each
+with a first-class mechanism (no path matching).
 
 `exclude_middleware` covers the `POST /mcp` request; `request.is_mcp` covers the
 replayed tool calls. Business middleware and dependencies (a DB session, request-id
@@ -522,10 +525,13 @@ wrapper should check `request.is_mcp` itself.)
 
 ### Hardening the HTTP transport
 
+```python
+app.mount_mcp(transport="http", allowed_origins=["https://app.example.com"])
+```
+
 - **Origin validation** (DNS-rebinding defense, required by the MCP transport
-  spec): `app.mount_mcp(transport="http", allowed_origins=["https://app.example.com"])`
-  rejects a browser request whose `Origin` is outside the allowlist (a request with
-  no `Origin`, i.e. a non-browser client, is allowed).
+  spec) rejects a browser request whose `Origin` is outside the allowlist (a request
+  with no `Origin`, i.e. a non-browser client, is allowed).
 - **`MCPAuth` requires** `resource_server_url` and at least one
   `authorization_servers` entry — the metadata a compliant client needs to
   audience-bind and obtain a token.

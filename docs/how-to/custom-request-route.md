@@ -96,10 +96,11 @@ if __name__ == "__main__":
 
 The dependency receives the same [`Request`](../reference.md#veloce.Request) the handler
 sees, so it can read headers, write to `request.state`, and short-circuit by raising
-[`HTTPException`](../reference.md#veloce.HTTPException). Attach a dependency to one route
-with `dependencies=[Depends(...)]` on the decorator, to a group via a
-[`Blueprint`](../reference.md#veloce.Blueprint), or globally with
-`Veloce(dependencies=[...])`.
+[`HTTPException`](../reference.md#veloce.HTTPException). Attach a dependency:
+
+- to one route with `dependencies=[Depends(...)]` on the decorator,
+- to a group via a [`Blueprint`](../reference.md#veloce.Blueprint),
+- or globally with `Veloce(dependencies=[...])`.
 
 ## Carry per-request data
 

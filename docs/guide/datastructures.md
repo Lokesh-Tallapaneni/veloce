@@ -6,13 +6,17 @@ tags: [request, headers, parsing, http]
 # HTTP data structures
 
 Veloce parses the raw request line and headers into typed objects you read off
-the [`Request`](../reference.md#veloce.Request). [`URL`](../reference.md#veloce.URL),
+the [`Request`](../reference.md#veloce.Request).
+
+[`URL`](../reference.md#veloce.URL),
 [`Headers`](../reference.md#veloce.Headers),
 [`AcceptHeader`](../reference.md#veloce.AcceptHeader),
 [`RangeSpec`](../reference.md#veloce.RangeSpec), and
 [`Authorization`](../reference.md#veloce.Authorization) are all importable from the
 top-level package, but you rarely construct them yourself — each surfaces as a
-cached property on the request. These types ship with Veloce; nothing extra to install.
+cached property on the request.
+
+These types ship with Veloce; nothing extra to install.
 
 !!! note
     These structures describe the **incoming request**. A `Response` carries plain

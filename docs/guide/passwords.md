@@ -77,6 +77,7 @@ Over time the recommended work factor rises, and you may switch from
 PBKDF2 to scrypt. Rather than forcing a password reset, re-derive a
 stored hash at the current strength the next time the user logs in —
 that is the one moment the plaintext is available.
+
 [`verify_and_needs_update`](../reference.md#veloce.verify_and_needs_update)
 checks the password and reports whether the stored verifier is weaker
 than the current defaults, returning `(ok, needs_update)`.

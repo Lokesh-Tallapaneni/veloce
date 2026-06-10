@@ -40,7 +40,7 @@ async def index(request):
     return {"message": "Hello from Veloce"}
 ```
 
-```bash
+```bash hl_lines="1"
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
@@ -79,7 +79,7 @@ async def index(request):
     return {"message": "Hello from Veloce"}
 ```
 
-```bash
+```bash hl_lines="1"
 gunicorn main:app -k veloce.workers.VeloceWorker --workers 4 --bind 0.0.0.0:8000
 ```
 
@@ -100,7 +100,7 @@ When gunicorn is started with `--certfile` and `--keyfile`, `VeloceWorker`
 builds a server SSL context from gunicorn's TLS config and terminates TLS in
 the worker.
 
-```bash
+```bash hl_lines="2"
 gunicorn main:app -k veloce.workers.VeloceWorker \
     --bind 0.0.0.0:8443 --certfile cert.pem --keyfile key.pem
 ```
@@ -120,7 +120,7 @@ slow leaks. `VeloceWorker` honours it: once the count is reached the worker
 stops accepting new requests at the next request boundary, finishes in-flight
 work, and lets the master replace it.
 
-```bash
+```bash hl_lines="2"
 gunicorn main:app -k veloce.workers.VeloceWorker \
     --workers 4 --max-requests 10000 --max-requests-jitter 1000
 ```
@@ -129,8 +129,10 @@ gunicorn main:app -k veloce.workers.VeloceWorker \
 
 Every worker is a separate operating-system process with its own Python
 interpreter and its own `Veloce()` instance. Anything held in memory lives in
-exactly one worker and is invisible to the others. Plan for this: a value
-written on one request may be served by a different worker on the next.
+exactly one worker and is invisible to the others.
+
+Plan for this: a value written on one request may be served by a different
+worker on the next.
 
 | State | Scope | Notes |
 | --- | --- | --- |
@@ -163,16 +165,19 @@ is `2 × cores + 1`), then tune against your own latency and memory profile
 under load. More workers means more memory, since each holds a full copy of the
 app and its per-process state.
 
-```bash
+```bash hl_lines="2"
 # Inspect the core count, then size --workers to it.
 nproc
 ```
 
-!!! note
-    The right number depends on the workload: CPU-bound handlers benefit from
-    one worker per core, while I/O-bound async handlers may serve well with
-    fewer, since a single async worker already overlaps many in-flight requests
-    on one loop.
+The right number depends on the workload:
+
+CPU-bound handlers
+:   benefit from one worker per core.
+
+I/O-bound async handlers
+:   may serve well with fewer, since a single async worker already overlaps many
+    in-flight requests on one loop.
 
 ## Next steps
 

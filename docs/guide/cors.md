@@ -8,7 +8,9 @@ tags: [cors, middleware, security, browser]
 A browser blocks JavaScript on one origin from reading a response served by
 another unless that response opts in with CORS headers.
 [`CORSMiddleware`](../reference.md#veloce.CORSMiddleware) adds those headers and
-answers the preflight `OPTIONS` request the browser sends first. It is
+answers the preflight `OPTIONS` request the browser sends first.
+
+It is
 implemented from the [WHATWG Fetch CORS protocol](https://fetch.spec.whatwg.org/#http-cors-protocol)
 and ships with Veloce — no install beyond the framework.
 

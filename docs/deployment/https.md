@@ -54,7 +54,7 @@ Because TLS terminates at the proxy, Veloce receives plain HTTP. To make
 scheme), trust the proxy's forwarding headers with
 [`ProxyFix`](../reference.md#veloce.ProxyFix).
 
-```python title="app.py"
+```python title="app.py" hl_lines="4"
 from veloce import ProxyFix, Request, Veloce
 
 app = Veloce()
@@ -84,7 +84,7 @@ When set, Veloce serves HTTPS directly with no proxy in front. This is useful
 for local development over `https://`, intranet tools, and single-binary
 deploys where there is no separate proxy process.
 
-```python title="app.py"
+```python title="app.py" hl_lines="14 15 16"
 import ssl
 
 from veloce import Veloce
@@ -176,10 +176,11 @@ The app now answers at `https://localhost:8443`.
 
 Add [`HTTPSRedirectMiddleware`](../reference.md#veloce.HTTPSRedirectMiddleware)
 to send plain HTTP requests to the `https://` URL with a 308 Permanent Redirect
-(so non-GET methods keep their method and body). It resolves the scheme from the
-ASGI scope first, then `X-Forwarded-Proto`. Behind a proxy, install
-[`ProxyFix`](../reference.md#veloce.ProxyFix) first so the forwarded scheme is
-trusted.
+(so non-GET methods keep their method and body).
+
+It resolves the scheme from the ASGI scope first, then `X-Forwarded-Proto`.
+Behind a proxy, install [`ProxyFix`](../reference.md#veloce.ProxyFix) first so
+the forwarded scheme is trusted.
 
 ```python title="app.py"
 from veloce import HTTPSRedirectMiddleware, ProxyFix, Veloce
@@ -197,9 +198,13 @@ async def index():
 ```
 
 The `/.well-known/acme-challenge/` prefix is exempt by default so Let's Encrypt
-HTTP-01 validation still reaches the app over plain HTTP. Pass
-`exempt_paths=("/health/", ...)` to serve more prefixes without redirecting, or
-`exempt_acme_challenge=False` to drop the ACME default.
+HTTP-01 validation still reaches the app over plain HTTP.
+
+`exempt_paths=("/health/", ...)`
+:   Serve more prefixes without redirecting.
+
+`exempt_acme_challenge=False`
+:   Drop the ACME default.
 
 !!! note
     Many reverse proxies and load balancers can redirect HTTP to HTTPS at the

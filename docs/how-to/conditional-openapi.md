@@ -7,9 +7,10 @@ tags: [openapi, docs, production, security]
 
 Veloce serves the generated OpenAPI document and two interactive explorers by
 default. [`Veloce`](../reference.md#veloce.Veloce) accepts `openapi_url`,
-`docs_url`, and `redoc_url` to relocate or disable each one. Pass `None` to a
-URL to turn that endpoint off entirely — useful for hiding your API surface in
-production while keeping the explorers during development.
+`docs_url`, and `redoc_url` to relocate or disable each one.
+
+Pass `None` to a URL to turn that endpoint off entirely — useful for hiding your
+API surface in production while keeping the explorers during development.
 
 ## The three URLs
 
@@ -21,10 +22,10 @@ Each URL controls one endpoint, all enabled by default:
 | `docs_url` | `/docs` | The Swagger UI explorer. |
 | `redoc_url` | `/redoc` | The ReDoc explorer. |
 
-Setting `docs_url=None` or `redoc_url=None` disables that explorer but leaves
-`/openapi.json` in place, so external tooling can still consume the schema.
-Setting `openapi_url=None` disables the JSON document *and* both explorers,
-because the UIs have nothing to read.
+| Set to `None` | Effect |
+| --- | --- |
+| `docs_url=None` or `redoc_url=None` | Disables that explorer but leaves `/openapi.json` in place, so external tooling can still consume the schema. |
+| `openapi_url=None` | Disables the JSON document *and* both explorers, because the UIs have nothing to read. |
 
 ```python title="app.py"
 from veloce import Request, Veloce
@@ -52,7 +53,7 @@ if __name__ == "__main__":
 Read an environment variable at startup and choose the URLs from it. The docs
 stay on in development and vanish in production.
 
-```python title="app.py"
+```python title="app.py" hl_lines="10 11 12"
 import os
 
 from veloce import Request, Veloce
@@ -78,8 +79,10 @@ if __name__ == "__main__":
 ```
 
 Run with `APP_ENV=production` and the three endpoints return `404`; run without
-it and they serve as usual. The flag is read once at construction, so toggling
-it requires a restart — which is the right granularity for a deployment switch.
+it and they serve as usual.
+
+The flag is read once at construction, so toggling it requires a restart — which
+is the right granularity for a deployment switch.
 
 ## Gating on app config
 

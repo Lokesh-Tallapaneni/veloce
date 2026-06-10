@@ -50,6 +50,8 @@ class ErrorsMixin:
         _status_handlers: Any
         _exception_handlers: Any
         _exc_handler_cache: Any
+        _bp_exception_handlers: Any
+        _bp_status_handlers: Any
         _call_exc_handler: Callable[..., Any]
         _coerce_response: Callable[..., Any]
         get_allowed_methods: Callable[..., Any]
@@ -96,6 +98,41 @@ class ErrorsMixin:
                 return handler
         self._exc_handler_cache[exc_type] = None
         return None
+
+    def _find_scoped_exception_handler(
+        self, exc_type: type, request: Request | None
+    ) -> Callable | None:
+        """Find an exception handler, preferring the request's blueprint chain.
+
+        A blueprint's `@bp.errorhandler` only applies to exceptions raised on its
+        own routes (or a nested descendant's): walk the failing request's
+        blueprint chain innermost-first, returning the first per-blueprint handler
+        whose registered exception class matches `exc_type`'s MRO. Falls back to
+        the app-level (MRO-cached) lookup when no blueprint handler matches, so an
+        app-level handler still catches everything and an app-level route is
+        unaffected. Not cached - the error path is cold.
+        """
+        if request is not None and self._bp_exception_handlers:
+            for bp_name in request.blueprints:
+                table = self._bp_exception_handlers.get(bp_name)
+                if not table:
+                    continue
+                for cls in exc_type.__mro__:
+                    handler = table.get(cls)
+                    if handler is not None:
+                        return handler
+        return self._find_exception_handler(exc_type)
+
+    def _find_scoped_status_handler(self, code: int, request: Request | None) -> Callable | None:
+        """Find a status-code handler, preferring the request's blueprint chain."""
+        if request is not None and self._bp_status_handlers:
+            for bp_name in request.blueprints:
+                table = self._bp_status_handlers.get(bp_name)
+                if table:
+                    handler = table.get(code)
+                    if handler is not None:
+                        return handler
+        return self._status_handlers.get(code)
 
     def exception_handler(self, exc_class_or_status: type | int) -> Callable:
         """Register a custom exception handler by exception type or status code."""
@@ -145,9 +182,9 @@ class ErrorsMixin:
         instead of a synthetic `GET /`. Callers without a request (the
         original out-of-band use case) can omit it.
         """
-        handler = self._status_handlers.get(exc.status_code) or self._find_exception_handler(
-            type(exc)
-        )
+        handler = self._find_scoped_status_handler(
+            exc.status_code, request
+        ) or self._find_scoped_exception_handler(type(exc), request)
         if handler is not None:
             if request is None:
                 request = Request(
@@ -204,7 +241,7 @@ class ErrorsMixin:
         """
         if isinstance(exc, HTTPException):
             return await self.handle_http_exception(exc, request=request)
-        handler = self._find_exception_handler(type(exc))
+        handler = self._find_scoped_exception_handler(type(exc), request)
         if handler is not None:
             if request is None:
                 request = Request(

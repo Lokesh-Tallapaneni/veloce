@@ -82,14 +82,12 @@ A mounted Veloce sub-app does not receive its own ASGI `lifespan` cycle, because
 it is driven through the parent. Instead the parent **fans its lifecycle out**
 to every mounted Veloce child:
 
-- On startup, the parent runs its own startup, then each child's startup in
-  registration order.
-- On shutdown, children are torn down newest-first, before the parent's own
-  `on_shutdown` handlers.
-- If a child's startup fails mid-fan-out, the already-started children are
-  unwound in reverse so nothing leaks.
-- The same child instance mounted under more than one prefix is started and
-  shut down exactly once (deduplicated by identity).
+| Phase | Behaviour |
+| --- | --- |
+| Startup | The parent runs its own startup, then each child's startup in registration order. |
+| Shutdown | Children are torn down newest-first, before the parent's own `on_shutdown` handlers. |
+| Mid-fan-out failure | If a child's startup fails mid-fan-out, the already-started children are unwound in reverse so nothing leaks. |
+| Duplicate mount | The same child instance mounted under more than one prefix is started and shut down exactly once (deduplicated by identity). |
 
 ```python title="app.py"
 from veloce import Request, Veloce
@@ -260,7 +258,7 @@ Mount prefixes must not overlap. Registering a prefix that is equal to, nested
 under, or a parent of an existing mount raises `ValueError` at mount time,
 because overlapping mounts would shadow each other in an order-dependent way.
 
-```python title="app.py"
+```python title="app.py" hl_lines="9"
 from veloce import Veloce
 
 admin = Veloce()
