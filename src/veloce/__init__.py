@@ -257,7 +257,7 @@ except Exception:
     # Editable install before metadata is materialised, or an
     # unsupported runtime. Fall back to a hand-maintained constant so
     # `veloce.__version__` is never undefined.
-    __version__ = "0.5.0"
+    __version__ = "0.6.0"
 
 # `APIRouter` aliases `Router`, whose constructor takes the keyword
 # surface that name implies (`prefix=`, `tags=`, `dependencies=`,
