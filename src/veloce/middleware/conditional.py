@@ -41,16 +41,17 @@ class ConditionalGetMiddleware(Middleware):
 
         # Field names are case-insensitive (RFC 9110 Sec. 5.1): a handler that
         # set `etag`/`Etag` or `cache-control: no-store` in any casing must be
-        # honored, so probe the plain-dict headers case-insensitively.
+        # honored, so probe the plain-dict headers case-insensitively. The
+        # `Cache-Control` scan + `.lower()` allocation is evaluated last so the
+        # cheaper and-chain guards short-circuit before it runs.
         existing_etag = header_present(response.headers, HEADER_ETAG)
-        cache_control = header_get(response.headers, HEADER_CACHE_CONTROL) or ""
         if (
             self.auto_etag
             and not existing_etag
             and response.status_code == HTTP_200_OK
             and not isinstance(response, StreamingResponse)
             and response.body
-            and "no-store" not in cache_control.lower()
+            and "no-store" not in (header_get(response.headers, HEADER_CACHE_CONTROL) or "").lower()
         ):
             response.add_etag(weak=True)
 

@@ -386,7 +386,11 @@ class RateLimitMiddleware(Middleware):
             return {}
         combined: dict[str, RateLimitStrategy] = {}
         known: set[str] = set()
-        for _method, _path, info in app._collect_all_routes():
+        # `include_hidden=True` so a `@rate_limit` tag on a route registered with
+        # `include_in_schema=False` (a login form POST, an internal endpoint - the
+        # routes most worth throttling) is still discovered; the default schema
+        # view would silently drop it.
+        for _method, _path, info in app._collect_all_routes(include_hidden=True):
             known.add(info.path_template)
             tagged = getattr(info.handler, RATE_LIMIT_ATTR, None)
             if isinstance(tagged, RateLimitStrategy):

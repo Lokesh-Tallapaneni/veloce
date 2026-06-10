@@ -26,6 +26,7 @@ from veloce._constants import (
 )
 from veloce._internal import _extract_host, _ws_handshake_rejection
 from veloce._protocol_constants import (
+    HTTP_METHOD_HEAD,
     RAW_HEADER_CONTENT_LENGTH,
     ROUTE_METHOD_WEBSOCKET,
 )
@@ -108,6 +109,17 @@ def _enable_tcp_keepalive(
             continue
         with contextlib.suppress(OSError):
             sock.setsockopt(_socket.IPPROTO_TCP, opt, value)
+
+
+def _strip_response_body(encoded: bytes) -> bytes:
+    """Return the header section of an encoded response, dropping the body.
+
+    `Response.encode()` emits the header block, a blank-line terminator, then
+    the body. A HEAD response keeps the header section (with the would-be
+    Content-Length) but sends no body (RFC 9110 Sec. 9.3.2). The header section
+    ends at the first CRLFCRLF; that separator is always present.
+    """
+    return encoded[: encoded.index(b"\r\n\r\n") + 4]
 
 
 # RFC 6455 Sec. 4.2.1: a WebSocket handshake is a GET carrying the upgrade
@@ -318,9 +330,16 @@ class HttpProtocol(asyncio.Protocol):
         # `should_upgrade()` flag, which is set only when httptools parsed a
         # `Connection: upgrade` + `Upgrade:` request - so an ordinary GET never
         # enters the Python-level header scan inside `_handle_websocket_upgrade`.
-        # A valid upgrade with a matching websocket route is handled here and
-        # returns; everything else continues down the normal HTTP path.
-        if self.parser.should_upgrade() and self._handle_websocket_upgrade():
+        # A valid upgrade with a matching websocket route is diverted there and
+        # returns. Any other upgrade (h2c, an unknown protocol token, a non-GET
+        # upgrade) is one this server does not speak: reject it with 400 and stop
+        # here. The request must NOT be enqueued - httptools raises
+        # `HttpParserUpgrade` at the body offset for any upgrade request, so
+        # dispatching here would run the handler for a request the client is told
+        # failed (the 400 is written from `data_received`'s no-websocket branch).
+        if self.parser.should_upgrade():
+            if not self._handle_websocket_upgrade():
+                self._send_bad_request()
             return
 
         max_len = self.app.config.get("MAX_CONTENT_LENGTH")
@@ -943,17 +962,27 @@ class HttpProtocol(asyncio.Protocol):
             self._arm_request_timer()
         try:
             self.parser.feed_data(data)
-        except httptools.HttpParserUpgrade:
+        except httptools.HttpParserUpgrade as upgrade:
             # A successful WebSocket upgrade: `on_headers_complete` already
             # diverted the connection (`_handle_websocket_upgrade` set
             # `self._websocket`) and httptools then raises `HttpParserUpgrade`
             # at the body offset to signal the protocol switch. This is NOT an
             # error - suppress it so it does not surface through the event
             # loop's exception handler as a spurious traceback on every connect.
-            # If the divert did not take (no route, refused handshake), treat it
-            # as a malformed request and fall through to the 400 path.
-            if self._websocket is None:
-                self._send_bad_request()
+            # If the divert did not take (no route, refused handshake, or an
+            # upgrade we do not speak), `on_headers_complete` already wrote the
+            # refusal and closed; nothing more to do here.
+            if self._websocket is not None:
+                # The exception's argument is the offset into `data` at which
+                # the post-handshake body begins. When the client pipelines its
+                # first WebSocket frame into the same TCP segment as the
+                # handshake, those bytes sit after the offset and the HTTP parser
+                # never delivers them - feed them to the frame parser so the
+                # first message is not dropped.
+                offset = upgrade.args[0]
+                if offset < len(data):
+                    with contextlib.suppress(WebSocketDisconnect):
+                        self._websocket.feed_data(data[offset:])
         except httptools.HttpParserError:
             self._send_bad_request()
 
@@ -1102,20 +1131,41 @@ class HttpProtocol(asyncio.Protocol):
         # is awaiting the source, so it is safe to drain-and-discard any body it
         # left unread, keeping the parser's byte accounting correct for the next
         # pipelined request. EOF arrives via on_message_complete; on teardown the
-        # source was already fed EOF in connection_lost / 413.
-        if not self._closing:
+        # source was already fed EOF in connection_lost / 413. A source already
+        # at EOF (a bodiless GET, the common case) has nothing to discard, so skip
+        # the no-op drain coroutine entirely.
+        if not self._closing and not source.at_eof:
             await source.drain()
 
         if self.transport is None or self.transport.is_closing():
             return False
 
+        # RFC 9110 Sec. 9.3.2: a HEAD response carries the same header section a
+        # GET would (including the would-be Content-Length) but MUST NOT include
+        # a message body. `Response.encode()` cannot see the request method, so
+        # the body strip lives here, mirroring the ASGI emit path. Sending the
+        # full body corrupts keep-alive framing - the client parses the body
+        # bytes as the start of the next response.
+        is_head = request.method == HTTP_METHOD_HEAD
         try:
             if getattr(response, "is_event_source", False):
-                await response.stream_to(self.transport, drain=self.drain)
+                if is_head:
+                    self.transport.write(response.encode())
+                else:
+                    await response.stream_to(self.transport, drain=self.drain)
                 self.transport.close()
                 return False
             if isinstance(response, StreamingResponse):
-                await response.stream_to(self.transport, drain=self.drain)
+                if is_head:
+                    # The encoded head advertises the (would-be) representation;
+                    # a HEAD response stops there - no chunks, no chunked
+                    # terminator (HEAD bodies are forbidden regardless of
+                    # Transfer-Encoding).
+                    self.transport.write(response.encode())
+                else:
+                    await response.stream_to(self.transport, drain=self.drain)
+            elif is_head:
+                self.transport.write(_strip_response_body(response.encode()))
             else:
                 self.transport.write(response.encode())
         except Exception:

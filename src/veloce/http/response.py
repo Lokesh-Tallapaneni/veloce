@@ -1449,9 +1449,23 @@ class StreamingResponse(Response):
         the high-water mark, so the fast path pays one already-set check.
         """
         transport.write(self.encode())
+        # `transport.writelines` (where supported) keeps the size-line,
+        # payload, and trailer as separate buffers instead of concatenating
+        # them into a fresh bytes object per chunk; fall back to a single
+        # concatenated `write` for transports / test fakes that only
+        # implement the basic `WriteTransport` API.
+        writelines = getattr(transport, "writelines", None)
         async for chunk in self._stream:
-            size = format(len(chunk), "x")
-            transport.write(f"{size}\r\n".encode() + chunk + b"\r\n")
+            # A zero-length chunk would encode as `0\r\n\r\n`, which RFC 9112
+            # Sec. 7.1 reserves for the last-chunk terminator; emitting it
+            # mid-stream truncates the body and desyncs keep-alive framing.
+            if not chunk:
+                continue
+            size = format(len(chunk), "x").encode("ascii")
+            if writelines is not None:
+                writelines((size, b"\r\n", chunk, b"\r\n"))
+            else:
+                transport.write(size + b"\r\n" + chunk + b"\r\n")
             if drain is not None:
                 await drain()
         transport.write(b"0\r\n\r\n")

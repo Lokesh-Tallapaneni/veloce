@@ -192,6 +192,19 @@ def test_valid_boundary_with_special_chars_parses():
     assert form["x"] == "v"
 
 
+def test_malformed_body_mid_parse_raises_bad_request():
+    # A part delimiter with a stray byte makes the underlying parser raise
+    # mid-body; the partial form must be rejected with 400 rather than
+    # returned as an incomplete 200, matching the malformed-boundary posture.
+    body = (
+        f"--{_BOUNDARY}X\r\n"
+        'Content-Disposition: form-data; name="a"\r\n\r\n'
+        f"value-a\r\n--{_BOUNDARY}--\r\n"
+    ).encode()
+    with pytest.raises(BadRequest):
+        parse_multipart_form(body, _ct())
+
+
 # ── Finding: separate field/file limits + field memory (Django/Quart) ─
 
 

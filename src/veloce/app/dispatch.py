@@ -43,7 +43,7 @@ from veloce._internal import (
     _is_async_callable,
     offload,
 )
-from veloce._model_backend import _HAS_MSGSPEC, is_msgspec_struct
+from veloce._model_backend import _HAS_MSGSPEC, _msgspec, is_msgspec_struct
 from veloce._pipeline import (
     CompiledPipeline,
 )
@@ -230,10 +230,16 @@ class DispatchMixin:
         _current_request_var.set(request)
         g._reset()
 
-        try:
-            request_started.send(self, request=request)
-        except Exception:
-            self.logger.exception("request_started signal receiver raised")
+        # Inline the no-subscriber guard so a request on an app with no
+        # `request_started` receivers pays neither the method call nor the
+        # `**kwargs` pack `Signal.send` would otherwise allocate before its own
+        # internal short-circuit. A dead-weakref-only `_subs` just defers
+        # pruning to the next send, which `send` already handles lazily.
+        if request_started._subs:
+            try:
+                request_started.send(self, request=request)
+            except Exception:
+                self.logger.exception("request_started signal receiver raised")
 
         # Drain `before_first_request` hooks exactly once AND decide the setup
         # lock - both keyed off the single `_first_request_fired` latch. The
@@ -343,10 +349,11 @@ class DispatchMixin:
         # Signal: request finished. Sender is the app, `response=` is the
         # final Response, `request=` lets a receiver correlate with the
         # matching `request_started`. Receivers may peek but not replace.
-        try:
-            request_finished.send(self, response=response, request=request)
-        except Exception:
-            self.logger.exception("request_finished signal raised an exception")
+        if request_finished._subs:
+            try:
+                request_finished.send(self, response=response, request=request)
+            except Exception:
+                self.logger.exception("request_finished signal raised an exception")
 
         if instrument:
             # A HEAD response never iterates its body (the ASGI path sends
@@ -439,6 +446,12 @@ class DispatchMixin:
             # is `None` (no response middleware to run).
             if cp.is_bare and match is not None and match.route_info.is_fast_eligible:
                 route_info = match.route_info
+                # The handler reaches its path params through
+                # `request.path_params`; the slow path assigns this in
+                # `_resolve_route`, which the fast path skips. `is_bare`
+                # guarantees no url-value preprocessors and `is_fast_eligible`
+                # no route `defaults`, so the raw match params are final.
+                request.path_params = match.path_params
                 if route_info.is_request_only_plan:
                     result = await route_info.handler(
                         **{route_info.handler_plan.slots[0].name: request}
@@ -446,7 +459,13 @@ class DispatchMixin:
                 else:
                     result = await route_info.handler()
                 response = self._build_response(request, match, result)
-                response = await self._run_after_hooks(request, response, None)
+                # `is_bare` guarantees the app/blueprint after_request hooks are
+                # empty, so the only work `_run_after_hooks` could do here is
+                # drain one-shot `after_this_request` callbacks. Probe for them
+                # inline and await the helper only when present, so the common
+                # no-callback request pays no extra coroutine on the fast path.
+                if request._state and request._state.get("_after_this_request"):
+                    response = await self._run_after_hooks(request, response, None)
                 self._schedule_background_tasks(request, response)
                 return response
 
@@ -464,10 +483,17 @@ class DispatchMixin:
             # A non-None return short-circuits. `_bp_name` is recorded as the
             # matched blueprint so the `finally`-block teardown hooks fire for
             # the right blueprint even when dispatch short-circuits before the
-            # final match is resolved.
-            early, _bp_name = await self._run_before_hooks(request)
-            if early is not None:
-                return early
+            # final match is resolved. With no before_request hooks registered the
+            # helper cannot short-circuit, so skip the coroutine await - but still
+            # derive `bp_name` (the cheap sync work the helper does), because
+            # `_resolve_route` can exit early (subdomain/host/slash/404) before the
+            # recompute below, and the `finally` blueprint teardown needs it.
+            if self._before_request_hooks or self._bp_before_hooks:
+                early, _bp_name = await self._run_before_hooks(request)
+                if early is not None:
+                    return early
+            else:
+                _bp_name = _endpoint_blueprint(request.endpoint)
 
             # Resolve the route - handles mounted sub-apps, static files,
             # the re-match-after-hook-rewrite case, subdomain/host
@@ -599,13 +625,18 @@ class DispatchMixin:
             # Signals: fire `got_request_exception` first when an exc bubbled
             # up, then always fire `request_tearing_down`. Receivers may
             # raise - log + continue so a buggy listener doesn't poison
-            # the dispatch path. Names hoisted to module top.
-            try:
-                if _exc is not None:
-                    got_request_exception.send(self, exception=_exc)
-                request_tearing_down.send(self, exc=_exc)
-            except Exception:
-                self.logger.exception("signal receiver raised an exception")
+            # the dispatch path. Names hoisted to module top. Inline the
+            # no-subscriber guards so the common no-receiver request skips the
+            # method call + `**kwargs` pack before `Signal.send`'s own internal
+            # short-circuit; a dead-weakref-only `_subs` just defers pruning.
+            if (_exc is not None and got_request_exception._subs) or request_tearing_down._subs:
+                try:
+                    if _exc is not None and got_request_exception._subs:
+                        got_request_exception.send(self, exception=_exc)
+                    if request_tearing_down._subs:
+                        request_tearing_down.send(self, exc=_exc)
+                except Exception:
+                    self.logger.exception("signal receiver raised an exception")
 
     async def _run_request_phase(
         self, request: Request, match: Any, cp: CompiledPipeline
@@ -830,7 +861,13 @@ class DispatchMixin:
                     if request.method != HTTP_METHOD_GET
                     else status.HTTP_307_TEMPORARY_REDIRECT
                 )
-                response = RedirectResponse(alt, status_code=code)
+                # `alt` is matched against this (sub-)app's router, so it is the
+                # mount-local path. The `Location` the client follows must carry
+                # the mount prefix (the request's `root_path`); otherwise a slash
+                # redirect inside a mounted sub-app points at a path that does not
+                # exist on the parent. `root_path` is "" for a top-level app, so
+                # the unmounted case is unchanged.
+                response = RedirectResponse(request.root_path + alt, status_code=code)
                 if cp.http_post is not None:
                     response = await self._run_response_phase(
                         cp.http_post, request, response, excluded
@@ -1243,6 +1280,14 @@ class DispatchMixin:
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
             return result
+        # Exact `dict` with no custom response_class is the overwhelmingly common
+        # handler return - serve it straight from `JSONResponse` before the
+        # msgspec probe, so a plain dict never pays the `_is_msgspec_payload`
+        # scan (it is not a struct or struct list and would fall through anyway).
+        # Gated on `response_class is None` so the JSONResponse-subclass branch
+        # below still owns dicts when a class was requested.
+        if type(result) is dict and response_class is None:
+            return JSONResponse(result)
         # A msgspec struct (or a list of structs) encodes in C with no
         # intermediate dict. With no response_class it is written straight to a
         # JSON Response; with one, it is normalized to builtins so the requested
@@ -1250,11 +1295,9 @@ class DispatchMixin:
         # by `_is_msgspec_payload` and flows to the tuple handler below, which
         # recurses on the struct body.
         if _HAS_MSGSPEC and _is_msgspec_payload(result):
-            import msgspec
-
             if response_class is None:
-                return Response(body=msgspec.json.encode(result), content_type=MIME_JSON)
-            result = msgspec.to_builtins(result)
+                return Response(body=_msgspec.json.encode(result), content_type=MIME_JSON)
+            result = _msgspec.to_builtins(result)
         # Use custom response_class if specified
         if response_class is not None:
             if isinstance(result, tuple):

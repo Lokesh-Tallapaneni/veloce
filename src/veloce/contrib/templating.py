@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from veloce.background import BackgroundTask
-from veloce.helpers import _current_app_var, current_app, g
+from veloce.helpers import _current_app_var, current_app, g, get_flashed_messages
 from veloce.http.response import HTMLResponse, Response
 from veloce.status import HTTP_200_OK
 
@@ -27,11 +27,13 @@ _fallback_env: Any = None
 def _sync_app_jinja_helpers(env: Any) -> None:
     """Copy filters/globals/tests registered on the active app into `env`.
 
-    Also injects the standard template globals - `url_for`, `g`, and
-    `current_app` - so templates can `{{ url_for('endpoint') }}` and
-    `{{ g.user }}` without manual context plumbing. `request` is not injected
-    here; being request-scoped, it is supplied by the caller's render context
-    (e.g. `TemplateResponse("page.html", {"request": request, ...})`).
+    Also injects the standard template globals - `url_for`, `g`,
+    `current_app`, and `get_flashed_messages` - so templates can
+    `{{ url_for('endpoint') }}`, `{{ g.user }}`, and
+    `{% for m in get_flashed_messages() %}` without manual context plumbing.
+    `request` is not injected here; being request-scoped, it is supplied by
+    the caller's render context (e.g.
+    `TemplateResponse("page.html", {"request": request, ...})`).
 
     Memoized per (env, app) - re-syncing is idempotent but it still
     runs three loops and several attribute lookups per render, which
@@ -52,6 +54,7 @@ def _sync_app_jinja_helpers(env: Any) -> None:
     env.globals["url_for"] = app.url_for
     env.globals["g"] = g
     env.globals["current_app"] = current_app
+    env.globals["get_flashed_messages"] = get_flashed_messages
     for fname, fn in filters:
         env.filters[fname] = fn
     for gname, fn in globs:

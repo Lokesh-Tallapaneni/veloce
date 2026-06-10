@@ -67,6 +67,34 @@ async def test_strict_slashes_false_with_trailing_form_too():
 
 
 @pytest.mark.asyncio
+async def test_registering_slashed_sibling_keeps_unslashed_match():
+    """Registering `/users/` must not flip the already-registered `/users`
+    route to a slash redirect — the two share one radix node."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/users")
+    async def list_users():
+        return {"slashed": False}
+
+    @app.post("/users/")
+    async def create_user():
+        return {"slashed": True}
+
+    # `GET /users` must still resolve to its handler, not redirect to `/users/`.
+    resp = await app.handle_request(_req("/users"))
+    assert resp.status_code == 200
+    import orjson
+
+    assert orjson.loads(resp.body) == {"slashed": False}
+
+    # The slashed form still resolves to its own handler.
+    post = Request(method="POST", path="/users/", query_string="", headers={}, body=b"")
+    resp_post = await app.handle_request(post)
+    assert resp_post.status_code == 200
+    assert orjson.loads(resp_post.body) == {"slashed": True}
+
+
+@pytest.mark.asyncio
 async def test_strict_slashes_only_affects_decorated_route():
     """Other routes still follow the global redirect_slashes policy."""
     app = Veloce(debug=True, openapi_url=None)

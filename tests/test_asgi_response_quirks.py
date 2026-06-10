@@ -114,3 +114,38 @@ def test_explicit_response_with_204_status_strips_body():
     resp = client.get("/x")
     assert resp.status_code == 204
     assert resp.body == b""
+
+
+# ── Non-ASCII query_string → 400, not 500 ──────────────────────────────
+
+
+async def test_non_ascii_query_string_returns_400():
+    """Raw non-ASCII bytes in `query_string` are a client error: the ASGI path
+    must emit 400, not raise UnicodeDecodeError out of dispatch as a 500."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/x")
+    async def h():
+        return {"ok": True}
+
+    # The TestClient encodes the query string as ASCII, so drive the ASGI app
+    # directly with a scope carrying raw UTF-8 bytes (`q=café` un-%-encoded).
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/x",
+        "query_string": "q=café".encode(),
+        "headers": [],
+    }
+    sent: list[dict] = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    await app(scope, receive, send)
+
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 400

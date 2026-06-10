@@ -176,6 +176,7 @@ nav:
       - MCP (AI Tools): guide/mcp.md
       - Debugging: guide/debugging.md
       - Testing: guide/testing.md
+      - Command-Line Interface: guide/cli.md
   - Deployment:
       - Overview: guide/deployment.md
       - Run a Server Manually: deployment/manually.md

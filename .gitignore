@@ -59,3 +59,4 @@ findings/
 # Benchmark result dumps — never shipped
 result_*.json
 result_*.b64
+examples/

@@ -46,3 +46,31 @@ def test_streaming_response_returns_underlying_stream():
 
     sr = StreamingResponse(content=gen())
     assert sr.iter_chunked(4) is sr._stream
+
+
+async def test_stream_to_skips_empty_chunks():
+    """An empty yield must not emit the `0\\r\\n\\r\\n` last-chunk terminator mid-stream."""
+
+    class _RecordingTransport:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+
+        def write(self, data: bytes) -> None:
+            self.writes.append(data)
+
+    async def gen():
+        yield b"hello"
+        yield b""
+        yield b"world"
+
+    sr = StreamingResponse(content=gen())
+    transport = _RecordingTransport()
+    await sr.stream_to(transport)
+
+    wire = b"".join(transport.writes)
+    body = wire.split(b"\r\n\r\n", 1)[1]
+    # Both chunks survive and the only last-chunk terminator is the final one.
+    assert b"5\r\nhello\r\n" in body
+    assert b"5\r\nworld\r\n" in body
+    assert body.endswith(b"0\r\n\r\n")
+    assert body.count(b"0\r\n\r\n") == 1

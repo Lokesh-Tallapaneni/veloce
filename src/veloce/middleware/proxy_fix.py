@@ -202,8 +202,12 @@ class ProxyFix(Middleware):
     def _parse_forwarded_element(element: str) -> dict[str, str]:
         """Parse a single element of a `Forwarded:` header (RFC 7239 Sec. 4).
 
-        Returns the lowercase key -> value mapping. Quotes and IPv6
-        brackets are stripped.
+        Returns the lowercase key -> value mapping with quotes stripped. For
+        the `for` / `by` node identifiers the bracketed-IPv6 wrapper is removed
+        to expose the bare address (RFC 7239 Sec. 6); the `host` directive is
+        an authority (`host[:port]`, RFC 7239 Sec. 5.3) and is kept verbatim so
+        a bracketed IPv6 host with a port survives intact when spliced into the
+        Host header.
         """
         result: dict[str, str] = {}
         for pair in split_outside_quotes(element, ";"):
@@ -213,7 +217,7 @@ class ProxyFix(Middleware):
             k, _, v = pair.partition("=")
             k = k.strip().lower()
             v = unquote_value(v)
-            if v.startswith("[") and "]" in v:
+            if k in ("for", "by") and v.startswith("[") and "]" in v:
                 v = v.split("]", 1)[0][1:]
             result[k] = v
         return result

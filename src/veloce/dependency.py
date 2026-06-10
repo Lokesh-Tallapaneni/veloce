@@ -375,6 +375,11 @@ def _resolve_scalar_param(
     if allow_query and name in request.query_params:
         return _coerce_value(request.query_params[name], slot.target_type or str, name, "query")
     if slot.has_default:
+        # A plain mutable default is wrapped in a copying factory at
+        # registration so each request gets its own value (see
+        # `_guard_plain_mutable_default`); immutable defaults read inline.
+        if slot.default_factory is not None:
+            return slot.default_factory()
         return slot.default
     if slot.is_optional:
         return None
@@ -402,6 +407,11 @@ def _resolve_list_param(slot: Any, request: Request, path_params: dict[str, str]
             for v in request.query_params.getall(name)
         ]
     if slot.has_default:
+        # A plain mutable default is wrapped in a copying factory at
+        # registration so each request gets its own value (see
+        # `_guard_plain_mutable_default`); immutable defaults read inline.
+        if slot.default_factory is not None:
+            return slot.default_factory()
         return slot.default
     if slot.is_optional:
         return None

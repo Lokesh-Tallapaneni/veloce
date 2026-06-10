@@ -126,10 +126,10 @@ The full Tier 0/1/2 feature matrix and per-feature design notes live in
 ## Benchmarks
 
 Comparative benches against equivalent third-party async and sync
-frameworks live in [`bench/`](bench/). On the JSON-hello and path-param
-hot paths Veloce sustains a 3-7x throughput multiplier on Python 3.12
-under the configurations measured. Numbers are workload-specific and
-reproducible; run the suite locally before quoting them.
+frameworks live in [`bench/`](bench/). They isolate framework dispatch
+cost on simple workloads (JSON-hello, path-param) and are meant to be
+reproduced locally. Numbers are workload- and machine-specific; run the
+suite yourself rather than relying on a headline figure.
 
 ## Project status
 

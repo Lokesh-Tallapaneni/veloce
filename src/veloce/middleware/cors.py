@@ -115,7 +115,16 @@ class CORSMiddleware(Middleware):
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
-        self.allow_origins = list(allow_origins) if allow_origins is not None else ["*"]
+        # When no origin list is given the default is the `*` wildcard, but an
+        # `allow_origin_regex` with no explicit list must not silently fall back
+        # to `*` - that would make `_origin_allowed` short-circuit on the star
+        # and echo `Access-Control-Allow-Origin: *` to every origin, leaving the
+        # regex dead code (Fetch CORS protocol). A regex-only config gates by the
+        # regex alone, so default the list to empty in that case.
+        if allow_origins is not None:
+            self.allow_origins = list(allow_origins)
+        else:
+            self.allow_origins = [] if allow_origin_regex else ["*"]
         self.allow_origin_regex: Pattern[str] | None
         if allow_origin_regex:
             try:

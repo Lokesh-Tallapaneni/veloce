@@ -26,6 +26,14 @@ def test_max_age_parsed_as_int():
     assert cc.max_age == 3600
 
 
+def test_non_numeric_int_directive_is_dropped():
+    # `max-age=abc` is malformed; the attribute stays int-or-None rather
+    # than returning a raw str that breaks `cc.max_age > 0`.
+    cc = CacheControl("max-age=abc")
+    assert cc.max_age is None
+    assert "max-age" not in cc.to_header()
+
+
 def test_combined_directives():
     cc = CacheControl("public, max-age=600, must-revalidate")
     assert cc.public is True

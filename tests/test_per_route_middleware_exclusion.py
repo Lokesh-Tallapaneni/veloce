@@ -346,6 +346,30 @@ def test_user_middleware_without_name_kwarg_is_nameable_and_excludable():
         assert "X-User-X" not in client.get("/skips").headers
 
 
+def test_blueprint_route_preserves_exclude_middleware():
+    # Re-registering a blueprint route onto the app (`_readd_route`) must forward
+    # `exclude_middleware`; otherwise a webhook route that opted out of a
+    # middleware silently has it run again after `register_blueprint`.
+    from veloce import Blueprint
+
+    bp = Blueprint("hooks")
+
+    @bp.get("/webhook", exclude_middleware=["_Tagger"])
+    async def webhook(request: Request):
+        return {"ok": True}
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(_Tagger("A"))
+    app.register_blueprint(bp)
+
+    with TestClient(app) as client:
+        resp = client.get("/webhook")
+        assert resp.status_code == 200
+        # `_Tagger` was excluded on the blueprint route and must stay excluded
+        # after the route is spliced onto the app.
+        assert "X-Saw-A" not in resp.headers
+
+
 def test_user_middleware_without_name_defaults_to_class_name():
     # With no `name=` override, the exclusion name falls back to the class name
     # even though the constructor never touched `self.name`.

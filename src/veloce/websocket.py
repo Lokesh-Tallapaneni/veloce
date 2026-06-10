@@ -1274,10 +1274,14 @@ class WebSocket:
         # Data frames (text / binary) and continuation frames.
         if opcode in (0x1, 0x2):
             # A data frame must not arrive mid-fragmentation - RFC 6455
-            # Sec. 5.4 allows only continuation frames after the opening
-            # frame. If a peer sends one anyway, discard the abandoned
-            # partial and clear the reassembly state cleanly so a later
-            # continuation cannot append to a stale buffer.
+            # Sec. 5.4 allows only continuation frames (opcode 0x0) after the
+            # opening frame of a fragmented message. A new data frame while a
+            # fragmented message is in progress is a protocol error and fails
+            # the connection with 1002, the symmetric case to a continuation
+            # frame with no message in progress.
+            if self._frag_opcode is not None:
+                self._close_protocol_error()
+                return 0
             if opcode == 0x1:
                 # TEXT payloads must be valid UTF-8 (RFC 6455 Sec. 8.1).
                 # Validate this opening/whole frame's bytes incrementally so

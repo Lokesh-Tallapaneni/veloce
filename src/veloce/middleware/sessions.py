@@ -260,12 +260,29 @@ class SessionMiddleware(Middleware):
             )
         if cookie_val:
             try:
-                # Read with the longer window so a permanent cookie is
-                # not rejected; a non-permanent cookie's shorter
-                # `Max-Age` already evicts it client-side.
-                decoded = self._signer.loads(
-                    cookie_val, max_age=max(self.max_age, self.permanent_lifetime)
-                )
+                # Decode with the longer window so a permanent cookie is not
+                # rejected before its flag is known. The cookie's own `Max-Age`
+                # is a client hint an attacker ignores when replaying a stolen
+                # cookie (RFC 6265 Sec. 5.3), so the server-side ceiling is
+                # re-checked against the payload's own `_permanent` flag.
+                lenient = max(self.max_age, self.permanent_lifetime)
+                decoded = self._signer.loads(cookie_val, max_age=lenient)
+                # Enforce the flag-appropriate ceiling: a permanent session may
+                # live for `permanent_lifetime`, a non-permanent one only for
+                # `max_age` - independent of which value is configured larger.
+                # When that ceiling is shorter than the lenient decode window,
+                # re-validate the token's age against it, so neither a stolen
+                # non-permanent cookie nor a stale permanent one replays past its
+                # own limit. A tampered flag cannot help - the whole payload is
+                # HMAC-signed.
+                if isinstance(decoded, dict):
+                    ceiling = (
+                        self.permanent_lifetime
+                        if decoded.get("_permanent", False)
+                        else self.max_age
+                    )
+                    if ceiling < lenient:
+                        decoded = self._signer.loads(cookie_val, max_age=ceiling)
             except BadSignature:
                 decoded = None
             if isinstance(decoded, dict):

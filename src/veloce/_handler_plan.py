@@ -13,6 +13,7 @@ Reflection happens at registration time only, never on the hot path.
 
 from __future__ import annotations
 
+import copy
 import functools
 import inspect
 import types
@@ -152,6 +153,22 @@ def _warn_shared_mutable_default(name: str, default: Any) -> None:
         f"request gets its own value",
         stacklevel=3,
     )
+
+
+def _guard_plain_mutable_default(slot: _Slot, name: str) -> None:
+    """Stop a plain `param: list = []` default from being shared across requests.
+
+    A bare mutable default (`tags: list[str] = []`) is one object on the
+    signature; returning it by identity lets one request's in-place mutation leak
+    into the next. Install a `default_factory` that deep-copies the original so
+    each request gets an independent value, and warn the author - the same DX
+    nudge the explicit-marker path already gives. Markers carry their own
+    `default` handling, so this only fires for slots holding a static default.
+    """
+    if slot.has_default and isinstance(slot.default, (list, dict, set)):
+        original = slot.default
+        slot.default_factory = lambda: copy.deepcopy(original)
+        _warn_shared_mutable_default(name, original)
 
 
 # -- Slot record --------------------------------------------
@@ -767,6 +784,7 @@ def build_plan(
             slot.has_default = has_default
             slot.default = default if has_default else None
             slot.is_optional = is_optional
+            _guard_plain_mutable_default(slot, param_name)
             slots.append(slot)
             continue
 
@@ -780,6 +798,7 @@ def build_plan(
         slot.is_optional = is_optional
         slot.has_default = has_default
         slot.default = default if has_default else None
+        _guard_plain_mutable_default(slot, param_name)
         slots.append(slot)
 
     return HandlerPlan(handler, slots, [])

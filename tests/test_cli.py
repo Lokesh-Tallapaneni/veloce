@@ -688,8 +688,90 @@ def test_builtin_command_names_introspection():
     # misclassify every built-in as an unknown plugin command. Assert the real
     # built-in set instead so the breakage fails loudly here.
     names = cli_module._builtin_command_names()
-    assert {"run", "routes", "check", "shell", "custom"} <= names
+    assert {"new", "generate", "g", "run", "routes", "check", "shell", "custom"} <= names
     # And it matches what the parser actually exposes as subcommand choices.
     parser = build_parser(plugin_command=None)
     sub_choices = set(parser._subparsers._group_actions[0].choices)  # type: ignore[union-attr]
     assert names == frozenset(sub_choices)
+
+
+# -- new / generate scaffolding ------------------------------------
+
+
+def test_new_minimal_creates_project(tmp_path):
+    assert main(["new", "demo", "--template", "minimal", "--dir", str(tmp_path)]) == 0
+    proj = tmp_path / "demo"
+    assert (proj / "app.py").is_file()
+    assert (proj / "pyproject.toml").is_file()
+    assert (proj / "tests" / "test_app.py").is_file()
+    assert "demo" in (proj / "app.py").read_text()
+    assert 'name = "demo"' in (proj / "pyproject.toml").read_text()
+
+
+@pytest.mark.parametrize("template", ["minimal", "api", "web"])
+def test_new_templates_generate_valid_python(tmp_path, template):
+    import py_compile
+
+    main(["new", "proj", "--template", template, "--dir", str(tmp_path)])
+    compiled = list((tmp_path / "proj").rglob("*.py"))
+    assert compiled  # there is at least one Python file to check
+    for path in compiled:
+        py_compile.compile(str(path), doraise=True)
+
+
+def test_new_unknown_template_errors(tmp_path):
+    with pytest.raises(SystemExit, match="unknown template"):
+        main(["new", "demo", "--template", "nope", "--dir", str(tmp_path)])
+
+
+def test_new_refuses_nonempty_dir_without_force(tmp_path):
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo" / "keep.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit, match="already exists"):
+        main(["new", "demo", "--dir", str(tmp_path)])
+
+
+def test_new_force_overwrites_nonempty_dir(tmp_path):
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo" / "keep.txt").write_text("x", encoding="utf-8")
+    assert main(["new", "demo", "--dir", str(tmp_path), "--force"]) == 0
+    assert (tmp_path / "demo" / "app.py").is_file()
+
+
+@pytest.mark.parametrize(
+    ("kind", "marker"),
+    [
+        ("route", "Blueprint"),
+        ("blueprint", "url_prefix"),
+        ("middleware", "Middleware"),
+        ("model", "BaseModel"),
+        ("security", "APIKeyHeader"),
+    ],
+)
+def test_generate_each_kind_writes_file(tmp_path, kind, marker):
+    assert main(["generate", kind, "thing", "--dir", str(tmp_path)]) == 0
+    out = tmp_path / "thing.py"
+    assert out.is_file()
+    assert marker in out.read_text(encoding="utf-8")
+
+
+def test_generate_alias_g_works(tmp_path):
+    assert main(["g", "model", "widget", "--dir", str(tmp_path)]) == 0
+    assert (tmp_path / "widget.py").is_file()
+
+
+def test_generate_stdout_does_not_write(tmp_path, capsys):
+    assert main(["generate", "model", "thing", "--dir", str(tmp_path), "--stdout"]) == 0
+    assert not (tmp_path / "thing.py").exists()
+    assert "class Thing" in capsys.readouterr().out
+
+
+def test_generate_unknown_kind_errors(tmp_path):
+    with pytest.raises(SystemExit, match="unknown kind"):
+        main(["generate", "controller", "thing", "--dir", str(tmp_path)])
+
+
+def test_generate_refuses_existing_file_without_force(tmp_path):
+    (tmp_path / "thing.py").write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit, match="already exists"):
+        main(["generate", "model", "thing", "--dir", str(tmp_path)])

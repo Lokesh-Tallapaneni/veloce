@@ -68,6 +68,19 @@ def test_parse_forwarded_strips_ipv6_brackets():
     assert p["for"] == "2001:db8::1"
 
 
+def test_parse_forwarded_host_keeps_ipv6_brackets_and_port():
+    """A `host=` authority is kept verbatim; only `for=`/`by=` get unbracketed."""
+    pf = ProxyFix(x_host=1)
+    p = pf._parse_forwarded(
+        'host="[2001:db8::1]:8443"',
+        x_for=0,
+        x_proto=0,
+        x_host=1,
+        x_prefix=0,
+    )
+    assert p["host"] == "[2001:db8::1]:8443"
+
+
 def test_parse_forwarded_selects_from_right():
     """Multiple proxies -- select by trust depth from the right, not the left."""
     pf = ProxyFix(x_for=1, x_proto=1)
@@ -492,3 +505,16 @@ def test_forwarded_host_with_port_survives():
         headers={"Forwarded": "for=192.0.2.1; host=public.example.com:8443"},
     )
     assert resp.json()["port"] == 8443
+
+
+def test_forwarded_ipv6_host_with_port_survives():
+    """A bracketed IPv6 `host=` authority reaches the URL with brackets+port."""
+    app = _make_app_capturing_url(x_host=1)
+    client = TestClient(app)
+    resp = client.get(
+        "/info",
+        headers={"Forwarded": 'for=192.0.2.1; host="[2001:db8::1]:8443"'},
+    )
+    body = resp.json()
+    assert body["netloc"] == "[2001:db8::1]:8443"
+    assert body["port"] == 8443

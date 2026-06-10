@@ -44,7 +44,7 @@ from veloce._constants import (
 )
 from veloce._internal import _coerce_bool, is_json_mimetype
 from veloce._protocol_constants import URL_SCHEME_HTTPS
-from veloce.exceptions import RequestEntityTooLarge
+from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
 from veloce.http.datastructures import (
     DEFAULT_MAX_MULTIPART_PART_SIZE,
@@ -71,6 +71,32 @@ _logger = logging.getLogger(__name__)
 # `if_unmodified_since`). Distinct from `None` so we can tell "absent
 # header" apart from "haven't looked yet".
 _UNSET: Any = object()
+
+
+def _split_etag_list(value: str) -> tuple[str, ...]:
+    """Split an `If-Match`/`If-None-Match` list on commas outside quoted strings.
+
+    RFC 9110 §8.8.3 `etagc = %x21 / %x23-7E / obs-text` permits a comma inside
+    an opaque-tag's quoted string, so a naive `split(",")` corrupts a valid tag
+    like `"abc,def"`. Track whether the scan is inside double quotes and only
+    break on a comma seen at the top level. The `W/` weak prefix and the
+    surrounding quotes are preserved verbatim for caller comparison.
+    """
+    tags: list[str] = []
+    start = 0
+    in_quotes = False
+    for i, ch in enumerate(value):
+        if ch == '"':
+            in_quotes = not in_quotes
+        elif ch == "," and not in_quotes:
+            tag = value[start:i].strip()
+            if tag:
+                tags.append(tag)
+            start = i + 1
+    tail = value[start:].strip()
+    if tail:
+        tags.append(tail)
+    return tuple(tags)
 
 
 class Request:
@@ -590,10 +616,7 @@ class Request:
                 cached = ()
             else:
                 stripped = raw.strip()
-                if stripped == "*":
-                    cached = ("*",)
-                else:
-                    cached = tuple(t.strip() for t in stripped.split(",") if t.strip())
+                cached = ("*",) if stripped == "*" else _split_etag_list(stripped)
             self._if_match = cached
         return cached
 
@@ -614,11 +637,9 @@ class Request:
                 cached = ()
             else:
                 stripped = raw.strip()
-                if stripped == "*":
-                    cached = ("*",)
-                else:
-                    # Comma-separated, optionally with weak `W/` prefixes.
-                    cached = tuple(t.strip() for t in stripped.split(",") if t.strip())
+                # `_split_etag_list` keeps weak `W/` prefixes and does not break
+                # on a comma inside an opaque tag's quoted string.
+                cached = ("*",) if stripped == "*" else _split_etag_list(stripped)
             self._if_none_match = cached
         return cached
 
@@ -1109,8 +1130,6 @@ class Request:
         the `JSON_ERRORS_VERBOSE` config flag is set. Override on a `Request`
         subclass to customise.
         """
-        from veloce.exceptions import BadRequest  # noqa: I001 - breaks cycle: exceptions -> app -> request
-
         _logger.warning("JSON parse error: %s", error)
         cfg = self._config()
         # Surface the verbose reason when explicitly enabled OR in debug mode.
@@ -1219,9 +1238,17 @@ class Request:
                 cfg = self._config()
                 if cfg is not None:
                     max_fields = cfg.get("MAX_FORM_PARTS", max_fields)
+                # Decode outside the field-count guard below: a non-UTF-8 body
+                # is a malformed request (400), not a field-count overflow.
+                # `UnicodeDecodeError` subclasses `ValueError`, so leaving it
+                # inside the `except ValueError` would misreport it as a 413.
+                try:
+                    decoded = body.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise BadRequest("form body is not valid UTF-8") from exc
                 try:
                     items = parse_qsl(
-                        body.decode("utf-8"),
+                        decoded,
                         keep_blank_values=True,
                         max_num_fields=max_fields,
                     )

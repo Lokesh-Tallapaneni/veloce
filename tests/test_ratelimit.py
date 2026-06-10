@@ -435,6 +435,27 @@ def test_rate_limit_decorator_applies_per_route():
         assert tc.get("/cheap", headers=_UA).status_code == 200
 
 
+def test_rate_limit_decorator_applies_to_hidden_route():
+    # A `@rate_limit` tag on an `include_in_schema=False` route (a login form
+    # POST, an internal endpoint - the routes most worth throttling) must still
+    # be enforced. The strategy scan walks hidden routes too, so the tag is not
+    # silently dropped with the schema-only view.
+    from veloce import rate_limit
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(strategy=FixedWindow(100, 60)))
+
+    @app.post("/login", include_in_schema=False)
+    @rate_limit(FixedWindow(2, 60))
+    async def login(request: Request):
+        return {"ok": True}
+
+    with TestClient(app) as tc:
+        assert tc.post("/login", headers=_UA).status_code == 200
+        assert tc.post("/login", headers=_UA).status_code == 200
+        assert tc.post("/login", headers=_UA).status_code == 429
+
+
 def test_route_added_after_first_request_is_limited():
     # A route registered after the per-route cache was primed must still be
     # picked up (the cache rebuilds when the app's route generation advances).

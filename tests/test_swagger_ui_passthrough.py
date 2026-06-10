@@ -23,6 +23,24 @@ def test_default_swagger_ui_renders_without_extras():
     # browsers — `, }` with no key-value before `}` is the empty case.
 
 
+def test_swagger_ui_uses_base_layout_not_standalone():
+    """Only `swagger-ui-bundle.js` is loaded, which provides BaseLayout but not
+    StandaloneLayout (that lives in a separate preset script). Referencing
+    StandaloneLayout rendered "No layout defined for StandaloneLayout" in the
+    browser, so the docs must use BaseLayout and not the standalone preset.
+    """
+    app = Veloce(debug=True)
+
+    @app.get("/x")
+    async def x():
+        return {}
+
+    html = TestClient(app).get("/docs").text
+    assert '"BaseLayout"' in html
+    assert "StandaloneLayout" not in html
+    assert "SwaggerUIStandalonePreset" not in html
+
+
 def test_swagger_ui_parameters_inserted_into_bundle():
     app = Veloce(
         debug=True,

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from veloce import status
 from veloce._constants import (
     MIME_TEXT_PLAIN_UTF8,
+    MSG_INVALID_QUERY_STRING,
     MSG_LABEL_HEADER_NAME,
     MSG_LABEL_SET_COOKIE_VALUE,
     MSG_REQUEST_BODY_EXCEEDS_MAX,
@@ -194,6 +195,29 @@ class AsgiMixin:
         )
         await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": body})
 
+    async def _emit_400(self, send: Callable, detail: str) -> None:
+        """Emit a 400 response directly over ASGI.
+
+        Used for malformed request lines that fail before a `Request` object
+        exists, such as a `query_string` carrying raw non-ASCII bytes.
+        """
+        resp = JSONResponse(
+            {"detail": detail, "status_code": status.HTTP_400_BAD_REQUEST},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        body = resp.body
+        await send(
+            {
+                "type": ASGI_EVENT_HTTP_RESPONSE_START,
+                "status": status.HTTP_400_BAD_REQUEST,
+                "headers": [
+                    (RAW_HEADER_CONTENT_TYPE, resp.content_type.encode()),
+                    (RAW_HEADER_CONTENT_LENGTH, str(len(body)).encode()),
+                ],
+            }
+        )
+        await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": body})
+
     def _build_asgi_stack(self, cp: CompiledPipeline) -> Callable:
         """Wrap the core ASGI app with the compiled PH_ASGI_WRAP chain.
 
@@ -308,9 +332,10 @@ class AsgiMixin:
             cp = self._ensure_pipeline()
         if cp.asgi_wrap is not None:
             # Rebuild the wrapper stack only when the pipeline generation moved
-            # (a wrapper was registered); otherwise reuse the memoised stack.
-            # The wrapper chain re-enters `__call__` per request, where the gen
-            # check then matches and `_asgi_app` is reached without a wrap slot.
+            # (a wrapper was registered); otherwise reuse the memoised stack. The
+            # wrapped `_asgi_app` re-resolves the pipeline on entry (its `cp`
+            # defaults to None), so a same-request late registration in DEBUG /
+            # TESTING is still observed - the reason this is not short-circuited.
             stack = self._asgi_stack
             if stack is None or self._asgi_stack_gen != cp.gen:
                 stack = self._build_asgi_stack(cp)
@@ -411,7 +436,15 @@ class AsgiMixin:
             # ASGI HTTP scope mandates `path` and `query_string` keys -
             # direct subscript skips the `.get(default)` default-arg pop.
             path = scope["path"]
-            query = scope["query_string"].decode("ascii")
+            # A well-formed query string is percent-encoded ASCII (RFC 3986
+            # Sec. 3.4); raw non-ASCII bytes are a client error, so emit a 400
+            # rather than letting `UnicodeDecodeError` escape as a 500. The
+            # native path is already protected by httptools' own callback guard.
+            try:
+                query = scope["query_string"].decode("ascii")
+            except UnicodeDecodeError:
+                await self._emit_400(send, MSG_INVALID_QUERY_STRING)
+                return
 
             request = Request(
                 method=scope["method"],
@@ -525,11 +558,14 @@ class AsgiMixin:
             # `GZipMiddleware`) was emitted above and wins; prepending the
             # default too would put a duplicate header on the wire.
             if not has_cl:
-                asgi_headers.insert(0, (RAW_HEADER_CONTENT_LENGTH, _cl_bytes))
+                # ASGI does not mandate header order, so append (O(1)) rather
+                # than insert at the front (O(n) list shift), matching the
+                # streaming branch above.
+                asgi_headers.append((RAW_HEADER_CONTENT_LENGTH, _cl_bytes))
             # Never default a content-type onto a bodiless response (an explicit
             # handler-set content-type still survives via has_ct).
             if not has_ct and body_allowed:
-                asgi_headers.insert(0, (RAW_HEADER_CONTENT_TYPE, _ct_bytes))
+                asgi_headers.append((RAW_HEADER_CONTENT_TYPE, _ct_bytes))
 
             await send(
                 {

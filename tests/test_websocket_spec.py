@@ -291,19 +291,20 @@ async def test_websocket_stray_continuation_frame_is_protocol_error():
     assert close and struct.unpack("!H", close[-1][2:4])[0] == 1002
 
 
-async def test_websocket_data_frame_clears_abandoned_fragment_state():
-    """A complete data frame arriving mid-fragmentation (a peer protocol
-    error) discards the abandoned partial and clears reassembly state, so
-    a later continuation finds no message in progress."""
+async def test_websocket_data_frame_mid_fragmentation_is_protocol_error():
+    """A data frame arriving while a fragmented message is in progress is a
+    protocol error (RFC 6455 §5.4) - only continuation frames may follow the
+    opening frame, so the connection fails with 1002 and nothing is delivered."""
     ws, transport = _make_ws()
+    from veloce.websocket import _RAW_DISCONNECT
+
     ws.feed_data(_client_frame(0x1, b"abandoned-", fin=False))  # opens a fragment
-    ws.feed_data(_client_frame(0x1, b"complete", fin=True))  # interrupts it
-    assert ws._receive_queue.get_nowait() == b"complete"
-    # State was cleared — a stray continuation now finds no message in
-    # progress and is a 1002 protocol error rather than appending to the
-    # abandoned buffer (RFC 6455 §5.4).
-    ws.feed_data(_client_frame(0x0, b"stale", fin=True))
+    ws.feed_data(_client_frame(0x1, b"interrupt", fin=True))  # new data frame mid-stream
     assert ws._closed is True
+    # The interrupting frame is not delivered: the only thing enqueued is the
+    # disconnect sentinel that wakes a parked receiver on the protocol close.
+    assert ws._receive_queue.get_nowait() is _RAW_DISCONNECT
+    assert ws._receive_queue.empty()
     close = [w for w in transport.writes if w[0] & 0x0F == 0x8]
     assert close and struct.unpack("!H", close[-1][2:4])[0] == 1002
 

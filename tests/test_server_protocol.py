@@ -415,6 +415,36 @@ def test_single_request_dispatches_and_keeps_alive():
         loop.close()
 
 
+def test_head_response_omits_body_keeps_content_length():
+    """RFC 9110 Sec. 9.3.2: a native HEAD response carries the would-be
+    Content-Length header but no message body. Sending the body corrupts
+    keep-alive framing (the client reads it as the next response)."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        @app.get("/hello")
+        async def hello(request):  # noqa: ANN001, ANN202
+            return "hello-body"
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        proto.data_received(b"HEAD /hello HTTP/1.1\r\nHost: x\r\n\r\n")
+        _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        head, _, body = emitted.partition(b"\r\n\r\n")
+        assert b"200" in head
+        # The Content-Length still advertises the GET representation size.
+        assert b"Content-Length: 10" in head
+        # But no body bytes follow the header terminator.
+        assert body == b""
+    finally:
+        loop.close()
+
+
 def test_keep_alive_serves_second_sequential_request():
     """After a keep-alive response, a second request on the same connection is
     served correctly (the parser and per-request state are reused)."""

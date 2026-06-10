@@ -383,8 +383,6 @@ a single `POST` route to your app, so you serve it with any ASGI server (or
 `app.run()`) like the rest of your application:
 
 ```python
-import asyncio
-
 from veloce import Veloce
 
 app = Veloce()
@@ -398,7 +396,7 @@ async def add(a: int, b: int) -> int:
 app.mount_mcp(transport="http", path="/mcp")  # default path is "/mcp"
 
 if __name__ == "__main__":
-    asyncio.run(app.run())
+    app.run()
 ```
 
 Call `mount_mcp(transport="http")` **after** registering your tools, resources, and

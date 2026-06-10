@@ -31,3 +31,25 @@ def test_view_args_populated_after_match():
         client.get("/items/42")
 
     assert captured["view_args"] == {"item_id": 42}
+
+
+def test_path_params_populated_on_bare_fast_path():
+    """A request-only handler on a bare app still sees `request.path_params`.
+
+    The straight-line fast path must assign the matched params to the request,
+    not only the slow (`_resolve_route`) path. A request-only handler keeps the
+    route fast-eligible, so this exercises the fast path with a parameterized
+    route on an app with no middleware/hooks.
+    """
+    app = Veloce(openapi_url=None)
+    captured: dict = {}
+
+    @app.get("/items/{item_id}")
+    async def item(request: Request):
+        captured["path_params"] = dict(request.path_params)
+        return {}
+
+    with TestClient(app) as client:
+        client.get("/items/42")
+
+    assert captured["path_params"] == {"item_id": "42"}

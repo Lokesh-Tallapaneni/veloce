@@ -370,6 +370,62 @@ async def test_native_upgrade_no_loop_exception_on_connect():
         await server.wait_closed()
 
 
+async def test_native_upgrade_first_frame_in_handshake_segment():
+    # Regression: a client that pipelines its first masked frame into the same
+    # TCP segment as the handshake. httptools raises `HttpParserUpgrade` at the
+    # body offset, so the post-handshake bytes (the frame) never reach the HTTP
+    # parser. `data_received` must feed `data[offset:]` to the frame parser or
+    # the first message is silently dropped and the connection hangs.
+    app = Veloce(openapi_url=None)
+
+    @app.websocket("/echo")
+    async def echo(ws: WebSocket):
+        await ws.accept()
+        async for message in ws.iter_text():
+            await ws.send_text(f"echo:{message}")
+
+    server, port = await _start_server(app)
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        key = base64.b64encode(os.urandom(16)).decode()
+        handshake = (
+            "GET /echo HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: keep-alive, Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        ).encode()
+        # The first text frame, masked, glued onto the handshake in one write.
+        payload = b"hello"
+        mask = os.urandom(4)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        frame = bytes([0x81, 0x80 | len(payload)]) + mask + masked
+        writer.write(handshake + frame)
+        await writer.drain()
+
+        head = await reader.readuntil(b"\r\n\r\n")
+        assert b"101" in head.split(b"\r\n", 1)[0]
+
+        # The echo must come back from the frame sent in the handshake segment.
+        # Without the fix the frame is dropped, so this read times out.
+        b0 = await asyncio.wait_for(reader.readexactly(1), timeout=2.0)
+        assert b0[0] & 0x0F == 0x1
+        length = (await reader.readexactly(1))[0] & 0x7F
+        body = await reader.readexactly(length)
+        assert body == b"echo:hello"
+    finally:
+        # Close the client first so a parked handler unwinds, then bound the
+        # server teardown so a no-fix run fails on the assertion above rather
+        # than hanging the suite.
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+        server.close()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(server.wait_closed(), timeout=2.0)
+
+
 # ── Handshake refusals (plain HTTP, never a 101) ────────────────────
 
 
@@ -466,6 +522,43 @@ async def test_native_upgrade_bad_host_returns_403():
         assert "403" in client.status_line  # type: ignore[attr-defined]
         assert "101" not in client.status_line  # type: ignore[attr-defined]
         await client.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_native_h2c_upgrade_returns_400_and_handler_does_not_run():
+    # Regression: an `Upgrade: h2c` (or any non-WebSocket upgrade) request is a
+    # protocol this server does not speak. The client must receive a 400 and the
+    # matching route handler must NOT execute - dispatching it would commit side
+    # effects for a request the client is told failed, and retries would
+    # double-execute.
+    app = Veloce(openapi_url=None)
+    ran = asyncio.Event()
+
+    @app.get("/upgrade")
+    async def upgrade_handler():
+        ran.set()
+        return {"ok": True}
+
+    server, port = await _start_server(app)
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            b"GET /upgrade HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Upgrade: h2c\r\n\r\n"
+        )
+        await writer.drain()
+        data = await asyncio.wait_for(reader.read(), timeout=2.0)
+        assert b"400" in data.split(b"\r\n", 1)[0]
+        # Give any erroneously-scheduled dispatch a chance to run.
+        await asyncio.sleep(0.05)
+        assert not ran.is_set(), "handler ran for a request the client saw fail"
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
     finally:
         server.close()
         await server.wait_closed()
