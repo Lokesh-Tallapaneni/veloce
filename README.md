@@ -123,14 +123,6 @@ Open <http://127.0.0.1:8000/items/42> to see `{"item_id": 42}`, or
 The full Tier 0/1/2 feature matrix and per-feature design notes live in
 [`docs/`](docs/).
 
-## Benchmarks
-
-Comparative benches against equivalent third-party async and sync
-frameworks live in [`bench/`](bench/). They isolate framework dispatch
-cost on simple workloads (JSON-hello, path-param) and are meant to be
-reproduced locally. Numbers are workload- and machine-specific; run the
-suite yourself rather than relying on a headline figure.
-
 ## Project status
 
 Veloce follows [semantic versioning](https://semver.org/): the public

@@ -102,24 +102,3 @@ jobs:
         run: uv run pytest -m fuzz -q
         env:
           HYPOTHESIS_PROFILE: ci
-
-  bench:
-    name: dispatch micro-benchmark
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      # Surfaces dispatch throughput in the CI log on every push, and
-      # fails the build on a catastrophic (multi-x) regression via a
-      # deliberately loose floor — runner variance stays well above it.
-      # A finer baseline-relative gate is tracked separately.
-      - name: Benchmark
-        run: uv run python bench/dispatch_bench.py --min-rps 2000

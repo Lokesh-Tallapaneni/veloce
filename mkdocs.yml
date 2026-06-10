@@ -200,6 +200,5 @@ nav:
       - Migrating from FastAPI: surpass/migrating-from-fastapi.md
   - Comparison: comparison.md
   - Versioning & Stability: policies.md
-  - Benchmarks: benchmarks.md
   - API Reference: reference.md
   - Changelog: changelog.md
