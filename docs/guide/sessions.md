@@ -92,6 +92,14 @@ cookie on the response.
 
 ## Caching and `Vary: Cookie`
 
+```python
+app.add_middleware(
+    SessionMiddleware,
+    secret_key="change-me-in-production",
+    vary_on_cookie=False,
+)
+```
+
 A response built from session state is personalised per user, so a shared
 cache (a CDN, a reverse proxy) must not serve one user's body to another.
 When a handler reads or writes the session, the middleware adds
@@ -102,18 +110,8 @@ A handler that never touches the session gets no extra `Vary`.
 Varying on `Cookie` is the safe default. If a deployment never serves
 session-bearing responses from a shared cache — or manages cache-safety another
 way — construct the middleware with `vary_on_cookie=False` to turn the automatic
-header off for every response it handles:
-
-```python
-app.add_middleware(
-    SessionMiddleware,
-    secret_key="change-me-in-production",
-    vary_on_cookie=False,
-)
-```
-
-This is an app-wide switch, not a per-response one; leave it on unless a shared
-cache is genuinely not in play.
+header off for every response it handles. This is an app-wide switch, not a
+per-response one; leave it on unless a shared cache is genuinely not in play.
 
 ## Permanent sessions
 
@@ -145,13 +143,6 @@ persists in the cookie across requests.
 
 ## Sliding expiry (idle timeout)
 
-By default a session is only re-written when a handler **modifies** it, so a
-read-only request never moves the expiry forward and the session ages out at a
-fixed `max_age` from its last write. Pass `renew_on_access=True` to switch to a
-sliding idle-timeout: any request that **reads** the session (via
-`request.session`) refreshes its expiry on the way out, so an active user is
-kept logged in and only an idle gap longer than `max_age` expires the session.
-
 ```python
 from veloce import Request, SessionMiddleware, Veloce
 
@@ -163,6 +154,15 @@ app.add_middleware(
     renew_on_access=True,    # ...measured from the last access, not the last write
 )
 ```
+
+By default a session is only re-written when a handler **modifies** it, so a
+read-only request never moves the expiry forward and the session ages out at a
+fixed `max_age` from its last write.
+
+Pass `renew_on_access=True` to switch to a sliding idle-timeout: any request
+that **reads** the session (via `request.session`) refreshes its expiry on the
+way out, so an active user is kept logged in and only an idle gap longer than
+`max_age` expires the session.
 
 With the cookie middleware this re-signs the cookie (new server-side timestamp
 and `Max-Age`); with

@@ -167,6 +167,8 @@ class DispatchMixin:
         make_default_options_response: Callable[..., Any]
         _status_handlers: Any
         _find_exception_handler: Callable[..., Any]
+        _find_scoped_exception_handler: Callable[..., Any]
+        _find_scoped_status_handler: Callable[..., Any]
         _mcp_context: Any
         _instrumentation: Any
         _middlewares: Any
@@ -536,15 +538,18 @@ class DispatchMixin:
             _exc = exc
             # Status-code handler wins over class handler; class handler walks
             # the MRO so e.g. registering on `HTTPException` catches `NotFound`.
-            handler = self._status_handlers.get(exc.status_code) or self._find_exception_handler(
-                type(exc)
-            )
+            # Both prefer a handler on the failing request's blueprint chain
+            # before the app-level tables, so a blueprint's handler stays scoped
+            # to its own routes.
+            handler = self._find_scoped_status_handler(
+                exc.status_code, request
+            ) or self._find_scoped_exception_handler(type(exc), request)
             if handler:
                 return await self._run_exc_handler_response(request, exc, handler, cp, excluded)
             return await self._default_http_exception_response(request, exc, cp, excluded)
         except Exception as exc:
             _exc = exc
-            handler = self._find_exception_handler(type(exc))
+            handler = self._find_scoped_exception_handler(type(exc), request)
             if handler:
                 return await self._run_exc_handler_response(request, exc, handler, cp, excluded)
             # Record the exception's low-cardinality class name (never the
@@ -759,6 +764,11 @@ class DispatchMixin:
             for prefix, prefix_slash, sub_app in self._mounted_apps:
                 if request.path.startswith(prefix_slash) or request.path == prefix:
                     sub_path = request.path[len(prefix) :] or "/"
+                    # Surface the mount prefix as the sub-app's `root_path`, the
+                    # same way the ASGI-mount path does (`_asgi_app`), so a route
+                    # inside the sub-app sees `request.root_path == <mount prefix>`
+                    # and `url_for` builds prefix-correct URLs. Stacks under the
+                    # parent's own root_path when the parent is itself mounted.
                     sub_request = Request(
                         method=request.method,
                         path=sub_path,
@@ -767,6 +777,7 @@ class DispatchMixin:
                         body=await request.body(),
                         transport=request.transport,
                         app=sub_app,
+                        scope={"root_path": request.root_path + prefix},
                     )
                     if hasattr(sub_app, "handle_request"):
                         response = await sub_app.handle_request(sub_request)
@@ -1047,7 +1058,11 @@ class DispatchMixin:
         self, request: Request, status_code: int, default: Response
     ) -> Response:
         """Check for status-code handler, fall back to default response."""
-        handler = self._status_handlers.get(status_code)
+        # Prefer a handler on the failing request's blueprint chain (a
+        # `@bp.errorhandler(500)` scoped to its own routes) before the app-level
+        # table, so a blueprint status handler still fires on the unhandled
+        # exception -> 500 path, not only on the HTTPException path.
+        handler = self._find_scoped_status_handler(status_code, request)
         if handler:
             result = await self._call_handler(handler, {"request": request})
             return await self._run_response_middleware(request, self._coerce_response(result))

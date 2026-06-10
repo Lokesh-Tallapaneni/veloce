@@ -1,8 +1,8 @@
 ---
 description: >-
   Generate typed API clients and SDKs from a Veloce app's OpenAPI document — the
-  /openapi.json endpoint, driving openapi-generator and openapi-ts, and shaping method
-  names with operation_id and automatic collision disambiguation.
+  /openapi.json endpoint, driving openapi-generator and openapi-ts, and shaping
+  method names with operation_id and automatic collision disambiguation.
 tags: [openapi, clients, sdk, codegen]
 ---
 
@@ -221,9 +221,12 @@ assert "search_get" in ids
 assert "search_get__users" in ids
 ```
 
-The first operation to claim a bare id keeps it; each later duplicate becomes
-`<id>__<path-segments>` (and `<id>__<path-segments>_<n>` if even that collides). A single
-aggregated `WARNING` is logged listing every collision and its resolution, so you can find
+| Operation | Resulting id |
+| --- | --- |
+| The first operation to claim a bare id | keeps it |
+| Each later duplicate | becomes `<id>__<path-segments>` (and `<id>__<path-segments>_<n>` if even that collides) |
+
+A single aggregated `WARNING` is logged listing every collision and its resolution, so you can find
 and pin the affected routes.
 
 !!! warning "Auto-suffixed ids are stable but not pretty"

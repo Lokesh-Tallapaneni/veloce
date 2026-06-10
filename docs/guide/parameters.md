@@ -115,7 +115,9 @@ async def by_tags(request: Request, tag: list[str] = []):
 ```
 
 A `bool`-annotated query, path, header, or cookie parameter is coerced from
-the raw string. The value is true only when it lower-cases to one of `true`,
+the raw string.
+
+The value is true only when it lower-cases to one of `true`,
 `1`, or `yes`; every other string (including `false`, `0`, `no`, `off`, and the
 empty string) coerces to `False`.
 
@@ -132,10 +134,13 @@ async def list_items(request: Request, archived: bool = False):
 
 !!! warning "Bool coercion accepts a fixed token set"
     Unlike FastAPI, which treats `on`/`off` as valid bool tokens, Veloce only
-    recognises `true`, `1`, and `yes` (case-insensitively) as `True`. Anything
-    else is `False` — there is no `422` for an unrecognised value, so a typo
-    like `archived=ture` silently reads as `False`. The same token set applies
-    to `Query`, `Path`, `Header`, and `Cookie` parameters.
+    recognises `true`, `1`, and `yes` (case-insensitively) as `True`.
+
+    Anything else is `False` — there is no `422` for an unrecognised value, so a
+    typo like `archived=ture` silently reads as `False`.
+
+    The same token set applies to `Query`, `Path`, `Header`, and `Cookie`
+    parameters.
 
 ## Path
 
@@ -276,11 +281,13 @@ after `=` supplies the default. If you set the marker as the default *and* in
 ## Validation errors
 
 When a value violates a constraint or a required parameter is missing, Veloce
-responds with a `422` and a structured error body. The same validation rules
-apply across all seven marker types: numeric bounds (`ge`, `le`, `gt`, `lt`,
-`multiple_of`) for numbers, and `min_length` / `max_length` / `pattern` for
-strings. See [Error handling](error-handling.md) for customising the
-response.
+responds with a `422` and a structured error body.
+
+The same validation rules apply across all seven marker types: numeric bounds
+(`ge`, `le`, `gt`, `lt`, `multiple_of`) for numbers, and `min_length` /
+`max_length` / `pattern` for strings.
+
+See [Error handling](error-handling.md) for customising the response.
 
 ## Next steps
 

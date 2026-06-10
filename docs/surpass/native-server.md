@@ -26,9 +26,6 @@ pip install veloceframework
 
 ## Running without uvicorn
 
-`app.run()` brings up the server on its own event loop. The same `app` object also works as an ASGI
-application, so nothing about the app changes between the two paths.
-
 ```python title="app.py"
 from veloce import Veloce
 
@@ -43,6 +40,9 @@ async def index():
 if __name__ == "__main__":
     app.run(port=8000)
 ```
+
+`app.run()` brings up the server on its own event loop. The same `app` object also works as an ASGI
+application, so nothing about the app changes between the two paths.
 
 `run()` runs startup lifecycle hooks, creates the listening socket via `loop.create_server`, installs
 `SIGINT`/`SIGTERM` handlers, and serves until a signal arrives. On exit it runs the graceful drain and
@@ -176,18 +176,6 @@ completed yet:
 
 ## Graceful drain on shutdown
 
-On `SIGINT`/`SIGTERM` (or Ctrl+C), `run()` stops accepting new connections and runs a **two-phase**
-graceful drain so in-flight requests are never cut off mid-pipeline.
-
-Phase one flips a drain flag on every live connection. Each connection finishes the request it is
-already dispatching, then closes at the request boundary instead of being cancelled. A connection
-admitted during the shutdown window serves at most its first request before quiescing; pipelined
-follow-ups are declined so the client retries on a fresh connection.
-
-Phase two is a hard fallback: any dispatch task still running after a bounded drain window is awaited
-with a 30-second timeout, then cancelled, so a stuck handler can never hang the process. The shutdown
-lifecycle hooks run last.
-
 ```python title="app.py"
 import asyncio
 
@@ -213,6 +201,18 @@ if __name__ == "__main__":
 
 A request already running when `SIGTERM` arrives runs to completion; the shutdown hooks fire only
 after the drain finishes.
+
+On `SIGINT`/`SIGTERM` (or Ctrl+C), `run()` stops accepting new connections and runs a **two-phase**
+graceful drain so in-flight requests are never cut off mid-pipeline.
+
+Phase one flips a drain flag on every live connection. Each connection finishes the request it is
+already dispatching, then closes at the request boundary instead of being cancelled. A connection
+admitted during the shutdown window serves at most its first request before quiescing; pipelined
+follow-ups are declined so the client retries on a fresh connection.
+
+Phase two is a hard fallback: any dispatch task still running after a bounded drain window is awaited
+with a 30-second timeout, then cancelled, so a stuck handler can never hang the process. The shutdown
+lifecycle hooks run last.
 
 ## Hardening knobs
 
@@ -248,8 +248,10 @@ if __name__ == "__main__":
 
 The slowloris and idle timers are mutually exclusive per connection: the idle `KEEP_ALIVE_TIMEOUT`
 governs a connection waiting for its next request, and the shorter `REQUEST_TIMEOUT` takes over the
-moment a request's first bytes arrive. The connection cap is enforced under a lock at
-`connection_made`, so a burst of parallel connections cannot over-admit past the limit.
+moment a request's first bytes arrive.
+
+The connection cap is enforced under a lock at `connection_made`, so a burst of parallel connections
+cannot over-admit past the limit.
 
 !!! note "The body cap is enforced twice"
     `MAX_CONTENT_LENGTH` rejects an honest over-limit `Content-Length` up front with `413`, and the

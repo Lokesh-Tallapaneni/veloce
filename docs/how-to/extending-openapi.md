@@ -29,7 +29,9 @@ assert app.openapi_schema is schema  # cached: same dict on every call
 ```
 
 The `/openapi.json` route, the Swagger UI at `/docs`, and the ReDoc UI at `/redoc` all
-serve `app.openapi()`, so a mutation reaches every consumer. Most metadata is better set
+serve `app.openapi()`, so a mutation reaches every consumer.
+
+Most metadata is better set
 through the constructor — `title`, `version`, `summary`, `description`, `contact`,
 `license_info`, `terms_of_service`, `servers`, and `openapi_tags` all flow into the
 document without any manual editing. Reach for the techniques below only for fields the

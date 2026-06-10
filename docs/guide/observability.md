@@ -26,9 +26,18 @@ def export(metrics):
     statsd.timing(metrics.route or "unmatched", metrics.duration_ms)
 ```
 
-`RequestMetrics` carries the request `method`, the concrete `path`, the
-matched `route` template (or `None` for a 404/405), the `status_code`, the
-wall-clock `duration_ms`, and a `streamed` flag. The route *template*
+`RequestMetrics` carries these fields:
+
+| Field | Carries |
+| --- | --- |
+| `method` | the request `method` |
+| `path` | the concrete `path` |
+| `route` | the matched `route` template (or `None` for a 404/405) |
+| `status_code` | the `status_code` |
+| `duration_ms` | the wall-clock `duration_ms` |
+| `streamed` | a `streamed` flag |
+
+The route *template*
 (`/items/{id}`) — not the concrete path — is the safe aggregation key:
 an attacker-controlled URL can never explode label cardinality.
 
@@ -74,14 +83,21 @@ app = Veloce()
 instrument_with_prometheus(app)
 ```
 
-This registers a `http_requests_total` counter (labelled by method, route
-template, and status) and a `http_request_duration_seconds` histogram
-(labelled by method and route template). An unmatched request (404/405) uses
-the constant `"<unmatched>"` route label. Override the metric name `prefix`,
-the histogram `buckets`, or pass a custom `registry=...` to isolate apps (use
-a fresh registry per app — instrumenting twice against the same registry
-raises prometheus_client's "Duplicated timeseries" error). Calling
-`instrument_with_prometheus` without the extra installed raises an
+This registers two series:
+
+| Series | Labels |
+| --- | --- |
+| `http_requests_total` counter | method, route template, and status |
+| `http_request_duration_seconds` histogram | method and route template |
+
+An unmatched request (404/405) uses the constant `"<unmatched>"` route label.
+
+Override the metric name `prefix`, the histogram `buckets`, or pass a custom
+`registry=...` to isolate apps (use a fresh registry per app — instrumenting
+twice against the same registry raises prometheus_client's "Duplicated
+timeseries" error).
+
+Calling `instrument_with_prometheus` without the extra installed raises an
 `ImportError` with an install hint.
 
 ## See also

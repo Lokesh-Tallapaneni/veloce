@@ -133,6 +133,16 @@ class _SessionProxy(_ContextProxy):
             )
         return req.session
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        # Reads forward through `_ContextProxy.__getattr__`; writes must forward
+        # too, or a public attribute the `Session` supports (notably the
+        # `permanent` property) raises `AttributeError` on this slotted proxy.
+        # Underscore names address the proxy itself.
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._resolve(), name, value)
+
     def __getitem__(self, key: str) -> Any:
         return self._resolve()[key]
 

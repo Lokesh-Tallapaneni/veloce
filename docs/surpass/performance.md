@@ -11,7 +11,9 @@ tags: [performance, dispatch, benchmarks, msgspec]
 Veloce is fast because the per-request dispatch path does almost no work that
 can be moved off it. Routing is a radix tree, the dependency graph compiles to a
 straight-line resolver, parameter reflection happens once at registration, and
-disabled features cost zero per request. This page explains each mechanism
+disabled features cost zero per request.
+
+This page explains each mechanism
 against the real source and then states the measured numbers — every figure is
 benchmarked, with the methodology and caveats spelled out and cross-linked to
 [Benchmarks](../benchmarks.md).
@@ -63,7 +65,7 @@ header, cookie, body model, the request itself, and so on). The expensive
 reflection calls, `inspect.signature` and `typing.get_type_hints`, never run on
 the request path.
 
-```python title="app.py"
+```python title="app.py" hl_lines="13"
 from pydantic import BaseModel
 
 from veloce import Request, Veloce
@@ -85,9 +87,15 @@ if __name__ == "__main__":
     app.run(port=8000)
 ```
 
-At registration Veloce records that `item_id` is a path int, `item` is a body
-model, and `request` is the injected request. Per request it walks that frozen
-plan instead of re-inspecting the signature.
+At registration Veloce records each slot of the handler signature:
+
+| Parameter | Recorded as |
+| --- | --- |
+| `item_id` | a path int |
+| `item` | a body model |
+| `request` | the injected request |
+
+Per request it walks that frozen plan instead of re-inspecting the signature.
 
 ## The compiled dependency-graph resolver
 

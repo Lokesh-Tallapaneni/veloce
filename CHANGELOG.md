@@ -57,6 +57,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The native dev server (`app.run()`) now starts on Windows: `reuse_port` is
+  requested only where `SO_REUSEPORT` exists, instead of unconditionally passing
+  `reuse_port=True` to the selector event loop (which raised `ValueError` and
+  killed the serving thread before it bound).
+- The native dev server now drains in-flight requests on shutdown on Windows too:
+  where `loop.add_signal_handler` is unavailable, `_serve` falls back to
+  `signal.signal` and schedules the cooperative shutdown on the loop, so Ctrl+C /
+  Ctrl+Break let an in-flight request finish at its boundary instead of raising
+  `KeyboardInterrupt` straight out of the loop and resetting the connection.
+- Blueprint error handlers are now scoped to their own routes: a
+  `@bp.errorhandler` only catches exceptions raised on that blueprint (or a nested
+  descendant), consulted by the failing request's blueprint chain before the
+  app-level handlers — it no longer catches a sibling blueprint's or an app-level
+  route's exception. `error_handler_spec` now reports per-blueprint sub-tables.
+- A mounted Veloce sub-app now sees `request.root_path` (and `script_root`) set to
+  its mount prefix, matching mounted ASGI apps, so `url_for` and proxy-aware URLs
+  inside the sub-app are prefix-correct.
+- `JSONResponse`, `HTMLResponse`, and `PlainTextResponse` accept `background=`
+  (forwarded to the base `Response`), so a `BackgroundTask`/`BackgroundTasks` can
+  be attached to them as it can to `Response`.
+- `FileResponse(content_disposition_type="inline")` now emits
+  `Content-Disposition: inline` even without a `filename`; an explicit non-default
+  disposition is honoured (the default `attachment` without a filename still emits
+  no header, so plain file responses are not forced to download).
+- The `session` proxy forwards attribute writes, so `session.permanent = True`
+  works through the global proxy rather than raising `AttributeError`.
+- A single Pydantic body model's validation errors are now located under `"body"`
+  (e.g. `["body", "field"]`), consistent with `Body(...)` marker params and the
+  whole-body error cases.
 - MCP: the `logging/setLevel` minimum is now scoped per request (a ContextVar like
   the progress/notification channel) rather than on the shared `MCPServer`, so one
   HTTP client's level change no longer raises the notification floor for others.

@@ -189,10 +189,13 @@ async def wait_for_next_update() -> str:
 
 !!! warning "`ping` must be a finite positive number of seconds"
     `EventSourceResponse` raises `ValueError` for a `ping` that is zero,
-    negative, `NaN`, or infinite. A zero or negative interval would time out
-    instantly and flood the connection with heartbeat frames; an infinite
-    interval would never fire. Use a sensible positive value (a few seconds
-    to a minute) or omit `ping` entirely to disable heartbeats.
+    negative, `NaN`, or infinite.
+
+    A zero or negative interval would time out instantly and flood the
+    connection with heartbeat frames; an infinite interval would never fire.
+
+    Use a sensible positive value (a few seconds to a minute) or omit `ping`
+    entirely to disable heartbeats.
 
 ## Status code and headers
 

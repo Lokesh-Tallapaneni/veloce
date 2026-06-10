@@ -9,8 +9,9 @@ Veloce ships an in-memory [`TestClient`](../reference.md#veloce.TestClient) and
 [`AsyncTestClient`](../reference.md#veloce.AsyncTestClient). They construct ASGI
 scopes directly and call the app's `__call__` surface, so the radix router,
 dependency resolver, middleware chain, response encoder, and the lifespan
-handshake all run — no socket, no separate server. Both clients ship with Veloce;
-there is nothing extra to install.
+handshake all run — no socket, no separate server.
+
+Both clients ship with Veloce; there is nothing extra to install.
 
 ## Creating a client
 
@@ -51,8 +52,17 @@ client = TestClient(app)
 
 ## Making requests
 
-The client mirrors the HTTP verbs and returns a response object exposing
-`status_code`, `json()`, `text`, `headers`, `content_type`, and `cookies`:
+The client mirrors the HTTP verbs and returns a response object exposing these
+attributes:
+
+| Attribute        |
+| ---------------- |
+| `status_code`    |
+| `json()`         |
+| `text`           |
+| `headers`        |
+| `content_type`   |
+| `cookies`        |
 
 ```python
 client.get("/items", params={"page": "2"})

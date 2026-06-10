@@ -6,12 +6,14 @@ tags: [deployment, systemd, shutdown, operations]
 # Deployment concepts
 
 A production deployment needs more than a serving command: a process manager to
-start the app, restart it on crash, and stop it cleanly. Veloce drains in-flight
-requests on `SIGTERM` on every serving path — the native
+start the app, restart it on crash, and stop it cleanly.
+
+Veloce drains in-flight requests on `SIGTERM` on every serving path — the native
 [`app.run()`](../reference.md#veloce.Veloce.run) server, the gunicorn
 [`VeloceWorker`](workers.md), and uvicorn — so a
-well-behaved process manager gets a clean handoff for free. This page covers the
-operational layer around the serving command itself.
+well-behaved process manager gets a clean handoff for free.
+
+This page covers the operational layer around the serving command itself.
 
 ## Running under a process manager
 
@@ -145,15 +147,15 @@ Click group.
 
 ## Worker and memory sizing
 
-Each worker is a separate process with its own Python interpreter and its own
-`Veloce()` instance, so memory scales roughly linearly with the worker count. A
-common starting point is one worker per CPU core; tune against your own latency
-and memory profile under load.
-
 ```bash
 # Size --workers to the core count.
 nproc
 ```
+
+Each worker is a separate process with its own Python interpreter and its own
+`Veloce()` instance, so memory scales roughly linearly with the worker count. A
+common starting point is one worker per CPU core; tune against your own latency
+and memory profile under load.
 
 Two facts drive sizing:
 
@@ -182,22 +184,6 @@ gunicorn app:app -k veloce.workers.VeloceWorker \
 
 ## Graceful shutdown
 
-When a process manager stops the server it sends `SIGTERM`. Veloce intercepts it
-and drains in-flight requests instead of dropping connections mid-response, then
-runs the app's `shutdown` lifecycle so resources opened at startup are released.
-
-The native `app.run()` server drains in two phases on `SIGTERM` (or `SIGINT`):
-
-- **Phase one — quiesce.** Every live connection finishes the request it is
-  already dispatching and then closes at the request boundary, rather than being
-  cancelled mid-pipeline. A connection accepted during shutdown serves at most
-  its first request.
-- **Phase two — bounded fallback.** Any dispatch still running after a 30-second
-  window is cancelled, so a stuck handler can never hang the process forever.
-
-After the drain, the `shutdown` lifecycle runs: `on_shutdown` handlers fire and
-the `lifespan=` context manager exits, *after* requests have drained.
-
 ```python title="app.py"
 from veloce import Veloce
 
@@ -225,6 +211,22 @@ if __name__ == "__main__":
 
 Press `Ctrl+C` (or send `SIGTERM`) and the server drains active requests, then
 runs `close_pool` before exiting.
+
+When a process manager stops the server it sends `SIGTERM`. Veloce intercepts it
+and drains in-flight requests instead of dropping connections mid-response, then
+runs the app's `shutdown` lifecycle so resources opened at startup are released.
+
+The native `app.run()` server drains in two phases on `SIGTERM` (or `SIGINT`):
+
+- **Phase one — quiesce.** Every live connection finishes the request it is
+  already dispatching and then closes at the request boundary, rather than being
+  cancelled mid-pipeline. A connection accepted during shutdown serves at most
+  its first request.
+- **Phase two — bounded fallback.** Any dispatch still running after a 30-second
+  window is cancelled, so a stuck handler can never hang the process forever.
+
+After the drain, the `shutdown` lifecycle runs: `on_shutdown` handlers fire and
+the `lifespan=` context manager exits, *after* requests have drained.
 
 !!! note "The drain window and `TimeoutStopSec`"
     The native server allows in-flight dispatch up to 30 seconds before

@@ -109,10 +109,14 @@ async def ping(request: Request):
 
 ## Conditional OpenAPI
 
-Disabling a docs surface is per-URL, and the granularity matters. Setting
-`docs_url=None` / `redoc_url=None` removes an interactive UI while the JSON schema
-endpoint stays up. Setting `openapi_url=None` disables the whole OpenAPI subsystem
-— no JSON document and, because the UIs depend on it, no `/docs` or `/redoc`.
+Disabling a docs surface is per-URL, and the granularity matters.
+
+`docs_url=None` / `redoc_url=None`
+: removes an interactive UI while the JSON schema endpoint stays up.
+
+`openapi_url=None`
+: disables the whole OpenAPI subsystem — no JSON document and, because the UIs
+  depend on it, no `/docs` or `/redoc`.
 
 ```python title="app.py"
 import os
@@ -159,12 +163,13 @@ assert client.get("/openapi.json").status_code == 200
 ## Extending the schema
 
 [`app.openapi()`](../reference.md#veloce.Veloce.openapi) returns the generated
-document, building it on first call and caching it on `app.openapi_schema`. The
-returned dict is the live cached object, so mutating it in place is the supported
+document, building it on first call and caching it on `app.openapi_schema`.
+
+The returned dict is the live cached object, so mutating it in place is the supported
 way to inject keys the generator does not produce — an `info.x-logo`, a custom tag
 ordering, vendor extensions.
 
-```python title="app.py"
+```python title="app.py" hl_lines="14"
 from veloce import Request, Veloce
 
 app = Veloce(title="Catalog API")
@@ -276,9 +281,11 @@ async def create_item(item: ItemIn):
 ```
 
 The request body references `ItemIn`; the `200` response references `ItemOut`.
-Models whose validation and serialization JSON Schemas are byte-identical collapse
-onto a single component — the `-Output` variant only appears when the shapes
-genuinely differ.
+
+!!! note
+    Models whose validation and serialization JSON Schemas are byte-identical collapse
+    onto a single component — the `-Output` variant only appears when the shapes
+    genuinely differ.
 
 !!! tip
     Declaring distinct `…In` / `…Out` models keeps your request and response
@@ -291,7 +298,7 @@ genuinely differ.
 Every route decorator accepts OpenAPI-specific keywords that shape its operation
 object.
 
-```python title="app.py"
+```python title="app.py" hl_lines="17 18 24"
 from pydantic import BaseModel
 
 from veloce import Request, Veloce

@@ -95,6 +95,12 @@ class Blueprint(Router):
         self._teardown_request_hooks: list[Callable] = []
         self._exception_handlers: dict[type, Callable] = {}
         self._status_handlers: dict[int, Callable] = {}
+        # Nested-child error handlers, kept under each child's dotted name suffix
+        # (relative to this blueprint) rather than flattened into the tables above,
+        # so a sibling child's handler does not leak across to another child. The
+        # app buckets these under `<this_bp_name>.<suffix>` at register time.
+        self._scoped_exception_handlers: dict[str, dict[type, Callable]] = {}
+        self._scoped_status_handlers: dict[str, dict[int, Callable]] = {}
         # URL processors registered on this blueprint. They're
         # gated to blueprint endpoints at register time.
         self._url_value_preprocessors: list[Callable] = []
@@ -199,10 +205,17 @@ class Blueprint(Router):
         self._before_request_hooks.extend(child._before_request_hooks)
         self._after_request_hooks.extend(child._after_request_hooks)
         self._teardown_request_hooks.extend(child._teardown_request_hooks)
-        for exc_cls, handler in child._exception_handlers.items():
-            self._exception_handlers.setdefault(exc_cls, handler)
-        for code, handler in child._status_handlers.items():
-            self._status_handlers.setdefault(code, handler)
+        # Error handlers stay scoped to the child (and its descendants) under the
+        # child's dotted name, not merged into this blueprint's own tables - so a
+        # `@child.errorhandler` only catches the child's routes, never a sibling's.
+        if child._exception_handlers:
+            self._scoped_exception_handlers[child.name] = dict(child._exception_handlers)
+        if child._status_handlers:
+            self._scoped_status_handlers[child.name] = dict(child._status_handlers)
+        for suffix, table in child._scoped_exception_handlers.items():
+            self._scoped_exception_handlers[f"{child.name}.{suffix}"] = table
+        for suffix, status_table in child._scoped_status_handlers.items():
+            self._scoped_status_handlers[f"{child.name}.{suffix}"] = status_table
         self._url_value_preprocessors.extend(child._url_value_preprocessors)
         self._url_default_funcs.extend(child._url_default_funcs)
 

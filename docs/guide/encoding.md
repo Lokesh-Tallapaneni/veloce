@@ -19,6 +19,7 @@ nothing extra to install.
 
 When a handler returns a `dict`, `list`, or Pydantic model, Veloce wraps it in a
 [`JSONResponse`](../reference.md#veloce.JSONResponse) and encodes it with orjson.
+
 orjson handles the common leaf types (`str`, `int`, `float`, `bool`, `None`,
 `datetime`, `UUID`, `Enum`, dataclass) at C speed; anything it cannot encode
 natively — `set`, `Path`, `Decimal`, `bytes`, or a registered custom type — is

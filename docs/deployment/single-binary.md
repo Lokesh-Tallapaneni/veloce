@@ -85,6 +85,7 @@ It starts the built-in server on port `8000`, exactly as `python main.py` would.
 | `--collect-all pydantic` | Bundle Pydantic's data files and submodules so validation works frozen. |
 | `--collect-all pydantic_core` | Bundle the compiled `pydantic_core` extension Pydantic v2 depends on. |
 | `--collect-submodules veloce` | Pull in every `veloce.*` submodule, including ones reached only through framework dispatch. |
+| `--add-data` | The argument is `SOURCE:DEST` (use `;` instead of `:` as the separator on Windows). |
 
 !!! note "Why `--collect-submodules veloce`"
     PyInstaller follows static imports well, but Veloce reaches some modules
@@ -115,13 +116,12 @@ pyinstaller --onefile \
     main.py
 ```
 
-The `--add-data` argument is `SOURCE:DEST` (use `;` instead of `:` as the
-separator on Windows). At runtime PyInstaller unpacks the bundle to a temporary
+At runtime PyInstaller unpacks the bundle to a temporary
 directory and exposes its path as `sys._MEIPASS`; resolve your asset directories
 against it so they point inside the bundle when frozen and at the source tree
 otherwise.
 
-```python title="main.py"
+```python title="main.py" hl_lines="9 10"
 import sys
 from pathlib import Path
 

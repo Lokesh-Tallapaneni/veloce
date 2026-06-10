@@ -329,13 +329,16 @@ async def report(session=Depends(db_session)):
     return session.query(...)
 ```
 
-Multiple `yield` dependencies tear down in reverse order. Every teardown
-runs even if an earlier one raises; the failures are then re-raised
-together as a `BaseExceptionGroup` (chained from the request exception
-when the request itself failed) so a broken teardown — a transaction that
-fails to commit or roll back, say — is observable rather than silently
-swallowed. The dispatcher logs the aggregated group so a failing teardown
-does not break the response cycle.
+Multiple `yield` dependencies tear down in reverse order.
+
+Every teardown runs even if an earlier one raises; the failures are then
+re-raised together as a `BaseExceptionGroup` (chained from the request
+exception when the request itself failed) so a broken teardown — a
+transaction that fails to commit or roll back, say — is observable rather
+than silently swallowed.
+
+The dispatcher logs the aggregated group so a failing teardown does not
+break the response cycle.
 
 !!! note
     The aggregated `BaseExceptionGroup` is raised on Python 3.11+ (PEP 654);

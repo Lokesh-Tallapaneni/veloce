@@ -147,3 +147,14 @@ def test_response_default_background_is_none():
     """Existing Response() construction without background= leaves it None."""
     r = Response(body=b"ok", content_type="text/plain")
     assert r.background is None
+
+
+def test_convenience_subclasses_accept_background():
+    """JSON/HTML/PlainText responses forward `background=` to the base Response,
+    so a BackgroundTask can be attached to them the same way it can to Response."""
+    from veloce import HTMLResponse, JSONResponse, PlainTextResponse
+
+    task = BackgroundTask(lambda: None)
+    assert JSONResponse({"ok": True}, background=task).background is task
+    assert HTMLResponse("<p>x</p>", background=task).background is task
+    assert PlainTextResponse("x", background=task).background is task

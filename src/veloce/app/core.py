@@ -596,6 +596,12 @@ class Veloce(
         self._bp_before_hooks: dict[str, list[Callable]] = {}
         self._bp_after_hooks: dict[str, list[Callable]] = {}
         self._bp_teardown_hooks: dict[str, list[Callable]] = {}
+        # Per-blueprint error handlers, kept out of the app-global tables so a
+        # blueprint's handler only catches exceptions raised by its own (or a
+        # nested descendant's) routes - consulted by `request.blueprints` before
+        # the app-level tables, never across sibling blueprints.
+        self._bp_exception_handlers: dict[str, dict[type, Callable]] = {}
+        self._bp_status_handlers: dict[str, dict[int, Callable]] = {}
         self._teardown_appcontext_hooks: list[Callable] = []
         self._context_processors: list[Callable] = []
         # `(prefix, prefix + "/", sub_app)` - the second slot is the
@@ -1283,16 +1289,22 @@ class Veloce(
         """Inspection view of registered error handlers.
 
         Returns a `{blueprint_name_or_None: {key: handler}}` mapping.
-        veloce keeps a flat registry (no per-blueprint sub-tables -
-        blueprint handlers are merged into the app's dicts at
-        `register_blueprint` time), so this view always carries a
-        single `None` key whose value contains every registered
-        handler keyed by integer status code or exception class.
+        App-level handlers live under the `None` key; each blueprint's
+        handlers live under the blueprint's name, keyed by integer status
+        code or exception class. Blueprint handlers are scoped to their own
+        routes at dispatch time, so they appear under their blueprint name
+        here, not folded into `None`.
         """
         merged: dict[Any, Callable] = {}
         merged.update(self._status_handlers)
         merged.update(self._exception_handlers)
-        return {None: merged}
+        result: dict[Any, dict[Any, Callable]] = {None: merged}
+        for bp_name in set(self._bp_status_handlers) | set(self._bp_exception_handlers):
+            sub: dict[Any, Callable] = {}
+            sub.update(self._bp_status_handlers.get(bp_name, {}))
+            sub.update(self._bp_exception_handlers.get(bp_name, {}))
+            result[bp_name] = sub
+        return result
 
     @property
     def before_request_funcs(self) -> dict[Any, list[Callable]]:
@@ -1475,9 +1487,9 @@ class Veloce(
           hooks fire only for blueprint-routed requests (gated via
           `request.endpoint` starting with `"<bpname>."`); we tag the
           blueprint's hooks so the dispatcher can filter.
-        - Splices blueprint-level error handlers into the app's tables;
-          app-level handlers take precedence on conflicts because
-          they're already registered.
+        - Buckets blueprint-level error handlers under the blueprint name (and
+          each nested child under its dotted name), scoped to that blueprint's
+          own routes; an app-level handler still catches everything as a fallback.
 
         Mountable multiple times on different apps with different
         prefixes - the blueprint itself stays unmodified.
@@ -1549,12 +1561,23 @@ class Veloce(
         for fn in blueprint._url_default_funcs:
             self._url_default_funcs.append(_proc_gate(fn))
 
-        # Error handlers: app-level wins on conflict (don't overwrite).
-        for exc_cls, handler in blueprint._exception_handlers.items():
-            self._exception_handlers.setdefault(exc_cls, handler)
-        self._exc_handler_cache.clear()
-        for code, handler in blueprint._status_handlers.items():
-            self._status_handlers.setdefault(code, handler)
+        # Error handlers stay scoped to the blueprint's own routes: bucket them
+        # under the blueprint name rather than merging into the app-global
+        # tables, so the dispatch error path (consulting `request.blueprints`)
+        # finds them only for a request on this blueprint or a descendant - never
+        # on a sibling blueprint or an app-level route. A nested child's handlers
+        # are bucketed under the child's full dotted name (`<bp>.<child>`), so two
+        # sibling children do not share a single parent bucket.
+        if blueprint._exception_handlers:
+            self._bp_exception_handlers.setdefault(bp_name, {}).update(
+                blueprint._exception_handlers
+            )
+        if blueprint._status_handlers:
+            self._bp_status_handlers.setdefault(bp_name, {}).update(blueprint._status_handlers)
+        for suffix, table in blueprint._scoped_exception_handlers.items():
+            self._bp_exception_handlers.setdefault(f"{bp_name}.{suffix}", {}).update(table)
+        for suffix, status_table in blueprint._scoped_status_handlers.items():
+            self._bp_status_handlers.setdefault(f"{bp_name}.{suffix}", {}).update(status_table)
 
     def add_url_rule(
         self,

@@ -52,7 +52,7 @@ what the class subclasses:
   level. This is the seam for third-party ASGI middleware — tracing,
   profiling, observability — that expects to wrap an ASGI app.
 
-```python
+```python hl_lines="14 18"
 from veloce import Middleware, Request, Response, Veloce
 
 app = Veloce()
@@ -98,7 +98,7 @@ when a preflight carries `Access-Control-Request-Private-Network: true`,
 the response echoes `Access-Control-Allow-Private-Network: true`. The grant
 is opt-in and never emitted unless configured.
 
-```python
+```python hl_lines="4"
 app.add_middleware(
     CORSMiddleware(
         allow_origins=["https://app.example.com"],

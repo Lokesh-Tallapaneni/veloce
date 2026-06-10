@@ -132,6 +132,143 @@ async def test_blueprint_errorhandler_catches_blueprint_routes():
     assert orjson.loads(resp.body) == {"caught": "kaboom"}
 
 
+@pytest.mark.asyncio
+async def test_blueprint_errorhandler_is_scoped_to_its_own_routes():
+    """A blueprint's errorhandler must not catch an exception raised on a
+    sibling blueprint or an app-level route - it is scoped to its own routes."""
+
+    class ScopedError(Exception):
+        pass
+
+    bp_a = Blueprint("a", url_prefix="/a")
+
+    @bp_a.errorhandler(ScopedError)
+    async def handle(request, exc):
+        return {"by": "a"}
+
+    @bp_a.get("/boom")
+    async def a_boom():
+        raise ScopedError("x")
+
+    bp_b = Blueprint("b", url_prefix="/b")
+
+    @bp_b.get("/boom")
+    async def b_boom():
+        raise ScopedError("x")
+
+    # No debug → an unhandled exception is a clean 500 JSON, not a traceback.
+    app = Veloce(openapi_url=None)
+    app.register_blueprint(bp_a)
+    app.register_blueprint(bp_b)
+
+    @app.get("/boom")
+    async def app_boom():
+        raise ScopedError("x")
+
+    import orjson
+
+    # a's handler catches a's own route.
+    resp_a = await app.handle_request(_req("/a/boom"))
+    assert orjson.loads(resp_a.body) == {"by": "a"}
+    # a's handler does NOT catch a sibling blueprint's route.
+    assert (await app.handle_request(_req("/b/boom"))).status_code == 500
+    # a's handler does NOT catch an app-level route.
+    assert (await app.handle_request(_req("/boom"))).status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_blueprint_status_handler_catches_unhandled_exception():
+    """A blueprint `@bp.errorhandler(500)` fires for a plain unhandled exception
+    on its own route (the unhandled-exception -> 500 path is scoped too)."""
+    import orjson
+
+    bp = Blueprint("bp", url_prefix="/bp")
+
+    @bp.errorhandler(500)
+    async def handle_500(request):
+        return {"by": "bp500"}
+
+    @bp.get("/boom")
+    async def boom():
+        raise RuntimeError("x")
+
+    app = Veloce(openapi_url=None)
+    app.register_blueprint(bp)
+
+    @app.get("/boom")
+    async def app_boom():
+        raise RuntimeError("x")
+
+    resp = await app.handle_request(_req("/bp/boom"))
+    assert orjson.loads(resp.body) == {"by": "bp500"}
+    # An app-level route's unhandled error is not caught by the blueprint handler.
+    assert orjson.loads((await app.handle_request(_req("/boom"))).body) == {
+        "detail": "Internal Server Error"
+    }
+
+
+@pytest.mark.asyncio
+async def test_nested_sibling_blueprints_scope_handlers():
+    """Two sibling child blueprints under the same parent keep their own
+    handlers - a shared exception type does not leak from one child to the other."""
+    import orjson
+
+    class E(Exception):
+        pass
+
+    parent = Blueprint("p", url_prefix="/p")
+    c1 = Blueprint("c1", url_prefix="/c1")
+    c2 = Blueprint("c2", url_prefix="/c2")
+
+    @c1.errorhandler(E)
+    async def h1(request, exc):
+        return {"by": "c1"}
+
+    @c2.errorhandler(E)
+    async def h2(request, exc):
+        return {"by": "c2"}
+
+    @c1.get("/boom")
+    async def b1():
+        raise E()
+
+    @c2.get("/boom")
+    async def b2():
+        raise E()
+
+    parent.register_blueprint(c1)
+    parent.register_blueprint(c2)
+    app = Veloce(openapi_url=None)
+    app.register_blueprint(parent)
+
+    assert orjson.loads((await app.handle_request(_req("/p/c1/boom"))).body) == {"by": "c1"}
+    assert orjson.loads((await app.handle_request(_req("/p/c2/boom"))).body) == {"by": "c2"}
+
+
+def test_error_handler_spec_reports_per_blueprint_subtables():
+    bp = Blueprint("shop", url_prefix="/shop")
+
+    class ShopError(Exception):
+        pass
+
+    @bp.errorhandler(ShopError)
+    async def handle(request, exc):
+        return {}
+
+    @bp.errorhandler(404)
+    async def not_found(request):
+        return {}
+
+    app = Veloce(openapi_url=None)
+    app.register_blueprint(bp)
+
+    spec = app.error_handler_spec
+    assert ShopError in spec["shop"]
+    assert 404 in spec["shop"]
+    # App-level handlers stay under the None key.
+    assert None in spec
+
+
 # ── Mountable on multiple apps / multiple times ──────────────────────
 
 

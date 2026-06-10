@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+import socket
 import ssl
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -152,6 +153,12 @@ class ServingMixin:
         # Run startup hooks
         await self._run_lifecycle(LIFECYCLE_STARTUP)
 
+        # `SO_REUSEPORT` is absent on Windows (and some others); the stdlib
+        # selector loop raises `ValueError: reuse_port not supported by socket
+        # module` if `reuse_port=True` is passed there, killing the serving
+        # thread before it binds. Request it only where the socket option
+        # exists, so the native server starts on every supported platform.
+        reuse_port = True if hasattr(socket, "SO_REUSEPORT") else None
         # `ssl=None` (the default) makes `create_server` behave exactly as
         # the plain-HTTP path; TLS cost is paid only when a context is set.
         server = await loop.create_server(
@@ -159,7 +166,7 @@ class ServingMixin:
             lambda: HttpProtocol(self, loop),  # type: ignore[arg-type]
             host,
             port,
-            reuse_port=True,
+            reuse_port=reuse_port,
             ssl=ssl_context,
         )
         # Handle signals for graceful shutdown
@@ -169,12 +176,64 @@ class ServingMixin:
             server.close()
             shutdown_event.set()
 
+        # POSIX: the loop installs the handler and runs it on the loop thread.
+        native_signals = True
         for sig in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError):
+            try:
                 loop.add_signal_handler(sig, _signal_handler)
+            except NotImplementedError:
+                # Windows: `loop.add_signal_handler` is unsupported. Without a
+                # handler, Ctrl+C / Ctrl+Break raise `KeyboardInterrupt` straight
+                # out of the loop, tearing down in-flight connections before the
+                # graceful drain can run. Fall back to `signal.signal` (which
+                # replaces the default KeyboardInterrupt-raising handler) and
+                # bounce the cooperative shutdown onto the loop thread, so an
+                # in-flight request drains at its own boundary.
+                native_signals = False
+                break
 
-        async with server:
-            await shutdown_event.wait()
+        # Windows fallback: `signal.signal` installs a PROCESS-WIDE handler, so
+        # the previous handlers are saved and restored after serving - otherwise a
+        # handler closing over this (soon-closed) loop leaks past `run()` and a
+        # later Ctrl+C would schedule onto a dead loop.
+        restore_signals: list[tuple[int, Any]] = []
+        if not native_signals:
+
+            def _os_signal_handler(signum: int, frame: Any) -> None:
+                # A late console control event can arrive once the loop is already
+                # closing/closed; ignore it rather than raising on a closed loop.
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(_signal_handler)
+
+            win_signals = [signal.SIGINT]
+            if hasattr(signal, "SIGBREAK"):
+                win_signals.append(signal.SIGBREAK)
+            for sig in win_signals:
+                previous = signal.getsignal(sig)
+                try:
+                    signal.signal(sig, _os_signal_handler)
+                except (ValueError, OSError):
+                    # `signal.signal` only works on the main thread; if `run()` is
+                    # driven from another thread, skip it (shutdown then relies on
+                    # the main thread / explicit stop).
+                    continue
+                restore_signals.append((sig, previous))
+
+        try:
+            async with server:
+                if native_signals:
+                    await shutdown_event.wait()
+                else:
+                    # Windows: wake periodically so a signal-scheduled shutdown is
+                    # observed promptly even when the loop was otherwise idle when
+                    # the console control event arrived.
+                    while not shutdown_event.is_set():
+                        with contextlib.suppress(TimeoutError):
+                            await asyncio.wait_for(shutdown_event.wait(), 0.25)
+        finally:
+            for sig_num, previous in restore_signals:
+                with contextlib.suppress(ValueError, OSError):
+                    signal.signal(sig_num, previous)
 
     async def _graceful_shutdown(self, loop: asyncio.AbstractEventLoop) -> None:
         """Two-phase graceful shutdown, then run the shutdown lifecycle.

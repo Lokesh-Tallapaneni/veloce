@@ -292,13 +292,19 @@ app.config["MAX_FORM_FIELD_MEMORY"] = 1024 * 1024      # 1 MiB of text in total
 
 `MAX_FORM_FIELD_MEMORY` caps the combined resident size of every text
 field (value bytes plus field-name bytes), a ceiling that the per-field
-limit alone cannot express. When a request exceeds any of these limits,
-parsing fails with `413 Request Entity Too Large` before the whole body
-is buffered. A multipart request with a missing or malformed boundary is
-rejected with `400 Bad Request` rather than parsed to an empty form. A
-text field that declares its own `Content-Type` charset (one of `ascii`,
-`us-ascii`, `utf-8`, or `iso-8859-1`) is decoded with that charset. See
-[Configuration](configuration.md) for how `app.config` is loaded and
+limit alone cannot express.
+
+When a request exceeds any of these limits, parsing fails with
+`413 Request Entity Too Large` before the whole body is buffered.
+
+A multipart request with a missing or malformed boundary is rejected
+with `400 Bad Request` rather than parsed to an empty form.
+
+A text field that declares its own `Content-Type` charset (one of
+`ascii`, `us-ascii`, `utf-8`, or `iso-8859-1`) is decoded with that
+charset.
+
+See [Configuration](configuration.md) for how `app.config` is loaded and
 overridden.
 
 ## Testing uploads

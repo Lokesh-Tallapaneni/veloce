@@ -859,10 +859,14 @@ class DependencyResolver:
             body_data = await request.json()
             return slot.model.model_validate(body_data)
         except PydanticValidationError as e:
+            # Prefix each field path with "body" so a single body model's errors
+            # carry the same `["body", ...]` location as a `Body(...)` marker
+            # param (MARKER_LOC) and the whole-body cases below - the validation
+            # error shape stays consistent regardless of how the body is declared.
             raise RequestValidationError(
                 [
                     {
-                        "loc": err["loc"],
+                        "loc": ["body", *err["loc"]],
                         "msg": err["msg"],
                         "type": err["type"],
                     }
