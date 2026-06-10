@@ -146,3 +146,33 @@ def test_server_session_cookie_name_from_config():
         resp = client.get("/set")
         assert resp.headers.get("set-cookie", "").startswith("srv=")
         assert client.get("/get").json() == {"who": "alice"}
+
+
+def test_session_cookie_secure_false_string_is_not_secure():
+    """A dotenv-style `SESSION_COOKIE_SECURE=false` (string) reads as False, not a
+    truthy "false" that would wrongly emit a `Secure` cookie."""
+    app = Veloce(openapi_url=None)
+    app.secret_key = "k" * 32
+    app.config["SESSION_COOKIE_SECURE"] = "false"
+    app.add_middleware(SessionMiddleware)
+    _add_session_routes(app)
+
+    with TestClient(app) as client:
+        cookie = client.get("/set").headers.get("set-cookie", "")
+        assert "session=" in cookie
+        assert "Secure" not in cookie
+
+
+def test_session_numeric_config_strings_are_coerced():
+    """String `MAX_COOKIE_SIZE` / `PERMANENT_SESSION_LIFETIME` (as a dotenv stores
+    them) coerce to int instead of crashing on `<=` / `max()` at request time."""
+    app = Veloce(openapi_url=None)
+    app.secret_key = "k" * 32
+    app.config["MAX_COOKIE_SIZE"] = "2048"
+    app.config["PERMANENT_SESSION_LIFETIME"] = "3600"
+    app.add_middleware(SessionMiddleware)
+    _add_session_routes(app)
+
+    with TestClient(app) as client:
+        assert client.get("/set").status_code == 200
+        assert client.get("/get").json() == {"who": "alice"}
