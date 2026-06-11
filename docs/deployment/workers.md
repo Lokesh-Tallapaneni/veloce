@@ -53,6 +53,28 @@ recommended production default.
     scale by running more containers — the orchestrator handles supervision and
     restarts. See [Docker](docker.md).
 
+## gunicorn with uvicorn workers
+
+If your stack standardizes on gunicorn for process supervision but you want the
+ASGI server unchanged, run Veloce as an ASGI app under gunicorn's bundled uvicorn
+worker. gunicorn forks and supervises the workers; each one is a uvicorn instance
+serving the app.
+
+```bash
+pip install veloceframework[uvicorn] gunicorn
+```
+
+```bash
+gunicorn main:app -k uvicorn.workers.UvicornWorker --workers 4 --bind 0.0.0.0:8000
+```
+
+This is the same ASGI path as plain `uvicorn` — uvicorn parses the request and
+builds the ASGI scope, then Veloce dispatches it — with gunicorn owning the
+process management. Reach for it when you already run gunicorn and want uvicorn's
+maturity and operational flags. For a gunicorn stack that skips the ASGI layer to
+cut per-request overhead, use the [`VeloceWorker`](#the-gunicorn-veloceworker)
+below instead.
+
 ## The gunicorn VeloceWorker
 
 `VeloceWorker` is an advanced alternative for stacks already built on gunicorn.
