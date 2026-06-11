@@ -264,7 +264,9 @@ def test_websocket_independent_async_deps_run_in_parallel():
     with client.websocket_connect("/ws-par") as conn:
         assert conn.receive_text() == "ab"
     assert len(starts) == 2
-    # Sequential resolution would put the second start ~50ms after the first.
-    assert abs(starts[1] - starts[0]) < 0.010, (
+    # Sequential resolution would put the second start ~50ms after the first
+    # (the `slow_a` sleep). The 30ms bound stays well under that while tolerating
+    # event-loop scheduling jitter on coarse-clock platforms (e.g. Windows CI).
+    assert abs(starts[1] - starts[0]) < 0.030, (
         f"WS siblings did not start concurrently: delta={starts[1] - starts[0]:.4f}s"
     )
