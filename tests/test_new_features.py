@@ -825,8 +825,10 @@ class TestAdditionalMiddleware:
         assert resp.headers["X-RateLimit-Limit"] == "5"
         assert resp.headers["X-RateLimit-Remaining"] == "4"
         # Pin the seconds-remaining form — a unix epoch would also satisfy
-        # >= 0 and silently regress the header semantics.
-        assert 0 <= int(resp.headers["X-RateLimit-Reset"]) <= 60
+        # >= 0 and silently regress the header semantics. The upper bound is
+        # window + 1: `_reset_after` ceils a sub-second remainder, so a fresh
+        # window can momentarily round up to `window_seconds + 1`.
+        assert 0 <= int(resp.headers["X-RateLimit-Reset"]) <= 61
 
         resp = await app.handle_request(make_request(headers=ua))
         assert resp.headers["X-RateLimit-Remaining"] == "3"
