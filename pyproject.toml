@@ -48,7 +48,6 @@ dependencies = [
     "python-multipart>=0.0.6",
     "httptools>=0.6.0",
     "jinja2>=3.1",
-    "click>=8.1",
 ]
 
 [project.optional-dependencies]
@@ -93,6 +92,11 @@ fast = ["msgspec>=0.13"]
 # / in-memory deploy carries no redis dependency.
 # Install with `pip install veloceframework[redis]`.
 redis = ["redis>=4.2"]
+# Click is needed only for Flask-style per-app commands via `app.cli`
+# (`@app.cli.command()`) and `app.test_cli_runner()`. The built-in `veloce` CLI
+# is pure stdlib `argparse` and needs nothing extra, so Click stays opt-in.
+# Install with `pip install veloceframework[cli]`.
+cli = ["click>=8.1"]
 # Everything optional in one shot.
 all = [
     "uvicorn[standard]>=0.23",
@@ -102,6 +106,7 @@ all = [
     "prometheus_client>=0.17",
     "msgspec>=0.13",
     "redis>=4.2",
+    "click>=8.1",
 ]
 
 [project.scripts]
@@ -115,10 +120,10 @@ Issues = "https://github.com/Lokesh-Tallapaneni/veloce/issues"
 Changelog = "https://github.com/Lokesh-Tallapaneni/veloce/blob/main/CHANGELOG.md"
 
 [dependency-groups]
-# Runtime deps (jinja2, click) are in [project.dependencies]; the dev group
-# covers test + lint + type-check tooling, plus the optional backends the suite
+# Runtime deps (jinja2) are in [project.dependencies]; the dev group covers
+# test + lint + type-check tooling, plus the optional backends the suite
 # exercises (uvicorn for the `veloce run` / serving tests, msgspec for the fast
-# path).
+# path, click for the `app.cli` tests).
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -129,6 +134,9 @@ dev = [
     # uvicorn is now an optional extra, but the test suite still exercises the
     # `veloce run` / serving paths, so the dev environment installs it.
     "uvicorn[standard]>=0.23",
+    # The `cli` extra's backend, so the default test run exercises the Flask-style
+    # `app.cli` / `test_cli_runner` paths; the guarded tests skip without it.
+    "click>=8.1",
     # The `fast` extra's backend, so the default test run exercises the msgspec
     # path; the no-msgspec CI leg installs without it and the guarded tests skip.
     "msgspec>=0.13",
