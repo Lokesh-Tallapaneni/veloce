@@ -98,6 +98,27 @@
   margin: 0.25rem 0.35rem;
 }
 
+/* Trust strip — brand-pill badges under the hero buttons. Factual signals
+   only (runtime, license, typing, package); styled to match the eyebrow
+   rather than utilitarian shields. */
+.md-typeset .vl-hero__badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 1.6rem 0 0;
+}
+.md-typeset .vl-hero__badges .vl-badge {
+  padding: 0.18rem 0.6rem;
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  color: var(--md-default-fg-color--light);
+  border: 1px solid var(--vl-border);
+  border-radius: 2rem;
+  background: var(--vl-surface);
+}
+
 /* Monospace eyebrow above the hero title */
 .vl-eyebrow {
   display: inline-block;

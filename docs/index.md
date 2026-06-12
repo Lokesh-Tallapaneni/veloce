@@ -20,9 +20,36 @@ test client — all in one tree.
 [Get started](getting-started.md){ .md-button .md-button--primary }
 [API reference](reference.md){ .md-button }
 
+<p class="vl-hero__badges" markdown>
+<span class="vl-badge">Python 3.10+</span>
+<span class="vl-badge">MIT licensed</span>
+<span class="vl-badge">Type-checked</span>
+<span class="vl-badge">pip install veloceframework</span>
+</p>
+
 </div>
 
 Veloce is an ASGI-native, async-first Python web framework for building APIs and full-stack applications. It draws Flask-compatible patterns (`g`, `flash`, blueprints, `@app.route`) and FastAPI-style typed dependency injection together into one tree — without depending on either. Requires Python 3.10+.
+
+```python title="app.py"
+from veloce import Veloce, Request
+
+app = Veloce()
+
+
+@app.get("/hello/{name}")
+async def hello(name: str):
+    return {"hello": name}
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
+```
+
+Type-annotated path parameters are coerced automatically, dictionaries become
+JSON responses, and the route is registered on the radix tree at import time.
+New here? [Why Veloce Exists](surpass/why-veloce-exists.md) explains the one-IR
+architecture the rest of the framework follows from.
 
 ## Why Veloce
 
@@ -72,26 +99,5 @@ Veloce is an ASGI-native, async-first Python web framework for building APIs and
     encoding, and cookies included.
 
 </div>
-
-## A first look
-
-```python
-from veloce import Veloce, Request
-
-app = Veloce()
-
-
-@app.get("/hello/{name}")
-async def hello(name: str):
-    return {"hello": name}
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
-```
-
-Type-annotated path parameters are coerced automatically, dictionaries
-become JSON responses, and the route is registered on the radix tree at
-import time.
 
 [Read the getting-started guide :material-arrow-right:](getting-started.md){ .md-button .md-button--primary }
