@@ -841,7 +841,8 @@ def _extract_parameters(
         if location == "body":
             # A bare model or `Body()`-wrapped model is the JSON request body. A
             # `Body()` over a non-model carries no documentable schema, matching
-            # the previous walk which dropped it.
+            # the previous walk which dropped it. A JSON body is always required:
+            # the resolver 422s on a missing body even for an `Optional` model.
             if d.model is not None:
                 request_body_schema = schemas_registry.ref(d.model, mode="validation")
             continue
@@ -881,17 +882,20 @@ def _extract_parameters(
         # the alias / hyphenated wire name the resolver actually reads.
         param_alias = d.name if location == "path" else d.wire_name
 
-        # An `Optional[T]` annotation makes a value omittable even with no
-        # default: the resolver binds `None` when it is absent, so the documented
-        # contract matches the resolver only when `is_optional` relaxes required.
-        if marker is not None:
+        # A path parameter is always required - the route cannot match without
+        # its segment (OpenAPI 3.1 requires `required: true`). For every other
+        # location an `Optional[T]` annotation makes the value omittable even
+        # with no default: the resolver binds `None` when it is absent, so the
+        # documented contract matches the resolver only when `is_optional`
+        # (or a default) relaxes required.
+        if location == "path":
+            required = True
+        elif marker is not None:
             required = not (marker.has_default or d.is_optional)
             if marker.has_default and marker.default is not ...:
                 default_val = marker.default
                 if isinstance(default_val, (str, int, float, bool, type(None))):
                     param_schema["default"] = default_val
-        elif location == "path":
-            required = True
         else:
             required = not (d.has_default or d.is_optional)
             if d.has_default:
@@ -930,6 +934,10 @@ def _extract_request_body(
     monolithic implementation. When only form fields are present, the
     media type is `multipart/form-data` if any field is a file upload
     (OpenAPI 3.1 Sec. 4.8.10.4), otherwise `application/x-www-form-urlencoded`.
+
+    A JSON body is always required - the resolver 422s on a missing body. A form
+    body whose every field is optional is omittable, so it is documented
+    `required: false` to match the runtime.
     """
     if request_body_schema:
         return {
@@ -950,7 +958,7 @@ def _extract_request_body(
     if required_fields:
         body_schema["required"] = required_fields
     return {
-        "required": True,
+        "required": bool(required_fields),
         "content": {media_type: {"schema": body_schema}},
     }
 
