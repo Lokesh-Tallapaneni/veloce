@@ -19,17 +19,12 @@ import orjson
 from pydantic import BaseModel
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
-from veloce._model_backend import is_msgspec_struct
+from veloce._model_backend import is_msgspec_struct, is_pydantic_model
 from veloce._protocol_constants import OAUTH2_GRANT_TYPE_PASSWORD
+from veloce._route_contract import RouteContract, iter_param_descriptors
 from veloce.dependency import Depends
 from veloce.http.response import HTMLResponse, JSONResponse
-from veloce.routing.params import Body as BodyParam
-from veloce.routing.params import Cookie as CookieParam
-from veloce.routing.params import File as FileParam
-from veloce.routing.params import Form as FormParam
-from veloce.routing.params import Header as HeaderParam
 from veloce.routing.params import ParamBase
-from veloce.routing.params import Path as PathParam
 from veloce.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery
 from veloce.security.http import HTTPBasic, HTTPBearer, HTTPDigest
 from veloce.security.oauth2 import (
@@ -124,7 +119,7 @@ def _is_model_type(annotation: Any) -> bool:
     so both backends register a component schema and resolve to a ``$ref`` the
     same way.
     """
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+    if is_pydantic_model(annotation):
         return True
     return is_msgspec_struct(annotation)
 
@@ -277,7 +272,7 @@ def _python_type_to_schema(annotation: Any) -> dict:
     # and validates it into the model (`?tag={"name":"x"}`), so the wire
     # shape is a string. A model carried as a structured JSON body belongs
     # in `requestBody`, handled by `_pydantic_to_schema`.
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+    if is_pydantic_model(annotation):
         return {"type": "string"}
 
     return {"type": "string"}
@@ -818,128 +813,110 @@ def _apply_marker_constraints(param_schema: dict[str, Any], marker: Any) -> None
 def _extract_parameters(
     info: Any, schemas_registry: SchemaRegistry
 ) -> tuple[list[dict], dict | None, list[tuple[str, dict, bool, bool]]]:
-    """Walk the handler signature and classify every parameter.
+    """Classify every parameter by lowering the route's handler plan.
 
     Returns `(parameters, request_body_schema, form_fields)`:
     - `parameters` - OpenAPI parameter objects for path/query/header/cookie.
-    - `request_body_schema` - schema of the first Pydantic body model (or None).
+    - `request_body_schema` - schema of the request body model (or None).
     - `form_fields` - `(alias, schema, required, is_file)` tuples for
       `Form()` / `File()` params, consumed by `_extract_request_body`.
 
-    Depends/Security and `Body()` markers are intentionally dropped here -
-    they belong to other parts of the operation object.
+    Walks the same `HandlerPlan` the resolver executes (via
+    `iter_param_descriptors`), so the documented contract matches the one the
+    server enforces. Depends/Security and JSON `Body()` markers are not yielded
+    as parameters - they belong to other parts of the operation object.
     """
-    handler = info.handler
-    sig, hints = _handler_intro(handler)
     parameters: list[dict] = []
     request_body_schema: dict | None = None
     form_fields: list[tuple[str, dict, bool, bool]] = []
 
-    if sig is None:
-        return parameters, request_body_schema, form_fields
-
-    for pname, param in sig.parameters.items():
-        if pname in ("self", "request"):
-            continue
-        if isinstance(param.default, Depends):
+    for d in iter_param_descriptors(RouteContract.from_route_info(info)):
+        marker = d.marker
+        # `include_in_schema=False` - resolved at runtime but omitted from docs.
+        if marker is not None and not getattr(marker, "include_in_schema", True):
             continue
 
-        annotation = hints.get(pname)
+        location = d.location
 
-        marker = None
-        if isinstance(param.default, ParamBase):
-            marker = param.default
-            # `include_in_schema=False` - resolved at runtime but omitted.
-            if not getattr(marker, "include_in_schema", True):
-                continue
-
-        # A BaseModel-typed param becomes the JSON request body only when it is
-        # NOT pinned to a non-body source by a marker. A bare model (no marker)
-        # or one with an explicit `Body()` is a JSON body; a model carried by a
-        # `Query`/`Header`/`Cookie`/`Form`/`File` marker is read from that source
-        # as a JSON-document string at runtime, so it belongs in `parameters` /
-        # form fields (where it emits `{"type": "string"}`), not `requestBody`.
-        if (
-            annotation
-            and _is_model_type(annotation)
-            and (marker is None or isinstance(marker, BodyParam))
-        ):
-            request_body_schema = schemas_registry.ref(annotation, mode="validation")
+        if location == "body":
+            # A bare model or `Body()`-wrapped model is the JSON request body. A
+            # `Body()` over a non-model carries no documentable schema, matching
+            # the previous walk which dropped it. A JSON body is always required:
+            # the resolver 422s on a missing body even for an `Optional` model.
+            if d.model is not None:
+                request_body_schema = schemas_registry.ref(d.model, mode="validation")
             continue
 
-        # Determine parameter location.
-        if marker and isinstance(marker, HeaderParam):
-            param_location = "header"
-            if marker.alias:
-                param_alias = marker.alias
-            elif getattr(marker, "convert_underscores", True):
-                # Mirror the runtime header lookup in _handler_plan: an
-                # un-aliased header param's `_` is read off the wire as `-`,
-                # so document the hyphenated name the resolver matches.
-                param_alias = pname.replace("_", "-")
-            else:
-                param_alias = pname
-        elif marker and isinstance(marker, CookieParam):
-            param_location = "cookie"
-            param_alias = marker.alias or pname
-        elif marker and isinstance(marker, (FormParam, FileParam)):
-            is_file = isinstance(marker, FileParam)
-            if is_file:
+        if location == "form":
+            if d.is_file:
                 field_schema: dict[str, Any] = {"type": "string", "format": "binary"}
             else:
-                field_schema = _python_type_to_schema(annotation)
-            if marker.description:
-                field_schema["description"] = marker.description
-            if getattr(marker, "title", None):
-                field_schema["title"] = marker.title
-            field_required = not marker.has_default
-            field_alias = marker.alias or pname
-            form_fields.append((field_alias, field_schema, field_required, is_file))
+                field_schema = _python_type_to_schema(d.target_type)
+            if marker is not None:
+                if marker.description:
+                    field_schema["description"] = marker.description
+                if getattr(marker, "title", None):
+                    field_schema["title"] = marker.title
+                field_required = not (marker.has_default or d.is_optional)
+                field_alias = marker.alias or d.name
+            else:
+                # A bare `UploadFile`: optional when it carries a default or an
+                # `Optional` annotation - the resolver leaves the kwarg unset and
+                # the handler default applies, so the field is not required.
+                field_required = not (d.has_default or d.is_optional)
+                field_alias = d.name
+            form_fields.append((field_alias, field_schema, field_required, d.is_file))
             continue
-        elif marker and isinstance(marker, BodyParam):
-            # Body goes into requestBody, not parameters.
-            continue
-        elif pname in info.param_names or (marker and isinstance(marker, PathParam)):
-            param_location = "path"
-            param_alias = pname
+
+        # path / query / header / cookie parameter.
+        param_schema: dict[str, Any]
+        if d.is_list:
+            param_schema = {"type": "array", "items": _python_type_to_schema(d.target_type)}
         else:
-            param_location = "query"
-            param_alias = marker.alias if marker and marker.alias else pname
+            param_schema = _python_type_to_schema(d.target_type)
 
-        param_schema = _python_type_to_schema(annotation)
-
-        if marker:
+        if marker is not None:
             _apply_marker_constraints(param_schema, marker)
 
-        if marker:
-            required = not marker.has_default
+        # Path parameters document the Python name; every other location honours
+        # the alias / hyphenated wire name the resolver actually reads.
+        param_alias = d.name if location == "path" else d.wire_name
+
+        # A path parameter is always required - the route cannot match without
+        # its segment (OpenAPI 3.1 requires `required: true`). For every other
+        # location an `Optional[T]` annotation makes the value omittable even
+        # with no default: the resolver binds `None` when it is absent, so the
+        # documented contract matches the resolver only when `is_optional`
+        # (or a default) relaxes required.
+        if location == "path":
+            required = True
+        elif marker is not None:
+            required = not (marker.has_default or d.is_optional)
             if marker.has_default and marker.default is not ...:
                 default_val = marker.default
                 if isinstance(default_val, (str, int, float, bool, type(None))):
                     param_schema["default"] = default_val
-        elif param_location == "path":
-            required = True
         else:
-            required = param.default is inspect.Parameter.empty
-            if not required and param.default is not inspect.Parameter.empty:
-                default_val = param.default
+            required = not (d.has_default or d.is_optional)
+            if d.has_default:
+                default_val = d.default
                 if isinstance(default_val, (str, int, float, bool, type(None))):
                     param_schema["default"] = default_val
 
         param_info: dict[str, Any] = {
             "name": param_alias,
-            "in": param_location,
+            "in": location,
             "required": required,
             "schema": param_schema,
         }
 
         # OpenAPI 3.1 Sec. 4.8.12.1 - array-valued query parameters default
         # to `style: form`, `explode: true` (one `?k=v1&k=v2` per item).
-        if param_location == "query" and param_schema.get("type") == "array":
+        if location == "query" and param_schema.get("type") == "array":
             param_info["style"] = "form"
             param_info["explode"] = True
 
-        if marker and marker.deprecated:
+        if marker is not None and marker.deprecated:
             param_info["deprecated"] = True
 
         parameters.append(param_info)
@@ -957,6 +934,10 @@ def _extract_request_body(
     monolithic implementation. When only form fields are present, the
     media type is `multipart/form-data` if any field is a file upload
     (OpenAPI 3.1 Sec. 4.8.10.4), otherwise `application/x-www-form-urlencoded`.
+
+    A JSON body is always required - the resolver 422s on a missing body. A form
+    body whose every field is optional is omittable, so it is documented
+    `required: false` to match the runtime.
     """
     if request_body_schema:
         return {
@@ -977,7 +958,7 @@ def _extract_request_body(
     if required_fields:
         body_schema["required"] = required_fields
     return {
-        "required": True,
+        "required": bool(required_fields),
         "content": {media_type: {"schema": body_schema}},
     }
 

@@ -10,7 +10,6 @@ live here too so this module owns the whole emit path.
 
 from __future__ import annotations
 
-import builtins
 import contextlib
 import traceback
 from collections.abc import Callable
@@ -140,11 +139,16 @@ def _build_asgi_headers(
     return asgi_headers, has_ct, has_cl
 
 
-# `BaseExceptionGroup` is a builtin only from Python 3.11; on 3.10 the name is
-# absent, so resolve it once via `builtins` and degrade to re-raising the first
-# failure when grouping is unavailable. Used to surface every error raised while
-# unwinding the lifespan stack instead of letting the first one mask the rest.
-_BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
+async def _refuse_websocket(receive: Callable, send: Callable) -> None:
+    """Refuse an ASGI WebSocket handshake per the spec.
+
+    Drain the `websocket.connect` then send a `websocket.close` with the
+    policy-violation code 1008. Shared by the host-check, origin-check, and
+    no-handler refusal paths.
+    """
+    msg = await receive()
+    if msg["type"] == ASGI_EVENT_WS_CONNECT:
+        await send({"type": ASGI_EVENT_WS_CLOSE, "code": status.WS_1008_POLICY_VIOLATION})
 
 
 class AsgiMixin:
@@ -615,34 +619,16 @@ class AsgiMixin:
                         _origin_seen = True
                 for _host_check, _origin_check in ws_checks:
                     if _host_check is not None and not _host_check(ws_host):
-                        msg = await receive()
-                        if msg["type"] == ASGI_EVENT_WS_CONNECT:
-                            await send(
-                                {
-                                    "type": ASGI_EVENT_WS_CLOSE,
-                                    "code": status.WS_1008_POLICY_VIOLATION,
-                                }
-                            )
+                        await _refuse_websocket(receive, send)
                         return
                     if _origin_check is not None and not _origin_check(ws_origin):
-                        msg = await receive()
-                        if msg["type"] == ASGI_EVENT_WS_CONNECT:
-                            await send(
-                                {
-                                    "type": ASGI_EVENT_WS_CLOSE,
-                                    "code": status.WS_1008_POLICY_VIOLATION,
-                                }
-                            )
+                        await _refuse_websocket(receive, send)
                         return
 
             ws_match = self.match(ROUTE_METHOD_WEBSOCKET, scope.get("path", "/"))
             if ws_match is None:
                 # No handler - refuse the connection per ASGI WS spec.
-                msg = await receive()
-                if msg["type"] == ASGI_EVENT_WS_CONNECT:
-                    await send(
-                        {"type": ASGI_EVENT_WS_CLOSE, "code": status.WS_1008_POLICY_VIOLATION}
-                    )
+                await _refuse_websocket(receive, send)
                 return
 
             ws = WebSocket.from_asgi(scope, receive, send)

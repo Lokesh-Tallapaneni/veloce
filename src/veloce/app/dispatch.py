@@ -43,7 +43,7 @@ from veloce._internal import (
     _is_async_callable,
     offload,
 )
-from veloce._model_backend import _HAS_MSGSPEC, _msgspec, is_msgspec_struct
+from veloce._model_backend import _HAS_MSGSPEC, _msgspec, is_msgspec_struct, is_pydantic_model
 from veloce._pipeline import (
     CompiledPipeline,
 )
@@ -612,6 +612,11 @@ class DispatchMixin:
             # on the already-built response. `run_teardowns` is async; the
             # common no-yield-dep case has an empty stack, so skip the
             # coroutine + await entirely.
+            # A yield-teardown failure that PROPAGATE_EXCEPTIONS must re-raise is
+            # deferred to the end of this `finally`, so the teardown hooks and
+            # signals below still run - the teardown contract holds even when the
+            # thing that failed is a yield-dependency teardown.
+            _teardown_to_propagate: BaseException | None = None
             if resolver is not None and resolver._teardowns:
                 try:
                     await resolver.run_teardowns(_exc)
@@ -623,7 +628,7 @@ class DispatchMixin:
                         except Exception:
                             self.logger.exception("signal receiver raised an exception")
                     if self._should_propagate_exceptions():
-                        raise
+                        _teardown_to_propagate = teardown_exc
 
             # Teardown hooks - always run, even on exceptions. The cheap
             # attribute guard stays inline so a request with no teardown hooks
@@ -659,6 +664,11 @@ class DispatchMixin:
                         request_tearing_down.send(self, exc=_exc)
                 except Exception:
                     self.logger.exception("signal receiver raised an exception")
+
+            # Deferred from the yield-teardown block above: re-raise the teardown
+            # failure now that the teardown hooks and signals have all run.
+            if _teardown_to_propagate is not None:
+                raise _teardown_to_propagate
 
     # ── Request phase and error shaping ────────────────────
 
@@ -1273,7 +1283,7 @@ class DispatchMixin:
                 inner = args[0]
                 if not isinstance(result, (list, tuple)):
                     return result  # let downstream coercion handle the mismatch
-                if isinstance(inner, type) and issubclass(inner, _PydanticBaseModel):
+                if is_pydantic_model(inner):
                     dumped: list[Any] = []
                     for item in result:
                         # Fast path: an element already of the target model
@@ -1289,7 +1299,7 @@ class DispatchMixin:
             return result
 
         # Scalar Pydantic model.
-        if isinstance(model, type) and issubclass(model, _PydanticBaseModel):
+        if is_pydantic_model(model):
             # If the handler returned an instance of the target model, use
             # it directly - the dump-then-validate roundtrip would erase
             # the `__pydantic_fields_set__` info that drives

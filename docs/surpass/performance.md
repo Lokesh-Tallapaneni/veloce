@@ -12,9 +12,7 @@ can be moved off it. Routing is a radix tree, the dependency graph compiles to a
 straight-line resolver, parameter reflection happens once at registration, and
 disabled features cost zero per request.
 
-This page explains each mechanism against the real source. To measure dispatch
-cost yourself, see [Benchmarks](../benchmarks.md) — it documents the bench suite
-and the methodology for reproducing numbers locally on your own hardware.
+This page explains each mechanism against the real source.
 
 !!! note
     The framework is rarely the bottleneck in a real application — the database
@@ -240,7 +238,6 @@ shape difference and when the trade-off is worth it.
 
 ## Next steps
 
-- [Benchmarks](../benchmarks.md) — the full methodology, the bench suite layout, and how to run the dispatch benches locally.
 - [msgspec backend](../guide/msgspec.md) — opt an endpoint into msgspec validation and serialisation.
 - [Migrating from FastAPI](migrating-from-fastapi.md) — the divergence map and the Veloce-only wins.
 - [Native server deep dive](native-server.md) — the `HttpProtocol` request loop and its hardening knobs.

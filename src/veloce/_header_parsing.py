@@ -44,6 +44,29 @@ no public re-export.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+
+def parse_media_type_params(rest: str) -> Iterator[tuple[str, str]]:
+    """Yield `(lowercased key, unquoted value)` for a media-type parameter list.
+
+    `rest` is the portion of a `Content-Type` / media-range value after the bare
+    media type (everything following the first `;`). Each `;`-separated
+    `key=value` is split on the first `=`, the key lowercased, and a single
+    surrounding double-quote pair removed from the value. Tokens without `=` are
+    skipped. Single source for the `Content-Type` parsers on `Request`,
+    `Response`, and the `Accept` media-range key.
+    """
+    for chunk in rest.split(";"):
+        chunk = chunk.strip()
+        if "=" not in chunk:
+            continue
+        key, _, value = chunk.partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+            value = value[1:-1]
+        yield key.strip().lower(), value
+
 
 def unquote_value(value: str) -> str:
     """Trim surrounding whitespace then a single pair of double quotes.

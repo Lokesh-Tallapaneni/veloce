@@ -31,10 +31,12 @@ from veloce._handler_plan import (
     K_SECURITY_SCOPES,
     MK_BODY,
 )
+from veloce._model_backend import is_pydantic_model
+from veloce._route_contract import describe_slot
 from veloce.background import BackgroundTasks
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.openapi import _pydantic_to_schema, _python_type_to_schema
-from veloce.dependency import SecurityScopes, _coerce_value
+from veloce.dependency import SecurityScopes, _coerce_scalar, _coerce_value
 from veloce.http.datastructures import FormData, QueryParams
 from veloce.http.request import Request
 from veloce.http.response import Response
@@ -250,41 +252,33 @@ def _deepcopy_schema(node: Any) -> Any:
 def _slot_schema(
     slot: _Slot, schemas_registry: dict[str, dict[str, Any]]
 ) -> tuple[dict[str, Any] | None, bool]:
-    """Return `(schema, required)` for one parameter slot, or `(None, _)` to skip."""
-    kind = slot.kind
+    """Return `(schema, required)` for one parameter slot, or `(None, _)` to skip.
 
-    if kind == K_BODY_MODEL:
-        model = slot.model
-        if isinstance(model, type) and issubclass(model, BaseModel):
-            return _pydantic_to_schema(model, schemas_registry), not slot.is_optional
-        return {"type": "object"}, not slot.is_optional
+    Classification is shared with the OpenAPI and dispatch lowerings via
+    `describe_slot`, so a tool's declared inputs track the same plan; only the
+    JSON-Schema construction is MCP-local. A file upload is not expressible as a
+    JSON tool argument, so a bare `UploadFile` slot is skipped.
+    """
+    d = describe_slot(slot, ())
+    if d is None:
+        return None, False
+    if d.is_file and d.marker is None:
+        return None, False
 
-    if kind == K_QUERY_LIST:
-        item = _python_type_to_schema(slot.list_inner)
-        return {"type": "array", "items": item}, not (slot.has_default or slot.is_optional)
-
-    if kind == K_PARAM_MARKER:
-        target = slot.target_type
-        if (
-            slot.marker_kind == MK_BODY
-            and isinstance(target, type)
-            and issubclass(target, BaseModel)
-        ):
-            prop = _pydantic_to_schema(target, schemas_registry)
+    if d.model is not None:
+        if is_pydantic_model(d.model):
+            prop = _pydantic_to_schema(d.model, schemas_registry)
         else:
-            prop = _python_type_to_schema(target)
-        marker = slot.marker
-        if marker is not None and getattr(marker, "description", None):
-            prop = {**prop, "description": marker.description}
-        required = (marker is None or not marker.has_default) and not slot.is_optional
-        return prop, required
+            prop = {"type": "object"}
+    elif d.is_list:
+        prop = {"type": "array", "items": _python_type_to_schema(d.target_type)}
+    else:
+        prop = _python_type_to_schema(d.target_type)
 
-    if kind == K_QUERY:
-        return _python_type_to_schema(slot.target_type), not (slot.has_default or slot.is_optional)
+    if d.marker is not None and getattr(d.marker, "description", None):
+        prop = {**prop, "description": d.marker.description}
 
-    # Any other kind (background tasks, websocket, upload-file, security
-    # scopes, response) is not an agent input.
-    return None, False
+    return prop, not (d.has_default or d.is_optional)
 
 
 def _coerce_argument(slot: _Slot, value: Any) -> Any:
@@ -293,21 +287,16 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
 
     if kind == K_BODY_MODEL:
         model = slot.model
-        if isinstance(model, type) and issubclass(model, BaseModel):
+        if is_pydantic_model(model):
             return _validate_model(value, model)
         return value
 
     if kind == K_PARAM_MARKER:
         target = slot.target_type
-        if (
-            slot.marker_kind == MK_BODY
-            and isinstance(target, type)
-            and issubclass(target, BaseModel)
-        ):
+        if slot.marker_kind == MK_BODY and is_pydantic_model(target):
             return _validate_model(value, target)
         marker = slot.marker
-        if target and target is not str and not isinstance(value, (dict, list)):
-            value = _coerce_value(value, target, slot.name, "body")
+        value = _coerce_scalar(value, target, slot.name, "body")
         if marker is not None:
             return marker.validate(value, slot.name)
         return value
@@ -319,10 +308,7 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         return [_coerce_value(v, inner, slot.name, "body") for v in value]
 
     if kind == K_QUERY:
-        target = slot.target_type
-        if target and target is not str and not isinstance(value, (dict, list)):
-            return _coerce_value(value, target, slot.name, "body")
-        return value
+        return _coerce_scalar(value, slot.target_type, slot.name, "body")
 
     return value
 

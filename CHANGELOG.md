@@ -6,142 +6,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- `veloce new NAME [--template minimal|api|web]` scaffolds a new project, and
-  `veloce generate KIND NAME` (alias `g`) emits a single boilerplate file for
-  `route`, `blueprint`, `middleware`, `model`, or `security`. Generated projects
-  import the public API and pass `ruff` and `mypy` out of the box. The
-  scaffolders are stdlib-only (no template-engine dependency) and load lazily, so
-  `veloce --version` / `--help` do not import the framework.
-- `get_flashed_messages` is now injected as a Jinja template global alongside
-  `url_for`, `g`, and `current_app`, so a template can call
-  `{% for m in get_flashed_messages() %}` without registering it manually. It
-  returns an empty list outside a request, so renders that reference it never
-  raise an undefined-global error.
-- `SessionMiddleware` and `ServerSessionMiddleware` resolve constructor
-  arguments left out against `app.config` on the first request: `secret_key`
-  from `SECRET_KEY`, `cookie_name` from `SESSION_COOKIE_NAME`, the cookie
-  `path` from `APPLICATION_ROOT`, `httponly`/`secure`/`samesite` from the
-  `SESSION_COOKIE_*` keys, `permanent_lifetime` from
-  `PERMANENT_SESSION_LIFETIME`, and `max_cookie_size` from `MAX_COOKIE_SIZE`.
-  Explicit arguments always win. `app.secret_key` is now a live property bound
-  to `config["SECRET_KEY"]`, so `app.secret_key = "..."` followed by a bare
-  `app.add_middleware(SessionMiddleware)` is a complete session setup;
-  `use_secure_defaults()` therefore now affects the emitted session cookie.
-  Constructing `SessionMiddleware` without any secret raises `RuntimeError` on
-  the first request instead of `TypeError` at construction.
-- `send_file` / `async_send_file` called without `max_age=` during a request
-  now apply the app's `SEND_FILE_MAX_AGE_DEFAULT` as the
-  `Cache-Control: public, max-age=...` lifetime. The key defaults to `None`
-  (no header), so behaviour is unchanged unless it is set.
-
-### Security
-
-- `CORSMiddleware(allow_origin_regex=...)` with no explicit `allow_origins` no
-  longer defaults the origin list to `["*"]`. Previously the wildcard
-  short-circuited origin matching before the regex was consulted, so a
-  regex-only configuration echoed `Access-Control-Allow-Origin: *` to every
-  origin. A regex-only config now gates strictly by the regex.
-
 ### Changed
 
-- `APIRouter` now aliases `Router` instead of `Blueprint`, so
-  `APIRouter(prefix="/items", tags=["items"])` constructs directly. Code that
-  instantiated `APIRouter` with a positional group name should construct
-  `Blueprint` (the named route group with hooks and scoped error handlers)
-  under its own name; `app.include_router` accepts both.
-- A `yield`-dependency teardown failure is no longer only logged: the
-  aggregated failure is delivered to `got_request_exception` receivers, and
-  under `PROPAGATE_EXCEPTIONS` (or the implicit `DEBUG` + `TESTING` test mode)
-  it re-raises out of dispatch. The default response behaviour is unchanged —
-  the already-built response is still returned.
-- `MAX_CONTENT_LENGTH` now defaults to `104857600` (100 MiB) instead of `None`
-  (unlimited). Request bodies are buffered in memory, so an unbounded default let
-  a single large request exhaust process memory; the cap bounds that exposure
-  while staying generous for typical uploads. Endpoints that accept larger bodies
-  must raise `MAX_CONTENT_LENGTH` (or set it to `None` for unlimited). The
-  enforcement mechanism is unchanged on both the ASGI and native transports.
+- OpenAPI parameters derive from the handler plan the resolver runs, keeping documented and enforced contracts in lockstep. ([#205](https://github.com/Lokesh-Tallapaneni/veloce/pull/205))
+- `click` is now an optional `cli` extra; install `veloceframework[cli]` to use `app.cli` and `test_cli_runner`. ([#206](https://github.com/Lokesh-Tallapaneni/veloce/pull/206))
 
 ### Fixed
 
-- Trailer fields of a chunked request on the built-in server are no longer
-  prepended to the next pipelined request's headers. The parser delivers
-  trailers through the same callback as ordinary headers, after the header
-  buffer had already been handed to the in-flight request; they are now
-  dropped once counted against the header-size caps, and a trailer named
-  `content-length` can no longer feed the next request's body-size guard.
-- `PROPAGATE_EXCEPTIONS` loaded from an env file as the string `"false"` (or
-  `"0"`, `"off"`) now reads as off. The value was previously truth-tested, so
-  any non-empty string — including `"false"` — enabled propagation.
-- `@app.endpoint(name)` now reclassifies the route for dispatch exactly as
-  registration does. Attaching a sync view to a route stubbed by
-  `add_url_rule` previously kept the stub's fast-path eligibility, so the
-  dispatcher awaited the sync handler (a `TypeError`) instead of offloading
-  it; route-level dependency plans and a previously cached `view_functions`
-  snapshot also now refresh.
-- `security_audit()` no longer claims session signing "falls back to weak
-  defaults" when `SECRET_KEY` is unset; the warning now describes the actual
-  behaviour (config-backed session middleware cannot sign without a key).
-- The Swagger UI docs page (`/docs`) no longer fails with "No layout defined for
-  StandaloneLayout". The template loaded only `swagger-ui-bundle.js` but selected
-  `layout: "StandaloneLayout"`, which is defined by the separate standalone-preset
-  script that was never included. The embedded docs now use `BaseLayout` (provided
-  by the bundle) and drop the unloaded preset reference.
-- A `@rate_limit` decorator on a route registered with `include_in_schema=False`
-  (a login form POST, an internal endpoint) is now honored. `RateLimitMiddleware`
-  discovered per-route strategies through the schema-only route view, so a tag on
-  a hidden route was silently dropped and the endpoint fell back to the global
-  limit. The scan now includes hidden routes. Per-route limits still require the
-  strategy API (`RateLimitMiddleware(strategy=...)`); the legacy
-  `max_requests`/`window_seconds` path enforces only the flat global ceiling.
-- A trailing-slash redirect generated inside a mounted Veloce sub-app now carries
-  the mount prefix in its `Location` (e.g. `/sub/ping/`, not a bare `/ping/`), so
-  a client following the redirect reaches the sub-app route instead of a `404` on
-  the parent. The target is built from the request's `root_path` + path; a
-  top-level app (empty `root_path`) is unchanged.
-- A `query_string` carrying raw non-ASCII bytes (an un-percent-encoded UTF-8
-  query) over ASGI now returns `400 Bad Request` instead of raising
-  `UnicodeDecodeError` out of dispatch as a `500`.
-- `multipart/form-data` bodies that fail to parse mid-body (truncated parts,
-  malformed delimiters) now raise `BadRequest` (400) instead of returning the
-  partial form with `200 OK`, matching the rejection already applied to a
-  malformed boundary.
-- `StreamingResponse` over the native server no longer truncates the body when
-  the producer yields an empty `bytes` chunk. An empty yield previously encoded
-  as `0\r\n\r\n`, the chunked last-chunk terminator, which ended the stream early
-  and desynced keep-alive framing; empty chunks are now skipped.
-- Registering the slashed and unslashed forms of a path (`/users` and `/users/`)
-  no longer makes the second registration flip the first to a slash redirect.
-  Both forms share one radix node; the slash-strictness flags are now tracked per
-  form, so each variant resolves to its own handler.
-- Blueprint routes registered with `exclude_middleware=[...]` now keep the
-  exclusion after `register_blueprint`. The re-registration path previously
-  dropped the field, so a route that opted out of a middleware silently had it
-  run again once spliced onto the app.
-- A plain mutable parameter default (`tags: list[str] = []`, `opts: dict = {}`)
-  is no longer shared across requests. The default was returned by identity, so
-  one request's in-place mutation leaked into the next; each request now receives
-  an independent copy. The shared-mutable-default warning, previously emitted only
-  for explicit `Query(default=[])` markers, now also covers plain defaults.
-- `ProxyFix` with a `Forwarded: host="[2001:db8::1]:8443"` directive no longer
-  strips the IPv6 brackets and port before splicing the value into the Host
-  header, which produced a malformed authority in redirects and OpenAPI server
-  URLs. The bracket-stripping now applies only to the `for`/`by` node
-  identifiers (RFC 7239 Sec. 6); the `host` authority is kept verbatim.
-- A `HEAD` request served by the native server (`Veloce.run()`) no longer sends
-  the response body. The body strip previously existed only on the ASGI emit
-  path, so the native server returned the full payload after the `Content-Length`
-  header (RFC 9110 Sec. 9.3.2), corrupting keep-alive framing. The header section
-  and advertised length are kept; the body is now omitted.
-- The native server no longer drops a WebSocket frame that the client pipelines
-  into the same TCP segment as the handshake. The post-handshake bytes were never
-  fed to the frame parser, so the first message was silently lost and the
-  connection hung; they are now delivered to the connection.
-- A non-WebSocket `Upgrade` request (e.g. `Upgrade: h2c`) on the native server
-  now returns `400 Bad Request` without running the matching route handler.
-  Previously the request was dispatched before the `400` was written, so side
-  effects committed for a request the client was told had failed.
+- Parameters the resolver treats as optional are documented as `required: false`, matching runtime. ([#205](https://github.com/Lokesh-Tallapaneni/veloce/pull/205))
+- A form request body whose every field is optional is documented as not required, matching runtime. ([#205](https://github.com/Lokesh-Tallapaneni/veloce/pull/205))
+- `FileResponse.from_path` emits a bare `Content-Disposition` for a non-default disposition with no filename, matching the sync constructor. ([#207](https://github.com/Lokesh-Tallapaneni/veloce/pull/207))
+
+## [0.6.0] - 2026-06-10
+
+### Added
+
+- `veloce new NAME [--template minimal|api|web]` scaffolds a project, and `veloce generate KIND NAME` (alias `g`) emits a single file. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `get_flashed_messages` is auto-injected as a Jinja global, so templates call it without manual registration. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `SessionMiddleware` / `ServerSessionMiddleware` resolve unset constructor arguments from `app.config` on the first request. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- `app.secret_key` is a live property bound to `config["SECRET_KEY"]`, so it alone configures `SessionMiddleware`. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- `send_file` / `async_send_file` apply `SEND_FILE_MAX_AGE_DEFAULT` when called without `max_age=`. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+
+### Security
+
+- `CORSMiddleware(allow_origin_regex=...)` gates strictly by the regex instead of defaulting `allow_origins` to `["*"]`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+
+### Changed
+
+- `APIRouter` now aliases `Router` (was `Blueprint`); construct `Blueprint` for a named route group. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- `MAX_CONTENT_LENGTH` defaults to `104857600` (100 MiB); set it to `None` for unlimited. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- A failing `yield`-dependency teardown now reaches `got_request_exception` and re-raises under `PROPAGATE_EXCEPTIONS`. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+
+### Fixed
+
+- `/docs` renders with `BaseLayout` instead of the unloaded `StandaloneLayout`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `@rate_limit` is honored on `include_in_schema=False` routes (with the strategy API). ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `@app.endpoint(name)` reclassifies the route so a sync view is offloaded, not awaited. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- `PROPAGATE_EXCEPTIONS=false` (and `0`/`off`) from an env file now reads as off. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- `security_audit()` no longer claims session signing falls back to weak defaults when `SECRET_KEY` is unset. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- The native server drops chunked-request trailer fields instead of prepending them to the next request. ([#198](https://github.com/Lokesh-Tallapaneni/veloce/pull/198))
+- A mounted sub-app's trailing-slash redirect carries the mount prefix in its `Location`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- A non-ASCII `query_string` over ASGI returns `400` instead of raising a `500`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- A `multipart/form-data` body that fails mid-parse returns `400`, not a partial `200`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `StreamingResponse` on the native server no longer truncates on an empty `bytes` chunk. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- Registering `/users` and `/users/` no longer flips the first to a slash redirect. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- Blueprint routes keep `exclude_middleware=[...]` after `register_blueprint`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- A mutable parameter default (`tags: list[str] = []`) is no longer shared across requests. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- `ProxyFix` keeps the brackets and port of a `Forwarded` IPv6 `host`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- A native-server `HEAD` response no longer sends a body, keeping `Content-Length`. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- The native server no longer drops a WebSocket frame pipelined into the handshake segment. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
+- A non-WebSocket `Upgrade` (e.g. `h2c`) returns `400` without running the route handler. ([#197](https://github.com/Lokesh-Tallapaneni/veloce/pull/197))
 
 ## [0.5.0] - 2026-06-10
 
@@ -151,97 +65,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validates the `Origin` header (DNS-rebinding defense), and
   `exclude_middleware=[...]` drops named app middleware from the `/mcp` + metadata
   routes (so an app-wide auth middleware the transport's own `auth` replaces does
-  not run on it).
+  not run on it). ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - MCP authorization: `mount_mcp(transport="http", auth=MCPAuth(...))` makes the
   endpoint an OAuth 2.1 resource server — a user-supplied `verify` callable
   validates the bearer token on every request, the RFC 9728 protected-resource
   metadata is served, and a missing/invalid token returns `401` (insufficient
   endpoint scope returns `403`) with a `WWW-Authenticate` challenge. Declarative
   per-tool scopes (`@app.mcp_tool(scopes=...)`, `mcp_scopes=` on exposed routes)
-  are enforced against the request principal.
+  are enforced against the request principal. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - `Principal` + `current_principal()` / `set_principal()`: a unified authenticated
   identity populated by HTTP auth or the MCP transport, so authorization and
-  identity-aware dependencies read one source across both doors.
+  identity-aware dependencies read one source across both doors. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - `Request.is_mcp` marks a replayed MCP tool/resource call, so auth middleware can
-  defer to the transport on agent calls while business middleware runs unchanged.
+  defer to the transport on agent calls while business middleware runs unchanged. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - MCP Streamable HTTP transport: `app.mount_mcp(transport="http", path="/mcp")`
   mounts the MCP server as a `POST` route, so it can run as a remote/hosted server
   under any ASGI server. A request with `Accept: text/event-stream` is answered with
   an SSE stream of the call's progress/log notifications followed by the JSON-RPC
   response; otherwise a single JSON response. The route is protected by whatever
-  middleware and dependencies the app applies to it.
+  middleware and dependencies the app applies to it. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - MCP progress and logging: `MCPContext.report_progress(...)` and
   `MCPContext.log(...)` now send live `notifications/progress` and
   `notifications/message` to the client (progress requires the client's
   `progressToken`); the server handles `logging/setLevel` and advertises the
-  `logging` capability.
+  `logging` capability. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - MCP per-call timeout: set `app.config["MCP_CALL_TIMEOUT"]` (seconds) to bound each
   tool call, resource read, and prompt render; an overrun is cancelled and surfaced
-  as an in-band tool error or a JSON-RPC error. Unset (no timeout) by default.
+  as an in-band tool error or a JSON-RPC error. Unset (no timeout) by default. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - MCP prompts: register a reusable prompt template with `@app.mcp_prompt(...)`. The
   callable's parameters become the prompt's arguments and its return (a string or a
   list of role/content messages) becomes the rendered messages; the server answers
   `prompts/list` and `prompts/get`, with `Depends`/`MCPContext` resolved as in a
-  tool, and advertises the `prompts` capability when at least one is registered.
+  tool, and advertises the `prompts` capability when at least one is registered. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - MCP resources: expose a read-only (`GET`/`HEAD`) route as a Model Context
   Protocol resource with `expose_as_mcp_resource=True` and `mcp_resource_uri=...`
   (a static URI, or a URI template such as `users://{user_id}` binding the route's
   path parameters). The server answers `resources/list`, `resources/templates/list`,
   and `resources/read`, replaying the route's dependencies, security, and
   `response_model` through the shared invocation path; it advertises the
-  `resources` capability when at least one resource is registered.
+  `resources` capability when at least one resource is registered. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - MCP non-text tool content: a tool returning an `image/*` or `audio/*` response
   emits the matching typed MCP content block (base64), and a binary resource read
-  returns its bytes as a `blob`.
+  returns its bytes as a `blob`. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 
 ### Fixed
 
 - The native dev server (`app.run()`) now starts on Windows: `reuse_port` is
   requested only where `SO_REUSEPORT` exists, instead of unconditionally passing
   `reuse_port=True` to the selector event loop (which raised `ValueError` and
-  killed the serving thread before it bound).
+  killed the serving thread before it bound). ([#195](https://github.com/Lokesh-Tallapaneni/veloce/pull/195))
 - The native dev server now drains in-flight requests on shutdown on Windows too:
   where `loop.add_signal_handler` is unavailable, `_serve` falls back to
   `signal.signal` and schedules the cooperative shutdown on the loop, so Ctrl+C /
   Ctrl+Break let an in-flight request finish at its boundary instead of raising
-  `KeyboardInterrupt` straight out of the loop and resetting the connection.
+  `KeyboardInterrupt` straight out of the loop and resetting the connection. ([#195](https://github.com/Lokesh-Tallapaneni/veloce/pull/195))
 - Blueprint error handlers are now scoped to their own routes: a
   `@bp.errorhandler` only catches exceptions raised on that blueprint (or a nested
   descendant), consulted by the failing request's blueprint chain before the
   app-level handlers — it no longer catches a sibling blueprint's or an app-level
-  route's exception. `error_handler_spec` now reports per-blueprint sub-tables.
+  route's exception. `error_handler_spec` now reports per-blueprint sub-tables. ([#195](https://github.com/Lokesh-Tallapaneni/veloce/pull/195))
 - A mounted Veloce sub-app now sees `request.root_path` (and `script_root`) set to
   its mount prefix, matching mounted ASGI apps, so `url_for` and proxy-aware URLs
-  inside the sub-app are prefix-correct.
+  inside the sub-app are prefix-correct. ([#195](https://github.com/Lokesh-Tallapaneni/veloce/pull/195))
 - `JSONResponse`, `HTMLResponse`, and `PlainTextResponse` accept `background=`
   (forwarded to the base `Response`), so a `BackgroundTask`/`BackgroundTasks` can
-  be attached to them as it can to `Response`.
+  be attached to them as it can to `Response`. ([#195](https://github.com/Lokesh-Tallapaneni/veloce/pull/195))
 - `FileResponse(content_disposition_type="inline")` now emits
   `Content-Disposition: inline` even without a `filename`; an explicit non-default
   disposition is honoured (the default `attachment` without a filename still emits
-  no header, so plain file responses are not forced to download).
+  no header, so plain file responses are not forced to download). ([#195](https://github.com/Lokesh-Tallapaneni/veloce/pull/195))
 - The `session` proxy forwards attribute writes, so `session.permanent = True`
-  works through the global proxy rather than raising `AttributeError`.
+  works through the global proxy rather than raising `AttributeError`. ([#195](https://github.com/Lokesh-Tallapaneni/veloce/pull/195))
 - A single Pydantic body model's validation errors are now located under `"body"`
   (e.g. `["body", "field"]`), consistent with `Body(...)` marker params and the
-  whole-body error cases.
+  whole-body error cases. ([#195](https://github.com/Lokesh-Tallapaneni/veloce/pull/195))
 - MCP: the `logging/setLevel` minimum is now scoped per request (a ContextVar like
   the progress/notification channel) rather than on the shared `MCPServer`, so one
-  HTTP client's level change no longer raises the notification floor for others.
+  HTTP client's level change no longer raises the notification floor for others. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - MCP: a resource read short-circuited by an auth guard (`401`/`403`) maps to a
-  forbidden error rather than an internal error.
+  forbidden error rather than an internal error. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 
 ### Security
 
 - MCP: a pure `@app.mcp_tool` handler error (and the defensive internal-error path)
   surfaces a generic message unless `app.debug` is set, so an exception carrying a
-  secret is not returned verbatim to the agent.
+  secret is not returned verbatim to the agent. ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 - MCP: a tool argument can no longer masquerade as an `Authorization`/`Cookie`
   header on the replayed request, so a `Security` scheme cannot read agent-supplied
   input as a credential; `Principal.token` is excluded from `repr()`; `MCPAuth`
   requires `resource_server_url` + `authorization_servers`; and an insufficient
   scope is reported uniformly across tools/resources/prompts (HTTP 403 with a
-  `WWW-Authenticate` challenge over the JSON transport).
+  `WWW-Authenticate` challenge over the JSON transport). ([#194](https://github.com/Lokesh-Tallapaneni/veloce/pull/194))
 
 ## [0.4.0] - 2026-06-08
 
@@ -250,21 +164,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable rate limiting: selectable algorithms (`FixedWindow`,
   `SlidingWindow`, `TokenBucket`), pluggable in-memory or Redis backends, and
   per-route limits via `overrides` or the `@rate_limit` decorator.
-- Result caching: the `cached` decorator with `InMemoryCache` and `RedisCache`.
+- Result caching: the `cached` decorator with `InMemoryCache` and `RedisCache`. ([#171](https://github.com/Lokesh-Tallapaneni/veloce/pull/171))
 - `veloce.contrib.redis`: `RedisSessionStore`, `RedisRateLimitBackend`, and
   `RedisCache` for state shared across workers.
-- msgspec as an opt-in fast validation and serialization backend.
+- msgspec as an opt-in fast validation and serialization backend. ([#157](https://github.com/Lokesh-Tallapaneni/veloce/pull/157))
 - Model Context Protocol integration (`veloce.contrib.mcp`): tool exposure over
   stdio, protocol-version negotiation, `ping`, route-derived tool metadata, and
   streaming-result tools.
 - JSON Web Tokens (`encode_jwt` / `decode_jwt`), storage-free reset tokens
   (`make_reset_token` / `check_reset_token`), and a `Secret` wrapper that resists
-  accidental disclosure.
+  accidental disclosure. ([#139](https://github.com/Lokesh-Tallapaneni/veloce/pull/139))
 - `CSPMiddleware` (Content-Security-Policy with a per-request nonce and
   report-only mode) and `ConditionalGetMiddleware` (`304` for `If-None-Match` /
-  `If-Modified-Since`).
+  `If-Modified-Since`). ([#139](https://github.com/Lokesh-Tallapaneni/veloce/pull/139))
 - `CORSMiddleware` gains Private Network Access support and preflight-method
-  validation; `CSRFMiddleware` gains Origin verification via `trusted_origins`.
+  validation; `CSRFMiddleware` gains Origin verification via `trusted_origins`. ([#136](https://github.com/Lokesh-Tallapaneni/veloce/pull/136))
 - Middleware ordering with `add_middleware(..., priority=N)` and per-route
   opt-out with `exclude_middleware=[...]`.
 - Background-task supervision: `app.supervise(...)` (restart policy) and
@@ -304,21 +218,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The deprecated `Veloce.on_event()` / `Veloce.add_event_handler()` now target
-  removal in `1.0.0`.
+  removal in `1.0.0`. ([#173](https://github.com/Lokesh-Tallapaneni/veloce/pull/173))
 - `Veloce.run(workers=...)` raises `ValueError` for any worker count other than
-  `1` (the built-in server is single-process).
+  `1` (the built-in server is single-process). ([#166](https://github.com/Lokesh-Tallapaneni/veloce/pull/166))
 - Independent dependencies resolve concurrently, and a no-wave `Depends` chain
-  compiles to a straight-line async resolver.
+  compiles to a straight-line async resolver. ([#154](https://github.com/Lokesh-Tallapaneni/veloce/pull/154))
 - Numerous per-request and schema-generation paths were optimized — a compiled
   feature pipeline, indexed route/encoder lookups, and bounded caches — without
   changing public behavior.
 - Route resolution gates its mounted-app, static-handler, and ASGI-mount scans on
   the compiled pipeline flags, skipping each scan when nothing of that kind is
-  registered.
+  registered. ([#183](https://github.com/Lokesh-Tallapaneni/veloce/pull/183))
 - Literal request paths resolve through a registration-time exact-match map in one
   hash lookup instead of a radix-tree walk, falling through to the tree for
   parameterized, wildcard, and slash-redirect routes (literal `match()` ~1.7x
-  faster, ~3x on deep literal paths).
+  faster, ~3x on deep literal paths). ([#185](https://github.com/Lokesh-Tallapaneni/veloce/pull/185))
 - Requests to feature-free apps take a straight-line dispatch fast path: when no
   middleware, request/response hooks, mounts, or url-value preprocessors are
   registered and the matched route is an async trivial or request-only handler
@@ -327,11 +241,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   route-resolution, and dependency-resolution orchestration is skipped while
   coercion, `after_this_request` callbacks, background tasks, exception handling,
   and teardown remain shared (~6-8% lower per-request dispatch time on those
-  routes, in-process A/B).
+  routes, in-process A/B). ([#185](https://github.com/Lokesh-Tallapaneni/veloce/pull/185))
 
 ### Fixed
 
-- Per-route rate-limit state now rebuilds when routes are added after startup.
+- Per-route rate-limit state now rebuilds when routes are added after startup. ([#178](https://github.com/Lokesh-Tallapaneni/veloce/pull/178))
 - A bodiless status (`1xx`, `204`, `205`, `304`) no longer advertises a body, the
   WebSocket handshake uses the correct RFC 6455 GUID, and a frame with a non-zero
   RSV bit is rejected.
@@ -363,14 +277,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `StaticFiles` now applies RFC 9110 `If-Range` validation correctly before
-  serving partial responses.
+  serving partial responses. ([#128](https://github.com/Lokesh-Tallapaneni/veloce/pull/128))
 
 ## [0.2.0] - 2026-05-31
 
 ### Added
 
 - Streaming request bodies on the built-in HTTP server, so large uploads no
-  longer require buffering the full body before dispatch.
+  longer require buffering the full body before dispatch. ([#106](https://github.com/Lokesh-Tallapaneni/veloce/pull/106))
 - CLI plugin discovery, `.env` loading, template streaming, SSE heartbeat
   support, OpenTelemetry integration, and a signal namespace helper.
 - Hybrid routing for patterns that do not fit the radix tree, plus an optional
@@ -381,11 +295,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Request body access is now asynchronous: `request.body()`, `request.text()`,
-  and `request.get_data()` must be awaited.
+  and `request.get_data()` must be awaited. ([#106](https://github.com/Lokesh-Tallapaneni/veloce/pull/106))
 - `request.stream()` now streams on the raw HTTP path instead of replaying an
-  already-buffered body.
+  already-buffered body. ([#106](https://github.com/Lokesh-Tallapaneni/veloce/pull/106))
 - Debug mode renders an HTML traceback page for clients that prefer HTML while
-  preserving plain-text tracebacks for CLI and programmatic clients.
+  preserving plain-text tracebacks for CLI and programmatic clients. ([#117](https://github.com/Lokesh-Tallapaneni/veloce/pull/117))
 - Resolver and response-encoding internals were consolidated and optimized
   without changing the public API.
 
@@ -408,17 +322,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   API cleanup, and small internal consolidations.
 - Improved encoder behavior, cached more parsed request metadata, and reduced
   duplicated logic across middleware, CLI helpers, templating, and the test
-  client.
+  client. ([#95](https://github.com/Lokesh-Tallapaneni/veloce/pull/95))
 
 ### Security
 
 - Tightened multipart UTF-8 validation, `HTTPBasic` challenge construction, and
-  exception handling around basic-auth parsing.
-- Made HSTS subdomain coverage opt-in rather than implicit.
+  exception handling around basic-auth parsing. ([#95](https://github.com/Lokesh-Tallapaneni/veloce/pull/95))
+- Made HSTS subdomain coverage opt-in rather than implicit. ([#95](https://github.com/Lokesh-Tallapaneni/veloce/pull/95))
 
 ### Removed
 
-- Dropped unused internal constants from the handler-plan implementation.
+- Dropped unused internal constants from the handler-plan implementation. ([#95](https://github.com/Lokesh-Tallapaneni/veloce/pull/95))
 
 ## [0.1.3] - 2026-05-23
 
@@ -427,34 +341,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security and correctness release covering CSRF token rotation, password-hash
   parameter validation, and several framework/runtime fixes.
 - Improved diagnostics around OpenAPI schema generation and clarified the
-  process-local scope of the built-in rate limiter.
+  process-local scope of the built-in rate limiter. ([#94](https://github.com/Lokesh-Tallapaneni/veloce/pull/94))
 
 ### Fixed
 
 - Addressed loop-affinity issues in `Veloce()`, multipart encoding in the test
   client, stale response-encode caches, router merge behavior, and several
-  runtime guards that previously relied on `assert`.
+  runtime guards that previously relied on `assert`. ([#94](https://github.com/Lokesh-Tallapaneni/veloce/pull/94))
 
 ### Security
 
-- Added CSRF token rotation support after login or privilege changes.
-- Rejected weak or tampered scrypt parameters during password verification.
-- Added SRI protection for Swagger UI and ReDoc assets.
+- Added CSRF token rotation support after login or privilege changes. ([#94](https://github.com/Lokesh-Tallapaneni/veloce/pull/94))
+- Rejected weak or tampered scrypt parameters during password verification. ([#94](https://github.com/Lokesh-Tallapaneni/veloce/pull/94))
+- Added SRI protection for Swagger UI and ReDoc assets. ([#94](https://github.com/Lokesh-Tallapaneni/veloce/pull/94))
 
 ## [0.1.2] - 2026-05-23
 
 ### Added
 
 - Top-level exports for `render_template`, `render_template_string`, and
-  `Jinja2Templates`.
+  `Jinja2Templates`. ([#78](https://github.com/Lokesh-Tallapaneni/veloce/pull/78))
 
 ### Changed
 
 - `Request.json()` became asynchronous for consistency with the rest of the
-  request-body API.
+  request-body API. ([#78](https://github.com/Lokesh-Tallapaneni/veloce/pull/78))
 - Runtime dependencies were corrected so standard installs include the pieces
-  needed for documented framework features.
-- `veloce.__version__` now comes from installed package metadata.
+  needed for documented framework features. ([#78](https://github.com/Lokesh-Tallapaneni/veloce/pull/78))
+- `veloce.__version__` now comes from installed package metadata. ([#78](https://github.com/Lokesh-Tallapaneni/veloce/pull/78))
 
 ## [0.1.1] - 2026-05-23
 

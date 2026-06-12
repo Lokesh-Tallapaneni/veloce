@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import builtins
 import contextlib
 import contextvars
 import functools
@@ -51,6 +52,12 @@ from veloce.secret import Secret
 MIME_HTML = MIME_TEXT_HTML_UTF8
 MIME_PLAIN = MIME_TEXT_PLAIN_UTF8
 MIME_OCTET = MIME_OCTET_STREAM
+
+# `BaseExceptionGroup` is a builtin only from Python 3.11 (PEP 654); on 3.10 the
+# name is absent. Resolved once here so the lifespan-unwind, debug, and
+# dependency-teardown paths share one platform shim: callers group multiple
+# failures on 3.11+ and re-raise the first on 3.10 when grouping is unavailable.
+_BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
 
 # Reason-phrase lookup - `HTTPStatus(code).phrase` walks the IntEnum on
 # every access. Build the mapping once at import time.
@@ -116,6 +123,19 @@ def _coerce_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return bool(value)
+
+
+def _coerce_int(value: Any, *, name: str) -> int:
+    """Interpret a config value as an int, including dotenv-style strings.
+
+    `from_env_file` stores values as plain strings, so `MAX_COOKIE_SIZE=2048`
+    arrives as `"2048"`. A real int passes through; an unparseable value raises a
+    clear error naming the config key rather than crashing later on `<` / `max()`.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError) as err:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from err
 
 
 def _header_value_has_crlf(value: str) -> bool:

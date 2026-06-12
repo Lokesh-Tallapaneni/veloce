@@ -237,6 +237,33 @@ async def test_yield_dep_teardown_exception_propagates_when_configured():
 
 
 @pytest.mark.asyncio
+async def test_teardown_request_runs_even_when_yield_teardown_propagates():
+    """Under PROPAGATE_EXCEPTIONS a failing yield-dependency teardown still
+    re-raises, but `teardown_request` (and the rest of the finally) runs first -
+    the re-raise is deferred to the end of teardown, not raised mid-cleanup."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["PROPAGATE_EXCEPTIONS"] = True
+    events: list[str] = []
+
+    @app.teardown_request
+    def _td(exc: BaseException | None) -> None:
+        events.append("teardown_request")
+
+    def db() -> Iterator[str]:
+        yield "session"
+        raise RuntimeError("commit failed")
+
+    @app.get("/x")
+    async def handler(s: str = Depends(db)):
+        return {"ok": True}
+
+    with pytest.raises(Exception):  # noqa: B017 - the propagated teardown failure
+        await app.handle_request(_req("/x"))
+    # The hook ran despite the teardown failure that then propagated.
+    assert events == ["teardown_request"]
+
+
+@pytest.mark.asyncio
 async def test_yield_dep_state_does_not_leak_across_requests():
     """The resolver's teardown stack must be cleared between requests so
     a stale entry from request N doesn't fire on request N+1."""

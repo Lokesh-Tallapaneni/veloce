@@ -342,3 +342,29 @@ def test_is_msgspec_struct_safe_when_absent(monkeypatch):
     monkeypatch.setattr(mb, "_MSGSPEC_STRUCT", None)
     assert mb.is_msgspec_struct(User) is False
     assert mb.backend_of(User) is mb.ModelBackend.NONE
+
+
+def test_mcp_msgspec_body_input_schema_is_object():
+    """An MCP tool's msgspec.Struct body advertises a generic JSON object.
+
+    The input schema is `{"type": "object"}` for both a bare struct body and a
+    `Body()`-marked one - the two forms agree, and the shape matches the dict a
+    `tools/call` delivers (MCP does not inline a struct's fields the way it does
+    a Pydantic model).
+    """
+    from veloce.contrib.mcp.registry import build_registry
+    from veloce.routing.params import Body
+
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="bare struct body")
+    async def bare(user: User) -> dict:
+        return {}
+
+    @app.mcp_tool(description="marked struct body")
+    async def marked(user: User = Body()) -> dict:
+        return {}
+
+    registry = build_registry(app)
+    assert registry.tools["bare"].input_schema["properties"]["user"] == {"type": "object"}
+    assert registry.tools["marked"].input_schema["properties"]["user"] == {"type": "object"}

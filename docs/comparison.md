@@ -40,7 +40,7 @@ Read each cell as "what ships in the core distribution with no third-party packa
 - You want FastAPI-style typed dependency injection and OpenAPI on top of an async-only request pipeline, without the Starlette layering underneath.
 - You want Flask-style helpers (`g`, `flash`, `Blueprint`, `current_app`, `url_for`) and an async pipeline in the same project, without bridging two stacks.
 - You want CSRF, sessions, signed cookies, CORS, GZip, ProxyFix, trusted-host, and HTTPS-redirect middleware available out of the box.
-- The dispatch hot path matters — Veloce inspects handler signatures once at registration into a `HandlerPlan` and performs no reflection per request. See [Benchmarks](benchmarks.md) for methodology.
+- The dispatch hot path matters — Veloce inspects handler signatures once at registration into a `HandlerPlan` and performs no reflection per request.
 
 ## When to choose FastAPI instead
 
@@ -191,4 +191,3 @@ if __name__ == "__main__":
 - [Getting started](getting-started.md)
 - [Routing guide](guide/routing.md)
 - [Dependency injection guide](guide/dependency-injection.md)
-- [Benchmarks](benchmarks.md)

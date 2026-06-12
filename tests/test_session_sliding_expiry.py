@@ -148,7 +148,21 @@ def test_server_read_only_does_not_restamp_when_off():
     assert after == before
 
 
-def test_server_read_only_restamps_when_on():
+def test_server_read_only_restamps_when_on(monkeypatch):
+    # `time.time()` can return the same value twice within one OS clock tick
+    # (notably on Windows), which would make the restamp land on the identical
+    # expiry. Drive a strictly increasing clock so the slide-forward is
+    # deterministic regardless of platform resolution.
+    import veloce.sessions as _sessions
+
+    clock = {"t": 1000.0}
+
+    def _tick() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(_sessions.time, "time", _tick)
+
     app, store = _server_app(renew_on_access=True)
     with TestClient(app) as client:
         client.post("/login")

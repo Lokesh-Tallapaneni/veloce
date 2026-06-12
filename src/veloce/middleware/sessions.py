@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from veloce._constants import HEADER_COOKIE
+from veloce._internal import _coerce_bool, _coerce_int
 from veloce.http.cookies import dump_cookie
 from veloce.http.request import Request
 from veloce.http.response import Response
@@ -336,18 +337,24 @@ class SessionMiddleware(Middleware):
             self.cookie_name = _cfg_or(cfg, "SESSION_COOKIE_NAME", self.cookie_name)
         if "path" in deferred:
             self.path = _cfg_or(cfg, "APPLICATION_ROOT", self.path)
+        # Config from `from_env_file` is strings, so bool/int fields are coerced;
+        # `SESSION_COOKIE_SECURE=false` must read as False, not a truthy "false",
+        # and the numeric fields must be ints before the `<=` / `max()` below.
         if "httponly" in deferred:
-            self.httponly = _cfg_or(cfg, "SESSION_COOKIE_HTTPONLY", self.httponly)
+            self.httponly = _coerce_bool(_cfg_or(cfg, "SESSION_COOKIE_HTTPONLY", self.httponly))
         if "secure" in deferred:
-            self.secure = _cfg_or(cfg, "SESSION_COOKIE_SECURE", self.secure)
+            self.secure = _coerce_bool(_cfg_or(cfg, "SESSION_COOKIE_SECURE", self.secure))
         if "samesite" in deferred:
             self.samesite = _cfg_or(cfg, "SESSION_COOKIE_SAMESITE", self.samesite)
         if "permanent_lifetime" in deferred:
-            self.permanent_lifetime = _cfg_or(
-                cfg, "PERMANENT_SESSION_LIFETIME", self.permanent_lifetime
+            self.permanent_lifetime = _coerce_int(
+                _cfg_or(cfg, "PERMANENT_SESSION_LIFETIME", self.permanent_lifetime),
+                name="PERMANENT_SESSION_LIFETIME",
             )
         if "max_cookie_size" in deferred:
-            self.max_cookie_size = _cfg_or(cfg, "MAX_COOKIE_SIZE", self.max_cookie_size)
+            self.max_cookie_size = _coerce_int(
+                _cfg_or(cfg, "MAX_COOKIE_SIZE", self.max_cookie_size), name="MAX_COOKIE_SIZE"
+            )
         self._samesite_cap = self.samesite.capitalize() if self.samesite else None
         self._wire_cookie_name = _wire_name(self.cookie_prefix, self.cookie_name)
         _validate_cookie_security(
@@ -713,10 +720,11 @@ class ServerSessionMiddleware(Middleware):
             self.cookie_name = _cfg_or(cfg, "SESSION_COOKIE_NAME", self.cookie_name)
         if "path" in deferred:
             self.path = _cfg_or(cfg, "APPLICATION_ROOT", self.path)
+        # Coerce dotenv-string config to bool (see SessionMiddleware._resolve_config).
         if "httponly" in deferred:
-            self.httponly = _cfg_or(cfg, "SESSION_COOKIE_HTTPONLY", self.httponly)
+            self.httponly = _coerce_bool(_cfg_or(cfg, "SESSION_COOKIE_HTTPONLY", self.httponly))
         if "secure" in deferred:
-            self.secure = _cfg_or(cfg, "SESSION_COOKIE_SECURE", self.secure)
+            self.secure = _coerce_bool(_cfg_or(cfg, "SESSION_COOKIE_SECURE", self.secure))
         if "samesite" in deferred:
             self.samesite = _cfg_or(cfg, "SESSION_COOKIE_SAMESITE", self.samesite)
         self._wire_cookie_name = _wire_name(self.cookie_prefix, self.cookie_name)

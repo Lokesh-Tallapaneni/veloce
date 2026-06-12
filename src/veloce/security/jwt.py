@@ -30,7 +30,7 @@ from typing import Any
 
 import orjson
 
-from veloce._internal import _b64decode, _b64encode
+from veloce._internal import _b64decode, _b64encode, _coerce_secret_bytes
 
 # RFC 7518 Sec. 3.2 - the HMAC family. Not user-extensible: a requested
 # algorithm outside this map raises UnsupportedAlgorithmError.
@@ -128,7 +128,7 @@ def encode_jwt(
     digestmod = _ALGORITHMS.get(alg)
     if digestmod is None:
         raise UnsupportedAlgorithmError(f"unsupported algorithm {alg!r}")
-    secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
+    secret_bytes = _coerce_secret_bytes(secret)
     if not secret_bytes:
         raise ValueError("secret must be non-empty")
     header_b64 = _b64encode(orjson.dumps({"alg": alg, "typ": _HEADER_TYP}))
@@ -152,7 +152,7 @@ def decode_jwt(
     """Verify a compact JWS token and return its claims as a read-only mapping."""
     if not algorithms:
         raise ValueError("algorithms allow-list is required and must be non-empty")
-    secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
+    secret_bytes = _coerce_secret_bytes(secret)
     # RFC 7519/RFC 2104: an empty HMAC key would verify tokens signed with the
     # empty secret (e.g. an unset secret env var), so reject it symmetrically
     # with encode_jwt. This is a configuration/programmer error, not a token
