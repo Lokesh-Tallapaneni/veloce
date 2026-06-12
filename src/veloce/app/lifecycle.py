@@ -13,13 +13,12 @@ out of `app.core` so the application object's lifecycle surface is one file.
 from __future__ import annotations
 
 import asyncio
-import builtins
 import contextlib
 import warnings
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
-from veloce._internal import _is_async_callable, offload
+from veloce._internal import _BaseExceptionGroup, _is_async_callable, offload
 from veloce._protocol_constants import (
     LIFECYCLE_SHUTDOWN,
     LIFECYCLE_STARTUP,
@@ -28,11 +27,6 @@ from veloce._protocol_constants import (
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app.contexts import _LifespanManager
     from veloce.app.core import Veloce
-
-
-# `BaseExceptionGroup` is a builtin only from Python 3.11; on 3.10 it is `None`
-# so the unwind helpers below fall back to single-exception chaining.
-_BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
 
 
 def _collect_chained(exc: BaseException) -> list[BaseException]:

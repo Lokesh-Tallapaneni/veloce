@@ -8,7 +8,6 @@ the handler signature per request.
 from __future__ import annotations
 
 import asyncio
-import builtins
 import contextlib
 import functools
 import inspect
@@ -40,7 +39,7 @@ from veloce._handler_plan import (
     _slot_parallel_safe,
     parallel_group_end,
 )
-from veloce._internal import _is_async_callable, offload
+from veloce._internal import _BaseExceptionGroup, _is_async_callable, offload
 from veloce._model_backend import ModelBackend, is_pydantic_model
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
@@ -50,10 +49,6 @@ from veloce.http.response import Response
 
 _logger = logging.getLogger(__name__)
 
-# `BaseExceptionGroup` is a builtin only from Python 3.11 (PEP 654); on 3.10 the
-# name is absent. When several yield-dependency teardowns fail, the failures are
-# surfaced together as a group on 3.11+ and chained singly on 3.10.
-_BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
 
 # Marks a plan whose compiled-resolver build was attempted and rejected, so
 # resolve_plan does not retry compilation on every request.

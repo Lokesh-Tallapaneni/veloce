@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import builtins
 import contextlib
 import contextvars
 import functools
@@ -51,6 +52,12 @@ from veloce.secret import Secret
 MIME_HTML = MIME_TEXT_HTML_UTF8
 MIME_PLAIN = MIME_TEXT_PLAIN_UTF8
 MIME_OCTET = MIME_OCTET_STREAM
+
+# `BaseExceptionGroup` is a builtin only from Python 3.11 (PEP 654); on 3.10 the
+# name is absent. Resolved once here so the lifespan-unwind, debug, and
+# dependency-teardown paths share one platform shim: callers group multiple
+# failures on 3.11+ and re-raise the first on 3.10 when grouping is unavailable.
+_BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
 
 # Reason-phrase lookup - `HTTPStatus(code).phrase` walks the IntEnum on
 # every access. Build the mapping once at import time.

@@ -25,10 +25,11 @@ inject markup (reflected XSS).
 
 from __future__ import annotations
 
-import builtins
 import html
 import linecache
 import traceback
+
+from veloce._internal import _BaseExceptionGroup
 
 # Number of source lines shown on each side of the failing line.
 _CONTEXT_RADIUS = 3
@@ -40,11 +41,6 @@ _STR_FAILED = "<exception str() failed>"
 # Separators the stdlib ``traceback`` module prints between linked exceptions.
 _CAUSE_MESSAGE = "The above exception was the direct cause of the following exception:"
 _CONTEXT_MESSAGE = "During handling of the above exception, another exception occurred:"
-
-# ``BaseExceptionGroup`` is only a builtin from Python 3.11; on 3.10 the lookup
-# returns ``None`` and the ``isinstance`` guard below is simply skipped. Going
-# through ``builtins`` keeps the name resolvable under a 3.10 type-check target.
-_BaseExceptionGroup: type[BaseException] | None = getattr(builtins, "BaseExceptionGroup", None)
 
 
 # -- String safety ------------------------------------------
