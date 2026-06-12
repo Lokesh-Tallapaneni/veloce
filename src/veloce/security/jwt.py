@@ -1,4 +1,4 @@
-"""Stdlib JWT - compact JWS sign/verify for the HMAC family.
+"""Stdlib JWT — compact JWS sign/verify for the HMAC family.
 
 A dependency-free JSON Web Token implementation covering the HMAC-SHA2
 algorithms (HS256/HS384/HS512) per RFC 7515 (JWS), RFC 7519 (JWT), and

@@ -80,7 +80,7 @@ def _raise_unwind_errors(errors: list[BaseException]) -> None:
 class LifecycleMixin:
     """Request hooks and application lifespan, mixed into `Veloce`."""
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host application (Veloce) provides.
         config: Any
         logger: Any
@@ -102,7 +102,7 @@ class LifecycleMixin:
         _watchdog: Any
         _drain_spawned_tasks: Callable[..., Any]
 
-    # -- Before/After request hooks -------------------------------
+    # ── Before/After request hooks ────────────────────────
 
     def before_request(self, func: Callable) -> Callable:
         """Register a function to run before each request."""
@@ -197,7 +197,7 @@ class LifecycleMixin:
             except Exception:
                 self.logger.exception(f"{label} hook raised an exception")
 
-    # -- Lifecycle events -----------------------------------------
+    # ── Lifecycle events ──────────────────────────────────
 
     def on_event(self, event: str) -> Callable:
         """Register startup/shutdown event handlers.
@@ -270,7 +270,7 @@ class LifecycleMixin:
         self._on_shutdown.append(func)
         return func
 
-    # -- Lifespan engine ------------------------------------------
+    # ── Lifespan engine ───────────────────────────────────
 
     async def _run_handler(self, handler: Callable[..., Any]) -> None:
         """Invoke a lifecycle handler, offloading sync ones to a thread.

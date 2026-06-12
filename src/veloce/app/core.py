@@ -655,7 +655,7 @@ class Veloce(
         self.static_folder: str = "static"
         self.static_url_path: str = "/static"
 
-    # -- Properties ---------------------------------------------
+    # ── Properties ────────────────────────────────────────
 
     @property
     def debug(self) -> bool:
@@ -725,6 +725,8 @@ class Veloce(
         self._cached_routes = result
         return result
 
+    # ── Route caches and the compiled pipeline ─────────────
+
     def _invalidate_route_caches(self) -> None:
         """Drop all cached views of the route table.
 
@@ -782,6 +784,8 @@ class Veloce(
                 "registration to before the first request, or enable DEBUG / "
                 "TESTING to allow late changes during development."
             )
+
+    # ── Registration APIs ──────────────────────────────────
 
     def add_route(self, *args: Any, **kwargs: Any) -> None:
         self._assert_mutable()
@@ -873,6 +877,8 @@ class Veloce(
                 self._instrumentation_excludes[hook] = excluded
         return hook
 
+    # ── Security posture ───────────────────────────────────
+
     def use_secure_defaults(self) -> None:
         """Apply a security-hardened configuration baseline.
 
@@ -924,6 +930,8 @@ class Veloce(
                 "headers (call app.use_secure_defaults())."
             )
         return warnings
+
+    # ── JSON, static files, and Jinja ──────────────────────
 
     @property
     def json(self) -> Any:
@@ -1034,6 +1042,8 @@ class Veloce(
             return self._instance_path
         return os.path.join(self.package_root, "instance")
 
+    # ── Signals, aborter, and CLI ──────────────────────────
+
     @property
     def signal_namespace(self) -> Any:
         """Accessor that returns the `veloce.signals` module.
@@ -1122,6 +1132,8 @@ class Veloce(
                 "test_cli_runner() requires `click`. Install with: pip install veloceframework[cli]"
             ) from err
         return CliRunner(**kwargs)
+
+    # ── Dispatch aliases and response coercion ─────────────
 
     # Veloce exposes the internal dispatcher under two names downstream
     # extension code reaches for. Both alias `_dispatch_request`.
@@ -1244,6 +1256,8 @@ class Veloce(
                 content_type=MIME_HTML,
             )
         raise TypeError(f"Cannot coerce {type(value).__name__} to Response")
+
+    # ── Endpoint and hook introspection ────────────────────
 
     @property
     def view_functions(self) -> dict[str, Callable]:
@@ -1405,7 +1419,7 @@ class Veloce(
                 ctx.update(extra)
         return ctx
 
-    # -- URL processors (URL hooks) -----------------------------
+    # ── URL processors (URL hooks) ────────────────────────
 
     def url_value_preprocessor(self, func: Callable) -> Callable:
         """Register a function `fn(endpoint, values)` that can mutate the
@@ -1481,6 +1495,8 @@ class Veloce(
         self._assert_mutable()
         self._url_default_funcs.append(func)
         return func
+
+    # ── Blueprints and URL rules ───────────────────────────
 
     def register_blueprint(
         self,
@@ -1640,7 +1656,7 @@ class Veloce(
             **kwargs,
         )
 
-    # -- Dependency overrides (for testing) ------------------------
+    # ── Dependency overrides (for testing) ────────────────
 
     def dependency_overrides_provider(self) -> dict[Callable, Callable]:
         """Return the dependency override mapping."""
@@ -1668,7 +1684,7 @@ class Veloce(
         # long-lived test suite that swaps in hundreds of fakes doesn't leak.
         self._override_subplans.clear()
 
-    # -- MCP (Model Context Protocol) -----------------------------
+    # ── MCP (Model Context Protocol) ──────────────────────
 
     def mcp_tool(
         self,
@@ -1811,4 +1827,4 @@ class Veloce(
             f"Unsupported MCP transport {transport!r}; supported transports are 'stdio' and 'http'."
         )
 
-    # -- ASGI compatibility layer ---------------------------------
+    # ── ASGI compatibility layer ──────────────────────────

@@ -195,7 +195,7 @@ class CORSMiddleware(Middleware):
                 "wildcard allow_origins or allow_headers (Fetch CORS spec Sec. 3.2.4)"
             )
 
-    # -- Origin matching ----------------------------------------------
+    # ── Origin matching ───────────────────────────────────
 
     def _origin_allowed(self, origin: str) -> bool:
         """True if `origin` matches the configured allow-list or regex."""
@@ -221,7 +221,7 @@ class CORSMiddleware(Middleware):
             return "*"
         return origin
 
-    # -- Request hooks ------------------------------------------------
+    # ── Request hooks ─────────────────────────────────────
 
     async def process_request(self, request: Request) -> Response | None:
         """Handle CORS preflight requests and validate origins."""
@@ -291,7 +291,7 @@ class CORSMiddleware(Middleware):
         self._add_cors_headers(response, origin, preflight=False)
         return response
 
-    # -- Header writer ------------------------------------------------
+    # ── Header writer ─────────────────────────────────────
 
     def _add_cors_headers(self, response: Response, origin: str, preflight: bool) -> None:
         allow_origin = self._resolve_allow_origin(origin)

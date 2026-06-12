@@ -1,4 +1,4 @@
-"""MCPContext - request-scoped handle passed to an MCP tool invocation.
+"""MCPContext — request-scoped handle passed to an MCP tool invocation.
 
 One `MCPContext` is constructed per `tools/call`, mirroring how a `Request` is
 constructed per HTTP request. A tool handler (or one of its `Depends`) may declare

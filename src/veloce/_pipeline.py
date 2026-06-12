@@ -1,4 +1,4 @@
-"""Compiled feature pipeline - one compile-once artifact for app-level features.
+"""Compiled feature pipeline — one compile-once artifact for app-level features.
 
 A `FeatureSpec` declares WHEN a feature is enabled, WHERE in the request/connect
 pipeline it plugs in (a `PH_*` phase), and HOW to build its per-request callable.
@@ -37,7 +37,7 @@ if TYPE_CHECKING:  # pragma: no cover
     # instantiated as `cls(app, **options)` when the stack is assembled.
     AsgiWrapPair = tuple[Any, dict[str, Any]]
 
-# -- Phase ids ------------------------------------------------
+# ── Phase ids ─────────────────────────────────────────────
 # Bare integers (not IntEnum) for cheap branching, mirroring the `K_*` slot-kind
 # constants in `_handler_plan.py`. Each id is the ONE pipeline slot a feature
 # occupies; a feature spanning two phases registers two specs.

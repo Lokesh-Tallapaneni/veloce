@@ -1,4 +1,4 @@
-"""Instrumentation - per-request metrics record for observability hooks.
+"""Instrumentation — per-request metrics record for observability hooks.
 
 `RequestMetrics` is the per-request record handed to every instrumentation
 hook registered with `Veloce.add_instrumentation`. It carries exactly the
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# -- Public classes -------------------------------------------------
+# ── Public classes ────────────────────────────────────────
 
 
 @dataclass(slots=True, eq=False, repr=False)

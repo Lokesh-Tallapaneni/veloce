@@ -1,4 +1,4 @@
-"""OpenTelemetry tracing bridge - one server span per finished HTTP request.
+"""OpenTelemetry tracing bridge — one server span per finished HTTP request.
 
 This is an **optional** integration that turns each finished HTTP request into
 an OpenTelemetry server span using Veloce's existing instrumentation hook

@@ -36,7 +36,7 @@ from veloce.http.cookies import iter_cookies
 _MAX_QUERY_FIELDS = 1000
 
 
-# -- Request scope primitives ----------------------------------------
+# ── Request scope primitives ──────────────────────────────
 class Address(NamedTuple):
     """Client/server address - ASGI shape.
 
@@ -78,7 +78,7 @@ class State(dict):
             raise AttributeError(name) from None
 
 
-# -- Uploaded files --------------------------------------------------
+# ── Uploaded files ────────────────────────────────────────
 class UploadFile:
     """Uploaded file with an async read/write interface."""
 
@@ -146,6 +146,8 @@ class UploadFile:
             with contextlib.suppress(ValueError, OSError):
                 self.file.seek(pos)
 
+    # ── Async file API ─────────────────────────────────────
+
     async def read(self, size: int = -1) -> bytes:
         """Read up to size bytes from the upload."""
         # In-memory file objects stay on the loop; rolled-over spools
@@ -173,6 +175,8 @@ class UploadFile:
             self.file.close()
             return
         await asyncio.to_thread(self.file.close)
+
+    # ── Internals and context management ───────────────────
 
     def _file_is_in_memory(self) -> bool:
         """`True` when reads/writes are pure-Python memory ops.
@@ -208,7 +212,7 @@ class UploadFile:
         return f"UploadFile(filename={self.filename!r}, content_type={self.content_type!r}, size={self.size})"
 
 
-# -- URL -------------------------------------------------------------
+# ── URL ───────────────────────────────────────────────────
 # Safe default host used when the Host header fails validation. Matches the
 # `URL.__init__` default so a rejected Host degrades to the same value as a
 # missing one rather than leaking the attacker-controlled string.
@@ -412,7 +416,7 @@ class URL:
         return self._full
 
 
-# -- Multidict-backed collections ------------------------------------
+# ── Multidict-backed collections ──────────────────────────
 # A header parameter value carrying any of these characters must be
 # double-quoted (RFC 9110 Sec. 5.6.6 quoted-string). Hoisted so `Headers.add`
 # does not rebuild the trigger set on every parameter.
@@ -538,7 +542,7 @@ class Headers(_GetListMixin, CIMultiDict):
         super().add(key, value)
 
 
-# -- Parsed header values --------------------------------------------
+# ── Parsed header values ──────────────────────────────────
 class RangeSpec:
     """Parsed `Range:` header (RFC 9110 Sec. 14.2).
 
@@ -654,6 +658,8 @@ class AcceptHeader:
         else:
             self._options = [(value, q, None) for value, q in options]
 
+    # ── Parsing ────────────────────────────────────────────
+
     @classmethod
     def parse(cls, raw: str, mime: bool = False) -> AcceptHeader:
         """Parse a comma-separated header into (value, q) tuples.
@@ -706,6 +712,8 @@ class AcceptHeader:
                 value = value + ";" + ";".join(params)
             items.append((value, q))
         return cls(items, mime)
+
+    # ── Quality queries ────────────────────────────────────
 
     @property
     def values(self) -> list[str]:
@@ -777,6 +785,8 @@ class AcceptHeader:
                 return q > 0
         # Neither identity nor `*` listed - identity stays acceptable by default.
         return True
+
+    # ── Matching ───────────────────────────────────────────
 
     def best_match(self, options: list[str], default: str | None = None) -> str | None:
         """Return the option the client accepts with the highest q-value.
@@ -933,7 +943,7 @@ class Authorization:
         return f"Authorization(type={self.type!r})"
 
 
-# -- Cookies & query parameters --------------------------------------
+# ── Cookies & query parameters ────────────────────────────
 class Cookies(_GetListMixin, MultiDict):
     """Cookie collection parsed from the `Cookie` header.
 
@@ -983,7 +993,7 @@ class QueryParams(_GetListMixin, MultiDict):
         return cls(items)
 
 
-# -- Backward-compatible re-exports ----------------------------------
+# ── Backward-compatible re-exports ────────────────────────
 # Re-export from formparsers for backward compatibility.
 from veloce.http.formparsers import (  # noqa: E402, F401
     DEFAULT_MAX_MULTIPART_PART_SIZE,

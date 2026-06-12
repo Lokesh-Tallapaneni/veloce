@@ -1,4 +1,4 @@
-"""Serving protocol - high-performance HTTP/1.1 over a raw asyncio transport.
+"""Serving protocol — high-performance HTTP/1.1 over a raw asyncio transport.
 
 Parses the wire with httptools and dispatches requests through the Veloce app,
 bypassing the ASGI layer entirely.
@@ -281,7 +281,7 @@ class HttpProtocol(asyncio.Protocol):
         self._websocket: WebSocket | None = None
         self._ws_task: asyncio.Task | None = None
 
-    # -- httptools callbacks --------------------------------------
+    # ── httptools callbacks ───────────────────────────────
 
     def on_url(self, url: bytes) -> None:
         if self._oversized:
@@ -421,7 +421,7 @@ class HttpProtocol(asyncio.Protocol):
             HttpProtocol._active_tasks.add(self._server_loop)
             self._server_loop.add_done_callback(self._task_done)
 
-    # -- WebSocket upgrade (RFC 6455 Sec. 4.2) --------------------
+    # ── WebSocket upgrade (RFC 6455 Sec. 4.2) ─────────────
 
     def _handle_websocket_upgrade(self) -> bool:
         """Attempt the RFC 6455 handshake; return True if the connection diverted.
@@ -617,7 +617,7 @@ class HttpProtocol(asyncio.Protocol):
             self._current_source.feed_eof()
             self._current_source = None
 
-    # -- asyncio.Protocol callbacks -------------------------------
+    # ── asyncio.Protocol callbacks ────────────────────────
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         # HTTP/WebSocket runs over a full-duplex transport; the Liskov-correct
@@ -737,7 +737,7 @@ class HttpProtocol(asyncio.Protocol):
             self._request_timer = None
         self.transport = None
 
-    # -- graceful shutdown ----------------------------------------
+    # ── graceful shutdown ─────────────────────────────────
 
     def begin_drain(self) -> None:
         """Mark this connection for graceful quiescing.
@@ -807,7 +807,7 @@ class HttpProtocol(asyncio.Protocol):
         if transport is not None and not transport.is_closing():
             transport.resume_reading()
 
-    # -- write-side flow control ----------------------------------
+    # ── write-side flow control ───────────────────────────
 
     def pause_writing(self) -> None:
         """asyncio callback: the transport write buffer crossed the high mark.
@@ -1011,7 +1011,7 @@ class HttpProtocol(asyncio.Protocol):
         """Write a minimal `400 Bad Request` and close the connection."""
         self._emit_http_error(status.HTTP_400_BAD_REQUEST, b"Bad Request", b"Bad Request")
 
-    # -- request dispatch -----------------------------------------
+    # ── request dispatch ──────────────────────────────────
 
     async def _serve(self) -> None:
         """Per-connection server loop: dispatch queued requests one at a time.

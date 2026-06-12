@@ -1,4 +1,4 @@
-"""Routing sub-package - radix tree router and parameter declarations."""
+"""Routing sub-package — radix tree router and parameter declarations."""
 
 from __future__ import annotations
 

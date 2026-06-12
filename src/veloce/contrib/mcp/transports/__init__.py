@@ -1,4 +1,4 @@
-"""MCP transports - the wire layer between a client and the `MCPServer`.
+"""MCP transports — the wire layer between a client and the `MCPServer`.
 
 Ships the stdio transport; the Streamable HTTP transport is not yet implemented.
 """

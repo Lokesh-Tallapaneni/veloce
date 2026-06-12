@@ -113,6 +113,7 @@ class InMemoryCache(Cache):
         self._max_entries = max_entries
 
     async def get(self, key: str) -> bytes | None:
+        """Return the stored bytes for `key`, or `None` if absent or expired."""
         entry = self._entries.get(key)
         if entry is None:
             return None
@@ -123,11 +124,13 @@ class InMemoryCache(Cache):
         return value
 
     async def set(self, key: str, value: bytes, ttl: int) -> None:
+        """Store `value` under `key` for `ttl` seconds, evicting when at capacity."""
         if key not in self._entries and len(self._entries) >= self._max_entries:
             self._evict()
         self._entries[key] = (value, time.monotonic() + ttl)
 
     async def delete(self, key: str) -> None:
+        """Remove `key` if present."""
         self._entries.pop(key, None)
 
     def _evict(self) -> None:

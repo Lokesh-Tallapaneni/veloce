@@ -1,4 +1,4 @@
-"""Handler plan - pre-computed parameter-resolution plan for a route handler.
+"""Handler plan — pre-computed parameter-resolution plan for a route handler.
 
 Built once at route registration; consumed per request. Removes the per-request
 cost of `inspect.signature` and `typing.get_type_hints` from the dispatch path.
@@ -34,7 +34,7 @@ from veloce.routing.params import Body, Cookie, File, Form, Header, ParamBase, P
 # and we are imported back via that chain.
 
 
-# -- Slot-kind constants ------------------------------------
+# ── Slot-kind constants ───────────────────────────────────
 # Bare integers (not IntEnum) for cheap branching in the request hot loop.
 K_REQUEST = 0
 K_BG_TASKS = 1
@@ -72,7 +72,7 @@ MARKER_LOC = {
 }
 
 
-# -- Annotation helpers -------------------------------------
+# ── Annotation helpers ────────────────────────────────────
 def _unwrap_optional(annotation: Any) -> tuple[bool, Any]:
     """Detect `Optional[T]` / `Union[T, None]` / `T | None` and unwrap T."""
     origin = get_origin(annotation)
@@ -171,7 +171,7 @@ def _guard_plain_mutable_default(slot: _Slot, name: str) -> None:
         _warn_shared_mutable_default(name, original)
 
 
-# -- Slot record --------------------------------------------
+# ── Slot record ───────────────────────────────────────────
 class _Slot:
     """One handler parameter's pre-resolved binding to a request source.
 
@@ -243,7 +243,7 @@ class _Slot:
         self.backend = ModelBackend.NONE
 
 
-# -- Parallel-dependency grouping ---------------------------
+# ── Parallel-dependency grouping ──────────────────────────
 def _slot_parallel_safe(slot: _Slot, seen_plans: set[int]) -> bool:
     """Whether a K_DEPENDS slot and its whole sub-graph are parallel-safe.
 
@@ -401,7 +401,7 @@ def compute_dep_waves(slots: list[_Slot]) -> list[list[int]]:
     return waves
 
 
-# -- Handler plan -------------------------------------------
+# ── Handler plan ──────────────────────────────────────────
 class HandlerPlan:
     """Frozen resolution plan for one handler, plus its dependency graph."""
 
@@ -469,7 +469,7 @@ class HandlerPlan:
         self.wave_members = members
 
 
-# -- Plan builders ------------------------------------------
+# ── Plan builders ─────────────────────────────────────────
 def _build_depends_slot(
     name: str,
     dep: Any,

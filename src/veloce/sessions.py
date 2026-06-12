@@ -73,15 +73,17 @@ class Session(dict[str, Any]):
         self.regenerate = True
         self.modified = True
 
-    # -- Mutation tracking --------------------------------------
+    # ── Mutation tracking ─────────────────────────────────
     # Every mutating dict operation is overridden to flip `modified`,
     # so the cookie middleware can cheaply tell when a re-write is due.
 
     def clear(self) -> None:
+        """Remove every key and mark the session modified."""
         super().clear()
         self.modified = True
 
     def pop(self, key: Any, *default: Any) -> Any:
+        """Remove `key` and return its value, marking the session modified on removal."""
         had = key in self
         result = super().pop(key, *default)
         if had:
@@ -89,11 +91,13 @@ class Session(dict[str, Any]):
         return result
 
     def popitem(self) -> Any:
+        """Remove and return the last `(key, value)` pair, marking the session modified."""
         result = super().popitem()
         self.modified = True
         return result
 
     def setdefault(self, key: Any, default: Any = None) -> Any:
+        """Insert `default` under `key` when absent, marking the session modified on insert."""
         existed = key in self
         result = super().setdefault(key, default)
         if not existed:
@@ -101,6 +105,7 @@ class Session(dict[str, Any]):
         return result
 
     def update(self, *args: Any, **kwargs: Any) -> None:
+        """Merge keys into the session, marking it modified unless the input is empty."""
         super().update(*args, **kwargs)
         # Skip the cookie re-write only for the unambiguously-empty case
         # (`session.update({})` / `session.update()` with no kwargs).
@@ -219,6 +224,7 @@ class InMemorySessionStore(SessionStore):
         self._sweep_probability = sweep_probability
 
     async def read(self, session_id: str) -> dict[str, Any] | None:
+        """Return a copy of the stored payload, or `None` when absent or expired."""
         entry = self._entries.get(session_id)
         if entry is None:
             return None
@@ -229,13 +235,16 @@ class InMemorySessionStore(SessionStore):
         return dict(data)
 
     async def write(self, session_id: str, data: dict[str, Any], max_age: int) -> None:
+        """Store a copy of `data` under `session_id`, expiring after `max_age` seconds."""
         self._entries[session_id] = (dict(data), time.time() + max_age)
         self._maybe_sweep()
 
     async def delete(self, session_id: str) -> None:
+        """Drop `session_id` from the store. No-op if not present."""
         self._entries.pop(session_id, None)
 
     async def replace(self, session_id: str, data: dict[str, Any], max_age: int) -> bool:
+        """Write `data` only when `session_id` still exists and is unexpired."""
         # Atomic against the event loop: this coroutine does no `await`,
         # so a concurrent `delete` cannot land between the check and the
         # write - a revoked session stays revoked. An expired entry that
@@ -251,6 +260,7 @@ class InMemorySessionStore(SessionStore):
         return True
 
     async def touch(self, session_id: str, max_age: int) -> bool:
+        """Refresh the expiry of an existing, unexpired entry without copying its payload."""
         # Refresh the expiry in place, reusing the stored payload object - no
         # copy, since the payload is not changing. Same liveness check as
         # `replace`: an absent or not-yet-evicted-but-expired entry counts as

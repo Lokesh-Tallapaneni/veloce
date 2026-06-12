@@ -75,6 +75,19 @@ _JSONRPC_RESOURCE_NOT_FOUND = -32002
 # HTTP 403 insufficient_scope).
 _JSONRPC_FORBIDDEN = -32003
 
+# Cap on the bytes buffered from a streamed tool result. A streamed response has
+# no single body, so the MCP path drains it into one (`_drain_stream`); this
+# bound stops a runaway or unbounded stream from exhausting memory - crossing it
+# yields an in-band tool error instead.
+_STREAM_BUFFER_LIMIT = 5 * 1024 * 1024
+
+# Wall-clock budget for draining a streamed tool result. The size cap alone does
+# not defend against a slow or never-completing stream that stays small (a
+# heartbeat SSE feed, a handler awaiting forever): without a deadline such a
+# stream wedges the serial stdio serve loop, blocking every later request.
+# Crossing it closes the stream and yields an in-band tool error.
+_STREAM_DRAIN_TIMEOUT = 30.0
+
 # The current call's outbound notification sink, scoped per request so a handler's
 # progress / log notifications reach the right client. A ContextVar (not an
 # instance attribute) keeps concurrent calls isolated on the Streamable HTTP
@@ -89,6 +102,325 @@ _notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = 
 # `None` until set (emit all). The serial stdio loop sets it once in its serve
 # task, where it persists for the connection.
 _log_level_var: ContextVar[str | None] = ContextVar("_mcp_log_level", default=None)
+
+
+# ── Helpers ───────────────────────────────────────────────
+
+
+# HTTP-method semantics mapped to MCP tool annotation hints. Read-only verbs do
+# not modify state; idempotent verbs are safe to retry; a mutating verb that is
+# not purely additive (PUT/PATCH/DELETE) is flagged destructive so a client can
+# prompt for consent. These are advisory hints a client may ignore.
+_READONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"})
+_NON_DESTRUCTIVE_METHODS = frozenset({"GET", "HEAD", "POST", "OPTIONS", "TRACE"})
+
+
+def _tool_annotations(methods: list[str]) -> dict[str, Any] | None:
+    """Derive MCP tool annotation hints from a route's HTTP methods.
+
+    A multi-verb route is rated conservatively across every verb it serves:
+    read-only and idempotent only when *all* verbs qualify, destructive when
+    *any* verb is non-additive (so a `GET`+`DELETE` route is flagged
+    destructive, not read-only). A pure `@app.mcp_tool` (no route) has no HTTP
+    verb to map, so it carries no annotations.
+    """
+    if not methods:
+        return None
+    verbs = {method.upper() for method in methods}
+    return {
+        "readOnlyHint": verbs <= _READONLY_METHODS,
+        "idempotentHint": verbs <= _IDEMPOTENT_METHODS,
+        "destructiveHint": not (verbs <= _NON_DESTRUCTIVE_METHODS),
+    }
+
+
+def _to_structured(value: Any) -> dict[str, Any] | None:
+    """Render a tool result as the JSON object MCP `structuredContent` requires.
+
+    A mapping passes through; a Pydantic model is dumped in JSON mode. A
+    non-object result (list, scalar) has no object form, so `None` is returned
+    and only the text content block is sent.
+    """
+    if isinstance(value, dict):
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="json")
+        if isinstance(dumped, dict):
+            return dumped
+    return None
+
+
+def _binary_result(response: Response) -> dict[str, Any] | None:
+    """Shape an image/audio response body into a typed MCP content block.
+
+    MCP defines first-class `image` and `audio` content blocks carrying the bytes
+    as base64 with their media type. A body of either kind has no useful text
+    form, so it is emitted as that typed block instead of a garbled decoded-text
+    block; any other media type returns `None` and the caller shapes it as text /
+    structured content as before. A 4xx/5xx still flags `isError` so an error is
+    never read as a successful result.
+    """
+    mimetype = response.mimetype
+    if mimetype.startswith("image/"):
+        kind = "image"
+    elif mimetype.startswith("audio/"):
+        kind = "audio"
+    else:
+        return None
+    block = {
+        "type": kind,
+        "data": base64.b64encode(response.body or b"").decode("ascii"),
+        "mimeType": mimetype,
+    }
+    result: dict[str, Any] = {"content": [block]}
+    if response.status_code >= 400:
+        result["isError"] = True
+    return result
+
+
+def _describe_resource(resource: MCPResource) -> dict[str, Any]:
+    """Shape a static resource into its `resources/list` entry."""
+    entry: dict[str, Any] = {
+        "uri": resource.uri,
+        "name": resource.name,
+        "description": resource.description,
+    }
+    if resource.title:
+        entry["title"] = resource.title
+    return entry
+
+
+def _describe_resource_template(resource: MCPResource) -> dict[str, Any]:
+    """Shape a template resource into its `resources/templates/list` entry."""
+    entry: dict[str, Any] = {
+        "uriTemplate": resource.uri,
+        "name": resource.name,
+        "description": resource.description,
+    }
+    if resource.title:
+        entry["title"] = resource.title
+    return entry
+
+
+def _resource_contents(uri: str, response: Response) -> dict[str, Any]:
+    """Shape a resource route's response body into one MCP resource-contents entry.
+
+    A JSON or `text/*` body is returned as `text` (the value an agent reads); any
+    other media type is returned as a base64 `blob`. The entry carries the read
+    URI and the response's media type.
+    """
+    mimetype = response.mimetype
+    body = response.body or b""
+    entry: dict[str, Any] = {"uri": uri, "mimeType": mimetype}
+    if is_json_mimetype(mimetype) or mimetype.startswith("text/"):
+        entry["text"] = body.decode("utf-8", "replace")
+    else:
+        entry["blob"] = base64.b64encode(body).decode("ascii")
+    return entry
+
+
+def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
+    """Shape a prompt into its `prompts/list` entry."""
+    entry: dict[str, Any] = {"name": prompt.name, "description": prompt.description}
+    if prompt.arguments:
+        entry["arguments"] = prompt.arguments
+    return entry
+
+
+def _user_text_message(text: str) -> dict[str, Any]:
+    """Build a user-role MCP prompt message carrying a single text block."""
+    return {"role": "user", "content": {"type": "text", "text": text}}
+
+
+# Valid MCP prompt message roles; an unrecognised role from a handler-built
+# message falls back to "user".
+_PROMPT_ROLES = frozenset({"user", "assistant"})
+
+
+def _normalize_prompt_message(item: Any) -> dict[str, Any]:
+    """Normalise one prompt message item into an MCP prompt message.
+
+    A string is a user text message; a mapping is read as a ``{"role", "content"}``
+    message whose string content is wrapped into a text content block and whose
+    unrecognised role falls back to user. Any other item is stringified.
+    """
+    if isinstance(item, str):
+        return _user_text_message(item)
+    if isinstance(item, dict):
+        role = item.get("role")
+        content = item.get("content")
+        if isinstance(content, str):
+            content = {"type": "text", "text": content}
+        return {"role": role if role in _PROMPT_ROLES else "user", "content": content}
+    return _user_text_message(_stringify(item))
+
+
+def _normalize_prompt_messages(result: Any) -> list[dict[str, Any]]:
+    """Normalise a prompt callable's return into MCP prompt messages.
+
+    A string becomes a single user text message; a list becomes one message per
+    item; any other return is stringified into a single user message.
+    """
+    if isinstance(result, str):
+        return [_user_text_message(result)]
+    if isinstance(result, list):
+        return [_normalize_prompt_message(item) for item in result]
+    return [_user_text_message(_stringify(result))]
+
+
+def _principal_lacks_scopes(required: frozenset[str]) -> bool:
+    """Return whether the current principal is missing any of `required`.
+
+    A tool / resource with no required scopes is always allowed. Otherwise the
+    request principal (set by the transport's authentication) must hold every
+    required scope; an absent principal can satisfy no non-empty requirement.
+    """
+    if not required:
+        return False
+    principal = current_principal()
+    return principal is None or not principal.has_scopes(required)
+
+
+def _insufficient_scope(required: frozenset[str]) -> str:
+    """Build the error text for a missing-scope rejection."""
+    return f"insufficient_scope: requires {sorted(required)}"
+
+
+def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Build `request.path_params` for a route-backed tool call.
+
+    The HTTP path fills `path_params` from the URL segments the router matched;
+    a tool call has no URL, so the equivalent values arrive as named entries in
+    the JSON `arguments`. Copy each argument whose name is one of the route's
+    declared path parameters, then fill any route `defaults` not supplied, so a
+    hook / dependency / handler that reads `request.path_params` sees the same
+    mapping it would on the HTTP path.
+    """
+    params = {name: arguments[name] for name in route_info.param_names if name in arguments}
+    for key, value in route_info.defaults.items():
+        params.setdefault(key, value)
+    return params
+
+
+def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": msg_id, "error": error}
+
+
+def _progress_token(params: dict[str, Any]) -> str | int | None:
+    """Return the call's `_meta.progressToken`, or `None` when none was sent.
+
+    A client opts into progress notifications by attaching a `progressToken` to a
+    request's `_meta`; without one the server reports no progress (per the MCP
+    progress utility).
+    """
+    meta = params.get("_meta")
+    if isinstance(meta, dict):
+        token = meta.get("progressToken")
+        if isinstance(token, (str, int)) and not isinstance(token, bool):
+            return token
+    return None
+
+
+def _response_body_value(response: Response) -> Any:
+    """Unwrap a Response into the value `_stringify` should serialise.
+
+    A JSON-typed body is decoded back to a Python value so the tool result
+    carries the same JSON the HTTP client would receive; any other body decodes
+    to its text. The body bytes are the already-rendered response body, so no
+    further response-model work is needed. A streamed response has been buffered
+    into its body by `_drain_stream` before this runs.
+    """
+    body = response.body
+    if not body:
+        return ""
+    if is_json_mimetype(response.mimetype):
+        try:
+            return orjson.loads(body)
+        except orjson.JSONDecodeError:
+            pass
+    return body.decode("utf-8", "replace")
+
+
+def _stringify(result: Any) -> str:
+    """Serialise a handler return value to the text content of a tool result."""
+    if isinstance(result, str):
+        return result
+    try:
+        return orjson.dumps(result, default=_orjson_default).decode()
+    except (TypeError, orjson.JSONEncodeError):
+        return str(result)
+
+
+def _orjson_default(value: Any) -> Any:
+    """Fallback serialiser for values orjson cannot encode natively."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return str(value)
+
+
+class _ToolInputError(Exception):
+    """A malformed tool call - reported as a JSON-RPC invalid-params error."""
+
+
+class _ResourceError(Exception):
+    """A ``resources/read`` failure, reported as a JSON-RPC error with `code`."""
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class _AuthorizationError(Exception):
+    """The principal lacks a required scope - reported as a forbidden error.
+
+    Carries the required scopes so the HTTP transport can surface them in an
+    RFC 6750 `WWW-Authenticate` insufficient-scope challenge.
+    """
+
+    def __init__(self, scopes: frozenset[str]) -> None:
+        super().__init__(_insufficient_scope(scopes))
+        self.scopes = scopes
+
+
+class _StreamTooLargeError(Exception):
+    """A streamed tool result exceeded the buffer limit - reported in-band."""
+
+
+class _StreamTimeoutError(Exception):
+    """A streamed tool result outran the drain deadline - reported in-band."""
+
+
+class _ShortCircuit:
+    """A `before_request` hook's `Response`, returned in place of the handler call."""
+
+    __slots__ = ("response",)
+
+    def __init__(self, response: Response) -> None:
+        self.response = response
+
+
+class _RouteResponse:
+    """A route-backed tool's final `Response` (shaped + after_request-rewritten,
+    or built by an exception handler), returned in place of the raw value.
+
+    `model_filtered` records whether the route's `response_model` filter ran over
+    the value this response carries: `True` when `_build_response` built it from
+    a non-`Response` handler return, `False` when the handler returned its own
+    `Response` (or an exception handler built it). The server uses it to decide
+    whether the decoded body may be advertised as schema-conformant
+    `structuredContent`.
+    """
+
+    __slots__ = ("response", "model_filtered")
+
+    def __init__(self, response: Response, model_filtered: bool = False) -> None:
+        self.response = response
+        self.model_filtered = model_filtered
 
 
 class MCPServer:
@@ -139,7 +471,7 @@ class MCPServer:
         """
         _notifier_var.set(notifier)
 
-    # -- JSON-RPC dispatch ------------------------------------------
+    # ── JSON-RPC dispatch ─────────────────────────────────
 
     async def handle_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
         """Dispatch one decoded JSON-RPC request; return the response object.
@@ -206,7 +538,7 @@ class MCPServer:
             return None
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
-    # -- Method handlers --------------------------------------------
+    # ── Method handlers ───────────────────────────────────
 
     def _initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         # Echo the client's requested revision when supported; otherwise return
@@ -325,7 +657,7 @@ class MCPServer:
             response = result.response
             try:
                 await self._drain_stream(response)
-            except (_StreamTooLarge, _StreamTimeout) as exc:
+            except (_StreamTooLargeError, _StreamTimeoutError) as exc:
                 await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
                 return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
             await self._instrument(tool, started, response.status_code)
@@ -347,7 +679,7 @@ class MCPServer:
                     await self._instrument(tool, started, result.status_code)
                     return binary
             shaped = self._shape_result(tool, result)
-        except (_StreamTooLarge, _StreamTimeout) as exc:
+        except (_StreamTooLargeError, _StreamTimeoutError) as exc:
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
             return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
         # A pure tool's raw return that completed without error is a genuine 200.
@@ -381,8 +713,8 @@ class MCPServer:
         into the response body; afterwards it shapes like any buffered response.
         A non-streaming response is left untouched. Draining is bounded in both
         size and time: a stream exceeding `_STREAM_BUFFER_LIMIT` raises
-        `_StreamTooLarge`, and one that has not completed within
-        `_STREAM_DRAIN_TIMEOUT` raises `_StreamTimeout` - both surfaced as an
+        `_StreamTooLargeError`, and one that has not completed within
+        `_STREAM_DRAIN_TIMEOUT` raises `_StreamTimeoutError` - both surfaced as an
         in-band error. The size cap stops a fast runaway; the deadline stops a
         slow or never-completing stream (a heartbeat SSE feed, a handler that
         awaits forever) from wedging the serial stdio serve loop. The size cap
@@ -403,7 +735,7 @@ class MCPServer:
                 piece = chunk.encode("utf-8") if isinstance(chunk, str) else chunk
                 total += len(piece)
                 if total > _STREAM_BUFFER_LIMIT:
-                    raise _StreamTooLarge(
+                    raise _StreamTooLargeError(
                         f"streamed result exceeded the {_STREAM_BUFFER_LIMIT}-byte MCP buffer limit"
                     )
                 chunks.append(piece)
@@ -423,11 +755,11 @@ class MCPServer:
             await asyncio.wait_for(asyncio.shield(task), _STREAM_DRAIN_TIMEOUT)
         except asyncio.TimeoutError as exc:
             await self._abandon_drain(task, stream)
-            raise _StreamTimeout(
+            raise _StreamTimeoutError(
                 f"streamed result did not complete within the "
                 f"{_STREAM_DRAIN_TIMEOUT}-second MCP drain timeout"
             ) from exc
-        except _StreamTooLarge:
+        except _StreamTooLargeError:
             # The size cap raises from inside the task, leaving the producer
             # suspended at its `async for`; close it under the same bound so it
             # does not leak until GC.
@@ -587,7 +919,7 @@ class MCPServer:
             return _response_body_value(result)
         return result
 
-    # -- Resources --------------------------------------------------
+    # ── Resources ─────────────────────────────────────────
 
     def _resources_list(self) -> dict[str, Any]:
         return {"resources": [_describe_resource(r) for r in self.resources.statics()]}
@@ -636,7 +968,7 @@ class MCPServer:
             raise _ResourceError(_JSONRPC_INTERNAL_ERROR, f"Resource {uri} produced no response")
         try:
             await self._drain_stream(response)
-        except (_StreamTooLarge, _StreamTimeout) as exc:
+        except (_StreamTooLargeError, _StreamTimeoutError) as exc:
             raise _ResourceError(_JSONRPC_INTERNAL_ERROR, str(exc)) from exc
         if response.status_code >= 400:
             if response.status_code == status.HTTP_404_NOT_FOUND:
@@ -651,7 +983,7 @@ class MCPServer:
             raise _ResourceError(code, _stringify(_response_body_value(response)))
         return {"contents": [_resource_contents(uri, response)]}
 
-    # -- Prompts ----------------------------------------------------
+    # ── Prompts ───────────────────────────────────────────
 
     def _prompts_list(self) -> dict[str, Any]:
         return {"prompts": [_describe_prompt(p) for p in self.prompts.prompts.values()]}
@@ -683,7 +1015,7 @@ class MCPServer:
             out["description"] = prompt.description
         return out
 
-    # -- Logging ----------------------------------------------------
+    # ── Logging ───────────────────────────────────────────
 
     def _set_log_level(self, params: dict[str, Any]) -> dict[str, Any]:
         """Set the minimum level for ``notifications/message`` (logging/setLevel)."""
@@ -705,7 +1037,7 @@ class MCPServer:
         """
         return str(exc) if getattr(self.app, "debug", False) else generic
 
-    # -- Invocation -------------------------------------------------
+    # ── Invocation ────────────────────────────────────────
 
     async def _run_invoke(
         self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None
@@ -1033,336 +1365,3 @@ class MCPServer:
                     await outcome
             except Exception:
                 _logger.exception("instrumentation hook raised an exception")
-
-
-# -- Helpers ----------------------------------------------------------
-
-
-# HTTP-method semantics mapped to MCP tool annotation hints. Read-only verbs do
-# not modify state; idempotent verbs are safe to retry; a mutating verb that is
-# not purely additive (PUT/PATCH/DELETE) is flagged destructive so a client can
-# prompt for consent. These are advisory hints a client may ignore.
-_READONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
-_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"})
-_NON_DESTRUCTIVE_METHODS = frozenset({"GET", "HEAD", "POST", "OPTIONS", "TRACE"})
-
-
-def _tool_annotations(methods: list[str]) -> dict[str, Any] | None:
-    """Derive MCP tool annotation hints from a route's HTTP methods.
-
-    A multi-verb route is rated conservatively across every verb it serves:
-    read-only and idempotent only when *all* verbs qualify, destructive when
-    *any* verb is non-additive (so a `GET`+`DELETE` route is flagged
-    destructive, not read-only). A pure `@app.mcp_tool` (no route) has no HTTP
-    verb to map, so it carries no annotations.
-    """
-    if not methods:
-        return None
-    verbs = {method.upper() for method in methods}
-    return {
-        "readOnlyHint": verbs <= _READONLY_METHODS,
-        "idempotentHint": verbs <= _IDEMPOTENT_METHODS,
-        "destructiveHint": not (verbs <= _NON_DESTRUCTIVE_METHODS),
-    }
-
-
-def _to_structured(value: Any) -> dict[str, Any] | None:
-    """Render a tool result as the JSON object MCP `structuredContent` requires.
-
-    A mapping passes through; a Pydantic model is dumped in JSON mode. A
-    non-object result (list, scalar) has no object form, so `None` is returned
-    and only the text content block is sent.
-    """
-    if isinstance(value, dict):
-        return value
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        dumped = model_dump(mode="json")
-        if isinstance(dumped, dict):
-            return dumped
-    return None
-
-
-def _binary_result(response: Response) -> dict[str, Any] | None:
-    """Shape an image/audio response body into a typed MCP content block.
-
-    MCP defines first-class `image` and `audio` content blocks carrying the bytes
-    as base64 with their media type. A body of either kind has no useful text
-    form, so it is emitted as that typed block instead of a garbled decoded-text
-    block; any other media type returns `None` and the caller shapes it as text /
-    structured content as before. A 4xx/5xx still flags `isError` so an error is
-    never read as a successful result.
-    """
-    mimetype = response.mimetype
-    if mimetype.startswith("image/"):
-        kind = "image"
-    elif mimetype.startswith("audio/"):
-        kind = "audio"
-    else:
-        return None
-    block = {
-        "type": kind,
-        "data": base64.b64encode(response.body or b"").decode("ascii"),
-        "mimeType": mimetype,
-    }
-    result: dict[str, Any] = {"content": [block]}
-    if response.status_code >= 400:
-        result["isError"] = True
-    return result
-
-
-def _describe_resource(resource: MCPResource) -> dict[str, Any]:
-    """Shape a static resource into its `resources/list` entry."""
-    entry: dict[str, Any] = {
-        "uri": resource.uri,
-        "name": resource.name,
-        "description": resource.description,
-    }
-    if resource.title:
-        entry["title"] = resource.title
-    return entry
-
-
-def _describe_resource_template(resource: MCPResource) -> dict[str, Any]:
-    """Shape a template resource into its `resources/templates/list` entry."""
-    entry: dict[str, Any] = {
-        "uriTemplate": resource.uri,
-        "name": resource.name,
-        "description": resource.description,
-    }
-    if resource.title:
-        entry["title"] = resource.title
-    return entry
-
-
-def _resource_contents(uri: str, response: Response) -> dict[str, Any]:
-    """Shape a resource route's response body into one MCP resource-contents entry.
-
-    A JSON or `text/*` body is returned as `text` (the value an agent reads); any
-    other media type is returned as a base64 `blob`. The entry carries the read
-    URI and the response's media type.
-    """
-    mimetype = response.mimetype
-    body = response.body or b""
-    entry: dict[str, Any] = {"uri": uri, "mimeType": mimetype}
-    if is_json_mimetype(mimetype) or mimetype.startswith("text/"):
-        entry["text"] = body.decode("utf-8", "replace")
-    else:
-        entry["blob"] = base64.b64encode(body).decode("ascii")
-    return entry
-
-
-# Valid MCP prompt message roles; an unrecognised role from a handler-built
-# message falls back to "user".
-_PROMPT_ROLES = frozenset({"user", "assistant"})
-
-
-def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
-    """Shape a prompt into its `prompts/list` entry."""
-    entry: dict[str, Any] = {"name": prompt.name, "description": prompt.description}
-    if prompt.arguments:
-        entry["arguments"] = prompt.arguments
-    return entry
-
-
-def _user_text_message(text: str) -> dict[str, Any]:
-    """Build a user-role MCP prompt message carrying a single text block."""
-    return {"role": "user", "content": {"type": "text", "text": text}}
-
-
-def _normalize_prompt_message(item: Any) -> dict[str, Any]:
-    """Normalise one prompt message item into an MCP prompt message.
-
-    A string is a user text message; a mapping is read as a ``{"role", "content"}``
-    message whose string content is wrapped into a text content block and whose
-    unrecognised role falls back to user. Any other item is stringified.
-    """
-    if isinstance(item, str):
-        return _user_text_message(item)
-    if isinstance(item, dict):
-        role = item.get("role")
-        content = item.get("content")
-        if isinstance(content, str):
-            content = {"type": "text", "text": content}
-        return {"role": role if role in _PROMPT_ROLES else "user", "content": content}
-    return _user_text_message(_stringify(item))
-
-
-def _normalize_prompt_messages(result: Any) -> list[dict[str, Any]]:
-    """Normalise a prompt callable's return into MCP prompt messages.
-
-    A string becomes a single user text message; a list becomes one message per
-    item; any other return is stringified into a single user message.
-    """
-    if isinstance(result, str):
-        return [_user_text_message(result)]
-    if isinstance(result, list):
-        return [_normalize_prompt_message(item) for item in result]
-    return [_user_text_message(_stringify(result))]
-
-
-# Cap on the bytes buffered from a streamed tool result. A streamed response has
-# no single body, so the MCP path drains it into one (`_drain_stream`); this
-# bound stops a runaway or unbounded stream from exhausting memory - crossing it
-# yields an in-band tool error instead.
-_STREAM_BUFFER_LIMIT = 5 * 1024 * 1024
-
-# Wall-clock budget for draining a streamed tool result. The size cap alone does
-# not defend against a slow or never-completing stream that stays small (a
-# heartbeat SSE feed, a handler awaiting forever): without a deadline such a
-# stream wedges the serial stdio serve loop, blocking every later request.
-# Crossing it closes the stream and yields an in-band tool error.
-_STREAM_DRAIN_TIMEOUT = 30.0
-
-
-class _ToolInputError(Exception):
-    """A malformed tool call - reported as a JSON-RPC invalid-params error."""
-
-
-class _ResourceError(Exception):
-    """A ``resources/read`` failure, reported as a JSON-RPC error with `code`."""
-
-    def __init__(self, code: int, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-class _AuthorizationError(Exception):
-    """The principal lacks a required scope - reported as a forbidden error.
-
-    Carries the required scopes so the HTTP transport can surface them in an
-    RFC 6750 `WWW-Authenticate` insufficient-scope challenge.
-    """
-
-    def __init__(self, scopes: frozenset[str]) -> None:
-        super().__init__(_insufficient_scope(scopes))
-        self.scopes = scopes
-
-
-def _principal_lacks_scopes(required: frozenset[str]) -> bool:
-    """Return whether the current principal is missing any of `required`.
-
-    A tool / resource with no required scopes is always allowed. Otherwise the
-    request principal (set by the transport's authentication) must hold every
-    required scope; an absent principal can satisfy no non-empty requirement.
-    """
-    if not required:
-        return False
-    principal = current_principal()
-    return principal is None or not principal.has_scopes(required)
-
-
-def _insufficient_scope(required: frozenset[str]) -> str:
-    """Build the error text for a missing-scope rejection."""
-    return f"insufficient_scope: requires {sorted(required)}"
-
-
-class _StreamTooLarge(Exception):
-    """A streamed tool result exceeded the buffer limit - reported in-band."""
-
-
-class _StreamTimeout(Exception):
-    """A streamed tool result outran the drain deadline - reported in-band."""
-
-
-class _ShortCircuit:
-    """A `before_request` hook's `Response`, returned in place of the handler call."""
-
-    __slots__ = ("response",)
-
-    def __init__(self, response: Response) -> None:
-        self.response = response
-
-
-class _RouteResponse:
-    """A route-backed tool's final `Response` (shaped + after_request-rewritten,
-    or built by an exception handler), returned in place of the raw value.
-
-    `model_filtered` records whether the route's `response_model` filter ran over
-    the value this response carries: `True` when `_build_response` built it from
-    a non-`Response` handler return, `False` when the handler returned its own
-    `Response` (or an exception handler built it). The server uses it to decide
-    whether the decoded body may be advertised as schema-conformant
-    `structuredContent`.
-    """
-
-    __slots__ = ("response", "model_filtered")
-
-    def __init__(self, response: Response, model_filtered: bool = False) -> None:
-        self.response = response
-        self.model_filtered = model_filtered
-
-
-def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Build `request.path_params` for a route-backed tool call.
-
-    The HTTP path fills `path_params` from the URL segments the router matched;
-    a tool call has no URL, so the equivalent values arrive as named entries in
-    the JSON `arguments`. Copy each argument whose name is one of the route's
-    declared path parameters, then fill any route `defaults` not supplied, so a
-    hook / dependency / handler that reads `request.path_params` sees the same
-    mapping it would on the HTTP path.
-    """
-    params = {name: arguments[name] for name in route_info.param_names if name in arguments}
-    for key, value in route_info.defaults.items():
-        params.setdefault(key, value)
-    return params
-
-
-def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
-    error: dict[str, Any] = {"code": code, "message": message}
-    if data is not None:
-        error["data"] = data
-    return {"jsonrpc": "2.0", "id": msg_id, "error": error}
-
-
-def _progress_token(params: dict[str, Any]) -> str | int | None:
-    """Return the call's `_meta.progressToken`, or `None` when none was sent.
-
-    A client opts into progress notifications by attaching a `progressToken` to a
-    request's `_meta`; without one the server reports no progress (per the MCP
-    progress utility).
-    """
-    meta = params.get("_meta")
-    if isinstance(meta, dict):
-        token = meta.get("progressToken")
-        if isinstance(token, (str, int)) and not isinstance(token, bool):
-            return token
-    return None
-
-
-def _response_body_value(response: Response) -> Any:
-    """Unwrap a Response into the value `_stringify` should serialise.
-
-    A JSON-typed body is decoded back to a Python value so the tool result
-    carries the same JSON the HTTP client would receive; any other body decodes
-    to its text. The body bytes are the already-rendered response body, so no
-    further response-model work is needed. A streamed response has been buffered
-    into its body by `_drain_stream` before this runs.
-    """
-    body = response.body
-    if not body:
-        return ""
-    if is_json_mimetype(response.mimetype):
-        try:
-            return orjson.loads(body)
-        except orjson.JSONDecodeError:
-            pass
-    return body.decode("utf-8", "replace")
-
-
-def _stringify(result: Any) -> str:
-    """Serialise a handler return value to the text content of a tool result."""
-    if isinstance(result, str):
-        return result
-    try:
-        return orjson.dumps(result, default=_orjson_default).decode()
-    except (TypeError, orjson.JSONEncodeError):
-        return str(result)
-
-
-def _orjson_default(value: Any) -> Any:
-    """Fallback serialiser for values orjson cannot encode natively."""
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
-    return str(value)

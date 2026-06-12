@@ -1,4 +1,4 @@
-"""Async request-body source for incremental (headers-complete) dispatch.
+"""Request-body source — async incremental body for headers-complete dispatch.
 
 The raw HTTP/1.1 protocol dispatches a request once its headers are parsed,
 before the body has fully arrived. Body bytes are then fed in as the socket

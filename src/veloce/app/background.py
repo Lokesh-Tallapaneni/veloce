@@ -20,7 +20,7 @@ class BackgroundTasksMixin:
 
     __slots__ = ()
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes the host application (`Veloce.__init__`) provides.
         _spawned_named: Any
         _spawned_anon: Any
@@ -42,7 +42,7 @@ class BackgroundTasksMixin:
         if exc is not None:
             self.logger.error("Background task failed", exc_info=exc)
 
-    # -- App-scoped background tasks ------------------------------
+    # ── App-scoped background tasks ───────────────────────
 
     def spawn(
         self,

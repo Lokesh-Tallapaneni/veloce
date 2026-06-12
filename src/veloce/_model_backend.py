@@ -1,4 +1,4 @@
-"""Model-backend detection - Pydantic vs msgspec.
+"""Model-backend detection — Pydantic vs msgspec.
 
 Detection is registration-time on the request side (a plan slot is tagged with
 the backend once) and a single `isinstance` on the response side. msgspec is an

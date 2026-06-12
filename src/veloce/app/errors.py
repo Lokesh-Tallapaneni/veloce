@@ -41,7 +41,7 @@ _MISSING: Any = object()
 class ErrorsMixin:
     """Exception-handler registration and dispatch, mixed into `Veloce`."""
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host application (Veloce) provides.
         config: Any
         debug: bool

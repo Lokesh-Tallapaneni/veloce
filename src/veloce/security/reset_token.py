@@ -1,4 +1,4 @@
-"""Reset tokens - storage-free, self-invalidating password-reset links.
+"""Reset tokens — storage-free, self-invalidating password-reset links.
 
 A thin layer over ``veloce.signing.Signer`` that binds an opaque
 caller-supplied state fingerprint into a one-time, expiring token. No

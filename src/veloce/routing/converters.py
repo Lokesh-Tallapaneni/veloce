@@ -66,7 +66,7 @@ _BUILTIN_REGEX: dict[str, str] = {
 _MAX_INT_DIGITS = 20
 
 
-# -- Converters ----------------------------------------------
+# ── Converters ────────────────────────────────────────────
 
 
 class _Converter:
@@ -117,6 +117,7 @@ class StringConverter(_Converter):
         self._maxlength = maxlength
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept the segment when its length satisfies the configured bounds."""
         # Empty path segments cannot match a {param}; the splitter strips
         # them out, so reaching here with an empty value is unexpected.
         length = len(value)
@@ -151,6 +152,7 @@ class IntConverter(_Converter):
         self._signed = signed
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept a decimal-integer segment within the configured bounds; coerce to `int`."""
         if not value or len(value) > _MAX_INT_DIGITS:
             return False, None
         if value[0] == "-":
@@ -191,6 +193,7 @@ class FloatConverter(_Converter):
         self._signed = signed
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept a decimal-float segment within the configured bounds; coerce to `float`."""
         if not value:
             return False, None
         # the float converter rejects "nan"/"inf" and scientific
@@ -220,6 +223,7 @@ class UUIDConverter(_Converter):
     __slots__ = ()
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept a canonical RFC 4122 UUID segment; coerce to `uuid.UUID`."""
         if len(value) != 36 or not _UUID_RE.match(value):
             return False, None
         try:
@@ -235,6 +239,7 @@ class PathConverter(_Converter):
     greedy = True
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept any non-empty remainder of the URL, slashes included."""
         # Reject empty (zero segments left) so static suffixes still win.
         if not value:
             return False, None
@@ -276,6 +281,7 @@ class DateConverter(_Converter):
     __slots__ = ()
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept an ISO 8601 date segment; coerce to `datetime.date`."""
         if not _DATE_RE.match(value):
             return False, None
         try:
@@ -290,6 +296,7 @@ class DateTimeConverter(_Converter):
     __slots__ = ()
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept an ISO 8601 datetime segment; coerce to `datetime.datetime`."""
         if not _DATETIME_RE.match(value):
             return False, None
         try:
@@ -304,6 +311,7 @@ class TimeConverter(_Converter):
     __slots__ = ()
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept an ISO 8601 time segment; coerce to `datetime.time`."""
         if not _TIME_RE.match(value):
             return False, None
         try:
@@ -325,6 +333,7 @@ class TimeDeltaConverter(_Converter):
     __slots__ = ()
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept an ISO 8601 duration or `str(timedelta)` segment; coerce to `timedelta`."""
         m = _TIMEDELTA_RE.match(value)
         if m is not None:
             days, hours, minutes, seconds = m.groups()
@@ -355,6 +364,7 @@ class DecimalConverter(_Converter):
     __slots__ = ()
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept a decimal-literal segment; coerce to `decimal.Decimal`."""
         if not value or len(value) > _MAX_DECIMAL_CHARS or not _DECIMAL_RE.match(value):
             return False, None
         try:
@@ -372,10 +382,11 @@ class AnyConverter(_Converter):
         self._choices = frozenset(choices)
 
     def match(self, value: str) -> tuple[bool, Any]:
+        """Accept the segment only when it is one of the declared literal values."""
         return (value in self._choices), value
 
 
-# -- Registry and parsing ------------------------------------
+# ── Registry and parsing ──────────────────────────────────
 
 
 # Public base-class alias - subclass `Converter` to build a custom one.
@@ -529,7 +540,7 @@ def parse_converter(spec: str | None) -> _Converter:
     return cls()
 
 
-# -- Regex-path classification and compilation ---------------
+# ── Regex-path classification and compilation ─────────────
 
 
 # Names the radix tree can express natively. A converter spec outside this

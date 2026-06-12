@@ -154,7 +154,7 @@ async def _refuse_websocket(receive: Callable, send: Callable) -> None:
 class AsgiMixin:
     """The ASGI transport + response-emit layer, mixed into Veloce."""
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host application (Veloce) provides.
         config: Any
         logger: Any

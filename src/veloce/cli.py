@@ -1,4 +1,4 @@
-"""`veloce` command-line interface.
+"""Command-line interface — the `veloce` entry point.
 
 Subcommands:
 
@@ -43,7 +43,7 @@ from typing import Any
 from veloce._constants import MSG_APP_REFERENCE_FORM
 from veloce.config import _parse_env_lines
 
-# -- Constants -----------------------------------------------
+# ── Constants ─────────────────────────────────────────────
 
 # Default dotenv filename auto-loaded by `run`/`shell`/`custom` when the
 # file exists in the CWD and `--no-env-file` was not passed.
@@ -60,7 +60,7 @@ _DEFAULT_ENV_FILE = ".env"
 _COMMAND_ENTRY_POINT_GROUP = "veloce.commands"
 
 
-# -- Shared helpers ------------------------------------------
+# ── Shared helpers ────────────────────────────────────────
 
 
 def _resolve_version() -> str:
@@ -121,7 +121,8 @@ def _apply_env_file(args: argparse.Namespace) -> None:
     except FileNotFoundError as err:
         if explicit:
             raise SystemExit(f"Could not read env file {path!r}: {err}") from err
-        return  # auto-discovery: an absent default `.env` is fine
+        # Auto-discovery: an absent default `.env` is fine.
+        return
     except OSError as err:
         # Permission denied, "is a directory", etc. are real failures even
         # for the auto-discovered default - never boot with silent loss.
@@ -142,7 +143,7 @@ def _require_app_attr(app: Any, attr: str, hint: str) -> None:
         raise SystemExit(f"target is not a Veloce app (missing {hint})")
 
 
-# -- Subcommands ---------------------------------------------
+# ── Subcommands ───────────────────────────────────────────
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -155,7 +156,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     uvicorn-only feature.
     """
     _apply_env_file(args)
-    app = _load_app(args.app)  # resolve + validate the reference
+    app = _load_app(args.app)
 
     try:
         import uvicorn
@@ -337,7 +338,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
-# -- Parser construction -------------------------------------
+# ── Parser construction ───────────────────────────────────
 
 
 def _add_env_file_args(p: argparse.ArgumentParser) -> None:
@@ -384,12 +385,15 @@ def _split_custom_argv(argv: list[str]) -> tuple[list[str], list[str] | None]:
     idx = 1
     while idx < len(argv) and argv[idx].startswith("-") and argv[idx] != "--":
         if argv[idx] == "--env-file":
-            idx += 2  # skip the flag and its value
+            # Skip the flag and its value token.
+            idx += 2
         else:
             idx += 1
     if idx >= len(argv):
-        return argv, None  # no `app` - let argparse report the error
-    head = argv[: idx + 1]  # ["custom", ..., "app"]
+        # No `app` token - let argparse report the error.
+        return argv, None
+    # `head` is ["custom", ..., "app"]; `rest` is the forwarded command.
+    head = argv[: idx + 1]
     rest = argv[idx + 1 :]
     # Consume env-file flags that precede the forwarded command.
     cursor = 0
@@ -679,7 +683,7 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     return parser
 
 
-# -- Entry point ---------------------------------------------
+# ── Entry point ───────────────────────────────────────────
 
 
 def _candidate_plugin_command(argv: list[str] | None) -> str | None:
@@ -710,7 +714,8 @@ def _candidate_plugin_command(argv: list[str] | None) -> str | None:
             strict.parse_args(argv)
     except SystemExit as exit_err:
         if exit_err.code != 2:
-            return None  # help / version - not an error, not a plugin
+            # Help / version exits: not an error, not a plugin.
+            return None
         tokens = sys.argv[1:] if argv is None else list(argv)
         candidate = _first_positional(tokens)
         if candidate is not None and candidate not in _builtin_command_names():
@@ -728,9 +733,11 @@ def _first_positional(tokens: list[str]) -> str | None:
     """
     for token in tokens:
         if token in ("-h", "--help", "-V", "--version"):
-            return None  # argparse would have acted on these already
+            # argparse would have acted on these already.
+            return None
         if token.startswith("-"):
-            return None  # an unknown/option token: not a clean command select
+            # An unknown option token: not a clean command selection.
+            return None
         return token
     return None
 

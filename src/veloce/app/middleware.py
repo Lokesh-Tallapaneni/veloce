@@ -1,4 +1,4 @@
-"""Middleware registration mixed into Veloce.
+"""Middleware registration — the three registration shapes, mixed into Veloce.
 
 Holds the registration funnel for the three middleware shapes Veloce accepts:
 request/response `Middleware` instances and subclasses (with priority ordering),
@@ -22,7 +22,7 @@ from veloce.middleware import BaseHTTPMiddleware, Middleware
 class MiddlewareMixin:
     """Middleware registration funnel, mixed into `Veloce`."""
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host application (Veloce) provides.
         _assert_mutable: Callable[..., Any]
         _register_feature_state: Any

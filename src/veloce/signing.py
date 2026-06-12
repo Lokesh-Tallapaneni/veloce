@@ -101,7 +101,7 @@ class Signer:
         # Future support for key rotation: extra accepted keys for verify.
         self._secret_keys: list[bytes] = [self._key]
 
-    # -- Key rotation -----------------------------------------------
+    # ── Key rotation ──────────────────────────────────────
 
     def add_fallback_secret(
         self, secret: str | bytes, salt: str | bytes = "veloce.signing"
@@ -116,7 +116,7 @@ class Signer:
         salt = _coerce_secret_bytes(salt)
         self._secret_keys.append(_derive_key(secret, salt))
 
-    # -- dumps / loads ----------------------------------------------
+    # ── dumps / loads ─────────────────────────────────────
 
     def dumps(self, data: Any) -> str:
         """Serialise `data` to a signed, timestamped, URL-safe token."""

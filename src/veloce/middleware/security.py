@@ -1,4 +1,4 @@
-"""Security-related middleware - trusted hosts, rate limiting, HTTPS redirect.
+"""Security-related middleware — trusted hosts, rate limiting, HTTPS redirect.
 
 Covers Host validation (RFC 9110 Sec. 7.2), HTTPS upgrade via 308 redirect
 (RFC 9110 Sec. 15.4.9), rate-limit headers (draft-ietf-httpapi-ratelimit-headers),

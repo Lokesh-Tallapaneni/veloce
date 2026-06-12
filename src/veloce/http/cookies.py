@@ -1,4 +1,4 @@
-"""Cookie string helpers - `parse_cookie` / `dump_cookie` (RFC 6265).
+"""Cookie string helpers — `parse_cookie` / `dump_cookie` (RFC 6265).
 
 `parse_cookie` reads a `Cookie:` request-header value into a dict.
 `dump_cookie` builds a `Set-Cookie:` response-header value from a

@@ -29,7 +29,7 @@ class ServingMixin:
 
     __slots__ = ()
 
-    if TYPE_CHECKING:
+    if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host application (`Veloce`) provides.
         config: Any
         logger: Any

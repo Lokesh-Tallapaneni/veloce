@@ -1,4 +1,4 @@
-"""Pluggable rate-limit algorithms and backends for `RateLimitMiddleware`.
+"""Rate limiting — pluggable algorithms and backends for `RateLimitMiddleware`.
 
 A *strategy* is the algorithm - fixed window, sliding window, or token bucket -
 expressed as a pure state transition: given the prior per-client state and the

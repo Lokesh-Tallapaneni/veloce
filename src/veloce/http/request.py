@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl
 
 import orjson
@@ -64,6 +64,9 @@ from veloce.http.datastructures import (
     parse_multipart_form,
 )
 from veloce.http.dates import parse_date
+
+if TYPE_CHECKING:  # pragma: no cover
+    from datetime import datetime
 
 _logger = logging.getLogger(__name__)
 
@@ -241,7 +244,7 @@ class Request:
         self._range: Any = _UNSET
         self._auth: Any = _UNSET
 
-    # -- Method, path and query -----------------------------------------
+    # ── Method, path and query ────────────────────────────
     @property
     def query_params(self) -> QueryParams:
         """Parse query string lazily - only when accessed.
@@ -275,7 +278,7 @@ class Request:
         """
         return self._path_params
 
-    # -- Headers --------------------------------------------------------
+    # ── Headers ───────────────────────────────────────────
     @property
     def headers(self) -> Headers:
         """Return the parsed request headers, materializing from raw ASGI tuples on first access."""
@@ -320,7 +323,7 @@ class Request:
         return self.headers.get(HEADER_ORIGIN)
 
     @property
-    def date(self) -> Any:
+    def date(self) -> datetime | None:
         """The request `Date` header as a tz-aware UTC `datetime`.
 
         RFC 9110 Sec. 6.6.1 - the originator's timestamp for the message.
@@ -359,7 +362,7 @@ class Request:
         """
         return self.headers.get(HEADER_X_REQUESTED_WITH, "").lower() == "xmlhttprequest"
 
-    # -- Content type and body metadata ---------------------------------
+    # ── Content type and body metadata ────────────────────
     @property
     def content_type(self) -> str:
         """Return the Content-Type header value, or an empty string."""
@@ -462,7 +465,7 @@ class Request:
         m = self.mimetype
         return m == MIME_FORM_URLENCODED or m.startswith("multipart/")
 
-    # -- Content negotiation (Accept) -----------------------------------
+    # ── Content negotiation (Accept) ──────────────────────
     @property
     def accept(self) -> str:
         """Return the raw Accept header value."""
@@ -502,7 +505,7 @@ class Request:
             self._accept_charsets = AcceptHeader.parse(self.headers.get(HEADER_ACCEPT_CHARSET, ""))
         return self._accept_charsets
 
-    # -- Authorization --------------------------------------------------
+    # ── Authorization ─────────────────────────────────────
     @property
     def authorization(self) -> str | None:
         """Return the parsed Authorization header."""
@@ -522,7 +525,7 @@ class Request:
             self._auth = cached
         return cached
 
-    # -- CORS preflight (RFC 6454) --------------------------------------
+    # ── CORS preflight (RFC 6454) ─────────────────────────
     @property
     def access_control_request_method(self) -> str | None:
         """CORS preflight `Access-Control-Request-Method` - RFC 6454.
@@ -546,7 +549,7 @@ class Request:
             self._access_control_request_headers = cached
         return cached
 
-    # -- Conditional requests (RFC 9110 Sec. 13) ----------------------------
+    # ── Conditional requests (RFC 9110 Sec. 13) ───────────
     @property
     def if_modified_since(self) -> float | None:
         """Parse `If-Modified-Since` (RFC 9110 Sec. 13.1.3) to a Unix timestamp.
@@ -673,7 +676,7 @@ class Request:
             self._range = cached
         return cached
 
-    # -- Caching directives ---------------------------------------------
+    # ── Caching directives ────────────────────────────────
     @property
     def cache_control(self) -> Any:
         """Parsed `Cache-Control` header.
@@ -684,7 +687,7 @@ class Request:
         """
         return CacheControl(self.headers.get(HEADER_CACHE_CONTROL, ""))
 
-    # -- Cookies --------------------------------------------------------
+    # ── Cookies ───────────────────────────────────────────
     @property
     def cookies(self) -> Cookies:
         """Parse cookies from the `Cookie` header - lazy, MultiDict-shaped.
@@ -707,7 +710,7 @@ class Request:
             self._cookies = Cookies.from_cookie_header(header)
         return self._cookies
 
-    # -- URL and routing ------------------------------------------------
+    # ── URL and routing ───────────────────────────────────
     @property
     def url(self) -> Any:
         """Full URL object - lazy construction."""
@@ -842,6 +845,8 @@ class Request:
         """
         return self.scope if isinstance(self.scope, dict) else {}
 
+    # ── Matched route and reverse URLs ─────────────────────
+
     @property
     def url_rule(self) -> str | None:
         """Return the matched route's template (e.g. `/users/{id}`).
@@ -907,7 +912,7 @@ class Request:
             )
         return self.app.url_for(name, **path_params)
 
-    # -- Client and connection ------------------------------------------
+    # ── Client and connection ─────────────────────────────
     @property
     def client_host(self) -> str | None:
         """Return the client's IP address from the ASGI scope."""
@@ -986,7 +991,7 @@ class Request:
             chain.append(peer)
         return chain
 
-    # -- Request state and session --------------------------------------
+    # ── Request state and session ─────────────────────────
     @property
     def state(self) -> State:
         """Per-request scratch namespace - ASGI shape.
@@ -1021,7 +1026,7 @@ class Request:
             session.accessed = True
         return session
 
-    # -- Body access ----------------------------------------------------
+    # ── Body access ───────────────────────────────────────
     @property
     def data(self) -> bytes:
         """Raw request body bytes - `request.data` shape.
@@ -1140,6 +1145,8 @@ class Request:
         # dynamic attribute is set via `setattr` (not a declared field).
         setattr(exc, "debug_detail", str(error))  # noqa: B010
         raise exc from error
+
+    # ── Async body, form, and streaming ────────────────────
 
     async def _drain_body(self) -> bytes:
         """Pull the body source to EOF once and cache the assembled bytes.

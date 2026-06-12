@@ -1,4 +1,4 @@
-"""Read-only URL-map view objects for route-table introspection.
+"""URL maps — read-only view objects for route-table introspection.
 
 `URLRule` is one registered rule (`rule`, `methods`, `endpoint`); `_URLMap`
 wraps the app's route table, yielding `URLRule`s grouped per unique route and

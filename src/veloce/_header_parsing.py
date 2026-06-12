@@ -1,4 +1,4 @@
-r"""Header parsing - quoted-string-aware walker for HTTP header parameter lists.
+r"""Header parsing — quoted-string-aware walker for HTTP header parameter lists.
 
 Three different headers in the codebase used to ship near-identical
 ad-hoc tokenizers: `Content-Disposition` (`;`-separated, unescape on),

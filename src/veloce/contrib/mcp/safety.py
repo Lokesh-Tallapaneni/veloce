@@ -1,4 +1,4 @@
-"""MCP safety policy - what an exposed tool must declare.
+"""MCP safety policy — what an exposed tool must declare.
 
 Exposure itself is default-closed and explicit: a route becomes a tool only
 when its author passes ``expose_as_mcp_tool=True`` (regardless of HTTP verb),

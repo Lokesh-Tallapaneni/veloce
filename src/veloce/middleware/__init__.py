@@ -1,4 +1,4 @@
-"""Middleware - base class and all built-in middleware.
+"""Middleware — base class and all built-in middleware.
 
 Middleware wraps the request/response cycle. Ordering is significant: the
 outermost layer sees the request first and the response last. Register

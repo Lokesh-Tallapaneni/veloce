@@ -1,4 +1,4 @@
-"""HandlerPlan -> MCP tool definition: input JSON Schema + argument binding.
+"""Plan bridge — HandlerPlan to MCP tool definition (input schema + binding).
 
 The input schema is derived from the same `HandlerPlan` the HTTP dispatch
 path uses, so a tool's declared inputs always match the handler signature.

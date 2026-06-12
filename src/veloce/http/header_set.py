@@ -1,4 +1,4 @@
-"""`HeaderSet` - ordered mutable set with comma-separated header serialisation.
+"""`HeaderSet` — ordered mutable set with comma-separated header serialisation.
 
 A datastructure for headers whose value is a list of
 tokens (`Allow`, `Vary`, `Access-Control-Allow-Methods`, ...). Case-insensitive

@@ -67,7 +67,7 @@ _EMPTY_OVERRIDES: dict[Callable, Callable] = {}
 _EMPTY_OVERRIDE_SUBPLANS: weakref.WeakKeyDictionary[Callable, Any] = weakref.WeakKeyDictionary()
 
 
-# -- Helpers -----------------------------------------------
+# ── Helpers ───────────────────────────────────────────────
 
 
 @functools.lru_cache(maxsize=512)
@@ -246,7 +246,7 @@ def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
     )
 
 
-# -- Markers -----------------------------------------------
+# ── Markers ───────────────────────────────────────────────
 
 
 class Depends:
@@ -359,7 +359,7 @@ class SecurityScopes:
         return f"SecurityScopes({self.scopes!r})"
 
 
-# -- Resolver ----------------------------------------------
+# ── Resolver ──────────────────────────────────────────────
 
 # Returned by `_resolve_scalar_param` for a path slot with no value, no default,
 # and not optional: the caller leaves the kwarg unset so the handler default

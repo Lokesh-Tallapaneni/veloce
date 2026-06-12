@@ -1,4 +1,4 @@
-"""Project and file scaffolding for the `veloce new` / `veloce generate` commands.
+"""Scaffolding — project and file generators for `veloce new` / `veloce generate`.
 
 Templates are plain in-module strings (no Jinja dependency, matching the CLI's
 stdlib-only footprint) carrying `__PROJECT__` / `__SNAKE__` / `__PASCAL__` tokens

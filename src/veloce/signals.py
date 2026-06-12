@@ -51,7 +51,7 @@ ANY_SENDER: Any = object()
 SignalResult = list[tuple[Callable, Any]]
 
 
-# -- Matching helpers ------------------------------------------------
+# ── Matching helpers ──────────────────────────────────────
 
 
 def _matches(subscribed: Any, sent: Any) -> bool:
@@ -68,7 +68,7 @@ def _matches(subscribed: Any, sent: Any) -> bool:
         return False
 
 
-# -- Concurrent async dispatch --------------------------------------
+# ── Concurrent async dispatch ─────────────────────────────
 
 
 async def _run_async_concurrently(
@@ -115,7 +115,7 @@ async def _run_async_concurrently(
     return await context.run(lambda: asyncio.gather(*coros, return_exceptions=True))
 
 
-# -- Signal ----------------------------------------------------------
+# ── Signal ────────────────────────────────────────────────
 
 
 class Signal:
@@ -425,7 +425,7 @@ class Signal:
         return f"<Signal name={self.name!r} receivers={len(self._subs)}>"
 
 
-# -- Namespace -------------------------------------------------------
+# ── Namespace ─────────────────────────────────────────────
 
 
 class Namespace:
@@ -473,7 +473,7 @@ class Namespace:
         return f"<Namespace signals={len(self._signals)}>"
 
 
-# -- Standard signals ------------------------------------------------
+# ── Standard signals ──────────────────────────────────────
 
 
 # Module-level singletons - apps subscribe via `request_started.connect(fn)`.
