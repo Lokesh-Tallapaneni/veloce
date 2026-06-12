@@ -19,7 +19,7 @@ import orjson
 from pydantic import BaseModel
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
-from veloce._model_backend import is_msgspec_struct
+from veloce._model_backend import is_msgspec_struct, is_pydantic_model
 from veloce._protocol_constants import OAUTH2_GRANT_TYPE_PASSWORD
 from veloce.dependency import Depends
 from veloce.http.response import HTMLResponse, JSONResponse
@@ -124,7 +124,7 @@ def _is_model_type(annotation: Any) -> bool:
     so both backends register a component schema and resolve to a ``$ref`` the
     same way.
     """
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+    if is_pydantic_model(annotation):
         return True
     return is_msgspec_struct(annotation)
 
@@ -277,7 +277,7 @@ def _python_type_to_schema(annotation: Any) -> dict:
     # and validates it into the model (`?tag={"name":"x"}`), so the wire
     # shape is a string. A model carried as a structured JSON body belongs
     # in `requestBody`, handled by `_pydantic_to_schema`.
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+    if is_pydantic_model(annotation):
         return {"type": "string"}
 
     return {"type": "string"}
