@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Parameters the resolver treats as optional are documented as `required: false`, matching runtime. ([#205](https://github.com/Lokesh-Tallapaneni/veloce/pull/205))
 - A form request body whose every field is optional is documented as not required, matching runtime. ([#205](https://github.com/Lokesh-Tallapaneni/veloce/pull/205))
+- `FileResponse.from_path` emits a bare `Content-Disposition` for a non-default disposition with no filename, matching the sync constructor. ([#207](https://github.com/Lokesh-Tallapaneni/veloce/pull/207))
 
 ## [0.6.0] - 2026-06-10
 
