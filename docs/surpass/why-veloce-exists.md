@@ -24,14 +24,26 @@ thing the framework is built around.
 A compiler has three parts: a source, an intermediate representation (IR), and
 one or more emit targets. Veloce maps onto all three.
 
-```
-   source                 IR                       emit targets
-┌────────────┐      ┌──────────────┐      ┌──────────────────────────┐
-│  @app.post │      │              │  →   │  runtime request pipeline │
-│  async def │  →   │  HandlerPlan │  →   │  OpenAPI 3.1 document     │
-│  handler() │      │   (per route)│  →   │  MCP tool surface         │
-└────────────┘      └──────────────┘      └──────────────────────────┘
-```
+<div class="vl-pipeline">
+  <div class="vl-stage">
+    <span class="vl-stage__label">Source</span>
+    <code class="vl-stage__body">@app.post<br>async def handler()</code>
+  </div>
+  <span class="vl-pipeline__arrow" aria-hidden="true">&rarr;</span>
+  <div class="vl-stage">
+    <span class="vl-stage__label">IR</span>
+    <code class="vl-stage__body">HandlerPlan<br><span class="vl-dim">(per route)</span></code>
+  </div>
+  <span class="vl-pipeline__arrow" aria-hidden="true">&rarr;</span>
+  <div class="vl-stage vl-stage--targets">
+    <span class="vl-stage__label">Emit targets</span>
+    <ul class="vl-stage__list">
+      <li>Runtime request pipeline</li>
+      <li>OpenAPI 3.1 document</li>
+      <li>MCP tool surface</li>
+    </ul>
+  </div>
+</div>
 
 - The **source** is your handler signature — its parameters, their types and
   defaults, its dependencies, and its return type.

@@ -100,4 +100,4 @@ architecture the rest of the framework follows from.
 
 </div>
 
-[Read the getting-started guide :material-arrow-right:](getting-started.md){ .md-button .md-button--primary }
+[Follow the tutorial :material-arrow-right:](tutorial/index.md){ .md-button .md-button--primary }

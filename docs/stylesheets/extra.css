@@ -3,6 +3,15 @@
    Brand palette: Veloce Violet (#5b3df0) + Ember accent (#ff6a1a)
    ========================================================================== */
 
+/* Motion tokens — one snappy ease-out curve and a consistent timing scale, so
+   every interaction feels related. Hover micro-interactions stay in the
+   150-200ms range; nothing animates backdrop-filter (expensive). */
+:root {
+  --vl-ease: cubic-bezier(0.2, 0, 0, 1);
+  --vl-dur-fast: 140ms;
+  --vl-dur: 200ms;
+}
+
 /* ----------------------------------------------------------------- Light -- */
 [data-md-color-scheme="default"] {
   --vl-violet:       #5b3df0;
@@ -138,15 +147,18 @@
 .md-typeset .grid.cards > ul > li,
 .md-typeset .grid > .card {
   border: 1px solid var(--vl-border);
-  border-radius: 0.8rem;
-  padding: 1.1rem;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  border-radius: 0.9rem;
+  padding: 1.25rem;
+  transition:
+    transform var(--vl-dur) var(--vl-ease),
+    box-shadow var(--vl-dur) var(--vl-ease),
+    border-color var(--vl-dur) var(--vl-ease);
 }
 .md-typeset .grid.cards > ul > li:hover,
 .md-typeset .grid > .card:hover {
   border-color: var(--md-accent-fg-color);
-  box-shadow: 0 0.5rem 1.5rem var(--vl-glow);
-  transform: translateY(-3px);
+  box-shadow: 0 0.75rem 2rem var(--vl-glow), inset 0 1px 0 var(--vl-glass-edge);
+  transform: translateY(-2px);
 }
 .md-typeset .grid.cards > ul > li > hr {
   margin: 0.6rem 0;
@@ -155,16 +167,42 @@
 
 /* ------------------------------------------------------------------ Buttons -- */
 .md-typeset .md-button {
-  border-radius: 0.5rem;
+  border-radius: 0.55rem;
   font-weight: 600;
   border-width: 1px;
-  transition: transform 0.12s ease, box-shadow 0.2s ease;
+  transition:
+    transform var(--vl-dur-fast) var(--vl-ease),
+    box-shadow var(--vl-dur) var(--vl-ease);
 }
 .md-typeset .md-button--primary {
   box-shadow: 0 0.35rem 0.9rem var(--vl-glow);
 }
 .md-typeset .md-button:hover {
   transform: translateY(-2px);
+}
+
+/* Dark mode buttons. The slate scheme sets --md-primary-fg-color near-black so
+   the header is dark, but Material reuses that colour for buttons — which would
+   render them (and the outline button's text) dark-on-dark. Give buttons their
+   own light violet so the primary pops and the outline button stays legible. */
+[data-md-color-scheme="slate"] .md-typeset .md-button--primary {
+  background-color: #5b3df0;
+  border-color: #5b3df0;
+  color: #ffffff;
+}
+[data-md-color-scheme="slate"] .md-typeset .md-button--primary:hover {
+  background-color: var(--vl-violet);
+  border-color: var(--vl-violet);
+  color: #14141f;
+}
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary) {
+  color: var(--vl-violet);
+  border-color: var(--vl-violet);
+}
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):hover {
+  background-color: var(--vl-violet);
+  border-color: var(--vl-violet);
+  color: #14141f;
 }
 
 /* -------------------------------------------------------------------- Code -- */
@@ -255,13 +293,13 @@
 [data-md-color-scheme="default"] {
   --vl-glass-bg:        rgba(255, 255, 255, 0.55);
   --vl-glass-edge:      rgba(255, 255, 255, 0.70);
-  --vl-glass-shadow:    0 0.5rem 2rem rgba(27, 27, 37, 0.12);
+  --vl-glass-shadow:    0 1px 2px rgba(27, 27, 37, 0.06), 0 12px 32px rgba(27, 27, 37, 0.10);
   --vl-glass-chrome-bg: rgba(91, 61, 240, 0.72);
 }
 [data-md-color-scheme="slate"] {
   --vl-glass-bg:        rgba(28, 28, 40, 0.55);
   --vl-glass-edge:      rgba(255, 255, 255, 0.12);
-  --vl-glass-shadow:    0 0.5rem 2rem rgba(0, 0, 0, 0.40);
+  --vl-glass-shadow:    0 1px 2px rgba(0, 0, 0, 0.30), 0 12px 32px rgba(0, 0, 0, 0.42);
   --vl-glass-chrome-bg: rgba(20, 20, 31, 0.72);
 }
 
@@ -284,22 +322,23 @@
   .md-header,
   .md-tabs {
     background-color: var(--vl-glass-chrome-bg);
-    -webkit-backdrop-filter: blur(14px) saturate(1.6);
-    backdrop-filter: blur(14px) saturate(1.6);
+    -webkit-backdrop-filter: blur(12px) saturate(1.6);
+    backdrop-filter: blur(12px) saturate(1.6);
   }
 
-  /* Frosted hero card — a single element, so the blur cost is negligible. */
+  /* Frosted hero card — a single element, so the blur cost is negligible. The
+     inset top highlight is the glass edge catching light. */
   .vl-hero {
     background:
       radial-gradient(ellipse 60% 80% at 50% 0%, var(--vl-glow), transparent 70%),
       var(--vl-glass-bg);
     border-color: var(--vl-glass-edge);
-    box-shadow: var(--vl-glass-shadow);
-    -webkit-backdrop-filter: blur(16px) saturate(1.4);
-    backdrop-filter: blur(16px) saturate(1.4);
+    box-shadow: var(--vl-glass-shadow), inset 0 1px 0 var(--vl-glass-edge);
+    -webkit-backdrop-filter: blur(12px) saturate(1.4);
+    backdrop-filter: blur(12px) saturate(1.4);
   }
 
-  /* Feature cards: translucent fill + edge + shadow, but NO per-card
+  /* Feature cards: translucent fill + edge highlight + shadow, but NO per-card
      backdrop-filter. Blurring every card scales poorly on pages with many of
      them (mobile Safari / low-end GPUs) for a modest gain; the shell and hero
      carry the effect. */
@@ -307,6 +346,195 @@
   .md-typeset .grid > .card {
     background: var(--vl-glass-bg);
     border-color: var(--vl-glass-edge);
-    box-shadow: var(--vl-glass-shadow);
+    box-shadow: var(--vl-glass-shadow), inset 0 1px 0 var(--vl-glass-edge);
+  }
+}
+
+/* ------------------------------------------------- Prev / next navigation -- */
+/* The footer page navigation becomes a pair of glass "section" cards: a small
+   brand direction label, the page title, and a chevron that slides toward its
+   direction on hover. They sit on the dark footer, so the glass is light-tinted. */
+.md-footer__inner.md-grid {
+  gap: 0.9rem;
+  padding: 1.1rem 0.8rem;
+  justify-content: space-between;
+}
+.md-footer__link {
+  flex: 1 1 auto;
+  max-width: 21rem;
+  min-width: 0;
+  align-items: center;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.7rem;
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  opacity: 1;
+  transition:
+    transform var(--vl-dur) var(--vl-ease),
+    border-color var(--vl-dur) var(--vl-ease),
+    background-color var(--vl-dur) var(--vl-ease),
+    box-shadow var(--vl-dur) var(--vl-ease);
+}
+/* A lone "next" link (e.g. the home page) sits at the right edge instead of
+   stretching across the whole row. */
+.md-footer__link--next {
+  margin-left: auto;
+}
+.md-footer__link:hover {
+  border-color: var(--vl-violet);
+  background: rgba(91, 61, 240, 0.12);
+  transform: translateY(-2px);
+  box-shadow:
+    0 0.6rem 1.6rem rgba(91, 61, 240, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+/* Compact the Material title block — its default 1.125rem title + wide padding
+   is what made the cards look oversized. Selectors are scoped under
+   `.md-footer__link` to win over the theme's own footer rules. */
+.md-footer__link .md-footer__title {
+  padding: 0 0.6rem;
+  line-height: 1.2;
+}
+.md-footer__link .md-footer__title .md-ellipsis {
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.md-footer__link .md-footer__direction {
+  margin-bottom: 0.05rem;
+  font-size: 0.5rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--vl-ember);
+  opacity: 0.95;
+}
+/* Smaller chevron; it leads the eye in its travel direction on hover. */
+.md-footer__button.md-icon {
+  margin: 0;
+  padding: 0.2rem;
+}
+.md-footer__button.md-icon svg {
+  width: 1rem;
+  height: 1rem;
+}
+.md-footer__button {
+  transition: transform var(--vl-dur) var(--vl-ease);
+}
+.md-footer__link--next:hover .md-footer__button {
+  transform: translateX(0.25rem);
+}
+.md-footer__link--prev:hover .md-footer__button {
+  transform: translateX(-0.25rem);
+}
+
+/* ---------------------------------------------------- "One IR" pipeline -- */
+/* A responsive, on-brand replacement for fragile ASCII art: source -> IR ->
+   emit targets. Flows left-to-right on wide screens and stacks (arrows rotate)
+   on narrow ones. */
+.md-typeset .vl-pipeline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.6rem;
+  margin: 1.5rem 0;
+}
+.md-typeset .vl-pipeline .vl-stage {
+  flex: 1 1 0;
+  min-width: 9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--vl-border);
+  border-radius: 0.7rem;
+  background: var(--vl-surface);
+  box-shadow: var(--vl-glass-shadow), inset 0 1px 0 var(--vl-glass-edge);
+}
+.md-typeset .vl-stage__label {
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--md-accent-fg-color);
+}
+.md-typeset .vl-stage__body {
+  display: block;
+  padding: 0;
+  background: none;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--md-default-fg-color);
+  box-shadow: none;
+}
+.md-typeset .vl-stage .vl-dim {
+  color: var(--md-default-fg-color--light);
+}
+.md-typeset .vl-stage__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.md-typeset .vl-stage__list li {
+  margin: 0.1rem 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.md-typeset .vl-pipeline__arrow {
+  display: flex;
+  align-items: center;
+  font-size: 1.1rem;
+  color: var(--md-accent-fg-color);
+}
+@media screen and (max-width: 44rem) {
+  .md-typeset .vl-pipeline {
+    flex-direction: column;
+  }
+  .md-typeset .vl-pipeline__arrow {
+    justify-content: center;
+    transform: rotate(90deg);
+  }
+}
+
+/* ----------------------------------------------------------- Hero entrance -- */
+/* One deliberate, staggered reveal on load — the single high-impact moment.
+   Gated to no-preference, so reduced-motion users get the final state instantly
+   with no hidden content. */
+@media (prefers-reduced-motion: no-preference) {
+  .vl-hero > * {
+    animation: vl-rise 0.6s var(--vl-ease) both;
+  }
+  .vl-hero > *:nth-child(1) { animation-delay: 0.04s; }
+  .vl-hero > *:nth-child(2) { animation-delay: 0.12s; }
+  .vl-hero > *:nth-child(3) { animation-delay: 0.20s; }
+  .vl-hero > *:nth-child(4) { animation-delay: 0.28s; }
+  .vl-hero > *:nth-child(5) { animation-delay: 0.36s; }
+}
+@keyframes vl-rise {
+  from {
+    opacity: 0;
+    transform: translateY(0.6rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Honour a reduced-motion preference: keep the look, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .md-typeset .grid.cards > ul > li:hover,
+  .md-typeset .grid > .card:hover,
+  .md-typeset .md-button:hover,
+  .md-footer__link:hover {
+    transform: none;
   }
 }
