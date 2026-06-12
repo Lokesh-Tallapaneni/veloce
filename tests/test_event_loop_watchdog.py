@@ -160,6 +160,77 @@ def test_no_false_positive_while_the_loop_is_idle(caplog):
     assert not any("event loop blocked" in r.getMessage() for r in caplog.records)
 
 
+# ── per-route attribution ────────────────────────────────────────────
+
+
+def test_report_attributes_the_stall_to_the_blocking_route(caplog):
+    """A blocking handler is named in the warning as `while serving GET /path`."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["EVENT_LOOP_WATCHDOG"] = {"interval": 0.02, "stall_threshold": 0.05}
+
+    @app.get("/block")
+    async def block():
+        time.sleep(0.25)  # noqa: ASYNC251 — deliberately blocks the loop
+        return {"ok": True}
+
+    client = app.test_client()
+    try:
+        with caplog.at_level(logging.WARNING, logger="veloce.watchdog"):
+            client.get("/block")
+    finally:
+        if app._watchdog is not None:
+            app._watchdog.stop()
+
+    blocked = [r for r in caplog.records if "event loop blocked" in r.getMessage()]
+    assert blocked
+    assert "while serving GET /block" in blocked[0].getMessage()
+
+
+def test_report_attributes_the_stall_to_the_blocking_dependency(caplog):
+    """A stall inside a dependency names the route and the dependency."""
+    app = Veloce(debug=True, openapi_url=None)
+    app.config["EVENT_LOOP_WATCHDOG"] = {"interval": 0.02, "stall_threshold": 0.05}
+
+    from veloce import Depends
+
+    async def slow_dep():
+        time.sleep(0.25)  # noqa: ASYNC251 — deliberately blocks the loop
+        return 1
+
+    @app.get("/dep")
+    async def dep(value: int = Depends(slow_dep)):
+        return {"value": value}
+
+    client = app.test_client()
+    try:
+        with caplog.at_level(logging.WARNING, logger="veloce.watchdog"):
+            client.get("/dep")
+    finally:
+        if app._watchdog is not None:
+            app._watchdog.stop()
+
+    blocked = [r for r in caplog.records if "event loop blocked" in r.getMessage()]
+    assert blocked
+    assert "while serving GET /dep -> slow_dep" in blocked[0].getMessage()
+
+
+async def test_report_has_no_attribution_when_block_is_outside_any_route(caplog):
+    """A bare watchdog with no attributor omits the `while serving` segment."""
+    loop = asyncio.get_running_loop()
+    watchdog = EventLoopWatchdog(loop, interval=0.02, stall_threshold=0.05)
+    watchdog.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="veloce.watchdog"):
+            time.sleep(0.25)  # noqa: ASYNC251 — deliberately blocks the loop
+            await _wait_for_log(caplog, "event loop blocked")
+    finally:
+        watchdog.stop()
+
+    blocked = [r for r in caplog.records if "event loop blocked" in r.getMessage()]
+    assert blocked
+    assert "while serving" not in blocked[0].getMessage()
+
+
 # ── app wiring ────────────────────────────────────────────────────────
 
 

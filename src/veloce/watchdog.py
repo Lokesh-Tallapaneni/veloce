@@ -24,6 +24,11 @@ import sys
 import threading
 import time
 import traceback
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Callable
+    from types import FrameType
 
 
 def _classify_block(first_stack: str, second_stack: str) -> str:
@@ -65,6 +70,7 @@ class EventLoopWatchdog:
         "_interval",
         "_stall_threshold",
         "_logger",
+        "_attributor",
         "_loop_thread_id",
         "_last_beat",
         "_beat_count",
@@ -80,11 +86,16 @@ class EventLoopWatchdog:
         interval: float = 0.05,
         stall_threshold: float = 0.1,
         logger: logging.Logger | None = None,
+        attributor: Callable[[FrameType], str | None] | None = None,
     ) -> None:
         self._loop = loop
         self._interval = interval
         self._stall_threshold = stall_threshold
         self._logger = logger or logging.getLogger(__name__)
+        # Optional app-supplied callable mapping the blocked loop frame to the
+        # route (and dependency) it is executing. Kept app-agnostic: the watchdog
+        # only invokes it; the app builds it from its route table.
+        self._attributor = attributor
         self._loop_thread_id = 0
         self._last_beat = time.monotonic()
         # Bumped by every heartbeat - the loop thread is its only writer.
@@ -155,25 +166,47 @@ class EventLoopWatchdog:
                 last_reported = count
                 self._report(elapsed)
 
-    def _capture_stack(self) -> str:
+    def _loop_frame(self) -> FrameType | None:
         # sys._current_frames() is the only way to read another thread's
         # stack from outside it. It is a CPython-private API (leading
         # underscore, no cross-implementation guarantee), but there is no
         # public equivalent; this is acceptable for a dev-only diagnostic.
-        frame = sys._current_frames().get(self._loop_thread_id)
+        return sys._current_frames().get(self._loop_thread_id)
+
+    @staticmethod
+    def _format_stack(frame: FrameType | None) -> str:
         if frame is None:
             return "<event-loop stack unavailable>"
         return "".join(traceback.format_stack(frame))
+
+    def _capture_stack(self) -> str:
+        return self._format_stack(self._loop_frame())
+
+    def _attribution(self, frame: FrameType | None) -> str:
+        """Return ` while serving <route>` for the blocked frame, or `` .
+
+        Resolves the route/dependency via the app-supplied attributor; any
+        failure degrades silently to no attribution (the stack still pinpoints
+        the call).
+        """
+        if self._attributor is None or frame is None:
+            return ""
+        try:
+            label = self._attributor(frame)
+        except Exception:
+            return ""
+        return f" while serving {label}" if label else ""
 
     def _report(self, elapsed: float) -> None:
         """Log a stall - runs in the watchdog thread, never on the loop."""
         # Sample the loop thread's stack twice to classify the block.
         first = self._capture_stack()
         time.sleep(0.005)
-        second = self._capture_stack()
+        frame = self._loop_frame()
         self._logger.warning(
-            "event loop blocked for %.0f ms - %s\nBlocked loop stack:\n%s",
+            "event loop blocked for %.0f ms%s - %s\nBlocked loop stack:\n%s",
             elapsed * 1000.0,
-            _classify_block(first, second),
-            second,
+            self._attribution(frame),
+            _classify_block(first, self._format_stack(frame)),
+            self._format_stack(frame),
         )

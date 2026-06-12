@@ -103,6 +103,14 @@ async def show(user=Depends(lookup_user, offload=True)):
     return user
 ```
 
+!!! tip "Catch the ones you miss"
+
+    Set `app.config["EVENT_LOOP_WATCHDOG"] = True` in development. When a call
+    blocks the loop, the watchdog logs the stall and names the route and
+    dependency it happened in — e.g. `while serving GET /users/{user_id} ->
+    lookup_user` — so the offending `Depends` is obvious. It is off by default
+    and meant for development only.
+
 ## OAuth2 `token_url`
 
 [`OAuth2PasswordBearer`](../reference.md#veloce.OAuth2PasswordBearer) takes
