@@ -18,6 +18,7 @@ import warnings
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
+from veloce._handler_plan import K_DEPENDS
 from veloce._internal import _BaseExceptionGroup, _is_async_callable, offload
 from veloce._protocol_constants import (
     LIFECYCLE_SHUTDOWN,
@@ -25,6 +26,9 @@ from veloce._protocol_constants import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover
+    from types import CodeType, FrameType
+
+    from veloce._handler_plan import HandlerPlan
     from veloce.app.contexts import _LifespanManager
     from veloce.app.core import Veloce
 
@@ -75,6 +79,66 @@ def _raise_unwind_errors(errors: list[BaseException]) -> None:
                 f"+ also raised during lifespan unwind: {extra!r}"
             )
     raise first
+
+
+def _build_watchdog_attributor(app: Veloce) -> Callable[[FrameType], str | None]:
+    """Build a frame-to-route resolver for the event-loop watchdog.
+
+    Returns a callable that maps a blocked loop frame to a `METHOD /path` (and,
+    for a stall inside a dependency, `METHOD /path -> dep`) label. The route
+    table is indexed lazily on the first stall and reused thereafter, so wiring
+    it on costs nothing until something actually blocks the loop.
+
+    The table is keyed by code object, so a callable shared across routes (the
+    same handler or dependency registered on several paths) is attributed to the
+    first route indexed; the logged stack still pinpoints the real call. A class
+    or `functools.partial` dependency has no `__code__` and is left unattributed,
+    degrading to the bare warning rather than a wrong label.
+    """
+    table: dict[CodeType, str] = {}
+    built = False
+
+    def _code_of(fn: object) -> CodeType | None:
+        return getattr(fn, "__code__", None)
+
+    def _index_plan(plan: HandlerPlan, label: str) -> None:
+        for slot in plan.slots:
+            if slot.kind != K_DEPENDS:
+                continue
+            dep = slot.dep_callable
+            dep_label = f"{label} -> {getattr(dep, '__name__', None) or slot.name}"
+            code = _code_of(dep)
+            if code is not None:
+                table.setdefault(code, dep_label)
+            if slot.sub_plan is not None:
+                _index_plan(slot.sub_plan, dep_label)
+
+    def _build() -> None:
+        for method, path, info in app._collect_all_routes(include_hidden=True):
+            label = f"{method} {path}"
+            code = _code_of(info.handler)
+            if code is not None:
+                table.setdefault(code, label)
+            if info.handler_plan is not None:
+                _index_plan(info.handler_plan, label)
+
+    # Walk the blocked frame outward to its caller chain and return the
+    # innermost handler/dependency it is running inside. Runs in the watchdog
+    # thread on a stall, never on the loop.
+    def attributor(frame: FrameType) -> str | None:
+        nonlocal built
+        if not built:
+            _build()
+            built = True
+        f: FrameType | None = frame
+        while f is not None:
+            label = table.get(f.f_code)
+            if label is not None:
+                return label
+            f = f.f_back
+        return None
+
+    return attributor
 
 
 class LifecycleMixin:
@@ -340,7 +404,11 @@ class LifecycleMixin:
                     from veloce.watchdog import EventLoopWatchdog
 
                     _wd_kwargs = dict(_wd_config) if isinstance(_wd_config, Mapping) else {}
-                    self._watchdog = EventLoopWatchdog(asyncio.get_running_loop(), **_wd_kwargs)
+                    self._watchdog = EventLoopWatchdog(
+                        asyncio.get_running_loop(),
+                        attributor=_build_watchdog_attributor(cast("Veloce", self)),
+                        **_wd_kwargs,
+                    )
                     self._watchdog.start()
                     stack.push_async_callback(self._stop_watchdog)
             except BaseException:
