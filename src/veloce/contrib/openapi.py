@@ -856,11 +856,13 @@ def _extract_parameters(
                     field_schema["description"] = marker.description
                 if getattr(marker, "title", None):
                     field_schema["title"] = marker.title
-                field_required = not marker.has_default
+                field_required = not (marker.has_default or d.is_optional)
                 field_alias = marker.alias or d.name
             else:
-                # A bare `UploadFile` (no `File()`): required unless `Optional`.
-                field_required = not d.is_optional
+                # A bare `UploadFile`: optional when it carries a default or an
+                # `Optional` annotation - the resolver leaves the kwarg unset and
+                # the handler default applies, so the field is not required.
+                field_required = not (d.has_default or d.is_optional)
                 field_alias = d.name
             form_fields.append((field_alias, field_schema, field_required, d.is_file))
             continue
@@ -879,8 +881,11 @@ def _extract_parameters(
         # the alias / hyphenated wire name the resolver actually reads.
         param_alias = d.name if location == "path" else d.wire_name
 
+        # An `Optional[T]` annotation makes a value omittable even with no
+        # default: the resolver binds `None` when it is absent, so the documented
+        # contract matches the resolver only when `is_optional` relaxes required.
         if marker is not None:
-            required = not marker.has_default
+            required = not (marker.has_default or d.is_optional)
             if marker.has_default and marker.default is not ...:
                 default_val = marker.default
                 if isinstance(default_val, (str, int, float, bool, type(None))):
@@ -888,7 +893,7 @@ def _extract_parameters(
         elif location == "path":
             required = True
         else:
-            required = not d.has_default
+            required = not (d.has_default or d.is_optional)
             if d.has_default:
                 default_val = d.default
                 if isinstance(default_val, (str, int, float, bool, type(None))):

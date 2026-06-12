@@ -156,8 +156,8 @@ def iter_param_descriptors(contract: RouteContract) -> Iterator[ParamDescriptor]
                 model=None,
                 marker=None,
                 is_file=True,
-                has_default=False,
-                default=None,
+                has_default=slot.has_default,
+                default=slot.default,
                 is_optional=slot.is_optional,
             )
         elif kind == K_QUERY_LIST:
