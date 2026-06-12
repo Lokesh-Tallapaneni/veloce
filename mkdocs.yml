@@ -43,6 +43,7 @@ theme:
     - navigation.top
     - navigation.footer
     - toc.follow
+    - toc.integrate
     - search.suggest
     - search.highlight
     - content.code.copy
@@ -195,6 +196,7 @@ nav:
       - GraphQL: how-to/graphql.md
       - Customising the Request or Route: how-to/custom-request-route.md
   - Why Veloce:
+      - Why Veloce Exists: surpass/why-veloce-exists.md
       - Performance: surpass/performance.md
       - Native Server Deep Dive: surpass/native-server.md
       - Migrating from FastAPI: surpass/migrating-from-fastapi.md
