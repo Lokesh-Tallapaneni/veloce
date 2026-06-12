@@ -34,7 +34,7 @@ from veloce._handler_plan import (
 from veloce._model_backend import ModelBackend, backend_of
 
 if TYPE_CHECKING:  # pragma: no cover
-    from veloce._handler_plan import HandlerPlan
+    from veloce._handler_plan import HandlerPlan, _Slot
     from veloce.routing.params import ParamBase
     from veloce.routing.router import RouteInfo
 
@@ -95,98 +95,112 @@ def _is_model(annotation: Any) -> bool:
     return annotation is not None and backend_of(annotation) is not ModelBackend.NONE
 
 
+def describe_slot(slot: _Slot, param_names: tuple[str, ...]) -> ParamDescriptor | None:
+    """Classify one plan slot into a `ParamDescriptor`, or `None` to skip it.
+
+    The single per-slot classification every lowering shares. `None` is returned
+    for an inject-only slot (request, response, background tasks, security
+    scopes, websocket, depends), which carries no client- or agent-facing input.
+    `param_names` resolves the planner's path-or-query ambiguity: a bare slot
+    whose name is a path segment is a path parameter. A dependency's own
+    sub-graph is not recursed here; a lowering that advertises sub-dependency
+    inputs walks `slot.sub_plan` itself.
+    """
+    kind = slot.kind
+    if kind == K_PARAM_MARKER:
+        mk = slot.marker_kind
+        if mk == MK_BODY:
+            location = "body"
+            model = slot.target_type if _is_model(slot.target_type) else None
+        elif mk in (MK_FORM, MK_FILE):
+            location = "form"
+            model = None
+        else:
+            location = MARKER_LOC[mk]
+            model = None
+        return ParamDescriptor(
+            name=slot.name,
+            wire_name=slot.lookup_name or slot.name,
+            location=location,
+            target_type=slot.target_type,
+            is_list=False,
+            model=model,
+            marker=slot.marker,
+            is_file=(mk == MK_FILE),
+            has_default=slot.has_default,
+            default=slot.marker.default if slot.marker is not None else None,
+            is_optional=slot.is_optional,
+        )
+    if kind == K_BODY_MODEL:
+        return ParamDescriptor(
+            name=slot.name,
+            wire_name=slot.name,
+            location="body",
+            target_type=slot.model,
+            is_list=False,
+            model=slot.model,
+            marker=None,
+            is_file=False,
+            has_default=False,
+            default=None,
+            is_optional=slot.is_optional,
+        )
+    if kind == K_UPLOAD_FILE:
+        return ParamDescriptor(
+            name=slot.name,
+            wire_name=slot.name,
+            location="form",
+            target_type=None,
+            is_list=False,
+            model=None,
+            marker=None,
+            is_file=True,
+            has_default=slot.has_default,
+            default=slot.default,
+            is_optional=slot.is_optional,
+        )
+    if kind == K_QUERY_LIST:
+        return ParamDescriptor(
+            name=slot.name,
+            wire_name=slot.name,
+            location="path" if slot.name in param_names else "query",
+            target_type=slot.list_inner,
+            is_list=True,
+            model=None,
+            marker=None,
+            is_file=False,
+            has_default=slot.has_default,
+            default=slot.default,
+            is_optional=slot.is_optional,
+        )
+    if kind in (K_QUERY, K_PATH):
+        return ParamDescriptor(
+            name=slot.name,
+            wire_name=slot.name,
+            location="path" if (kind == K_PATH or slot.name in param_names) else "query",
+            target_type=slot.target_type,
+            is_list=False,
+            model=None,
+            marker=None,
+            is_file=False,
+            has_default=slot.has_default,
+            default=slot.default,
+            is_optional=slot.is_optional,
+        )
+    # Inject-only kinds (request/response/background/scopes/websocket/depends)
+    # are not documentable inputs.
+    return None
+
+
 def iter_param_descriptors(contract: RouteContract) -> Iterator[ParamDescriptor]:
     """Yield one `ParamDescriptor` per documentable input in the route's plan.
 
-    The single canonical walk over the plan's parameter slots. Inject-only slots
-    (request, response, background tasks, security scopes, websocket, depends)
-    carry no client- or agent-facing input and are skipped, exactly as the
-    resolver-facing interpreter skips them. A dependency's own sub-graph is not
-    recursed here; a lowering that advertises sub-dependency inputs walks
-    `slot.sub_plan` itself.
+    The single canonical walk over the plan's parameter slots, built on
+    `describe_slot`. Inject-only slots are skipped; dependency sub-graphs are not
+    recursed (a lowering that needs them walks `slot.sub_plan` itself).
     """
     param_names = contract.param_names
     for slot in contract.plan.slots:
-        kind = slot.kind
-        if kind == K_PARAM_MARKER:
-            mk = slot.marker_kind
-            if mk == MK_BODY:
-                location = "body"
-                model = slot.target_type if _is_model(slot.target_type) else None
-            elif mk in (MK_FORM, MK_FILE):
-                location = "form"
-                model = None
-            else:
-                location = MARKER_LOC[mk]
-                model = None
-            yield ParamDescriptor(
-                name=slot.name,
-                wire_name=slot.lookup_name or slot.name,
-                location=location,
-                target_type=slot.target_type,
-                is_list=False,
-                model=model,
-                marker=slot.marker,
-                is_file=(mk == MK_FILE),
-                has_default=slot.has_default,
-                default=slot.marker.default if slot.marker is not None else None,
-                is_optional=slot.is_optional,
-            )
-        elif kind == K_BODY_MODEL:
-            yield ParamDescriptor(
-                name=slot.name,
-                wire_name=slot.name,
-                location="body",
-                target_type=slot.model,
-                is_list=False,
-                model=slot.model,
-                marker=None,
-                is_file=False,
-                has_default=False,
-                default=None,
-                is_optional=slot.is_optional,
-            )
-        elif kind == K_UPLOAD_FILE:
-            yield ParamDescriptor(
-                name=slot.name,
-                wire_name=slot.name,
-                location="form",
-                target_type=None,
-                is_list=False,
-                model=None,
-                marker=None,
-                is_file=True,
-                has_default=slot.has_default,
-                default=slot.default,
-                is_optional=slot.is_optional,
-            )
-        elif kind == K_QUERY_LIST:
-            yield ParamDescriptor(
-                name=slot.name,
-                wire_name=slot.name,
-                location="path" if slot.name in param_names else "query",
-                target_type=slot.list_inner,
-                is_list=True,
-                model=None,
-                marker=None,
-                is_file=False,
-                has_default=slot.has_default,
-                default=slot.default,
-                is_optional=slot.is_optional,
-            )
-        elif kind in (K_QUERY, K_PATH):
-            yield ParamDescriptor(
-                name=slot.name,
-                wire_name=slot.name,
-                location="path" if (kind == K_PATH or slot.name in param_names) else "query",
-                target_type=slot.target_type,
-                is_list=False,
-                model=None,
-                marker=None,
-                is_file=False,
-                has_default=slot.has_default,
-                default=slot.default,
-                is_optional=slot.is_optional,
-            )
-        # Inject-only kinds (request/response/background/scopes/websocket/depends)
-        # are not documentable inputs and are intentionally not yielded.
+        descriptor = describe_slot(slot, param_names)
+        if descriptor is not None:
+            yield descriptor
