@@ -19,7 +19,7 @@ Charset variants are distinct values and therefore distinct constants
 
 from __future__ import annotations
 
-# -- MIME types --
+# ── MIME types ────────────────────────────────────────────
 MIME_APPLICATION_JAVASCRIPT = "application/javascript"
 MIME_APPLICATION_X_YAML = "application/x-yaml"
 MIME_APPLICATION_XHTML_XML = "application/xhtml+xml"
@@ -34,7 +34,7 @@ MIME_TEXT_HTML_UTF8 = "text/html; charset=utf-8"
 MIME_TEXT_PLAIN = "text/plain"
 MIME_TEXT_PLAIN_UTF8 = "text/plain; charset=utf-8"
 
-# -- HTTP header names (Title-Case, user-facing) --
+# ── HTTP header names (Title-Case, user-facing) ───────────
 HEADER_ACCEPT = "Accept"
 HEADER_ACCEPT_ENCODING = "Accept-Encoding"
 HEADER_ACCEPT_CHARSET = "Accept-Charset"
@@ -107,7 +107,7 @@ HEADER_X_RATELIMIT_RESET = "X-RateLimit-Reset"
 HEADER_X_REQUEST_ID = "X-Request-ID"
 HEADER_X_REQUESTED_WITH = "X-Requested-With"
 
-# -- HTTP header values (industry-standard, reusable) --
+# ── HTTP header values (industry-standard, reusable) ──────
 HEADER_VALUE_ATTACHMENT = "attachment"
 HEADER_VALUE_BYTES = "bytes"
 HEADER_VALUE_CHUNKED = "chunked"
@@ -119,7 +119,7 @@ HEADER_VALUE_NOSNIFF = "nosniff"
 HEADER_VALUE_PUBLIC = "public"
 HEADER_VALUE_STRICT_ORIGIN_WHEN_CROSS_ORIGIN = "strict-origin-when-cross-origin"
 
-# -- Duplicated messages and error/log strings --
+# ── Duplicated messages and error/log strings ─────────────
 MSG_ACCESS_DENIED = "Access denied"
 MSG_APP_REFERENCE_FORM = "App reference in 'module:attribute' form."
 MSG_ERROR_RESPONSE_EMISSION = "Error during response emission"
@@ -133,7 +133,7 @@ MSG_RECEIVER_RAISED = "Receiver %r for signal %r raised %s"
 MSG_REQUEST_BODY_EXCEEDS_MAX = "Request body exceeds MAX_CONTENT_LENGTH"
 MSG_SUCCESSFUL_RESPONSE = "Successful Response"
 
-# -- Duplicated CRLF-rejection context labels --
+# ── Duplicated CRLF-rejection context labels ──────────────
 MSG_LABEL_COOKIE_DOMAIN = "cookie domain"
 MSG_LABEL_COOKIE_NAME = "cookie name"
 MSG_LABEL_COOKIE_PATH = "cookie path"
