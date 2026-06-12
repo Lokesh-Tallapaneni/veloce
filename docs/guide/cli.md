@@ -110,6 +110,12 @@ veloce shell app:app    # a Python REPL with `app` and `g` loaded
 veloce custom app:app -- <command>   # run an app.cli (Click) command
 ```
 
+!!! note "`app.cli` needs the `cli` extra"
+    The built-in `veloce` commands are pure stdlib `argparse` and need nothing
+    extra. Flask-style per-app commands (`@app.cli.command()`, run via
+    `veloce custom`, and `app.test_cli_runner()`) use Click, so install it with
+    `pip install veloceframework[cli]`.
+
 `veloce shell` runs inside an application context, so `current_app`, `g`, and
 anything registered with `@app.shell_context_processor` resolve as they would in
 a request.
