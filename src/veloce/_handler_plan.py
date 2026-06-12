@@ -760,6 +760,8 @@ def build_plan(
             if not websocket:
                 slot = _Slot(K_UPLOAD_FILE, param_name)
                 slot.is_optional = is_optional
+                slot.has_default = has_default
+                slot.default = default if has_default else None
                 slots.append(slot)
             continue
 
