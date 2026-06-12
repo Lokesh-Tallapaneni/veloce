@@ -46,7 +46,7 @@ from veloce._constants import (
     HEADER_WWW_AUTHENTICATE,
     MIME_TEXT_PLAIN,
 )
-from veloce._header_parsing import unquote_value
+from veloce._header_parsing import parse_media_type_params, unquote_value
 from veloce._internal import (
     _STATUS_PHRASES,
     MIME_HTML,
@@ -428,15 +428,8 @@ class Response:
         `text/html; charset=utf-8` this is `{"charset": "utf-8"}`.
         Returns an empty dict when no parameters are present.
         """
-        params: dict[str, str] = {}
-        ct = self.content_type or ""
-        for part in ct.split(";")[1:]:
-            part = part.strip()
-            if not part or "=" not in part:
-                continue
-            key, _, value = part.partition("=")
-            params[key.strip().lower()] = unquote_value(value)
-        return params
+        _, _, rest = (self.content_type or "").partition(";")
+        return dict(parse_media_type_params(rest))
 
     def calculate_content_length(self) -> int:
         """Set `Content-Length` from `len(body)` and return the value.
@@ -1513,6 +1506,61 @@ def _read_file_bytes(path: str) -> bytes:
 _INLINE_READ_MAX = 64 * 1024
 
 
+def _stat_regular_file(path: str) -> os.stat_result:
+    """Stat `path`, raising `FileNotFoundError` for a missing or non-regular file.
+
+    One stat covers the existence/regular-file guard and the mtime/size used for
+    `Last-Modified` + `ETag`; a separate `os.path.isfile` pre-check would stat
+    twice. A non-regular path (directory, broken symlink) is rejected with the
+    same error a `False` from `os.path.isfile` would have produced.
+    """
+    try:
+        st = os.stat(path)
+    except OSError as err:
+        raise FileNotFoundError(f"File not found: {path}") from err
+    if not stat.S_ISREG(st.st_mode):
+        raise FileNotFoundError(f"File not found: {path}")
+    return st
+
+
+def _build_file_headers(
+    path: str,
+    st: os.stat_result,
+    filename: str | None,
+    content_type: str | None,
+    content_disposition_type: str,
+    headers: dict[str, str] | None,
+) -> tuple[str, dict[str, str]]:
+    """Resolve the content type and build the file-serving response headers.
+
+    Shared by the sync `FileResponse(...)` and the async `from_path(...)` so the
+    `Content-Disposition` / `Last-Modified` / `ETag` shape stays identical on
+    both paths.
+    """
+    if content_type is None:
+        content_type = mimetypes.guess_type(path)[0] or MIME_OCTET
+
+    hdrs = headers or {}
+    if filename:
+        # `content_disposition_type` - "attachment" (force a download dialog)
+        # or "inline" (render in the browser).
+        hdrs[HEADER_CONTENT_DISPOSITION] = _format_content_disposition(
+            content_disposition_type, filename
+        )
+    elif content_disposition_type != HEADER_VALUE_ATTACHMENT:
+        # No filename, but the caller explicitly chose a non-default disposition
+        # (e.g. `inline`): honour it with a bare `Content-Disposition: inline`.
+        # The default `attachment` stays unset without a filename, so a plain
+        # `FileResponse(path)` does not force a download on every file it serves.
+        hdrs[HEADER_CONTENT_DISPOSITION] = content_disposition_type
+
+    if HEADER_LAST_MODIFIED not in hdrs and "last-modified" not in hdrs:
+        hdrs[HEADER_LAST_MODIFIED] = http_date(st.st_mtime)
+    if HEADER_ETAG not in hdrs and "etag" not in hdrs:
+        hdrs[HEADER_ETAG] = _file_etag(path, st.st_size, st.st_mtime)
+    return content_type, hdrs
+
+
 class FileResponse(Response):
     """Serve a file from disk - small files inline, large files via executor."""
 
@@ -1526,41 +1574,10 @@ class FileResponse(Response):
         headers: dict[str, str] | None = None,
         content_disposition_type: str = HEADER_VALUE_ATTACHMENT,
     ) -> None:
-        # Single stat covers both the existence/regular-file guard and the
-        # mtime/size used for Last-Modified + ETag below; a separate
-        # `os.path.isfile` pre-check would stat the path twice. A missing
-        # path raises here; a non-regular path (directory, broken symlink)
-        # is rejected with the same FileNotFoundError `os.path.isfile`
-        # would have produced via a False return.
-        try:
-            st = os.stat(path)
-        except OSError as err:
-            raise FileNotFoundError(f"File not found: {path}") from err
-        if not stat.S_ISREG(st.st_mode):
-            raise FileNotFoundError(f"File not found: {path}")
-
-        if content_type is None:
-            content_type = mimetypes.guess_type(path)[0] or MIME_OCTET
-
-        hdrs = headers or {}
-        if filename:
-            # `content_disposition_type` - "attachment" (force a
-            # download dialog) or "inline" (render in the browser).
-            hdrs[HEADER_CONTENT_DISPOSITION] = _format_content_disposition(
-                content_disposition_type, filename
-            )
-        elif content_disposition_type != HEADER_VALUE_ATTACHMENT:
-            # No filename, but the caller explicitly chose a non-default
-            # disposition (e.g. `inline`): honour it with a bare
-            # `Content-Disposition: inline`. The default `attachment` stays
-            # unset without a filename, so a plain `FileResponse(path)` does
-            # not force a download on every file it serves.
-            hdrs[HEADER_CONTENT_DISPOSITION] = content_disposition_type
-
-        if HEADER_LAST_MODIFIED not in hdrs and "last-modified" not in hdrs:
-            hdrs[HEADER_LAST_MODIFIED] = http_date(st.st_mtime)
-        if HEADER_ETAG not in hdrs and "etag" not in hdrs:
-            hdrs[HEADER_ETAG] = _file_etag(path, st.st_size, st.st_mtime)
+        st = _stat_regular_file(path)
+        content_type, hdrs = _build_file_headers(
+            path, st, filename, content_type, content_disposition_type, headers
+        )
 
         # Warn when called on a running loop - a 50 MB read on the loop
         # pauses every other request. The cheap factory
@@ -1611,12 +1628,7 @@ class FileResponse(Response):
         """
         loop = asyncio.get_running_loop()
 
-        try:
-            st = os.stat(path)
-        except OSError as err:
-            raise FileNotFoundError(f"File not found: {path}") from err
-        if not stat.S_ISREG(st.st_mode):
-            raise FileNotFoundError(f"File not found: {path}")
+        st = _stat_regular_file(path)
 
         if st.st_size <= _INLINE_READ_MAX:
             # ASYNC230: a bounded inline read is deliberate here - the file is
@@ -1629,18 +1641,9 @@ class FileResponse(Response):
         else:
             body = await loop.run_in_executor(None, _read_file_bytes, path)
 
-        if content_type is None:
-            content_type = mimetypes.guess_type(path)[0] or MIME_OCTET
-
-        hdrs = headers or {}
-        if filename:
-            hdrs[HEADER_CONTENT_DISPOSITION] = _format_content_disposition(
-                content_disposition_type, filename
-            )
-        if HEADER_LAST_MODIFIED not in hdrs and "last-modified" not in hdrs:
-            hdrs[HEADER_LAST_MODIFIED] = http_date(st.st_mtime)
-        if HEADER_ETAG not in hdrs and "etag" not in hdrs:
-            hdrs[HEADER_ETAG] = _file_etag(path, st.st_size, st.st_mtime)
+        content_type, hdrs = _build_file_headers(
+            path, st, filename, content_type, content_disposition_type, headers
+        )
 
         resp = Response.__new__(cls)
         Response.__init__(

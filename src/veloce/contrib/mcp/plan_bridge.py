@@ -31,11 +31,12 @@ from veloce._handler_plan import (
     K_SECURITY_SCOPES,
     MK_BODY,
 )
+from veloce._model_backend import is_pydantic_model
 from veloce._route_contract import describe_slot
 from veloce.background import BackgroundTasks
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.openapi import _pydantic_to_schema, _python_type_to_schema
-from veloce.dependency import SecurityScopes, _coerce_value
+from veloce.dependency import SecurityScopes, _coerce_scalar, _coerce_value
 from veloce.http.datastructures import FormData, QueryParams
 from veloce.http.request import Request
 from veloce.http.response import Response
@@ -265,7 +266,7 @@ def _slot_schema(
         return None, False
 
     if d.model is not None:
-        if isinstance(d.model, type) and issubclass(d.model, BaseModel):
+        if is_pydantic_model(d.model):
             prop = _pydantic_to_schema(d.model, schemas_registry)
         else:
             prop = {"type": "object"}
@@ -286,21 +287,16 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
 
     if kind == K_BODY_MODEL:
         model = slot.model
-        if isinstance(model, type) and issubclass(model, BaseModel):
+        if is_pydantic_model(model):
             return _validate_model(value, model)
         return value
 
     if kind == K_PARAM_MARKER:
         target = slot.target_type
-        if (
-            slot.marker_kind == MK_BODY
-            and isinstance(target, type)
-            and issubclass(target, BaseModel)
-        ):
+        if slot.marker_kind == MK_BODY and is_pydantic_model(target):
             return _validate_model(value, target)
         marker = slot.marker
-        if target and target is not str and not isinstance(value, (dict, list)):
-            value = _coerce_value(value, target, slot.name, "body")
+        value = _coerce_scalar(value, target, slot.name, "body")
         if marker is not None:
             return marker.validate(value, slot.name)
         return value
@@ -312,10 +308,7 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         return [_coerce_value(v, inner, slot.name, "body") for v in value]
 
     if kind == K_QUERY:
-        target = slot.target_type
-        if target and target is not str and not isinstance(value, (dict, list)):
-            return _coerce_value(value, target, slot.name, "body")
-        return value
+        return _coerce_scalar(value, slot.target_type, slot.name, "body")
 
     return value
 

@@ -25,7 +25,7 @@ from veloce._constants import (
     MIME_JSON,
     MIME_OCTET_STREAM,
 )
-from veloce._header_parsing import parse_header_params
+from veloce._header_parsing import parse_header_params, parse_media_type_params
 from veloce._internal import is_default_port
 from veloce._protocol_constants import URL_SCHEME_HTTP, URL_SCHEME_HTTPS
 from veloce.exceptions import FilesKeyError, RequestURITooLong
@@ -613,19 +613,9 @@ def _parse_mime_key(value: str) -> _MimeKey:
     # `*/non-*` is meaningless (RFC 9110 Sec. 12.5.1) - never match it.
     if type_ == "*" and subtype != "*":
         return ("", "", frozenset(), -1)
-    params: set[tuple[str, str]] = set()
-    if rest:
-        for chunk in rest.split(";"):
-            chunk = chunk.strip()
-            if "=" not in chunk:
-                continue
-            k, _, v = chunk.partition("=")
-            v = v.strip()
-            if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
-                v = v[1:-1]
-            # Parameter names are case-insensitive; values are kept verbatim
-            # except for the surrounding quotes.
-            params.add((k.strip().lower(), v))
+    # Parameter names are case-insensitive; values are kept verbatim except for
+    # the surrounding quotes.
+    params: set[tuple[str, str]] = set(parse_media_type_params(rest))
     if type_ == "*":
         specificity = 0
     elif subtype == "*":

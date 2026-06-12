@@ -43,7 +43,7 @@ from veloce._internal import (
     _is_async_callable,
     offload,
 )
-from veloce._model_backend import _HAS_MSGSPEC, _msgspec, is_msgspec_struct
+from veloce._model_backend import _HAS_MSGSPEC, _msgspec, is_msgspec_struct, is_pydantic_model
 from veloce._pipeline import (
     CompiledPipeline,
 )
@@ -1265,7 +1265,7 @@ class DispatchMixin:
                 inner = args[0]
                 if not isinstance(result, (list, tuple)):
                     return result  # let downstream coercion handle the mismatch
-                if isinstance(inner, type) and issubclass(inner, _PydanticBaseModel):
+                if is_pydantic_model(inner):
                     dumped: list[Any] = []
                     for item in result:
                         # Fast path: an element already of the target model
@@ -1281,7 +1281,7 @@ class DispatchMixin:
             return result
 
         # Scalar Pydantic model.
-        if isinstance(model, type) and issubclass(model, _PydanticBaseModel):
+        if is_pydantic_model(model):
             # If the handler returned an instance of the target model, use
             # it directly - the dump-then-validate roundtrip would erase
             # the `__pydantic_fields_set__` info that drives

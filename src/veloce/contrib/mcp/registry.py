@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from veloce._handler_plan import build_plan
+from veloce._model_backend import is_pydantic_model
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
 from veloce.contrib.mcp.safety import require_mcp_description
@@ -120,7 +121,7 @@ def _return_model(handler: Callable) -> type[BaseModel] | None:
     except Exception:
         return None
     annotation = hints.get("return")
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+    if is_pydantic_model(annotation):
         return annotation
     return None
 
@@ -145,7 +146,7 @@ def _output_schema_for(
     by_alias = False
     if route_info is not None:
         response_model = route_info.response_model
-        if isinstance(response_model, type) and issubclass(response_model, BaseModel):
+        if is_pydantic_model(response_model):
             model = response_model
             by_alias = route_info.response_model_by_alias
     if model is None:

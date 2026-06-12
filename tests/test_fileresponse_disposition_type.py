@@ -45,6 +45,13 @@ def test_inline_disposition_without_filename(sample_file: str):
     assert resp.headers["Content-Disposition"] == "inline"
 
 
+async def test_from_path_inline_disposition_without_filename(sample_file: str):
+    # The async factory honours a bare non-default disposition exactly as the
+    # sync constructor does (both build headers through one shared helper).
+    resp = await FileResponse.from_path(sample_file, content_disposition_type="inline")
+    assert resp.headers["Content-Disposition"] == "inline"
+
+
 def test_default_attachment_without_filename_emits_no_header(sample_file: str):
     # The default `attachment` stays unset without a filename, so a plain
     # FileResponse does not force a download on every file it serves.

@@ -42,6 +42,7 @@ from veloce._constants import (
     MIME_FORM_URLENCODED,
     MIME_MULTIPART_FORM_DATA,
 )
+from veloce._header_parsing import parse_media_type_params
 from veloce._internal import _coerce_bool, is_json_mimetype
 from veloce._protocol_constants import URL_SCHEME_HTTPS
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
@@ -377,18 +378,7 @@ class Request:
             return ("", {})
         mt, _, rest = ct.partition(";")
         mimetype = mt.strip().lower()
-        params: dict[str, str] = {}
-        if rest:
-            for chunk in rest.split(";"):
-                chunk = chunk.strip()
-                if "=" not in chunk:
-                    continue
-                k, _, v = chunk.partition("=")
-                v = v.strip()
-                if v.startswith('"') and v.endswith('"') and len(v) >= 2:
-                    v = v[1:-1]
-                params[k.strip().lower()] = v
-        return (mimetype, params)
+        return (mimetype, dict(parse_media_type_params(rest)))
 
     @property
     def mimetype(self) -> str:
