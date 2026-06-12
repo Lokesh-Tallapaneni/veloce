@@ -183,7 +183,7 @@ class EventLoopWatchdog:
         return self._format_stack(self._loop_frame())
 
     def _attribution(self, frame: FrameType | None) -> str:
-        """Return ` while serving <route>` for the blocked frame, or `` .
+        """Return " while serving <route>" for the frame, or "" if unattributable.
 
         Resolves the route/dependency via the app-supplied attributor; any
         failure degrades silently to no attribution (the stack still pinpoints
@@ -203,10 +203,11 @@ class EventLoopWatchdog:
         first = self._capture_stack()
         time.sleep(0.005)
         frame = self._loop_frame()
+        second = self._format_stack(frame)
         self._logger.warning(
             "event loop blocked for %.0f ms%s - %s\nBlocked loop stack:\n%s",
             elapsed * 1000.0,
             self._attribution(frame),
-            _classify_block(first, self._format_stack(frame)),
-            self._format_stack(frame),
+            _classify_block(first, second),
+            second,
         )

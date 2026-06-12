@@ -88,6 +88,12 @@ def _build_watchdog_attributor(app: Veloce) -> Callable[[FrameType], str | None]
     for a stall inside a dependency, `METHOD /path -> dep`) label. The route
     table is indexed lazily on the first stall and reused thereafter, so wiring
     it on costs nothing until something actually blocks the loop.
+
+    The table is keyed by code object, so a callable shared across routes (the
+    same handler or dependency registered on several paths) is attributed to the
+    first route indexed; the logged stack still pinpoints the real call. A class
+    or `functools.partial` dependency has no `__code__` and is left unattributed,
+    degrading to the bare warning rather than a wrong label.
     """
     table: dict[CodeType, str] = {}
     built = False
