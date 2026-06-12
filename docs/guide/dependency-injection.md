@@ -134,6 +134,15 @@ offloaded call. The flag is ignored for coroutine, `yield`, and async-generator
 dependencies, which already have their own execution model. `Security` accepts
 the same `offload=True` argument.
 
+!!! note "Dependencies differ from route handlers here"
+
+    A sync **route handler** is always offloaded to the thread pool — you never
+    set a flag. A sync **dependency** runs inline unless you pass `offload=True`.
+    The asymmetry is deliberate: a request has one handler but often many
+    dependencies, and most dependencies are tiny pure helpers, so offloading
+    every one would add a thread hop per dependency for no benefit. Opt in the
+    rare dependency that actually blocks.
+
 ## Sub-dependencies and caching
 
 A dependency may itself declare dependencies; Veloce resolves the whole
