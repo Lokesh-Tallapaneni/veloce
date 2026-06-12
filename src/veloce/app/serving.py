@@ -49,6 +49,7 @@ class ServingMixin:
         access_log: bool = True,
         ssl_context: ssl.SSLContext | None = None,
         bind_all: bool = False,
+        reload: bool = False,
     ) -> None:
         """Start the built-in **development** server.
 
@@ -78,6 +79,12 @@ class ServingMixin:
         and does not pre-fork. Passing more raises ``ValueError`` - run under
         ``uvicorn module:app --workers N`` or the gunicorn ``VeloceWorker`` for
         multiple processes.
+
+        ``reload=True`` turns on the development auto-reloader: this process
+        supervises a child that serves requests and restarts it whenever a
+        project ``.py`` file changes. The watching happens in the supervisor, so
+        the served child carries no overhead. It is a development aid - leave it
+        off for any deployment.
         """
         if host is not None and bind_all:
             raise ValueError(
@@ -94,6 +101,19 @@ class ServingMixin:
                 "processes run under an ASGI server (uvicorn module:app "
                 "--workers N) or the gunicorn VeloceWorker."
             )
+
+        # Auto-reload: the supervisor process (no child marker set) hands off to
+        # the watch loop, which re-spawns this same command as a serving child
+        # on every source change. The child sees the marker and falls straight
+        # through to serve. Deferred import keeps the reloader out of a normal
+        # run() entirely, so reload=False costs nothing.
+        if reload:
+            from veloce.serving.reloader import is_reloader_child, run_with_reloader
+
+            if not is_reloader_child():
+                run_with_reloader()
+                return
+
         if host is None:
             host = "0.0.0.0" if bind_all else "127.0.0.1"
         self._setup_openapi()

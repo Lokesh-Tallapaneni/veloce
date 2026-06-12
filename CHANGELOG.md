@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Veloce.run(reload=True)` and `veloce run --reload` auto-restart the built-in server on source changes, without uvicorn. ([#212](https://github.com/Lokesh-Tallapaneni/veloce/pull/212))
 - `EVENT_LOOP_WATCHDOG` names the route and dependency a blocking call stalled in. ([#210](https://github.com/Lokesh-Tallapaneni/veloce/pull/210))
 
 ## [0.7.0] - 2026-06-12
