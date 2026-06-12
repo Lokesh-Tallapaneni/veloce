@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-12
+
 ### Changed
 
 - OpenAPI parameters derive from the handler plan the resolver runs, keeping documented and enforced contracts in lockstep. ([#205](https://github.com/Lokesh-Tallapaneni/veloce/pull/205))
