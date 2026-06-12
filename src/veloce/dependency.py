@@ -18,7 +18,7 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Annotated, Any, Literal, get_args, get_origin
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 from typing_extensions import Doc
 
@@ -41,7 +41,7 @@ from veloce._handler_plan import (
     parallel_group_end,
 )
 from veloce._internal import _is_async_callable, offload
-from veloce._model_backend import ModelBackend
+from veloce._model_backend import ModelBackend, is_pydantic_model
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
@@ -129,7 +129,7 @@ def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> 
 
 def _is_model_typed(target_type: Any) -> bool:
     """Return True for a Pydantic ``BaseModel`` subclass annotation."""
-    return isinstance(target_type, type) and issubclass(target_type, BaseModel)
+    return is_pydantic_model(target_type)
 
 
 def _coerce_via_pydantic(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
@@ -218,6 +218,19 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
     if get_origin(target_type) is Literal:
         return _coerce_literal(value, target_type, param_name, loc)
     return _coerce_via_pydantic(value, target_type, param_name, loc)
+
+
+def _coerce_scalar(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
+    """Coerce `value` to `target_type` unless it is a string or already structured.
+
+    The guard shared by the marker and bare-query resolution tails (HTTP and the
+    MCP argument binder): a `str` target, an absent target, or an already-decoded
+    `dict` / `list` needs no scalar coercion; anything else goes through
+    `_coerce_value`.
+    """
+    if target_type and target_type is not str and not isinstance(value, (dict, list)):
+        return _coerce_value(value, target_type, param_name, loc)
+    return value
 
 
 def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
@@ -990,9 +1003,7 @@ class DependencyResolver:
                 return None
             raise _err_missing_marker(loc, slot.name)
 
-        target = slot.target_type
-        if target and target is not str and not isinstance(raw, (dict, list)):
-            raw = _coerce_value(raw, target, slot.name, loc)
+        raw = _coerce_scalar(raw, slot.target_type, slot.name, loc)
 
         try:
             return marker.validate(raw, slot.name)
