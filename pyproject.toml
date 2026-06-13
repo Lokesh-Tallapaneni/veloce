@@ -239,5 +239,6 @@ module = [
     "opentelemetry.*",
     "prometheus_client",
     "redis.*",
+    "watchfiles",
 ]
 ignore_missing_imports = true

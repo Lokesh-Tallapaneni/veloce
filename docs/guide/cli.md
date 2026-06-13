@@ -86,7 +86,16 @@ veloce run app:app --host 0.0.0.0 --port 8000 --reload
 
 `veloce run` uses [uvicorn](https://www.uvicorn.org/) when it is installed (the
 `veloceframework[uvicorn]` extra) and falls back to the built-in development
-server otherwise. `--reload` and `--workers` require uvicorn.
+server otherwise. `--reload` works on either path — uvicorn's reloader, or the
+built-in one (a stdlib file watcher, no extra dependency). `--workers` requires
+uvicorn; the built-in server runs a single process.
+
+!!! tip "Auto-reload during development"
+    `veloce run app:app --reload` restarts the server whenever a project `.py`
+    file changes. The same behaviour is available programmatically with
+    `app.run(reload=True)`. The file-watching runs in a supervisor process, so
+    the served app itself carries no overhead — keep `--reload` off in
+    production.
 
 !!! note
     A dotenv file named `.env` in the working directory is loaded automatically

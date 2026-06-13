@@ -152,8 +152,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     uvicorn is an optional extra (`pip install veloceframework[uvicorn]`). When
     it is installed the app is handed to it (preserving `--reload` and
     cross-platform multi-worker); otherwise this falls back to veloce's built-in
-    `app.run()` server so `veloce run` works on a plain install. `--reload` is a
-    uvicorn-only feature.
+    `app.run()` server so `veloce run` works on a plain install. `--reload` is
+    supported on both paths - uvicorn's reloader, or the built-in one.
     """
     _apply_env_file(args)
     app = _load_app(args.app)
@@ -174,11 +174,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # uvicorn absent: serve with the built-in development server.
-    if args.reload:
-        raise SystemExit(
-            "--reload requires uvicorn. Install it with: pip install veloceframework[uvicorn]"
-        )
+    # uvicorn absent: serve with the built-in development server, which carries
+    # its own auto-reloader, so `--reload` works without uvicorn.
     if not callable(getattr(app, "run", None)):
         raise SystemExit(
             f"{args.app!r} has no built-in server to fall back to; install "
@@ -186,8 +183,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
     print(
         "uvicorn is not installed - serving with veloce's built-in server. "
-        "Install veloceframework[uvicorn] for the recommended production server "
-        "and --reload support.",
+        "Install veloceframework[uvicorn] for the recommended production server.",
         file=sys.stderr,
     )
     # The built-in server is single-process; --workers>1 needs uvicorn or the
@@ -201,9 +197,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
     # The native server takes `bind_all=True` rather than an all-interfaces host.
     if args.host in ("0.0.0.0", "::"):
-        app.run(port=args.port, bind_all=True)
+        app.run(port=args.port, bind_all=True, reload=args.reload)
     else:
-        app.run(host=args.host, port=args.port)
+        app.run(host=args.host, port=args.port, reload=args.reload)
     return 0
 
 

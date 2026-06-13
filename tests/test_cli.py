@@ -63,7 +63,7 @@ def test_run_falls_back_to_native_when_uvicorn_absent(monkeypatch):
     monkeypatch.setattr(cli_module, "_load_app", lambda ref: _FakeApp())
     args = build_parser().parse_args(["run", "x:y", "--port", "9001"])
     assert cli_module._cmd_run(args) == 0
-    assert calls == {"host": "127.0.0.1", "port": 9001}
+    assert calls == {"host": "127.0.0.1", "port": 9001, "reload": False}
 
 
 def test_run_native_ignores_multiple_workers(monkeypatch, capsys):
@@ -96,16 +96,23 @@ def test_run_native_maps_all_interfaces_to_bind_all(monkeypatch):
     monkeypatch.setattr(cli_module, "_load_app", lambda ref: _FakeApp())
     args = build_parser().parse_args(["run", "x:y", "--host", "0.0.0.0", "--port", "9002"])
     assert cli_module._cmd_run(args) == 0
-    assert calls == {"port": 9002, "bind_all": True}
+    assert calls == {"port": 9002, "bind_all": True, "reload": False}
 
 
-def test_run_reload_without_uvicorn_errors(monkeypatch):
-    # --reload is a uvicorn-only feature; without uvicorn it fails loudly.
+def test_run_reload_without_uvicorn_uses_native_reloader(monkeypatch):
+    # --reload no longer requires uvicorn; it forwards reload=True to the
+    # built-in server, which carries its own auto-reloader.
     monkeypatch.setitem(sys.modules, "uvicorn", None)
-    monkeypatch.setattr(cli_module, "_load_app", lambda ref: object())
+    calls: dict = {}
+
+    class _FakeApp:
+        def run(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "_load_app", lambda ref: _FakeApp())
     args = build_parser().parse_args(["run", "x:y", "--reload"])
-    with pytest.raises(SystemExit, match="--reload requires uvicorn"):
-        cli_module._cmd_run(args)
+    assert cli_module._cmd_run(args) == 0
+    assert calls.get("reload") is True
 
 
 def test_load_app_bad_form_raises():

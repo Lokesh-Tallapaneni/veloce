@@ -51,7 +51,7 @@ otherwise it falls back to the stdlib `asyncio` loop.
 
 ## The `run()` signature
 
-`run()` takes only the arguments below. There is no `reload`, no `log_level`, and no `--workers` fan-out.
+`run()` takes only the arguments below. There is no `log_level` and no `--workers` fan-out.
 
 ```python title="app.py"
 import ssl
@@ -84,9 +84,19 @@ if __name__ == "__main__":
 | `access_log` | `True` | Print the startup banner (`Listening on ...`). |
 | `ssl_context` | `None` | An `ssl.SSLContext` to serve HTTPS; handed to `create_server(ssl=...)`. |
 | `bind_all` | `False` | Bind `0.0.0.0` (all interfaces) instead of localhost. |
+| `reload` | `False` | Auto-restart on source changes (development only). |
 
 When `host` is left unset it resolves to `"127.0.0.1"`, so the dev server is reachable only from the
 local machine. Pass `bind_all=True` to bind `0.0.0.0`.
+
+!!! tip "Auto-reload"
+    `app.run(reload=True)` (or `veloce run --reload`) supervises a child process
+    that serves requests and restarts it whenever a project `.py` file changes —
+    no uvicorn required. It uses a stdlib file watcher by default, or
+    [`watchfiles`](https://pypi.org/project/watchfiles/) automatically if it is
+    installed (`pip install watchfiles`) for OS-level change events. The watching
+    runs in the supervisor, so the served child carries no overhead. Development
+    only.
 
 !!! warning "`host=` and `bind_all=True` are mutually exclusive"
     Passing both raises `ValueError` to prevent a silent widening of the bind. Binding `0.0.0.0`
