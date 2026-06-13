@@ -20,6 +20,8 @@
 
 ---
 
+**Veloce framework** (PyPI: `veloceframework`) is an ultra-fast async Python web framework — ASGI-native and batteries-included.
+
 Veloce is a from-scratch async Python web framework. The router,
 request/response pipeline, dependency injection system, OpenAPI
 generator, WebSocket layer, and test client are all in-tree — not

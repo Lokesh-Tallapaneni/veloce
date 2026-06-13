@@ -1,6 +1,6 @@
 site_name: Veloce
 site_description: >-
-  Ultra-fast async Python web framework — ASGI-native, batteries included.
+  Veloce framework (veloceframework) — ultra-fast async Python web framework, ASGI-native, batteries included.
 site_url: https://veloceframework.com/  # docs/CNAME must match this domain
 site_author: Lokesh Tallapaneni
 copyright: Copyright &copy; 2026 Veloce maintainers
