@@ -8,6 +8,7 @@ file-system latency.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -82,9 +83,39 @@ def test_wait_for_change_stat_returns_on_new_file(tmp_path):
 # ── restart command ───────────────────────────────────────────────────
 
 
-def test_restart_command_reproduces_invocation(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["veloce", "run", "app:app", "--reload"])
-    assert reloader._restart_command() == [sys.executable, "veloce", "run", "app:app", "--reload"]
+def test_restart_command_plain_script(monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+    monkeypatch.setattr(sys, "argv", ["app.py", "--port", "9000"])
+    monkeypatch.setattr(sys.modules["__main__"], "__package__", None, raising=False)
+    monkeypatch.setattr(reloader.os.path, "abspath", lambda p: "/proj/" + p)
+
+    assert reloader._restart_command() == ["/usr/bin/python3", "/proj/app.py", "--port", "9000"]
+
+
+def test_restart_command_console_script_on_windows(monkeypatch):
+    # A pip console script is a `veloce.exe` launcher; it must run directly, not
+    # be handed to python.exe (which cannot execute a PE binary as source).
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(sys, "executable", r"C:\Py\python.exe")
+    monkeypatch.setattr(sys, "argv", [r"C:\Scripts\veloce.exe", "run", "x:y", "--reload"])
+    monkeypatch.setattr(sys.modules["__main__"], "__package__", None, raising=False)
+    monkeypatch.setattr(reloader.os.path, "abspath", lambda p: p)
+    monkeypatch.setattr(reloader.os.path, "exists", lambda p: p.endswith(".exe"))
+
+    assert reloader._restart_command() == [r"C:\Scripts\veloce.exe", "run", "x:y", "--reload"]
+
+
+def test_restart_command_module_launch(monkeypatch):
+    # `python -m veloce` - CPython rewrites argv[0] to the module file, so the
+    # command must be rebuilt as `-m veloce`.
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+    monkeypatch.setattr(sys, "argv", ["/proj/veloce/__main__.py", "run", "x:y"])
+    monkeypatch.setattr(sys.modules["__main__"], "__package__", "veloce", raising=False)
+    monkeypatch.setattr(reloader.os.path, "isfile", lambda p: True)
+
+    assert reloader._restart_command() == ["/usr/bin/python3", "-m", "veloce", "run", "x:y"]
 
 
 # ── supervisor loop ───────────────────────────────────────────────────
@@ -123,6 +154,63 @@ def test_run_with_reloader_restarts_then_exits_on_interrupt(monkeypatch):
     assert len(children) == 2, "should spawn, restart once, then stop"
     for proc in children:
         assert proc.poll() is not None, "every child must be terminated, no leaks"
+
+
+def test_run_with_reloader_survives_child_crash(monkeypatch):
+    # A child that crashes on import (e.g. a syntax error) must not kill the
+    # supervisor: it waits for the next edit and re-spawns the fixed code.
+    monkeypatch.setattr(
+        reloader, "_restart_command", lambda: [sys.executable, "-c", "raise SystemExit(1)"]
+    )
+    spawns = {"n": 0}
+    real_popen = subprocess.Popen
+
+    def counting_popen(*args, **kwargs):
+        spawns["n"] += 1
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(reloader.subprocess, "Popen", counting_popen)
+
+    calls = {"n": 0}
+
+    def fake_wait(dirs, interval):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise KeyboardInterrupt
+        return "x.py"
+
+    monkeypatch.setattr(reloader, "_wait_for_change", fake_wait)
+
+    assert reloader.run_with_reloader(["."], interval=0.01) == 0
+    assert spawns["n"] == 2, "supervisor should re-spawn after a crash, not give up"
+
+
+def test_terminate_escalates_to_kill_when_terminate_ignored():
+    # A child that ignores the graceful stop is force-killed after the timeout.
+    class StubbornChild:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return 0 if self.killed else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            if timeout is not None and not self.killed:
+                raise subprocess.TimeoutExpired("server", timeout)
+            return 0
+
+    child = StubbornChild()
+    reloader._terminate(child)  # type: ignore[arg-type]
+
+    assert child.terminated, "should ask the child to stop gracefully first"
+    assert child.killed, "should escalate to a hard kill when it will not exit"
 
 
 # ── run() wiring ──────────────────────────────────────────────────────

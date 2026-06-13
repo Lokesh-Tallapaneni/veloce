@@ -65,11 +65,49 @@ def is_reloader_child() -> bool:
 
 
 def _restart_command() -> list[str]:
-    """Rebuild the command that launched this process, for re-spawning."""
-    # Re-running `sys.executable` with the original argv reproduces both the
-    # `veloce run ... --reload` console-script invocation and a plain
-    # `python app.py`. Interactive (`-c`, REPL) launches are not reloadable.
-    return [sys.executable, *sys.argv]
+    """Rebuild the command that launched this process, for re-spawning.
+
+    Covers the three reloadable launch modes: a plain script (`python app.py`),
+    a console-script / executable launcher (`veloce run ...`, where ``argv[0]``
+    is the launcher itself - a ``.exe`` on Windows), and a module (`python -m
+    pkg`, where CPython rewrites ``argv[0]`` to the module's file). An executable
+    launcher must be run directly, not handed back to ``python``. Interactive
+    (`-c` / REPL) launches are not reloadable.
+    """
+    main = sys.modules["__main__"]
+    script = sys.argv[0]
+    rest = sys.argv[1:]
+    package = getattr(main, "__package__", None)
+    on_windows = os.name == "nt"
+
+    # No package context means a file or console-script launch (not `-m`). On
+    # Windows a console script's argv[0] can be the extension-less name sitting
+    # beside the real `.exe` launcher.
+    launched_as_file = package is None or (
+        on_windows
+        and package == ""
+        and not os.path.exists(script)
+        and os.path.exists(script + ".exe")
+    )
+    if launched_as_file:
+        path = os.path.abspath(script)
+        if on_windows and not os.path.exists(path) and os.path.exists(path + ".exe"):
+            path += ".exe"
+        # An executable launcher runs directly; only a source file goes via python.
+        if on_windows and path.lower().endswith(".exe"):
+            return [path, *rest]
+        return [sys.executable, path, *rest]
+
+    # `python -m pkg`: argv[0] was rewritten to the module's file, so rebuild the
+    # `-m <module>` form from the package and the file's stem.
+    if os.path.isfile(script):
+        module = package or ""
+        stem = os.path.splitext(os.path.basename(script))[0]
+        if stem != "__main__":
+            module = f"{module}.{stem}" if module else stem
+    else:
+        module = script
+    return [sys.executable, "-m", module.lstrip("."), *rest]
 
 
 def _iter_source_files(dirs: Iterable[str]) -> Iterator[str]:
@@ -162,8 +200,8 @@ def run_with_reloader(
 
     Spawns the server in a child process, watches `watch_dirs` (defaulting to the
     current working directory), and re-spawns on every change until interrupted.
-    Returns the last child's exit code. Runs only in the supervisor process; the
-    child serves requests with no watcher attached.
+    Returns 0 once interrupted (Ctrl+C or SIGTERM). Runs only in the supervisor
+    process; the child serves requests with no watcher attached.
     """
     dirs = watch_dirs if watch_dirs else [os.getcwd()]
     command = _restart_command()
@@ -178,9 +216,14 @@ def run_with_reloader(
     def _request_stop(_signum: int, _frame: object) -> None:
         raise KeyboardInterrupt
 
+    # `installed` (not the handler value) gates restoration: signal.signal()
+    # legitimately returns None when the prior handler was C-installed, so a
+    # `previous_term is not None` guard would skip a real restore.
+    installed = False
     previous_term: Any = None
     with contextlib.suppress(ValueError, OSError):
         previous_term = signal.signal(signal.SIGTERM, _request_stop)
+        installed = True
 
     child: subprocess.Popen[bytes] | None = None
     try:
@@ -193,7 +236,7 @@ def run_with_reloader(
     except KeyboardInterrupt:
         return 0
     finally:
-        if previous_term is not None:
+        if installed:
             with contextlib.suppress(ValueError, OSError):
                 signal.signal(signal.SIGTERM, previous_term)
         if child is not None:

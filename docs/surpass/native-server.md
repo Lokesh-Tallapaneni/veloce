@@ -94,8 +94,9 @@ local machine. Pass `bind_all=True` to bind `0.0.0.0`.
     that serves requests and restarts it whenever a project `.py` file changes —
     no uvicorn required. It uses a stdlib file watcher by default, or
     [`watchfiles`](https://pypi.org/project/watchfiles/) automatically if it is
-    installed. The watching runs in the supervisor, so the served child carries
-    no overhead. Development only.
+    installed (`pip install watchfiles`) for OS-level change events. The watching
+    runs in the supervisor, so the served child carries no overhead. Development
+    only.
 
 !!! warning "`host=` and `bind_all=True` are mutually exclusive"
     Passing both raises `ValueError` to prevent a silent widening of the bind. Binding `0.0.0.0`
