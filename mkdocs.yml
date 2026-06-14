@@ -201,6 +201,10 @@ nav:
       - Native Server Deep Dive: surpass/native-server.md
       - Migrating from FastAPI: surpass/migrating-from-fastapi.md
   - Comparison: comparison.md
+  - Blog:
+      - Overview: blog/index.md
+      - Why I wrote an ASGI framework from scratch: blog/why-from-scratch.md
+      - Reflection-free request dispatch: blog/reflection-free-dispatch.md
   - Versioning & Stability: policies.md
   - API Reference: reference.md
   - Changelog: changelog.md
