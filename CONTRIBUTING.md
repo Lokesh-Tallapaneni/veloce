@@ -3,6 +3,16 @@
 Thanks for your interest in improving Veloce. This guide covers how to set up a
 development environment, the checks your change must pass, and how to propose it.
 
+## Where to start
+
+New here? Browse the open
+[`good first issue`](https://github.com/Lokesh-Tallapaneni/veloce/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+and
+[`help wanted`](https://github.com/Lokesh-Tallapaneni/veloce/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+issues - each is scoped with a suggested approach so you can get going quickly.
+Documentation improvements are always welcome and make an excellent first
+contribution.
+
 ## Development setup
 
 Veloce targets Python 3.10+.
@@ -94,6 +104,14 @@ diff speaks for the change.
 
 Do not open a public issue for a security vulnerability. Follow the process in
 [SECURITY.md](SECURITY.md) instead.
+
+## Becoming a maintainer
+
+Veloce is actively looking for contributors and co-maintainers. The path is
+straightforward: land a few quality pull requests, help triage issues and review
+other people's PRs, and you'll be offered triage and then commit access. If you'd
+like to own an area - the docs, a specific module, the MCP layer - say so in an
+issue; maintenance is shared with the people who show up.
 
 ## Code of conduct
 
