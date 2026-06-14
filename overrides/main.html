@@ -1,5 +1,14 @@
 {% extends "base.html" %}
 
+{# Give the homepage a descriptive <title> instead of the bare site_name. #}
+{% block htmltitle %}
+  {% if page and page.is_homepage %}
+  <title>Veloce — Async Python Web Framework</title>
+  {% else %}
+  {{ super() }}
+  {% endif %}
+{% endblock %}
+
 {% block extrahead %}
   {{ super() }}
   <meta name="google-site-verification" content="q7v78GSv3YXjJghq83psHSjBiZvdr_sUzPmNQ0DDeN0">
