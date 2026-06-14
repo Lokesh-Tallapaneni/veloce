@@ -1,5 +1,5 @@
 ---
-description: Veloce framework (veloceframework) is an ultra-fast async Python web framework — ASGI-native, with radix routing, typed dependency injection, OpenAPI 3.1, WebSockets, and an in-memory test client.
+description: Veloce framework (veloceframework) is a fast, ASGI-native Python web framework with typed dependency injection, OpenAPI 3.1, and WebSockets.
 hide:
   - navigation
   - toc
