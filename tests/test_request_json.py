@@ -125,3 +125,41 @@ def test_get_json_raises_when_body_not_yet_buffered():
     req._body_drained = False
     with pytest.raises(RuntimeError, match=r"await request\.json\(\)"):
         req.get_json()
+
+
+# ── JSON `null` body is cached, not re-parsed every call ──────────────
+
+
+def _count_loads(monkeypatch) -> dict:
+    """Patch the module's orjson.loads with a call counter; return the counter."""
+    import veloce.http.request as reqmod
+
+    calls = {"n": 0}
+    real = reqmod.orjson.loads
+
+    def counting(raw):
+        calls["n"] += 1
+        return real(raw)
+
+    monkeypatch.setattr(reqmod.orjson, "loads", counting)
+    return calls
+
+
+def test_get_json_null_body_caches(monkeypatch):
+    # A body that is JSON `null` parses to None. The cache must store that None
+    # so a second access returns it without re-decoding; previously the `is None`
+    # cache check conflated "not parsed yet" with "parsed to null" and re-parsed
+    # on every call.
+    calls = _count_loads(monkeypatch)
+    req = _req(b"null")
+    assert req.get_json() is None
+    assert req.get_json() is None
+    assert calls["n"] == 1
+
+
+async def test_async_json_null_body_caches(monkeypatch):
+    calls = _count_loads(monkeypatch)
+    req = _req(b"null")
+    assert await req.json() is None
+    assert await req.json() is None
+    assert calls["n"] == 1
