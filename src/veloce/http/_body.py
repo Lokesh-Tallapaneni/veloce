@@ -28,8 +28,13 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import Callable
+from typing import Any
 
 from veloce.exceptions import RequestEntityTooLarge
+
+# ASGI message types consumed by the pull-based body source below.
+_ASGI_HTTP_REQUEST = "http.request"
+_ASGI_HTTP_DISCONNECT = "http.disconnect"
 
 # Bound on unconsumed body chunks. Reaching the high-water mark pauses socket
 # reading; draining back to the low-water mark resumes it. The gap (hysteresis)
@@ -229,3 +234,62 @@ class RequestBodySource:
             self._event.clear()
             await self._event.wait()
         self._chunks.clear()
+
+
+class ASGIBodySource:
+    """Pull-based body source over an ASGI `receive` channel.
+
+    The native `RequestBodySource` is push-fed by the HTTP/1.1 parser; under an
+    ASGI server the body instead arrives as `http.request` messages a consumer
+    pulls with `await receive()`. This presents the SAME consumer interface
+    (`__aiter__` / `__anext__` / `read`) so a `Request` built on either transport
+    streams identically - the dispatch layer and `Request.stream()` are unaware
+    of which one is underneath.
+
+    `max_content_length` caps the running total: a chunk that pushes the total
+    past the limit raises `RequestEntityTooLarge`, so an over-large streamed body
+    is refused mid-read rather than buffered whole - matching the native source's
+    413 behaviour. A `http.disconnect` ends the stream (the consumer sees the
+    body truncated at the bytes received so far).
+    """
+
+    __slots__ = ("_receive", "_max", "_size", "_done")
+
+    def __init__(self, receive: Callable[[], Any], max_content_length: int | None = None) -> None:
+        self._receive = receive
+        self._max = max_content_length
+        self._size = 0
+        self._done = False
+
+    def __aiter__(self) -> ASGIBodySource:
+        return self
+
+    async def __anext__(self) -> bytes:
+        while True:
+            if self._done:
+                raise StopAsyncIteration
+            message = await self._receive()
+            mtype = message.get("type")
+            if mtype == _ASGI_HTTP_DISCONNECT:
+                self._done = True
+                raise StopAsyncIteration
+            if mtype != _ASGI_HTTP_REQUEST:
+                # Ignore any non-body control message and keep pulling.
+                continue
+            chunk = message.get("body", b"") or b""
+            if not message.get("more_body", False):
+                self._done = True
+            if chunk:
+                self._size += len(chunk)
+                if self._max is not None and self._size > self._max:
+                    raise RequestEntityTooLarge(f"Request body exceeds the {self._max}-byte limit")
+                return chunk
+            if self._done:
+                raise StopAsyncIteration
+
+    async def read(self) -> bytes:
+        """Pull every remaining chunk to EOF and return the joined bytes."""
+        parts: list[bytes] = []
+        async for chunk in self:
+            parts.append(chunk)
+        return b"".join(parts)

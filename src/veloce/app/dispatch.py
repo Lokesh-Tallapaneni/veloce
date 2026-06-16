@@ -61,8 +61,10 @@ from veloce.debug import render_traceback_html
 from veloce.dependency import DependencyResolver, Depends
 from veloce.exceptions import (
     HTTPException,
+    RequestEntityTooLarge,
 )
 from veloce.helpers import _current_app_var, _current_request_var, g
+from veloce.http._body import ASGIBodySource
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
@@ -209,6 +211,27 @@ class DispatchMixin:
 
     # ── Entry point and core dispatch ──────────────────────
 
+    async def _body_too_large_response(
+        self, request: Request, cp: CompiledPipeline | None, max_size: int | None
+    ) -> Response:
+        """Build the 413 for an over-`MAX_CONTENT_LENGTH` body, run the response phase.
+
+        Shared by the eager declared/buffered check and the streamed-body drain so
+        both reject with the identical `{detail, status_code, limit}` payload.
+        """
+        response: Response = JSONResponse(
+            {
+                "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
+                "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                "limit": max_size,
+            },
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+        # No route matched on a reject, so no per-route exclusion chain exists.
+        if cp is not None and cp.http_post is not None:
+            response = await self._run_response_phase(cp.http_post, request, response, False)
+        return response
+
     async def handle_request(
         self, request: Request, cp: CompiledPipeline | None = None
     ) -> Response:
@@ -296,22 +319,7 @@ class DispatchMixin:
                 buffered = await request.body()
                 over = len(buffered) > max_size
             if over:
-                response: Response = JSONResponse(
-                    {
-                        "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
-                        "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        "limit": max_size,
-                    },
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                )
-                # Cold reject before dispatch - the resolved pipeline still runs
-                # the fused response phase on the 413. No route was matched, so
-                # no per-route exclusion chain can exist (`excluded=False`).
-                if cp.http_post is not None:
-                    response = await self._run_response_phase(
-                        cp.http_post, request, response, False
-                    )
-                return response
+                return await self._body_too_large_response(request, cp, max_size)
 
         # Time the dispatch only when instrumentation hooks are registered -
         # an un-instrumented app does not even read the clock. The fused finish
@@ -441,6 +449,28 @@ class DispatchMixin:
             if match is not None:
                 request.endpoint = match.route_info.name
                 request._state["url_rule"] = match.route_info.path_template
+
+            # ASGI requests are built over a LAZY body source. For every route
+            # except an opted-in `stream=True` one (and for a route miss),
+            # buffer the body here - before the handler - so the synchronous
+            # body accessors (`.get_json()`/`.form`/`.data`) still find it
+            # drained, preserving the eager-drain contract the ASGI path has
+            # always offered. An over-large streamed body raises
+            # `RequestEntityTooLarge` (rendered 413) on drain. The native
+            # transport keeps its own lazy-for-all body semantics: its source is
+            # a `RequestBodySource`, not an `ASGIBodySource`, so this gate is a
+            # no-op there. In-memory requests start already-drained and skip it.
+            if (
+                not request._body_drained
+                and isinstance(request._body_source, ASGIBodySource)
+                and (match is None or not match.route_info.stream)
+            ):
+                try:
+                    await request._drain_body()
+                except RequestEntityTooLarge:
+                    return await self._body_too_large_response(
+                        request, cp, self.config.get("MAX_CONTENT_LENGTH")
+                    )
 
             # Straight-line fast path: with no app-level feature active
             # (`cp.is_bare`) and a fast-eligible matched route, the request-phase

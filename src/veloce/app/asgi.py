@@ -65,6 +65,7 @@ from veloce.exceptions import (
     WebSocketRequestValidationError,
 )
 from veloce.helpers import _current_app_var, g
+from veloce.http._body import ASGIBodySource
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
@@ -414,28 +415,17 @@ class AsgiMixin:
                         await self._emit_413(send, max_size)
                         return
 
-            # Common case - one body chunk, no `more_body`. Skip the
-            # body_parts list + join.
-            message = await receive()
-            body = message.get("body", b"") or b""
-            if message.get("more_body", False):
-                body_parts = [body] if body else []
-                received = len(body)
-                while True:
-                    message = await receive()
-                    chunk = message.get("body", b"")
-                    if chunk:
-                        body_parts.append(chunk)
-                        received += len(chunk)
-                        if max_size is not None and received > max_size:
-                            await self._emit_413(send, max_size)
-                            return
-                    if not message.get("more_body", False):
-                        break
-                body = b"".join(body_parts)
-            elif max_size is not None and len(body) > max_size:
-                await self._emit_413(send, max_size)
-                return
+            # Build the request over a LAZY body source rather than draining
+            # `receive()` here. The dispatch layer buffers the body before the
+            # handler for the common (non-streaming) route - so the synchronous
+            # body accessors still find it drained - while a `stream=True` route
+            # consumes the source incrementally via `request.stream()`. The
+            # declared-Content-Length reject above is the only eager check; the
+            # running-total cap is enforced by the source, which raises
+            # `RequestEntityTooLarge` (rendered 413) when a streamed body
+            # overflows on drain. This is the single body-source abstraction the
+            # native HTTP/1.1 transport already uses.
+            body_source = ASGIBodySource(receive, max_size)
 
             # ASGI HTTP scope mandates `path` and `query_string` keys -
             # direct subscript skips the `.get(default)` default-arg pop.
@@ -455,7 +445,8 @@ class AsgiMixin:
                 path=path,
                 query_string=query,
                 headers=raw_headers,
-                body=body,
+                body=b"",
+                body_source=body_source,
                 scope=scope,
             )
 
