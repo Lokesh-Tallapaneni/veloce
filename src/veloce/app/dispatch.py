@@ -61,10 +61,8 @@ from veloce.debug import render_traceback_html
 from veloce.dependency import DependencyResolver, Depends
 from veloce.exceptions import (
     HTTPException,
-    RequestEntityTooLarge,
 )
 from veloce.helpers import _current_app_var, _current_request_var, g
-from veloce.http._body import ASGIBodySource
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
@@ -233,7 +231,7 @@ class DispatchMixin:
         return response
 
     async def handle_request(
-        self, request: Request, cp: CompiledPipeline | None = None
+        self, request: Request, cp: CompiledPipeline | None = None, match: Any = None
     ) -> Response:
         """Main request handler - runs middleware chain + route dispatch.
 
@@ -333,7 +331,7 @@ class DispatchMixin:
             if cp.http_around is not None:
                 response = await self._run_http_middleware_chain(request, cp)
             else:
-                response = await self._dispatch_request(request, cp)
+                response = await self._dispatch_request(request, cp, match)
         except Exception as exc:
             # Dispatch propagated an exception (e.g. PROPAGATE_EXCEPTIONS is
             # set). Record a `500` metric before the exception continues
@@ -413,7 +411,9 @@ class DispatchMixin:
 
         return await funcs[0](request, _make_next(0))
 
-    async def _dispatch_request(self, request: Request, cp: CompiledPipeline) -> Response:
+    async def _dispatch_request(
+        self, request: Request, cp: CompiledPipeline, match: Any = None
+    ) -> Response:
         """Core request dispatch - middleware, routing, handler execution.
 
         Thin orchestrator: the request phase, route resolution, handler
@@ -442,35 +442,17 @@ class DispatchMixin:
             # route's `exclude_middleware` opt-out can be honoured. The same
             # match object is reused for dispatch below; `request.endpoint`
             # and `url_rule` are populated here so before_request hooks can
-            # gate on the route name.
+            # gate on the route name. The ASGI transport matches the route
+            # before building the request (to decide eager-vs-streaming body
+            # handling) and threads the result in here, so the radix tree is
+            # walked once per request, not twice.
             _matched_path = request.path
             _matched_method = request.method
-            match = self.match(_matched_method, _matched_path)
+            if match is None:
+                match = self.match(_matched_method, _matched_path)
             if match is not None:
                 request.endpoint = match.route_info.name
                 request._state["url_rule"] = match.route_info.path_template
-
-            # ASGI requests are built over a LAZY body source. For every route
-            # except an opted-in `stream=True` one (and for a route miss),
-            # buffer the body here - before the handler - so the synchronous
-            # body accessors (`.get_json()`/`.form`/`.data`) still find it
-            # drained, preserving the eager-drain contract the ASGI path has
-            # always offered. An over-large streamed body raises
-            # `RequestEntityTooLarge` (rendered 413) on drain. The native
-            # transport keeps its own lazy-for-all body semantics: its source is
-            # a `RequestBodySource`, not an `ASGIBodySource`, so this gate is a
-            # no-op there. In-memory requests start already-drained and skip it.
-            if (
-                not request._body_drained
-                and isinstance(request._body_source, ASGIBodySource)
-                and (match is None or not match.route_info.stream)
-            ):
-                try:
-                    await request._drain_body()
-                except RequestEntityTooLarge:
-                    return await self._body_too_large_response(
-                        request, cp, self.config.get("MAX_CONTENT_LENGTH")
-                    )
 
             # Straight-line fast path: with no app-level feature active
             # (`cp.is_bare`) and a fast-eligible matched route, the request-phase
