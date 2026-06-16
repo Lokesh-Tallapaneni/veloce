@@ -288,8 +288,37 @@ class ASGIBodySource:
                 raise StopAsyncIteration
 
     async def read(self) -> bytes:
-        """Pull every remaining chunk to EOF and return the joined bytes."""
-        parts: list[bytes] = []
-        async for chunk in self:
-            parts.append(chunk)
-        return b"".join(parts)
+        """Pull the body to EOF and return the joined bytes.
+
+        Fast-paths the common case where the whole body (or an empty body)
+        arrives in a single `http.request` message: one `receive()`, no
+        async-iterator step and no list/join - matching the tight inline reader
+        this replaced, so a buffered (non-streaming) route pays no extra cost.
+        Only a genuinely multi-chunk body falls back to accumulation.
+        """
+        if self._done:
+            return b""
+        parts: list[bytes] | None = None
+        while not self._done:
+            message = await self._receive()
+            mtype = message.get("type")
+            if mtype == _ASGI_HTTP_DISCONNECT:
+                self._done = True
+                break
+            if mtype != _ASGI_HTTP_REQUEST:
+                continue
+            last = not message.get("more_body", False)
+            if last:
+                self._done = True
+            chunk = message.get("body", b"") or b""
+            if chunk:
+                self._size += len(chunk)
+                if self._max is not None and self._size > self._max:
+                    raise RequestEntityTooLarge(f"Request body exceeds the {self._max}-byte limit")
+                if parts is None:
+                    if last:
+                        return chunk  # whole body in one message: no list/join
+                    parts = [chunk]
+                else:
+                    parts.append(chunk)
+        return b"".join(parts) if parts else b""
