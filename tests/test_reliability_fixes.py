@@ -127,7 +127,11 @@ async def test_logging_middleware_durations_are_per_request():
     await mw.process_request(r2)
     s1 = r1._state["__veloce_logging_start"]
     s2 = r2._state["__veloce_logging_start"]
-    assert s2 > s1
+    # `>=`, not `>`: each request stamps its own start time (the point of this
+    # test - no shared-dict id() collision), but a coarse-resolution clock
+    # (Windows' wall clock is ~15 ms) can return the same value for two reads
+    # only 10 ms apart, so strict `>` flakes there.
+    assert s2 >= s1
     # process_response reads each request's own start, not the other's.
     await mw.process_response(r1, Response(status_code=200))
     await mw.process_response(r2, Response(status_code=200))
