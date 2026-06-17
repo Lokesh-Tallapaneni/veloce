@@ -29,9 +29,9 @@ def test_client_dispatches_through_asgi_call_not_handle_request(monkeypatch):
         asgi_calls["n"] += 1
         await orig_call(self, scope, receive, send)
 
-    async def counting_handle(self, req, cp=None):
+    async def counting_handle(self, req, cp=None, match=None):
         handle_calls["n"] += 1
-        return await orig_handle(self, req, cp)
+        return await orig_handle(self, req, cp, match)
 
     monkeypatch.setattr(Veloce, "__call__", counting_call)
     monkeypatch.setattr(Veloce, "handle_request", counting_handle)

@@ -122,9 +122,10 @@ async def echo_json(request: Request):
 
 ### Streaming the request body
 
-`request.stream()` async-iterates the body in chunks. On the raw HTTP/1.1
-server each chunk is yielded as the socket delivers it, so a large upload is
-processed without buffering it whole.
+`request.stream()` async-iterates the body in chunks, so a large upload is
+processed without ever buffering it whole. Mark the route `stream=True` to opt
+into true incremental delivery on the ASGI path: each chunk is yielded as the
+server delivers it, in constant memory.
 
 ```python title="app.py"
 from veloce import Request, Veloce
@@ -132,13 +133,25 @@ from veloce import Request, Veloce
 app = Veloce()
 
 
-@app.post("/upload")
+@app.post("/upload", stream=True)
 async def upload(request: Request):
     total = 0
-    async for chunk in request.stream():
+    async for chunk in request.stream():  # one chunk at a time, never buffered
         total += len(chunk)
     return {"bytes": total}
 ```
+
+By default a route's body is buffered before the handler runs, so the
+synchronous accessors (`request.get_json()`, `request.form`, `request.data`)
+find it ready. A `stream=True` route trades those away: the body is delivered
+incrementally and must be consumed through `request.stream()` (or `await
+request.body()` to drain it). `MAX_CONTENT_LENGTH` is still enforced — an
+over-large streamed body is refused mid-read. The native `Veloce.run()` server
+streams every route's body off the socket regardless of the flag.
+
+!!! note "Added in version 0.9"
+    The `stream=True` route option enables incremental request-body reading on
+    the ASGI path.
 
 ### Form data
 

@@ -65,6 +65,7 @@ from veloce.exceptions import (
     WebSocketRequestValidationError,
 )
 from veloce.helpers import _current_app_var, g
+from veloce.http._body import ASGIBodySource
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
@@ -414,29 +415,6 @@ class AsgiMixin:
                         await self._emit_413(send, max_size)
                         return
 
-            # Common case - one body chunk, no `more_body`. Skip the
-            # body_parts list + join.
-            message = await receive()
-            body = message.get("body", b"") or b""
-            if message.get("more_body", False):
-                body_parts = [body] if body else []
-                received = len(body)
-                while True:
-                    message = await receive()
-                    chunk = message.get("body", b"")
-                    if chunk:
-                        body_parts.append(chunk)
-                        received += len(chunk)
-                        if max_size is not None and received > max_size:
-                            await self._emit_413(send, max_size)
-                            return
-                    if not message.get("more_body", False):
-                        break
-                body = b"".join(body_parts)
-            elif max_size is not None and len(body) > max_size:
-                await self._emit_413(send, max_size)
-                return
-
             # ASGI HTTP scope mandates `path` and `query_string` keys -
             # direct subscript skips the `.get(default)` default-arg pop.
             path = scope["path"]
@@ -450,16 +428,61 @@ class AsgiMixin:
                 await self._emit_400(send, MSG_INVALID_QUERY_STRING)
                 return
 
-            request = Request(
-                method=scope["method"],
-                path=path,
-                query_string=query,
-                headers=raw_headers,
-                body=body,
-                scope=scope,
-            )
+            # Match the route ONCE here and thread the result into
+            # `handle_request` so it is not matched again in dispatch. This lets
+            # a non-streaming route (the common case) keep the eager inline body
+            # drain below - byte-for-byte the pre-streaming path, zero added
+            # per-request cost - while only a `stream=True` route is built over a
+            # lazy `ASGIBodySource` it consumes incrementally via
+            # `request.stream()`. The lazy source enforces the running-total cap
+            # itself (raising `RequestEntityTooLarge`); the eager path enforces it
+            # in the read loop. The declared-Content-Length reject above guards
+            # both before any body byte is read.
+            method = scope["method"]
+            match = self.match(method, path)
+            if match is not None and match.route_info.stream:
+                request = Request(
+                    method=method,
+                    path=path,
+                    query_string=query,
+                    headers=raw_headers,
+                    body=b"",
+                    body_source=ASGIBodySource(receive, max_size),
+                    scope=scope,
+                )
+            else:
+                # Eager drain. Common case - one body chunk, no `more_body` -
+                # skips the body_parts list + join.
+                message = await receive()
+                body = message.get("body", b"") or b""
+                if message.get("more_body", False):
+                    body_parts = [body] if body else []
+                    received = len(body)
+                    while True:
+                        message = await receive()
+                        chunk = message.get("body", b"")
+                        if chunk:
+                            body_parts.append(chunk)
+                            received += len(chunk)
+                            if max_size is not None and received > max_size:
+                                await self._emit_413(send, max_size)
+                                return
+                        if not message.get("more_body", False):
+                            break
+                    body = b"".join(body_parts)
+                elif max_size is not None and len(body) > max_size:
+                    await self._emit_413(send, max_size)
+                    return
+                request = Request(
+                    method=method,
+                    path=path,
+                    query_string=query,
+                    headers=raw_headers,
+                    body=body,
+                    scope=scope,
+                )
 
-            response = await self.handle_request(request, cp)
+            response = await self.handle_request(request, cp, match)
 
             # Streaming response - emit the body as a sequence of ASGI
             # `http.response.body` chunks instead of one buffered

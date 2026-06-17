@@ -209,8 +209,29 @@ class DispatchMixin:
 
     # ── Entry point and core dispatch ──────────────────────
 
+    async def _body_too_large_response(
+        self, request: Request, cp: CompiledPipeline | None, max_size: int | None
+    ) -> Response:
+        """Build the 413 for an over-`MAX_CONTENT_LENGTH` body, run the response phase.
+
+        Shared by the eager declared/buffered check and the streamed-body drain so
+        both reject with the identical `{detail, status_code, limit}` payload.
+        """
+        response: Response = JSONResponse(
+            {
+                "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
+                "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                "limit": max_size,
+            },
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+        # No route matched on a reject, so no per-route exclusion chain exists.
+        if cp is not None and cp.http_post is not None:
+            response = await self._run_response_phase(cp.http_post, request, response, False)
+        return response
+
     async def handle_request(
-        self, request: Request, cp: CompiledPipeline | None = None
+        self, request: Request, cp: CompiledPipeline | None = None, match: Any = None
     ) -> Response:
         """Main request handler - runs middleware chain + route dispatch.
 
@@ -296,22 +317,7 @@ class DispatchMixin:
                 buffered = await request.body()
                 over = len(buffered) > max_size
             if over:
-                response: Response = JSONResponse(
-                    {
-                        "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
-                        "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        "limit": max_size,
-                    },
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                )
-                # Cold reject before dispatch - the resolved pipeline still runs
-                # the fused response phase on the 413. No route was matched, so
-                # no per-route exclusion chain can exist (`excluded=False`).
-                if cp.http_post is not None:
-                    response = await self._run_response_phase(
-                        cp.http_post, request, response, False
-                    )
-                return response
+                return await self._body_too_large_response(request, cp, max_size)
 
         # Time the dispatch only when instrumentation hooks are registered -
         # an un-instrumented app does not even read the clock. The fused finish
@@ -325,7 +331,7 @@ class DispatchMixin:
             if cp.http_around is not None:
                 response = await self._run_http_middleware_chain(request, cp)
             else:
-                response = await self._dispatch_request(request, cp)
+                response = await self._dispatch_request(request, cp, match)
         except Exception as exc:
             # Dispatch propagated an exception (e.g. PROPAGATE_EXCEPTIONS is
             # set). Record a `500` metric before the exception continues
@@ -405,7 +411,9 @@ class DispatchMixin:
 
         return await funcs[0](request, _make_next(0))
 
-    async def _dispatch_request(self, request: Request, cp: CompiledPipeline) -> Response:
+    async def _dispatch_request(
+        self, request: Request, cp: CompiledPipeline, match: Any = None
+    ) -> Response:
         """Core request dispatch - middleware, routing, handler execution.
 
         Thin orchestrator: the request phase, route resolution, handler
@@ -434,10 +442,14 @@ class DispatchMixin:
             # route's `exclude_middleware` opt-out can be honoured. The same
             # match object is reused for dispatch below; `request.endpoint`
             # and `url_rule` are populated here so before_request hooks can
-            # gate on the route name.
+            # gate on the route name. The ASGI transport matches the route
+            # before building the request (to decide eager-vs-streaming body
+            # handling) and threads the result in here, so the radix tree is
+            # walked once per request, not twice.
             _matched_path = request.path
             _matched_method = request.method
-            match = self.match(_matched_method, _matched_path)
+            if match is None:
+                match = self.match(_matched_method, _matched_path)
             if match is not None:
                 request.endpoint = match.route_info.name
                 request._state["url_rule"] = match.route_info.path_template

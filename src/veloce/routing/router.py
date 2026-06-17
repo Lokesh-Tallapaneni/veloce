@@ -226,6 +226,7 @@ class RouteInfo:
         "mcp_resource_uri",
         "mcp_scopes",
         "excluded_middleware",
+        "stream",
         "_mw_chain_cache",
     )
 
@@ -334,6 +335,13 @@ class RouteInfo:
         # defaults, or middleware exclusion. Set by `_attach_plans`; left False
         # for synthetic routes that bypass it.
         self.is_fast_eligible = False
+        # Opt-in request-body streaming (ASGI path). When True, the dispatch
+        # layer does NOT eagerly buffer the body before the handler, so the
+        # handler can consume `request.stream()` incrementally; the synchronous
+        # body accessors (`.get_json()`/`.form`/`.data`) are unavailable on such
+        # a route until the body is drained. Set by `add_route`; default False
+        # preserves the buffer-before-handler behaviour every other route has.
+        self.stream = False
         # MCP exposure (contrib.mcp). `expose_as_mcp_tool` opts this route
         # into the MCP tool registry; `mcp_description` is the LLM-facing
         # description (separate from the docstring), required by the MCP
@@ -1074,6 +1082,15 @@ class Router:
             Sequence[str] | None,
             Doc("Names of middleware this route opts out of."),
         ] = None,
+        stream: Annotated[
+            bool,
+            Doc(
+                "Opt into request-body streaming: the body is not buffered before "
+                "the handler, so the handler may consume `request.stream()` "
+                "incrementally. The synchronous body accessors are unavailable on a "
+                "streaming route until the body is drained."
+            ),
+        ] = False,
     ) -> None:
         """Register a route in the radix tree.
 
@@ -1139,6 +1156,7 @@ class Router:
             mcp_scopes=mcp_scopes,
             excluded_middleware=frozenset(exclude_middleware) if exclude_middleware else None,
         )
+        route_info.stream = stream
 
         # Pre-compute the handler resolution plan once, here at registration.
         # A WebSocket route's plan is built in websocket mode so the
@@ -1690,6 +1708,14 @@ class Router:
             Sequence[str] | None,
             Doc("Names of middleware this route opts out of."),
         ] = None,
+        stream: Annotated[
+            bool,
+            Doc(
+                "Opt into request-body streaming: the body is not buffered before "
+                "the handler, so the handler may consume `request.stream()` "
+                "incrementally."
+            ),
+        ] = False,
     ) -> Callable:
         """Generic route decorator.
 
@@ -1737,6 +1763,7 @@ class Router:
                 mcp_resource_uri=mcp_resource_uri,
                 mcp_scopes=mcp_scopes,
                 exclude_middleware=exclude_middleware,
+                stream=stream,
             )
             return func
 
