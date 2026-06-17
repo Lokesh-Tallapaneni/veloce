@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `stream=True` on a route opts its handler into incremental request-body reading via `request.stream()`, instead of buffering the body first.
+- `stream=True` on a route opts its handler into incremental request-body reading via `request.stream()`, instead of buffering the body first. ([#222](https://github.com/Lokesh-Tallapaneni/veloce/pull/222))
 
 ## [0.8.0] - 2026-06-13
 
