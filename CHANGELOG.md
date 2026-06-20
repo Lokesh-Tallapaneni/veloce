@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A task-augmented `tools/call` returns a `CreateTaskResult` the client polls for the result. ([#236](https://github.com/Lokesh-Tallapaneni/veloce/pull/236))
 - `tasks/get`, `tasks/result`, `tasks/list`, and `tasks/cancel` drive an MCP task through its lifecycle. ([#236](https://github.com/Lokesh-Tallapaneni/veloce/pull/236))
 - The MCP server emits `notifications/tasks/status` with the related-task `_meta` on each task transition. ([#236](https://github.com/Lokesh-Tallapaneni/veloce/pull/236))
+- `mount_mcp(transport="http", sessions=True)` assigns and validates an `Mcp-Session-Id` on the HTTP transport. ([#237](https://github.com/Lokesh-Tallapaneni/veloce/pull/237))
+- The MCP HTTP transport rejects a missing required session id with `400` and a terminated one with `404`. ([#237](https://github.com/Lokesh-Tallapaneni/veloce/pull/237))
+- A `DELETE` on the MCP HTTP endpoint terminates the session when session management is enabled. ([#237](https://github.com/Lokesh-Tallapaneni/veloce/pull/237))
+- `SessionRequiredError` and `SessionNotFoundError` surface MCP session violations as typed errors. ([#237](https://github.com/Lokesh-Tallapaneni/veloce/pull/237))
 
 ### Changed
 

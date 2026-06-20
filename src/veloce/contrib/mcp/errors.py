@@ -94,6 +94,29 @@ class OriginNotAllowedError(InvalidRequestError):
     http_status = 403
 
 
+class SessionRequiredError(InvalidRequestError):
+    """A post-initialization request omitted the required `Mcp-Session-Id` header.
+
+    Per the MCP 2025-06-18 Streamable HTTP transport, once the server has assigned
+    a session id the client MUST echo it on every later request; a request missing
+    it is answered HTTP 400.
+    """
+
+    http_status = 400
+
+
+class SessionNotFoundError(MCPError):
+    """A request named an `Mcp-Session-Id` the server no longer recognizes.
+
+    Per the MCP 2025-06-18 Streamable HTTP transport a terminated (or never
+    issued) session is answered HTTP 404, signalling the client to start a new
+    session.
+    """
+
+    code = _JSONRPC_INVALID_REQUEST
+    http_status = 404
+
+
 class MethodNotFoundError(MCPError):
     """A request named a method this server does not implement."""
 

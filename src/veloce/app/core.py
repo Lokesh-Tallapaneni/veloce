@@ -1815,6 +1815,7 @@ class Veloce(
         principal: Any = None,
         allowed_origins: Sequence[str] | None = None,
         exclude_middleware: Sequence[str] | None = None,
+        sessions: bool = False,
     ) -> Any:
         """Build the MCP server and serve the registered tools.
 
@@ -1841,6 +1842,9 @@ class Veloce(
         RFC 9728 metadata. `allowed_origins` enables `Origin` validation
         (DNS-rebinding defense); `exclude_middleware` names app middleware the
         transport routes opt out of (an app-wide auth middleware `auth` replaces).
+        `sessions` opts into `Mcp-Session-Id` lifecycle: the server assigns a
+        session id on `initialize`, requires it on later requests (400 missing,
+        404 once terminated), and accepts a `DELETE` to terminate it.
         Call this after the tool / resource / prompt routes are registered.
         """
         from veloce.contrib.mcp.server import MCPServer
@@ -1871,6 +1875,7 @@ class Veloce(
                     frozenset(allowed_origins) if allowed_origins is not None else None
                 ),
                 exclude_middleware=exclude_middleware,
+                sessions=sessions,
             )
             return None
 

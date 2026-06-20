@@ -58,6 +58,8 @@ from veloce.contrib.mcp.errors import (
     OriginNotAllowedError,
     ProtocolVersionError,
     ResourceNotFoundError,
+    SessionNotFoundError,
+    SessionRequiredError,
 )
 from veloce.contrib.mcp.icons import Icon
 from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
@@ -103,6 +105,8 @@ __all__ = [
     "ResourceLink",
     "ResourceNotFoundError",
     "ResourceRegistry",
+    "SessionNotFoundError",
+    "SessionRequiredError",
     "StdioTransport",
     "TaskRegistry",
     "TasksCapability",

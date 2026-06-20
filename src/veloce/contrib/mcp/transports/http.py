@@ -16,6 +16,12 @@ the configured allowlist is rejected ``403`` (DNS-rebinding defense; a missing
 unsupported revision is rejected ``400`` (a missing header keeps the negotiated
 version). Each violation raises an `MCPError` subclass carrying its HTTP status.
 
+Session management is opt-in (``sessions=True``): the server mints an
+``Mcp-Session-Id`` on the ``initialize`` result, then requires it on every later
+request (``400`` when missing, ``404`` once terminated) and accepts a ``DELETE`` to
+terminate it. The stateless default keeps each POST independent with no session
+state. The id lifecycle lives in `HttpSessionStore` behind the `Transport` contract.
+
 The endpoint is an ordinary Veloce route, so it is protected by whatever middleware
 and dependencies the app applies to it (an OAuth Resource-Server check, an API-key
 scheme) - the transport adds no auth of its own.
@@ -40,9 +46,12 @@ from veloce.contrib.mcp.errors import (
     MCPError,
     OriginNotAllowedError,
     ProtocolVersionError,
+    SessionNotFoundError,
+    SessionRequiredError,
     _error,
 )
 from veloce.contrib.mcp.server import _SUPPORTED_PROTOCOL_VERSIONS, MCPServer, _notifier_var
+from veloce.contrib.mcp.transports.session_store import HttpSessionStore
 from veloce.http.response import JSONResponse, Response
 from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
@@ -54,6 +63,11 @@ _logger = logging.getLogger(__name__)
 
 # JSON-RPC 2.0 Sec. 5.1 parse error - a body that is not a single JSON object.
 _JSONRPC_PARSE_ERROR = -32700
+
+# Header carrying the session id when session management is enabled (MCP
+# 2025-06-18 Streamable HTTP transport: the server assigns it on the initialize
+# result and the client echoes it on every later request).
+_SESSION_ID_HEADER = "Mcp-Session-Id"
 
 # Reconnect hint (milliseconds) emitted as the SSE `retry` field before a stream
 # closes, so a disconnected client knows how long to wait before reconnecting
@@ -78,6 +92,7 @@ def register_http_transport(
     auth: MCPAuth | None = None,
     allowed_origins: frozenset[str] | None = None,
     exclude_middleware: Sequence[str] | None = None,
+    sessions: bool = False,
 ) -> None:
     """Mount the Streamable HTTP transport for `server` at `path` on `app`.
 
@@ -87,20 +102,29 @@ def register_http_transport(
     `allowed_origins` enables `Origin` validation (DNS-rebinding defense).
     `exclude_middleware` names app middleware the transport routes opt out of -
     typically an app-wide auth middleware the transport's own `auth` replaces.
+
+    `sessions` opts into `Mcp-Session-Id` lifecycle: the server assigns a session
+    id on the `initialize` result, requires it on every later request (HTTP 400 if
+    missing, 404 once terminated), and accepts a `DELETE` to terminate it. The
+    default keeps the stateless behavior with no per-request session bookkeeping.
     """
+    store = HttpSessionStore() if sessions else None
 
     async def mcp_endpoint(request: Request) -> Response:
-        # The Streamable HTTP transport is one endpoint serving both verbs: POST
-        # carries a JSON-RPC message; GET would open a standalone server-to-client
-        # SSE stream. This server keeps no such stream, so a GET is answered 405.
+        # The Streamable HTTP transport is one endpoint serving the spec's verbs:
+        # POST carries a JSON-RPC message; DELETE terminates a session (only when
+        # session management is on); GET would open a standalone server-to-client
+        # SSE stream this server keeps none of, so a GET is answered 405.
+        if request.method == "DELETE":
+            return _handle_delete(store, request)
         if request.method == "GET":
             return _method_not_allowed()
-        return await _handle_http(server, request, auth, allowed_origins)
+        return await _handle_http(server, request, auth, allowed_origins, store)
 
     app.add_route(
         path,
         mcp_endpoint,
-        methods=["POST", "GET"],
+        methods=["POST", "GET", "DELETE"],
         include_in_schema=False,
         exclude_middleware=exclude_middleware,
     )
@@ -124,6 +148,7 @@ async def _handle_http(
     request: Request,
     auth: MCPAuth | None,
     allowed_origins: frozenset[str] | None = None,
+    store: HttpSessionStore | None = None,
 ) -> Response:
     """Authenticate, then dispatch one JSON-RPC message from an HTTP POST body."""
     # Origin and protocol-version checks are spec MUSTs that precede dispatch; a
@@ -151,15 +176,26 @@ async def _handle_http(
     if not isinstance(message, dict):
         return JSONResponse(_error(None, _JSONRPC_PARSE_ERROR, "Parse error"), status_code=400)
 
+    # When session management is on, every request except `initialize` must echo a
+    # live session id (HTTP 400 if missing, 404 once terminated); `initialize`
+    # mints a new id returned on its response. The stateless default skips this.
+    is_initialize = message.get("method") == "initialize"
+    session_id: str | None = None
+    if store is not None:
+        try:
+            session_id = _bind_session(store, request, is_initialize)
+        except MCPError as exc:
+            return JSONResponse(exc.to_error(message.get("id")), status_code=exc.http_status)
+
     is_request = "id" in message and isinstance(message.get("method"), str)
     accepts_sse = "text/event-stream" in request.headers.get("accept", "")
     if is_request and accepts_sse:
-        return _stream_response(server, message, current_principal())
+        return _stream_response(server, message, current_principal(), session_id)
 
     response = await server.handle_message(message)
     if response is None:
         # A notification or a response carries no reply (JSON-RPC 2.0 Sec. 4.1).
-        return Response(status_code=202)
+        return _with_session(Response(status_code=202), session_id)
     # An authorization failure (insufficient scope) is surfaced as an HTTP 403 with
     # an RFC 6750 scope challenge, not a 200 carrying a JSON-RPC error, so a client
     # can drive a step-up authorization flow. This applies to the JSON path only;
@@ -169,7 +205,50 @@ async def _handle_http(
     if isinstance(error, dict) and error.get("code") == _JSONRPC_FORBIDDEN:
         scopes = (error.get("data") or {}).get("requiredScopes") or []
         return _forbidden(response, scopes)
-    return JSONResponse(response)
+    return _with_session(JSONResponse(response), session_id)
+
+
+def _bind_session(store: HttpSessionStore, request: Request, is_initialize: bool) -> str | None:
+    """Resolve the session id for a request under session management.
+
+    `initialize` mints and returns a fresh id (echoed on its response). Any other
+    request must carry a live `Mcp-Session-Id`: a missing header raises
+    `SessionRequiredError` (HTTP 400) and an unknown / terminated id raises
+    `SessionNotFoundError` (HTTP 404).
+    """
+    if is_initialize:
+        return store.create()
+    session_id = request.headers.get("mcp-session-id")
+    if not session_id:
+        raise SessionRequiredError("missing Mcp-Session-Id header")
+    if not store.is_live(session_id):
+        raise SessionNotFoundError("unknown or terminated session")
+    return session_id
+
+
+def _with_session(response: Response, session_id: str | None) -> Response:
+    """Attach the `Mcp-Session-Id` header to `response` when a session is bound."""
+    if session_id is not None:
+        response.headers[_SESSION_ID_HEADER] = session_id
+    return response
+
+
+def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response:
+    """Terminate the session named by `Mcp-Session-Id` (HTTP 204), or 404/405.
+
+    A `DELETE` is meaningful only under session management: without it the verb is
+    unsupported (HTTP 405). With it, a live id is terminated (HTTP 204) and a
+    missing / already-terminated id is HTTP 404.
+    """
+    if store is None:
+        return Response(status_code=405, headers={"Allow": "POST"})
+    session_id = request.headers.get("mcp-session-id")
+    if not session_id or not store.terminate(session_id):
+        return JSONResponse(
+            SessionNotFoundError("unknown or terminated session").to_error(None),
+            status_code=404,
+        )
+    return Response(status_code=204)
 
 
 def _validate_origin(request: Request, allowed_origins: frozenset[str] | None) -> None:
@@ -254,7 +333,10 @@ def _challenge(auth: MCPAuth, status_code: int, error: str) -> Response:
 
 
 def _stream_response(
-    server: MCPServer, message: dict[str, Any], principal: Principal | None
+    server: MCPServer,
+    message: dict[str, Any],
+    principal: Principal | None,
+    session_id: str | None = None,
 ) -> EventSourceResponse:
     """Answer one request as an SSE stream: its notifications then its response.
 
@@ -320,4 +402,5 @@ def _stream_response(
         yield ServerSentEvent(retry=_SSE_RETRY_MS)
         await runner_task
 
-    return EventSourceResponse(events())
+    headers = {_SESSION_ID_HEADER: session_id} if session_id is not None else None
+    return EventSourceResponse(events(), headers=headers)

@@ -651,6 +651,26 @@ and a client dropping the stream does not cancel the in-flight call.
     `MCP-Protocol-Version` header naming a revision the server does not support is
     rejected `400`; a request with no such header is unaffected.
 
+### Session management
+
+The HTTP transport is stateless by default — each `POST` is an independent message.
+Pass `sessions=True` to opt into the MCP `Mcp-Session-Id` lifecycle:
+
+```python
+app.mount_mcp(transport="http", sessions=True)
+```
+
+- The server assigns a fresh `Mcp-Session-Id` header on the `initialize` response.
+- Every later request must echo that header. A request missing it is rejected
+  `400`; a request naming a terminated (or never-issued) id is rejected `404`,
+  signalling the client to start a new session.
+- A `DELETE` carrying the header terminates the session (`204`); a `DELETE` for an
+  unknown id is `404`. Without `sessions=True`, `DELETE` is `405`.
+
+!!! note "Added in version 0.9"
+    HTTP session management (`sessions=True`) is opt-in; the stateless default is
+    unchanged and carries no per-request session bookkeeping.
+
 ## Authentication and authorization
 
 MCP authenticates at the **transport**, not per tool call, following the MCP OAuth

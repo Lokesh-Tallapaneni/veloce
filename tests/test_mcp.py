@@ -4035,6 +4035,146 @@ def test_missing_protocol_version_header_keeps_current_behavior():
     assert resp.status_code == 200
 
 
+def test_sessions_disabled_by_default():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    client = app.test_client()
+    # The stateless default assigns no session id and never requires one.
+    init = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    assert init.headers.get("mcp-session-id") is None
+    call = client.post("/mcp", json=_mcp_call_body("add", {"a": 1, "b": 1}))
+    assert call.status_code == 200
+
+
+def test_session_id_assigned_on_initialize_and_required_after():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+
+    init = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    session_id = init.headers.get("mcp-session-id")
+    assert session_id
+    assert orjson.loads(init.body)["result"]["serverInfo"]["name"]
+
+    # A later request echoing the id is accepted and the id is echoed back.
+    ok = client.post(
+        "/mcp",
+        json=_mcp_call_body("add", {"a": 2, "b": 3}),
+        headers={"mcp-session-id": session_id},
+    )
+    assert ok.status_code == 200
+    assert ok.headers.get("mcp-session-id") == session_id
+    assert orjson.loads(ok.body)["result"]["content"][0]["text"] == "5"
+
+
+def test_missing_session_id_is_400():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", sessions=True)
+    # A non-initialize request without the session header is rejected at 400.
+    resp = app.test_client().post("/mcp", json=_mcp_call_body("add", {"a": 1, "b": 1}))
+    assert resp.status_code == 400
+    assert orjson.loads(resp.body)["error"]["code"] == -32600
+
+
+def test_unknown_session_id_is_404():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", sessions=True)
+    resp = app.test_client().post(
+        "/mcp",
+        json=_mcp_call_body("add", {"a": 1, "b": 1}),
+        headers={"mcp-session-id": "never-issued"},
+    )
+    assert resp.status_code == 404
+
+
+def test_delete_terminates_session_then_404():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+    init = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    session_id = init.headers["mcp-session-id"]
+
+    # DELETE terminates the live session (HTTP 204).
+    deleted = client.delete("/mcp", headers={"mcp-session-id": session_id})
+    assert deleted.status_code == 204
+
+    # A request on the terminated id is now 404; a second DELETE is too.
+    after = client.post(
+        "/mcp",
+        json=_mcp_call_body("add", {"a": 1, "b": 1}),
+        headers={"mcp-session-id": session_id},
+    )
+    assert after.status_code == 404
+    assert client.delete("/mcp", headers={"mcp-session-id": session_id}).status_code == 404
+
+
+def test_delete_without_sessions_is_405():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    # Without session management the DELETE verb is unsupported.
+    resp = app.test_client().delete("/mcp")
+    assert resp.status_code == 405
+    assert resp.headers.get("allow") == "POST"
+
+
+def test_session_id_echoed_on_sse_response():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+    session_id = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    ).headers["mcp-session-id"]
+
+    resp = client.post(
+        "/mcp",
+        json=_mcp_call_body("work"),
+        headers={"mcp-session-id": session_id, "accept": "text/event-stream"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("mcp-session-id") == session_id
+
+
 def test_sse_stream_opens_with_priming_event_and_closes_with_retry():
     app = Veloce(openapi_url=None)
 
