@@ -24,8 +24,11 @@ matching typed content block. A tool,
 prompt, or resource may carry opt-in ``icons`` (`Icon` objects) a client renders
 beside it, and a route may return its result as a ``resource_link`` or embedded
 ``resource`` block via the ``X-MCP-Resource-Link`` / ``X-MCP-Embedded-Resource``
-response header. Both the stdio transport (``mount_mcp()``) and the Streamable
-HTTP transport (``mount_mcp(transport="http")``) are supported.
+response header. Over the stdio transport one `MCPSession` tracks the connection:
+it records the client's advertised capabilities from ``initialize`` and rejects any
+request other than ``initialize`` / ``ping`` that precedes initialization. Both the
+stdio transport (``mount_mcp()``) and the Streamable HTTP transport
+(``mount_mcp(transport="http")``) are supported.
 """
 
 from __future__ import annotations
@@ -62,6 +65,7 @@ from veloce.contrib.mcp.resources import (
     build_resource_registry,
 )
 from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.http import register_http_transport
 from veloce.contrib.mcp.transports.stdio import StdioTransport, serve_stdio
 
@@ -84,6 +88,7 @@ __all__ = [
     "MCPPrompt",
     "MCPResource",
     "MCPServer",
+    "MCPSession",
     "MCPTool",
     "MethodNotFoundError",
     "OriginNotAllowedError",

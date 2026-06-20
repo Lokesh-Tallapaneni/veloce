@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 
 import orjson
 
+from veloce.contrib.mcp.session import MCPSession
+
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MCPServer
     from veloce.contrib.mcp.transports.base import Transport
@@ -68,6 +70,10 @@ class StdioTransport:
         # written while the handler runs, before the call's own response - so a
         # direct write never races the loop's response write.
         self.server.set_notifier(self.send)
+        # One session for the connection's lifetime: it records the client's
+        # advertised capabilities from `initialize` and lets the server enforce
+        # that no other request precedes initialization.
+        session = MCPSession()
         while True:
             line = await self._read_line()
             if line is None:
@@ -75,7 +81,7 @@ class StdioTransport:
             stripped = line.strip()
             if not stripped:
                 continue
-            response = await self._dispatch_line(stripped)
+            response = await self._dispatch_line(stripped, session)
             if response is not None:
                 await self._write_line(orjson.dumps(response))
 
@@ -83,7 +89,7 @@ class StdioTransport:
         """Write one server-initiated JSON-RPC message line to the client."""
         await self._write_line(orjson.dumps(message))
 
-    async def _dispatch_line(self, line: bytes) -> dict[str, Any] | None:
+    async def _dispatch_line(self, line: bytes, session: MCPSession) -> dict[str, Any] | None:
         try:
             message = orjson.loads(line)
         except orjson.JSONDecodeError:
@@ -98,7 +104,7 @@ class StdioTransport:
                 "id": None,
                 "error": {"code": _JSONRPC_PARSE_ERROR, "message": "Parse error"},
             }
-        return await self.server.handle_message(message)
+        return await self.server.handle_message(message, session)
 
 
 async def serve_stdio(server: MCPServer) -> None:

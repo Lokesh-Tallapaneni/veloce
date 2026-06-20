@@ -24,7 +24,7 @@ from veloce import (
     current_principal,
     set_principal,
 )
-from veloce.contrib.mcp import Icon, MCPAuth
+from veloce.contrib.mcp import Icon, MCPAuth, MCPSession
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
@@ -423,7 +423,7 @@ def test_parse_error_on_bad_json():
     app = Veloce(openapi_url=None)
     server = _server(app)
     transport = StdioTransport(server, None, None)  # type: ignore[arg-type]
-    out = asyncio.run(transport._dispatch_line(b"{not json"))
+    out = asyncio.run(transport._dispatch_line(b"{not json", MCPSession()))
     assert out["error"]["code"] == -32700
 
 

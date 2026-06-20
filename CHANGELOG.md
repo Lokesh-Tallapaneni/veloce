@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ResourceLink` and `EmbeddedResource` content blocks let a route return a linked or inlined resource result. ([#232](https://github.com/Lokesh-Tallapaneni/veloce/pull/232))
 - `@app.mcp_completer` answers MCP `completion/complete` with per-argument value suggestions for a prompt or resource. ([#233](https://github.com/Lokesh-Tallapaneni/veloce/pull/233))
 - MCP `notifications/cancelled` cancels the named in-flight request and unwinds its task. ([#234](https://github.com/Lokesh-Tallapaneni/veloce/pull/234))
+- `MCPSession` records the client capabilities advertised in `initialize` over the stdio transport. ([#235](https://github.com/Lokesh-Tallapaneni/veloce/pull/235))
+- `MCP_ENFORCE_LIFECYCLE` rejects a request that precedes `initialize` on a stateful connection. ([#235](https://github.com/Lokesh-Tallapaneni/veloce/pull/235))
 
 ### Changed
 

@@ -76,6 +76,7 @@ from veloce.routing.router import RouteMatch
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.registry import MCPTool
+    from veloce.contrib.mcp.session import MCPSession
 
 _logger = logging.getLogger(__name__)
 
@@ -531,6 +532,7 @@ class MCPServer:
         "server_title",
         "server_version",
         "_call_timeout",
+        "_enforce_lifecycle",
         "_capabilities",
         "_methods",
         "_inflight",
@@ -568,6 +570,15 @@ class MCPServer:
         # is cancelled and surfaced as an in-band tool error. `None` disables it.
         config = getattr(app, "config", None)
         self._call_timeout = config.get("MCP_CALL_TIMEOUT") if config is not None else None
+        # Opt-in lifecycle ordering on a stateful connection (`MCP_ENFORCE_LIFECYCLE`
+        # in `app.config`). When on, a stateful transport's session rejects any
+        # request other than `initialize` / `ping` that precedes initialization
+        # (the spec's "initialization MUST be first" rule). Off by default so the
+        # existing stdio wire behavior is unchanged; the session still records the
+        # client's advertised capabilities either way.
+        self._enforce_lifecycle = bool(
+            config.get("MCP_ENFORCE_LIFECYCLE") if config is not None else False
+        )
         # The spec areas this server serves, each owning its `initialize`
         # advertisement and its method handlers. A new area is a capability
         # added here, not a branch edited into the dispatcher or `_initialize`.
@@ -617,11 +628,19 @@ class MCPServer:
 
     # ── JSON-RPC dispatch ─────────────────────────────────
 
-    async def handle_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
+    async def handle_message(
+        self, message: dict[str, Any], session: MCPSession | None = None
+    ) -> dict[str, Any] | None:
         """Dispatch one decoded JSON-RPC request; return the response object.
 
         Returns `None` for a notification (a request with no ``id``), which
         carries no response per JSON-RPC 2.0 Sec. 4.1.
+
+        A stateful transport (the serial stdio loop) passes its `session` so the
+        server records the client's advertised capabilities from `initialize` and
+        enforces the lifecycle ordering: before `initialize` completes the only
+        requests answered are `initialize` and `ping`. The stateless HTTP
+        transport passes none, leaving its fast path unaffected.
         """
         msg_id = message.get("id")
         method = message.get("method")
@@ -631,6 +650,14 @@ class MCPServer:
 
         params = message.get("params") or {}
         is_notification = "id" not in message
+
+        # On a stateful connection the initialization exchange MUST be first: a
+        # request other than `initialize` / `ping` arriving before it completes is
+        # rejected, and the client's advertised capabilities are recorded here.
+        if session is not None:
+            rejection = self._gate_session(session, method, params, msg_id, is_notification)
+            if rejection is not None:
+                return rejection
 
         handler = self._methods.get(method)
         if handler is None:
@@ -666,6 +693,40 @@ class MCPServer:
         if is_notification:
             return None
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+    def _gate_session(
+        self,
+        session: MCPSession,
+        method: str,
+        params: dict[str, Any],
+        msg_id: Any,
+        is_notification: bool,
+    ) -> dict[str, Any] | None:
+        """Record client capabilities on a session and optionally enforce ordering.
+
+        Records the client's advertised capabilities from `initialize` and marks
+        the session initialized on the `notifications/initialized` ack - always,
+        so the recorded state is available regardless of the ordering policy. When
+        `MCP_ENFORCE_LIFECYCLE` is on, any request other than `initialize` / `ping`
+        that precedes initialization is rejected with an invalid-request error;
+        notifications always pass (the spec orders requests, not one-way messages).
+        Returns the JSON-RPC error to send back, or `None` to proceed.
+        """
+        if method == "initialize":
+            session.record_initialize(params)
+            return None
+        if method == "notifications/initialized":
+            session.initialized = True
+            return None
+        if not self._enforce_lifecycle:
+            return None
+        if session.initialized or is_notification or method == "ping":
+            return None
+        return _error(
+            msg_id,
+            _JSONRPC_INVALID_REQUEST,
+            f"Received {method!r} before initialization completed",
+        )
 
     def _track_inflight(self, msg_id: Any, method: str) -> _InFlight | None:
         """Register an in-flight request so a cancel notification can reach it.

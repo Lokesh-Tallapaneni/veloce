@@ -554,6 +554,24 @@ handler (database pools, `app.state`, caches) and the lifespan context manager
 run before the first tool is served, and the matching shutdown runs after the
 input closes - exactly as when the app is served by an ASGI server.
 
+### Connection lifecycle
+
+The stdio loop keeps one connection alive across many messages, so it tracks a
+single session. The session records the capabilities the client advertised in
+its `initialize` request, which the server can consult before relying on a client
+feature.
+
+The MCP lifecycle requires the initialization exchange to come first. To enforce
+that ordering, set `app.config["MCP_ENFORCE_LIFECYCLE"] = True`: any request other
+than `initialize` or `ping` that arrives before initialization completes is
+rejected with a JSON-RPC invalid-request error. One-way notifications are never
+ordered by this rule and always pass. The flag is off by default, so the existing
+stdio behavior is unchanged unless you opt in. The stateless HTTP transport has no
+persistent connection to order against, so this setting does not affect it.
+
+!!! note "Added in version 0.9"
+    `MCPSession` and `MCP_ENFORCE_LIFECYCLE` were added in version 0.9.
+
 ## Serving over HTTP
 
 For a remote (hosted) MCP server, mount the **Streamable HTTP** transport. It adds
