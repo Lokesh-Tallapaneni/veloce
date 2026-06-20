@@ -61,6 +61,12 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
+# A dispatch entry: an async handler taking the request `params` and returning the
+# JSON-RPC `result` object (or `None` for a method that produces no response, such
+# as the `notifications/initialized` ack). The dispatch map maps method names to
+# these so `handle_message` is one dict lookup, not an if/elif ladder.
+MethodHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]
+
 # Latest Model Context Protocol revision this server speaks. Returned from
 # ``initialize`` when the client requests a revision this server does not
 # recognise, per the MCP lifecycle spec (the client then decides whether to
@@ -394,6 +400,7 @@ class MCPServer:
         "server_name",
         "server_version",
         "_call_timeout",
+        "_methods",
     )
 
     def __init__(
@@ -415,6 +422,29 @@ class MCPServer:
         # is cancelled and surfaced as an in-band tool error. `None` disables it.
         config = getattr(app, "config", None)
         self._call_timeout = config.get("MCP_CALL_TIMEOUT") if config is not None else None
+        # Built once at construction so per-request dispatch is one dict lookup.
+        # A new method is registered here, never wired into a dispatcher branch.
+        self._methods: dict[str, MethodHandler] = self._build_method_map()
+
+    def _build_method_map(self) -> dict[str, MethodHandler]:
+        """Map each supported JSON-RPC method to its async handler.
+
+        Sync handlers are wrapped here so every entry shares the
+        `async (params) -> result | None` shape `handle_message` dispatches.
+        """
+        return {
+            "initialize": self._handle_initialize,
+            "notifications/initialized": self._handle_initialized,
+            "ping": self._handle_ping,
+            "tools/list": self._handle_tools_list,
+            "tools/call": self._tools_call,
+            "resources/list": self._handle_resources_list,
+            "resources/templates/list": self._handle_resource_templates_list,
+            "resources/read": self._resources_read,
+            "prompts/list": self._handle_prompts_list,
+            "prompts/get": self._prompts_get,
+            "logging/setLevel": self._handle_set_log_level,
+        }
 
     @staticmethod
     def set_notifier(notifier: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
@@ -443,36 +473,16 @@ class MCPServer:
         params = message.get("params") or {}
         is_notification = "id" not in message
 
-        try:
-            if method == "initialize":
-                result = self._initialize(params)
-            elif method == "notifications/initialized":
-                # Client handshake ack - a notification, no response.
+        handler = self._methods.get(method)
+        if handler is None:
+            # An unknown notification carries no response; an unknown request is a
+            # method-not-found error.
+            if is_notification:
                 return None
-            elif method == "ping":
-                # Base liveness utility either side may send; the spec'd reply is
-                # an empty result object.
-                result = {}
-            elif method == "tools/list":
-                result = self._tools_list()
-            elif method == "tools/call":
-                result = await self._tools_call(params)
-            elif method == "resources/list":
-                result = self._resources_list()
-            elif method == "resources/templates/list":
-                result = self._resource_templates_list()
-            elif method == "resources/read":
-                result = await self._resources_read(params)
-            elif method == "prompts/list":
-                result = self._prompts_list()
-            elif method == "prompts/get":
-                result = await self._prompts_get(params)
-            elif method == "logging/setLevel":
-                result = self._set_log_level(params)
-            else:
-                if is_notification:
-                    return None
-                return _error(msg_id, _JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
+            return _error(msg_id, _JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
+
+        try:
+            result = await handler(params)
         except MCPError as exc:
             # Polymorphic: the JSON-RPC code and any `data` come from the subclass.
             return exc.to_error(msg_id)
@@ -487,6 +497,40 @@ class MCPServer:
         if is_notification:
             return None
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+    # ── Dispatch adapters ─────────────────────────────────
+    #
+    # Thin async wrappers giving every dispatch-map entry the uniform
+    # `async (params) -> result | None` shape. The sync implementations they call
+    # stay focused on building their result; `tools/call`, `resources/read`, and
+    # `prompts/get` are already async + params-shaped and registered directly.
+
+    async def _handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._initialize(params)
+
+    async def _handle_initialized(self, params: dict[str, Any]) -> None:
+        # Client handshake ack - a notification, no response.
+        return None
+
+    async def _handle_ping(self, params: dict[str, Any]) -> dict[str, Any]:
+        # Base liveness utility either side may send; the spec'd reply is an empty
+        # result object.
+        return {}
+
+    async def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._tools_list()
+
+    async def _handle_resources_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._resources_list()
+
+    async def _handle_resource_templates_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._resource_templates_list()
+
+    async def _handle_prompts_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._prompts_list()
+
+    async def _handle_set_log_level(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._set_log_level(params)
 
     # ── Method handlers ───────────────────────────────────
 
