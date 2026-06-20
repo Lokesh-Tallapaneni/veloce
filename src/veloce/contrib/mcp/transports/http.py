@@ -21,13 +21,8 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
-from veloce.contrib.mcp.server import (
-    _JSONRPC_FORBIDDEN,
-    _JSONRPC_INTERNAL_ERROR,
-    MCPServer,
-    _error,
-    _notifier_var,
-)
+from veloce.contrib.mcp.errors import _JSONRPC_FORBIDDEN, _JSONRPC_INTERNAL_ERROR, _error
+from veloce.contrib.mcp.server import MCPServer, _notifier_var
 from veloce.http.response import JSONResponse, Response
 from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent

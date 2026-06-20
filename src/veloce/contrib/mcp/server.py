@@ -29,6 +29,21 @@ import orjson
 from veloce import status
 from veloce._internal import _is_async_callable, is_json_mimetype, offload
 from veloce.contrib.mcp.context import _LOG_RANKS, MCPContext
+from veloce.contrib.mcp.errors import (
+    _JSONRPC_INTERNAL_ERROR,
+    _JSONRPC_INVALID_REQUEST,
+    _JSONRPC_METHOD_NOT_FOUND,
+    AuthorizationError,
+    InternalError,
+    InvalidParamsError,
+    MCPError,
+    ResourceNotFoundError,
+    _error,
+    _ForbiddenError,
+    _InBandError,
+    _StreamTimeoutError,
+    _StreamTooLargeError,
+)
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
@@ -58,22 +73,6 @@ LATEST_PROTOCOL_VERSION = "2025-11-25"
 # predates the ``title`` / ``outputSchema`` / ``structuredContent`` fields this
 # server emits.
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", LATEST_PROTOCOL_VERSION})
-
-# JSON-RPC 2.0 error codes (Sec. 5.1) plus the MCP "method not found" reuse.
-_JSONRPC_INVALID_REQUEST = -32600
-_JSONRPC_METHOD_NOT_FOUND = -32601
-_JSONRPC_INVALID_PARAMS = -32602
-_JSONRPC_INTERNAL_ERROR = -32603
-
-# MCP "Resource not found" code (server-defined, outside the JSON-RPC reserved
-# range), returned when ``resources/read`` names a URI the registry cannot
-# resolve or whose route answers 404.
-_JSONRPC_RESOURCE_NOT_FOUND = -32002
-
-# Server-defined "forbidden" code, returned when the request principal lacks a
-# tool's / resource's required authorization scopes (the JSON-RPC analogue of an
-# HTTP 403 insufficient_scope).
-_JSONRPC_FORBIDDEN = -32003
 
 # Cap on the bytes buffered from a streamed tool result. A streamed response has
 # no single body, so the MCP path drains it into one (`_drain_stream`); this
@@ -283,11 +282,6 @@ def _principal_lacks_scopes(required: frozenset[str]) -> bool:
     return principal is None or not principal.has_scopes(required)
 
 
-def _insufficient_scope(required: frozenset[str]) -> str:
-    """Build the error text for a missing-scope rejection."""
-    return f"insufficient_scope: requires {sorted(required)}"
-
-
 def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, Any]:
     """Build `request.path_params` for a route-backed tool call.
 
@@ -302,13 +296,6 @@ def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, 
     for key, value in route_info.defaults.items():
         params.setdefault(key, value)
     return params
-
-
-def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
-    error: dict[str, Any] = {"code": code, "message": message}
-    if data is not None:
-        error["data"] = data
-    return {"jsonrpc": "2.0", "id": msg_id, "error": error}
 
 
 def _progress_token(params: dict[str, Any]) -> str | int | None:
@@ -361,38 +348,6 @@ def _orjson_default(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     return str(value)
-
-
-class _ToolInputError(Exception):
-    """A malformed tool call - reported as a JSON-RPC invalid-params error."""
-
-
-class _ResourceError(Exception):
-    """A ``resources/read`` failure, reported as a JSON-RPC error with `code`."""
-
-    def __init__(self, code: int, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-class _AuthorizationError(Exception):
-    """The principal lacks a required scope - reported as a forbidden error.
-
-    Carries the required scopes so the HTTP transport can surface them in an
-    RFC 6750 `WWW-Authenticate` insufficient-scope challenge.
-    """
-
-    def __init__(self, scopes: frozenset[str]) -> None:
-        super().__init__(_insufficient_scope(scopes))
-        self.scopes = scopes
-
-
-class _StreamTooLargeError(Exception):
-    """A streamed tool result exceeded the buffer limit - reported in-band."""
-
-
-class _StreamTimeoutError(Exception):
-    """A streamed tool result outran the drain deadline - reported in-band."""
 
 
 class _ShortCircuit:
@@ -518,14 +473,9 @@ class MCPServer:
                 if is_notification:
                     return None
                 return _error(msg_id, _JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
-        except _ToolInputError as exc:
-            return _error(msg_id, _JSONRPC_INVALID_PARAMS, str(exc))
-        except _ResourceError as exc:
-            return _error(msg_id, exc.code, str(exc))
-        except _AuthorizationError as exc:
-            return _error(
-                msg_id, _JSONRPC_FORBIDDEN, str(exc), {"requiredScopes": sorted(exc.scopes)}
-            )
+        except MCPError as exc:
+            # Polymorphic: the JSON-RPC code and any `data` come from the subclass.
+            return exc.to_error(msg_id)
         except asyncio.TimeoutError:
             # A resources/read or prompts/get that overran the per-call budget
             # (a tools/call surfaces its own timeout in-band before here).
@@ -597,26 +547,26 @@ class MCPServer:
     async def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")
         if not isinstance(name, str):
-            raise _ToolInputError("tools/call requires a string 'name'")
+            raise InvalidParamsError("tools/call requires a string 'name'")
         tool = self.registry.get(name)
         if tool is None:
-            raise _ToolInputError(f"Unknown tool: {name}")
+            raise InvalidParamsError(f"Unknown tool: {name}")
 
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
-            raise _ToolInputError("tools/call 'arguments' must be an object")
+            raise InvalidParamsError("tools/call 'arguments' must be an object")
 
         started = time.perf_counter()
         # An authorization failure is a protocol-level forbidden error (uniform
         # across tools, resources, and prompts), not a normal tool result.
         if _principal_lacks_scopes(tool.required_scopes):
             await self._instrument(tool, started, status.HTTP_403_FORBIDDEN)
-            raise _AuthorizationError(tool.required_scopes)
+            raise AuthorizationError(tool.required_scopes)
 
         progress_token = _progress_token(params)
         try:
             result = await self._run_invoke(tool, arguments, progress_token)
-        except _ToolInputError:
+        except InvalidParamsError:
             raise
         except asyncio.TimeoutError:
             await self._instrument(tool, started, status.HTTP_504_GATEWAY_TIMEOUT)
@@ -657,7 +607,7 @@ class MCPServer:
             response = result.response
             try:
                 await self._drain_stream(response)
-            except (_StreamTooLargeError, _StreamTimeoutError) as exc:
+            except _InBandError as exc:
                 await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
                 return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
             await self._instrument(tool, started, response.status_code)
@@ -679,7 +629,7 @@ class MCPServer:
                     await self._instrument(tool, started, result.status_code)
                     return binary
             shaped = self._shape_result(tool, result)
-        except (_StreamTooLargeError, _StreamTimeoutError) as exc:
+        except _InBandError as exc:
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
             return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
         # A pure tool's raw return that completed without error is a genuine 200.
@@ -945,42 +895,39 @@ class MCPServer:
         """
         uri = params.get("uri")
         if not isinstance(uri, str):
-            raise _ToolInputError("resources/read requires a string 'uri'")
+            raise InvalidParamsError("resources/read requires a string 'uri'")
         matched = self.resources.match(uri)
         if matched is None:
-            raise _ResourceError(_JSONRPC_RESOURCE_NOT_FOUND, f"Unknown resource: {uri}")
+            raise ResourceNotFoundError(f"Unknown resource: {uri}")
         resource, arguments = matched
         if _principal_lacks_scopes(resource.tool.required_scopes):
-            raise _AuthorizationError(resource.tool.required_scopes)
+            raise AuthorizationError(resource.tool.required_scopes)
 
-        try:
-            result = await self._run_invoke(resource.tool, arguments, _progress_token(params))
-        except _ToolInputError as exc:
-            # A path-parameter value the URI carries that the route cannot coerce
-            # (a non-int `{user_id}`) is an invalid-params read, not a 404.
-            raise _ResourceError(_JSONRPC_INVALID_PARAMS, str(exc)) from exc
+        # A path-parameter value the URI carries that the route cannot coerce (a
+        # non-int `{user_id}`) raises `InvalidParamsError`, which already maps to
+        # the invalid-params code - it propagates unchanged.
+        result = await self._run_invoke(resource.tool, arguments, _progress_token(params))
 
         # A resource is always route-backed, so `_invoke` yields a
         # `_RouteResponse` (or a `_ShortCircuit` from a middleware / before_request
         # guard); both carry the `Response` whose body is the resource contents.
         response = result.response if isinstance(result, (_ShortCircuit, _RouteResponse)) else None
         if response is None:
-            raise _ResourceError(_JSONRPC_INTERNAL_ERROR, f"Resource {uri} produced no response")
+            raise InternalError(f"Resource {uri} produced no response")
         try:
             await self._drain_stream(response)
-        except (_StreamTooLargeError, _StreamTimeoutError) as exc:
-            raise _ResourceError(_JSONRPC_INTERNAL_ERROR, str(exc)) from exc
+        except _InBandError as exc:
+            raise InternalError(str(exc)) from exc
         if response.status_code >= 400:
+            body = _stringify(_response_body_value(response))
             if response.status_code == status.HTTP_404_NOT_FOUND:
-                code = _JSONRPC_RESOURCE_NOT_FOUND
-            elif response.status_code in (
+                raise ResourceNotFoundError(body)
+            if response.status_code in (
                 status.HTTP_401_UNAUTHORIZED,
                 status.HTTP_403_FORBIDDEN,
             ):
-                code = _JSONRPC_FORBIDDEN
-            else:
-                code = _JSONRPC_INTERNAL_ERROR
-            raise _ResourceError(code, _stringify(_response_body_value(response)))
+                raise _ForbiddenError(body)
+            raise InternalError(body)
         return {"contents": [_resource_contents(uri, response)]}
 
     # ── Prompts ───────────────────────────────────────────
@@ -999,15 +946,15 @@ class MCPServer:
         """
         name = params.get("name")
         if not isinstance(name, str):
-            raise _ToolInputError("prompts/get requires a string 'name'")
+            raise InvalidParamsError("prompts/get requires a string 'name'")
         prompt = self.prompts.get(name)
         if prompt is None:
-            raise _ToolInputError(f"Unknown prompt: {name}")
+            raise InvalidParamsError(f"Unknown prompt: {name}")
         if _principal_lacks_scopes(prompt.tool.required_scopes):
-            raise _AuthorizationError(prompt.tool.required_scopes)
+            raise AuthorizationError(prompt.tool.required_scopes)
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
-            raise _ToolInputError("prompts/get 'arguments' must be an object")
+            raise InvalidParamsError("prompts/get 'arguments' must be an object")
 
         result = await self._run_invoke(prompt.tool, arguments, _progress_token(params))
         out: dict[str, Any] = {"messages": _normalize_prompt_messages(result)}
@@ -1021,7 +968,7 @@ class MCPServer:
         """Set the minimum level for ``notifications/message`` (logging/setLevel)."""
         level = params.get("level")
         if not isinstance(level, str) or level not in _LOG_RANKS:
-            raise _ToolInputError("logging/setLevel requires a valid RFC 5424 'level'")
+            raise InvalidParamsError("logging/setLevel requires a valid RFC 5424 'level'")
         _log_level_var.set(level)
         return {}
 
@@ -1221,7 +1168,7 @@ class MCPServer:
                     _logger.exception("MCP background task failed")
             await self._run_response_background(response)
             return _RouteResponse(response, model_filtered)
-        except _ToolInputError:
+        except InvalidParamsError:
             # A malformed argument is a transport-level invalid-params error,
             # not a handled application failure - re-raise so `_tools_call`
             # surfaces it on the JSON-RPC error channel. It still flows through
@@ -1282,7 +1229,7 @@ class MCPServer:
         """Bind the handler kwargs from `arguments` and call the handler.
 
         The argument-binding boundary is the only place that maps a malformed
-        argument to an invalid-params transport error (`_ToolInputError`): a
+        argument to an invalid-params transport error (`InvalidParamsError`): a
         missing argument (TypeError), a failed coercion (RequestValidationError)
         or a failed model validation (ValueError). The handler call lives outside
         that guard so a genuine TypeError / ValueError raised in the handler body
@@ -1305,7 +1252,7 @@ class MCPServer:
                 route_defaults=route_defaults,
             )
         except (TypeError, ValueError, RequestValidationError) as err:
-            raise _ToolInputError(str(err)) from err
+            raise InvalidParamsError(str(err)) from err
 
         handler = tool.handler
         if _is_async_callable(handler):
