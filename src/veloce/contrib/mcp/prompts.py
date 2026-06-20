@@ -16,17 +16,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from veloce._handler_plan import build_plan
+from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.plan_bridge import build_input_schema
 from veloce.contrib.mcp.registry import MCPTool
 from veloce.contrib.mcp.safety import require_mcp_description
 
 
 @dataclass(slots=True)
-class MCPPrompt:
+class MCPPrompt(MCPDescriptor):
     """One registered MCP prompt template."""
 
-    name: str
-    description: str
     # The prompt callable wrapped as an `MCPTool` (no route), so a ``prompts/get``
     # replays it through the shared pure-tool invocation path - resolving its
     # `Depends` graph and `MCPContext` exactly as a tool call does.

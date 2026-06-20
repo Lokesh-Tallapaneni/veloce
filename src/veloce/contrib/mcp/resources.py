@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
+from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.registry import MCPTool, _tool_from_route
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -35,12 +36,10 @@ _URI_TEMPLATE_VAR = re.compile(r"\{([^}]+)\}")
 
 
 @dataclass(slots=True)
-class MCPResource:
+class MCPResource(MCPDescriptor):
     """One registered MCP resource (a read-only route addressed by URI)."""
 
     uri: str
-    name: str
-    description: str
     tool: MCPTool
     # True when `uri` is a URI template (carries `{var}` placeholders bound to
     # the route's path parameters); such a resource is advertised through

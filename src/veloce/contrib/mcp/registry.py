@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from veloce._handler_plan import build_plan
 from veloce._model_backend import is_pydantic_model
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
+from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
 from veloce.contrib.mcp.safety import require_mcp_description
 
@@ -33,11 +34,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 @dataclass(slots=True)
-class MCPTool:
+class MCPTool(MCPDescriptor):
     """One registered MCP tool."""
 
-    name: str
-    description: str
     handler: Callable
     plan: HandlerPlan
     input_schema: dict[str, Any]
