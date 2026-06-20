@@ -1816,6 +1816,7 @@ class Veloce(
         allowed_origins: Sequence[str] | None = None,
         exclude_middleware: Sequence[str] | None = None,
         sessions: bool = False,
+        resumable: bool = False,
     ) -> Any:
         """Build the MCP server and serve the registered tools.
 
@@ -1845,6 +1846,9 @@ class Veloce(
         `sessions` opts into `Mcp-Session-Id` lifecycle: the server assigns a
         session id on `initialize`, requires it on later requests (400 missing,
         404 once terminated), and accepts a `DELETE` to terminate it.
+        `resumable` opts into SSE resumability: each streamed event gets an id
+        encoding its stream, and a `GET` carrying `Last-Event-ID` replays only that
+        stream's missed events so a client can reconnect after a dropped connection.
         Call this after the tool / resource / prompt routes are registered.
         """
         from veloce.contrib.mcp.server import MCPServer
@@ -1876,6 +1880,7 @@ class Veloce(
                 ),
                 exclude_middleware=exclude_middleware,
                 sessions=sessions,
+                resumable=resumable,
             )
             return None
 

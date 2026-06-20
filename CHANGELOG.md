@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The MCP HTTP transport rejects a missing required session id with `400` and a terminated one with `404`. ([#237](https://github.com/Lokesh-Tallapaneni/veloce/pull/237))
 - A `DELETE` on the MCP HTTP endpoint terminates the session when session management is enabled. ([#237](https://github.com/Lokesh-Tallapaneni/veloce/pull/237))
 - `SessionRequiredError` and `SessionNotFoundError` surface MCP session violations as typed errors. ([#237](https://github.com/Lokesh-Tallapaneni/veloce/pull/237))
+- `mount_mcp(transport="http", resumable=True)` attaches per-stream ids to MCP SSE events and keeps a bounded replay buffer. ([#238](https://github.com/Lokesh-Tallapaneni/veloce/pull/238))
+- A `GET` carrying `Last-Event-ID` resumes an MCP SSE stream, replaying only that stream's missed events. ([#238](https://github.com/Lokesh-Tallapaneni/veloce/pull/238))
 
 ### Changed
 

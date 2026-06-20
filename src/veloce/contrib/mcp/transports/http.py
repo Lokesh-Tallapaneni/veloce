@@ -22,6 +22,13 @@ request (``400`` when missing, ``404`` once terminated) and accepts a ``DELETE``
 terminate it. The stateless default keeps each POST independent with no session
 state. The id lifecycle lives in `HttpSessionStore` behind the `Transport` contract.
 
+Resumability is opt-in (``resumable=True``): each SSE event carrying a JSON-RPC
+payload gets an id encoding its originating POST stream, and the events are kept in
+a bounded `SSEEventStore`. A client whose connection drops reconnects with a
+``GET`` carrying ``Last-Event-ID``; the server replays only that one stream's missed
+events (never another stream's) and closes. With resumability off a ``GET`` stays
+``405`` and no ids or history are kept.
+
 The endpoint is an ordinary Veloce route, so it is protected by whatever middleware
 and dependencies the app applies to it (an OAuth Resource-Server check, an API-key
 scheme) - the transport adds no auth of its own.
@@ -35,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from collections.abc import Sequence
 from itertools import count
 from typing import TYPE_CHECKING, Any, cast
@@ -51,6 +59,7 @@ from veloce.contrib.mcp.errors import (
     _error,
 )
 from veloce.contrib.mcp.server import _SUPPORTED_PROTOCOL_VERSIONS, MCPServer, _notifier_var
+from veloce.contrib.mcp.transports.event_store import SSEEventStore
 from veloce.contrib.mcp.transports.session_store import HttpSessionStore
 from veloce.http.response import JSONResponse, Response
 from veloce.principal import Principal, current_principal, set_principal
@@ -75,10 +84,19 @@ _SESSION_ID_HEADER = "Mcp-Session-Id"
 # before closing").
 _SSE_RETRY_MS = 3000
 
-# Monotonic source of SSE event ids for the priming event. The id makes the
-# stream's first frame addressable; a real resumable event store is a later
-# feature, so the id is process-local and not persisted.
+# Header a resuming client sends to name the last event it received, so the
+# server replays only what came after it (WHATWG SSE / MCP transport resumability).
+_LAST_EVENT_ID_HEADER = "Last-Event-ID"
+
+# Monotonic source of SSE event ids for the non-resumable priming event. The id
+# makes the stream's first frame addressable; when resumability is off the id is
+# process-local and not persisted (no replay window is kept).
 _event_id = count(1)
+
+# Bytes of entropy per resumable stream id. URL-safe base64 keeps the id within
+# the SSE-id visible-ASCII range and free of the `.` sequence separator, so an
+# event id splits unambiguously into (stream, sequence).
+_STREAM_ID_ENTROPY_BYTES = 12
 
 # Sentinel marking the end of an SSE response stream (the runner has produced the
 # call's notifications and final response).
@@ -93,6 +111,7 @@ def register_http_transport(
     allowed_origins: frozenset[str] | None = None,
     exclude_middleware: Sequence[str] | None = None,
     sessions: bool = False,
+    resumable: bool = False,
 ) -> None:
     """Mount the Streamable HTTP transport for `server` at `path` on `app`.
 
@@ -107,19 +126,27 @@ def register_http_transport(
     id on the `initialize` result, requires it on every later request (HTTP 400 if
     missing, 404 once terminated), and accepts a `DELETE` to terminate it. The
     default keeps the stateless behavior with no per-request session bookkeeping.
+
+    `resumable` opts into SSE resumability: each streamed event carrying a payload
+    gets an id encoding its originating stream, the events are kept in a bounded
+    `SSEEventStore`, and a `GET` carrying `Last-Event-ID` replays only that stream's
+    missed events. The default keeps no event ids or history and answers a `GET`
+    405.
     """
     store = HttpSessionStore() if sessions else None
+    event_store = SSEEventStore() if resumable else None
 
     async def mcp_endpoint(request: Request) -> Response:
         # The Streamable HTTP transport is one endpoint serving the spec's verbs:
         # POST carries a JSON-RPC message; DELETE terminates a session (only when
-        # session management is on); GET would open a standalone server-to-client
-        # SSE stream this server keeps none of, so a GET is answered 405.
+        # session management is on); GET resumes a dropped stream when resumability
+        # is on (it carries Last-Event-ID), else there is no standalone
+        # server-to-client stream this server keeps, so a GET is answered 405.
         if request.method == "DELETE":
             return _handle_delete(store, request)
         if request.method == "GET":
-            return _method_not_allowed()
-        return await _handle_http(server, request, auth, allowed_origins, store)
+            return _handle_get(event_store, request)
+        return await _handle_http(server, request, auth, allowed_origins, store, event_store)
 
     app.add_route(
         path,
@@ -149,6 +176,7 @@ async def _handle_http(
     auth: MCPAuth | None,
     allowed_origins: frozenset[str] | None = None,
     store: HttpSessionStore | None = None,
+    event_store: SSEEventStore | None = None,
 ) -> Response:
     """Authenticate, then dispatch one JSON-RPC message from an HTTP POST body."""
     # Origin and protocol-version checks are spec MUSTs that precede dispatch; a
@@ -190,7 +218,7 @@ async def _handle_http(
     is_request = "id" in message and isinstance(message.get("method"), str)
     accepts_sse = "text/event-stream" in request.headers.get("accept", "")
     if is_request and accepts_sse:
-        return _stream_response(server, message, current_principal(), session_id)
+        return _stream_response(server, message, current_principal(), session_id, event_store)
 
     response = await server.handle_message(message)
     if response is None:
@@ -249,6 +277,32 @@ def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response
             status_code=404,
         )
     return Response(status_code=204)
+
+
+def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response:
+    """Resume a dropped SSE stream from `Last-Event-ID`, or answer 405.
+
+    A `GET` is meaningful only under resumability and only as a resume: the client
+    names the last event it saw via `Last-Event-ID`, and the server replays the
+    events that one stream produced after it (scoped to that stream, never another
+    POST's). Without resumability, or without the header, there is no standalone
+    server-push stream, so the verb is unsupported (HTTP 405).
+    """
+    if event_store is None:
+        return _method_not_allowed()
+    last_event_id = request.headers.get("last-event-id")
+    if not last_event_id:
+        return _method_not_allowed()
+    missed = event_store.replay_after(last_event_id)
+
+    async def events() -> Any:
+        for event_id, payload in missed:
+            yield ServerSentEvent.json(payload, id=event_id)
+        # Close the resumed stream with the same reconnect hint a live stream uses,
+        # so a second drop reconnects on the same schedule.
+        yield ServerSentEvent(retry=_SSE_RETRY_MS)
+
+    return EventSourceResponse(events())
 
 
 def _validate_origin(request: Request, allowed_origins: frozenset[str] | None) -> None:
@@ -337,6 +391,7 @@ def _stream_response(
     message: dict[str, Any],
     principal: Principal | None,
     session_id: str | None = None,
+    event_store: SSEEventStore | None = None,
 ) -> EventSourceResponse:
     """Answer one request as an SSE stream: its notifications then its response.
 
@@ -351,13 +406,32 @@ def _stream_response(
     reconnect delay (MCP 2025-11-25 transport). The dispatch task is left running
     on client disconnection rather than cancelled - the spec forbids treating a
     dropped connection as the client cancelling its request.
+
+    When `event_store` is given (resumability is on) each payload event carries an
+    id encoding this stream and is recorded before being queued, so a client that
+    drops can replay the tail via a `Last-Event-ID` GET. The runner records into
+    the store regardless of the generator's state, so events produced after a
+    disconnect are still available to replay.
     """
     queue: asyncio.Queue[Any] = asyncio.Queue()
+    # A resumable stream gets a unique id so its event ids encode their origin and
+    # a resume replays only this stream's events. `seq` advances per recorded
+    # payload; 0 is reserved for the priming event so the replay base is addressable.
+    stream_id = secrets.token_urlsafe(_STREAM_ID_ENTROPY_BYTES) if event_store is not None else None
+    seq = count(1)
 
-    # This sink is the HTTP transport's `Transport.send`: one outbound JSON-RPC
-    # message onto the queue the SSE generator drains.
+    def emit_id(payload: dict[str, Any]) -> str | None:
+        # Record the payload and return its event id when resumability is on; the
+        # stateless default records nothing and the event carries no id.
+        if event_store is None or stream_id is None:
+            return None
+        return event_store.record(stream_id, next(seq), payload)
+
+    # This sink is the HTTP transport's `Transport.send`: it records the outbound
+    # JSON-RPC message (when resumable) then queues it for the SSE generator. The
+    # recording is what survives a dropped connection for later replay.
     async def send(message: dict[str, Any]) -> None:
-        await queue.put(message)
+        await queue.put((emit_id(message), message))
 
     async def runner() -> None:
         token = _notifier_var.set(send)
@@ -368,7 +442,7 @@ def _stream_response(
         try:
             response = await server.handle_message(message)
             if response is not None:
-                await queue.put(response)
+                await queue.put((emit_id(response), response))
         except asyncio.CancelledError:
             # The client cancelled this request (notifications/cancelled): the
             # call's task was cancelled deliberately. Close the stream cleanly
@@ -376,7 +450,8 @@ def _stream_response(
             pass
         except Exception:
             _logger.exception("MCP HTTP request handling failed")
-            await queue.put(_error(message.get("id"), _JSONRPC_INTERNAL_ERROR, "internal error"))
+            err = _error(message.get("id"), _JSONRPC_INTERNAL_ERROR, "internal error")
+            await queue.put((emit_id(err), err))
         finally:
             _notifier_var.reset(token)
             await queue.put(_STREAM_END)
@@ -390,13 +465,17 @@ def _stream_response(
         # mid-flight, and the queue handshake guarantees the generator outlives it.
         runner_task = asyncio.ensure_future(runner())
         # Priming event: an id plus an empty data field marks the stream open and
-        # gives the first frame an id, before any notification or the response.
-        yield ServerSentEvent(data="", id=str(next(_event_id)))
+        # gives the first frame an id, before any notification or the response. A
+        # resumable stream's priming id encodes the stream (sequence 0) so a resume
+        # from it replays the whole tail.
+        prime_id = f"{stream_id}.0" if stream_id is not None else str(next(_event_id))
+        yield ServerSentEvent(data="", id=prime_id)
         while True:
             item = await queue.get()
             if item is _STREAM_END:
                 break
-            yield ServerSentEvent.json(item)
+            event_id, payload = item
+            yield ServerSentEvent.json(payload, id=event_id)
         # A closing frame carrying the reconnect hint, so a client that drops
         # mid-stream knows how long to wait before reconnecting.
         yield ServerSentEvent(retry=_SSE_RETRY_MS)

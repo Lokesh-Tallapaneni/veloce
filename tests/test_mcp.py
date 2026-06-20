@@ -4198,6 +4198,222 @@ def test_sse_stream_opens_with_priming_event_and_closes_with_retry():
     assert events[-1]["result"]["content"][0]["text"] == "done"
 
 
+def _sse_event_ids(body: bytes) -> list[str]:
+    """Return the `id:` field values from an SSE body, in order."""
+    ids: list[str] = []
+    for raw in body.split(b"\n"):
+        line = raw.strip()
+        if line.startswith(b"id:"):
+            ids.append(line[len(b"id:") :].strip().decode("utf-8"))
+    return ids
+
+
+def test_resumability_disabled_by_default_get_is_405():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http")
+    client = app.test_client()
+    # Without resumability a GET (even carrying Last-Event-ID) stays unsupported,
+    # and a streamed POST attaches no payload event ids.
+    resp = client.get("/mcp", headers={"last-event-id": "anything.0"})
+    assert resp.status_code == 405
+    assert resp.headers.get("allow") == "POST"
+    streamed = client.post(
+        "/mcp", json=_mcp_call_body("work"), headers={"accept": "text/event-stream"}
+    )
+    payload_frames = [f for f in streamed.body.split(b"\n\n") if b"data: {" in f]
+    # The payload frame (the JSON-RPC response) carries no id field.
+    assert payload_frames and all(not f.strip().startswith(b"id:") for f in payload_frames)
+
+
+def test_resumable_stream_attaches_per_stream_event_ids():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work with progress")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 2)
+        await ctx.report_progress(2, 2)
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    resp = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "work", "arguments": {}, "_meta": {"progressToken": "p"}},
+        },
+        headers={"accept": "text/event-stream"},
+    )
+    ids = _sse_event_ids(resp.body)
+    # Priming id (sequence 0) plus one id per payload event (two progress + response).
+    assert len(ids) == 4
+    stream_id = ids[0].rsplit(".", 1)[0]
+    # Every id shares the one stream and the sequence advances 0,1,2,3.
+    assert [i.rsplit(".", 1)[0] for i in ids] == [stream_id] * 4
+    assert [int(i.rsplit(".", 1)[1]) for i in ids] == [0, 1, 2, 3]
+
+
+def test_resume_replays_only_the_missed_tail_of_the_same_stream():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work with progress")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 2)
+        await ctx.report_progress(2, 2)
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    client = app.test_client()
+    first = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "work", "arguments": {}, "_meta": {"progressToken": "p"}},
+        },
+        headers={"accept": "text/event-stream"},
+    )
+    ids = _sse_event_ids(first.body)
+    # Pretend the client received through the first progress event, then dropped.
+    last_seen = ids[1]
+
+    resumed = client.get("/mcp", headers={"last-event-id": last_seen})
+    assert resumed.status_code == 200
+    assert "text/event-stream" in resumed.content_type
+    # Only the events after the acknowledged one are replayed: the second progress
+    # notification and the final response.
+    replayed = _parse_sse(resumed.body)
+    assert len(replayed) == 2
+    assert replayed[0]["method"] == "notifications/progress"
+    assert replayed[0]["params"]["progress"] == 2
+    assert replayed[-1]["result"]["content"][0]["text"] == "done"
+    # The replayed ids stay on the originating stream.
+    assert all(
+        i.rsplit(".", 1)[0] == last_seen.rsplit(".", 1)[0] for i in _sse_event_ids(resumed.body)
+    )
+
+
+def test_resume_from_priming_id_replays_whole_stream():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work with progress")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 1)
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    client = app.test_client()
+    first = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "work", "arguments": {}, "_meta": {"progressToken": "p"}},
+        },
+        headers={"accept": "text/event-stream"},
+    )
+    priming_id = _sse_event_ids(first.body)[0]
+    # Resuming from the priming id (sequence 0) replays every payload event.
+    resumed = client.get("/mcp", headers={"last-event-id": priming_id})
+    replayed = _parse_sse(resumed.body)
+    assert len(replayed) == 2
+    assert replayed[-1]["result"]["content"][0]["text"] == "done"
+
+
+def test_resume_does_not_cross_into_another_stream():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Echo")
+    async def echo(label: str) -> str:
+        return label
+
+    app.mount_mcp(transport="http", resumable=True)
+    client = app.test_client()
+
+    def call(label: str) -> bytes:
+        return client.post(
+            "/mcp",
+            json=_mcp_call_body("echo", {"label": label}),
+            headers={"accept": "text/event-stream"},
+        ).body
+
+    first_priming = _sse_event_ids(call("a"))[0]
+    call("b")  # a second, distinct stream the resume must not leak.
+
+    # Resuming the first stream replays only its events, never the second's.
+    resumed = client.get("/mcp", headers={"last-event-id": first_priming})
+    replayed = _parse_sse(resumed.body)
+    assert len(replayed) == 1
+    assert replayed[0]["result"]["content"][0]["text"] == "a"
+
+
+def test_resume_with_unknown_event_id_replays_nothing():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    client = app.test_client()
+    # An id for a stream that was never recorded yields an empty replay (still a
+    # well-formed SSE response closing with the reconnect hint), not a crash.
+    resumed = client.get("/mcp", headers={"last-event-id": "never-seen.3"})
+    assert resumed.status_code == 200
+    assert _parse_sse(resumed.body) == []
+    assert b"retry: 3000" in resumed.body
+
+
+def test_resume_without_last_event_id_is_405():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    # A GET with no Last-Event-ID is not a resume; there is no standalone stream.
+    resp = app.test_client().get("/mcp")
+    assert resp.status_code == 405
+
+
+def test_event_store_replays_after_eviction_window():
+    from veloce.contrib.mcp.transports.event_store import (
+        _MAX_EVENTS_PER_STREAM,
+        SSEEventStore,
+    )
+
+    store = SSEEventStore()
+    # Record more than the per-stream window so the oldest entries are evicted.
+    for seq in range(1, _MAX_EVENTS_PER_STREAM + 5):
+        store.record("s", seq, {"seq": seq})
+    # A resume from an evicted middle id replays whatever still remains, in order,
+    # rather than nothing or a crash.
+    overflow = _MAX_EVENTS_PER_STREAM + 4
+    missed = store.replay_after(f"s.{overflow - 2}")
+    assert [p["seq"] for _, p in missed] == [overflow - 1, overflow]
+
+
+def test_event_store_discards_unknown_stream_and_malformed_ids():
+    from veloce.contrib.mcp.transports.event_store import SSEEventStore
+
+    store = SSEEventStore()
+    store.record("s", 1, {"v": 1})
+    assert store.replay_after("other.0") == []  # unknown stream
+    assert store.replay_after("no-separator") == []  # malformed id
+    assert store.replay_after("s.x") == []  # non-numeric sequence
+    store.discard("s")
+    assert store.replay_after("s.0") == []  # discarded stream
+
+
 async def test_sse_disconnection_does_not_cancel_the_call():
     from veloce.contrib.mcp.server import MCPServer
     from veloce.contrib.mcp.transports.http import _stream_response

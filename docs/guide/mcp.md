@@ -671,6 +671,27 @@ app.mount_mcp(transport="http", sessions=True)
     HTTP session management (`sessions=True`) is opt-in; the stateless default is
     unchanged and carries no per-request session bookkeeping.
 
+### Resumable streams
+
+When a tool call replies over SSE (the client sent `Accept: text/event-stream`), a
+dropped connection normally loses any events the client had not yet received. Pass
+`resumable=True` to let a client reconnect and replay only what it missed:
+
+```python
+app.mount_mcp(transport="http", resumable=True)
+```
+
+- Each streamed event carrying a payload gets an `id` encoding its originating
+  stream, and the events are kept in a bounded in-memory store.
+- A client that drops reconnects with a `GET` carrying the standard SSE
+  `Last-Event-ID` header. The server replays only the events that **one** stream
+  produced after the acknowledged id — never another stream's events — then closes.
+- Without `resumable=True` a `GET` is `405` and no event ids or history are kept.
+
+!!! note "Added in version 0.9"
+    SSE resumability (`resumable=True`) is opt-in; the default keeps no event ids or
+    replay history and answers a `GET` `405`.
+
 ## Authentication and authorization
 
 MCP authenticates at the **transport**, not per tool call, following the MCP OAuth
