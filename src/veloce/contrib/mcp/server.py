@@ -28,6 +28,13 @@ import orjson
 
 from veloce import status
 from veloce._internal import _is_async_callable, is_json_mimetype, offload
+from veloce.contrib.mcp.capabilities import (
+    Capability,
+    LoggingCapability,
+    PromptsCapability,
+    ResourcesCapability,
+    ToolsCapability,
+)
 from veloce.contrib.mcp.context import _LOG_RANKS, MCPContext
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
@@ -400,6 +407,7 @@ class MCPServer:
         "server_name",
         "server_version",
         "_call_timeout",
+        "_capabilities",
         "_methods",
     )
 
@@ -422,6 +430,15 @@ class MCPServer:
         # is cancelled and surfaced as an in-band tool error. `None` disables it.
         config = getattr(app, "config", None)
         self._call_timeout = config.get("MCP_CALL_TIMEOUT") if config is not None else None
+        # The spec areas this server serves, each owning its `initialize`
+        # advertisement and its method handlers. A new area is a capability
+        # added here, not a branch edited into the dispatcher or `_initialize`.
+        self._capabilities: tuple[Capability, ...] = (
+            ToolsCapability(self),
+            ResourcesCapability(self),
+            PromptsCapability(self),
+            LoggingCapability(self),
+        )
         # Built once at construction so per-request dispatch is one dict lookup.
         # A new method is registered here, never wired into a dispatcher branch.
         self._methods: dict[str, MethodHandler] = self._build_method_map()
@@ -429,22 +446,19 @@ class MCPServer:
     def _build_method_map(self) -> dict[str, MethodHandler]:
         """Map each supported JSON-RPC method to its async handler.
 
-        Sync handlers are wrapped here so every entry shares the
-        `async (params) -> result | None` shape `handle_message` dispatches.
+        The lifecycle methods (`initialize`, `ping`, the `initialized` ack) are
+        core to every server; the spec-area methods are contributed by the held
+        capabilities. Every entry shares the `async (params) -> result | None`
+        shape `handle_message` dispatches.
         """
-        return {
+        methods: dict[str, MethodHandler] = {
             "initialize": self._handle_initialize,
             "notifications/initialized": self._handle_initialized,
             "ping": self._handle_ping,
-            "tools/list": self._handle_tools_list,
-            "tools/call": self._tools_call,
-            "resources/list": self._handle_resources_list,
-            "resources/templates/list": self._handle_resource_templates_list,
-            "resources/read": self._resources_read,
-            "prompts/list": self._handle_prompts_list,
-            "prompts/get": self._prompts_get,
-            "logging/setLevel": self._handle_set_log_level,
         }
+        for capability in self._capabilities:
+            methods.update(capability.handlers())
+        return methods
 
     @staticmethod
     def set_notifier(notifier: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
@@ -543,18 +557,14 @@ class MCPServer:
             if isinstance(requested, str) and requested in _SUPPORTED_PROTOCOL_VERSIONS
             else LATEST_PROTOCOL_VERSION
         )
-        # `tools` is always advertised; `resources` only when the app exposes at
-        # least one, so a client does not probe a primitive this server has
-        # nothing to serve for. `subscribe`/`listChanged` are off - resources are
-        # served on demand, with no update notifications on the serial loop.
-        # `logging` is always advertised: any tool may emit a log message through
-        # `MCPContext.log`, and the client may raise the minimum with
-        # ``logging/setLevel``.
-        capabilities: dict[str, Any] = {"tools": {"listChanged": False}, "logging": {}}
-        if self.resources.resources:
-            capabilities["resources"] = {"subscribe": False, "listChanged": False}
-        if self.prompts.prompts:
-            capabilities["prompts"] = {"listChanged": False}
+        # Each held capability advertises its own entry (tools/logging always,
+        # resources/prompts only when the app exposes one); a `None` advertisement
+        # is dropped so the client does not probe an empty primitive.
+        capabilities: dict[str, Any] = {}
+        for capability in self._capabilities:
+            entry = capability.advertise()
+            if entry is not None:
+                capabilities.update(entry)
         return {
             "protocolVersion": version,
             "capabilities": capabilities,
