@@ -427,6 +427,26 @@ def test_parse_error_on_bad_json():
     assert out["error"]["code"] == -32700
 
 
+def test_stdio_transport_satisfies_transport_contract():
+    from veloce.contrib.mcp.transports.base import Transport
+
+    app = Veloce(openapi_url=None)
+    transport = StdioTransport(_server(app), None, None)  # type: ignore[arg-type]
+    assert isinstance(transport, Transport)
+
+
+def test_stdio_transport_send_writes_one_message():
+    app = Veloce(openapi_url=None)
+    written: list[bytes] = []
+
+    async def write_line(data: bytes) -> None:
+        written.append(data)
+
+    transport = StdioTransport(_server(app), None, write_line)  # type: ignore[arg-type]
+    asyncio.run(transport.send({"jsonrpc": "2.0", "method": "notifications/progress"}))
+    assert orjson.loads(written[0])["method"] == "notifications/progress"
+
+
 # -- Dependency injection ---------------------------------------------
 
 

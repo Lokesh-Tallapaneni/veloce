@@ -11,6 +11,10 @@ notification or a response) is answered with ``202 Accepted``.
 The endpoint is an ordinary Veloce route, so it is protected by whatever middleware
 and dependencies the app applies to it (an OAuth Resource-Server check, an API-key
 scheme) - the transport adds no auth of its own.
+
+This transport satisfies the `Transport` contract through its per-request outbound
+sink (`send` in `_stream_response`): the SSE generator drains a queue the sink
+feeds, so one-way notifications reach the client while the call is in flight.
 """
 
 from __future__ import annotations
@@ -197,11 +201,13 @@ def _stream_response(
     """
     queue: asyncio.Queue[Any] = asyncio.Queue()
 
-    async def sink(notification: dict[str, Any]) -> None:
-        await queue.put(notification)
+    # This sink is the HTTP transport's `Transport.send`: one outbound JSON-RPC
+    # message onto the queue the SSE generator drains.
+    async def send(message: dict[str, Any]) -> None:
+        await queue.put(message)
 
     async def runner() -> None:
-        token = _notifier_var.set(sink)
+        token = _notifier_var.set(send)
         # The runner task inherits the request's context (and its principal), but
         # re-bind explicitly so identity is correct regardless of how the task was
         # scheduled.
