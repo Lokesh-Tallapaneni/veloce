@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `stream=True` on a route opts its handler into incremental request-body reading via `request.stream()`, instead of buffering the body first. ([#222](https://github.com/Lokesh-Tallapaneni/veloce/pull/222))
 
+### Fixed
+
+- `PlainTextResponse` and `HTMLResponse` now accept `bytes` as well as `str`, matching Starlette parity. ([#216](https://github.com/Lokesh-Tallapaneni/veloce/issues/216))
+
 ## [0.8.0] - 2026-06-13
 
 ### Added

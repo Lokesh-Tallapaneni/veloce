@@ -1338,14 +1338,14 @@ class HTMLResponse(Response):
 
     def __init__(
         self,
-        content: str,
+        content: str | bytes,
         status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
         background: Any = None,
     ) -> None:
         super().__init__(
             status_code=status_code,
-            body=content.encode("utf-8"),
+            body=content if isinstance(content, bytes) else content.encode("utf-8"),
             content_type=MIME_HTML,
             headers=headers,
             background=background,
@@ -1359,14 +1359,14 @@ class PlainTextResponse(Response):
 
     def __init__(
         self,
-        content: str,
+        content: str | bytes,
         status_code: int = HTTP_200_OK,
         headers: dict[str, str] | None = None,
         background: Any = None,
     ) -> None:
         super().__init__(
             status_code=status_code,
-            body=content.encode("utf-8"),
+            body=content if isinstance(content, bytes) else content.encode("utf-8"),
             content_type=MIME_PLAIN,
             headers=headers,
             background=background,
