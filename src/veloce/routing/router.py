@@ -226,6 +226,7 @@ class RouteInfo:
         "mcp_resource_uri",
         "mcp_scopes",
         "mcp_icons",
+        "mcp_task_support",
         "excluded_middleware",
         "stream",
         "_mw_chain_cache",
@@ -266,6 +267,7 @@ class RouteInfo:
         mcp_resource_uri: str | None = None,
         mcp_scopes: Sequence[str] | None = None,
         mcp_icons: Sequence[Any] | None = None,
+        mcp_task_support: bool = False,
         excluded_middleware: frozenset[str] | None = None,
     ) -> None:
         self.handler = handler
@@ -366,6 +368,13 @@ class RouteInfo:
         # icons and emits no ``icons`` key. Stored as a tuple so the route
         # metadata is immutable and the MCP registry reads it directly.
         self.mcp_icons = tuple(mcp_icons) if mcp_icons else None
+        # Opt this route's MCP tool into task-augmented `tools/call` (contrib.mcp).
+        # `False` (the default) advertises `execution.taskSupport: "forbidden"`
+        # and rejects a task-augmented call; `True` lets a client run the call as
+        # a background task it polls via `tasks/get` / `tasks/result`. The handler
+        # invocation is unchanged - the task reuses the same dispatch path the
+        # synchronous call uses, so a route stays one handler behind both doors.
+        self.mcp_task_support = mcp_task_support
         # Named middleware this route opts out of. `None` (the common case)
         # means "run every registered middleware" - the dispatch hot path
         # then iterates the app's middleware list directly with zero extra
@@ -670,6 +679,7 @@ class Router:
         "mcp_resource_uri",
         "mcp_scopes",
         "mcp_icons",
+        "mcp_task_support",
         "excluded_middleware",
     )
 
@@ -855,6 +865,7 @@ class Router:
             mcp_resource_uri=info.mcp_resource_uri,
             mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
             mcp_icons=info.mcp_icons,
+            mcp_task_support=info.mcp_task_support,
             excluded_middleware=info.excluded_middleware,
         )
 
@@ -1091,6 +1102,13 @@ class Router:
             Sequence[Any] | None,
             Doc("Optional MCP `Icon` objects a client may render next to the tool/resource."),
         ] = None,
+        mcp_task_support: Annotated[
+            bool,
+            Doc(
+                "Allow this route's MCP tool to run as a background task "
+                "(task-augmented `tools/call`, polled via `tasks/get` / `tasks/result`)."
+            ),
+        ] = False,
         exclude_middleware: Annotated[
             Sequence[str] | None,
             Doc("Names of middleware this route opts out of."),
@@ -1168,6 +1186,7 @@ class Router:
             mcp_resource_uri=mcp_resource_uri,
             mcp_scopes=mcp_scopes,
             mcp_icons=mcp_icons,
+            mcp_task_support=mcp_task_support,
             excluded_middleware=frozenset(exclude_middleware) if exclude_middleware else None,
         )
         route_info.stream = stream
@@ -1722,6 +1741,13 @@ class Router:
             Sequence[Any] | None,
             Doc("Optional MCP `Icon` objects a client may render next to the tool/resource."),
         ] = None,
+        mcp_task_support: Annotated[
+            bool,
+            Doc(
+                "Allow this route's MCP tool to run as a background task "
+                "(task-augmented `tools/call`, polled via `tasks/get` / `tasks/result`)."
+            ),
+        ] = False,
         exclude_middleware: Annotated[
             Sequence[str] | None,
             Doc("Names of middleware this route opts out of."),
@@ -1781,6 +1807,7 @@ class Router:
                 mcp_resource_uri=mcp_resource_uri,
                 mcp_scopes=mcp_scopes,
                 mcp_icons=mcp_icons,
+                mcp_task_support=mcp_task_support,
                 exclude_middleware=exclude_middleware,
                 stream=stream,
             )
@@ -2227,5 +2254,6 @@ def _readd_route(
         mcp_resource_uri=info.mcp_resource_uri,
         mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
         mcp_icons=info.mcp_icons,
+        mcp_task_support=info.mcp_task_support,
         exclude_middleware=(list(info.excluded_middleware) if info.excluded_middleware else None),
     )

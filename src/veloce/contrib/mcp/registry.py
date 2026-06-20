@@ -82,6 +82,12 @@ class MCPTool(MCPDescriptor):
     # tool / read this resource. Empty means no per-tool requirement; a non-empty
     # set is checked before invocation and a miss yields an authorization error.
     required_scopes: frozenset[str] = frozenset()
+    # Whether this tool may be invoked as a background task (task-augmented
+    # `tools/call`). `False` (the default) advertises no task support and rejects
+    # a task-augmented call; `True` lets a client run the call detached and poll
+    # it via `tasks/get` / `tasks/result`. Opt-in per tool so the synchronous
+    # path stays unchanged for every tool that does not ask for it.
+    task_support: bool = False
 
 
 @dataclass(slots=True)
@@ -193,6 +199,7 @@ def _register_explicit_tool(
     namespace: str | None,
     scopes: frozenset[str] | None = None,
     icons: Sequence[Icon] | None = None,
+    task_support: bool = False,
 ) -> None:
     """Add an `@app.mcp_tool`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -212,6 +219,7 @@ def _register_explicit_tool(
             output_model=output_model,
             required_scopes=scopes or frozenset(),
             icons=coerce_icons(icons),
+            task_support=task_support,
         )
     )
 
@@ -249,6 +257,7 @@ def _tool_from_route(
         route_methods=methods,
         required_scopes=info.mcp_scopes or frozenset(),
         icons=coerce_icons(getattr(info, "mcp_icons", None)),
+        task_support=bool(getattr(info, "mcp_task_support", False)),
     )
 
 
@@ -257,8 +266,17 @@ def build_registry(app: Any) -> ToolRegistry:
     registry = ToolRegistry()
 
     # Explicit @app.mcp_tool registrations, recorded on the app at decoration
-    # time as `(handler, name, description, namespace, scopes, icons)` tuples.
-    for handler, name, description, namespace, scopes, icons in getattr(app, "_mcp_tools", ()):
+    # time as `(handler, name, description, namespace, scopes, icons,
+    # task_support)` tuples.
+    for (
+        handler,
+        name,
+        description,
+        namespace,
+        scopes,
+        icons,
+        task_support,
+    ) in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
             registry,
             handler,
@@ -267,6 +285,7 @@ def build_registry(app: Any) -> ToolRegistry:
             namespace=namespace,
             scopes=scopes,
             icons=icons,
+            task_support=task_support,
         )
 
     # Routes flagged for exposure. Walk every route (including those hidden

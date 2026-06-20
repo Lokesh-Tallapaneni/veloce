@@ -20,7 +20,11 @@ flagged ``expose_as_mcp_resource=True`` is served as a resource (``resources/lis
 served as a prompt template (``prompts/list``, ``prompts/get``); a ``@app.mcp_completer``
 callable suggests values for a prompt or resource-template argument
 (``completion/complete``); and a tool returning an image or audio response emits the
-matching typed content block. A tool,
+matching typed content block. A tool flagged ``task_support=True`` may be invoked
+as a background task: a task-augmented ``tools/call`` returns a ``CreateTaskResult``
+the client polls via ``tasks/get`` / ``tasks/result`` (``tasks/list`` /
+``tasks/cancel`` round it out), and the same handler runs whether the call is
+synchronous or a task. A tool,
 prompt, or resource may carry opt-in ``icons`` (`Icon` objects) a client renders
 beside it, and a route may return its result as a ``resource_link`` or embedded
 ``resource`` block via the ``X-MCP-Resource-Link`` / ``X-MCP-Embedded-Resource``
@@ -66,6 +70,7 @@ from veloce.contrib.mcp.resources import (
 )
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.tasks import MCPTask, TaskRegistry, TasksCapability
 from veloce.contrib.mcp.transports.http import register_http_transport
 from veloce.contrib.mcp.transports.stdio import StdioTransport, serve_stdio
 
@@ -89,6 +94,7 @@ __all__ = [
     "MCPResource",
     "MCPServer",
     "MCPSession",
+    "MCPTask",
     "MCPTool",
     "MethodNotFoundError",
     "OriginNotAllowedError",
@@ -98,6 +104,8 @@ __all__ = [
     "ResourceNotFoundError",
     "ResourceRegistry",
     "StdioTransport",
+    "TaskRegistry",
+    "TasksCapability",
     "TextContent",
     "ToolRegistry",
     "build_prompt_registry",

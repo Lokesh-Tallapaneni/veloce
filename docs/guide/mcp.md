@@ -470,6 +470,42 @@ seconds to bound each call: a call that overruns it is cancelled and surfaced as
 error (in-band `isError` for a tool, a JSON-RPC error for a resource read or
 prompt). It is unset (no timeout) by default.
 
+## Background tasks
+
+A long tool call can run as a background **task**: the client sends the
+`tools/call` with a `task` field, gets a task id back immediately, and retrieves
+the result later. Task support is opt-in per tool — pass `task_support=True` to
+`@app.mcp_tool` (or `mcp_task_support=True` on an exposed route):
+
+```python
+@app.mcp_tool(description="A long report the client can poll", task_support=True)
+async def build_report(rows: int) -> dict:
+    return {"rows": rows, "ready": True}
+```
+
+The same handler runs whether the call is synchronous or a task — a route stays
+one handler behind every door. An opted-in tool advertises
+`execution.taskSupport: "optional"` in `tools/list`; a tool that does not opt in
+rejects a task-augmented call.
+
+The client drives the task with four methods:
+
+- `tasks/get` — poll the task's status (`working`, then `completed` / `failed` /
+  `cancelled`).
+- `tasks/result` — retrieve the settled `tools/call` result.
+- `tasks/list` — list the server's known tasks.
+- `tasks/cancel` — cancel a running task.
+
+The server emits `notifications/tasks/status` on each transition (carrying the
+`io.modelcontextprotocol/related-task` `_meta` key), and the `CreateTaskResult`
+returned at creation carries the `io.modelcontextprotocol/model-immediate-response`
+hint. A task is retained for a bounded time-to-live (the client may set `ttl` in
+milliseconds on the `task` field); a settled task is evicted once it expires.
+
+!!! note "Added in version 0.9"
+    Task-augmented tool calls require a tool to opt in with `task_support=True`;
+    every other tool is unchanged.
+
 ## Dependency injection
 
 `Depends()` works in a tool exactly as it does in a route. Injected parameters

@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP `notifications/cancelled` cancels the named in-flight request and unwinds its task. ([#234](https://github.com/Lokesh-Tallapaneni/veloce/pull/234))
 - `MCPSession` records the client capabilities advertised in `initialize` over the stdio transport. ([#235](https://github.com/Lokesh-Tallapaneni/veloce/pull/235))
 - `MCP_ENFORCE_LIFECYCLE` rejects a request that precedes `initialize` on a stateful connection. ([#235](https://github.com/Lokesh-Tallapaneni/veloce/pull/235))
+- `task_support=True` opts an MCP tool into a task-augmented `tools/call` that runs in the background. ([#236](https://github.com/Lokesh-Tallapaneni/veloce/pull/236))
+- A task-augmented `tools/call` returns a `CreateTaskResult` the client polls for the result. ([#236](https://github.com/Lokesh-Tallapaneni/veloce/pull/236))
+- `tasks/get`, `tasks/result`, `tasks/list`, and `tasks/cancel` drive an MCP task through its lifecycle. ([#236](https://github.com/Lokesh-Tallapaneni/veloce/pull/236))
+- The MCP server emits `notifications/tasks/status` with the related-task `_meta` on each task transition. ([#236](https://github.com/Lokesh-Tallapaneni/veloce/pull/236))
 
 ### Changed
 

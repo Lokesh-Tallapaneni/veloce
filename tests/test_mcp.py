@@ -833,7 +833,7 @@ def test_duplicate_tool_name_raises():
         return 1
 
     # A second tool resolving to the same name collides at registry build.
-    app._mcp_tools.append((dup, "dup", "Two", None, None, None))
+    app._mcp_tools.append((dup, "dup", "Two", None, None, None, False))
     with pytest.raises(ValueError, match="Duplicate"):
         build_registry(app)
 

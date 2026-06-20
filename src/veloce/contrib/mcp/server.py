@@ -66,6 +66,18 @@ from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import MCPResource, ResourceRegistry, build_resource_registry
+from veloce.contrib.mcp.tasks import (
+    STATUS_CANCELLED,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    MCPTask,
+    TaskRegistry,
+    TasksCapability,
+    create_task_result,
+    new_task,
+    status_notification,
+    task_ttl_ms,
+)
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import RequestValidationError
 from veloce.helpers import _current_app_var, _current_request_var, g
@@ -536,6 +548,7 @@ class MCPServer:
         "_capabilities",
         "_methods",
         "_inflight",
+        "_tasks",
     )
 
     def __init__(
@@ -579,6 +592,11 @@ class MCPServer:
         self._enforce_lifecycle = bool(
             config.get("MCP_ENFORCE_LIFECYCLE") if config is not None else False
         )
+        # Background task store + capability for task-augmented tool calls. The
+        # store is shared between `_tools_call` (which creates a task) and the
+        # capability (which serves `tasks/get|result|list|cancel`); it holds no
+        # task and costs nothing until a client opts a call into a task.
+        self._tasks = TaskRegistry()
         # The spec areas this server serves, each owning its `initialize`
         # advertisement and its method handlers. A new area is a capability
         # added here, not a branch edited into the dispatcher or `_initialize`.
@@ -587,6 +605,7 @@ class MCPServer:
             ResourcesCapability(self),
             PromptsCapability(self),
             CompletionsCapability(self),
+            TasksCapability(self),
             LoggingCapability(self),
         )
         # Built once at construction so per-request dispatch is one dict lookup.
@@ -854,6 +873,11 @@ class MCPServer:
             entry["annotations"] = annotations
         if tool.output_schema is not None:
             entry["outputSchema"] = tool.output_schema
+        # A tool that opts into background execution advertises it so a client
+        # knows it may send a task-augmented `tools/call`. The spec's default is
+        # `"forbidden"`, so a non-opting tool omits the field entirely.
+        if tool.task_support:
+            entry["execution"] = {"taskSupport": "optional"}
         return entry
 
     async def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -875,7 +899,30 @@ class MCPServer:
             await self._instrument(tool, started, status.HTTP_403_FORBIDDEN)
             raise AuthorizationError(tool.required_scopes)
 
-        progress_token = _progress_token(params)
+        # A task-augmented call (a `task` field naming the client's intent to run
+        # it as a background task) is started detached: the tool must opt in, and
+        # a `CreateTaskResult` is returned immediately instead of the synchronous
+        # tool result, which the client retrieves later via `tasks/result`.
+        if "task" in params:
+            return self._create_task(tool, arguments, params)
+
+        return await self._produce_tool_result(tool, arguments, started, _progress_token(params))
+
+    async def _produce_tool_result(
+        self,
+        tool: MCPTool,
+        arguments: dict[str, Any],
+        started: float,
+        progress_token: str | int | None,
+    ) -> dict[str, Any]:
+        """Invoke a tool and shape its return into the `tools/call` result object.
+
+        Shared by the synchronous `tools/call` and the background task runner so
+        a tool invoked either way runs the same handler dispatch and produces the
+        same result shape (one handler, two doors). Authorization is checked by
+        the caller; instrumentation and in-band error shaping happen here so both
+        callers report a call's real outcome identically.
+        """
         try:
             result = await self._run_invoke(tool, arguments, progress_token)
         except InvalidParamsError:
@@ -948,6 +995,102 @@ class MCPServer:
                     "tool result does not conform to the declared output schema", is_error=True
                 )
         return self._success_result(tool, shaped)
+
+    # ── Tasks ─────────────────────────────────────────────
+
+    def _create_task(
+        self, tool: MCPTool, arguments: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Start a task-augmented tool call and return its `CreateTaskResult`.
+
+        A tool that did not opt into task support rejects the task-augmented call
+        (invalid-params), matching the ``execution.taskSupport: "forbidden"`` it
+        advertises. An opted-in tool's call is started detached - the handler runs
+        on a background asyncio task through the same `tools/call` result builder
+        the synchronous path uses - and the new task object is returned at once.
+        """
+        if not tool.task_support:
+            raise InvalidParamsError(
+                f"Tool {tool.name!r} does not support task execution; call it without a 'task' field."
+            )
+        self._tasks.evict_expired()
+        task = new_task(tool.name, task_ttl_ms(params))
+        self._tasks.register(task)
+        # `create_task` copies the current context, so the background runner sees
+        # the same notifier / log level / principal the request established here.
+        progress_token = _progress_token(params)
+        task.runner = asyncio.ensure_future(self._run_task(task, tool, arguments, progress_token))
+        return create_task_result(task)
+
+    async def _run_task(
+        self,
+        task: MCPTask,
+        tool: MCPTool,
+        arguments: dict[str, Any],
+        progress_token: str | int | None,
+    ) -> None:
+        """Run a task's tool call to completion, settling and notifying the client.
+
+        Produces the result through the shared `tools/call` builder (one handler,
+        two doors), then moves the task to `completed` / `failed` and emits a
+        ``notifications/tasks/status`` so a watching client learns the outcome.
+        A cancellation mid-run leaves the already-recorded `cancelled` status
+        untouched.
+        """
+        started = time.perf_counter()
+        try:
+            result = await self._produce_tool_result(tool, arguments, started, progress_token)
+        except asyncio.CancelledError:
+            # `_cancel_task` has already settled the task to `cancelled` and sent
+            # its notification; let the cancellation unwind without overwriting it.
+            raise
+        except InvalidParamsError as exc:
+            # A malformed argument surfaces synchronously on the non-task path; on
+            # the task path the call already started, so it settles the task as
+            # failed rather than propagating to a dead request.
+            task.settle(STATUS_FAILED, _text_result(str(exc), is_error=True), str(exc))
+        except Exception as exc:  # pragma: no cover - defensive
+            _logger.exception("MCP task %s raised", task.name)
+            text = self._error_text(exc, "the task raised an internal error")
+            task.settle(STATUS_FAILED, _text_result(text, is_error=True), text)
+        else:
+            # An in-band tool error is still a settled task: the call ran and
+            # produced a result the client retrieves; `isError` lives inside it.
+            is_error = bool(result.get("isError"))
+            task.settle(STATUS_FAILED if is_error else STATUS_COMPLETED, result)
+        await self._notify_task_status(task)
+
+    def _cancel_task(self, task: MCPTask) -> None:
+        """Cancel a running task, settling it to `cancelled` and notifying.
+
+        A task already terminal is left untouched (a cancel racing completion is a
+        no-op per the spec); a working task is moved to `cancelled` and its runner
+        unwound. The status notification is scheduled rather than awaited so the
+        synchronous `tasks/cancel` handler returns at once.
+        """
+        if task.is_terminal():
+            return
+        runner = task.runner
+        task.settle(STATUS_CANCELLED, _text_result("task cancelled", is_error=True), "cancelled")
+        if runner is not None and not runner.done():
+            runner.cancel()
+        asyncio.ensure_future(self._notify_task_status(task))
+
+    async def _notify_task_status(self, task: MCPTask) -> None:
+        """Emit ``notifications/tasks/status`` for a task transition, if a sink exists.
+
+        The notifier captured when the task was created carries the message; off a
+        transport (a bare construction) or once the originating request's stream
+        has closed there is no sink and the transition is silent - the client
+        still learns the outcome by polling ``tasks/get`` / ``tasks/result``.
+        """
+        notifier = _notifier_var.get()
+        if notifier is None:
+            return
+        try:
+            await notifier(status_notification(task))
+        except Exception:  # pragma: no cover - a dead sink must not fail the task
+            _logger.exception("MCP task status notification failed")
 
     async def _drain_stream(self, response: Response) -> None:
         """Buffer a streamed response into its body so it can be a tool result.
