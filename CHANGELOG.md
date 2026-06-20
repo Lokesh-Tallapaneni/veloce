@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SessionRequiredError` and `SessionNotFoundError` surface MCP session violations as typed errors. ([#237](https://github.com/Lokesh-Tallapaneni/veloce/pull/237))
 - `mount_mcp(transport="http", resumable=True)` attaches per-stream ids to MCP SSE events and keeps a bounded replay buffer. ([#238](https://github.com/Lokesh-Tallapaneni/veloce/pull/238))
 - A `GET` carrying `Last-Event-ID` resumes an MCP SSE stream, replaying only that stream's missed events. ([#238](https://github.com/Lokesh-Tallapaneni/veloce/pull/238))
+- `MCP_RESOURCE_SUBSCRIPTIONS` lets a client `resources/subscribe` and `resources/unsubscribe` to a resource URI. ([#239](https://github.com/Lokesh-Tallapaneni/veloce/pull/239))
+- `MCPServer.notify_resource_updated` sends `notifications/resources/updated` to subscribed connections. ([#239](https://github.com/Lokesh-Tallapaneni/veloce/pull/239))
+- `MCPServer.notify_resources_list_changed` sends `notifications/resources/list_changed` to open connections. ([#239](https://github.com/Lokesh-Tallapaneni/veloce/pull/239))
+- The MCP `resources` capability advertises `subscribe` and `listChanged` when subscriptions are enabled. ([#239](https://github.com/Lokesh-Tallapaneni/veloce/pull/239))
 
 ### Changed
 

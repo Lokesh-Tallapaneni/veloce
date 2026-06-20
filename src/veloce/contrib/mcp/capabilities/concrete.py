@@ -46,11 +46,13 @@ class ResourcesCapability(Capability):
         self._server = server
 
     def advertise(self) -> dict[str, Any] | None:
-        # `subscribe`/`listChanged` are off: resources are served on demand,
-        # with no update notifications on the serial loop.
+        # The `subscribe`/`listChanged` sub-capabilities are advertised only when
+        # the app opts into resource subscriptions; otherwise resources are served
+        # on demand with no update notifications.
         if not self._server.resources.resources:
             return None
-        return {"resources": {"subscribe": False, "listChanged": False}}
+        enabled = self._server._subscriptions_enabled
+        return {"resources": {"subscribe": enabled, "listChanged": enabled}}
 
     def handlers(self) -> dict[str, MethodHandler]:
         return {

@@ -58,6 +58,7 @@ callers that assemble or serve the registry themselves.
 ::: veloce.contrib.mcp.PromptRegistry
 ::: veloce.contrib.mcp.TaskRegistry
 ::: veloce.contrib.mcp.TasksCapability
+::: veloce.contrib.mcp.SubscriptionsCapability
 ::: veloce.contrib.mcp.build_registry
 ::: veloce.contrib.mcp.build_resource_registry
 ::: veloce.contrib.mcp.build_prompt_registry

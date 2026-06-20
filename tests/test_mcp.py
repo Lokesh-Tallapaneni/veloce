@@ -2810,6 +2810,212 @@ def test_initialize_omits_resources_capability_when_none():
     assert "resources" not in caps
 
 
+def _subscriptions_app() -> Veloce:
+    """An app exposing one resource with resource subscriptions enabled."""
+    app = Veloce(openapi_url=None)
+    app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="Settings",
+    )
+    async def settings() -> dict:
+        return {"theme": "dark"}
+
+    return app
+
+
+def test_initialize_advertises_subscriptions_when_enabled():
+    caps = _initialize(_subscriptions_app(), {})["result"]["capabilities"]
+    assert caps["resources"] == {"subscribe": True, "listChanged": True}
+
+
+def test_subscribe_then_resource_updated_reaches_subscriber():
+    app = _subscriptions_app()
+
+    # A tool that signals a change to the subscribed resource mid-connection, so
+    # the resulting `notifications/resources/updated` is written on the same loop.
+    @app.mcp_tool(description="Mark settings changed")
+    async def touch() -> str:
+        await server.notify_resource_updated("config://app")
+        return "ok"
+
+    server = MCPServer(app)
+    pipe = _Pipe(server)
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    pipe.feed({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "touch"}})
+    out = asyncio.run(pipe.run())
+
+    updates = [m for m in out if m.get("method") == "notifications/resources/updated"]
+    assert len(updates) == 1
+    assert updates[0]["params"] == {"uri": "config://app"}
+
+
+def test_resource_updated_skips_unsubscribed_uri():
+    app = _subscriptions_app()
+
+    @app.mcp_tool(description="Mark a different resource changed")
+    async def touch_other() -> str:
+        await server.notify_resource_updated("config://other")
+        return "ok"
+
+    server = MCPServer(app)
+    pipe = _Pipe(server)
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    pipe.feed(
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "touch_other"}}
+    )
+    out = asyncio.run(pipe.run())
+
+    assert not [m for m in out if m.get("method") == "notifications/resources/updated"]
+
+
+def test_unsubscribe_stops_resource_updates():
+    app = _subscriptions_app()
+
+    @app.mcp_tool(description="Mark settings changed")
+    async def touch() -> str:
+        await server.notify_resource_updated("config://app")
+        return "ok"
+
+    server = MCPServer(app)
+    pipe = _Pipe(server)
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/unsubscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    pipe.feed({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "touch"}})
+    out = asyncio.run(pipe.run())
+
+    assert not [m for m in out if m.get("method") == "notifications/resources/updated"]
+
+
+def test_list_changed_reaches_open_connection():
+    app = _subscriptions_app()
+
+    @app.mcp_tool(description="Announce a new resource")
+    async def announce() -> str:
+        await server.notify_resources_list_changed()
+        return "ok"
+
+    server = MCPServer(app)
+    pipe = _Pipe(server)
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "announce"}})
+    out = asyncio.run(pipe.run())
+
+    changed = [m for m in out if m.get("method") == "notifications/resources/list_changed"]
+    assert len(changed) == 1
+    assert "params" not in changed[0]
+
+
+def test_subscribe_returns_empty_result():
+    pipe = _Pipe(_server(_subscriptions_app()))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    out = asyncio.run(pipe.run())[0]
+    assert out["result"] == {}
+
+
+def test_subscribe_rejects_missing_uri():
+    pipe = _Pipe(_server(_subscriptions_app()))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/subscribe", "params": {}})
+    out = asyncio.run(pipe.run())[0]
+    assert out["error"]["code"] == -32602
+
+
+def test_subscribe_unknown_when_disabled():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="Settings",
+    )
+    async def settings() -> dict:
+        return {}
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    out = asyncio.run(pipe.run())[0]
+    # Not advertised, so the method is unknown when the feature is off.
+    assert out["error"]["code"] == -32601
+
+
+def test_notify_is_inert_when_disabled():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Touch")
+    async def touch() -> str:
+        await server.notify_resource_updated("config://app")
+        await server.notify_resources_list_changed()
+        return "ok"
+
+    server = MCPServer(app)
+    pipe = _Pipe(server)
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "touch"}})
+    out = asyncio.run(pipe.run())
+    assert not [m for m in out if m.get("method", "").startswith("notifications/resources/")]
+
+
+def test_subscribe_on_stateless_request_is_invalid():
+    # The HTTP transport dispatches without a session, so a subscribe there is an
+    # invalid request (subscriptions are per-connection state).
+    server = MCPServer(_subscriptions_app())
+    out = asyncio.run(
+        server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "resources/subscribe",
+                "params": {"uri": "config://app"},
+            }
+        )
+    )
+    assert out["error"]["code"] == -32602
+
+
 def test_resource_on_mutating_route_is_rejected():
     app = Veloce(openapi_url=None)
 

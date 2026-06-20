@@ -74,16 +74,23 @@ class StdioTransport:
         # advertised capabilities from `initialize` and lets the server enforce
         # that no other request precedes initialization.
         session = MCPSession()
-        while True:
-            line = await self._read_line()
-            if line is None:
-                return
-            stripped = line.strip()
-            if not stripped:
-                continue
-            response = await self._dispatch_line(stripped, session)
-            if response is not None:
-                await self._write_line(orjson.dumps(response))
+        # Register this connection so an application-signalled resource change can
+        # be delivered to it (a no-op when resource subscriptions are disabled);
+        # unregistered on EOF so a closed connection receives nothing further.
+        self.server.register_connection(session, self.send)
+        try:
+            while True:
+                line = await self._read_line()
+                if line is None:
+                    return
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                response = await self._dispatch_line(stripped, session)
+                if response is not None:
+                    await self._write_line(orjson.dumps(response))
+        finally:
+            self.server.unregister_connection(session)
 
     async def send(self, message: dict[str, Any]) -> None:
         """Write one server-initiated JSON-RPC message line to the client."""

@@ -27,7 +27,7 @@ class MCPSession:
     capabilities / implementation info, recorded from the `initialize` request.
     """
 
-    __slots__ = ("initialized", "client_capabilities", "client_info")
+    __slots__ = ("initialized", "client_capabilities", "client_info", "subscriptions")
 
     def __init__(self) -> None:
         self.initialized = False
@@ -37,6 +37,11 @@ class MCPSession:
         # The client's `clientInfo` (name / version / title), or `None` when the
         # client sent none.
         self.client_info: dict[str, Any] | None = None
+        # Resource URIs this connection subscribed to via `resources/subscribe`;
+        # the server emits `notifications/resources/updated` only to a connection
+        # holding the changed URI here. Empty until the connection subscribes, so
+        # a connection that never subscribes pays nothing.
+        self.subscriptions: set[str] = set()
 
     def record_initialize(self, params: dict[str, Any]) -> None:
         """Record the client's advertised capabilities and info from `initialize`."""

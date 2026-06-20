@@ -30,7 +30,11 @@ beside it, and a route may return its result as a ``resource_link`` or embedded
 ``resource`` block via the ``X-MCP-Resource-Link`` / ``X-MCP-Embedded-Resource``
 response header. Over the stdio transport one `MCPSession` tracks the connection:
 it records the client's advertised capabilities from ``initialize`` and rejects any
-request other than ``initialize`` / ``ping`` that precedes initialization. Both the
+request other than ``initialize`` / ``ping`` that precedes initialization. With
+``MCP_RESOURCE_SUBSCRIPTIONS`` enabled a client may ``resources/subscribe`` to a
+resource URI and the app signals a change with ``MCPServer.notify_resource_updated``
+(or ``notify_resources_list_changed``), fanning ``notifications/resources/updated``
+and ``notifications/resources/list_changed`` out to subscribed connections. Both the
 stdio transport (``mount_mcp()``) and the Streamable HTTP transport
 (``mount_mcp(transport="http")``) are supported.
 """
@@ -72,6 +76,7 @@ from veloce.contrib.mcp.resources import (
 )
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.subscriptions import SubscriptionsCapability
 from veloce.contrib.mcp.tasks import MCPTask, TaskRegistry, TasksCapability
 from veloce.contrib.mcp.transports.http import register_http_transport
 from veloce.contrib.mcp.transports.stdio import StdioTransport, serve_stdio
@@ -108,6 +113,7 @@ __all__ = [
     "SessionNotFoundError",
     "SessionRequiredError",
     "StdioTransport",
+    "SubscriptionsCapability",
     "TaskRegistry",
     "TasksCapability",
     "TextContent",

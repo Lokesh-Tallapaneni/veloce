@@ -66,6 +66,7 @@ from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import MCPResource, ResourceRegistry, build_resource_registry
+from veloce.contrib.mcp.subscriptions import ConnectionRegistry, SubscriptionsCapability
 from veloce.contrib.mcp.tasks import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
@@ -144,6 +145,12 @@ _log_level_var: ContextVar[str | None] = ContextVar("_mcp_log_level", default=No
 # `None` for a notification or off-dispatch construction. A ContextVar keeps
 # concurrent HTTP calls isolated, exactly like the notifier / log-level vars.
 _inflight_var: ContextVar[_InFlight | None] = ContextVar("_mcp_inflight", default=None)
+
+# The dispatching connection's session, set by `handle_message` when a stateful
+# transport passes one, so a per-connection method (`resources/subscribe`) reads
+# the session it should mutate without the handler signature gaining a parameter.
+# `None` on the stateless path. A ContextVar isolates concurrent connections.
+_session_var: ContextVar[MCPSession | None] = ContextVar("_mcp_session", default=None)
 
 
 # ── Helpers ───────────────────────────────────────────────
@@ -545,6 +552,8 @@ class MCPServer:
         "server_version",
         "_call_timeout",
         "_enforce_lifecycle",
+        "_subscriptions_enabled",
+        "_connections",
         "_capabilities",
         "_methods",
         "_inflight",
@@ -592,6 +601,18 @@ class MCPServer:
         self._enforce_lifecycle = bool(
             config.get("MCP_ENFORCE_LIFECYCLE") if config is not None else False
         )
+        # Opt-in resource subscriptions (`MCP_RESOURCE_SUBSCRIPTIONS` in
+        # `app.config`). When on, the resource capability advertises
+        # `subscribe`/`listChanged`, the subscribe / unsubscribe methods are
+        # served, and `notify_resource_updated` / `notify_resources_list_changed`
+        # fan changes out to subscribed connections. Off by default so the
+        # existing wire behavior and zero-overhead path are unchanged.
+        self._subscriptions_enabled = bool(
+            config.get("MCP_RESOURCE_SUBSCRIPTIONS") if config is not None else False
+        )
+        # The live stateful connections that may receive resource notifications;
+        # built only when subscriptions are on, so the default path holds nothing.
+        self._connections = ConnectionRegistry() if self._subscriptions_enabled else None
         # Background task store + capability for task-augmented tool calls. The
         # store is shared between `_tools_call` (which creates a task) and the
         # capability (which serves `tasks/get|result|list|cancel`); it holds no
@@ -600,14 +621,20 @@ class MCPServer:
         # The spec areas this server serves, each owning its `initialize`
         # advertisement and its method handlers. A new area is a capability
         # added here, not a branch edited into the dispatcher or `_initialize`.
-        self._capabilities: tuple[Capability, ...] = (
+        capabilities: list[Capability] = [
             ToolsCapability(self),
             ResourcesCapability(self),
             PromptsCapability(self),
             CompletionsCapability(self),
             TasksCapability(self),
             LoggingCapability(self),
-        )
+        ]
+        # The subscribe / unsubscribe methods are registered only when the feature
+        # is on, so an off server returns method-not-found for them (matching the
+        # `subscribe: false` it advertises) and pays no dispatch-map cost.
+        if self._subscriptions_enabled:
+            capabilities.append(SubscriptionsCapability(self))
+        self._capabilities: tuple[Capability, ...] = tuple(capabilities)
         # Built once at construction so per-request dispatch is one dict lookup.
         # A new method is registered here, never wired into a dispatcher branch.
         self._methods: dict[str, MethodHandler] = self._build_method_map()
@@ -644,6 +671,53 @@ class MCPServer:
         request so concurrent calls never cross notifications.
         """
         _notifier_var.set(notifier)
+
+    @staticmethod
+    def current_session() -> MCPSession | None:
+        """Return the session of the connection currently dispatching, or `None`.
+
+        Set per dispatch by `handle_message` when a stateful transport supplies a
+        session; `None` on the stateless HTTP path or off-dispatch.
+        """
+        return _session_var.get()
+
+    # ── Resource subscriptions ────────────────────────────
+
+    def register_connection(
+        self, session: MCPSession, sink: Callable[[dict[str, Any]], Awaitable[None]]
+    ) -> None:
+        """Record an open stateful connection so it can receive resource updates.
+
+        A no-op when subscriptions are disabled, so a transport may call this
+        unconditionally without the off path tracking any connection.
+        """
+        if self._connections is not None:
+            self._connections.add(session, sink)
+
+    def unregister_connection(self, session: MCPSession) -> None:
+        """Drop a closed connection (a no-op when subscriptions are disabled)."""
+        if self._connections is not None:
+            self._connections.remove(session)
+
+    async def notify_resource_updated(self, uri: str) -> None:
+        """Tell subscribed clients a resource changed (`notifications/resources/updated`).
+
+        Call this from the app when a resource's data changes; the server fans the
+        notification out to every connection subscribed to `uri`. A no-op when
+        subscriptions are disabled or no connection subscribed to `uri`.
+        """
+        if self._connections is not None:
+            await self._connections.notify_updated(uri)
+
+    async def notify_resources_list_changed(self) -> None:
+        """Tell clients the resource list changed (`notifications/resources/list_changed`).
+
+        Call this from the app when the set of available resources changes; the
+        server fans the notification out to every open connection. A no-op when
+        subscriptions are disabled.
+        """
+        if self._connections is not None:
+            await self._connections.notify_list_changed()
 
     # ── JSON-RPC dispatch ─────────────────────────────────
 
@@ -692,6 +766,10 @@ class MCPServer:
         # zero-cancellation common case never touch the registry.
         inflight = self._track_inflight(msg_id, method) if not is_notification else None
         token = _inflight_var.set(inflight)
+        # Expose the connection's session so a per-connection method
+        # (`resources/subscribe`) reaches the session it mutates; `None` on the
+        # stateless path leaves the subscribe handler to reject the call.
+        session_token = _session_var.set(session)
         try:
             result = await handler(params)
         except MCPError as exc:
@@ -706,6 +784,7 @@ class MCPServer:
             return _error(msg_id, _JSONRPC_INTERNAL_ERROR, self._error_text(exc, "internal error"))
         finally:
             _inflight_var.reset(token)
+            _session_var.reset(session_token)
             if inflight is not None:
                 self._inflight.pop(msg_id, None)
 

@@ -290,6 +290,61 @@ file) as a base64 `blob`.
 The server advertises the `resources` capability only when at least one resource
 is registered.
 
+### Subscriptions
+
+A client may **subscribe** to a resource URI and be notified when that resource
+changes, so the agent re-reads only what moved. Subscriptions are opt-in: set
+`MCP_RESOURCE_SUBSCRIPTIONS` in the app config before mounting.
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+
+@app.get(
+    "/settings",
+    expose_as_mcp_resource=True,
+    mcp_resource_uri="config://app/settings",
+    mcp_description="The application settings",
+)
+async def settings() -> dict:
+    return {"debug": False}
+```
+
+With the flag on, the `resources` capability advertises `subscribe: true` and
+`listChanged: true`, and the server answers `resources/subscribe` and
+`resources/unsubscribe` (each carrying a `uri`). A subscription is per-connection,
+recorded on the connection's `MCPSession`.
+
+The framework cannot know when your data changes, so signal a change from the app —
+typically from the same handler that mutated the data. The server fans the
+notification out to every connection subscribed to that URI:
+
+```python
+from veloce.contrib.mcp.server import MCPServer
+
+server = MCPServer(app)
+
+
+@app.mcp_tool(description="Toggle debug mode")
+async def set_debug(on: bool) -> str:
+    # ... mutate the settings store ...
+    await server.notify_resource_updated("config://app/settings")
+    return "updated"
+```
+
+Call `server.notify_resources_list_changed()` when the *set* of resources changes
+(one is added or removed); it sends `notifications/resources/list_changed` to every
+open connection. Both signals are no-ops when subscriptions are disabled, so the
+default path stays inert.
+
+!!! note "Added in version 0.9"
+    Resource subscriptions require a stateful connection (the stdio transport, or
+    any transport that keeps one connection open). A subscribe on a stateless HTTP
+    request is rejected, since there is no connection to deliver updates over.
+
 ## Prompts
 
 A **prompt** is the MCP primitive for a reusable, parameterised message template a
