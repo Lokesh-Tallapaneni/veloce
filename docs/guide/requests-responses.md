@@ -41,6 +41,44 @@ async def inspect(request: Request):
 - `request.state` is a per-request scratch namespace — use `request.state.foo`
   for your own data, never a bare attribute on `request`.
 
+### Client IP
+
+Five properties expose the connecting client's address:
+
+| Property | Returns | Notes |
+| --- | --- | --- |
+| `request.client` | `Address(host, port)` or `None` | ASGI scope `client`; honours ProxyFix. |
+| `request.client_host` | `str` or `None` | The IP portion of `client`. |
+| `request.client_port` | `int` or `None` | The port portion of `client`. |
+| `request.remote_addr` | `str` or `None` | Flask-style alias for `client_host`. |
+| `request.access_route` | `list[str]` | `X-Forwarded-For` chain + connecting peer. |
+
+```python title="app.py"
+from veloce import Request, Veloce
+
+app = Veloce()
+
+
+@app.get("/ip")
+async def ip(request: Request):
+    return {
+        "client_host": request.client_host,
+        "client_port": request.client_port,
+        "remote_addr": request.remote_addr,
+        "access_route": request.access_route,
+    }
+```
+
+`client`, `client_host`, and `remote_addr` return `None` for synthetic requests
+(e.g. `TestClient` without a live socket). `access_route` returns `[]` in that
+case.
+
+!!! warning "Forwarded headers are spoofable"
+    `X-Forwarded-For` and `access_route` reflect whatever the caller sent. Only
+    trust them when you have added [`ProxyFix`](../reference.md#veloce.ProxyFix)
+    and configured the correct hop depth — see
+    [Behind a proxy](behind-a-proxy.md).
+
 ### Cookies and query parameters
 
 `request.cookies` parses the `Cookie` header lazily; `request.query_params`
