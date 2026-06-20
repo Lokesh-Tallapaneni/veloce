@@ -17,8 +17,10 @@ Schema 2020-12 dialect, and - where the result has a declared object shape - an
 returns alongside the text block. A read-only route
 flagged ``expose_as_mcp_resource=True`` is served as a resource (``resources/list``,
 ``resources/templates/list``, ``resources/read``); a ``@app.mcp_prompt`` callable is
-served as a prompt template (``prompts/list``, ``prompts/get``); and a tool returning
-an image or audio response emits the matching typed content block. A tool,
+served as a prompt template (``prompts/list``, ``prompts/get``); a ``@app.mcp_completer``
+callable suggests values for a prompt or resource-template argument
+(``completion/complete``); and a tool returning an image or audio response emits the
+matching typed content block. A tool,
 prompt, or resource may carry opt-in ``icons`` (`Icon` objects) a client renders
 beside it, and a route may return its result as a ``resource_link`` or embedded
 ``resource`` block via the ``X-MCP-Resource-Link`` / ``X-MCP-Embedded-Resource``
@@ -29,6 +31,7 @@ HTTP transport (``mount_mcp(transport="http")``) are supported.
 from __future__ import annotations
 
 from veloce.contrib.mcp.auth import MCPAuth
+from veloce.contrib.mcp.completion import CompletionResult, CompletionsCapability
 from veloce.contrib.mcp.content import (
     AudioContent,
     ContentBlock,
@@ -66,6 +69,8 @@ __all__ = [
     "JSON_SCHEMA_DIALECT",
     "AudioContent",
     "AuthorizationError",
+    "CompletionResult",
+    "CompletionsCapability",
     "ContentBlock",
     "EmbeddedResource",
     "Icon",

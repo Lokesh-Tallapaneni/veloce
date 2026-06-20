@@ -35,6 +35,7 @@ from veloce.contrib.mcp.capabilities import (
     ResourcesCapability,
     ToolsCapability,
 )
+from veloce.contrib.mcp.completion import CompletionsCapability, attach_completers
 from veloce.contrib.mcp.content import (
     AudioContent,
     ContentBlock,
@@ -513,6 +514,10 @@ class MCPServer:
         self.registry = registry if registry is not None else build_registry(app)
         self.resources = resources if resources is not None else build_resource_registry(app)
         self.prompts = prompts if prompts is not None else build_prompt_registry(app)
+        # Bind every `@app.mcp_completer` registration onto its prompt / resource
+        # descriptor now the registries exist, so a misconfigured target surfaces
+        # at build time and `CompletionsCapability` finds the completers in place.
+        attach_completers(app, self.prompts, self.resources)
         self.server_name = getattr(app, "title", None) or "Veloce"
         self.server_version = getattr(app, "version", None) or "0.1.0"
         # Human-facing display name and client-facing usage guidance for the
@@ -537,6 +542,7 @@ class MCPServer:
             ToolsCapability(self),
             ResourcesCapability(self),
             PromptsCapability(self),
+            CompletionsCapability(self),
             LoggingCapability(self),
         )
         # Built once at construction so per-request dispatch is one dict lookup.

@@ -15,6 +15,7 @@ by always decorating concretes with ``@dataclass(slots=True)`` rather than by an
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from veloce.contrib.mcp.icons import Icon
@@ -36,9 +37,17 @@ class MCPDescriptor:
     here for the same reason as `title` - declared once, inherited by every
     subclass - and defaults to the empty tuple so a primitive without icons holds
     no extra state and emits no ``icons`` key.
+
+    `completers` maps one of the primitive's argument names to the opt-in callable
+    that suggests completions for it (``completion/complete``). It is declared
+    here so a prompt and a resource template share one argument-completer model
+    rather than each carrying its own; it defaults to an empty mapping so a
+    primitive without completers holds no extra state. Tools carry none - the MCP
+    spec defines completion references only for prompts and resources.
     """
 
     name: str
     description: str
     title: str | None = field(default=None, kw_only=True)
     icons: tuple[Icon, ...] = field(default=(), kw_only=True)
+    completers: dict[str, Callable] = field(default_factory=dict, kw_only=True)

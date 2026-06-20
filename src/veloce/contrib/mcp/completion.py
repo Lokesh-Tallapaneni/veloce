@@ -1,0 +1,257 @@
+"""MCP argument completion — suggest values for a prompt or resource argument.
+
+The Model Context Protocol's ``completion/complete`` lets a client ask the server
+to suggest values for one argument of a prompt or a resource template as the user
+types. Completion is opt-in per argument: a handler author registers a completer
+with ``@app.mcp_completer(prompt=..., argument=...)`` (or ``resource=...``), and
+the callable is invoked with the partial value the user has typed plus the values
+of the sibling arguments already resolved. A prompt or resource argument with no
+registered completer answers with an empty completion - never an error - so a
+client may always probe and a server that registers none stays inert.
+
+The completers live on the existing `MCPPrompt` / `MCPResource` descriptors (their
+shared `completers` mapping), so completion reuses the prompt and resource
+registries rather than maintaining a parallel argument model. `CompletionsCapability`
+advertises the ``completions`` capability only when at least one completer is
+registered, and answers ``completion/complete`` by resolving the reference,
+looking up the argument's completer, and shaping its return into the spec's
+``{values, total, hasMore}`` result.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from veloce._internal import _is_async_callable, offload
+from veloce.contrib.mcp.capabilities.base import Capability
+from veloce.contrib.mcp.errors import InvalidParamsError
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.mcp.prompts import PromptRegistry
+    from veloce.contrib.mcp.resources import ResourceRegistry
+    from veloce.contrib.mcp.server import MCPServer, MethodHandler
+
+# The MCP completion utility caps a single response at 100 values; a completer
+# returning more is truncated to the cap and the overflow is reported via `total`
+# and `hasMore` so the client knows further matches exist.
+_MAX_COMPLETION_VALUES = 100
+
+
+@dataclass(slots=True)
+class CompletionResult:
+    """An explicit completion response: candidate values plus optional totals.
+
+    Return this from a completer to declare the full match `total` and whether
+    more values exist beyond those returned; return a bare sequence of strings
+    instead to let the capability derive both from the values it received.
+
+    Usage::
+
+        @app.mcp_completer(prompt="greet", argument="name")
+        async def complete_name(value: str) -> CompletionResult:
+            matches = await lookup_names(prefix=value)
+            return CompletionResult(matches[:100], total=len(matches))
+    """
+
+    values: Sequence[str]
+    total: int | None = None
+    has_more: bool | None = None
+
+
+def _empty_completion() -> dict[str, Any]:
+    """Return the completion result for an argument with no completer."""
+    return {"completion": {"values": [], "hasMore": False}}
+
+
+def _shape_completion(result: Sequence[str] | CompletionResult) -> dict[str, Any]:
+    """Shape a completer's return into the MCP ``completion/complete`` result.
+
+    A bare sequence yields its values (capped at 100) with `total`/`hasMore`
+    derived from the cap; a `CompletionResult` carries the author's explicit
+    `total` / `has_more`, falling back to the derived values when either is unset.
+    """
+    if isinstance(result, CompletionResult):
+        values = list(result.values)
+        explicit_total = result.total
+        explicit_has_more = result.has_more
+    else:
+        values = list(result)
+        explicit_total = None
+        explicit_has_more = None
+
+    capped = values[:_MAX_COMPLETION_VALUES]
+    completion: dict[str, Any] = {"values": capped}
+    total = explicit_total if explicit_total is not None else len(values)
+    completion["total"] = total
+    if explicit_has_more is not None:
+        completion["hasMore"] = explicit_has_more
+    else:
+        completion["hasMore"] = total > len(capped)
+    return {"completion": completion}
+
+
+def attach_completers(app: Any, prompts: PromptRegistry, resources: ResourceRegistry) -> None:
+    """Bind every `@app.mcp_completer` registration onto its target descriptor.
+
+    Each registration names a prompt (by name) or a resource (by URI) and one of
+    its argument names; the completer is stored in that descriptor's `completers`
+    mapping. An unknown target, an unknown argument, or a duplicate completer for
+    the same argument raises at mount time so the misconfiguration surfaces before
+    a client connects.
+    """
+    for kind, key, argument, completer in getattr(app, "_mcp_completers", ()):
+        if kind == "prompt":
+            prompt = prompts.get(key)
+            if prompt is None:
+                raise ValueError(
+                    f"@app.mcp_completer names prompt {key!r}, which is not a "
+                    "registered MCP prompt."
+                )
+            valid = {arg["name"] for arg in prompt.arguments}
+            _attach_one(prompt.completers, key, argument, completer, valid, "prompt")
+        else:
+            resource = resources.get(key)
+            if resource is None:
+                raise ValueError(
+                    f"@app.mcp_completer names resource {key!r}, which is not a "
+                    "registered MCP resource URI."
+                )
+            valid = set(resource.uri_param_names)
+            _attach_one(resource.completers, key, argument, completer, valid, "resource")
+
+
+def _attach_one(
+    store: dict[str, Callable],
+    key: str,
+    argument: str,
+    completer: Callable,
+    valid_arguments: set[str],
+    kind: str,
+) -> None:
+    """Store one completer under `argument`, validating the argument and uniqueness."""
+    if argument not in valid_arguments:
+        raise ValueError(
+            f"@app.mcp_completer names argument {argument!r} on {kind} {key!r}, "
+            f"which has no such argument (its arguments are {sorted(valid_arguments)})."
+        )
+    if argument in store:
+        raise ValueError(f"Duplicate MCP completer for argument {argument!r} on {kind} {key!r}.")
+    store[argument] = completer
+
+
+class CompletionsCapability(Capability):
+    """The ``completion/complete`` method, advertised when a completer exists.
+
+    Completion is opt-in: the capability is advertised only when at least one
+    prompt or resource argument carries a registered completer, so a server with
+    none stays inert and a client never probes an empty capability.
+    """
+
+    __slots__ = ("_server",)
+
+    def __init__(self, server: MCPServer) -> None:
+        self._server = server
+
+    def advertise(self) -> dict[str, Any] | None:
+        if not self._has_completers():
+            return None
+        return {"completions": {}}
+
+    def handlers(self) -> dict[str, MethodHandler]:
+        return {"completion/complete": self._complete}
+
+    def _has_completers(self) -> bool:
+        """Return whether any registered prompt or resource carries a completer."""
+        server = self._server
+        if any(p.completers for p in server.prompts.prompts.values()):
+            return True
+        return any(r.completers for r in server.resources.resources.values())
+
+    async def _complete(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Answer ``completion/complete`` for one prompt or resource argument.
+
+        The reference selects the primitive (``ref/prompt`` by name, ``ref/resource``
+        by URI), the ``argument`` carries the name and the partial value, and an
+        optional ``context.arguments`` supplies the sibling values already resolved.
+        An argument with no registered completer answers with an empty completion.
+        """
+        completer, value, context = self._resolve(params)
+        if completer is None:
+            return _empty_completion()
+        if _is_async_callable(completer):
+            result = await completer(value, context)
+        else:
+            result = await offload(completer, value, context)
+        return _shape_completion(result)
+
+    def _resolve(self, params: dict[str, Any]) -> tuple[Callable | None, str, dict[str, str]]:
+        """Resolve a request into its completer, partial value, and sibling context.
+
+        The completer is `None` when the named argument carries none (the empty
+        completion case); a malformed reference or argument is an invalid-params
+        error per JSON-RPC.
+        """
+        ref = params.get("ref")
+        if not isinstance(ref, dict):
+            raise InvalidParamsError("completion/complete requires a 'ref' object")
+        argument = params.get("argument")
+        if not isinstance(argument, dict) or not isinstance(argument.get("name"), str):
+            raise InvalidParamsError(
+                "completion/complete requires an 'argument' object with a string 'name'"
+            )
+        name = argument["name"]
+        value = argument.get("value")
+        if not isinstance(value, str):
+            raise InvalidParamsError("completion/complete 'argument.value' must be a string")
+        context = self._context_arguments(params)
+
+        completers = self._completers_for_ref(ref)
+        return completers.get(name), value, context
+
+    def _completers_for_ref(self, ref: dict[str, Any]) -> dict[str, Callable]:
+        """Return the completer mapping for a ``ref/prompt`` / ``ref/resource``.
+
+        An unknown primitive yields an empty mapping, so the request answers with
+        an empty completion rather than an error - the client may always probe.
+        """
+        ref_type = ref.get("type")
+        if ref_type == "ref/prompt":
+            prompt_name = ref.get("name")
+            if not isinstance(prompt_name, str):
+                raise InvalidParamsError("ref/prompt requires a string 'name'")
+            prompt = self._server.prompts.get(prompt_name)
+            return prompt.completers if prompt is not None else {}
+        if ref_type == "ref/resource":
+            uri = ref.get("uri")
+            if not isinstance(uri, str):
+                raise InvalidParamsError("ref/resource requires a string 'uri'")
+            # A completion reference carries the template URI verbatim (the value
+            # `resources/templates/list` advertised), so an exact registry lookup
+            # is tried first; a concrete URI then falls back to the pattern match.
+            resources = self._server.resources
+            resource = resources.get(uri)
+            if resource is not None:
+                return resource.completers
+            matched = resources.match(uri)
+            return matched[0].completers if matched is not None else {}
+        raise InvalidParamsError(
+            "completion/complete 'ref.type' must be ref/prompt or ref/resource"
+        )
+
+    @staticmethod
+    def _context_arguments(params: dict[str, Any]) -> dict[str, str]:
+        """Extract the already-resolved sibling argument values from the request.
+
+        The optional ``context.arguments`` mapping carries the values the client
+        has already filled for other arguments, so a completer can narrow its
+        suggestions; an absent or malformed context yields an empty mapping.
+        """
+        context = params.get("context")
+        if not isinstance(context, dict):
+            return {}
+        arguments = context.get("arguments")
+        if not isinstance(arguments, dict):
+            return {}
+        return {k: v for k, v in arguments.items() if isinstance(v, str)}

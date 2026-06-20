@@ -531,6 +531,12 @@ class Veloce(
         self._mcp_prompts: list[
             tuple[Callable, str | None, str | None, str | None, frozenset[str] | None, Any]
         ] = []
+        # MCP argument-completer registrations (contrib.mcp). Each entry is
+        # `(kind, key, argument, completer)` where `kind` is "prompt" or
+        # "resource", `key` is the prompt name or resource URI, recorded by
+        # `@app.mcp_completer(...)` and bound onto its descriptor at `mount_mcp`
+        # time so `completion/complete` can answer for that argument.
+        self._mcp_completers: list[tuple[str, str, str, Callable]] = []
         # Dev-mode event-loop blocking watchdog - armed during startup only
         # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
         # (and free) for every other app.
@@ -1755,6 +1761,42 @@ class Veloce(
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
             self._mcp_prompts.append((func, name, description, namespace, scope_set, icons))
+            return func
+
+        return decorator
+
+    def mcp_completer(
+        self,
+        *,
+        argument: str,
+        prompt: str | None = None,
+        resource: str | None = None,
+    ) -> Callable:
+        """Register an argument-value completer for an MCP prompt or resource (contrib.mcp).
+
+        The decorated callable suggests values for one `argument` of a `prompt`
+        (named) or a `resource` (by URI template) as the user types, answering the
+        MCP ``completion/complete`` request. It is called with the partial value
+        and a mapping of the sibling argument values already resolved, and returns
+        a sequence of candidate strings (or a `CompletionResult` for explicit
+        totals). Pass exactly one of `prompt` or `resource`. An argument with no
+        registered completer answers with an empty completion.
+
+        Usage::
+
+            @app.mcp_completer(prompt="greet", argument="name")
+            async def complete_name(value: str, context: dict[str, str]) -> list[str]:
+                return [n for n in KNOWN_NAMES if n.startswith(value)]
+        """
+        if prompt is not None and resource is None:
+            kind, key = "prompt", prompt
+        elif resource is not None and prompt is None:
+            kind, key = "resource", resource
+        else:
+            raise ValueError("mcp_completer requires exactly one of prompt= or resource=.")
+
+        def decorator(func: Callable) -> Callable:
+            self._mcp_completers.append((kind, key, argument, func))
             return func
 
         return decorator

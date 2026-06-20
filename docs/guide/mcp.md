@@ -331,6 +331,75 @@ with a default is an optional argument. As with tools and resources, a non-empty
 The server advertises the `prompts` capability only when at least one prompt is
 registered.
 
+## Argument completion
+
+A client can ask the server to suggest values for one argument of a prompt or a
+resource template as the user types, through the MCP `completion/complete` request.
+Completion is opt-in per argument: register a completer with `@app.mcp_completer`,
+naming the `prompt` (by name) or `resource` (by URI template) and the `argument`.
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+
+KNOWN_NAMES = ["ada", "alan", "grace"]
+
+
+@app.mcp_prompt(description="Greet a user by name")
+async def greet(name: str) -> str:
+    return f"Hello, {name}!"
+
+
+@app.mcp_completer(prompt="greet", argument="name")
+async def complete_name(value: str, context: dict[str, str]) -> list[str]:
+    return [n for n in KNOWN_NAMES if n.startswith(value)]
+# completion/complete {"ref": {"type": "ref/prompt", "name": "greet"},
+#                      "argument": {"name": "name", "value": "a"}}
+#   -> {"completion": {"values": ["ada", "alan"], "total": 2, "hasMore": false}}
+```
+
+The completer is called with the partial `value` the user has typed and a mapping
+of the sibling arguments already resolved (the request's `context.arguments`), so a
+completer can narrow its suggestions. It may be `async` or sync — a sync completer
+runs in the thread pool. Return a list of candidate strings, or a `CompletionResult`
+to declare the full match `total` and whether more values exist:
+
+```python
+from veloce.contrib.mcp import CompletionResult
+
+
+@app.mcp_completer(prompt="greet", argument="name")
+async def complete_name(value: str, context: dict[str, str]) -> CompletionResult:
+    matches = await directory.search(prefix=value)
+    return CompletionResult(matches[:100], total=len(matches))
+```
+
+A completer for a resource template names its argument by a URI-template variable:
+
+```python
+@app.get(
+    "/users/{user_id}",
+    expose_as_mcp_resource=True,
+    mcp_description="A user record",
+    mcp_resource_uri="users://{user_id}",
+)
+async def get_user(user_id: str) -> dict:
+    return {"id": user_id}
+
+
+@app.mcp_completer(resource="users://{user_id}", argument="user_id")
+async def complete_user_id(value: str, context: dict[str, str]) -> list[str]:
+    return [uid for uid in active_user_ids() if uid.startswith(value)]
+```
+
+!!! note
+    A single response is capped at 100 values; an over-cap return is truncated and
+    `hasMore` is set so the client knows more matches exist. An argument with no
+    registered completer answers with an empty completion (never an error), so a
+    client may always probe. The server advertises the `completions` capability
+    only when at least one completer is registered.
+
 ## The MCP context
 
 A tool handler (or one of its dependencies) may declare a parameter typed
