@@ -197,6 +197,7 @@ nav:
       - Customising the Request or Route: how-to/custom-request-route.md
   - Why Veloce:
       - Why Veloce Exists: surpass/why-veloce-exists.md
+      - Veloce vs Starlette: surpass/veloce-vs-starlette.md
       - Performance: surpass/performance.md
       - Native Server Deep Dive: surpass/native-server.md
       - Migrating from FastAPI: surpass/migrating-from-fastapi.md
