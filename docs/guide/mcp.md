@@ -441,6 +441,27 @@ Log messages use RFC 5424 levels (`debug`, `info`, `notice`, `warning`, `error`,
 `critical`, `alert`, `emergency`); the client can raise the minimum with
 `logging/setLevel`, and a message below it is dropped.
 
+### Cancellation
+
+When the client sends a `notifications/cancelled` naming an in-flight request, the
+server cancels that call's task and marks its context cancelled. A handler blocked
+on an `await` unwinds; a cooperative handler can poll `ctx.cancelled` and stop
+early:
+
+```python
+@app.mcp_tool(description="A long scan the client may cancel")
+async def scan(count: int, ctx: MCPContext) -> dict:
+    for i in range(count):
+        if ctx.cancelled:
+            return {"scanned": i, "cancelled": True}
+        await ctx.report_progress(i + 1, count)
+    return {"scanned": count}
+```
+
+The `initialize` request is never cancellable (the spec forbids it), and a cancel
+naming an already-finished or unknown request is ignored. Over the Streamable HTTP
+transport a cancelled call closes its SSE stream without a response frame.
+
 ### Call timeout
 
 The stdio transport serves calls one at a time, so a handler that blocks forever

@@ -4092,6 +4092,111 @@ async def test_sse_disconnection_does_not_cancel_the_call():
     assert ran_to_completion.is_set()
 
 
+def test_mcp_context_cancelled_defaults_false():
+    ctx = MCPContext("tool")
+    assert ctx.cancelled is False
+
+
+async def test_notifications_cancelled_cancels_in_flight_call():
+    app = Veloce(openapi_url=None)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    saw_cancel = asyncio.Event()
+
+    @app.mcp_tool(description="Cooperative work")
+    async def work(ctx: MCPContext) -> str:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            # The cancel notification flips the flag and unwinds the await.
+            assert ctx.cancelled is True
+            saw_cancel.set()
+            raise
+        return "done"
+
+    server = MCPServer(app)
+    call = asyncio.ensure_future(server.handle_message(_mcp_call_body("work", {})))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    # The client cancels the in-flight request by id; the call's task unwinds.
+    await server.handle_message(
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    await asyncio.wait_for(saw_cancel.wait(), timeout=1)
+    # The cancelled request is removed from the in-flight registry once settled.
+    assert server._inflight == {}
+
+
+async def test_notifications_cancelled_unknown_id_is_a_no_op():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    server = MCPServer(app)
+    # No request is in flight; cancelling an unknown id returns no response and
+    # does not raise (the request may have already completed).
+    result = await server.handle_message(
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 99}}
+    )
+    assert result is None
+
+
+async def test_initialize_request_is_not_cancellable():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    server = MCPServer(app)
+    # `initialize` is never registered as cancellable (the spec forbids cancelling
+    # it), so dispatching it leaves the in-flight registry untouched.
+    await server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    assert server._inflight == {}
+    # A tracked tool call, by contrast, would register; verify the gate directly.
+    assert server._track_inflight(1, "initialize") is None
+    assert server._track_inflight(2, "tools/call") is not None
+
+
+async def test_http_sse_call_is_cancelled_by_notification():
+    from veloce.contrib.mcp.transports.http import _stream_response
+
+    app = Veloce(openapi_url=None)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    ran_to_completion = asyncio.Event()
+
+    @app.mcp_tool(description="Work cancelled mid-flight over SSE")
+    async def work(ctx: MCPContext) -> str:
+        started.set()
+        await release.wait()
+        ran_to_completion.set()
+        return "done"
+
+    server = MCPServer(app)
+    stream = _stream_response(server, _mcp_call_body("work"), None)
+    gen = stream._stream
+    await gen.__anext__()  # priming frame; schedules the runner task
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    # A separate cancel message reaches the concurrently-running call by id.
+    await server.handle_message(
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}
+    )
+    # Drain the stream to its close; the call never ran to completion.
+    async for _ in gen:
+        pass
+    release.set()
+    await asyncio.sleep(0)
+    assert not ran_to_completion.is_set()
+    assert server._inflight == {}
+
+
 def test_http_log_level_does_not_bleed_across_requests():
     app = Veloce(openapi_url=None)
 

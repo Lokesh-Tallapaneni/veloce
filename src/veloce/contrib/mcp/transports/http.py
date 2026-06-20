@@ -287,6 +287,11 @@ def _stream_response(
             response = await server.handle_message(message)
             if response is not None:
                 await queue.put(response)
+        except asyncio.CancelledError:
+            # The client cancelled this request (notifications/cancelled): the
+            # call's task was cancelled deliberately. Close the stream cleanly
+            # without an error frame - a cancelled request expects no response.
+            pass
         except Exception:
             _logger.exception("MCP HTTP request handling failed")
             await queue.put(_error(message.get("id"), _JSONRPC_INTERNAL_ERROR, "internal error"))

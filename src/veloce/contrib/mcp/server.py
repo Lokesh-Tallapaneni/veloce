@@ -6,8 +6,9 @@ request objects, forwards the responses it returns, and supplies the outbound si
 ``initialize`` (negotiating the protocol version), ``ping``, the tool methods
 (``tools/list`` / ``tools/call``), the resource methods (``resources/list`` /
 ``resources/templates/list`` / ``resources/read``), the prompt methods
-(``prompts/list`` / ``prompts/get``), ``logging/setLevel``, and the
-``notifications/initialized`` ack. A ``tools/call`` runs the handler through the
+(``prompts/list`` / ``prompts/get``), ``logging/setLevel``, the
+``notifications/initialized`` ack, and ``notifications/cancelled`` (cancelling the
+named in-flight request). A ``tools/call`` runs the handler through the
 shared `DependencyResolver`, so `Depends()` graphs, `yield`-style teardown, and
 `Security` all behave exactly as on the HTTP and WebSocket paths; resource reads
 and prompt renders replay the same invocation path. Per-tool instrumentation fires
@@ -125,8 +126,39 @@ _notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = 
 # task, where it persists for the connection.
 _log_level_var: ContextVar[str | None] = ContextVar("_mcp_log_level", default=None)
 
+# The current request's in-flight registration, set by `handle_message` for an
+# id-bearing (cancellable) request so the invocation can attach its `MCPContext`.
+# `None` for a notification or off-dispatch construction. A ContextVar keeps
+# concurrent HTTP calls isolated, exactly like the notifier / log-level vars.
+_inflight_var: ContextVar[_InFlight | None] = ContextVar("_mcp_inflight", default=None)
+
 
 # ── Helpers ───────────────────────────────────────────────
+
+
+class _InFlight:
+    """One id-bearing request the client may cancel while it runs.
+
+    Holds the request's task and - once `_invoke` builds it - the call's
+    `MCPContext`. `cancel` flips the context flag (so a cooperative handler that
+    polls `ctx.cancelled` stops) and cancels the task (so a handler blocked on an
+    `await` unwinds). The `initialize` request is never registered: the spec
+    forbids cancelling it.
+    """
+
+    __slots__ = ("task", "context")
+
+    def __init__(self, task: asyncio.Task[Any]) -> None:
+        self.task = task
+        # Attached by `_invoke` when the tool context exists; `None` for a method
+        # (resources/read, prompts/get) that builds no `MCPContext` to expose.
+        self.context: MCPContext | None = None
+
+    def cancel(self) -> None:
+        """Mark the call cancelled and unwind its task."""
+        if self.context is not None:
+            self.context._mark_cancelled()
+        self.task.cancel()
 
 
 # HTTP-method semantics mapped to MCP tool annotation hints. Read-only verbs do
@@ -501,6 +533,7 @@ class MCPServer:
         "_call_timeout",
         "_capabilities",
         "_methods",
+        "_inflight",
     )
 
     def __init__(
@@ -548,6 +581,11 @@ class MCPServer:
         # Built once at construction so per-request dispatch is one dict lookup.
         # A new method is registered here, never wired into a dispatcher branch.
         self._methods: dict[str, MethodHandler] = self._build_method_map()
+        # Cancellable requests in flight, keyed by JSON-RPC id. Populated only for
+        # an id-bearing request and popped when it settles, so a server with no
+        # concurrent cancellable call holds an empty dict (no per-call cost on the
+        # path that never cancels).
+        self._inflight: dict[Any, _InFlight] = {}
 
     def _build_method_map(self) -> dict[str, MethodHandler]:
         """Map each supported JSON-RPC method to its async handler.
@@ -560,6 +598,7 @@ class MCPServer:
         methods: dict[str, MethodHandler] = {
             "initialize": self._handle_initialize,
             "notifications/initialized": self._handle_initialized,
+            "notifications/cancelled": self._handle_cancelled,
             "ping": self._handle_ping,
         }
         for capability in self._capabilities:
@@ -601,6 +640,12 @@ class MCPServer:
                 return None
             return _error(msg_id, _JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
 
+        # Register an id-bearing request as cancellable so a later
+        # `notifications/cancelled` can reach its task; `initialize` is excluded
+        # because the spec forbids cancelling it. A notification (no id) and the
+        # zero-cancellation common case never touch the registry.
+        inflight = self._track_inflight(msg_id, method) if not is_notification else None
+        token = _inflight_var.set(inflight)
         try:
             result = await handler(params)
         except MCPError as exc:
@@ -613,10 +658,43 @@ class MCPServer:
         except Exception as exc:  # pragma: no cover - defensive
             _logger.exception("MCP method %s raised", method)
             return _error(msg_id, _JSONRPC_INTERNAL_ERROR, self._error_text(exc, "internal error"))
+        finally:
+            _inflight_var.reset(token)
+            if inflight is not None:
+                self._inflight.pop(msg_id, None)
 
         if is_notification:
             return None
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+    def _track_inflight(self, msg_id: Any, method: str) -> _InFlight | None:
+        """Register an in-flight request so a cancel notification can reach it.
+
+        Skips `initialize` (the spec forbids cancelling it) and any request not
+        running inside a task (a bare synchronous driver). Returns the holder, or
+        `None` when the request is not tracked.
+        """
+        if method == "initialize":
+            return None
+        task = asyncio.current_task()
+        if task is None:
+            return None
+        holder = _InFlight(task)
+        self._inflight[msg_id] = holder
+        return holder
+
+    async def _handle_cancelled(self, params: dict[str, Any]) -> None:
+        """Cancel the request named by ``notifications/cancelled`` (a notification).
+
+        Looks up the ``requestId`` among the in-flight requests and cancels its
+        task, marking the call's context cancelled. An unknown id is ignored: the
+        request may have already completed, which the spec expects clients to race.
+        """
+        request_id = params.get("requestId")
+        holder = self._inflight.get(request_id)
+        if holder is not None:
+            holder.cancel()
+        return None
 
     # ── Dispatch adapters ─────────────────────────────────
     #
@@ -1193,6 +1271,12 @@ class MCPServer:
             progress_token=progress_token,
             log_level=_log_level_var.get(),
         )
+        # Expose this context on its in-flight registration so a
+        # `notifications/cancelled` flips `ctx.cancelled` (cooperative stop) as
+        # well as cancelling the task. `None` off-dispatch or for an untracked call.
+        inflight = _inflight_var.get()
+        if inflight is not None:
+            inflight.context = context
         resolver = DependencyResolver()
         resolver._overrides = self.app._dependency_overrides
         resolver._override_subplans = self.app._override_subplans

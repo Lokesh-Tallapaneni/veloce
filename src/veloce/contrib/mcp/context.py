@@ -8,8 +8,10 @@ normal tool input). The context carries the calling tool name and the raw argume
 mapping, and - when the server is served over a transport with an outbound
 notification channel - its `log` and `report_progress` methods send live
 ``notifications/message`` and ``notifications/progress`` to the client. Off a
-transport (a bare construction) they are inert. The cancellation channel is not yet
-wired, so `cancelled` is always ``False``.
+transport (a bare construction) they are inert. When the client sends a
+``notifications/cancelled`` naming this call's request id, the server marks the
+context cancelled (so a cooperative handler can poll `cancelled` and stop) and
+cancels the in-flight task.
 """
 
 from __future__ import annotations
@@ -77,8 +79,12 @@ class MCPContext:
 
     @property
     def cancelled(self) -> bool:
-        """Whether the caller has requested cancellation (no cancel channel yet)."""
+        """Whether the client has sent ``notifications/cancelled`` for this call."""
         return self._cancelled
+
+    def _mark_cancelled(self) -> None:
+        """Record that the client cancelled this call (set by the server)."""
+        self._cancelled = True
 
     async def log(self, level: str, message: Any, logger: str | None = None) -> None:
         """Send a log message to the MCP client (notifications/message).
