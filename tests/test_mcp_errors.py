@@ -12,6 +12,8 @@ from veloce.contrib.mcp import (
     InvalidRequestError,
     MCPError,
     MethodNotFoundError,
+    OriginNotAllowedError,
+    ProtocolVersionError,
     ResourceNotFoundError,
 )
 from veloce.contrib.mcp.errors import (
@@ -74,6 +76,15 @@ def test_each_subclass_carries_its_jsonrpc_code():
 def test_base_defaults_to_internal_error_code():
     """The base error defaults to the internal-error code."""
     assert MCPError.code == _JSONRPC_INTERNAL_ERROR
+
+
+def test_transport_errors_carry_invalid_request_code_and_http_status():
+    """The HTTP-transport violations are `InvalidRequestError`s with a status."""
+    assert issubclass(ProtocolVersionError, InvalidRequestError)
+    assert issubclass(OriginNotAllowedError, InvalidRequestError)
+    assert ProtocolVersionError.code == _JSONRPC_INVALID_REQUEST
+    assert ProtocolVersionError("v").http_status == 400
+    assert OriginNotAllowedError("o").http_status == 403
 
 
 def test_subclasses_are_substitutable_for_the_base():

@@ -30,6 +30,8 @@ from veloce.contrib.mcp.errors import (
     InvalidRequestError,
     MCPError,
     MethodNotFoundError,
+    OriginNotAllowedError,
+    ProtocolVersionError,
     ResourceNotFoundError,
 )
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
@@ -56,7 +58,9 @@ __all__ = [
     "MCPServer",
     "MCPTool",
     "MethodNotFoundError",
+    "OriginNotAllowedError",
     "PromptRegistry",
+    "ProtocolVersionError",
     "ResourceNotFoundError",
     "ResourceRegistry",
     "StdioTransport",

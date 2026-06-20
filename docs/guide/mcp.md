@@ -406,6 +406,18 @@ prompts. The client `POST`s one JSON-RPC message to the route and gets one reply
   carries the call's progress / log notifications followed by the JSON-RPC
   response. A request without it gets a single JSON response.
 - A notification (a message with no `id`) is answered with `202 Accepted` and no body.
+- A `GET` on the endpoint is answered `405 Method Not Allowed` (the transport keeps
+  no standalone server-to-client stream).
+
+The SSE stream opens with a priming event and closes with a `retry` reconnect hint,
+and a client dropping the stream does not cancel the in-flight call.
+
+!!! note "Transport conformance headers"
+    Pass `allowed_origins=[...]` to enable `Origin` validation (DNS-rebinding
+    defense): a present `Origin` outside the allowlist is rejected `403`, while a
+    missing `Origin` (a non-browser client) is allowed. A request carrying an
+    `MCP-Protocol-Version` header naming a revision the server does not support is
+    rejected `400`; a request with no such header is unaffected.
 
 ## Authentication and authorization
 

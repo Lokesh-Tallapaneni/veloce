@@ -3283,12 +3283,18 @@ def test_pure_tool_error_text_shown_with_debug():
 
 
 def _parse_sse(body: bytes) -> list[dict]:
-    """Extract the JSON payloads from the `data:` lines of an SSE body."""
+    """Extract the JSON payloads from the `data:` lines of an SSE body.
+
+    The stream's priming frame carries an empty `data:` field (no JSON), so an
+    empty payload is skipped rather than decoded.
+    """
     events: list[dict] = []
     for raw in body.split(b"\n"):
         line = raw.strip()
         if line.startswith(b"data:"):
-            events.append(orjson.loads(line[len(b"data:") :].strip()))
+            payload = line[len(b"data:") :].strip()
+            if payload:
+                events.append(orjson.loads(payload))
     return events
 
 
@@ -3863,6 +3869,111 @@ def test_origin_empty_allowlist_rejects_all_browsers():
     assert blocked.status_code == 403
     # A non-browser client (no Origin) is still allowed.
     assert app.test_client().post("/mcp", json=body).status_code == 200
+
+
+def test_get_on_mcp_endpoint_returns_405():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    # The endpoint has no standalone server-to-client stream, so a GET is the
+    # spec-conformant 405 (not the app's generic method-not-allowed), with Allow.
+    resp = app.test_client().get("/mcp")
+    assert resp.status_code == 405
+    assert resp.headers.get("allow") == "POST"
+
+
+def test_unsupported_protocol_version_header_is_400():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    client = app.test_client()
+    body = _mcp_call_body("add", {"a": 1, "b": 1})
+
+    # A present, unsupported version is rejected with a JSON-RPC error at 400.
+    bad = client.post("/mcp", json=body, headers={"mcp-protocol-version": "1999-01-01"})
+    assert bad.status_code == 400
+    assert orjson.loads(bad.body)["error"]["code"] == -32600
+    # A supported version passes.
+    ok = client.post("/mcp", json=body, headers={"mcp-protocol-version": "2025-06-18"})
+    assert ok.status_code == 200
+
+
+def test_missing_protocol_version_header_keeps_current_behavior():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    # No MCP-Protocol-Version header: the legacy path is unchanged (no 400).
+    resp = app.test_client().post("/mcp", json=_mcp_call_body("add", {"a": 1, "b": 1}))
+    assert resp.status_code == 200
+
+
+def test_sse_stream_opens_with_priming_event_and_closes_with_retry():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp", json=_mcp_call_body("work"), headers={"accept": "text/event-stream"}
+    )
+    frames = resp.body.split(b"\n\n")
+    # First frame: a priming event carrying an id and an empty data field.
+    assert frames[0].startswith(b"id: ")
+    assert b"data: " in frames[0]
+    # Last non-empty frame: a retry field hinting the reconnect delay.
+    closing = [f for f in frames if f.strip()][-1]
+    assert closing.strip() == b"retry: 3000"
+    # The JSON-RPC response is still delivered between the two.
+    events = _parse_sse(resp.body)
+    assert events[-1]["result"]["content"][0]["text"] == "done"
+
+
+async def test_sse_disconnection_does_not_cancel_the_call():
+    from veloce.contrib.mcp.server import MCPServer
+    from veloce.contrib.mcp.transports.http import _stream_response
+
+    app = Veloce(openapi_url=None)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    ran_to_completion = asyncio.Event()
+
+    @app.mcp_tool(description="Work whose completion is observable after disconnect")
+    async def work(ctx: MCPContext) -> str:
+        started.set()
+        # Block until the test releases the call, keeping it in flight across the
+        # consumer's disconnect so cancellation (if any) would land here.
+        await release.wait()
+        ran_to_completion.set()
+        return "done"
+
+    stream = _stream_response(MCPServer(app), _mcp_call_body("work"), None)
+    gen = stream._stream
+    # Consume only the priming frame, then disconnect by closing the generator -
+    # simulating a client dropping the SSE stream while the call is in flight.
+    await gen.__anext__()
+    await started.wait()
+    await gen.aclose()
+    # The call is still blocked (in flight) at disconnect time; release it now.
+    release.set()
+
+    # The dispatched call is left running to completion; a dropped connection is
+    # not treated as the client cancelling its request (MCP transport rule).
+    await asyncio.wait_for(ran_to_completion.wait(), timeout=1)
+    assert ran_to_completion.is_set()
 
 
 def test_http_log_level_does_not_bleed_across_requests():

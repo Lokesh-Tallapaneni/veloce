@@ -54,6 +54,10 @@ class MCPError(Exception):
     # Class-level default; each subclass overrides with its JSON-RPC code.
     code: int = _JSONRPC_INTERNAL_ERROR
 
+    # HTTP status a transport-level violation maps to when raised before
+    # dispatch; only the transport pre-dispatch subclasses override it.
+    http_status: int = 400
+
     def __init__(self, message: str, *, data: Any = None) -> None:
         super().__init__(message)
         self.data = data
@@ -67,6 +71,27 @@ class InvalidRequestError(MCPError):
     """A malformed JSON-RPC request object."""
 
     code = _JSONRPC_INVALID_REQUEST
+
+
+class ProtocolVersionError(InvalidRequestError):
+    """The HTTP `MCP-Protocol-Version` header names a version this server rejects.
+
+    Per the MCP 2025-06-18 Streamable HTTP transport the server MUST answer a
+    request carrying an invalid or unsupported protocol version with HTTP 400.
+    """
+
+    http_status = 400
+
+
+class OriginNotAllowedError(InvalidRequestError):
+    """A request carries an `Origin` header outside the configured allowlist.
+
+    Per the MCP transport's DNS-rebinding defense the server MUST reject a
+    present, disallowed `Origin` with HTTP 403 (a missing `Origin`, a non-browser
+    client, is allowed).
+    """
+
+    http_status = 403
 
 
 class MethodNotFoundError(MCPError):

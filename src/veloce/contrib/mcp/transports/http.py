@@ -1,12 +1,20 @@
 """Streamable HTTP transport — the MCP remote transport on a mounted route.
 
-A single ``POST`` endpoint accepts one JSON-RPC message and replies through the
-same transport-agnostic `MCPServer.handle_message` the stdio transport uses, so
-tools, resources, and prompts behave identically over HTTP. When the client's
-``Accept`` header offers ``text/event-stream`` the reply is an SSE stream that
-carries the call's progress / log notifications followed by the JSON-RPC response;
-otherwise a single JSON response is returned. A message that needs no reply (a
-notification or a response) is answered with ``202 Accepted``.
+A single endpoint serves both verbs the spec mandates: a ``POST`` accepts one
+JSON-RPC message and replies through the same transport-agnostic
+`MCPServer.handle_message` the stdio transport uses, so tools, resources, and
+prompts behave identically over HTTP; a ``GET`` (which would open a standalone
+server-to-client stream this server does not keep) is answered ``405``. When the
+client's ``Accept`` header offers ``text/event-stream`` the POST reply is an SSE
+stream that carries the call's progress / log notifications followed by the
+JSON-RPC response; otherwise a single JSON response is returned. A message that
+needs no reply (a notification or a response) is answered with ``202 Accepted``.
+
+Before dispatch the transport enforces two spec MUSTs: a present ``Origin`` outside
+the configured allowlist is rejected ``403`` (DNS-rebinding defense; a missing
+``Origin`` is allowed), and a present ``MCP-Protocol-Version`` header naming an
+unsupported revision is rejected ``400`` (a missing header keeps the negotiated
+version). Each violation raises an `MCPError` subclass carrying its HTTP status.
 
 The endpoint is an ordinary Veloce route, so it is protected by whatever middleware
 and dependencies the app applies to it (an OAuth Resource-Server check, an API-key
@@ -22,11 +30,19 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
+from itertools import count
 from typing import TYPE_CHECKING, Any, cast
 
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
-from veloce.contrib.mcp.errors import _JSONRPC_FORBIDDEN, _JSONRPC_INTERNAL_ERROR, _error
-from veloce.contrib.mcp.server import MCPServer, _notifier_var
+from veloce.contrib.mcp.errors import (
+    _JSONRPC_FORBIDDEN,
+    _JSONRPC_INTERNAL_ERROR,
+    MCPError,
+    OriginNotAllowedError,
+    ProtocolVersionError,
+    _error,
+)
+from veloce.contrib.mcp.server import _SUPPORTED_PROTOCOL_VERSIONS, MCPServer, _notifier_var
 from veloce.http.response import JSONResponse, Response
 from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
@@ -38,6 +54,17 @@ _logger = logging.getLogger(__name__)
 
 # JSON-RPC 2.0 Sec. 5.1 parse error - a body that is not a single JSON object.
 _JSONRPC_PARSE_ERROR = -32700
+
+# Reconnect hint (milliseconds) emitted as the SSE `retry` field before a stream
+# closes, so a disconnected client knows how long to wait before reconnecting
+# (MCP 2025-11-25 transport: "send an SSE event with a standard retry field
+# before closing").
+_SSE_RETRY_MS = 3000
+
+# Monotonic source of SSE event ids for the priming event. The id makes the
+# stream's first frame addressable; a real resumable event store is a later
+# feature, so the id is process-local and not persisted.
+_event_id = count(1)
 
 # Sentinel marking the end of an SSE response stream (the runner has produced the
 # call's notifications and final response).
@@ -63,12 +90,17 @@ def register_http_transport(
     """
 
     async def mcp_endpoint(request: Request) -> Response:
+        # The Streamable HTTP transport is one endpoint serving both verbs: POST
+        # carries a JSON-RPC message; GET would open a standalone server-to-client
+        # SSE stream. This server keeps no such stream, so a GET is answered 405.
+        if request.method == "GET":
+            return _method_not_allowed()
         return await _handle_http(server, request, auth, allowed_origins)
 
     app.add_route(
         path,
         mcp_endpoint,
-        methods=["POST"],
+        methods=["POST", "GET"],
         include_in_schema=False,
         exclude_middleware=exclude_middleware,
     )
@@ -94,13 +126,14 @@ async def _handle_http(
     allowed_origins: frozenset[str] | None = None,
 ) -> Response:
     """Authenticate, then dispatch one JSON-RPC message from an HTTP POST body."""
-    # Origin validation guards against DNS-rebinding attacks from a browser (MCP
-    # 2025-11-25 transport requirement). A request with no `Origin` (a non-browser
-    # client) is allowed; a browser-set `Origin` outside the allowlist is rejected.
-    if allowed_origins is not None:
-        origin = request.headers.get("origin")
-        if origin is not None and origin not in allowed_origins:
-            return JSONResponse({"error": "origin not allowed"}, status_code=403)
+    # Origin and protocol-version checks are spec MUSTs that precede dispatch; a
+    # violation raises an `MCPError` subclass carrying its own HTTP status, so the
+    # two checks share one rejection path (a JSON-RPC error body at that status).
+    try:
+        _validate_origin(request, allowed_origins)
+        _validate_protocol_version(request)
+    except MCPError as exc:
+        return JSONResponse(exc.to_error(None), status_code=exc.http_status)
 
     if auth is not None:
         principal, challenge = await _authenticate(auth, request)
@@ -137,6 +170,38 @@ async def _handle_http(
         scopes = (error.get("data") or {}).get("requiredScopes") or []
         return _forbidden(response, scopes)
     return JSONResponse(response)
+
+
+def _validate_origin(request: Request, allowed_origins: frozenset[str] | None) -> None:
+    """Reject a present `Origin` outside the allowlist (DNS-rebinding defense).
+
+    A missing `Origin` (a non-browser client) is allowed; a browser-set `Origin`
+    not in `allowed_origins` raises `OriginNotAllowedError` (HTTP 403). Validation
+    is skipped entirely when no allowlist is configured.
+    """
+    if allowed_origins is None:
+        return
+    origin = request.headers.get("origin")
+    if origin is not None and origin not in allowed_origins:
+        raise OriginNotAllowedError("origin not allowed")
+
+
+def _validate_protocol_version(request: Request) -> None:
+    """Reject an unsupported `MCP-Protocol-Version` header (HTTP 400).
+
+    The header binds a post-initialization request to a negotiated revision. A
+    missing header keeps the legacy behavior (the version negotiated at
+    `initialize` stands); a present value this server does not speak raises
+    `ProtocolVersionError`.
+    """
+    version = request.headers.get("mcp-protocol-version")
+    if version is not None and version not in _SUPPORTED_PROTOCOL_VERSIONS:
+        raise ProtocolVersionError(f"unsupported MCP-Protocol-Version: {version}")
+
+
+def _method_not_allowed() -> Response:
+    """Answer a GET on the MCP endpoint with HTTP 405 (no server-push stream)."""
+    return Response(status_code=405, headers={"Allow": "POST"})
 
 
 def _forbidden(response: dict[str, Any], scopes: list[str]) -> Response:
@@ -198,6 +263,12 @@ def _stream_response(
     each progress / log notification as it is produced and finally the JSON-RPC
     response. Per-request `_notifier_var` scoping keeps concurrent HTTP calls from
     crossing notifications.
+
+    The stream opens with a priming event (an id and an empty `data` field) so the
+    first frame is addressable, and closes with a `retry` field hinting the
+    reconnect delay (MCP 2025-11-25 transport). The dispatch task is left running
+    on client disconnection rather than cancelled - the spec forbids treating a
+    dropped connection as the client cancelling its request.
     """
     queue: asyncio.Queue[Any] = asyncio.Queue()
 
@@ -224,15 +295,24 @@ def _stream_response(
             await queue.put(_STREAM_END)
 
     async def events() -> Any:
-        task = asyncio.ensure_future(runner())
-        try:
-            while True:
-                item = await queue.get()
-                if item is _STREAM_END:
-                    break
-                yield ServerSentEvent.json(item)
-        finally:
-            if not task.done():
-                task.cancel()
+        # Disconnection is not cancellation (MCP transport): a client that closes
+        # the stream must not abort the in-flight call, so the dispatch task is
+        # never cancelled on generator teardown. It holds its own context and
+        # finishes on its own; the `runner_task` binding is held in this frame for
+        # the generator's lifetime, keeping the task from being garbage-collected
+        # mid-flight, and the queue handshake guarantees the generator outlives it.
+        runner_task = asyncio.ensure_future(runner())
+        # Priming event: an id plus an empty data field marks the stream open and
+        # gives the first frame an id, before any notification or the response.
+        yield ServerSentEvent(data="", id=str(next(_event_id)))
+        while True:
+            item = await queue.get()
+            if item is _STREAM_END:
+                break
+            yield ServerSentEvent.json(item)
+        # A closing frame carrying the reconnect hint, so a client that drops
+        # mid-stream knows how long to wait before reconnecting.
+        yield ServerSentEvent(retry=_SSE_RETRY_MS)
+        await runner_task
 
     return EventSourceResponse(events())

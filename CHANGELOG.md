@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `stream=True` on a route opts its handler into incremental request-body reading via `request.stream()`, instead of buffering the body first. ([#222](https://github.com/Lokesh-Tallapaneni/veloce/pull/222))
 - `MCPError` and typed subclasses (`InvalidParamsError`, `AuthorizationError`, others) let an MCP handler raise a specific JSON-RPC error. ([#229](https://github.com/Lokesh-Tallapaneni/veloce/pull/229))
+- The MCP HTTP transport rejects an unsupported `MCP-Protocol-Version` header with `400`. ([#230](https://github.com/Lokesh-Tallapaneni/veloce/pull/230))
+- `ProtocolVersionError` and `OriginNotAllowedError` surface MCP transport violations as typed errors. ([#230](https://github.com/Lokesh-Tallapaneni/veloce/pull/230))
+- The MCP HTTP endpoint answers a `GET` with `405 Method Not Allowed`. ([#230](https://github.com/Lokesh-Tallapaneni/veloce/pull/230))
+- The MCP SSE stream sends a priming event on open and a `retry` field before closing. ([#230](https://github.com/Lokesh-Tallapaneni/veloce/pull/230))
+
+### Changed
+
+- A client disconnecting from an MCP SSE stream no longer cancels the in-flight call. ([#230](https://github.com/Lokesh-Tallapaneni/veloce/pull/230))
 
 ### Fixed
 
