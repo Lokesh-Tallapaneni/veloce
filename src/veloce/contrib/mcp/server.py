@@ -35,6 +35,7 @@ from veloce.contrib.mcp.capabilities import (
     ResourcesCapability,
     ToolsCapability,
 )
+from veloce.contrib.mcp.content import AudioContent, ContentBlock, ImageContent, TextContent
 from veloce.contrib.mcp.context import _LOG_RANKS, MCPContext
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
@@ -164,6 +165,20 @@ def _to_structured(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def _text_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
+    """Build a tool-call result whose content is a single text block.
+
+    Every successful-text and in-band-error tool result shares this single
+    text-content shape; routing them through `TextContent` keeps the wire form in
+    one place. An in-band failure (a timeout, a raised handler, a non-conforming
+    result) sets `isError`; a plain text success omits it.
+    """
+    result: dict[str, Any] = {"content": [TextContent(text).to_payload()]}
+    if is_error:
+        result["isError"] = True
+    return result
+
+
 def _binary_result(response: Response) -> dict[str, Any] | None:
     """Shape an image/audio response body into a typed MCP content block.
 
@@ -175,18 +190,14 @@ def _binary_result(response: Response) -> dict[str, Any] | None:
     never read as a successful result.
     """
     mimetype = response.mimetype
+    data = base64.b64encode(response.body or b"").decode("ascii")
     if mimetype.startswith("image/"):
-        kind = "image"
+        block: ContentBlock = ImageContent(data, mimetype)
     elif mimetype.startswith("audio/"):
-        kind = "audio"
+        block = AudioContent(data, mimetype)
     else:
         return None
-    block = {
-        "type": kind,
-        "data": base64.b64encode(response.body or b"").decode("ascii"),
-        "mimeType": mimetype,
-    }
-    result: dict[str, Any] = {"content": [block]}
+    result: dict[str, Any] = {"content": [block.to_payload()]}
     if response.status_code >= 400:
         result["isError"] = True
     return result
@@ -243,7 +254,7 @@ def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
 
 def _user_text_message(text: str) -> dict[str, Any]:
     """Build a user-role MCP prompt message carrying a single text block."""
-    return {"role": "user", "content": {"type": "text", "text": text}}
+    return {"role": "user", "content": TextContent(text).to_payload()}
 
 
 # Valid MCP prompt message roles; an unrecognised role from a handler-built
@@ -264,7 +275,7 @@ def _normalize_prompt_message(item: Any) -> dict[str, Any]:
         role = item.get("role")
         content = item.get("content")
         if isinstance(content, str):
-            content = {"type": "text", "text": content}
+            content = TextContent(content).to_payload()
         return {"role": role if role in _PROMPT_ROLES else "user", "content": content}
     return _user_text_message(_stringify(item))
 
@@ -624,15 +635,9 @@ class MCPServer:
             raise
         except asyncio.TimeoutError:
             await self._instrument(tool, started, status.HTTP_504_GATEWAY_TIMEOUT)
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"tool call exceeded the {self._call_timeout}s timeout",
-                    }
-                ],
-                "isError": True,
-            }
+            return _text_result(
+                f"tool call exceeded the {self._call_timeout}s timeout", is_error=True
+            )
         except Exception as exc:
             # A pure `@app.mcp_tool` (no route) has no exception-handler
             # machinery to run through, so its handler error is surfaced
@@ -642,15 +647,9 @@ class MCPServer:
             # through the app's exception handlers and returns a `_RouteResponse`.
             # An unhandled handler error is a 500, recorded as such.
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": self._error_text(exc, "the tool raised an internal error"),
-                    }
-                ],
-                "isError": True,
-            }
+            return _text_result(
+                self._error_text(exc, "the tool raised an internal error"), is_error=True
+            )
 
         # A `before_request` / middleware short-circuit or a route-backed tool's
         # final `Response` carries the real status code (an auth 401, a 500 from
@@ -663,7 +662,7 @@ class MCPServer:
                 await self._drain_stream(response)
             except _InBandError as exc:
                 await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
-                return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+                return _text_result(str(exc), is_error=True)
             await self._instrument(tool, started, response.status_code)
             # A `before_request` / middleware short-circuit response never went
             # through `response_model`; only a `_RouteResponse` carries the flag.
@@ -685,7 +684,7 @@ class MCPServer:
             shaped = self._shape_result(tool, result)
         except _InBandError as exc:
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
-            return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+            return _text_result(str(exc), is_error=True)
         # A pure tool's raw return that completed without error is a genuine 200.
         await self._instrument(tool, started, status.HTTP_200_OK)
         # A pure tool's `output_schema` is advertised from its declared return
@@ -698,15 +697,9 @@ class MCPServer:
             try:
                 shaped = tool.output_model.model_validate(shaped).model_dump(mode="json")
             except Exception:
-                return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": ("tool result does not conform to the declared output schema"),
-                        }
-                    ],
-                    "isError": True,
-                }
+                return _text_result(
+                    "tool result does not conform to the declared output schema", is_error=True
+                )
         return self._success_result(tool, shaped)
 
     async def _drain_stream(self, response: Response) -> None:
@@ -829,7 +822,7 @@ class MCPServer:
         # shape). A success goes through the shared success shaping so a declared
         # `outputSchema` yields `structuredContent` alongside the text block.
         if response.status_code >= 400:
-            return {"content": [{"type": "text", "text": _stringify(shaped)}], "isError": True}
+            return _text_result(_stringify(shaped), is_error=True)
         # A handler that returned its own `Response` bypassed the route
         # `response_model` filter, so its decoded body is not yet trusted to
         # conform to the advertised `outputSchema`. Re-run it through the filter
@@ -859,7 +852,7 @@ class MCPServer:
                     try:
                         shaped = self.app._apply_response_model(shaped, route_info)
                     except Exception:
-                        return {"content": [{"type": "text", "text": _stringify(shaped)}]}
+                        return _text_result(_stringify(shaped))
             elif tool.output_model is not None:
                 # The output schema came from the handler's return annotation, not
                 # a `response_model`, so `_build_response` never filtered to it -
@@ -868,7 +861,7 @@ class MCPServer:
                 try:
                     shaped = tool.output_model.model_validate(shaped).model_dump(mode="json")
                 except Exception:
-                    return {"content": [{"type": "text", "text": _stringify(shaped)}]}
+                    return _text_result(_stringify(shaped))
         return self._success_result(tool, shaped)
 
     def _success_result(self, tool: MCPTool, shaped: Any) -> dict[str, Any]:
@@ -882,7 +875,7 @@ class MCPServer:
         advertised schema - honouring the MCP requirement that a declared
         `outputSchema` is matched by conforming structured output.
         """
-        result: dict[str, Any] = {"content": [{"type": "text", "text": _stringify(shaped)}]}
+        result = _text_result(_stringify(shaped))
         if tool.output_schema is not None:
             structured = _to_structured(shaped)
             if structured is not None:
