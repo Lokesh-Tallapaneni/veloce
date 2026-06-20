@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from veloce.contrib.mcp.icons import Icon
+
 
 @dataclass(slots=True)
 class MCPDescriptor:
@@ -29,8 +31,14 @@ class MCPDescriptor:
     so a subclass can still declare its own positional fields without a default
     (a default-valued base field would otherwise force every later field to have
     one).
+
+    `icons` is the optional MCP icon array every primitive may carry. It lives
+    here for the same reason as `title` - declared once, inherited by every
+    subclass - and defaults to the empty tuple so a primitive without icons holds
+    no extra state and emits no ``icons`` key.
     """
 
     name: str
     description: str
     title: str | None = field(default=None, kw_only=True)
+    icons: tuple[Icon, ...] = field(default=(), kw_only=True)

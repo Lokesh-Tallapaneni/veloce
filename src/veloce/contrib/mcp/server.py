@@ -35,7 +35,14 @@ from veloce.contrib.mcp.capabilities import (
     ResourcesCapability,
     ToolsCapability,
 )
-from veloce.contrib.mcp.content import AudioContent, ContentBlock, ImageContent, TextContent
+from veloce.contrib.mcp.content import (
+    AudioContent,
+    ContentBlock,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+)
 from veloce.contrib.mcp.context import _LOG_RANKS, MCPContext
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
@@ -52,6 +59,7 @@ from veloce.contrib.mcp.errors import (
     _StreamTimeoutError,
     _StreamTooLargeError,
 )
+from veloce.contrib.mcp.icons import render_icons
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
@@ -214,6 +222,54 @@ def _binary_result(response: Response) -> dict[str, Any] | None:
     return result
 
 
+# Response headers a route handler sets to deliver its MCP result as a resource
+# reference rather than inline content. Both are opt-in: a response without them
+# takes the unchanged text/structured/binary path, so the wire form is identical
+# for a route that uses neither. The link form references a resource the client
+# reads later (`resources/read`); the embedded form inlines the body's contents
+# so the agent reads the data without a follow-up call. The values are an MCP
+# resource URI; they are harmless custom headers on the HTTP door.
+_HEADER_RESOURCE_LINK = "x-mcp-resource-link"
+_HEADER_EMBEDDED_RESOURCE = "x-mcp-embedded-resource"
+
+
+def _mcp_resource_header(response: Response, name: str) -> str | None:
+    """Return a response header value by case-insensitive name, or `None`.
+
+    `Response.headers` is a plain dict keyed by the casing the handler chose, so
+    a fixed-case lookup would miss `X-MCP-Resource-Link` set as `x-mcp-...`. The
+    scan runs only on the MCP tool-call path (never the HTTP hot path) and over a
+    handful of headers, so the per-call cost is immaterial.
+    """
+    for key, value in response.headers.items():
+        if key.lower() == name:
+            return value
+    return None
+
+
+def _resource_result_from_response(tool: MCPTool, response: Response) -> dict[str, Any] | None:
+    """Emit a resource-link / embedded-resource result when the response asks for one.
+
+    A route signals the intent with the `X-MCP-Resource-Link` /
+    `X-MCP-Embedded-Resource` header carrying the resource URI. The link form
+    references the URI (the client follows it with `resources/read`); the
+    embedded form inlines the body's contents at that URI. A response carrying
+    neither header returns `None`, leaving the caller's existing shaping path
+    untouched.
+    """
+    link_uri = _mcp_resource_header(response, _HEADER_RESOURCE_LINK)
+    if link_uri:
+        block: ContentBlock = ResourceLink(
+            link_uri, tool.name, title=tool.title, description=tool.description
+        )
+        return {"content": [block.to_payload()]}
+    embed_uri = _mcp_resource_header(response, _HEADER_EMBEDDED_RESOURCE)
+    if embed_uri:
+        block = EmbeddedResource(_resource_contents(embed_uri, response))
+        return {"content": [block.to_payload()]}
+    return None
+
+
 def _describe_resource(resource: MCPResource) -> dict[str, Any]:
     """Shape a static resource into its `resources/list` entry."""
     entry: dict[str, Any] = {
@@ -223,6 +279,9 @@ def _describe_resource(resource: MCPResource) -> dict[str, Any]:
     }
     if resource.title:
         entry["title"] = resource.title
+    icons = render_icons(resource.icons)
+    if icons is not None:
+        entry["icons"] = icons
     return entry
 
 
@@ -235,6 +294,9 @@ def _describe_resource_template(resource: MCPResource) -> dict[str, Any]:
     }
     if resource.title:
         entry["title"] = resource.title
+    icons = render_icons(resource.icons)
+    if icons is not None:
+        entry["icons"] = icons
     return entry
 
 
@@ -260,6 +322,9 @@ def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
     entry: dict[str, Any] = {"name": prompt.name, "description": prompt.description}
     if prompt.title:
         entry["title"] = prompt.title
+    icons = render_icons(prompt.icons)
+    if icons is not None:
+        entry["icons"] = icons
     if prompt.arguments:
         entry["arguments"] = prompt.arguments
     return entry
@@ -636,6 +701,9 @@ class MCPServer:
         }
         if tool.title:
             entry["title"] = tool.title
+        icons = render_icons(tool.icons)
+        if icons is not None:
+            entry["icons"] = icons
         annotations = _tool_annotations(tool.route_methods, tool.title)
         if annotations is not None:
             entry["annotations"] = annotations
@@ -850,6 +918,13 @@ class MCPServer:
         binary = _binary_result(response)
         if binary is not None:
             return binary
+        # A successful response may ask, via an opt-in header, that its result be
+        # delivered as a resource-link / embedded-resource block rather than inline
+        # text; a 4xx/5xx skips this and surfaces the error body as text below.
+        if response.status_code < 400:
+            resource = _resource_result_from_response(tool, response)
+            if resource is not None:
+                return resource
         shaped = self._shape_result(tool, response)
         # A 4xx/5xx is an in-band error: surface the body text and flag it,
         # without structured content (the error body is not the tool's output

@@ -64,7 +64,7 @@ from veloce.middleware import Middleware
 from veloce.routing.router import Router, _readd_route
 
 if TYPE_CHECKING:  # pragma: no cover
-    pass
+    from veloce.contrib.mcp.icons import Icon
 
 
 # Sentinel for cache misses where `None` is itself a valid cache hit
@@ -518,18 +518,18 @@ class Veloce(
         # membership test entirely and a hook with no exclusion pays nothing.
         self._instrumentation_excludes: dict[Callable, frozenset[str]] = {}
         # MCP-only tool registrations (contrib.mcp). Each entry is
-        # `(handler, name, description, namespace)`, recorded by
+        # `(handler, name, description, namespace, scopes, icons)`, recorded by
         # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
         # tool registry is assembled.
         self._mcp_tools: list[
-            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None]
+            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None, Any]
         ] = []
         # MCP prompt registrations (contrib.mcp). Each entry is
-        # `(handler, name, description, namespace, scopes)`, recorded by
+        # `(handler, name, description, namespace, scopes, icons)`, recorded by
         # `@app.mcp_prompt(...)` and consumed once at `mount_mcp` time when the
         # prompt registry is assembled.
         self._mcp_prompts: list[
-            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None]
+            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None, Any]
         ] = []
         # Dev-mode event-loop blocking watchdog - armed during startup only
         # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
@@ -1693,6 +1693,7 @@ class Veloce(
         name: str | None = None,
         namespace: str | None = None,
         scopes: Sequence[str] | None = None,
+        icons: Sequence[Icon] | None = None,
     ) -> Callable:
         """Register an MCP-only tool callable by an AI agent (contrib.mcp).
 
@@ -1702,7 +1703,8 @@ class Veloce(
         `MCPContext` standing in for the HTTP `Request`. `description` is the
         required LLM-facing text (separate from the docstring). `namespace`
         prefixes the tool name (`<namespace>_<name>`), mirroring how a
-        blueprint namespaces an exposed route.
+        blueprint namespaces an exposed route. `icons` is an optional list of
+        `Icon` objects a client may render next to the tool.
 
         Usage::
 
@@ -1716,7 +1718,7 @@ class Veloce(
 
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
-            self._mcp_tools.append((func, name, description, namespace, scope_set))
+            self._mcp_tools.append((func, name, description, namespace, scope_set, icons))
             return func
 
         return decorator
@@ -1728,6 +1730,7 @@ class Veloce(
         name: str | None = None,
         namespace: str | None = None,
         scopes: Sequence[str] | None = None,
+        icons: Sequence[Icon] | None = None,
     ) -> Callable:
         """Register an MCP prompt template fetchable by an AI agent (contrib.mcp).
 
@@ -1736,7 +1739,8 @@ class Veloce(
         messages ``prompts/get`` returns. `Depends()` params resolve through the
         same dependency machinery routes use, with an `MCPContext` standing in for
         the HTTP `Request`. `description` is the required LLM-facing text;
-        `namespace` prefixes the prompt name (`<namespace>_<name>`).
+        `namespace` prefixes the prompt name (`<namespace>_<name>`). `icons` is an
+        optional list of `Icon` objects a client may render next to the prompt.
 
         Usage::
 
@@ -1750,7 +1754,7 @@ class Veloce(
 
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
-            self._mcp_prompts.append((func, name, description, namespace, scope_set))
+            self._mcp_prompts.append((func, name, description, namespace, scope_set, icons))
             return func
 
         return decorator

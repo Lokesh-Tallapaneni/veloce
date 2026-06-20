@@ -11,13 +11,14 @@ and ``MCPContext`` work inside a prompt exactly as in a tool.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from veloce._handler_plan import build_plan
 from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.descriptors import MCPDescriptor
+from veloce.contrib.mcp.icons import Icon, coerce_icons
 from veloce.contrib.mcp.plan_bridge import build_input_schema
 from veloce.contrib.mcp.registry import MCPTool
 from veloce.contrib.mcp.safety import require_mcp_description
@@ -90,6 +91,7 @@ def _register_prompt(
     description: str | None,
     namespace: str | None,
     scopes: frozenset[str] | None = None,
+    icons: Sequence[Icon] | None = None,
 ) -> None:
     """Add an `@app.mcp_prompt`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -111,6 +113,7 @@ def _register_prompt(
             description=desc,
             tool=tool,
             arguments=_prompt_arguments(input_schema),
+            icons=coerce_icons(icons),
         )
     )
 
@@ -118,7 +121,7 @@ def _register_prompt(
 def build_prompt_registry(app: Any) -> PromptRegistry:
     """Assemble the prompt registry from `@app.mcp_prompt` registrations."""
     registry = PromptRegistry()
-    for handler, name, description, namespace, scopes in getattr(app, "_mcp_prompts", ()):
+    for handler, name, description, namespace, scopes, icons in getattr(app, "_mcp_prompts", ()):
         _register_prompt(
             registry,
             handler,
@@ -126,5 +129,6 @@ def build_prompt_registry(app: Any) -> PromptRegistry:
             description=description,
             namespace=namespace,
             scopes=scopes,
+            icons=icons,
         )
     return registry

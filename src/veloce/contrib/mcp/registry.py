@@ -16,7 +16,7 @@ handler must carry a non-empty description.
 from __future__ import annotations
 
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +27,7 @@ from veloce._model_backend import is_pydantic_model
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.descriptors import MCPDescriptor
+from veloce.contrib.mcp.icons import Icon, coerce_icons
 from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
 from veloce.contrib.mcp.safety import require_mcp_description
 
@@ -191,6 +192,7 @@ def _register_explicit_tool(
     description: str | None,
     namespace: str | None,
     scopes: frozenset[str] | None = None,
+    icons: Sequence[Icon] | None = None,
 ) -> None:
     """Add an `@app.mcp_tool`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -209,6 +211,7 @@ def _register_explicit_tool(
             output_schema=output_schema,
             output_model=output_model,
             required_scopes=scopes or frozenset(),
+            icons=coerce_icons(icons),
         )
     )
 
@@ -245,6 +248,7 @@ def _tool_from_route(
         route_method=methods[0],
         route_methods=methods,
         required_scopes=info.mcp_scopes or frozenset(),
+        icons=coerce_icons(getattr(info, "mcp_icons", None)),
     )
 
 
@@ -253,8 +257,8 @@ def build_registry(app: Any) -> ToolRegistry:
     registry = ToolRegistry()
 
     # Explicit @app.mcp_tool registrations, recorded on the app at decoration
-    # time as `(handler, name, description, namespace, scopes)` tuples.
-    for handler, name, description, namespace, scopes in getattr(app, "_mcp_tools", ()):
+    # time as `(handler, name, description, namespace, scopes, icons)` tuples.
+    for handler, name, description, namespace, scopes, icons in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
             registry,
             handler,
@@ -262,6 +266,7 @@ def build_registry(app: Any) -> ToolRegistry:
             description=description,
             namespace=namespace,
             scopes=scopes,
+            icons=icons,
         )
 
     # Routes flagged for exposure. Walk every route (including those hidden

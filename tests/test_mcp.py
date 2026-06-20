@@ -24,7 +24,7 @@ from veloce import (
     current_principal,
     set_principal,
 )
-from veloce.contrib.mcp import MCPAuth
+from veloce.contrib.mcp import Icon, MCPAuth
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.transports.stdio import StdioTransport
@@ -833,7 +833,7 @@ def test_duplicate_tool_name_raises():
         return 1
 
     # A second tool resolving to the same name collides at registry build.
-    app._mcp_tools.append((dup, "dup", "Two", None, None))
+    app._mcp_tools.append((dup, "dup", "Two", None, None, None))
     with pytest.raises(ValueError, match="Duplicate"):
         build_registry(app)
 
@@ -3153,7 +3153,7 @@ def test_prompt_duplicate_name_raises():
     async def greet() -> str:
         return "one"
 
-    app._mcp_prompts.append((greet, "greet", "Two", None, None))
+    app._mcp_prompts.append((greet, "greet", "Two", None, None, None))
     with pytest.raises(ValueError, match="Duplicate MCP prompt"):
         _server(app)
 
@@ -4117,3 +4117,125 @@ def test_http_log_level_does_not_bleed_across_requests():
     resp = client.post("/mcp", json=_mcp_call_body("work"), headers={"accept": "text/event-stream"})
     messages = [e for e in _parse_sse(resp.body) if e.get("method") == "notifications/message"]
     assert len(messages) == 1  # the info log is emitted; the other request's setLevel did not bleed
+
+
+# -- Icons + resource-link / embedded content -------------------------
+
+
+def test_mcp_tool_icons_appear_in_tools_list():
+    """An `@app.mcp_tool` icon set surfaces as the tool's `icons` array."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(
+        description="Add two integers",
+        icons=[Icon("https://x/add.png", mime_type="image/png", sizes=("48x48",))],
+    )
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    entry = _list_tools(app)["add"]
+    assert entry["icons"] == [
+        {"src": "https://x/add.png", "mimeType": "image/png", "sizes": ["48x48"]}
+    ]
+
+
+def test_route_tool_icons_appear_in_tools_list():
+    """A route exposed as a tool carries its `mcp_icons` into tools/list."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/ping",
+        expose_as_mcp_tool=True,
+        mcp_description="Health probe",
+        mcp_icons=[Icon("https://x/ping.svg")],
+    )
+    async def ping():
+        return {"pong": True}
+
+    assert _list_tools(app)["ping"]["icons"] == [{"src": "https://x/ping.svg"}]
+
+
+def test_tool_without_icons_emits_no_icons_key():
+    """A tool with no icons omits the `icons` key entirely (unchanged wire form)."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    assert "icons" not in _list_tools(app)["add"]
+
+
+def test_resource_icons_appear_in_resources_list():
+    """A route exposed as a resource carries its `mcp_icons` into resources/list."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_description="Settings",
+        mcp_resource_uri="config://app",
+        mcp_icons=[Icon("https://x/cfg.png")],
+    )
+    async def settings():
+        return {"debug": False}
+
+    assert _list_resources(app)["config://app"]["icons"] == [{"src": "https://x/cfg.png"}]
+
+
+def test_prompt_icons_appear_in_prompts_list():
+    """An `@app.mcp_prompt` icon set surfaces as the prompt's `icons` array."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Summarise a topic", icons=[Icon("https://x/p.png")])
+    async def summarise(topic: str) -> str:
+        return f"Summarise {topic}."
+
+    assert _list_prompts(app)["summarise"]["icons"] == [{"src": "https://x/p.png"}]
+
+
+def test_route_result_emits_resource_link_block():
+    """A route setting the resource-link header returns a `resource_link` block."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/doc", expose_as_mcp_tool=True, mcp_description="Doc pointer")
+    async def doc() -> Response:
+        return Response(
+            body=b"see resource",
+            content_type="text/plain",
+            headers={"X-MCP-Resource-Link": "res://doc/1"},
+        )
+
+    block = _call(app, "doc", {})["result"]["content"][0]
+    assert block["type"] == "resource_link"
+    assert block["uri"] == "res://doc/1"
+    assert block["name"] == "doc"
+
+
+def test_route_result_emits_embedded_resource_block():
+    """A route setting the embedded header inlines its body as a `resource` block."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/inline", expose_as_mcp_tool=True, mcp_description="Inline data")
+    async def inline() -> Response:
+        return Response(
+            body=b"hello",
+            content_type="text/plain",
+            headers={"X-MCP-Embedded-Resource": "res://inline/1"},
+        )
+
+    block = _call(app, "inline", {})["result"]["content"][0]
+    assert block["type"] == "resource"
+    assert block["resource"] == {"uri": "res://inline/1", "mimeType": "text/plain", "text": "hello"}
+
+
+def test_route_result_without_resource_header_stays_text():
+    """A route with neither resource header keeps the plain text result shape."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/plain", expose_as_mcp_tool=True, mcp_description="Plain")
+    async def plain() -> Response:
+        return Response(body=b"hi", content_type="text/plain")
+
+    block = _call(app, "plain", {})["result"]["content"][0]
+    assert block == {"type": "text", "text": "hi"}

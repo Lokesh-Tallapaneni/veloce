@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.descriptors import MCPDescriptor
+from veloce.contrib.mcp.icons import coerce_icons
 from veloce.contrib.mcp.registry import MCPTool, _tool_from_route
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -171,6 +172,7 @@ def _resource_from_route(
         pattern=_compile_uri_template(uri) if is_template else None,
         uri_param_names=tuple(template_vars),
         title=info.summary or None,
+        icons=coerce_icons(getattr(info, "mcp_icons", None)),
     )
 
 

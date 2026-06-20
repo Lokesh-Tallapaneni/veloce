@@ -145,6 +145,35 @@ async def get_user(user_id: int) -> User:
 # tools/call -> structuredContent {"id": ..., "name": ...} plus the text block
 ```
 
+## Icons
+
+A tool, prompt, or resource may carry opt-in **icons** a client renders beside
+it. Pass `icons=[Icon(...)]` to `@app.mcp_tool` / `@app.mcp_prompt`, or
+`mcp_icons=[Icon(...)]` on an exposed route. Each `Icon` carries a required
+`src` URI plus an optional `mime_type` and `sizes` list. A primitive with no
+icons emits no `icons` key, so the wire form is unchanged for tools that do not
+use them.
+
+```python
+from veloce import Veloce
+from veloce.contrib.mcp import Icon
+
+app = Veloce()
+
+
+@app.mcp_tool(
+    description="Add two integers",
+    icons=[Icon("https://example.com/add.png", mime_type="image/png", sizes=["48x48"])],
+)
+async def add(a: int, b: int) -> int:
+    return a + b
+# tools/list -> icons: [{"src": "...", "mimeType": "image/png", "sizes": ["48x48"]}]
+```
+
+!!! note "Added in version 0.9"
+    Icons on tools, prompts, and resources, and the resource-link / embedded
+    content blocks below.
+
 ## Non-text tool content
 
 A tool whose handler returns an `image/*` or `audio/*` response emits the matching
@@ -169,6 +198,37 @@ block).
 
 !!! note "Added in version 0.5"
     Image/audio tool content blocks and the resources primitive below.
+
+### Resource-link and embedded-resource results
+
+A tool may point an agent at a resource instead of inlining the data, or inline a
+resource's contents directly. The handler signals which by setting a response
+header carrying the resource URI:
+
+- **`X-MCP-Resource-Link`** — the result is a `resource_link` block referencing
+  the URI; the client follows it with `resources/read`.
+- **`X-MCP-Embedded-Resource`** — the result is a `resource` block inlining the
+  body's contents at that URI, so the agent reads the data with no follow-up call.
+
+Both are opt-in: a response without either header takes the unchanged
+text/structured/binary path, and the header is a harmless custom header on the
+HTTP door.
+
+```python
+from veloce import Response, Veloce
+
+app = Veloce()
+
+
+@app.get("/report", expose_as_mcp_tool=True, mcp_description="The latest report")
+async def report() -> Response:
+    return Response(
+        body=b"see resource",
+        content_type="text/plain",
+        headers={"X-MCP-Resource-Link": "report://latest"},
+    )
+# tools/call -> content: [{"type": "resource_link", "uri": "report://latest", "name": "report"}]
+```
 
 ## Resources
 

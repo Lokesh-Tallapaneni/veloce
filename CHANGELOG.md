@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The MCP `initialize` result emits a `serverInfo.title` from the app title. ([#231](https://github.com/Lokesh-Tallapaneni/veloce/pull/231))
 - MCP tool annotations now carry `openWorldHint` and the route summary as `annotations.title`. ([#231](https://github.com/Lokesh-Tallapaneni/veloce/pull/231))
 - MCP tool `inputSchema` and `outputSchema` declare the JSON Schema 2020-12 dialect. ([#231](https://github.com/Lokesh-Tallapaneni/veloce/pull/231))
+- `Icon` objects on `@app.mcp_tool`, `@app.mcp_prompt`, and `mcp_icons=` routes surface as a primitive's `icons` array. ([#232](https://github.com/Lokesh-Tallapaneni/veloce/pull/232))
+- MCP content blocks carry optional `audience` / `priority` / `lastModified` annotations. ([#232](https://github.com/Lokesh-Tallapaneni/veloce/pull/232))
+- `ResourceLink` and `EmbeddedResource` content blocks let a route return a linked or inlined resource result. ([#232](https://github.com/Lokesh-Tallapaneni/veloce/pull/232))
 
 ### Changed
 
