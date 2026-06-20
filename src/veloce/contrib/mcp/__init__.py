@@ -34,9 +34,13 @@ request other than ``initialize`` / ``ping`` that precedes initialization. With
 ``MCP_RESOURCE_SUBSCRIPTIONS`` enabled a client may ``resources/subscribe`` to a
 resource URI and the app signals a change with ``MCPServer.notify_resource_updated``
 (or ``notify_resources_list_changed``), fanning ``notifications/resources/updated``
-and ``notifications/resources/list_changed`` out to subscribed connections. Both the
-stdio transport (``mount_mcp()``) and the Streamable HTTP transport
-(``mount_mcp(transport="http")``) are supported.
+and ``notifications/resources/list_changed`` out to subscribed connections. Over the
+bidirectional stdio transport a tool's `MCPContext` also issues server-initiated
+requests - ``ctx.sample`` (``sampling/createMessage`` with model preferences and
+sampling tools), ``ctx.elicit`` (``elicitation/create`` in form or URL mode), and
+``ctx.roots`` (``roots/list``) - each gated on the client having advertised the
+matching capability in ``initialize``. Both the stdio transport (``mount_mcp()``)
+and the Streamable HTTP transport (``mount_mcp(transport="http")``) are supported.
 """
 
 from __future__ import annotations
@@ -57,6 +61,7 @@ from veloce.contrib.mcp.errors import (
     InternalError,
     InvalidParamsError,
     InvalidRequestError,
+    MCPCapabilityError,
     MCPError,
     MethodNotFoundError,
     OriginNotAllowedError,
@@ -79,7 +84,7 @@ from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.subscriptions import SubscriptionsCapability
 from veloce.contrib.mcp.tasks import MCPTask, TaskRegistry, TasksCapability
 from veloce.contrib.mcp.transports.http import register_http_transport
-from veloce.contrib.mcp.transports.stdio import StdioTransport, serve_stdio
+from veloce.contrib.mcp.transports.stdio import MCPRequestError, StdioTransport, serve_stdio
 
 __all__ = [
     "JSON_SCHEMA_DIALECT",
@@ -95,9 +100,11 @@ __all__ = [
     "InvalidParamsError",
     "InvalidRequestError",
     "MCPAuth",
+    "MCPCapabilityError",
     "MCPContext",
     "MCPError",
     "MCPPrompt",
+    "MCPRequestError",
     "MCPResource",
     "MCPServer",
     "MCPSession",

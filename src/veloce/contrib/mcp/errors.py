@@ -155,6 +155,22 @@ class AuthorizationError(MCPError):
         self.scopes = scopes
 
 
+class MCPCapabilityError(InvalidRequestError):
+    """A server->client request needs a client capability the client did not advertise.
+
+    Raised by `MCPContext.sample` / `elicit` / `roots` (and their sub-capabilities)
+    when the connected client did not advertise the matching capability in
+    ``initialize``, so the request cannot be issued.
+    """
+
+    def __init__(self, capability: str) -> None:
+        super().__init__(
+            f"client did not advertise the {capability!r} capability",
+            data={"capability": capability},
+        )
+        self.capability = capability
+
+
 class _ForbiddenError(MCPError):
     """A route answered 401/403 during a resource read — a forbidden error.
 

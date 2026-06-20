@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MCP_RESOURCE_SUBSCRIPTIONS` lets a client `resources/subscribe` and `resources/unsubscribe` to a resource URI. ([#239](https://github.com/Lokesh-Tallapaneni/veloce/pull/239))
 - `MCPServer.notify_resource_updated` sends `notifications/resources/updated` to subscribed connections. ([#239](https://github.com/Lokesh-Tallapaneni/veloce/pull/239))
 - `MCPServer.notify_resources_list_changed` sends `notifications/resources/list_changed` to open connections. ([#239](https://github.com/Lokesh-Tallapaneni/veloce/pull/239))
+- `MCPContext.sample` asks the client's model for a completion via `sampling/createMessage`. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
+- `MCPContext.elicit` requests user input via `elicitation/create` in form or URL mode. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
+- `MCPContext.roots` lists the client's filesystem roots via `roots/list`. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
+- The stdio transport issues server-to-client requests and awaits their correlated replies. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
+- `MCPCapabilityError` rejects a server-initiated request the client did not advertise support for. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
 - The MCP `resources` capability advertises `subscribe` and `listChanged` when subscriptions are enabled. ([#239](https://github.com/Lokesh-Tallapaneni/veloce/pull/239))
 
 ### Changed

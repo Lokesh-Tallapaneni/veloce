@@ -423,7 +423,7 @@ def test_parse_error_on_bad_json():
     app = Veloce(openapi_url=None)
     server = _server(app)
     transport = StdioTransport(server, None, None)  # type: ignore[arg-type]
-    out = asyncio.run(transport._dispatch_line(b"{not json", MCPSession()))
+    out = asyncio.run(transport._process_line(b"{not json", MCPSession()))
     assert out["error"]["code"] == -32700
 
 
@@ -433,6 +433,14 @@ def test_stdio_transport_satisfies_transport_contract():
     app = Veloce(openapi_url=None)
     transport = StdioTransport(_server(app), None, None)  # type: ignore[arg-type]
     assert isinstance(transport, Transport)
+
+
+def test_stdio_transport_satisfies_bidirectional_contract():
+    from veloce.contrib.mcp.transports.base import BidirectionalTransport
+
+    app = Veloce(openapi_url=None)
+    transport = StdioTransport(_server(app), None, None)  # type: ignore[arg-type]
+    assert isinstance(transport, BidirectionalTransport)
 
 
 def test_stdio_transport_send_writes_one_message():

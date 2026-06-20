@@ -4,8 +4,8 @@ A transport carries JSON-RPC messages between a client and the `MCPServer`. The
 server depends on this interface, not on a concrete transport, so it pushes a
 one-way notification through `send` without knowing whether the wire is stdio or
 HTTP. `BidirectionalTransport` extends the contract with `request` for the
-server->client calls (`sampling` / `elicitation`) that need session correlation;
-it is satisfied once a transport can await a correlated reply.
+server->client calls (`sampling` / `elicitation` / `roots`) that need reply
+correlation; it is satisfied once a transport can await a correlated reply.
 
 The receive loop is intentionally not part of the contract: it is transport
 specific (a blocking stdin reader versus one HTTP request), so each transport
@@ -30,6 +30,10 @@ class Transport(Protocol):
 class BidirectionalTransport(Transport, Protocol):
     """A transport that can also issue server->client requests and await replies."""
 
-    async def request(self, message: dict[str, Any]) -> dict[str, Any]:
-        """Send a server->client request and await the correlated response."""
+    async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Issue a server->client request and await its correlated result.
+
+        The transport owns id minting and correlation, so it takes the method and
+        params (not a pre-built message) and returns the reply's `result`.
+        """
         ...

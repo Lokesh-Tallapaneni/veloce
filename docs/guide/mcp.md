@@ -525,6 +525,64 @@ seconds to bound each call: a call that overruns it is cancelled and surfaced as
 error (in-band `isError` for a tool, a JSON-RPC error for a resource read or
 prompt). It is unset (no timeout) by default.
 
+### Server-initiated requests
+
+Over the stdio transport the connection is bidirectional, so a tool may call back
+into the client mid-handler. `MCPContext` exposes three server-initiated requests,
+each gated on the client having advertised the matching capability in `initialize`
+— a call against a client that did not advertise it raises `MCPCapabilityError`
+(surfaced as an `isError` tool result).
+
+`ctx.sample(...)` asks the client's LLM to produce a completion
+(`sampling/createMessage`). It takes the message list and `max_tokens`, plus
+optional `model_preferences`, `system_prompt`, `temperature`, and `stop_sequences`;
+`tools` / `tool_choice` enable tool-using sampling and require the client's
+`sampling.tools` sub-capability:
+
+```python
+from veloce import MCPContext
+
+@app.mcp_tool(description="Summarise text with the client's model")
+async def summarise(text: str, ctx: MCPContext) -> str:
+    result = await ctx.sample(
+        [{"role": "user", "content": {"type": "text", "text": text}}],
+        max_tokens=128,
+        model_preferences={"intelligencePriority": 0.9},
+    )
+    return result["content"]["text"]
+```
+
+`ctx.elicit(...)` asks the client to gather input from its user
+(`elicitation/create`). Form mode passes a `requested_schema` (the JSON Schema of
+the fields to collect); URL mode passes a `url` the client opens instead:
+
+```python
+@app.mcp_tool(description="Confirm a destructive action")
+async def delete_all(ctx: MCPContext) -> dict:
+    answer = await ctx.elicit(
+        "Delete every record?",
+        requested_schema={"type": "object", "properties": {"confirm": {"type": "boolean"}}},
+    )
+    return {"action": answer["action"]}
+```
+
+`ctx.roots()` lists the filesystem roots the client exposes (`roots/list`),
+returning the `roots` array:
+
+```python
+@app.mcp_tool(description="List the client's workspace roots")
+async def workspace(ctx: MCPContext) -> list[dict]:
+    return await ctx.roots()
+```
+
+These require a bidirectional transport (stdio). Calling one off such a transport
+raises `RuntimeError`. The HTTP transport's per-POST model has no return channel
+for server-initiated requests, so they are stdio-only.
+
+!!! note "Added in version 0.9"
+    Server-initiated `sample` / `elicit` / `roots` require the client to advertise
+    the matching capability; existing one-way tools are unchanged.
+
 ## Background tasks
 
 A long tool call can run as a background **task**: the client sends the

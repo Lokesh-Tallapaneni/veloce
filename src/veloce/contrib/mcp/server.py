@@ -152,6 +152,15 @@ _inflight_var: ContextVar[_InFlight | None] = ContextVar("_mcp_inflight", defaul
 # `None` on the stateless path. A ContextVar isolates concurrent connections.
 _session_var: ContextVar[MCPSession | None] = ContextVar("_mcp_session", default=None)
 
+# The current call's server->client request issuer, set by a bidirectional
+# transport so a tool's `MCPContext.sample` / `elicit` / `roots` can call the
+# client and await the correlated reply. `None` off a bidirectional transport (the
+# one-way HTTP/stdio default), where those methods raise. A ContextVar keeps
+# concurrent connections' requesters isolated, like the notifier var.
+_requester_var: ContextVar[Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None] = (
+    ContextVar("_mcp_requester", default=None)
+)
+
 
 # ── Helpers ───────────────────────────────────────────────
 
@@ -671,6 +680,19 @@ class MCPServer:
         request so concurrent calls never cross notifications.
         """
         _notifier_var.set(notifier)
+
+    @staticmethod
+    def set_requester(
+        requester: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Wire the current context's server->client request issuer.
+
+        Sets the per-context `_requester_var`; a bidirectional transport (the stdio
+        loop) calls this once in its serve task so a tool's `MCPContext.sample` /
+        `elicit` / `roots` reaches the client. A one-way transport never calls it,
+        leaving those methods to raise.
+        """
+        _requester_var.set(requester)
 
     @staticmethod
     def current_session() -> MCPSession | None:
@@ -1547,12 +1569,19 @@ class MCPServer:
         tool result. A pure `@app.mcp_tool` (no route) has no such lifecycle and
         its return value is passed back unchanged.
         """
+        # The client capabilities gating `ctx.sample` / `elicit` / `roots` come
+        # from the dispatching connection's session (recorded at `initialize`);
+        # empty off a stateful transport, which leaves those methods to reject.
+        session = _session_var.get()
+        client_capabilities = session.client_capabilities if session is not None else None
         context = MCPContext(
             tool.name,
             arguments,
             notifier=_notifier_var.get(),
             progress_token=progress_token,
             log_level=_log_level_var.get(),
+            requester=_requester_var.get(),
+            client_capabilities=client_capabilities,
         )
         # Expose this context on its in-flight registration so a
         # `notifications/cancelled` flips `ctx.cancelled` (cooperative stop) as
