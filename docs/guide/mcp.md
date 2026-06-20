@@ -109,12 +109,17 @@ client can present it and reason about its effects without calling it:
 - **`title`** - the route's `summary`, shown as the tool's human-readable name.
 - **`annotations`** - advisory hints derived from the HTTP method: `readOnlyHint`
   (true for `GET`/`HEAD`), `idempotentHint` (true for `GET`/`HEAD`/`PUT`/`DELETE`),
-  and `destructiveHint` (true for `PUT`/`PATCH`/`DELETE`, false for the additive
-  `POST`). A client may surface a consent prompt for a destructive tool. A pure
-  `@app.mcp_tool` has no HTTP method, so it carries no annotations.
-- **`outputSchema`** - when the route declares a `response_model` (or the handler
-  returns a Pydantic model), the tool advertises a standalone JSON Schema for its
-  result. `tools/call` then returns the result as `structuredContent` alongside
+  `destructiveHint` (true for `PUT`/`PATCH`/`DELETE`, false for the additive
+  `POST`), and `openWorldHint` (false for a fully read-only route, since it
+  operates only on the server's own data; omitted otherwise, where the spec
+  treats the tool as open-world). The route summary is also carried as
+  `annotations.title`. A client may surface a consent prompt for a destructive
+  tool. A pure `@app.mcp_tool` has no HTTP method, so it carries no annotations.
+- **`inputSchema`** / **`outputSchema`** - when the route declares a
+  `response_model` (or the handler returns a Pydantic model), the tool advertises
+  a standalone JSON Schema for its result. Both schemas declare the JSON Schema
+  2020-12 dialect (`$schema`), so a strict client validates against it without
+  guessing. `tools/call` then returns the result as `structuredContent` alongside
   the text block, so a client receives the typed value the schema describes. A
   scalar or list result has no object schema and returns only the text block.
 
@@ -352,6 +357,29 @@ async def add(a: int, b: int) -> int:
 ```
 
 ## Serving over stdio
+
+### Server identity and instructions
+
+The `initialize` result describes the server from the same metadata that
+documents the HTTP API, so both doors present it identically:
+
+- **`serverInfo.title`** - the app `title`, the human-facing display name (the
+  `name`/`version` fields still carry the identifier and version).
+- **`instructions`** - the app `description` (falling back to the one-line
+  `summary`), surfaced to the client's model as usage guidance.
+
+```python
+from veloce import Veloce
+
+app = Veloce(
+    title="Task Service",
+    description="Call list_tasks before create_task; ids are opaque.",
+)
+# initialize -> serverInfo.title "Task Service", instructions the description
+```
+
+Neither field is emitted when its source is unset, so a client never sees an
+empty string.
 
 `app.mount_mcp(transport="stdio")` builds the tool registry (from
 `@app.mcp_tool` registrations plus every route flagged `expose_as_mcp_tool=True`)

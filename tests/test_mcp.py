@@ -1983,6 +1983,122 @@ def test_tool_without_summary_has_no_title():
     assert "title" not in _list_tools(app)["health"]
 
 
+def test_read_only_tool_is_closed_world():
+    """A read-only route operates on the server's own data, so openWorldHint=False."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/items", expose_as_mcp_tool=True, mcp_description="List items")
+    async def list_items() -> dict:
+        return {"items": []}
+
+    ann = _list_tools(app)["list_items"]["annotations"]
+    assert ann["openWorldHint"] is False
+
+
+def test_mutating_tool_omits_open_world_hint():
+    """A mutating route leaves openWorldHint to the spec's open-world default."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/items", expose_as_mcp_tool=True, mcp_description="Create item")
+    async def create_item() -> dict:
+        return {"ok": True}
+
+    assert "openWorldHint" not in _list_tools(app)["create_item"]["annotations"]
+
+
+def test_annotation_carries_title():
+    """The route summary appears as annotations.title alongside the top-level title."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/health",
+        summary="Health probe",
+        expose_as_mcp_tool=True,
+        mcp_description="Check health",
+    )
+    async def health() -> dict:
+        return {"ok": True}
+
+    ann = _list_tools(app)["health"]["annotations"]
+    assert ann["title"] == "Health probe"
+
+
+def test_pure_tool_without_title_has_no_annotations():
+    """A pure tool with no verb and no title still carries no annotation block."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    assert "annotations" not in _list_tools(app)["add"]
+
+
+# -- Schema dialect ---------------------------------------------------
+
+
+def test_input_schema_declares_2020_12_dialect():
+    """Every tool input schema declares the JSON Schema 2020-12 dialect."""
+    from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
+
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    assert _list_tools(app)["add"]["inputSchema"]["$schema"] == JSON_SCHEMA_DIALECT
+
+
+def test_output_schema_declares_2020_12_dialect():
+    """A declared output schema also declares the 2020-12 dialect."""
+    from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
+
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/me",
+        response_model=PublicUser,
+        expose_as_mcp_tool=True,
+        mcp_description="Current user",
+    )
+    async def me() -> dict:
+        return {"id": 1, "name": "ada"}
+
+    assert _list_tools(app)["me"]["outputSchema"]["$schema"] == JSON_SCHEMA_DIALECT
+
+
+# -- initialize instructions + serverInfo title -----------------------
+
+
+def test_initialize_emits_instructions_from_description():
+    """The app description becomes the initialize `instructions` field."""
+    app = Veloce(openapi_url=None, description="Use list_items before create_item.")
+    result = _initialize(app, {})["result"]
+    assert result["instructions"] == "Use list_items before create_item."
+
+
+def test_initialize_instructions_fall_back_to_summary():
+    """With no description, the one-line summary becomes the instructions."""
+    app = Veloce(openapi_url=None, summary="A small task API.")
+    result = _initialize(app, {})["result"]
+    assert result["instructions"] == "A small task API."
+
+
+def test_initialize_omits_instructions_when_unset():
+    """Neither description nor summary set: no instructions field is emitted."""
+    app = Veloce(openapi_url=None)
+    assert "instructions" not in _initialize(app, {})["result"]
+
+
+def test_initialize_serverinfo_carries_title():
+    """The app title is the human-facing serverInfo.title."""
+    app = Veloce(openapi_url=None, title="Task Service")
+    server_info = _initialize(app, {})["result"]["serverInfo"]
+    assert server_info["title"] == "Task Service"
+    assert server_info["name"] == "Task Service"
+
+
 # -- Output schema + structured content -------------------------------
 
 

@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ProtocolVersionError` and `OriginNotAllowedError` surface MCP transport violations as typed errors. ([#230](https://github.com/Lokesh-Tallapaneni/veloce/pull/230))
 - The MCP HTTP endpoint answers a `GET` with `405 Method Not Allowed`. ([#230](https://github.com/Lokesh-Tallapaneni/veloce/pull/230))
 - The MCP SSE stream sends a priming event on open and a `retry` field before closing. ([#230](https://github.com/Lokesh-Tallapaneni/veloce/pull/230))
+- The MCP `initialize` result emits `instructions` from the app description or summary. ([#231](https://github.com/Lokesh-Tallapaneni/veloce/pull/231))
+- The MCP `initialize` result emits a `serverInfo.title` from the app title. ([#231](https://github.com/Lokesh-Tallapaneni/veloce/pull/231))
+- MCP tool annotations now carry `openWorldHint` and the route summary as `annotations.title`. ([#231](https://github.com/Lokesh-Tallapaneni/veloce/pull/231))
+- MCP tool `inputSchema` and `outputSchema` declare the JSON Schema 2020-12 dialect. ([#231](https://github.com/Lokesh-Tallapaneni/veloce/pull/231))
 
 ### Changed
 

@@ -234,6 +234,7 @@ def _tool_from_route(
     return MCPTool(
         name=tool_name,
         description=desc,
+        title=info.summary or None,
         handler=info.handler,
         plan=plan,
         input_schema=schema,

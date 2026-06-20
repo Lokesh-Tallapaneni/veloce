@@ -15,12 +15,22 @@ by always decorating concretes with ``@dataclass(slots=True)`` rather than by an
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
 class MCPDescriptor:
-    """Base for a served MCP primitive: its client-facing name and description."""
+    """Base for a served MCP primitive: its client-facing name and description.
+
+    `title` is the optional human-facing display name the spec defines on every
+    primitive (a tool, a resource, a prompt). It lives here so the field is
+    declared once and each subclass inherits it instead of carrying a private
+    copy; a subclass without a route summary leaves it `None`. It is keyword-only
+    so a subclass can still declare its own positional fields without a default
+    (a default-valued base field would otherwise force every later field to have
+    one).
+    """
 
     name: str
     description: str
+    title: str | None = field(default=None, kw_only=True)

@@ -53,7 +53,6 @@ class MCPResource(MCPDescriptor):
     # The template variable names, in declaration order (empty for a static
     # resource). Each names a route path parameter.
     uri_param_names: tuple[str, ...]
-    title: str | None = None
 
 
 @dataclass(slots=True)

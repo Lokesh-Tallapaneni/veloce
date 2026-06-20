@@ -71,6 +71,11 @@ def _is_context_slot(slot: _Slot) -> bool:
 _OPENAPI_REF_PREFIX = "#/components/schemas/"
 _MCP_REF_PREFIX = "#/$defs/"
 
+# JSON Schema dialect MCP tool input/output schemas default to. The spec assumes
+# Draft 2020-12 when a schema omits `$schema`; declaring it explicitly on the
+# emitted top-level schema removes that ambiguity for a strict validator.
+JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
 
 def build_input_schema(
     plan: HandlerPlan, schemas_registry: dict[str, dict[str, Any]]
@@ -98,7 +103,11 @@ def build_input_schema(
 
     _collect_input_slots(plan.slots, properties, required, schemas_registry, set())
 
-    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    schema: dict[str, Any] = {
+        "$schema": JSON_SCHEMA_DIALECT,
+        "type": "object",
+        "properties": properties,
+    }
     if required:
         schema["required"] = required
 
@@ -137,6 +146,9 @@ def build_output_schema(
     defs = _collect_defs(schema, schemas_registry)
     if defs:
         schema["$defs"] = defs
+    # Declare the dialect on the emitted top-level schema (the model's own object
+    # schema), so a strict client validates `structuredContent` under 2020-12.
+    schema["$schema"] = JSON_SCHEMA_DIALECT
     return schema
 
 

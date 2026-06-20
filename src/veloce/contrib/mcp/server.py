@@ -129,23 +129,34 @@ _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRA
 _NON_DESTRUCTIVE_METHODS = frozenset({"GET", "HEAD", "POST", "OPTIONS", "TRACE"})
 
 
-def _tool_annotations(methods: list[str]) -> dict[str, Any] | None:
-    """Derive MCP tool annotation hints from a route's HTTP methods.
+def _tool_annotations(methods: list[str], title: str | None) -> dict[str, Any] | None:
+    """Derive MCP tool annotation hints from a route's HTTP methods and title.
 
     A multi-verb route is rated conservatively across every verb it serves:
     read-only and idempotent only when *all* verbs qualify, destructive when
     *any* verb is non-additive (so a `GET`+`DELETE` route is flagged
-    destructive, not read-only). A pure `@app.mcp_tool` (no route) has no HTTP
-    verb to map, so it carries no annotations.
+    destructive, not read-only). `openWorldHint` is `False` only for a fully
+    read-only route - an operation over the server's own data is closed-world;
+    any mutating route is left to the spec's open-world default (omitted). The
+    human-facing `title`, when the route declares a summary, is carried too. A
+    pure `@app.mcp_tool` (no route) has no HTTP verb to map; it still gets a
+    `title`-only annotation block when an explicit title was set.
     """
-    if not methods:
-        return None
-    verbs = {method.upper() for method in methods}
-    return {
-        "readOnlyHint": verbs <= _READONLY_METHODS,
-        "idempotentHint": verbs <= _IDEMPOTENT_METHODS,
-        "destructiveHint": not (verbs <= _NON_DESTRUCTIVE_METHODS),
-    }
+    annotations: dict[str, Any] = {}
+    if title:
+        annotations["title"] = title
+    if methods:
+        verbs = {method.upper() for method in methods}
+        read_only = verbs <= _READONLY_METHODS
+        annotations["readOnlyHint"] = read_only
+        annotations["idempotentHint"] = verbs <= _IDEMPOTENT_METHODS
+        annotations["destructiveHint"] = not (verbs <= _NON_DESTRUCTIVE_METHODS)
+        # A read-only route operates only on the server's own resources, so it is
+        # a closed-world operation; a mutating route may reach external systems,
+        # which the spec's omitted (open-world) default already covers.
+        if read_only:
+            annotations["openWorldHint"] = False
+    return annotations or None
 
 
 def _to_structured(value: Any) -> dict[str, Any] | None:
@@ -247,6 +258,8 @@ def _resource_contents(uri: str, response: Response) -> dict[str, Any]:
 def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
     """Shape a prompt into its `prompts/list` entry."""
     entry: dict[str, Any] = {"name": prompt.name, "description": prompt.description}
+    if prompt.title:
+        entry["title"] = prompt.title
     if prompt.arguments:
         entry["arguments"] = prompt.arguments
     return entry
@@ -415,7 +428,9 @@ class MCPServer:
         "prompts",
         "registry",
         "resources",
+        "server_instructions",
         "server_name",
+        "server_title",
         "server_version",
         "_call_timeout",
         "_capabilities",
@@ -435,6 +450,15 @@ class MCPServer:
         self.prompts = prompts if prompts is not None else build_prompt_registry(app)
         self.server_name = getattr(app, "title", None) or "Veloce"
         self.server_version = getattr(app, "version", None) or "0.1.0"
+        # Human-facing display name and client-facing usage guidance for the
+        # `initialize` result, read from the same app metadata the OpenAPI
+        # document uses so the two doors describe the server identically. The
+        # title falls back to the identifier name; instructions prefer the longer
+        # `description`, then the one-line `summary`. Empty when neither is set.
+        self.server_title = getattr(app, "title", None) or None
+        self.server_instructions = (
+            getattr(app, "description", None) or getattr(app, "summary", None) or None
+        )
         # Optional per-call wall-clock budget (`MCP_CALL_TIMEOUT` seconds in
         # `app.config`). The stdio serve loop is serial, so a handler that awaits
         # forever wedges every later call; when set, a call exceeding the budget
@@ -576,11 +600,22 @@ class MCPServer:
             entry = capability.advertise()
             if entry is not None:
                 capabilities.update(entry)
-        return {
+        # `serverInfo.title` is the human-facing display name; the app's `title`
+        # is that name (`name`/`version` already carry the identifier + version).
+        server_info: dict[str, Any] = {"name": self.server_name, "version": self.server_version}
+        if self.server_title:
+            server_info["title"] = self.server_title
+        result: dict[str, Any] = {
             "protocolVersion": version,
             "capabilities": capabilities,
-            "serverInfo": {"name": self.server_name, "version": self.server_version},
+            "serverInfo": server_info,
         }
+        # `instructions` is optional usage guidance the client may surface to its
+        # model; the app's `description` (falling back to its `summary`) is that
+        # guidance, derived from the same contract that documents the HTTP API.
+        if self.server_instructions:
+            result["instructions"] = self.server_instructions
+        return result
 
     def _tools_list(self) -> dict[str, Any]:
         return {"tools": [self._describe_tool(tool) for tool in self.registry.tools.values()]}
@@ -599,10 +634,9 @@ class MCPServer:
             "description": tool.description,
             "inputSchema": tool.input_schema,
         }
-        title = tool.route_info.summary if tool.route_info is not None else None
-        if title:
-            entry["title"] = title
-        annotations = _tool_annotations(tool.route_methods)
+        if tool.title:
+            entry["title"] = tool.title
+        annotations = _tool_annotations(tool.route_methods, tool.title)
         if annotations is not None:
             entry["annotations"] = annotations
         if tool.output_schema is not None:

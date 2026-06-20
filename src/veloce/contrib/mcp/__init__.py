@@ -7,10 +7,14 @@ with `@app.mcp_tool(...)`, opt an existing route in with
 `app.mount_mcp(transport="stdio")`.
 
 Scope: tools and resources over the stdio transport. The server negotiates the
-protocol version with the client, answers ``ping``, and a tool definition carries
-HTTP-derived annotation hints (read-only / idempotent / destructive), a `title`,
-and - where the result has a declared object shape - an `outputSchema` whose
-structured value `tools/call` returns alongside the text block. A read-only route
+protocol version with the client, answers ``ping``, and the ``initialize`` result
+carries ``instructions`` (the app description / summary) plus a ``serverInfo.title``
+(the app title). A tool definition carries HTTP-derived annotation hints
+(read-only / idempotent / destructive / open-world) with the route summary as
+``annotations.title``, a top-level ``title``, an ``inputSchema`` declaring the JSON
+Schema 2020-12 dialect, and - where the result has a declared object shape - an
+``outputSchema`` (also dialect-declared) whose structured value ``tools/call``
+returns alongside the text block. A read-only route
 flagged ``expose_as_mcp_resource=True`` is served as a resource (``resources/list``,
 ``resources/templates/list``, ``resources/read``); a ``@app.mcp_prompt`` callable is
 served as a prompt template (``prompts/list``, ``prompts/get``); and a tool returning
@@ -34,6 +38,7 @@ from veloce.contrib.mcp.errors import (
     ProtocolVersionError,
     ResourceNotFoundError,
 )
+from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import MCPTool, ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import (
@@ -46,6 +51,7 @@ from veloce.contrib.mcp.transports.http import register_http_transport
 from veloce.contrib.mcp.transports.stdio import StdioTransport, serve_stdio
 
 __all__ = [
+    "JSON_SCHEMA_DIALECT",
     "AuthorizationError",
     "InternalError",
     "InvalidParamsError",
