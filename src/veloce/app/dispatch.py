@@ -195,7 +195,7 @@ class DispatchMixin:
         _ensure_pipeline: Callable[..., Any]
         _setup_openapi: Callable[..., Any]
         _openapi_setup: bool
-        _log_background_task_error: Callable[..., Any]
+        spawn: Callable[..., Any]
         _run_teardown_hooks: Callable[..., Any]
         _select_teardown_request_hooks: Callable[..., Any]
         get_allowed_methods: Callable[..., Any]
@@ -1123,18 +1123,16 @@ class DispatchMixin:
     def _schedule_background_tasks(self, request: Request, response: Response) -> None:
         """Schedule the DI-injected queue and response-attached background task.
 
-        Both run fire-and-forget; a strong reference is held via the loop's
-        task set and an error-logging done-callback is attached.
+        Both run through `spawn()`, the single tracked-task path: each is held
+        by a strong reference (so the loop cannot GC it mid-flight) and is
+        cancelled-and-drained on shutdown alongside app-spawned tasks rather
+        than orphaned, and its failures surface through the same logging path.
         """
-        # Run background tasks if present - hold strong ref to prevent GC
         if request._background_tasks is not None:
-            bg_task = asyncio.get_running_loop().create_task(request._background_tasks.run_all())
-            bg_task.add_done_callback(self._log_background_task_error)
+            self.spawn(request._background_tasks.run_all())
 
         # Response-attached background task (shape:
         # `Response(content=..., background=BackgroundTask(fn))`).
-        # Runs in the same fire-and-forget pattern as the
-        # DI-injected BackgroundTasks queue.
         attached_bg = getattr(response, "background", None)
         if attached_bg is not None:
             # `BackgroundTasks` collection -> `.run_all()`;
@@ -1147,8 +1145,7 @@ class DispatchMixin:
             else:
                 coro = None
             if coro is not None:
-                bg_task = asyncio.get_running_loop().create_task(coro)
-                bg_task.add_done_callback(self._log_background_task_error)
+                self.spawn(coro)
 
     # ── Error handling and handler invocation ──────────────
 

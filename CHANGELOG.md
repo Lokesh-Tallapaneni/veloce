@@ -59,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Response and DI-injected background tasks are tracked and cancelled-and-drained on shutdown, so one no longer outlives the event loop and is orphaned mid-run.
 - `request.json()` caches a JSON `null` body as `None` so it is parsed once instead of re-decoded on every access. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
 - The MCP HTTP `GET` resume path validates `Origin` and `MCP-Protocol-Version` so a cross-origin or unsupported-version client cannot bypass the DNS-rebinding defense. ([#232](https://github.com/Lokesh-Tallapaneni/veloce/issues/232))
 - MCP `completion/complete` bounds the number of client-supplied `context.arguments` entries it ingests. ([#233](https://github.com/Lokesh-Tallapaneni/veloce/issues/233))
