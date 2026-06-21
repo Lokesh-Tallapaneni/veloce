@@ -647,11 +647,16 @@ class MCPServer:
         # Built once at construction so per-request dispatch is one dict lookup.
         # A new method is registered here, never wired into a dispatcher branch.
         self._methods: dict[str, MethodHandler] = self._build_method_map()
-        # Cancellable requests in flight, keyed by JSON-RPC id. Populated only for
-        # an id-bearing request and popped when it settles, so a server with no
-        # concurrent cancellable call holds an empty dict (no per-call cost on the
-        # path that never cancels).
-        self._inflight: dict[Any, _InFlight] = {}
+        # Cancellable requests in flight, keyed by `(connection_key, msg_id)` so a
+        # JSON-RPC id is unique only within its own connection. The client owns its
+        # id space per connection, so two HTTP clients of the same server routinely
+        # reuse id `1`; keying by id alone would let one client's
+        # `notifications/cancelled` reach a peer's call. The connection key is the
+        # dispatching session's identity (the stdio loop's one session, an HTTP
+        # `Mcp-Session-Id`'s session, or a stateless POST's ephemeral session);
+        # `None` only for a direct `handle_message` with no session. Populated only
+        # for an id-bearing request and popped when it settles.
+        self._inflight: dict[tuple[int | None, Any], _InFlight] = {}
 
     def _build_method_map(self) -> dict[str, MethodHandler]:
         """Map each supported JSON-RPC method to its async handler.
@@ -785,8 +790,11 @@ class MCPServer:
         # Register an id-bearing request as cancellable so a later
         # `notifications/cancelled` can reach its task; `initialize` is excluded
         # because the spec forbids cancelling it. A notification (no id) and the
-        # zero-cancellation common case never touch the registry.
-        inflight = self._track_inflight(msg_id, method) if not is_notification else None
+        # zero-cancellation common case never touch the registry. The registry is
+        # keyed per connection so one client cannot cancel a peer's colliding id.
+        connection_key = id(session) if session is not None else None
+        inflight_key = (connection_key, msg_id)
+        inflight = self._track_inflight(inflight_key, method) if not is_notification else None
         token = _inflight_var.set(inflight)
         # Expose the connection's session so a per-connection method
         # (`resources/subscribe`) reaches the session it mutates; `None` on the
@@ -808,7 +816,7 @@ class MCPServer:
             _inflight_var.reset(token)
             _session_var.reset(session_token)
             if inflight is not None:
-                self._inflight.pop(msg_id, None)
+                self._inflight.pop(inflight_key, None)
 
         if is_notification:
             return None
@@ -838,7 +846,10 @@ class MCPServer:
         if method == "notifications/initialized":
             session.initialized = True
             return None
-        if not self._enforce_lifecycle:
+        # Lifecycle ordering is a property of a persistent connection; a stateless
+        # per-request session is never initialized across messages, so enforcing it
+        # there would reject every independent POST.
+        if not self._enforce_lifecycle or not session.persistent:
             return None
         if session.initialized or is_notification or method == "ping":
             return None
@@ -848,12 +859,13 @@ class MCPServer:
             f"Received {method!r} before initialization completed",
         )
 
-    def _track_inflight(self, msg_id: Any, method: str) -> _InFlight | None:
+    def _track_inflight(self, key: tuple[int | None, Any], method: str) -> _InFlight | None:
         """Register an in-flight request so a cancel notification can reach it.
 
         Skips `initialize` (the spec forbids cancelling it) and any request not
         running inside a task (a bare synchronous driver). Returns the holder, or
-        `None` when the request is not tracked.
+        `None` when the request is not tracked. `key` is `(connection_key, msg_id)`
+        so a cancel from one connection cannot reach another's colliding id.
         """
         if method == "initialize":
             return None
@@ -861,18 +873,23 @@ class MCPServer:
         if task is None:
             return None
         holder = _InFlight(task)
-        self._inflight[msg_id] = holder
+        self._inflight[key] = holder
         return holder
 
     async def _handle_cancelled(self, params: dict[str, Any]) -> None:
         """Cancel the request named by ``notifications/cancelled`` (a notification).
 
-        Looks up the ``requestId`` among the in-flight requests and cancels its
-        task, marking the call's context cancelled. An unknown id is ignored: the
-        request may have already completed, which the spec expects clients to race.
+        Resolves the ``requestId`` within the cancelling connection's own id space
+        and cancels its task, marking the call's context cancelled. An unknown id is
+        ignored: the request may have already completed, which the spec expects
+        clients to race. The lookup is scoped to the dispatching connection so a
+        client can cancel only its own in-flight request, never a peer's whose
+        JSON-RPC id happens to collide.
         """
         request_id = params.get("requestId")
-        holder = self._inflight.get(request_id)
+        session = _session_var.get()
+        connection_key = id(session) if session is not None else None
+        holder = self._inflight.get((connection_key, request_id))
         if holder is not None:
             holder.cancel()
         return None
@@ -1115,7 +1132,11 @@ class MCPServer:
                 f"Tool {tool.name!r} does not support task execution; call it without a 'task' field."
             )
         self._tasks.evict_expired()
-        task = new_task(tool.name, task_ttl_ms(params))
+        # The creating connection owns the task: a task method from a different
+        # connection cannot see or act on it (multi-client isolation on HTTP).
+        session = _session_var.get()
+        owner_key = id(session) if session is not None else None
+        task = new_task(tool.name, task_ttl_ms(params), owner_key)
         self._tasks.register(task)
         # `create_task` copies the current context, so the background runner sees
         # the same notifier / log level / principal the request established here.

@@ -19,8 +19,18 @@ version). Each violation raises an `MCPError` subclass carrying its HTTP status.
 Session management is opt-in (``sessions=True``): the server mints an
 ``Mcp-Session-Id`` on the ``initialize`` result, then requires it on every later
 request (``400`` when missing, ``404`` once terminated) and accepts a ``DELETE`` to
-terminate it. The stateless default keeps each POST independent with no session
-state. The id lifecycle lives in `HttpSessionStore` behind the `Transport` contract.
+terminate it. Each id owns a real `MCPSession`, so a stateful HTTP connection is a
+first-class `MCPServer` connection - it records the client's advertised
+capabilities, scopes the in-flight cancellation registry and task ownership to that
+one client, and carries the connection's resource subscriptions, exactly as the
+stdio loop's one session does. The id lifecycle lives in `HttpSessionStore` behind
+the `Transport` contract, which reclaims an idle never-terminated session.
+
+The stateless default keeps each POST independent, dispatched under a throwaway
+per-request session: it isolates the in-flight registry (so a concurrent POST's
+colliding JSON-RPC id cannot cancel this one) but is not a persistent connection,
+so it advertises and serves no per-connection feature (subscriptions, lifecycle
+gating).
 
 Resumability is opt-in (``resumable=True``): each SSE event carrying a JSON-RPC
 payload gets an id encoding its originating POST stream, and the events are kept in
@@ -59,6 +69,7 @@ from veloce.contrib.mcp.errors import (
     _error,
 )
 from veloce.contrib.mcp.server import _SUPPORTED_PROTOCOL_VERSIONS, MCPServer, _notifier_var
+from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.event_store import SSEEventStore
 from veloce.contrib.mcp.transports.session_store import HttpSessionStore
 from veloce.http.response import JSONResponse, Response
@@ -133,7 +144,9 @@ def register_http_transport(
     missed events. The default keeps no event ids or history and answers a `GET`
     405.
     """
-    store = HttpSessionStore() if sessions else None
+    # When sessions are on, a terminated / evicted id drops its connection from the
+    # server's subscription registry so a closed connection receives nothing further.
+    store = HttpSessionStore(on_evict=server.unregister_connection) if sessions else None
     event_store = SSEEventStore() if resumable else None
 
     async def mcp_endpoint(request: Request) -> Response:
@@ -206,21 +219,35 @@ async def _handle_http(
 
     # When session management is on, every request except `initialize` must echo a
     # live session id (HTTP 400 if missing, 404 once terminated); `initialize`
-    # mints a new id returned on its response. The stateless default skips this.
+    # mints a new id returned on its response. Each id owns a real `MCPSession`, so
+    # the connection is a first-class server connection (capabilities, in-flight
+    # scope, subscriptions, lifecycle). The stateless default uses a fresh
+    # per-request session instead: it carries no id and lives only for this POST,
+    # which still isolates the in-flight registry so a colliding JSON-RPC id from a
+    # concurrent POST cannot cancel this one.
     is_initialize = message.get("method") == "initialize"
     session_id: str | None = None
+    session: MCPSession
     if store is not None:
         try:
-            session_id = _bind_session(store, request, is_initialize)
+            session_id, session = _bind_session(store, request, is_initialize)
         except MCPError as exc:
             return JSONResponse(exc.to_error(message.get("id")), status_code=exc.http_status)
+    else:
+        # A throwaway session for this POST only: it isolates the in-flight registry
+        # (so a concurrent POST's colliding id cannot cancel this one) but is not a
+        # persistent connection, so it advertises and serves no per-connection
+        # feature (subscriptions, lifecycle gating).
+        session = MCPSession(persistent=False)
 
     is_request = "id" in message and isinstance(message.get("method"), str)
     accepts_sse = "text/event-stream" in request.headers.get("accept", "")
     if is_request and accepts_sse:
-        return _stream_response(server, message, current_principal(), session_id, event_store)
+        return _stream_response(
+            server, message, current_principal(), session, session_id, event_store
+        )
 
-    response = await server.handle_message(message)
+    response = await server.handle_message(message, session)
     if response is None:
         # A notification or a response carries no reply (JSON-RPC 2.0 Sec. 4.1).
         return _with_session(Response(status_code=202), session_id)
@@ -236,22 +263,25 @@ async def _handle_http(
     return _with_session(JSONResponse(response), session_id)
 
 
-def _bind_session(store: HttpSessionStore, request: Request, is_initialize: bool) -> str | None:
-    """Resolve the session id for a request under session management.
+def _bind_session(
+    store: HttpSessionStore, request: Request, is_initialize: bool
+) -> tuple[str, MCPSession]:
+    """Resolve the `(id, MCPSession)` for a request under session management.
 
-    `initialize` mints and returns a fresh id (echoed on its response). Any other
-    request must carry a live `Mcp-Session-Id`: a missing header raises
-    `SessionRequiredError` (HTTP 400) and an unknown / terminated id raises
-    `SessionNotFoundError` (HTTP 404).
+    `initialize` mints and returns a fresh id with its session (echoed on its
+    response). Any other request must carry a live `Mcp-Session-Id`: a missing
+    header raises `SessionRequiredError` (HTTP 400) and an unknown / terminated id
+    raises `SessionNotFoundError` (HTTP 404).
     """
     if is_initialize:
         return store.create()
     session_id = request.headers.get("mcp-session-id")
     if not session_id:
         raise SessionRequiredError("missing Mcp-Session-Id header")
-    if not store.is_live(session_id):
+    session = store.resolve(session_id)
+    if session is None:
         raise SessionNotFoundError("unknown or terminated session")
-    return session_id
+    return session_id, session
 
 
 def _with_session(response: Response, session_id: str | None) -> Response:
@@ -390,6 +420,7 @@ def _stream_response(
     server: MCPServer,
     message: dict[str, Any],
     principal: Principal | None,
+    session: MCPSession,
     session_id: str | None = None,
     event_store: SSEEventStore | None = None,
 ) -> EventSourceResponse:
@@ -400,6 +431,12 @@ def _stream_response(
     each progress / log notification as it is produced and finally the JSON-RPC
     response. Per-request `_notifier_var` scoping keeps concurrent HTTP calls from
     crossing notifications.
+
+    For the open lifetime of the stream the connection is registered with the
+    server keyed by its `session`, with this stream's sink as its outbound channel,
+    so an application-signalled `notifications/resources/updated` reaches a client
+    that has `resources/subscribe`d (a no-op when subscriptions are off). The
+    connection is unregistered when the stream closes.
 
     The stream opens with a priming event (an id and an empty `data` field) so the
     first frame is addressable, and closes with a `retry` field hinting the
@@ -435,12 +472,16 @@ def _stream_response(
 
     async def runner() -> None:
         token = _notifier_var.set(send)
+        # Register this connection so an application-signalled resource update fans
+        # out to it while the stream is open (a no-op when subscriptions are off);
+        # unregistered in `finally` so a closed stream receives nothing further.
+        server.register_connection(session, send)
         # The runner task inherits the request's context (and its principal), but
         # re-bind explicitly so identity is correct regardless of how the task was
         # scheduled.
         set_principal(principal)
         try:
-            response = await server.handle_message(message)
+            response = await server.handle_message(message, session)
             if response is not None:
                 await queue.put((emit_id(response), response))
         except asyncio.CancelledError:
@@ -453,6 +494,7 @@ def _stream_response(
             err = _error(message.get("id"), _JSONRPC_INTERNAL_ERROR, "internal error")
             await queue.put((emit_id(err), err))
         finally:
+            server.unregister_connection(session)
             _notifier_var.reset(token)
             await queue.put(_STREAM_END)
 

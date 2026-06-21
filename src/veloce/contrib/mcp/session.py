@@ -27,9 +27,21 @@ class MCPSession:
     capabilities / implementation info, recorded from the `initialize` request.
     """
 
-    __slots__ = ("initialized", "client_capabilities", "client_info", "subscriptions")
+    __slots__ = (
+        "initialized",
+        "client_capabilities",
+        "client_info",
+        "subscriptions",
+        "persistent",
+    )
 
-    def __init__(self) -> None:
+    def __init__(self, persistent: bool = True) -> None:
+        # Whether the session outlives a single message. The stdio loop and an HTTP
+        # `Mcp-Session-Id` own a persistent session that carries connection state
+        # (subscriptions, lifecycle) across messages; a stateless HTTP POST gets a
+        # throwaway session only to isolate its in-flight registry, so it is not
+        # persistent and cannot subscribe or advertise per-connection features.
+        self.persistent = persistent
         self.initialized = False
         # The `capabilities` object the client sent in `initialize`; empty until
         # then. The server consults it before relying on a client feature.

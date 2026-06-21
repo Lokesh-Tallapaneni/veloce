@@ -106,6 +106,11 @@ class MCPTask(MCPDescriptor):
     last_updated_at: str = field(default_factory=_now_iso)
     ttl_ms: int = _DEFAULT_TASK_TTL_SECONDS * 1000
     expires_at: float = 0.0
+    # Identity of the connection that created the task (the dispatching session's
+    # `id`, or `None` off a connection). A task method from a different connection
+    # cannot see or act on this task, so one HTTP client cannot read another's
+    # result, cancel another's work, or enumerate another's tasks.
+    owner_key: int | None = None
     # The settled `tools/call` result, set when the task reaches a terminal
     # status; `None` while the task is still working.
     result: dict[str, Any] | None = None
@@ -193,11 +198,16 @@ def task_ttl_ms(params: dict[str, Any]) -> int:
     return _DEFAULT_TASK_TTL_SECONDS * 1000
 
 
-def new_task(tool_name: str, ttl_ms: int) -> MCPTask:
-    """Create a fresh `working` task for `tool_name` with the given time-to-live."""
+def new_task(tool_name: str, ttl_ms: int, owner_key: int | None = None) -> MCPTask:
+    """Create a fresh `working` task for `tool_name` with the given time-to-live.
+
+    `owner_key` is the creating connection's identity; the task methods reject a
+    caller whose connection does not match it, so a task is private to its creator.
+    """
     task = MCPTask(name=uuid.uuid4().hex, description="", tool_name=tool_name)
     task.ttl_ms = ttl_ms
     task.expires_at = time.monotonic() + ttl_ms / 1000.0
+    task.owner_key = owner_key
     return task
 
 
@@ -276,10 +286,19 @@ class TasksCapability(Capability):
         return task.result
 
     async def _list(self, params: dict[str, Any]) -> dict[str, Any]:
-        """List the server's known tasks (``tasks/list``)."""
+        """List the calling connection's own tasks (``tasks/list``).
+
+        Scoped to the caller: a task is returned only when its owning connection is
+        the one dispatching, so one client never enumerates another's tasks.
+        """
         store = self._server._tasks
         store.evict_expired()
-        return {"tasks": [task.describe() for task in store.tasks.values()]}
+        owner_key = self._caller_key()
+        return {
+            "tasks": [
+                task.describe() for task in store.tasks.values() if task.owner_key == owner_key
+            ]
+        }
 
     async def _cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         """Cancel a running task and return its (now cancelled) status object.
@@ -293,13 +312,23 @@ class TasksCapability(Capability):
         return task.describe()
 
     def _lookup(self, params: dict[str, Any]) -> MCPTask:
-        """Resolve a ``taskId`` param to its task, evicting expired tasks first."""
+        """Resolve a ``taskId`` param to the caller's own task, evicting expired first.
+
+        A task created by a different connection is treated as unknown - so a client
+        cannot read, retrieve, or cancel a task it does not own even if it learns or
+        guesses the id - rather than leaking that the id exists.
+        """
         store = self._server._tasks
         store.evict_expired()
         task_id = params.get("taskId")
         if not isinstance(task_id, str):
             raise InvalidParamsError("task method requires a string 'taskId'")
         task = store.get(task_id)
-        if task is None:
+        if task is None or task.owner_key != self._caller_key():
             raise ResourceNotFoundError(f"Unknown task: {task_id}")
         return task
+
+    def _caller_key(self) -> int | None:
+        """Return the dispatching connection's identity, scoping task ownership."""
+        session = self._server.current_session()
+        return id(session) if session is not None else None

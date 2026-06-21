@@ -341,9 +341,13 @@ open connection. Both signals are no-ops when subscriptions are disabled, so the
 default path stays inert.
 
 !!! note "Added in version 0.9"
-    Resource subscriptions require a stateful connection (the stdio transport, or
-    any transport that keeps one connection open). A subscribe on a stateless HTTP
-    request is rejected, since there is no connection to deliver updates over.
+    Resource subscriptions require a stateful connection: the stdio transport, or
+    the HTTP transport with `sessions=True` (an `Mcp-Session-Id` connection).
+    Over such a connection the `resources` capability advertises `subscribe: true`
+    and `listChanged: true`, and `notifications/resources/updated` is delivered on
+    the connection's open SSE stream. A stateless HTTP request (the default, no
+    `sessions=True`) advertises `subscribe: false` and rejects a `resources/subscribe`,
+    since there is no connection to deliver updates over.
 
 ## Prompts
 
@@ -606,8 +610,13 @@ The client drives the task with four methods:
 - `tasks/get` — poll the task's status (`working`, then `completed` / `failed` /
   `cancelled`).
 - `tasks/result` — retrieve the settled `tools/call` result.
-- `tasks/list` — list the server's known tasks.
+- `tasks/list` — list the calling connection's own tasks.
 - `tasks/cancel` — cancel a running task.
+
+A task is private to the connection that created it. Over the HTTP transport with
+`sessions=True`, one client's `tasks/list` shows only its own tasks, and another
+client cannot `tasks/get` / `result` / `cancel` a task it does not own — the id is
+treated as unknown.
 
 The server emits `notifications/tasks/status` on each transition (carrying the
 `io.modelcontextprotocol/related-task` `_meta` key), and the `CreateTaskResult`
@@ -779,10 +788,19 @@ app.mount_mcp(transport="http", sessions=True)
   signalling the client to start a new session.
 - A `DELETE` carrying the header terminates the session (`204`); a `DELETE` for an
   unknown id is `404`. Without `sessions=True`, `DELETE` is `405`.
+- Each `Mcp-Session-Id` owns a real per-connection session: it records the client
+  capabilities from `initialize` (so `MCPContext.sample` / `elicit` / `roots` see
+  them), scopes the in-flight cancellation registry and task ownership to that one
+  client, and carries its resource subscriptions. A session a client never
+  `DELETE`s is reclaimed by an idle time-to-live.
+- With `MCP_ENFORCE_LIFECYCLE` set, a stateful HTTP session also rejects any request
+  other than `initialize` / `ping` that precedes the `notifications/initialized` ack.
 
 !!! note "Added in version 0.9"
     HTTP session management (`sessions=True`) is opt-in; the stateless default is
-    unchanged and carries no per-request session bookkeeping.
+    unchanged and carries no per-request session bookkeeping. Even stateless, a
+    `notifications/cancelled` cancels only the request from the same `POST`, never a
+    concurrent client's call with a colliding JSON-RPC id.
 
 ### Resumable streams
 

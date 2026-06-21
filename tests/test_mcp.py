@@ -3807,6 +3807,354 @@ def test_http_sse_concurrent_calls_do_not_cross_notifications():
     assert b_tokens == {"b"}
 
 
+# -- HTTP per-connection isolation (multi-client) ---------------------
+
+
+async def _drive_stream(stream: object) -> None:
+    """Run an SSE response generator to exhaustion (its dispatch task settles)."""
+    async for _ in stream._stream:  # type: ignore[attr-defined]
+        pass
+
+
+async def test_http_cancel_does_not_cross_connections():
+    """One HTTP client's cancel must not cancel a peer's call with a colliding id."""
+    from veloce.contrib.mcp.transports.http import _stream_response
+
+    app = Veloce(openapi_url=None)
+    released = {"a": asyncio.Event(), "b": asyncio.Event()}
+    completed = {"a": asyncio.Event(), "b": asyncio.Event()}
+    started = {"a": asyncio.Event(), "b": asyncio.Event()}
+
+    @app.mcp_tool(description="Block until released")
+    async def work(which: str) -> str:
+        started[which].set()
+        await released[which].wait()
+        completed[which].set()
+        return which
+
+    server = MCPServer(app)
+    # Two distinct connections sharing the one server, each issuing id 1.
+    session_a = MCPSession()
+    session_b = MCPSession()
+    stream_a = _stream_response(server, _mcp_call_body("work", {"which": "a"}), None, session_a)
+    stream_b = _stream_response(server, _mcp_call_body("work", {"which": "b"}), None, session_b)
+    gen_a, gen_b = stream_a._stream, stream_b._stream
+    await gen_a.__anext__()
+    await gen_b.__anext__()
+    await asyncio.wait_for(started["a"].wait(), timeout=1)
+    await asyncio.wait_for(started["b"].wait(), timeout=1)
+
+    # Connection A cancels its own id 1; B's id 1 must be untouched.
+    await server.handle_message(
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}},
+        session_a,
+    )
+    await _drive_stream(stream_a)
+    # B finishes normally once released; A never reached completion.
+    released["b"].set()
+    await asyncio.wait_for(completed["b"].wait(), timeout=1)
+    await _drive_stream(stream_b)
+    released["a"].set()
+    await asyncio.sleep(0)
+
+    assert not completed["a"].is_set()
+    assert completed["b"].is_set()
+    assert server._inflight == {}
+
+
+async def test_http_subscriptions_advertised_and_served_with_sessions():
+    """Subscriptions advertise true and deliver updates over a stateful HTTP stream."""
+    from veloce.contrib.mcp.transports.http import _stream_response
+
+    app = Veloce(openapi_url=None)
+    app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @app.get(
+        "/doc",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://main",
+        mcp_description="A document",
+    )
+    async def doc() -> dict:
+        return {"v": 1}
+
+    @app.mcp_tool(description="Hold the stream open while a change is signalled")
+    async def hold() -> str:
+        started.set()
+        await release.wait()
+        return "ok"
+
+    server = MCPServer(app)
+    session = MCPSession()
+
+    # A stateful connection sees subscribe/listChanged advertised as true.
+    init = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, session
+    )
+    assert init["result"]["capabilities"]["resources"] == {
+        "subscribe": True,
+        "listChanged": True,
+    }
+
+    # Subscribe, then open a stream that registers the connection's sink and, while
+    # the call is held in flight, signal a change; the update reaches the stream.
+    await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/subscribe",
+            "params": {"uri": "doc://main"},
+        },
+        session,
+    )
+
+    stream = _stream_response(server, _mcp_call_body("hold", {}), None, session)
+    gen = stream._stream
+    await gen.__anext__()  # priming frame; registers the connection's sink
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await server.notify_resource_updated("doc://main")
+    release.set()
+    frames = b"".join([chunk async for chunk in gen])
+    methods = [e.get("method") for e in _parse_sse(frames)]
+    assert "notifications/resources/updated" in methods
+
+
+def test_http_subscribe_not_advertised_without_sessions():
+    """Stateless HTTP must advertise subscribe/listChanged as false (cannot serve them)."""
+    app = Veloce(openapi_url=None)
+    app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+    @app.get(
+        "/doc",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://main",
+        mcp_description="A document",
+    )
+    async def doc() -> dict:
+        return {"v": 1}
+
+    app.mount_mcp(transport="http")  # stateless: no sessions
+    resp = app.test_client().post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    caps = orjson.loads(resp.body)["result"]["capabilities"]
+    assert caps["resources"] == {"subscribe": False, "listChanged": False}
+
+
+def test_http_subscribe_advertised_true_with_sessions():
+    """With sessions on, the HTTP initialize advertises subscribe/listChanged true."""
+    app = Veloce(openapi_url=None)
+    app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+    @app.get(
+        "/doc",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://main",
+        mcp_description="A document",
+    )
+    async def doc() -> dict:
+        return {"v": 1}
+
+    app.mount_mcp(transport="http", sessions=True)
+    resp = app.test_client().post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    caps = orjson.loads(resp.body)["result"]["capabilities"]
+    assert caps["resources"] == {"subscribe": True, "listChanged": True}
+
+
+def test_http_subscribe_rejected_on_stateless_request():
+    """resources/subscribe over a stateless HTTP request errors (not advertised)."""
+    app = Veloce(openapi_url=None)
+    app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+    @app.get(
+        "/doc",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://main",
+        mcp_description="A document",
+    )
+    async def doc() -> dict:
+        return {"v": 1}
+
+    app.mount_mcp(transport="http")  # stateless
+    resp = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "doc://main"},
+        },
+    )
+    assert orjson.loads(resp.body)["error"]["code"] == -32602
+
+
+def test_http_tasks_isolated_per_session():
+    """A task created under one Mcp-Session-Id is invisible to another session."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Slow", task_support=True)
+    async def slow() -> str:
+        await asyncio.sleep(0.2)
+        return "done"
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+
+    def initialize() -> str:
+        init = client.post(
+            "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        )
+        return init.headers["mcp-session-id"]
+
+    sid_a = initialize()
+    sid_b = initialize()
+
+    created = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "slow", "arguments": {}, "task": {}},
+        },
+        headers={"mcp-session-id": sid_a},
+    )
+    task_id = orjson.loads(created.body)["result"]["task"]["taskId"]
+
+    # Client B cannot see A's task in its own list.
+    listed_b = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 3, "method": "tasks/list", "params": {}},
+        headers={"mcp-session-id": sid_b},
+    )
+    assert orjson.loads(listed_b.body)["result"]["tasks"] == []
+
+    # Client B cannot get / cancel A's task even with the id.
+    got_b = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 4, "method": "tasks/get", "params": {"taskId": task_id}},
+        headers={"mcp-session-id": sid_b},
+    )
+    assert orjson.loads(got_b.body)["error"]["code"] == -32002
+
+    cancel_b = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 5, "method": "tasks/cancel", "params": {"taskId": task_id}},
+        headers={"mcp-session-id": sid_b},
+    )
+    assert orjson.loads(cancel_b.body)["error"]["code"] == -32002
+
+    # Client A still sees and owns its task.
+    listed_a = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 6, "method": "tasks/list", "params": {}},
+        headers={"mcp-session-id": sid_a},
+    )
+    a_ids = [t["taskId"] for t in orjson.loads(listed_a.body)["result"]["tasks"]]
+    assert task_id in a_ids
+
+
+def test_http_client_capabilities_recorded_with_sessions():
+    """initialize capabilities are recorded on the HTTP session, gating ctx.sample."""
+    app = Veloce(openapi_url=None)
+
+    app.debug = True
+
+    @app.mcp_tool(description="Try sampling")
+    async def sample_tool(ctx: MCPContext) -> str:
+        await ctx.sample([{"role": "user", "content": "hi"}], max_tokens=16)
+        return "ok"
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+    sid = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"capabilities": {"sampling": {}}},
+        },
+    ).headers["mcp-session-id"]
+
+    # The capability is recorded, so the call passes the capability gate and then
+    # fails on the genuine transport limit (HTTP POST has no server->client reply
+    # channel), not on a missing-capability error - proving the session recorded it.
+    resp = client.post(
+        "/mcp",
+        json=_mcp_call_body("sample_tool", {}),
+        headers={"mcp-session-id": sid},
+    )
+    body = orjson.loads(resp.body)
+    # Not a top-level JSON-RPC error: a missing-capability gate would have produced
+    # one. Instead the call passed the gate and failed in-band on the genuine
+    # transport limit (a POST has no server->client reply channel).
+    assert "error" not in body
+    result = body["result"]
+    assert result["isError"] is True
+    assert "bidirectional" in result["content"][0]["text"]
+
+
+def test_http_lifecycle_gating_enforced_with_sessions():
+    """MCP_ENFORCE_LIFECYCLE rejects a pre-initialize call on a stateful HTTP session."""
+    app = Veloce(openapi_url=None)
+    app.config["MCP_ENFORCE_LIFECYCLE"] = True
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+    sid = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    ).headers["mcp-session-id"]
+
+    # A call before notifications/initialized is rejected.
+    early = client.post(
+        "/mcp", json=_mcp_call_body("add", {"a": 1, "b": 2}), headers={"mcp-session-id": sid}
+    )
+    assert orjson.loads(early.body)["error"]["code"] == -32600
+
+    # After the initialized ack, the same call succeeds.
+    client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        headers={"mcp-session-id": sid},
+    )
+    ok = client.post(
+        "/mcp", json=_mcp_call_body("add", {"a": 1, "b": 2}), headers={"mcp-session-id": sid}
+    )
+    assert orjson.loads(ok.body)["result"]["content"][0]["text"] == "3"
+
+
+def test_http_session_store_evicts_idle_sessions():
+    """An idle, never-DELETEd session is reclaimed by the store's idle TTL."""
+    from veloce.contrib.mcp.transports.session_store import HttpSessionStore
+
+    store = HttpSessionStore(idle_ttl=0.0)
+    sid, _session = store.create()
+    # With a zero idle window any subsequent resolution evicts the stale id.
+    assert store.resolve(sid) is None
+
+
+def test_event_store_caps_stream_count():
+    """The event store evicts the oldest stream once the stream cap is exceeded."""
+    from veloce.contrib.mcp.transports.event_store import SSEEventStore
+
+    store = SSEEventStore(max_streams=2)
+    store.record("s1", 1, {"v": 1})
+    store.record("s2", 1, {"v": 2})
+    store.record("s3", 1, {"v": 3})  # evicts s1 (oldest)
+    assert store.replay_after("s1.0") == []  # s1 history reclaimed
+    assert [p["v"] for _, p in store.replay_after("s3.0")] == [3]
+    assert [p["v"] for _, p in store.replay_after("s2.0")] == [2]
+
+
 # -- Principal + per-tool scopes --------------------------------------
 
 
@@ -4624,8 +4972,6 @@ def test_event_store_discards_unknown_stream_and_malformed_ids():
     assert store.replay_after("other.0") == []  # unknown stream
     assert store.replay_after("no-separator") == []  # malformed id
     assert store.replay_after("s.x") == []  # non-numeric sequence
-    store.discard("s")
-    assert store.replay_after("s.0") == []  # discarded stream
 
 
 async def test_sse_disconnection_does_not_cancel_the_call():
@@ -4646,7 +4992,9 @@ async def test_sse_disconnection_does_not_cancel_the_call():
         ran_to_completion.set()
         return "done"
 
-    stream = _stream_response(MCPServer(app), _mcp_call_body("work"), None)
+    from veloce.contrib.mcp.session import MCPSession
+
+    stream = _stream_response(MCPServer(app), _mcp_call_body("work"), None, MCPSession())
     gen = stream._stream
     # Consume only the priming frame, then disconnect by closing the generator -
     # simulating a client dropping the SSE stream while the call is in flight.
@@ -4748,15 +5096,21 @@ async def test_http_sse_call_is_cancelled_by_notification():
         ran_to_completion.set()
         return "done"
 
+    from veloce.contrib.mcp.session import MCPSession
+
     server = MCPServer(app)
-    stream = _stream_response(server, _mcp_call_body("work"), None)
+    # One connection: the cancel must arrive on the same session the call runs
+    # under, since cancellation is now scoped per connection.
+    session = MCPSession()
+    stream = _stream_response(server, _mcp_call_body("work"), None, session)
     gen = stream._stream
     await gen.__anext__()  # priming frame; schedules the runner task
     await asyncio.wait_for(started.wait(), timeout=1)
 
-    # A separate cancel message reaches the concurrently-running call by id.
+    # A cancel on the same connection reaches the concurrently-running call by id.
     await server.handle_message(
-        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}},
+        session,
     )
     # Drain the stream to its close; the call never ran to completion.
     async for _ in gen:

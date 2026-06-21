@@ -144,7 +144,7 @@ class SubscriptionsCapability(Capability):
         is an invalid request for this method.
         """
         session = self._server.current_session()
-        if session is None:
+        if session is None or not session.persistent:
             raise InvalidParamsError(
                 "resources/subscribe requires a stateful connection; subscriptions "
                 "are not supported on a stateless request."

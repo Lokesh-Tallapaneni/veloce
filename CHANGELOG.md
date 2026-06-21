@@ -44,15 +44,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The stdio transport issues server-to-client requests and awaits their correlated replies. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
 - `MCPCapabilityError` rejects a server-initiated request the client did not advertise support for. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
 - The MCP `resources` capability advertises `subscribe` and `listChanged` when subscriptions are enabled. ([#239](https://github.com/Lokesh-Tallapaneni/veloce/pull/239))
+- MCP resource subscriptions deliver `notifications/resources/updated` over a stateful HTTP `Mcp-Session-Id` connection. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
+- The MCP HTTP transport records the client capabilities from `initialize` on a session, gating `MCPContext.sample` / `elicit` / `roots`. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
 
 ### Changed
 
 - A client disconnecting from an MCP SSE stream no longer cancels the in-flight call. ([#230](https://github.com/Lokesh-Tallapaneni/veloce/pull/230))
 - `MCPContext.cancelled` reflects real cancellation state instead of always returning `False`. ([#234](https://github.com/Lokesh-Tallapaneni/veloce/pull/234))
+- The MCP HTTP transport advertises `resources.subscribe` / `listChanged` as `true` only with `sessions=True`; a stateless request advertises `false`. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
+- `MCP_ENFORCE_LIFECYCLE` is enforced on a stateful HTTP `Mcp-Session-Id` connection, not only over stdio. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
 
 ### Fixed
 
 - `PlainTextResponse` and `HTMLResponse` now accept `bytes` as well as `str`, matching Starlette parity. ([#216](https://github.com/Lokesh-Tallapaneni/veloce/issues/216))
+- An MCP HTTP client's `notifications/cancelled` cancels only its own in-flight request, never a peer's call with a colliding JSON-RPC id. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
+- An MCP task is private to the connection that created it; `tasks/list` and `tasks/get` / `result` / `cancel` reject another connection's task. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
+- The MCP HTTP session store evicts idle `Mcp-Session-Id` sessions so an abandoned session no longer leaks for the process lifetime. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
+- The MCP SSE event store caps retained streams so a long-running resumable server's replay buffer no longer grows without bound. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
 
 ## [0.8.0] - 2026-06-13
 
