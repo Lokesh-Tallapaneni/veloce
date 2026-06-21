@@ -76,6 +76,11 @@ _logger = logging.getLogger(__name__)
 # header" apart from "haven't looked yet".
 _UNSET: Any = object()
 
+# Sentinel for "the JSON body has not been parsed yet" on the `_json` cache.
+# Distinct from `None` so a body that is legitimately JSON `null` caches as
+# `None` instead of looking unparsed and being re-decoded on every access.
+_UNPARSED: Any = object()
+
 
 def _split_etag_list(value: str) -> tuple[str, ...]:
     """Split an `If-Match`/`If-None-Match` list on commas outside quoted strings.
@@ -214,7 +219,7 @@ class Request:
         # for synthetic requests built outside dispatch; Veloce
         # writes it inside `_dispatch_request` after `Router.match`.
         self.endpoint: str | None = None
-        self._json: Any = None
+        self._json: Any = _UNPARSED
         self._query_params: QueryParams | None = None
         self._form: Any = None
         self._path_params: dict[str, Any] = {}
@@ -1100,7 +1105,7 @@ class Request:
         if not body:
             return None
 
-        if cache and self._json is not None:
+        if cache and self._json is not _UNPARSED:
             return self._json
 
         try:
@@ -1183,7 +1188,7 @@ class Request:
         For Flask muscle-memory call `request.get_json()` instead - that
         remains synchronous to match Flask's `Request.get_json`.
         """
-        if self._json is None:
+        if self._json is _UNPARSED:
             body = await self._drain_body()
             if not body:
                 self._json = None

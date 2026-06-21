@@ -55,9 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The MCP HTTP transport advertises `resources.subscribe` / `listChanged` as `true` only with `sessions=True`; a stateless request advertises `false`. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
 - `MCP_ENFORCE_LIFECYCLE` is enforced on a stateful HTTP `Mcp-Session-Id` connection, not only over stdio. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
 - `Response.mimetype`, `charset`, and `mimetype_params` cache their parse, keyed on the current `content_type` value.
+- Route registration rejects a path parameter name that is not a valid Python identifier or is a reserved keyword, instead of failing opaquely at request time. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
 
 ### Fixed
 
+- `request.json()` caches a JSON `null` body as `None` so it is parsed once instead of re-decoded on every access. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
 - The MCP HTTP `GET` resume path validates `Origin` and `MCP-Protocol-Version` so a cross-origin or unsupported-version client cannot bypass the DNS-rebinding defense. ([#232](https://github.com/Lokesh-Tallapaneni/veloce/issues/232))
 - MCP `completion/complete` bounds the number of client-supplied `context.arguments` entries it ingests. ([#233](https://github.com/Lokesh-Tallapaneni/veloce/issues/233))
 - A malformed inbound `traceparent` no longer raises out of the OpenTelemetry span-emit hook; the span is rooted instead. ([#234](https://github.com/Lokesh-Tallapaneni/veloce/issues/234))
