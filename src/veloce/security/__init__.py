@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from veloce.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery
+from veloce.security.base import SecurityScheme
 from veloce.security.http import (
     HTTPBasic,
     HTTPBasicCredentials,
@@ -38,6 +39,7 @@ from veloce.security.reset_token import (
 )
 
 __all__ = [
+    "SecurityScheme",
     "HTTPBasic",
     "HTTPBasicCredentials",
     "HTTPBearer",

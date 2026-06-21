@@ -7,6 +7,7 @@ from typing import Any
 from veloce._constants import HEADER_WWW_AUTHENTICATE
 from veloce.http.request import Request
 from veloce.security._utils import _extract_api_key, _quote_header_value, _validate_realm
+from veloce.security.base import SecurityScheme
 
 # RFC 9110 Sec. 11.6.1 - the auth-scheme token for the API-key 401 challenge.
 # Not an IANA-registered scheme, but a bare `WWW-Authenticate: APIKey` (or
@@ -15,7 +16,7 @@ from veloce.security._utils import _extract_api_key, _quote_header_value, _valid
 _APIKEY_SCHEME = "APIKey"
 
 
-class _APIKeyBase:
+class _APIKeyBase(SecurityScheme):
     """Shared logic for `APIKeyHeader`, `APIKeyQuery`, `APIKeyCookie`.
 
     Each subclass differs only in which `Request` collection it pulls
@@ -26,7 +27,8 @@ class _APIKeyBase:
     """
 
     _source_attr: str = ""  # subclass overrides - Request attribute name
-    __slots__ = ("name", "auto_error", "realm", "_challenge")
+    # `auto_error` is owned by `SecurityScheme`'s slots.
+    __slots__ = ("name", "realm", "_challenge")
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

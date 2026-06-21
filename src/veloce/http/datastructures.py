@@ -428,8 +428,10 @@ class _GetListMixin:
 
     `multidict` exposes `getall`, which raises `KeyError` when the key is
     absent; the framework's collections expose `getlist`, which returns an
-    empty list instead. The mixin is slotless so it adds no per-instance
-    `__dict__` to its (also slotless-by-omission) multidict subclasses.
+    empty list instead. The mixin's own `__slots__ = ()` is necessary but
+    not sufficient for a `__dict__`-free layout: each subclass must itself
+    declare `__slots__`, because a subclass that omits it regains a
+    per-instance `__dict__` regardless of the mixin's empty slots.
     """
 
     __slots__ = ()
@@ -483,8 +485,15 @@ class FormData(_GetListMixin, MultiDict):
     # with `debug=True`: `(request_mimetype, frozenset_of_form_field_names)`.
     # When set, a missing-key lookup raises a descriptive `FilesKeyError`
     # instead of a bare `KeyError`. `None` (the default) keeps plain
-    # multidict semantics, so production lookups pay nothing.
-    _files_diagnostic: tuple[str, frozenset[str]] | None = None
+    # multidict semantics, so production lookups pay nothing. A real slot
+    # rather than the open-ended `__dict__` the class would otherwise gain.
+    __slots__ = ("_files_diagnostic",)
+
+    _files_diagnostic: tuple[str, frozenset[str]] | None
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._files_diagnostic = None
 
     def __getitem__(self, key: str) -> Any:
         try:
@@ -509,6 +518,8 @@ class Headers(_GetListMixin, CIMultiDict):
     values. Construction from a plain dict, a list of tuples, or another
     multidict all work - the underlying constructor handles each shape.
     """
+
+    __slots__ = ()
 
     def to_wsgi_list(self) -> list[tuple[str, str]]:
         """Return headers as a list of `(name, value)` tuples.
@@ -952,6 +963,8 @@ class Cookies(_GetListMixin, MultiDict):
     collapse to the first occurrence per the spec.
     """
 
+    __slots__ = ()
+
     @classmethod
     def from_cookie_header(cls, header_value: str) -> Cookies:
         """Parse a `Cookie:` header value into a `Cookies` mapping.
@@ -970,6 +983,8 @@ class QueryParams(_GetListMixin, MultiDict):
     preserve every value; `getlist("x")` returns ``["1", "2"]`` while
     `params["x"]` returns ``"1"`` (the first).
     """
+
+    __slots__ = ()
 
     @classmethod
     def from_query_string(cls, query_string: str) -> QueryParams:
