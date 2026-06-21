@@ -1089,7 +1089,7 @@ class Request:
 
         Returns `None` for empty bodies regardless of `force` / `silent`.
 
-        This is the synchronous, Flask-flavoured accessor: it requires the
+        This is the synchronous accessor: it requires the
         body to already be buffered (the in-memory path), and raises
         `RuntimeError` otherwise - reach for `await request.json()` when
         the body has not yet been drained.
@@ -1170,23 +1170,22 @@ class Request:
     async def body(self) -> bytes:
         """Return the full request body as bytes, draining the source once.
 
-        Async to match Starlette / FastAPI / Quart. Veloce buffers the
+        Async to match the ASGI convention. Veloce buffers the
         body before dispatch, so no I/O happens inside the await - the
         coroutine resolves immediately with the cached bytes.
         """
         return await self._drain_body()
 
     async def json(self) -> Any:
-        """Parse the request body as JSON, async to match Starlette / FastAPI / Quart.
+        """Parse the request body as JSON, async to match the ASGI convention.
 
         Veloce buffers the body at construction time, so no I/O actually
         happens inside the await - the coroutine resolves immediately
         with the cached parse. The async signature exists so the
-        `await request.json()` idiom Starlette and FastAPI callers
-        reach for first does not blow up at runtime.
+        `await request.json()` idiom does not blow up at runtime.
 
-        For Flask muscle-memory call `request.get_json()` instead - that
-        remains synchronous to match Flask's `Request.get_json`.
+        The synchronous `request.get_json()` accessor is available for
+        callers that prefer a sync API.
         """
         if self._json is _UNPARSED:
             body = await self._drain_body()

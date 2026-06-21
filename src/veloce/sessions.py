@@ -18,8 +18,7 @@ from typing import Any
 
 # Probabilistic sweep tuning for `InMemorySessionStore`. The threshold keeps
 # small stores cheap; the probability keeps the amortised cost of a write
-# below one full scan per `1/_SWEEP_PROBABILITY` writes. Mirrors Django's
-# `cached_db` session backend.
+# below one full scan per `1/_SWEEP_PROBABILITY` writes.
 _SWEEP_THRESHOLD = 1000
 _SWEEP_PROBABILITY = 1.0 / 32
 

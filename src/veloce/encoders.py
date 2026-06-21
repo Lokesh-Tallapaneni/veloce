@@ -206,7 +206,7 @@ def _resolve_custom(
 ) -> Callable[[Any], Any] | None:
     """Resolve a per-call `custom_encoder` entry for `obj`.
 
-    Matches FastAPI's order: exact `type(obj)` first, then an insertion-order
+    Resolution order: exact `type(obj)` first, then an insertion-order
     `isinstance` scan returning the first matching entry. Insertion order is
     the documented tie-break when two registered bases both match.
     """

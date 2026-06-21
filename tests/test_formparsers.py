@@ -162,7 +162,7 @@ def _ct() -> str:
     return f"multipart/form-data; boundary={_BOUNDARY}"
 
 
-# ── Finding: missing / malformed boundary handling (Django) ──────────
+# ── Finding: missing / malformed boundary handling ──────────
 
 
 def test_missing_boundary_raises_bad_request():
@@ -205,7 +205,7 @@ def test_malformed_body_mid_parse_raises_bad_request():
         parse_multipart_form(body, _ct())
 
 
-# ── Finding: separate field/file limits + field memory (Django/Quart) ─
+# ── Finding: separate field/file limits + field memory ─
 
 
 def test_max_fields_caps_text_field_count():

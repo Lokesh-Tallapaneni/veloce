@@ -38,7 +38,7 @@ from veloce.contrib.mcp.context import MCPContext
 # Static files
 from veloce.contrib.staticfiles import StaticFiles
 
-# Templating - Flask-style top-level shortcuts. The full Jinja2Templates
+# Templating - top-level shortcuts. The full Jinja2Templates
 # class stays under veloce.contrib.templating for callers that want the
 # class-based API.
 from veloce.contrib.templating import (
