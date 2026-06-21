@@ -12,19 +12,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from veloce.contrib.mcp.capabilities.base import Capability
+from veloce.contrib.mcp.capabilities.base import _ServerCapability
 
 if TYPE_CHECKING:  # pragma: no cover
-    from veloce.contrib.mcp.server import MCPServer, MethodHandler
+    from veloce.contrib.mcp.server import MethodHandler
 
 
-class ToolsCapability(Capability):
+class ToolsCapability(_ServerCapability):
     """The ``tools/list`` and ``tools/call`` methods, always advertised."""
 
-    __slots__ = ("_server",)
-
-    def __init__(self, server: MCPServer) -> None:
-        self._server = server
+    __slots__ = ()
 
     def advertise(self) -> dict[str, Any]:
         # `listChanged` is off: the tool set is fixed once the server is built.
@@ -37,13 +34,10 @@ class ToolsCapability(Capability):
         }
 
 
-class ResourcesCapability(Capability):
+class ResourcesCapability(_ServerCapability):
     """The resource methods, advertised only when the app exposes a resource."""
 
-    __slots__ = ("_server",)
-
-    def __init__(self, server: MCPServer) -> None:
-        self._server = server
+    __slots__ = ()
 
     def advertise(self) -> dict[str, Any] | None:
         # The `subscribe`/`listChanged` sub-capabilities are advertised only when
@@ -68,13 +62,10 @@ class ResourcesCapability(Capability):
         }
 
 
-class PromptsCapability(Capability):
+class PromptsCapability(_ServerCapability):
     """The prompt methods, advertised only when the app exposes a prompt."""
 
-    __slots__ = ("_server",)
-
-    def __init__(self, server: MCPServer) -> None:
-        self._server = server
+    __slots__ = ()
 
     def advertise(self) -> dict[str, Any] | None:
         if not self._server.prompts.prompts:
@@ -88,17 +79,14 @@ class PromptsCapability(Capability):
         }
 
 
-class LoggingCapability(Capability):
+class LoggingCapability(_ServerCapability):
     """The ``logging/setLevel`` method, always advertised.
 
     Any tool may emit a log message through `MCPContext.log`, and the client may
     raise the minimum level, so logging is advertised for every server.
     """
 
-    __slots__ = ("_server",)
-
-    def __init__(self, server: MCPServer) -> None:
-        self._server = server
+    __slots__ = ()
 
     def advertise(self) -> dict[str, Any]:
         return {"logging": {}}

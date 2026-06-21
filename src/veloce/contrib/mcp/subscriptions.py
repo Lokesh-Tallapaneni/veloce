@@ -25,11 +25,11 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from veloce.contrib.mcp.capabilities.base import Capability
+from veloce.contrib.mcp.capabilities.base import _ServerCapability
 from veloce.contrib.mcp.errors import InvalidParamsError
 
 if TYPE_CHECKING:  # pragma: no cover
-    from veloce.contrib.mcp.server import MCPServer, MethodHandler
+    from veloce.contrib.mcp.server import MethodHandler
     from veloce.contrib.mcp.session import MCPSession
 
 _logger = logging.getLogger(__name__)
@@ -118,7 +118,7 @@ class ConnectionRegistry:
             _logger.exception("MCP resource notification delivery failed")
 
 
-class SubscriptionsCapability(Capability):
+class SubscriptionsCapability(_ServerCapability):
     """The `resources/subscribe` / `resources/unsubscribe` methods, opt-in.
 
     Folded into the resource area but kept a separate capability so the base
@@ -129,10 +129,7 @@ class SubscriptionsCapability(Capability):
     returns `None`.
     """
 
-    __slots__ = ("_server",)
-
-    def __init__(self, server: MCPServer) -> None:
-        self._server = server
+    __slots__ = ()
 
     def advertise(self) -> dict[str, Any] | None:
         return None
