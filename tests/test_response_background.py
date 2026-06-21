@@ -143,6 +143,75 @@ async def test_response_background_with_di_injected_tasks_coexist():
     assert set(log) == {"from-di", "from-response"}
 
 
+# ── Shutdown drain: background tasks are not orphaned ────────────────
+
+
+@pytest.mark.asyncio
+async def test_response_background_task_is_drained_on_shutdown():
+    """A still-running response background task is tracked and cancelled-and-
+    drained on shutdown, not orphaned. Pre-fix it was a bare `create_task`
+    the shutdown drain never saw, so it could outlive the loop."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def long_bg() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/x")
+    async def x():
+        return Response(
+            body=b"ok",
+            content_type="text/plain",
+            background=BackgroundTask(long_bg),
+        )
+
+    await app.handle_request(_req())
+    await started.wait()
+    # Tracked in the single spawn registry, so the shutdown drain sees it.
+    assert len(app._spawned_anon) == 1
+    await app._drain_spawned_tasks()
+    # Cancelled and awaited rather than left pending past shutdown.
+    assert cancelled.is_set()
+    assert not app._spawned_anon
+
+
+@pytest.mark.asyncio
+async def test_di_injected_background_tasks_are_drained_on_shutdown():
+    """The DI-injected `BackgroundTasks` queue goes through the same tracked
+    spawn path, so its work is drained on shutdown too."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def long_bg() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/x")
+    async def x(bg: BackgroundTasks):
+        bg.add_task(long_bg)
+        return Response(body=b"ok", content_type="text/plain")
+
+    await app.handle_request(_req())
+    await started.wait()
+    assert len(app._spawned_anon) == 1
+    await app._drain_spawned_tasks()
+    assert cancelled.is_set()
+    assert not app._spawned_anon
+
+
 def test_response_default_background_is_none():
     """Existing Response() construction without background= leaves it None."""
     r = Response(body=b"ok", content_type="text/plain")
