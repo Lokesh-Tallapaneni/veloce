@@ -103,8 +103,11 @@ class HttpSessionStore:
         """Reclaim sessions untouched past the idle time-to-live."""
         if not self._live:
             return
+        # `<=` so a session exactly at the deadline is reclaimed: with `idle_ttl=0`
+        # ("evict on next access") and a coarse monotonic clock (Windows' ~15ms
+        # granularity can read the same value twice), a strict `<` would never fire.
         deadline = time.monotonic() - self._idle_ttl
-        expired = [sid for sid, entry in self._live.items() if entry.touched_at < deadline]
+        expired = [sid for sid, entry in self._live.items() if entry.touched_at <= deadline]
         for sid in expired:
             entry = self._live.pop(sid, None)
             if entry is not None and self._on_evict is not None:
