@@ -1,6 +1,6 @@
 """Request and application lifecycle — hooks and lifespan mixed into Veloce.
 
-Holds the Flask-style request hooks (`before_request`, `after_request`,
+Holds the request hooks (`before_request`, `after_request`,
 `teardown_request`, `teardown_appcontext`) and their teardown runners, the
 lifespan-event registration surface (`on_startup` / `on_shutdown` and the
 deprecated `on_event` / `add_event_handler` aliases), and the lifespan engine

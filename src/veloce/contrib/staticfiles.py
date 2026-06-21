@@ -389,8 +389,8 @@ class StaticFiles:
             # first redirects to the slash-terminated form (`/s/docs/`) so the
             # browser resolves the page's relative links against the directory
             # rather than its parent; the slash-terminated request then serves
-            # the index. This mirrors how every static server (nginx, Apache,
-            # Starlette `html=True`) treats a directory with an index document.
+            # the index. This mirrors how a static server (nginx, Apache)
+            # treats a directory with an index document when index serving is on.
             if not is_file and self.html and is_dir:
                 index_path = os.path.join(file_path, "index.html")
                 stat_index, denied_index = await loop.run_in_executor(None, _try_stat, index_path)

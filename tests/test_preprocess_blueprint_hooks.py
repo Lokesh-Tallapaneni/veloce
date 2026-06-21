@@ -3,7 +3,7 @@ for routes the blueprint owns.
 
 Inspector F-002 on PR #65: the bucket refactor moved blueprint hooks out
 of the flat `_*_hooks` lists into `_bp_*_hooks` dicts. The dispatch path
-walks the bucket; the public Flask-shape helpers
+walks the bucket; the public hook helpers
 `preprocess_request` / `process_response` were missed and would silently
 skip every blueprint-registered hook when called directly by user code,
 extensions, or tests.

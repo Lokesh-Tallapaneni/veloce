@@ -256,7 +256,7 @@ class Signal:
         `Exception` instance if the receiver raised. Per-receiver
         exceptions are logged at WARNING and substituted into the
         result list so the caller can inspect failures while subsequent
-        receivers still fire. Mirrors Django/Blinker `send_robust`.
+        receivers still fire.
 
         Sync-only: if a receiver is an async function (or otherwise
         returns a coroutine), the coroutine is closed and a `TypeError`

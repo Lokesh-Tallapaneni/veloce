@@ -740,7 +740,7 @@ def build_plan(
             is_opt, inner = _unwrap_optional(annotation) if annotation else (False, annotation)
             slot.is_optional = is_opt
             slot.target_type = inner if is_opt else annotation
-            # DX lint (Veloce-original; FastAPI does not flag this): a mutable
+            # DX lint (Veloce-original): a mutable
             # static default on a marker is shared across every request, so an
             # in-place mutation by one handler leaks into the next. Point the
             # author at `default_factory`, which builds a fresh value per call.

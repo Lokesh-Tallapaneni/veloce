@@ -92,7 +92,7 @@ async def test_default_route_buffers_body_so_sync_accessor_works():
 
     @app.post("/echo")
     async def echo(request):
-        # Sync Flask-style accessor: works only because the default route is
+        # Sync accessor: works only because the default route is
         # buffered before the handler, even though the body arrived in chunks.
         return {"drained": request._body_drained, "data": request.get_json()}
 

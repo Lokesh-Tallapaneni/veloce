@@ -1,9 +1,8 @@
 """Request body-as-JSON accessors.
 
-`Request.json()` is async (matches Starlette / FastAPI / Quart;
-exercised via `await request.json()`).
-`Request.get_json(force=, silent=, cache=)` is the synchronous
-Flask-shape alias.
+`Request.json()` is async (the ASGI convention; exercised via
+`await request.json()`).
+`Request.get_json(force=, silent=, cache=)` is the synchronous alias.
 """
 
 from __future__ import annotations
@@ -94,14 +93,14 @@ def test_cache_false_reparses():
 
 def test_request_json_is_coroutine_function():
     """`Request.json` must remain `async def`. A future contributor reverting
-    it to a sync method would break the Starlette / FastAPI / Quart
-    `await request.json()` idiom; this is the regression guard."""
+    it to a sync method would break the `await request.json()` idiom;
+    this is the regression guard."""
     assert inspect.iscoroutinefunction(Request.json)
 
 
 def test_request_get_json_stays_synchronous():
-    """The Flask-shape `get_json()` keeps the sync signature so callers
-    porting from Flask do not need to rewrite their code."""
+    """The synchronous `get_json()` keeps the sync signature so callers
+    that prefer a sync API do not need to rewrite their code."""
     assert not inspect.iscoroutinefunction(Request.get_json)
 
 
