@@ -252,6 +252,50 @@ async def test_malformed_request_is_invalid_params(params):
     assert out["error"]["code"] == -32602
 
 
+async def test_oversized_context_arguments_is_bounded():
+    """An oversized client `context.arguments` is rejected, not materialized wholesale."""
+    from veloce.contrib.mcp.completion import _MAX_CONTEXT_ARGS
+
+    app = Veloce()
+
+    @app.mcp_prompt(description="A greeting")
+    async def greet(name: str) -> str:
+        return f"Hi {name}"
+
+    @app.mcp_completer(prompt="greet", argument="name")
+    async def complete_name(value, context):
+        return ["ada"]
+
+    server = _server(app)
+    oversized = {str(i): "x" for i in range(_MAX_CONTEXT_ARGS + 1)}
+    out = await _complete_raw(
+        server,
+        {"type": "ref/prompt", "name": "greet"},
+        "name",
+        "",
+        context={"arguments": oversized},
+    )
+    assert out["error"]["code"] == -32602
+
+    # A context at the cap is still accepted.
+    at_cap = {str(i): "x" for i in range(_MAX_CONTEXT_ARGS)}
+    ok = await _complete(
+        server,
+        {"type": "ref/prompt", "name": "greet"},
+        "name",
+        "",
+        context={"arguments": at_cap},
+    )
+    assert ok["completion"]["values"] == ["ada"]
+
+
+async def _complete_raw(server: MCPServer, ref: dict, name: str, value: str, **extra) -> dict:
+    params: dict = {"ref": ref, "argument": {"name": name, "value": value}, **extra}
+    return await server.handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "completion/complete", "params": params}
+    )
+
+
 # -- Registration validation -----------------------------------------
 
 

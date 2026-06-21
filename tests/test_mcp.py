@@ -5162,6 +5162,40 @@ def test_resume_without_last_event_id_is_405():
     assert resp.status_code == 405
 
 
+def test_resume_get_rejects_cross_origin():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    # The GET resume path must run the same DNS-rebinding defense as POST: a
+    # browser Origin outside the allowlist is rejected before any replay.
+    app.mount_mcp(transport="http", resumable=True, allowed_origins=["https://app.example.com"])
+    blocked = app.test_client().get(
+        "/mcp",
+        headers={"last-event-id": "s.1", "origin": "https://evil.example"},
+    )
+    assert blocked.status_code == 403
+
+
+def test_resume_get_rejects_unsupported_protocol_version():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    # A present, unsupported MCP-Protocol-Version on the GET resume path is the
+    # same 400 the POST path returns, not a stream.
+    bad = app.test_client().get(
+        "/mcp",
+        headers={"last-event-id": "s.1", "mcp-protocol-version": "1999-01-01"},
+    )
+    assert bad.status_code == 400
+
+
 def test_event_store_replays_after_eviction_window():
     from veloce.contrib.mcp.transports.event_store import (
         _MAX_EVENTS_PER_STREAM,
@@ -5277,6 +5311,44 @@ async def test_notifications_cancelled_unknown_id_is_a_no_op():
         {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 99}}
     )
     assert result is None
+
+
+async def test_notifications_cancelled_non_hashable_id_is_ignored():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    server = MCPServer(app)
+    # A `requestId` that is a list/object would make the in-flight lookup key
+    # unhashable; the malformed notification is ignored without raising.
+    for bad_id in ([1, 2], {"k": "v"}, True):
+        result = await server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": {"requestId": bad_id},
+            }
+        )
+        assert result is None
+
+
+def test_task_settle_is_idempotent_after_cancel():
+    from veloce.contrib.mcp.tasks import (
+        STATUS_CANCELLED,
+        STATUS_COMPLETED,
+        new_task,
+    )
+
+    # A `tasks/cancel` racing the runner's natural completion: the cancel settles
+    # the task first, and the runner's later COMPLETED settle must not overwrite
+    # the recorded CANCELLED state.
+    task = new_task("work", ttl_ms=1000)
+    task.settle(STATUS_CANCELLED, {"content": [], "isError": True}, "cancelled")
+    task.settle(STATUS_COMPLETED, {"content": [{"type": "text", "text": "done"}]})
+    assert task.status == STATUS_CANCELLED
+    assert task.result == {"content": [], "isError": True}
 
 
 async def test_initialize_request_is_not_cancellable():

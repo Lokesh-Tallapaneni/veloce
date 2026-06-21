@@ -916,6 +916,11 @@ class MCPServer:
         JSON-RPC id happens to collide.
         """
         request_id = params.get("requestId")
+        # A JSON-RPC id is a string or a number; a list/object would make the
+        # `(connection_key, request_id)` lookup key unhashable. A malformed id
+        # matches no in-flight request, so ignore the notification.
+        if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
+            return None
         session = _session_var.get()
         connection_key = session.connection_id if session is not None else None
         holder = self._inflight.get((connection_key, request_id))

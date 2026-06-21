@@ -160,7 +160,7 @@ def register_http_transport(
         if request.method == "DELETE":
             return _handle_delete(store, request)
         if request.method == "GET":
-            return _handle_get(event_store, request)
+            return _handle_get(event_store, request, allowed_origins)
         return await _handle_http(server, request, auth, allowed_origins, store, event_store)
 
     app.add_route(
@@ -311,7 +311,11 @@ def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response
     return Response(status_code=204)
 
 
-def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response:
+def _handle_get(
+    event_store: SSEEventStore | None,
+    request: Request,
+    allowed_origins: frozenset[str] | None = None,
+) -> Response:
     """Resume a dropped SSE stream from `Last-Event-ID`, or answer 405.
 
     A `GET` is meaningful only under resumability and only as a resume: the client
@@ -320,6 +324,15 @@ def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response
     POST's). Without resumability, or without the header, there is no standalone
     server-push stream, so the verb is unsupported (HTTP 405).
     """
+    # The Origin and protocol-version checks are the same spec MUSTs the POST path
+    # runs; a resume must not bypass the DNS-rebinding defense, so they precede any
+    # replay. A violation raises an `MCPError` subclass carrying its HTTP status.
+    try:
+        _validate_origin(request, allowed_origins)
+        _validate_protocol_version(request)
+    except MCPError as exc:
+        return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+
     if event_store is None:
         return _method_not_allowed()
     last_event_id = request.headers.get("last-event-id")

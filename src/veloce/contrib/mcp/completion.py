@@ -38,6 +38,13 @@ if TYPE_CHECKING:  # pragma: no cover
 # and `hasMore` so the client knows further matches exist.
 _MAX_COMPLETION_VALUES = 100
 
+# Upper bound on the number of sibling argument values ingested from a client's
+# `context.arguments`. The mapping is attacker-supplied and otherwise unbounded, so
+# a request carrying more is rejected (an invalid-params error, the same contract
+# the module uses for every other malformed completion input) rather than
+# materializing an arbitrarily large dict.
+_MAX_CONTEXT_ARGS = 1000
+
 
 @dataclass(slots=True)
 class CompletionResult:
@@ -254,4 +261,10 @@ class CompletionsCapability(Capability):
         arguments = context.get("arguments")
         if not isinstance(arguments, dict):
             return {}
+        # The client-supplied mapping is otherwise unbounded; reject an oversized
+        # one outright rather than materializing every entry.
+        if len(arguments) > _MAX_CONTEXT_ARGS:
+            raise InvalidParamsError(
+                f"completion/complete 'context.arguments' exceeds {_MAX_CONTEXT_ARGS} entries"
+            )
         return {k: v for k, v in arguments.items() if isinstance(v, str)}

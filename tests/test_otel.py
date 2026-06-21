@@ -562,6 +562,35 @@ def test_inbound_traceparent_continues_the_distributed_trace() -> None:
     assert format(span.parent.span_id, "016x") == span_id_hex
 
 
+def test_malformed_traceparent_does_not_raise_and_still_emits_a_span(monkeypatch) -> None:
+    # A propagator that raises on a bad inbound `traceparent` (a custom propagator,
+    # or a stricter future revision) must not abort span emission: the emit hook
+    # swallows the error and falls back to a fresh root context. One span is still
+    # recorded, rooted (no parent), and the request itself is unaffected.
+    pytest.importorskip("opentelemetry")
+    pytest.importorskip("opentelemetry.sdk")
+
+    import veloce.otel as otel
+
+    class _RaisingPropagator(otel._W3CPropagator):
+        def extract(self, carrier, *args, **kwargs):
+            raise ValueError("malformed traceparent")
+
+    monkeypatch.setattr(otel, "_W3CPropagator", _RaisingPropagator)
+    exporter, app = _exporter_and_app()
+
+    trace_id_hex = "0af7651916cd43dd8448eb211c80319c"
+    span_id_hex = "b7ad6b7169203331"
+    resp = app.test_client().get(
+        "/items/7", headers={"traceparent": f"00-{trace_id_hex}-{span_id_hex}-01"}
+    )
+
+    assert resp.status_code == 200
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].parent is None
+
+
 def test_no_traceparent_starts_a_fresh_root_span() -> None:
     # Without inbound trace headers the span is a clean root (no parent),
     # exactly as before propagation was added.
