@@ -751,6 +751,18 @@ class Response:
         self._encoded = None
         return value
 
+    def _set_or_pop(self, name: str, value: str | None) -> None:
+        """Set header `name` to `value`, or remove it when `value is None`.
+
+        Backs the plain string headers whose setter is a pop/assign pair;
+        invalidates the cached encode after every mutation.
+        """
+        if value is None:
+            self.headers.pop(name, None)
+        else:
+            self.headers[name] = value
+        self._encoded = None
+
     @property
     def content_encoding(self) -> str | None:
         """The `Content-Encoding` header - RFC 9110 Sec. 8.4. `None` when unset."""
@@ -759,11 +771,7 @@ class Response:
     @content_encoding.setter
     def content_encoding(self, value: str | None) -> None:
         """Set the content encoding."""
-        if value is None:
-            self.headers.pop(HEADER_CONTENT_ENCODING, None)
-        else:
-            self.headers[HEADER_CONTENT_ENCODING] = value
-        self._encoded = None
+        self._set_or_pop(HEADER_CONTENT_ENCODING, value)
 
     @property
     def content_language(self) -> str | None:
@@ -773,11 +781,7 @@ class Response:
     @content_language.setter
     def content_language(self, value: str | None) -> None:
         """Set the content language."""
-        if value is None:
-            self.headers.pop(HEADER_CONTENT_LANGUAGE, None)
-        else:
-            self.headers[HEADER_CONTENT_LANGUAGE] = value
-        self._encoded = None
+        self._set_or_pop(HEADER_CONTENT_LANGUAGE, value)
 
     @property
     def accept_ranges(self) -> str | None:
@@ -791,11 +795,7 @@ class Response:
     @accept_ranges.setter
     def accept_ranges(self, value: str | None) -> None:
         """Set the accept ranges."""
-        if value is None:
-            self.headers.pop(HEADER_ACCEPT_RANGES, None)
-        else:
-            self.headers[HEADER_ACCEPT_RANGES] = value
-        self._encoded = None
+        self._set_or_pop(HEADER_ACCEPT_RANGES, value)
 
     def set_content_range(
         self,
@@ -855,11 +855,7 @@ class Response:
     @location.setter
     def location(self, value: str | None) -> None:
         """Set the location."""
-        if value is None:
-            self.headers.pop(HEADER_LOCATION, None)
-        else:
-            self.headers[HEADER_LOCATION] = value
-        self._encoded = None
+        self._set_or_pop(HEADER_LOCATION, value)
 
     @property
     def content_location(self) -> str | None:
@@ -868,11 +864,7 @@ class Response:
 
     @content_location.setter
     def content_location(self, value: str | None) -> None:
-        if value is None:
-            self.headers.pop(HEADER_CONTENT_LOCATION, None)
-        else:
-            self.headers[HEADER_CONTENT_LOCATION] = value
-        self._encoded = None
+        self._set_or_pop(HEADER_CONTENT_LOCATION, value)
 
     @property
     def retry_after(self) -> Any:
@@ -1331,46 +1323,48 @@ class UJSONResponse(Response):
         )
 
 
-class HTMLResponse(Response):
+class _TextResponse(Response):
+    """Shared base for textual responses keyed only by content type.
+
+    `content` is sent verbatim when already `bytes`, else UTF-8 encoded.
+    Subclasses set only `default_media_type`, mirroring the
+    `JSONResponse.default_media_type` idiom in this module.
+    """
+
+    __slots__ = ()
+
+    default_media_type: str = MIME_PLAIN
+
+    def __init__(
+        self,
+        content: str | bytes,
+        status_code: int = HTTP_200_OK,
+        headers: dict[str, str] | None = None,
+        background: Any = None,
+    ) -> None:
+        super().__init__(
+            status_code=status_code,
+            body=content if isinstance(content, bytes) else content.encode("utf-8"),
+            content_type=type(self).default_media_type,
+            headers=headers,
+            background=background,
+        )
+
+
+class HTMLResponse(_TextResponse):
     """HTML response."""
 
     __slots__ = ()
 
-    def __init__(
-        self,
-        content: str | bytes,
-        status_code: int = HTTP_200_OK,
-        headers: dict[str, str] | None = None,
-        background: Any = None,
-    ) -> None:
-        super().__init__(
-            status_code=status_code,
-            body=content if isinstance(content, bytes) else content.encode("utf-8"),
-            content_type=MIME_HTML,
-            headers=headers,
-            background=background,
-        )
+    default_media_type = MIME_HTML
 
 
-class PlainTextResponse(Response):
+class PlainTextResponse(_TextResponse):
     """Plain text response."""
 
     __slots__ = ()
 
-    def __init__(
-        self,
-        content: str | bytes,
-        status_code: int = HTTP_200_OK,
-        headers: dict[str, str] | None = None,
-        background: Any = None,
-    ) -> None:
-        super().__init__(
-            status_code=status_code,
-            body=content if isinstance(content, bytes) else content.encode("utf-8"),
-            content_type=MIME_PLAIN,
-            headers=headers,
-            background=background,
-        )
+    default_media_type = MIME_PLAIN
 
 
 class RedirectResponse(Response):
