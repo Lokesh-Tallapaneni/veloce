@@ -263,6 +263,21 @@ class LifecycleMixin:
 
     # ── Lifecycle events ──────────────────────────────────
 
+    def _register_lifecycle_event(self, event: str, func: Callable) -> None:
+        """Validate an event name and append the handler to its bucket.
+
+        Shared by `on_event` and `add_event_handler` so the two register
+        identically; raises the same `ValueError` for an unknown event name.
+        """
+        if event == LIFECYCLE_STARTUP:
+            self._on_startup.append(func)
+        elif event == LIFECYCLE_SHUTDOWN:
+            self._on_shutdown.append(func)
+        else:
+            raise ValueError(
+                f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
+            )
+
     def on_event(self, event: str) -> Callable:
         """Register startup/shutdown event handlers.
 
@@ -281,10 +296,7 @@ class LifecycleMixin:
         )
 
         def decorator(func: Callable) -> Callable:
-            if event == LIFECYCLE_STARTUP:
-                self._on_startup.append(func)
-            elif event == LIFECYCLE_SHUTDOWN:
-                self._on_shutdown.append(func)
+            self._register_lifecycle_event(event, func)
             return func
 
         return decorator
@@ -311,14 +323,7 @@ class LifecycleMixin:
             DeprecationWarning,
             stacklevel=2,
         )
-        if event == LIFECYCLE_STARTUP:
-            self._on_startup.append(func)
-        elif event == LIFECYCLE_SHUTDOWN:
-            self._on_shutdown.append(func)
-        else:
-            raise ValueError(
-                f"event must be {LIFECYCLE_STARTUP!r} or {LIFECYCLE_SHUTDOWN!r}, got {event!r}"
-            )
+        self._register_lifecycle_event(event, func)
 
     # Lifespan-event aliases. `before_serving` fires once at app startup
     # (lifespan event); `after_serving` fires once at shutdown. They are

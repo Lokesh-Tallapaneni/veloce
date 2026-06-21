@@ -65,3 +65,10 @@ callers that assemble or serve the registry themselves.
 ::: veloce.contrib.mcp.register_http_transport
 ::: veloce.contrib.mcp.StdioTransport
 ::: veloce.contrib.mcp.serve_stdio
+::: veloce.contrib.mcp.MCPError
+::: veloce.contrib.mcp.InvalidRequestError
+::: veloce.contrib.mcp.MethodNotFoundError
+::: veloce.contrib.mcp.InvalidParamsError
+::: veloce.contrib.mcp.InternalError
+::: veloce.contrib.mcp.ResourceNotFoundError
+::: veloce.contrib.mcp.AuthorizationError

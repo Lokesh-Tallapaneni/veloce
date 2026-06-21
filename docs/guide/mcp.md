@@ -645,6 +645,41 @@ a session's tasks — settled or still working — are reclaimed when its
     Task-augmented tool calls require a tool to opt in with `task_support=True`;
     every other tool is unchanged.
 
+## Raising a typed error
+
+A handler can raise a typed error instead of returning a result. The typed
+errors — `MCPError` and its subclasses `InvalidParamsError`,
+`MethodNotFoundError`, `ResourceNotFoundError`, `InvalidRequestError`, and
+`InternalError` — each carry a JSON-RPC 2.0 error code, take a message, and accept
+`data=` to attach a structured payload to the error object. `AuthorizationError`
+is the exception: it takes the required scope set
+(`AuthorizationError(frozenset({"admin"}))`) rather than a message or `data=`,
+and reports the forbidden code with those scopes:
+
+```python
+from veloce import Veloce
+from veloce.contrib.mcp import InvalidParamsError
+
+app = Veloce()
+
+
+@app.mcp_tool(description="Divide two integers")
+async def divide(a: int, b: int) -> float:
+    if b == 0:
+        raise InvalidParamsError("b must not be zero")
+    return a / b
+```
+
+From a **tool** handler, raising `InvalidParamsError` surfaces as a JSON-RPC error
+object with code `-32602`; any other exception is reported in-band as an
+`isError` tool result so the agent can read the message. From a **prompt**
+handler, any raised `MCPError` subclass surfaces as a JSON-RPC error object with
+its code. A **resource read** handler is route-backed, so only
+`InvalidParamsError` keeps its own code; any other raised exception (including
+other `MCPError` subclasses) is routed through the app's exception handlers and
+surfaces as an internal error (`-32603`) unless a matching
+`@app.exception_handler` is registered for it.
+
 ## Dependency injection
 
 `Depends()` works in a tool exactly as it does in a route. Injected parameters

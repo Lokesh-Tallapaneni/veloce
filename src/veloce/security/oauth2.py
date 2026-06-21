@@ -30,7 +30,25 @@ def _form_value(v: Any) -> Any:
     return v.default if isinstance(v, Form) else v
 
 
-class OAuth2PasswordBearer:
+class _OAuth2BearerScheme:
+    """Shared Bearer-token extraction for the OAuth2/OIDC schemes.
+
+    `OAuth2PasswordBearer`, `OAuth2AuthorizationCodeBearer`, and
+    `OpenIdConnect` pull the same `Authorization: Bearer` token; they
+    differ only in the OpenAPI scheme they advertise. Each keeps its own
+    `__init__` (and distinct fields) and inherits this `__call__` so the
+    extraction lines stay in one place. The base is intentionally
+    un-slotted to preserve the concrete classes' existing instance layout.
+    """
+
+    # Each concrete subclass sets this in its own `__init__`.
+    auto_error: bool
+
+    def __call__(self, request: Request) -> str | None:
+        return _extract_bearer_token(request, AUTH_SCHEME_BEARER, self.auto_error)
+
+
+class OAuth2PasswordBearer(_OAuth2BearerScheme):
     """OAuth2 Password Bearer flow - extracts token from Authorization header."""
 
     def __init__(
@@ -43,11 +61,8 @@ class OAuth2PasswordBearer:
         self.auto_error = auto_error
         self.scopes = scopes or {}
 
-    def __call__(self, request: Request) -> str | None:
-        return _extract_bearer_token(request, AUTH_SCHEME_BEARER, self.auto_error)
 
-
-class OAuth2AuthorizationCodeBearer:
+class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
     """OAuth2 Authorization-Code (with PKCE) Bearer flow.
 
     Extracts a Bearer token from the `Authorization:` header exactly
@@ -82,11 +97,8 @@ class OAuth2AuthorizationCodeBearer:
         self.scopes = scopes or {}
         self.auto_error = auto_error
 
-    def __call__(self, request: Request) -> str | None:
-        return _extract_bearer_token(request, AUTH_SCHEME_BEARER, self.auto_error)
 
-
-class OpenIdConnect:
+class OpenIdConnect(_OAuth2BearerScheme):
     """OpenID Connect Bearer authentication.
 
     Same Bearer extraction logic as the OAuth2 schemes; the OpenAPI
@@ -102,9 +114,6 @@ class OpenIdConnect:
     ) -> None:
         self.openIdConnectUrl = openIdConnectUrl
         self.auto_error = auto_error
-
-    def __call__(self, request: Request) -> str | None:
-        return _extract_bearer_token(request, AUTH_SCHEME_BEARER, self.auto_error)
 
 
 class OAuth2PasswordRequestForm:
