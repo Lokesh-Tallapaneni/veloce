@@ -315,6 +315,34 @@ seconds to bound each call: a call that overruns it is cancelled and surfaced as
 error (in-band `isError` for a tool, a JSON-RPC error for a resource read or
 prompt). It is unset (no timeout) by default.
 
+## Raising a typed error
+
+A handler can raise a typed error instead of returning a result. The typed
+errors — `MCPError` and its subclasses `InvalidParamsError`,
+`MethodNotFoundError`, `ResourceNotFoundError`, `AuthorizationError`,
+`InvalidRequestError`, and `InternalError` — each carry a JSON-RPC 2.0 error code,
+and `data=` attaches a structured payload to the error object:
+
+```python
+from veloce import Veloce
+from veloce.contrib.mcp import InvalidParamsError
+
+app = Veloce()
+
+
+@app.mcp_tool(description="Divide two integers")
+async def divide(a: int, b: int) -> float:
+    if b == 0:
+        raise InvalidParamsError("b must not be zero")
+    return a / b
+```
+
+From a **tool** handler, raising `InvalidParamsError` surfaces as a JSON-RPC error
+object with code `-32602`; any other exception is reported in-band as an
+`isError` tool result so the agent can read the message. From a **resource read**
+or **prompt** handler, any raised `MCPError` subclass surfaces as a JSON-RPC error
+object with its code.
+
 ## Dependency injection
 
 `Depends()` works in a tool exactly as it does in a route. Injected parameters
