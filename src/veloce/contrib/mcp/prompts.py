@@ -16,17 +16,17 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from veloce._handler_plan import build_plan
+from veloce.contrib.mcp._registry_base import Registry
+from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.plan_bridge import build_input_schema
 from veloce.contrib.mcp.registry import MCPTool
 from veloce.contrib.mcp.safety import require_mcp_description
 
 
 @dataclass(slots=True)
-class MCPPrompt:
+class MCPPrompt(MCPDescriptor):
     """One registered MCP prompt template."""
 
-    name: str
-    description: str
     # The prompt callable wrapped as an `MCPTool` (no route), so a ``prompts/get``
     # replays it through the shared pure-tool invocation path - resolving its
     # `Depends` graph and `MCPContext` exactly as a tool call does.
@@ -39,22 +39,28 @@ class MCPPrompt:
 
 
 @dataclass(slots=True)
-class PromptRegistry:
+class PromptRegistry(Registry[MCPPrompt]):
     """Name -> `MCPPrompt`, plus the shared JSON Schema component registry."""
 
     prompts: dict[str, MCPPrompt] = field(default_factory=dict)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    def add(self, prompt: MCPPrompt) -> None:
-        if prompt.name in self.prompts:
-            raise ValueError(
-                f"Duplicate MCP prompt name {prompt.name!r}. Prompt names must be "
-                "unique; rename the handler, pass name=, or set namespace=."
-            )
-        self.prompts[prompt.name] = prompt
+    @property
+    def _store(self) -> dict[str, MCPPrompt]:
+        return self.prompts
 
-    def get(self, name: str) -> MCPPrompt | None:
-        return self.prompts.get(name)
+    def _key(self, item: MCPPrompt) -> str:
+        return item.name
+
+    def _duplicate_message(self, key: str) -> str:
+        return (
+            f"Duplicate MCP prompt name {key!r}. Prompt names must be unique; "
+            "rename the handler, pass name=, or set namespace=."
+        )
+
+    def add(self, prompt: MCPPrompt) -> None:
+        """Register `prompt`, rejecting a name already taken."""
+        self.register(prompt)
 
 
 def _prompt_arguments(input_schema: dict[str, Any]) -> list[dict[str, Any]]:

@@ -23,6 +23,15 @@ from __future__ import annotations
 
 from veloce.contrib.mcp.auth import MCPAuth
 from veloce.contrib.mcp.context import MCPContext
+from veloce.contrib.mcp.errors import (
+    AuthorizationError,
+    InternalError,
+    InvalidParamsError,
+    InvalidRequestError,
+    MCPError,
+    MethodNotFoundError,
+    ResourceNotFoundError,
+)
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import MCPTool, ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import (
@@ -35,13 +44,20 @@ from veloce.contrib.mcp.transports.http import register_http_transport
 from veloce.contrib.mcp.transports.stdio import StdioTransport, serve_stdio
 
 __all__ = [
+    "AuthorizationError",
+    "InternalError",
+    "InvalidParamsError",
+    "InvalidRequestError",
     "MCPAuth",
     "MCPContext",
+    "MCPError",
     "MCPPrompt",
     "MCPResource",
     "MCPServer",
     "MCPTool",
+    "MethodNotFoundError",
     "PromptRegistry",
+    "ResourceNotFoundError",
     "ResourceRegistry",
     "StdioTransport",
     "ToolRegistry",

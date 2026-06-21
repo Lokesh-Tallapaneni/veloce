@@ -28,7 +28,30 @@ import orjson
 
 from veloce import status
 from veloce._internal import _is_async_callable, is_json_mimetype, offload
+from veloce.contrib.mcp.capabilities import (
+    Capability,
+    LoggingCapability,
+    PromptsCapability,
+    ResourcesCapability,
+    ToolsCapability,
+)
+from veloce.contrib.mcp.content import AudioContent, ContentBlock, ImageContent, TextContent
 from veloce.contrib.mcp.context import _LOG_RANKS, MCPContext
+from veloce.contrib.mcp.errors import (
+    _JSONRPC_INTERNAL_ERROR,
+    _JSONRPC_INVALID_REQUEST,
+    _JSONRPC_METHOD_NOT_FOUND,
+    AuthorizationError,
+    InternalError,
+    InvalidParamsError,
+    MCPError,
+    ResourceNotFoundError,
+    _error,
+    _ForbiddenError,
+    _InBandError,
+    _StreamTimeoutError,
+    _StreamTooLargeError,
+)
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
@@ -46,6 +69,12 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _logger = logging.getLogger(__name__)
 
+# A dispatch entry: an async handler taking the request `params` and returning the
+# JSON-RPC `result` object (or `None` for a method that produces no response, such
+# as the `notifications/initialized` ack). The dispatch map maps method names to
+# these so `handle_message` is one dict lookup, not an if/elif ladder.
+MethodHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]
+
 # Latest Model Context Protocol revision this server speaks. Returned from
 # ``initialize`` when the client requests a revision this server does not
 # recognise, per the MCP lifecycle spec (the client then decides whether to
@@ -58,22 +87,6 @@ LATEST_PROTOCOL_VERSION = "2025-11-25"
 # predates the ``title`` / ``outputSchema`` / ``structuredContent`` fields this
 # server emits.
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", LATEST_PROTOCOL_VERSION})
-
-# JSON-RPC 2.0 error codes (Sec. 5.1) plus the MCP "method not found" reuse.
-_JSONRPC_INVALID_REQUEST = -32600
-_JSONRPC_METHOD_NOT_FOUND = -32601
-_JSONRPC_INVALID_PARAMS = -32602
-_JSONRPC_INTERNAL_ERROR = -32603
-
-# MCP "Resource not found" code (server-defined, outside the JSON-RPC reserved
-# range), returned when ``resources/read`` names a URI the registry cannot
-# resolve or whose route answers 404.
-_JSONRPC_RESOURCE_NOT_FOUND = -32002
-
-# Server-defined "forbidden" code, returned when the request principal lacks a
-# tool's / resource's required authorization scopes (the JSON-RPC analogue of an
-# HTTP 403 insufficient_scope).
-_JSONRPC_FORBIDDEN = -32003
 
 # Cap on the bytes buffered from a streamed tool result. A streamed response has
 # no single body, so the MCP path drains it into one (`_drain_stream`); this
@@ -152,6 +165,20 @@ def _to_structured(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def _text_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
+    """Build a tool-call result whose content is a single text block.
+
+    Every successful-text and in-band-error tool result shares this single
+    text-content shape; routing them through `TextContent` keeps the wire form in
+    one place. An in-band failure (a timeout, a raised handler, a non-conforming
+    result) sets `isError`; a plain text success omits it.
+    """
+    result: dict[str, Any] = {"content": [TextContent(text).to_payload()]}
+    if is_error:
+        result["isError"] = True
+    return result
+
+
 def _binary_result(response: Response) -> dict[str, Any] | None:
     """Shape an image/audio response body into a typed MCP content block.
 
@@ -164,17 +191,14 @@ def _binary_result(response: Response) -> dict[str, Any] | None:
     """
     mimetype = response.mimetype
     if mimetype.startswith("image/"):
-        kind = "image"
+        block: ContentBlock = ImageContent(
+            base64.b64encode(response.body or b"").decode("ascii"), mimetype
+        )
     elif mimetype.startswith("audio/"):
-        kind = "audio"
+        block = AudioContent(base64.b64encode(response.body or b"").decode("ascii"), mimetype)
     else:
         return None
-    block = {
-        "type": kind,
-        "data": base64.b64encode(response.body or b"").decode("ascii"),
-        "mimeType": mimetype,
-    }
-    result: dict[str, Any] = {"content": [block]}
+    result: dict[str, Any] = {"content": [block.to_payload()]}
     if response.status_code >= 400:
         result["isError"] = True
     return result
@@ -231,7 +255,7 @@ def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
 
 def _user_text_message(text: str) -> dict[str, Any]:
     """Build a user-role MCP prompt message carrying a single text block."""
-    return {"role": "user", "content": {"type": "text", "text": text}}
+    return {"role": "user", "content": TextContent(text).to_payload()}
 
 
 # Valid MCP prompt message roles; an unrecognised role from a handler-built
@@ -252,7 +276,7 @@ def _normalize_prompt_message(item: Any) -> dict[str, Any]:
         role = item.get("role")
         content = item.get("content")
         if isinstance(content, str):
-            content = {"type": "text", "text": content}
+            content = TextContent(content).to_payload()
         return {"role": role if role in _PROMPT_ROLES else "user", "content": content}
     return _user_text_message(_stringify(item))
 
@@ -283,11 +307,6 @@ def _principal_lacks_scopes(required: frozenset[str]) -> bool:
     return principal is None or not principal.has_scopes(required)
 
 
-def _insufficient_scope(required: frozenset[str]) -> str:
-    """Build the error text for a missing-scope rejection."""
-    return f"insufficient_scope: requires {sorted(required)}"
-
-
 def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, Any]:
     """Build `request.path_params` for a route-backed tool call.
 
@@ -302,13 +321,6 @@ def _route_path_params(route_info: Any, arguments: dict[str, Any]) -> dict[str, 
     for key, value in route_info.defaults.items():
         params.setdefault(key, value)
     return params
-
-
-def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
-    error: dict[str, Any] = {"code": code, "message": message}
-    if data is not None:
-        error["data"] = data
-    return {"jsonrpc": "2.0", "id": msg_id, "error": error}
 
 
 def _progress_token(params: dict[str, Any]) -> str | int | None:
@@ -363,38 +375,6 @@ def _orjson_default(value: Any) -> Any:
     return str(value)
 
 
-class _ToolInputError(Exception):
-    """A malformed tool call - reported as a JSON-RPC invalid-params error."""
-
-
-class _ResourceError(Exception):
-    """A ``resources/read`` failure, reported as a JSON-RPC error with `code`."""
-
-    def __init__(self, code: int, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-class _AuthorizationError(Exception):
-    """The principal lacks a required scope - reported as a forbidden error.
-
-    Carries the required scopes so the HTTP transport can surface them in an
-    RFC 6750 `WWW-Authenticate` insufficient-scope challenge.
-    """
-
-    def __init__(self, scopes: frozenset[str]) -> None:
-        super().__init__(_insufficient_scope(scopes))
-        self.scopes = scopes
-
-
-class _StreamTooLargeError(Exception):
-    """A streamed tool result exceeded the buffer limit - reported in-band."""
-
-
-class _StreamTimeoutError(Exception):
-    """A streamed tool result outran the drain deadline - reported in-band."""
-
-
 class _ShortCircuit:
     """A `before_request` hook's `Response`, returned in place of the handler call."""
 
@@ -439,6 +419,8 @@ class MCPServer:
         "server_name",
         "server_version",
         "_call_timeout",
+        "_capabilities",
+        "_methods",
     )
 
     def __init__(
@@ -460,6 +442,35 @@ class MCPServer:
         # is cancelled and surfaced as an in-band tool error. `None` disables it.
         config = getattr(app, "config", None)
         self._call_timeout = config.get("MCP_CALL_TIMEOUT") if config is not None else None
+        # The spec areas this server serves, each owning its `initialize`
+        # advertisement and its method handlers. A new area is a capability
+        # added here, not a branch edited into the dispatcher or `_initialize`.
+        self._capabilities: tuple[Capability, ...] = (
+            ToolsCapability(self),
+            ResourcesCapability(self),
+            PromptsCapability(self),
+            LoggingCapability(self),
+        )
+        # Built once at construction so per-request dispatch is one dict lookup.
+        # A new method is registered here, never wired into a dispatcher branch.
+        self._methods: dict[str, MethodHandler] = self._build_method_map()
+
+    def _build_method_map(self) -> dict[str, MethodHandler]:
+        """Map each supported JSON-RPC method to its async handler.
+
+        The lifecycle methods (`initialize`, `ping`, the `initialized` ack) are
+        core to every server; the spec-area methods are contributed by the held
+        capabilities. Every entry shares the `async (params) -> result | None`
+        shape `handle_message` dispatches.
+        """
+        methods: dict[str, MethodHandler] = {
+            "initialize": self._handle_initialize,
+            "notifications/initialized": self._handle_initialized,
+            "ping": self._handle_ping,
+        }
+        for capability in self._capabilities:
+            methods.update(capability.handlers())
+        return methods
 
     @staticmethod
     def set_notifier(notifier: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
@@ -488,44 +499,19 @@ class MCPServer:
         params = message.get("params") or {}
         is_notification = "id" not in message
 
-        try:
-            if method == "initialize":
-                result = self._initialize(params)
-            elif method == "notifications/initialized":
-                # Client handshake ack - a notification, no response.
+        handler = self._methods.get(method)
+        if handler is None:
+            # An unknown notification carries no response; an unknown request is a
+            # method-not-found error.
+            if is_notification:
                 return None
-            elif method == "ping":
-                # Base liveness utility either side may send; the spec'd reply is
-                # an empty result object.
-                result = {}
-            elif method == "tools/list":
-                result = self._tools_list()
-            elif method == "tools/call":
-                result = await self._tools_call(params)
-            elif method == "resources/list":
-                result = self._resources_list()
-            elif method == "resources/templates/list":
-                result = self._resource_templates_list()
-            elif method == "resources/read":
-                result = await self._resources_read(params)
-            elif method == "prompts/list":
-                result = self._prompts_list()
-            elif method == "prompts/get":
-                result = await self._prompts_get(params)
-            elif method == "logging/setLevel":
-                result = self._set_log_level(params)
-            else:
-                if is_notification:
-                    return None
-                return _error(msg_id, _JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
-        except _ToolInputError as exc:
-            return _error(msg_id, _JSONRPC_INVALID_PARAMS, str(exc))
-        except _ResourceError as exc:
-            return _error(msg_id, exc.code, str(exc))
-        except _AuthorizationError as exc:
-            return _error(
-                msg_id, _JSONRPC_FORBIDDEN, str(exc), {"requiredScopes": sorted(exc.scopes)}
-            )
+            return _error(msg_id, _JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
+
+        try:
+            result = await handler(params)
+        except MCPError as exc:
+            # Polymorphic: the JSON-RPC code and any `data` come from the subclass.
+            return exc.to_error(msg_id)
         except asyncio.TimeoutError:
             # A resources/read or prompts/get that overran the per-call budget
             # (a tools/call surfaces its own timeout in-band before here).
@@ -538,6 +524,40 @@ class MCPServer:
             return None
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
+    # ── Dispatch adapters ─────────────────────────────────
+    #
+    # Thin async wrappers giving every dispatch-map entry the uniform
+    # `async (params) -> result | None` shape. The sync implementations they call
+    # stay focused on building their result; `tools/call`, `resources/read`, and
+    # `prompts/get` are already async + params-shaped and registered directly.
+
+    async def _handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._initialize(params)
+
+    async def _handle_initialized(self, params: dict[str, Any]) -> None:
+        # Client handshake ack - a notification, no response.
+        return None
+
+    async def _handle_ping(self, params: dict[str, Any]) -> dict[str, Any]:
+        # Base liveness utility either side may send; the spec'd reply is an empty
+        # result object.
+        return {}
+
+    async def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._tools_list()
+
+    async def _handle_resources_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._resources_list()
+
+    async def _handle_resource_templates_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._resource_templates_list()
+
+    async def _handle_prompts_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._prompts_list()
+
+    async def _handle_set_log_level(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._set_log_level(params)
+
     # ── Method handlers ───────────────────────────────────
 
     def _initialize(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -549,18 +569,14 @@ class MCPServer:
             if isinstance(requested, str) and requested in _SUPPORTED_PROTOCOL_VERSIONS
             else LATEST_PROTOCOL_VERSION
         )
-        # `tools` is always advertised; `resources` only when the app exposes at
-        # least one, so a client does not probe a primitive this server has
-        # nothing to serve for. `subscribe`/`listChanged` are off - resources are
-        # served on demand, with no update notifications on the serial loop.
-        # `logging` is always advertised: any tool may emit a log message through
-        # `MCPContext.log`, and the client may raise the minimum with
-        # ``logging/setLevel``.
-        capabilities: dict[str, Any] = {"tools": {"listChanged": False}, "logging": {}}
-        if self.resources.resources:
-            capabilities["resources"] = {"subscribe": False, "listChanged": False}
-        if self.prompts.prompts:
-            capabilities["prompts"] = {"listChanged": False}
+        # Each held capability advertises its own entry (tools/logging always,
+        # resources/prompts only when the app exposes one); a `None` advertisement
+        # is dropped so the client does not probe an empty primitive.
+        capabilities: dict[str, Any] = {}
+        for capability in self._capabilities:
+            entry = capability.advertise()
+            if entry is not None:
+                capabilities.update(entry)
         return {
             "protocolVersion": version,
             "capabilities": capabilities,
@@ -597,38 +613,32 @@ class MCPServer:
     async def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")
         if not isinstance(name, str):
-            raise _ToolInputError("tools/call requires a string 'name'")
+            raise InvalidParamsError("tools/call requires a string 'name'")
         tool = self.registry.get(name)
         if tool is None:
-            raise _ToolInputError(f"Unknown tool: {name}")
+            raise InvalidParamsError(f"Unknown tool: {name}")
 
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
-            raise _ToolInputError("tools/call 'arguments' must be an object")
+            raise InvalidParamsError("tools/call 'arguments' must be an object")
 
         started = time.perf_counter()
         # An authorization failure is a protocol-level forbidden error (uniform
         # across tools, resources, and prompts), not a normal tool result.
         if _principal_lacks_scopes(tool.required_scopes):
             await self._instrument(tool, started, status.HTTP_403_FORBIDDEN)
-            raise _AuthorizationError(tool.required_scopes)
+            raise AuthorizationError(tool.required_scopes)
 
         progress_token = _progress_token(params)
         try:
             result = await self._run_invoke(tool, arguments, progress_token)
-        except _ToolInputError:
+        except InvalidParamsError:
             raise
         except asyncio.TimeoutError:
             await self._instrument(tool, started, status.HTTP_504_GATEWAY_TIMEOUT)
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"tool call exceeded the {self._call_timeout}s timeout",
-                    }
-                ],
-                "isError": True,
-            }
+            return _text_result(
+                f"tool call exceeded the {self._call_timeout}s timeout", is_error=True
+            )
         except Exception as exc:
             # A pure `@app.mcp_tool` (no route) has no exception-handler
             # machinery to run through, so its handler error is surfaced
@@ -638,15 +648,9 @@ class MCPServer:
             # through the app's exception handlers and returns a `_RouteResponse`.
             # An unhandled handler error is a 500, recorded as such.
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": self._error_text(exc, "the tool raised an internal error"),
-                    }
-                ],
-                "isError": True,
-            }
+            return _text_result(
+                self._error_text(exc, "the tool raised an internal error"), is_error=True
+            )
 
         # A `before_request` / middleware short-circuit or a route-backed tool's
         # final `Response` carries the real status code (an auth 401, a 500 from
@@ -657,9 +661,9 @@ class MCPServer:
             response = result.response
             try:
                 await self._drain_stream(response)
-            except (_StreamTooLargeError, _StreamTimeoutError) as exc:
+            except _InBandError as exc:
                 await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
-                return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+                return _text_result(str(exc), is_error=True)
             await self._instrument(tool, started, response.status_code)
             # A `before_request` / middleware short-circuit response never went
             # through `response_model`; only a `_RouteResponse` carries the flag.
@@ -679,9 +683,9 @@ class MCPServer:
                     await self._instrument(tool, started, result.status_code)
                     return binary
             shaped = self._shape_result(tool, result)
-        except (_StreamTooLargeError, _StreamTimeoutError) as exc:
+        except _InBandError as exc:
             await self._instrument(tool, started, status.HTTP_500_INTERNAL_SERVER_ERROR)
-            return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+            return _text_result(str(exc), is_error=True)
         # A pure tool's raw return that completed without error is a genuine 200.
         await self._instrument(tool, started, status.HTTP_200_OK)
         # A pure tool's `output_schema` is advertised from its declared return
@@ -694,15 +698,9 @@ class MCPServer:
             try:
                 shaped = tool.output_model.model_validate(shaped).model_dump(mode="json")
             except Exception:
-                return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": ("tool result does not conform to the declared output schema"),
-                        }
-                    ],
-                    "isError": True,
-                }
+                return _text_result(
+                    "tool result does not conform to the declared output schema", is_error=True
+                )
         return self._success_result(tool, shaped)
 
     async def _drain_stream(self, response: Response) -> None:
@@ -825,7 +823,7 @@ class MCPServer:
         # shape). A success goes through the shared success shaping so a declared
         # `outputSchema` yields `structuredContent` alongside the text block.
         if response.status_code >= 400:
-            return {"content": [{"type": "text", "text": _stringify(shaped)}], "isError": True}
+            return _text_result(_stringify(shaped), is_error=True)
         # A handler that returned its own `Response` bypassed the route
         # `response_model` filter, so its decoded body is not yet trusted to
         # conform to the advertised `outputSchema`. Re-run it through the filter
@@ -855,7 +853,7 @@ class MCPServer:
                     try:
                         shaped = self.app._apply_response_model(shaped, route_info)
                     except Exception:
-                        return {"content": [{"type": "text", "text": _stringify(shaped)}]}
+                        return _text_result(_stringify(shaped))
             elif tool.output_model is not None:
                 # The output schema came from the handler's return annotation, not
                 # a `response_model`, so `_build_response` never filtered to it -
@@ -864,7 +862,7 @@ class MCPServer:
                 try:
                     shaped = tool.output_model.model_validate(shaped).model_dump(mode="json")
                 except Exception:
-                    return {"content": [{"type": "text", "text": _stringify(shaped)}]}
+                    return _text_result(_stringify(shaped))
         return self._success_result(tool, shaped)
 
     def _success_result(self, tool: MCPTool, shaped: Any) -> dict[str, Any]:
@@ -878,7 +876,7 @@ class MCPServer:
         advertised schema - honouring the MCP requirement that a declared
         `outputSchema` is matched by conforming structured output.
         """
-        result: dict[str, Any] = {"content": [{"type": "text", "text": _stringify(shaped)}]}
+        result = _text_result(_stringify(shaped))
         if tool.output_schema is not None:
             structured = _to_structured(shaped)
             if structured is not None:
@@ -945,42 +943,39 @@ class MCPServer:
         """
         uri = params.get("uri")
         if not isinstance(uri, str):
-            raise _ToolInputError("resources/read requires a string 'uri'")
+            raise InvalidParamsError("resources/read requires a string 'uri'")
         matched = self.resources.match(uri)
         if matched is None:
-            raise _ResourceError(_JSONRPC_RESOURCE_NOT_FOUND, f"Unknown resource: {uri}")
+            raise ResourceNotFoundError(f"Unknown resource: {uri}")
         resource, arguments = matched
         if _principal_lacks_scopes(resource.tool.required_scopes):
-            raise _AuthorizationError(resource.tool.required_scopes)
+            raise AuthorizationError(resource.tool.required_scopes)
 
-        try:
-            result = await self._run_invoke(resource.tool, arguments, _progress_token(params))
-        except _ToolInputError as exc:
-            # A path-parameter value the URI carries that the route cannot coerce
-            # (a non-int `{user_id}`) is an invalid-params read, not a 404.
-            raise _ResourceError(_JSONRPC_INVALID_PARAMS, str(exc)) from exc
+        # A path-parameter value the URI carries that the route cannot coerce (a
+        # non-int `{user_id}`) raises `InvalidParamsError`, which already maps to
+        # the invalid-params code - it propagates unchanged.
+        result = await self._run_invoke(resource.tool, arguments, _progress_token(params))
 
         # A resource is always route-backed, so `_invoke` yields a
         # `_RouteResponse` (or a `_ShortCircuit` from a middleware / before_request
         # guard); both carry the `Response` whose body is the resource contents.
         response = result.response if isinstance(result, (_ShortCircuit, _RouteResponse)) else None
         if response is None:
-            raise _ResourceError(_JSONRPC_INTERNAL_ERROR, f"Resource {uri} produced no response")
+            raise InternalError(f"Resource {uri} produced no response")
         try:
             await self._drain_stream(response)
-        except (_StreamTooLargeError, _StreamTimeoutError) as exc:
-            raise _ResourceError(_JSONRPC_INTERNAL_ERROR, str(exc)) from exc
+        except _InBandError as exc:
+            raise InternalError(str(exc)) from exc
         if response.status_code >= 400:
+            body = _stringify(_response_body_value(response))
             if response.status_code == status.HTTP_404_NOT_FOUND:
-                code = _JSONRPC_RESOURCE_NOT_FOUND
-            elif response.status_code in (
+                raise ResourceNotFoundError(body)
+            if response.status_code in (
                 status.HTTP_401_UNAUTHORIZED,
                 status.HTTP_403_FORBIDDEN,
             ):
-                code = _JSONRPC_FORBIDDEN
-            else:
-                code = _JSONRPC_INTERNAL_ERROR
-            raise _ResourceError(code, _stringify(_response_body_value(response)))
+                raise _ForbiddenError(body)
+            raise InternalError(body)
         return {"contents": [_resource_contents(uri, response)]}
 
     # ── Prompts ───────────────────────────────────────────
@@ -999,15 +994,15 @@ class MCPServer:
         """
         name = params.get("name")
         if not isinstance(name, str):
-            raise _ToolInputError("prompts/get requires a string 'name'")
+            raise InvalidParamsError("prompts/get requires a string 'name'")
         prompt = self.prompts.get(name)
         if prompt is None:
-            raise _ToolInputError(f"Unknown prompt: {name}")
+            raise InvalidParamsError(f"Unknown prompt: {name}")
         if _principal_lacks_scopes(prompt.tool.required_scopes):
-            raise _AuthorizationError(prompt.tool.required_scopes)
+            raise AuthorizationError(prompt.tool.required_scopes)
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
-            raise _ToolInputError("prompts/get 'arguments' must be an object")
+            raise InvalidParamsError("prompts/get 'arguments' must be an object")
 
         result = await self._run_invoke(prompt.tool, arguments, _progress_token(params))
         out: dict[str, Any] = {"messages": _normalize_prompt_messages(result)}
@@ -1021,7 +1016,7 @@ class MCPServer:
         """Set the minimum level for ``notifications/message`` (logging/setLevel)."""
         level = params.get("level")
         if not isinstance(level, str) or level not in _LOG_RANKS:
-            raise _ToolInputError("logging/setLevel requires a valid RFC 5424 'level'")
+            raise InvalidParamsError("logging/setLevel requires a valid RFC 5424 'level'")
         _log_level_var.set(level)
         return {}
 
@@ -1221,7 +1216,7 @@ class MCPServer:
                     _logger.exception("MCP background task failed")
             await self._run_response_background(response)
             return _RouteResponse(response, model_filtered)
-        except _ToolInputError:
+        except InvalidParamsError:
             # A malformed argument is a transport-level invalid-params error,
             # not a handled application failure - re-raise so `_tools_call`
             # surfaces it on the JSON-RPC error channel. It still flows through
@@ -1282,7 +1277,7 @@ class MCPServer:
         """Bind the handler kwargs from `arguments` and call the handler.
 
         The argument-binding boundary is the only place that maps a malformed
-        argument to an invalid-params transport error (`_ToolInputError`): a
+        argument to an invalid-params transport error (`InvalidParamsError`): a
         missing argument (TypeError), a failed coercion (RequestValidationError)
         or a failed model validation (ValueError). The handler call lives outside
         that guard so a genuine TypeError / ValueError raised in the handler body
@@ -1305,7 +1300,7 @@ class MCPServer:
                 route_defaults=route_defaults,
             )
         except (TypeError, ValueError, RequestValidationError) as err:
-            raise _ToolInputError(str(err)) from err
+            raise InvalidParamsError(str(err)) from err
 
         handler = tool.handler
         if _is_async_callable(handler):

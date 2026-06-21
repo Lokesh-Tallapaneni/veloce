@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
+from veloce.contrib.mcp._registry_base import Registry
+from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.registry import MCPTool, _tool_from_route
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -35,12 +37,10 @@ _URI_TEMPLATE_VAR = re.compile(r"\{([^}]+)\}")
 
 
 @dataclass(slots=True)
-class MCPResource:
+class MCPResource(MCPDescriptor):
     """One registered MCP resource (a read-only route addressed by URI)."""
 
     uri: str
-    name: str
-    description: str
     tool: MCPTool
     # True when `uri` is a URI template (carries `{var}` placeholders bound to
     # the route's path parameters); such a resource is advertised through
@@ -57,19 +57,30 @@ class MCPResource:
 
 
 @dataclass(slots=True)
-class ResourceRegistry:
+class ResourceRegistry(Registry[MCPResource]):
     """URI -> `MCPResource`, plus the shared JSON Schema component registry."""
 
     resources: dict[str, MCPResource] = field(default_factory=dict)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+    @property
+    def _store(self) -> dict[str, MCPResource]:
+        return self.resources
+
+    # A resource is keyed by its URI, not its name (two resources may share a
+    # tool name yet must expose distinct URIs).
+    def _key(self, item: MCPResource) -> str:
+        return item.uri
+
+    def _duplicate_message(self, key: str) -> str:
+        return (
+            f"Duplicate MCP resource URI {key!r}. Resource URIs must be unique; "
+            "give the route a distinct mcp_resource_uri."
+        )
+
     def add(self, resource: MCPResource) -> None:
-        if resource.uri in self.resources:
-            raise ValueError(
-                f"Duplicate MCP resource URI {resource.uri!r}. Resource URIs must "
-                "be unique; give the route a distinct mcp_resource_uri."
-            )
-        self.resources[resource.uri] = resource
+        """Register `resource`, rejecting a URI already taken."""
+        self.register(resource)
 
     def statics(self) -> list[MCPResource]:
         """Return the concrete-URI resources (for ``resources/list``)."""

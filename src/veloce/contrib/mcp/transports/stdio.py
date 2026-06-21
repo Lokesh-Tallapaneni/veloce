@@ -23,6 +23,7 @@ import orjson
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.server import MCPServer
+    from veloce.contrib.mcp.transports.base import Transport
 
 # JSON-RPC 2.0 Sec. 5.1 parse error - returned for a line that is not valid
 # JSON. The id is null because the request could not be read.
@@ -30,7 +31,11 @@ _JSONRPC_PARSE_ERROR = -32700
 
 
 class StdioTransport:
-    """Drive an `MCPServer` over a line-delimited JSON byte stream."""
+    """Drive an `MCPServer` over a line-delimited JSON byte stream.
+
+    Satisfies the `Transport` contract: its `send` writes one outbound JSON-RPC
+    message line, which the server wires as the notification sink for this loop.
+    """
 
     __slots__ = ("server", "_read_line", "_write_line")
 
@@ -62,7 +67,7 @@ class StdioTransport:
         # notifications reach the client. The loop is serial - a notification is
         # written while the handler runs, before the call's own response - so a
         # direct write never races the loop's response write.
-        self.server.set_notifier(self._emit_notification)
+        self.server.set_notifier(self.send)
         while True:
             line = await self._read_line()
             if line is None:
@@ -74,8 +79,8 @@ class StdioTransport:
             if response is not None:
                 await self._write_line(orjson.dumps(response))
 
-    async def _emit_notification(self, message: dict[str, Any]) -> None:
-        """Write one server-initiated JSON-RPC notification line to the client."""
+    async def send(self, message: dict[str, Any]) -> None:
+        """Write one server-initiated JSON-RPC message line to the client."""
         await self._write_line(orjson.dumps(message))
 
     async def _dispatch_line(self, line: bytes) -> dict[str, Any] | None:
@@ -120,3 +125,8 @@ async def serve_stdio(server: MCPServer) -> None:
         await loop.run_in_executor(None, _write)
 
     await StdioTransport(server, read_line, write_line).serve()
+
+
+if TYPE_CHECKING:  # pragma: no cover
+    # Static assertion that the transport satisfies the structural contract.
+    _: Transport = StdioTransport(None, None, None)  # type: ignore[arg-type]

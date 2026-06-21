@@ -25,6 +25,8 @@ from pydantic import BaseModel
 from veloce._handler_plan import build_plan
 from veloce._model_backend import is_pydantic_model
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
+from veloce.contrib.mcp._registry_base import Registry
+from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
 from veloce.contrib.mcp.safety import require_mcp_description
 
@@ -33,11 +35,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 @dataclass(slots=True)
-class MCPTool:
+class MCPTool(MCPDescriptor):
     """One registered MCP tool."""
 
-    name: str
-    description: str
     handler: Callable
     plan: HandlerPlan
     input_schema: dict[str, Any]
@@ -84,7 +84,7 @@ class MCPTool:
 
 
 @dataclass(slots=True)
-class ToolRegistry:
+class ToolRegistry(Registry[MCPTool]):
     """Name -> `MCPTool`, plus the shared JSON Schema component registry.
 
     `schemas` holds Pydantic-model components shared across tool input
@@ -95,17 +95,22 @@ class ToolRegistry:
     tools: dict[str, MCPTool] = field(default_factory=dict)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    def add(self, tool: MCPTool) -> None:
-        if tool.name in self.tools:
-            raise ValueError(
-                f"Duplicate MCP tool name {tool.name!r}. Tool names must be "
-                "unique; rename the handler, pass name=, or adjust the "
-                "blueprint namespace."
-            )
-        self.tools[tool.name] = tool
+    @property
+    def _store(self) -> dict[str, MCPTool]:
+        return self.tools
 
-    def get(self, name: str) -> MCPTool | None:
-        return self.tools.get(name)
+    def _key(self, item: MCPTool) -> str:
+        return item.name
+
+    def _duplicate_message(self, key: str) -> str:
+        return (
+            f"Duplicate MCP tool name {key!r}. Tool names must be unique; "
+            "rename the handler, pass name=, or adjust the blueprint namespace."
+        )
+
+    def add(self, tool: MCPTool) -> None:
+        """Register `tool`, rejecting a name already taken."""
+        self.register(tool)
 
 
 def _return_model(handler: Callable) -> type[BaseModel] | None:
