@@ -219,6 +219,7 @@ from veloce.security import (
     OAuth2PasswordRequestForm,
     OAuth2PasswordRequestFormStrict,
     OpenIdConnect,
+    SecurityScheme,
     UnsupportedAlgorithmError,
     check_reset_token,
     decode_jwt,
@@ -358,6 +359,7 @@ __all__ = [
     "AcceptHeader",
     "RangeSpec",
     # Security
+    "SecurityScheme",
     "HTTPBasic",
     "HTTPBasicCredentials",
     "HTTPBearer",

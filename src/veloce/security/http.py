@@ -12,7 +12,8 @@ from veloce._header_parsing import parse_header_params
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER, AUTH_SCHEME_DIGEST
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
-from veloce.security._utils import _extract_bearer_token, _quote_header_value, _validate_realm
+from veloce.security._utils import _quote_header_value, _validate_realm
+from veloce.security.base import SecurityScheme, _BearerScheme
 from veloce.status import HTTP_401_UNAUTHORIZED
 
 # `_quote_header_value` / `_validate_realm` now live in `_utils` so the
@@ -34,8 +35,11 @@ class HTTPBasicCredentials:
         self.password = password
 
 
-class HTTPBasic:
+class HTTPBasic(SecurityScheme):
     """HTTP Basic authentication - extracts username:password from Authorization header."""
+
+    # `auto_error` is owned by `SecurityScheme`'s slots.
+    __slots__ = ("realm", "_challenge_template")
 
     def __init__(self, auto_error: bool = True, realm: str = "") -> None:
         _validate_realm(realm)
@@ -139,7 +143,7 @@ class HTTPDigestCredentials:
         self.algorithm = algorithm
 
 
-class HTTPDigest:
+class HTTPDigest(SecurityScheme):
     """HTTP Digest authentication - RFC 7616.
 
     Parses the `Authorization: Digest ...` header into the named fields
@@ -153,6 +157,16 @@ class HTTPDigest:
     The scheme's responsibility is the parse + challenge dance;
     verifying the response is application logic.
     """
+
+    # `auto_error` is owned by `SecurityScheme`'s slots.
+    __slots__ = (
+        "realm",
+        "qop",
+        "algorithm",
+        "nonce_factory",
+        "_challenge_prefix",
+        "_challenge_suffix",
+    )
 
     def __init__(
         self,
@@ -232,12 +246,15 @@ def _parse_digest(value: str) -> HTTPDigestCredentials:
     )
 
 
-class HTTPBearer:
+class HTTPBearer(_BearerScheme):
     """HTTP Bearer token authentication."""
+
+    # `auto_error` and `_bearer_scheme` are owned by the base; `scheme_name`
+    # is the public attribute mirrored into `_bearer_scheme` for the shared
+    # `__call__`.
+    __slots__ = ("scheme_name", "_bearer_scheme")
 
     def __init__(self, auto_error: bool = True, scheme_name: str = AUTH_SCHEME_BEARER) -> None:
         self.auto_error = auto_error
         self.scheme_name = scheme_name
-
-    def __call__(self, request: Request) -> str | None:
-        return _extract_bearer_token(request, self.scheme_name, self.auto_error)
+        self._bearer_scheme = scheme_name
