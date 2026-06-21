@@ -142,7 +142,15 @@ class MCPTask(MCPDescriptor):
         return self.status in _TERMINAL_STATUSES
 
     def settle(self, status: str, result: dict[str, Any], message: str | None = None) -> None:
-        """Move the task to a terminal status carrying its final result."""
+        """Move the task to a terminal status carrying its final result.
+
+        A no-op once the task is already terminal: this guards against a racing
+        `tasks/cancel` and the natural completion of `_run_task` both settling the
+        same task, so the first terminal status (e.g. `cancelled`) is never
+        overwritten by the second.
+        """
+        if self.is_terminal():
+            return
         self.status = status
         self.status_message = message
         self.result = result

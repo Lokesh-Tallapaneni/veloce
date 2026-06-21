@@ -5313,6 +5313,44 @@ async def test_notifications_cancelled_unknown_id_is_a_no_op():
     assert result is None
 
 
+async def test_notifications_cancelled_non_hashable_id_is_ignored():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    server = MCPServer(app)
+    # A `requestId` that is a list/object would make the in-flight lookup key
+    # unhashable; the malformed notification is ignored without raising.
+    for bad_id in ([1, 2], {"k": "v"}, True):
+        result = await server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": {"requestId": bad_id},
+            }
+        )
+        assert result is None
+
+
+def test_task_settle_is_idempotent_after_cancel():
+    from veloce.contrib.mcp.tasks import (
+        STATUS_CANCELLED,
+        STATUS_COMPLETED,
+        new_task,
+    )
+
+    # A `tasks/cancel` racing the runner's natural completion: the cancel settles
+    # the task first, and the runner's later COMPLETED settle must not overwrite
+    # the recorded CANCELLED state.
+    task = new_task("work", ttl_ms=1000)
+    task.settle(STATUS_CANCELLED, {"content": [], "isError": True}, "cancelled")
+    task.settle(STATUS_COMPLETED, {"content": [{"type": "text", "text": "done"}]})
+    assert task.status == STATUS_CANCELLED
+    assert task.result == {"content": [], "isError": True}
+
+
 async def test_initialize_request_is_not_cancellable():
     app = Veloce(openapi_url=None)
 
