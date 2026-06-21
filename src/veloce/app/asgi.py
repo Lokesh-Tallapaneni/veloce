@@ -173,25 +173,19 @@ class AsgiMixin:
         _override_subplans: Any
         _dependency_overrides: Any
 
-    async def _emit_413(self, send: Callable, limit: int) -> None:
-        """Emit a 413 response directly over ASGI.
+    async def _emit_error(self, send: Callable, status_code: int, payload: dict) -> None:
+        """Emit a JSON error response directly over ASGI.
 
-        Used by the incremental body-size guard in `__call__`, which
-        runs before a `Request` object exists.
+        Shared by `_emit_413` / `_emit_400` so the cold pre-`Request` reject
+        paths build their `http.response.start` + `http.response.body` messages
+        from one implementation.
         """
-        resp = JSONResponse(
-            {
-                "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
-                "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                "limit": limit,
-            },
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-        )
+        resp = JSONResponse(payload, status_code=status_code)
         body = resp.body
         await send(
             {
                 "type": ASGI_EVENT_HTTP_RESPONSE_START,
-                "status": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                "status": status_code,
                 "headers": [
                     (RAW_HEADER_CONTENT_TYPE, resp.content_type.encode()),
                     (RAW_HEADER_CONTENT_LENGTH, str(len(body)).encode()),
@@ -199,6 +193,22 @@ class AsgiMixin:
             }
         )
         await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": body})
+
+    async def _emit_413(self, send: Callable, limit: int) -> None:
+        """Emit a 413 response directly over ASGI.
+
+        Used by the incremental body-size guard in `__call__`, which
+        runs before a `Request` object exists.
+        """
+        await self._emit_error(
+            send,
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            {
+                "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
+                "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                "limit": limit,
+            },
+        )
 
     async def _emit_400(self, send: Callable, detail: str) -> None:
         """Emit a 400 response directly over ASGI.
@@ -206,22 +216,11 @@ class AsgiMixin:
         Used for malformed request lines that fail before a `Request` object
         exists, such as a `query_string` carrying raw non-ASCII bytes.
         """
-        resp = JSONResponse(
+        await self._emit_error(
+            send,
+            status.HTTP_400_BAD_REQUEST,
             {"detail": detail, "status_code": status.HTTP_400_BAD_REQUEST},
-            status_code=status.HTTP_400_BAD_REQUEST,
         )
-        body = resp.body
-        await send(
-            {
-                "type": ASGI_EVENT_HTTP_RESPONSE_START,
-                "status": status.HTTP_400_BAD_REQUEST,
-                "headers": [
-                    (RAW_HEADER_CONTENT_TYPE, resp.content_type.encode()),
-                    (RAW_HEADER_CONTENT_LENGTH, str(len(body)).encode()),
-                ],
-            }
-        )
-        await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": body})
 
     def _build_asgi_stack(self, cp: CompiledPipeline) -> Callable:
         """Wrap the core ASGI app with the compiled PH_ASGI_WRAP chain.
