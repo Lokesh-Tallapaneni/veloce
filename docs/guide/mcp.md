@@ -319,9 +319,12 @@ prompt). It is unset (no timeout) by default.
 
 A handler can raise a typed error instead of returning a result. The typed
 errors — `MCPError` and its subclasses `InvalidParamsError`,
-`MethodNotFoundError`, `ResourceNotFoundError`, `AuthorizationError`,
-`InvalidRequestError`, and `InternalError` — each carry a JSON-RPC 2.0 error code,
-and `data=` attaches a structured payload to the error object:
+`MethodNotFoundError`, `ResourceNotFoundError`, `InvalidRequestError`, and
+`InternalError` — each carry a JSON-RPC 2.0 error code, take a message, and accept
+`data=` to attach a structured payload to the error object. `AuthorizationError`
+is the exception: it takes the required scope set
+(`AuthorizationError(frozenset({"admin"}))`) rather than a message or `data=`,
+and reports the forbidden code with those scopes:
 
 ```python
 from veloce import Veloce
@@ -339,9 +342,13 @@ async def divide(a: int, b: int) -> float:
 
 From a **tool** handler, raising `InvalidParamsError` surfaces as a JSON-RPC error
 object with code `-32602`; any other exception is reported in-band as an
-`isError` tool result so the agent can read the message. From a **resource read**
-or **prompt** handler, any raised `MCPError` subclass surfaces as a JSON-RPC error
-object with its code.
+`isError` tool result so the agent can read the message. From a **prompt**
+handler, any raised `MCPError` subclass surfaces as a JSON-RPC error object with
+its code. A **resource read** handler is route-backed, so only
+`InvalidParamsError` keeps its own code; any other raised exception (including
+other `MCPError` subclasses) is routed through the app's exception handlers and
+surfaces as an internal error (`-32603`) unless a matching
+`@app.exception_handler` is registered for it.
 
 ## Dependency injection
 
