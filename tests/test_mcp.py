@@ -5162,6 +5162,40 @@ def test_resume_without_last_event_id_is_405():
     assert resp.status_code == 405
 
 
+def test_resume_get_rejects_cross_origin():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    # The GET resume path must run the same DNS-rebinding defense as POST: a
+    # browser Origin outside the allowlist is rejected before any replay.
+    app.mount_mcp(transport="http", resumable=True, allowed_origins=["https://app.example.com"])
+    blocked = app.test_client().get(
+        "/mcp",
+        headers={"last-event-id": "s.1", "origin": "https://evil.example"},
+    )
+    assert blocked.status_code == 403
+
+
+def test_resume_get_rejects_unsupported_protocol_version():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    # A present, unsupported MCP-Protocol-Version on the GET resume path is the
+    # same 400 the POST path returns, not a stream.
+    bad = app.test_client().get(
+        "/mcp",
+        headers={"last-event-id": "s.1", "mcp-protocol-version": "1999-01-01"},
+    )
+    assert bad.status_code == 400
+
+
 def test_event_store_replays_after_eviction_window():
     from veloce.contrib.mcp.transports.event_store import (
         _MAX_EVENTS_PER_STREAM,
