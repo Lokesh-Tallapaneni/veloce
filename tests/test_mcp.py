@@ -3024,6 +3024,65 @@ def test_subscribe_on_stateless_request_is_invalid():
     assert out["error"]["code"] == -32602
 
 
+def test_concurrent_streams_on_one_session_each_receive_updates():
+    # Two SSE streams may run concurrently under one session id; each registers
+    # its own sink, so a resource update must reach both, and one stream closing
+    # must not silence the other.
+    from veloce.contrib.mcp.subscriptions import ConnectionRegistry
+
+    registry = ConnectionRegistry()
+    session = MCPSession()
+    session.subscriptions.add("config://app")
+
+    received_a: list[dict] = []
+    received_b: list[dict] = []
+
+    async def sink_a(message: dict) -> None:
+        received_a.append(message)
+
+    async def sink_b(message: dict) -> None:
+        received_b.append(message)
+
+    token_a = registry.add(session, sink_a)
+    token_b = registry.add(session, sink_b)
+
+    asyncio.run(registry.notify_updated("config://app"))
+    assert len(received_a) == 1
+    assert len(received_b) == 1
+
+    # The first stream closes; the second must keep receiving.
+    registry.remove(token_a)
+    asyncio.run(registry.notify_updated("config://app"))
+    assert len(received_a) == 1
+    assert len(received_b) == 2
+
+    # Token reuse is harmless and the surviving stream is unaffected.
+    registry.remove(token_a)
+    registry.remove(token_b)
+    asyncio.run(registry.notify_updated("config://app"))
+    assert len(received_b) == 2
+
+
+def test_remove_session_drops_all_of_a_sessions_streams():
+    from veloce.contrib.mcp.subscriptions import ConnectionRegistry
+
+    registry = ConnectionRegistry()
+    session = MCPSession()
+    session.subscriptions.add("config://app")
+
+    received: list[dict] = []
+
+    async def sink(message: dict) -> None:
+        received.append(message)
+
+    registry.add(session, sink)
+    registry.add(session, sink)
+    registry.remove_session(session)
+
+    asyncio.run(registry.notify_updated("config://app"))
+    assert received == []
+
+
 def test_resource_on_mutating_route_is_rejected():
     app = Veloce(openapi_url=None)
 

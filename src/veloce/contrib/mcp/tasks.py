@@ -322,7 +322,7 @@ class TasksCapability(Capability):
         against natural completion.
         """
         task = self._lookup(params)
-        self._server._cancel_task(task)
+        await self._server._cancel_task(task)
         return task.describe()
 
     def _lookup(self, params: dict[str, Any]) -> MCPTask:

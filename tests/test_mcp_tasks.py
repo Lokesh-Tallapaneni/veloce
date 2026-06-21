@@ -228,6 +228,38 @@ def test_tasks_cancel_moves_task_to_cancelled():
     assert cancelled["result"]["status"] == STATUS_CANCELLED
 
 
+def test_tasks_cancel_emits_a_status_notification():
+    """tasks/cancel awaits the cancelled status notification so it is not dropped."""
+    app = Veloce(openapi_url=None)
+
+    gate = asyncio.Event()
+
+    @app.mcp_tool(description="Blocks", task_support=True)
+    async def blocker() -> int:
+        await gate.wait()
+        return 1
+
+    server = _server(app)
+    sent: list[dict] = []
+
+    async def sink(message: dict) -> None:
+        sent.append(message)
+
+    async def run() -> None:
+        _notifier_var.set(sink)
+        created = await _drive(server, _call("blocker", {}, task=True))
+        task_id = created["result"]["task"]["taskId"]
+        await _drive(
+            server,
+            {"jsonrpc": "2.0", "id": 2, "method": "tasks/cancel", "params": {"taskId": task_id}},
+        )
+        await _await_tasks(server)
+
+    asyncio.run(run())
+    status_msgs = [m for m in sent if m.get("method") == "notifications/tasks/status"]
+    assert any(m["params"]["task"]["status"] == STATUS_CANCELLED for m in status_msgs)
+
+
 def test_tasks_list_reports_known_tasks():
     """tasks/list enumerates the created tasks."""
     app = Veloce(openapi_url=None)

@@ -712,19 +712,22 @@ class MCPServer:
 
     def register_connection(
         self, session: MCPSession, sink: Callable[[dict[str, Any]], Awaitable[None]]
-    ) -> None:
+    ) -> object | None:
         """Record an open stateful connection so it can receive resource updates.
 
-        A no-op when subscriptions are disabled, so a transport may call this
-        unconditionally without the off path tracking any connection.
+        Returns an opaque token a transport passes back to `unregister_connection`
+        to drop exactly this stream, so concurrent streams on one session are
+        tracked independently. A no-op returning `None` when subscriptions are
+        disabled, so a transport may call this unconditionally.
         """
         if self._connections is not None:
-            self._connections.add(session, sink)
+            return self._connections.add(session, sink)
+        return None
 
-    def unregister_connection(self, session: MCPSession) -> None:
-        """Drop a closed connection (a no-op when subscriptions are disabled)."""
-        if self._connections is not None:
-            self._connections.remove(session)
+    def unregister_connection(self, token: object | None) -> None:
+        """Drop the connection named by its token (a no-op when token is `None`)."""
+        if self._connections is not None and token is not None:
+            self._connections.remove(token)
 
     def evict_session(self, session: MCPSession) -> None:
         """Reclaim everything an evicted session owns: its connection and tasks.
@@ -735,7 +738,8 @@ class MCPServer:
         in place - so an abandoned session cannot pin a task for the process
         lifetime.
         """
-        self.unregister_connection(session)
+        if self._connections is not None:
+            self._connections.remove_session(session)
         for task in self._tasks.owned_by(session.connection_id):
             if not task.is_terminal() and task.runner is not None and not task.runner.done():
                 task.runner.cancel()
@@ -1197,13 +1201,13 @@ class MCPServer:
             task.settle(STATUS_FAILED if is_error else STATUS_COMPLETED, result)
         await self._notify_task_status(task)
 
-    def _cancel_task(self, task: MCPTask) -> None:
+    async def _cancel_task(self, task: MCPTask) -> None:
         """Cancel a running task, settling it to `cancelled` and notifying.
 
         A task already terminal is left untouched (a cancel racing completion is a
         no-op per the spec); a working task is moved to `cancelled` and its runner
-        unwound. The status notification is scheduled rather than awaited so the
-        synchronous `tasks/cancel` handler returns at once.
+        unwound. The status notification is awaited inline (the `tasks/cancel`
+        handler is async) so it cannot be dropped by garbage collection.
         """
         if task.is_terminal():
             return
@@ -1211,7 +1215,7 @@ class MCPServer:
         task.settle(STATUS_CANCELLED, _text_result("task cancelled", is_error=True), "cancelled")
         if runner is not None and not runner.done():
             runner.cancel()
-        asyncio.ensure_future(self._notify_task_status(task))
+        await self._notify_task_status(task)
 
     async def _notify_task_status(self, task: MCPTask) -> None:
         """Emit ``notifications/tasks/status`` for a task transition, if a sink exists.

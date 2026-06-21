@@ -58,34 +58,54 @@ class ConnectionRegistry:
 
     A stateful transport registers its connection for the duration it is open so
     an application-signalled resource change can be fanned out to the connections
-    subscribed to that resource. A connection is keyed by its `MCPSession`
-    identity, so registering twice is idempotent and removal is exact.
+    subscribed to that resource. Each registration is keyed by an opaque token
+    rather than by session, so two concurrent streams on one session id are
+    tracked independently: each receives notifications and unregisters on its own
+    without silencing the other. A `session -> tokens` index keeps the fan-out a
+    set walk and lets an evicted session drop all of its streams at once.
     """
 
-    __slots__ = ("_sinks",)
+    __slots__ = ("_sinks", "_by_session")
 
     def __init__(self) -> None:
-        self._sinks: dict[MCPSession, Sink] = {}
+        self._sinks: dict[object, tuple[MCPSession, Sink]] = {}
+        self._by_session: dict[MCPSession, set[object]] = {}
 
-    def add(self, session: MCPSession, sink: Sink) -> None:
-        """Record an open connection's session and its outbound sink."""
-        self._sinks[session] = sink
+    def add(self, session: MCPSession, sink: Sink) -> object:
+        """Record an open connection's session and sink; return its removal token."""
+        token = object()
+        self._sinks[token] = (session, sink)
+        self._by_session.setdefault(session, set()).add(token)
+        return token
 
-    def remove(self, session: MCPSession) -> None:
-        """Drop a closed connection so it no longer receives notifications."""
-        self._sinks.pop(session, None)
+    def remove(self, token: object) -> None:
+        """Drop a single closed connection so it no longer receives notifications."""
+        entry = self._sinks.pop(token, None)
+        if entry is None:
+            return
+        session = entry[0]
+        tokens = self._by_session.get(session)
+        if tokens is not None:
+            tokens.discard(token)
+            if not tokens:
+                del self._by_session[session]
+
+    def remove_session(self, session: MCPSession) -> None:
+        """Drop every connection a session holds (used when the session is evicted)."""
+        for token in self._by_session.pop(session, ()):
+            self._sinks.pop(token, None)
 
     async def notify_updated(self, uri: str) -> None:
         """Send `notifications/resources/updated` to connections subscribed to `uri`."""
         message = resource_updated_notification(uri)
-        for session, sink in list(self._sinks.items()):
+        for session, sink in list(self._sinks.values()):
             if uri in session.subscriptions:
                 await self._send(sink, message)
 
     async def notify_list_changed(self) -> None:
         """Send `notifications/resources/list_changed` to every open connection."""
         message = resources_list_changed_notification()
-        for sink in list(self._sinks.values()):
+        for _session, sink in list(self._sinks.values()):
             await self._send(sink, message)
 
     @staticmethod

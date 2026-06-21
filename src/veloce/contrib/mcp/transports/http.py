@@ -477,7 +477,7 @@ def _stream_response(
         # Register this connection so an application-signalled resource update fans
         # out to it while the stream is open (a no-op when subscriptions are off);
         # unregistered in `finally` so a closed stream receives nothing further.
-        server.register_connection(session, send)
+        conn_token = server.register_connection(session, send)
         # The runner task inherits the request's context (and its principal), but
         # re-bind explicitly so identity is correct regardless of how the task was
         # scheduled.
@@ -496,7 +496,7 @@ def _stream_response(
             err = _error(message.get("id"), _JSONRPC_INTERNAL_ERROR, "internal error")
             await queue.put((emit_id(err), err))
         finally:
-            server.unregister_connection(session)
+            server.unregister_connection(conn_token)
             _notifier_var.reset(token)
             await queue.put(_STREAM_END)
 

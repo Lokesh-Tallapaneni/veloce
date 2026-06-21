@@ -102,7 +102,7 @@ class StdioTransport:
         # Register this connection so an application-signalled resource change can
         # be delivered to it (a no-op when resource subscriptions are disabled);
         # unregistered on EOF so a closed connection receives nothing further.
-        self.server.register_connection(session, self.send)
+        token = self.server.register_connection(session, self.send)
         try:
             while True:
                 line = await self._read_line()
@@ -112,7 +112,7 @@ class StdioTransport:
                 if response is not None:
                     await self._write_line(orjson.dumps(response))
         finally:
-            self.server.unregister_connection(session)
+            self.server.unregister_connection(token)
             self._session = None
 
     async def send(self, message: dict[str, Any]) -> None:
