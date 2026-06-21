@@ -162,6 +162,10 @@ class Response:
         "_encoded",
         "background",
         "_stream",
+        "_ct_cache_key",
+        "_mimetype",
+        "_charset",
+        "_ct_params",
     )
 
     def __init__(
@@ -185,6 +189,17 @@ class Response:
         # base `Response` the slot stays `None` so `is_streamed` is a
         # direct attribute load (no `getattr` fallback to None).
         self._stream: Any = None
+        # Value-keyed parse cache for `mimetype` / `charset` /
+        # `mimetype_params`. `content_type` is a bare public slot that
+        # framework and user code reassign directly (no setter hook), so the
+        # cache is keyed on the `content_type` *value* it was built from: a
+        # mismatch on read means the value changed and the cache is rebuilt.
+        # `_ct_cache_key` starts as `None`, which no real content-type string
+        # equals, so the first access always parses.
+        self._ct_cache_key: str | None = None
+        self._mimetype: str = ""
+        self._charset: str = ""
+        self._ct_params: dict[str, str] = {}
 
     # ── `body` ────────────────────────────────────────────
     # Backed by `_body` so the setter can invalidate the encode cache.
@@ -244,6 +259,32 @@ class Response:
         body = self.body
         return orjson.loads(body) if body else None
 
+    def _ensure_ct_parsed(self) -> None:
+        """Parse `content_type` into mimetype / charset / params, value-keyed.
+
+        Re-parses only when the current `content_type` differs from the value
+        the cache was built from, so direct slot reassignment can never serve a
+        stale result. A warm cache costs one string compare.
+        """
+        ct = self.content_type or ""
+        if ct == self._ct_cache_key:
+            return
+        media, _, rest = ct.partition(";")
+        self._mimetype = media.strip().lower()
+        params = dict(parse_media_type_params(rest))
+        self._ct_params = params
+        # `charset` matches a case-sensitive `charset=` part (RFC 9110 §5.6.6
+        # parameter names are case-insensitive, but this accessor preserves the
+        # historical case-sensitive lookup), falling back to "utf-8".
+        charset = "utf-8"
+        for part in ct.split(";"):
+            part = part.strip()
+            if part.startswith("charset="):
+                charset = unquote_value(part[8:])
+                break
+        self._charset = charset
+        self._ct_cache_key = ct
+
     @property
     def mimetype(self) -> str:
         """The bare media type - `Content-Type` without parameters.
@@ -251,7 +292,8 @@ class Response:
         `text/html; charset=utf-8` -> `text/html`. Lower-cased and
         stripped per RFC 9110 Sec. 8.3 (media types are case-insensitive).
         """
-        return (self.content_type or "").split(";", 1)[0].strip().lower()
+        self._ensure_ct_parsed()
+        return self._mimetype
 
     @mimetype.setter
     def mimetype(self, value: str) -> None:
@@ -434,12 +476,8 @@ class Response:
         Assignable: setting it rewrites the `charset=` parameter on the
         existing `Content-Type` (the bare media type is preserved).
         """
-        ct = self.content_type or ""
-        for part in ct.split(";"):
-            part = part.strip()
-            if part.startswith("charset="):
-                return unquote_value(part[8:])
-        return "utf-8"
+        self._ensure_ct_parsed()
+        return self._charset
 
     @charset.setter
     def charset(self, value: str) -> None:
@@ -460,8 +498,8 @@ class Response:
         `text/html; charset=utf-8` this is `{"charset": "utf-8"}`.
         Returns an empty dict when no parameters are present.
         """
-        _, _, rest = (self.content_type or "").partition(";")
-        return dict(parse_media_type_params(rest))
+        self._ensure_ct_parsed()
+        return self._ct_params
 
     def calculate_content_length(self) -> int:
         """Set `Content-Length` from `len(body)` and return the value.

@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MCPContext.cancelled` reflects real cancellation state instead of always returning `False`. ([#234](https://github.com/Lokesh-Tallapaneni/veloce/pull/234))
 - The MCP HTTP transport advertises `resources.subscribe` / `listChanged` as `true` only with `sessions=True`; a stateless request advertises `false`. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
 - `MCP_ENFORCE_LIFECYCLE` is enforced on a stateful HTTP `Mcp-Session-Id` connection, not only over stdio. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
+- `Response.mimetype`, `charset`, and `mimetype_params` cache their parse, keyed on the current `content_type` value.
 
 ### Fixed
 
