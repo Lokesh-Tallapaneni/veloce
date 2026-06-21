@@ -558,8 +558,17 @@ class DispatchMixin:
             response = self._build_response(request, match, result)
 
             # Run after_request hooks (app + blueprint) and one-shot
-            # `after_this_request` callbacks.
-            response = await self._run_after_hooks(request, response, _bp_name)
+            # `after_this_request` callbacks. With no app/blueprint hooks and no
+            # one-shot callback registered the helper does no work, so skip the
+            # awaited frame - mirrors the before_hooks guard above and the
+            # fast-path probe. The blueprint branch only fires when both
+            # `_bp_after_hooks` and a matched `_bp_name` are present.
+            if (
+                self._after_request_hooks
+                or (self._bp_after_hooks and _bp_name is not None)
+                or (request._state and request._state.get("_after_this_request"))
+            ):
+                response = await self._run_after_hooks(request, response, _bp_name)
 
             # Schedule any background tasks (DI-injected queue + the
             # response-attached task) in fire-and-forget fashion.

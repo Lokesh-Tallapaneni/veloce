@@ -25,13 +25,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from veloce._internal import _is_async_callable, offload
-from veloce.contrib.mcp.capabilities.base import Capability
+from veloce.contrib.mcp.capabilities.base import _ServerCapability
 from veloce.contrib.mcp.errors import InvalidParamsError
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.prompts import PromptRegistry
     from veloce.contrib.mcp.resources import ResourceRegistry
-    from veloce.contrib.mcp.server import MCPServer, MethodHandler
+    from veloce.contrib.mcp.server import MethodHandler
 
 # The MCP completion utility caps a single response at 100 values; a completer
 # returning more is truncated to the cap and the overflow is reported via `total`
@@ -148,7 +148,7 @@ def _attach_one(
     store[argument] = completer
 
 
-class CompletionsCapability(Capability):
+class CompletionsCapability(_ServerCapability):
     """The ``completion/complete`` method, advertised when a completer exists.
 
     Completion is opt-in: the capability is advertised only when at least one
@@ -156,10 +156,7 @@ class CompletionsCapability(Capability):
     none stays inert and a client never probes an empty capability.
     """
 
-    __slots__ = ("_server",)
-
-    def __init__(self, server: MCPServer) -> None:
-        self._server = server
+    __slots__ = ()
 
     def advertise(self) -> dict[str, Any] | None:
         if not self._has_completers():

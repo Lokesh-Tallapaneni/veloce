@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover
-    from veloce.contrib.mcp.server import MethodHandler
+    from veloce.contrib.mcp.server import MCPServer, MethodHandler
 
 
 class Capability:
@@ -41,3 +41,17 @@ class Capability:
     def handlers(self) -> dict[str, MethodHandler]:
         """Return the ``{json_rpc_method: handler}`` map this capability answers."""
         raise NotImplementedError
+
+
+class _ServerCapability(Capability):
+    """A capability bound to its `MCPServer`.
+
+    Every concrete capability is constructed with the server and reaches the
+    handlers and registries through it, so the `_server`-only slot and its
+    `__init__` live here once rather than on each subclass.
+    """
+
+    __slots__ = ("_server",)
+
+    def __init__(self, server: MCPServer) -> None:
+        self._server = server

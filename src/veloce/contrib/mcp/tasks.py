@@ -34,12 +34,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from veloce.contrib.mcp._registry_base import Registry
-from veloce.contrib.mcp.capabilities.base import Capability
+from veloce.contrib.mcp.capabilities.base import _ServerCapability
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.errors import InvalidParamsError, ResourceNotFoundError
 
 if TYPE_CHECKING:  # pragma: no cover
-    from veloce.contrib.mcp.server import MCPServer, MethodHandler
+    from veloce.contrib.mcp.server import MethodHandler
 
 # The task status values the spec defines. `working` is the only non-terminal
 # state the framework drives a task into on its own; `input_required` is modelled
@@ -261,7 +261,7 @@ def status_notification(task: MCPTask) -> dict[str, Any]:
     }
 
 
-class TasksCapability(Capability):
+class TasksCapability(_ServerCapability):
     """The ``tasks/get|result|list|cancel`` methods and the tasks advertisement.
 
     Advertised only when at least one tool opts into task support, so a server
@@ -269,10 +269,7 @@ class TasksCapability(Capability):
     empty capability.
     """
 
-    __slots__ = ("_server",)
-
-    def __init__(self, server: MCPServer) -> None:
-        self._server = server
+    __slots__ = ()
 
     def advertise(self) -> dict[str, Any] | None:
         if not any(tool.task_support for tool in self._server.registry.tools.values()):
