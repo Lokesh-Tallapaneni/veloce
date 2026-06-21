@@ -144,9 +144,11 @@ def register_http_transport(
     missed events. The default keeps no event ids or history and answers a `GET`
     405.
     """
-    # When sessions are on, a terminated / evicted id drops its connection from the
-    # server's subscription registry so a closed connection receives nothing further.
-    store = HttpSessionStore(on_evict=server.unregister_connection) if sessions else None
+    # When sessions are on, a terminated / evicted id reclaims everything the
+    # session owns: its subscription connection (so a closed connection receives
+    # nothing further) and its tasks (so a never-settling task does not leak past
+    # its owner).
+    store = HttpSessionStore(on_evict=server.evict_session) if sessions else None
     event_store = SSEEventStore() if resumable else None
 
     async def mcp_endpoint(request: Request) -> Response:

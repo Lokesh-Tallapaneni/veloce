@@ -61,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An MCP task is private to the connection that created it; `tasks/list` and `tasks/get` / `result` / `cancel` reject another connection's task. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
 - The MCP HTTP session store evicts idle `Mcp-Session-Id` sessions so an abandoned session no longer leaks for the process lifetime. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
 - The MCP SSE event store caps retained streams so a long-running resumable server's replay buffer no longer grows without bound. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
+- An MCP task keys ownership to a stable per-connection id so a task cannot alias to a later session that reuses a freed session's address. ([#242](https://github.com/Lokesh-Tallapaneni/veloce/pull/242))
+- Evicting an MCP HTTP session cancels and drops its tasks so a never-settling task no longer pins memory for the process lifetime. ([#242](https://github.com/Lokesh-Tallapaneni/veloce/pull/242))
 
 ## [0.8.0] - 2026-06-13
 

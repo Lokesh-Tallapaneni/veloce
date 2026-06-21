@@ -4155,6 +4155,92 @@ def test_event_store_caps_stream_count():
     assert [p["v"] for _, p in store.replay_after("s2.0")] == [2]
 
 
+def test_session_connection_ids_are_unique_and_monotonic():
+    """Each MCPSession gets a process-unique, never-recycled connection id."""
+    ids = [MCPSession().connection_id for _ in range(5)]
+    assert len(set(ids)) == 5
+    assert ids == sorted(ids)
+
+
+async def test_evict_session_reclaims_never_settling_task():
+    """An owning session's eviction cancels and drops its non-terminal task."""
+    app = Veloce(openapi_url=None)
+    started = asyncio.Event()
+
+    @app.mcp_tool(description="Never settles", task_support=True)
+    async def stuck() -> str:
+        started.set()
+        await asyncio.Event().wait()  # never completes on its own
+        return "unreachable"
+
+    server = MCPServer(app)
+    session = MCPSession()
+    created = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "stuck", "arguments": {}, "task": {}},
+        },
+        session,
+    )
+    task_id = created["result"]["task"]["taskId"]
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task = server._tasks.get(task_id)
+    assert task is not None and not task.is_terminal()
+    runner = task.runner
+
+    # Evicting the session reclaims its task: the runner is cancelled and the
+    # task is dropped from the store, so a stuck handler cannot pin memory.
+    server.evict_session(session)
+    assert server._tasks.get(task_id) is None
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+    assert runner.cancelled()
+
+
+async def test_task_ownership_survives_session_id_recycle():
+    """A task owner_key keys off the stable connection id, not id(session).
+
+    A later session cannot inherit an earlier session's tasks even if CPython
+    recycles the freed session's memory address.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Quick", task_support=True)
+    async def quick() -> str:
+        return "ok"
+
+    server = MCPServer(app)
+    session_a = MCPSession()
+    created = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "quick", "arguments": {}, "task": {}},
+        },
+        session_a,
+    )
+    task_id = created["result"]["task"]["taskId"]
+    await asyncio.sleep(0)
+
+    # A second session - even one CPython may give the freed address of the first -
+    # owns a distinct connection id, so A's task is invisible and inaccessible.
+    session_b = MCPSession()
+    assert session_b.connection_id != session_a.connection_id
+    got = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 2, "method": "tasks/get", "params": {"taskId": task_id}},
+        session_b,
+    )
+    assert got["error"]["code"] == -32002
+    listed = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 3, "method": "tasks/list", "params": {}},
+        session_b,
+    )
+    assert listed["result"]["tasks"] == []
+
+
 # -- Principal + per-tool scopes --------------------------------------
 
 

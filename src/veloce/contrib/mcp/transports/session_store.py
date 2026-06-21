@@ -65,8 +65,8 @@ class HttpSessionStore:
         self._live: dict[str, _LiveSession] = {}
         self._idle_ttl = idle_ttl
         # Called with a session when its id is terminated or evicted, so the
-        # transport can drop the connection from the server's subscription
-        # registry. `None` when no cleanup is needed (subscriptions off).
+        # transport can reclaim what the session owns (its subscription connection
+        # and its tasks). `None` when no cleanup is needed.
         self._on_evict = on_evict
 
     def create(self) -> tuple[str, MCPSession]:

@@ -17,7 +17,15 @@ unaffected.
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
+
+# Monotonic source of per-session connection ids. A connection id is a stable
+# identity for the session's lifetime and is never reused, unlike `id(session)`
+# (a memory address CPython recycles once the session is freed). Task ownership
+# and the in-flight registry key off this so a task that outlives its evicted
+# session cannot be matched by a later session that lands on a recycled address.
+_connection_id_counter = itertools.count(1)
 
 
 class MCPSession:
@@ -28,6 +36,7 @@ class MCPSession:
     """
 
     __slots__ = (
+        "connection_id",
         "initialized",
         "client_capabilities",
         "client_info",
@@ -36,6 +45,10 @@ class MCPSession:
     )
 
     def __init__(self, persistent: bool = True) -> None:
+        # A process-unique, never-recycled identity for this connection. Used as
+        # the ownership key for tasks and the in-flight registry so ownership
+        # cannot alias across a freed session's recycled `id()`.
+        self.connection_id = next(_connection_id_counter)
         # Whether the session outlives a single message. The stdio loop and an HTTP
         # `Mcp-Session-Id` own a persistent session that carries connection state
         # (subscriptions, lifecycle) across messages; a stateless HTTP POST gets a

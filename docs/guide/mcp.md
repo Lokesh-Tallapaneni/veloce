@@ -622,7 +622,9 @@ The server emits `notifications/tasks/status` on each transition (carrying the
 `io.modelcontextprotocol/related-task` `_meta` key), and the `CreateTaskResult`
 returned at creation carries the `io.modelcontextprotocol/model-immediate-response`
 hint. A task is retained for a bounded time-to-live (the client may set `ttl` in
-milliseconds on the `task` field); a settled task is evicted once it expires.
+milliseconds on the `task` field); a settled task is evicted once it expires, and
+a session's tasks — settled or still working — are reclaimed when its
+`Mcp-Session-Id` is terminated or evicted, so an abandoned task cannot leak.
 
 !!! note "Added in version 0.9"
     Task-augmented tool calls require a tool to opt in with `task_support=True`;

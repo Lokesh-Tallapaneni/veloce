@@ -107,9 +107,11 @@ class MCPTask(MCPDescriptor):
     ttl_ms: int = _DEFAULT_TASK_TTL_SECONDS * 1000
     expires_at: float = 0.0
     # Identity of the connection that created the task (the dispatching session's
-    # `id`, or `None` off a connection). A task method from a different connection
-    # cannot see or act on this task, so one HTTP client cannot read another's
-    # result, cancel another's work, or enumerate another's tasks.
+    # `connection_id`, or `None` off a connection). The id is process-unique and
+    # never recycled, so a task that outlives its evicted owner cannot be matched
+    # by a later session. A task method from a different connection cannot see or
+    # act on this task, so one HTTP client cannot read another's result, cancel
+    # another's work, or enumerate another's tasks.
     owner_key: int | None = None
     # The settled `tools/call` result, set when the task reaches a terminal
     # status; `None` while the task is still working.
@@ -181,6 +183,18 @@ class TaskRegistry(Registry[MCPTask]):
         ]
         for key in expired:
             del self.tasks[key]
+
+    def owned_by(self, owner_key: int | None) -> list[MCPTask]:
+        """Return the tasks created by the given connection.
+
+        Used to reclaim a session's tasks when it is evicted so a never-settling
+        task does not pin memory for the process lifetime after its owner is gone.
+        """
+        return [task for task in self.tasks.values() if task.owner_key == owner_key]
+
+    def drop(self, task: MCPTask) -> None:
+        """Remove a task from the store, settled or not (used on owner eviction)."""
+        self.tasks.pop(task.name, None)
 
 
 def task_ttl_ms(params: dict[str, Any]) -> int:
@@ -331,4 +345,4 @@ class TasksCapability(Capability):
     def _caller_key(self) -> int | None:
         """Return the dispatching connection's identity, scoping task ownership."""
         session = self._server.current_session()
-        return id(session) if session is not None else None
+        return session.connection_id if session is not None else None

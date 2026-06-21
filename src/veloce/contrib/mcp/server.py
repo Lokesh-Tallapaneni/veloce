@@ -726,6 +726,21 @@ class MCPServer:
         if self._connections is not None:
             self._connections.remove(session)
 
+    def evict_session(self, session: MCPSession) -> None:
+        """Reclaim everything an evicted session owns: its connection and tasks.
+
+        Called when a session's transport drops it (idle TTL on HTTP). Beyond
+        unregistering the subscription connection, this cancels and drops the
+        session's tasks - including a never-settling one TTL eviction would leave
+        in place - so an abandoned session cannot pin a task for the process
+        lifetime.
+        """
+        self.unregister_connection(session)
+        for task in self._tasks.owned_by(session.connection_id):
+            if not task.is_terminal() and task.runner is not None and not task.runner.done():
+                task.runner.cancel()
+            self._tasks.drop(task)
+
     async def notify_resource_updated(self, uri: str) -> None:
         """Tell subscribed clients a resource changed (`notifications/resources/updated`).
 
@@ -792,7 +807,7 @@ class MCPServer:
         # because the spec forbids cancelling it. A notification (no id) and the
         # zero-cancellation common case never touch the registry. The registry is
         # keyed per connection so one client cannot cancel a peer's colliding id.
-        connection_key = id(session) if session is not None else None
+        connection_key = session.connection_id if session is not None else None
         inflight_key = (connection_key, msg_id)
         inflight = self._track_inflight(inflight_key, method) if not is_notification else None
         token = _inflight_var.set(inflight)
@@ -888,7 +903,7 @@ class MCPServer:
         """
         request_id = params.get("requestId")
         session = _session_var.get()
-        connection_key = id(session) if session is not None else None
+        connection_key = session.connection_id if session is not None else None
         holder = self._inflight.get((connection_key, request_id))
         if holder is not None:
             holder.cancel()
@@ -1135,7 +1150,7 @@ class MCPServer:
         # The creating connection owns the task: a task method from a different
         # connection cannot see or act on it (multi-client isolation on HTTP).
         session = _session_var.get()
-        owner_key = id(session) if session is not None else None
+        owner_key = session.connection_id if session is not None else None
         task = new_task(tool.name, task_ttl_ms(params), owner_key)
         self._tasks.register(task)
         # `create_task` copies the current context, so the background runner sees
