@@ -618,6 +618,21 @@ A task is private to the connection that created it. Over the HTTP transport wit
 client cannot `tasks/get` / `result` / `cancel` a task it does not own — the id is
 treated as unknown.
 
+!!! warning "HTTP task support requires `sessions=True`"
+    A task is reachable only from the connection that created it, so a
+    task-augmented call over the HTTP transport needs a persistent session.
+    `mount_mcp(transport="http", sessions=True)` is required when any tool sets
+    `task_support=True`; the stateless default would mint a fresh connection per
+    request, leaving the task unretrievable, so it raises `ValueError` at mount
+    time instead.
+
+On the stdio transport a tool may use tasks freely, but a task runner cannot
+issue a server-to-client request (`ctx.sample` / `ctx.elicit` / `ctx.roots`):
+stdio has a single reader, and the serve loop resumes reading once the task is
+created, so the runner has no channel for the reply. Such a call settles the task
+as a failed result with an actionable message. Call the tool synchronously (no
+`task` field) when it needs sampling, elicitation, or roots over stdio.
+
 The server emits `notifications/tasks/status` on each transition (carrying the
 `io.modelcontextprotocol/related-task` `_meta` key), and the `CreateTaskResult`
 returned at creation carries the `io.modelcontextprotocol/model-immediate-response`

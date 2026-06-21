@@ -65,6 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Evicting an MCP HTTP session cancels and drops its tasks so a never-settling task no longer pins memory for the process lifetime. ([#242](https://github.com/Lokesh-Tallapaneni/veloce/pull/242))
 - `tasks/cancel` delivers its `notifications/tasks/status` (cancelled) reliably instead of dropping it to garbage collection. ([#243](https://github.com/Lokesh-Tallapaneni/veloce/pull/243))
 - Concurrent MCP SSE streams on one `Mcp-Session-Id` each receive resource-update notifications and unregister independently. ([#243](https://github.com/Lokesh-Tallapaneni/veloce/pull/243))
+- `mount_mcp(transport="http")` rejects a `task_support` tool without `sessions=True` so a created task is never silently unretrievable. ([#244](https://github.com/Lokesh-Tallapaneni/veloce/pull/244))
+- An MCP task runner refuses `ctx.sample` / `elicit` / `roots` on stdio, settling the task failed instead of racing the serve loop's reader. ([#244](https://github.com/Lokesh-Tallapaneni/veloce/pull/244))
 
 ## [0.8.0] - 2026-06-13
 

@@ -1870,9 +1870,23 @@ class Veloce(
         if transport == "http":
             from veloce.contrib.mcp.transports.http import register_http_transport
 
+            server = MCPServer(self)
+            # A task-augmented call records the creating connection's identity and
+            # the follow-up tasks/get|result|list|cancel must run under that same
+            # connection. The stateless default mints a throwaway session (a fresh,
+            # never-recycled connection id) per POST, so a task created by one POST
+            # can never be retrieved by another. Require sessions=True so the
+            # connection persists and the task remains reachable.
+            if not sessions and any(tool.task_support for tool in server.registry.tools.values()):
+                raise ValueError(
+                    "MCP task support over the HTTP transport requires sessions=True; "
+                    "pass mount_mcp(transport='http', sessions=True) so a task created "
+                    "by one request can be retrieved by the follow-up tasks/* request."
+                )
+
             register_http_transport(
                 self,
-                MCPServer(self),
+                server,
                 path=path,
                 auth=auth,
                 allowed_origins=(

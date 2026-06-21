@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import orjson
 
+from veloce.contrib.mcp.server import _in_task_var
 from veloce.contrib.mcp.session import MCPSession
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -126,7 +127,19 @@ class StdioTransport:
         reply arrives: any other inbound message is dispatched and answered inline,
         so the client may interleave its own calls while the request is in flight.
         Returns the reply's `result`; an error reply raises `MCPRequestError`.
+
+        Refused from a detached task runner: the stdio reader is serial, so this
+        method reads the reply itself, which works only while the serve loop is
+        parked in the calling handler. A task-augmented call has already returned
+        its `CreateTaskResult`, so the serve loop is reading stdin too; two readers
+        on one blocking stream would split inbound lines arbitrarily.
         """
+        if _in_task_var.get():
+            raise MCPRequestError(
+                "server->client requests (sample/elicit/roots) are not supported from a "
+                "task-augmented tool call on the stdio transport; call the tool without a "
+                "'task' field, or run it over a transport that does not share one reader."
+            )
         request_id = f"{_SERVER_ID_PREFIX}{next(self._server_ids)}"
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future

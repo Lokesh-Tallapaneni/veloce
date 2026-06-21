@@ -161,6 +161,15 @@ _requester_var: ContextVar[Callable[[str, dict[str, Any]], Awaitable[dict[str, A
     ContextVar("_mcp_requester", default=None)
 )
 
+# Set on a detached task runner (`_run_task`) so the serial stdio transport can
+# refuse a server->client request issued from it. A task-augmented call returns
+# its `CreateTaskResult` immediately, so the stdio serve loop resumes reading
+# stdin while the runner executes; if the runner called `ctx.sample` / `elicit` /
+# `roots` its `request()` would start a second reader of the same stdin, racing
+# the serve loop for inbound lines. `False` on the synchronous call path, where
+# the serve loop is parked in the handler and `request()` is the sole reader.
+_in_task_var: ContextVar[bool] = ContextVar("_mcp_in_task", default=False)
+
 
 # ── Helpers ───────────────────────────────────────────────
 
@@ -1178,6 +1187,10 @@ class MCPServer:
         A cancellation mid-run leaves the already-recorded `cancelled` status
         untouched.
         """
+        # Mark this as a detached task so a server->client request issued from the
+        # runner is refused on the serial stdio transport (its reply has no reader
+        # while the serve loop has already resumed reading stdin).
+        _in_task_var.set(True)
         started = time.perf_counter()
         try:
             result = await self._produce_tool_result(tool, arguments, started, progress_token)

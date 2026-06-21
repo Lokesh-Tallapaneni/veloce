@@ -27,6 +27,7 @@ from veloce import (
 from veloce.contrib.mcp import Icon, MCPAuth, MCPSession
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.tasks import STATUS_FAILED
 from veloce.contrib.mcp.transports.stdio import StdioTransport
 
 # -- In-process stdio driver ------------------------------------------
@@ -4117,6 +4118,30 @@ def test_http_tasks_isolated_per_session():
     assert task_id in a_ids
 
 
+def test_http_task_support_requires_sessions():
+    """Mounting HTTP with a task_support tool and no sessions raises a clear error."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Slow", task_support=True)
+    async def slow() -> str:
+        return "done"
+
+    with pytest.raises(ValueError, match="requires sessions=True"):
+        app.mount_mcp(transport="http")
+
+
+def test_http_task_support_without_task_tools_allows_stateless():
+    """HTTP without sessions mounts fine when no tool opts into task support."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Quick")
+    async def quick() -> str:
+        return "done"
+
+    # No task_support tool, so the stateless default is valid and does not raise.
+    assert app.mount_mcp(transport="http") is None
+
+
 def test_http_client_capabilities_recorded_with_sessions():
     """initialize capabilities are recorded on the HTTP session, gating ctx.sample."""
     app = Veloce(openapi_url=None)
@@ -4298,6 +4323,51 @@ async def test_task_ownership_survives_session_id_recycle():
         session_b,
     )
     assert listed["result"]["tasks"] == []
+
+
+async def test_stdio_task_runner_rejects_server_request():
+    """A task-augmented stdio tool calling ctx.sample settles failed, not deadlocked.
+
+    The serve loop resumes reading stdin after returning the CreateTaskResult, so a
+    second reader inside request() would race it; the guard refuses the call and the
+    task settles as a failed result carrying an actionable message.
+    """
+    app = Veloce(openapi_url=None)
+    app.debug = True
+
+    @app.mcp_tool(description="Samples from a task", task_support=True)
+    async def sampler(ctx: MCPContext) -> str:
+        await ctx.sample([{"role": "user", "content": "hi"}], max_tokens=8)
+        return "unreachable"
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"capabilities": {"sampling": {}}},
+        }
+    )
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "sampler", "arguments": {}, "task": {}},
+        }
+    )
+    out = await pipe.run()
+
+    task_id = out[-1]["result"]["task"]["taskId"]
+    runner = pipe.transport.server._tasks.get(task_id).runner
+    await runner
+
+    task = pipe.transport.server._tasks.get(task_id)
+    assert task.status == STATUS_FAILED
+    assert task.result["isError"] is True
+    text = task.result["content"][0]["text"]
+    assert "not supported from a task-augmented tool call on the stdio transport" in text
 
 
 # -- Principal + per-tool scopes --------------------------------------
