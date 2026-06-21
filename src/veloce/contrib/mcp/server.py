@@ -190,11 +190,12 @@ def _binary_result(response: Response) -> dict[str, Any] | None:
     never read as a successful result.
     """
     mimetype = response.mimetype
-    data = base64.b64encode(response.body or b"").decode("ascii")
     if mimetype.startswith("image/"):
-        block: ContentBlock = ImageContent(data, mimetype)
+        block: ContentBlock = ImageContent(
+            base64.b64encode(response.body or b"").decode("ascii"), mimetype
+        )
     elif mimetype.startswith("audio/"):
-        block = AudioContent(data, mimetype)
+        block = AudioContent(base64.b64encode(response.body or b"").decode("ascii"), mimetype)
     else:
         return None
     result: dict[str, Any] = {"content": [block.to_payload()]}
