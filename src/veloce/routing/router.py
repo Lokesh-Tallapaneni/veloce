@@ -1183,6 +1183,19 @@ class Router:
         self._named_routes[route_name] = (full_path, param_names)
         self._reverse_converters.pop(route_name, None)
 
+    def _get_or_create_regex_route(self, full_path: str) -> tuple[RegexRoute, list[str]]:
+        """Return the indexed regex route for a path, building and indexing it once."""
+        target = self._regex_route_index.get(full_path)
+        if target is None:
+            pattern = build_route_regex(full_path)
+            param_names = list(pattern.groupindex)
+            target = RegexRoute(full_path, pattern, param_names)
+            self._regex_routes.append(target)
+            self._regex_route_index[full_path] = target
+        else:
+            param_names = target.param_names
+        return target, param_names
+
     def _classify_route_path(
         self, full_path: str, strict_slashes: bool | None
     ) -> tuple[RadixNode | None, RegexRoute | None, list[str]]:
@@ -1197,15 +1210,7 @@ class Router:
         """
         has_trailing_slash = full_path.endswith("/") and full_path != "/"
         if is_regex_path(full_path):
-            regex_route = self._regex_route_index.get(full_path)
-            if regex_route is None:
-                pattern = build_route_regex(full_path)
-                param_names = list(pattern.groupindex)
-                regex_route = RegexRoute(full_path, pattern, param_names)
-                self._regex_routes.append(regex_route)
-                self._regex_route_index[full_path] = regex_route
-            else:
-                param_names = regex_route.param_names
+            regex_route, param_names = self._get_or_create_regex_route(full_path)
             if strict_slashes is False:
                 regex_route.tolerant_slash = True
             return None, regex_route, param_names
@@ -2095,15 +2100,7 @@ class Router:
         """
         for src in router._regex_routes:
             full_path = prefix + src.template if prefix else src.template
-            target = self._regex_route_index.get(full_path)
-            if target is None:
-                pattern = build_route_regex(full_path)
-                param_names = list(pattern.groupindex)
-                target = RegexRoute(full_path, pattern, param_names)
-                self._regex_routes.append(target)
-                self._regex_route_index[full_path] = target
-            else:
-                param_names = target.param_names
+            target, param_names = self._get_or_create_regex_route(full_path)
             # Carry slash-tolerance from the source so a child route declared
             # with `strict_slashes=False` keeps it after merge.
             if src.tolerant_slash:

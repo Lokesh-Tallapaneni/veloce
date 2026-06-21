@@ -50,6 +50,23 @@ def _endpoint_blueprint(endpoint: str | None) -> str | None:
     return endpoint[:dot] if dot >= 0 else None
 
 
+def _merge_scoped(
+    dst: dict[str, dict],
+    child_own: dict,
+    child_scoped: dict,
+    child_name: str,
+) -> None:
+    """Merge a child's own + already-scoped handler tables into `dst`.
+
+    The child's own table lands under its bare dotted name; each of the
+    child's already-scoped tables keeps its suffix under the child's name.
+    """
+    if child_own:
+        dst[child_name] = dict(child_own)
+    for suffix, table in child_scoped.items():
+        dst[f"{child_name}.{suffix}"] = table
+
+
 class Blueprint(Router):
     """Deferred-registration route collection."""
 
@@ -208,14 +225,18 @@ class Blueprint(Router):
         # Error handlers stay scoped to the child (and its descendants) under the
         # child's dotted name, not merged into this blueprint's own tables - so a
         # `@child.errorhandler` only catches the child's routes, never a sibling's.
-        if child._exception_handlers:
-            self._scoped_exception_handlers[child.name] = dict(child._exception_handlers)
-        if child._status_handlers:
-            self._scoped_status_handlers[child.name] = dict(child._status_handlers)
-        for suffix, table in child._scoped_exception_handlers.items():
-            self._scoped_exception_handlers[f"{child.name}.{suffix}"] = table
-        for suffix, status_table in child._scoped_status_handlers.items():
-            self._scoped_status_handlers[f"{child.name}.{suffix}"] = status_table
+        _merge_scoped(
+            self._scoped_exception_handlers,
+            child._exception_handlers,
+            child._scoped_exception_handlers,
+            child.name,
+        )
+        _merge_scoped(
+            self._scoped_status_handlers,
+            child._status_handlers,
+            child._scoped_status_handlers,
+            child.name,
+        )
         self._url_value_preprocessors.extend(child._url_value_preprocessors)
         self._url_default_funcs.extend(child._url_default_funcs)
 
