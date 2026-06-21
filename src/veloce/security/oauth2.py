@@ -16,7 +16,7 @@ from veloce._protocol_constants import AUTH_SCHEME_BEARER, OAUTH2_GRANT_TYPE_PAS
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
 from veloce.routing.params import Form
-from veloce.security._utils import _extract_bearer_token
+from veloce.security.base import _BearerScheme
 from veloce.status import HTTP_422_UNPROCESSABLE_ENTITY
 
 
@@ -30,26 +30,24 @@ def _form_value(v: Any) -> Any:
     return v.default if isinstance(v, Form) else v
 
 
-class _OAuth2BearerScheme:
+class _OAuth2BearerScheme(_BearerScheme):
     """Shared Bearer-token extraction for the OAuth2/OIDC schemes.
 
     `OAuth2PasswordBearer`, `OAuth2AuthorizationCodeBearer`, and
     `OpenIdConnect` pull the same `Authorization: Bearer` token; they
     differ only in the OpenAPI scheme they advertise. Each keeps its own
-    `__init__` (and distinct fields) and inherits this `__call__` so the
-    extraction lines stay in one place. The base is intentionally
-    un-slotted to preserve the concrete classes' existing instance layout.
+    `__init__` (and distinct fields) and inherits the shared `__call__` from
+    `_BearerScheme` so the extraction lines stay in one place.
     """
 
-    # Each concrete subclass sets this in its own `__init__`.
-    auto_error: bool
-
-    def __call__(self, request: Request) -> str | None:
-        return _extract_bearer_token(request, AUTH_SCHEME_BEARER, self.auto_error)
+    __slots__ = ()
+    _bearer_scheme = AUTH_SCHEME_BEARER
 
 
 class OAuth2PasswordBearer(_OAuth2BearerScheme):
     """OAuth2 Password Bearer flow - extracts token from Authorization header."""
+
+    __slots__ = ("token_url", "scopes")
 
     def __init__(
         self,
@@ -83,6 +81,8 @@ class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
         )
     """
 
+    __slots__ = ("authorizationUrl", "tokenUrl", "refreshUrl", "scopes")
+
     def __init__(
         self,
         authorizationUrl: str,
@@ -106,6 +106,8 @@ class OpenIdConnect(_OAuth2BearerScheme):
     provider's `.well-known/openid-configuration` document. Clients
     auto-discover everything else from there.
     """
+
+    __slots__ = ("openIdConnectUrl",)
 
     def __init__(
         self,
