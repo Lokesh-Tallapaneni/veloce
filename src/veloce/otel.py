@@ -395,7 +395,16 @@ def instrument_with_otel(
         # parent is never the ambient context active when this retroactive
         # hook fires (which would parent under unrelated same-task work).
         carrier = metrics.parent_context
-        parent = propagator.extract(cast("dict[str, str]", carrier)) if carrier else _OtelContext()
+        if carrier:
+            # A malformed `traceparent` makes the propagator raise; a bad inbound
+            # header must not abort the span this hook emits, so fall back to a
+            # fresh root context and still record the request.
+            try:
+                parent = propagator.extract(cast("dict[str, str]", carrier))
+            except Exception:
+                parent = _OtelContext()
+        else:
+            parent = _OtelContext()
         span = tracer.start_span(
             span_name,
             context=parent,

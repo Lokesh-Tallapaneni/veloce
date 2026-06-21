@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The MCP HTTP `GET` resume path validates `Origin` and `MCP-Protocol-Version` so a cross-origin or unsupported-version client cannot bypass the DNS-rebinding defense. ([#232](https://github.com/Lokesh-Tallapaneni/veloce/issues/232))
 - MCP `completion/complete` bounds the number of client-supplied `context.arguments` entries it ingests. ([#233](https://github.com/Lokesh-Tallapaneni/veloce/issues/233))
+- A malformed inbound `traceparent` no longer raises out of the OpenTelemetry span-emit hook; the span is rooted instead. ([#234](https://github.com/Lokesh-Tallapaneni/veloce/issues/234))
 - `PlainTextResponse` and `HTMLResponse` now accept `bytes` as well as `str`, matching Starlette parity. ([#216](https://github.com/Lokesh-Tallapaneni/veloce/issues/216))
 - An MCP HTTP client's `notifications/cancelled` cancels only its own in-flight request, never a peer's call with a colliding JSON-RPC id. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
 - An MCP task is private to the connection that created it; `tasks/list` and `tasks/get` / `result` / `cancel` reject another connection's task. ([#241](https://github.com/Lokesh-Tallapaneni/veloce/pull/241))
