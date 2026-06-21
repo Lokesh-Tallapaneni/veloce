@@ -6,8 +6,9 @@ request objects, forwards the responses it returns, and supplies the outbound si
 ``initialize`` (negotiating the protocol version), ``ping``, the tool methods
 (``tools/list`` / ``tools/call``), the resource methods (``resources/list`` /
 ``resources/templates/list`` / ``resources/read``), the prompt methods
-(``prompts/list`` / ``prompts/get``), ``logging/setLevel``, and the
-``notifications/initialized`` ack. A ``tools/call`` runs the handler through the
+(``prompts/list`` / ``prompts/get``), ``logging/setLevel``, the
+``notifications/initialized`` ack, and ``notifications/cancelled`` (cancelling the
+named in-flight request). A ``tools/call`` runs the handler through the
 shared `DependencyResolver`, so `Depends()` graphs, `yield`-style teardown, and
 `Security` all behave exactly as on the HTTP and WebSocket paths; resource reads
 and prompt renders replay the same invocation path. Per-tool instrumentation fires
@@ -35,7 +36,15 @@ from veloce.contrib.mcp.capabilities import (
     ResourcesCapability,
     ToolsCapability,
 )
-from veloce.contrib.mcp.content import AudioContent, ContentBlock, ImageContent, TextContent
+from veloce.contrib.mcp.completion import CompletionsCapability, attach_completers
+from veloce.contrib.mcp.content import (
+    AudioContent,
+    ContentBlock,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+)
 from veloce.contrib.mcp.context import _LOG_RANKS, MCPContext
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
@@ -52,10 +61,24 @@ from veloce.contrib.mcp.errors import (
     _StreamTimeoutError,
     _StreamTooLargeError,
 )
+from veloce.contrib.mcp.icons import render_icons
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import MCPResource, ResourceRegistry, build_resource_registry
+from veloce.contrib.mcp.subscriptions import ConnectionRegistry, SubscriptionsCapability
+from veloce.contrib.mcp.tasks import (
+    STATUS_CANCELLED,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    MCPTask,
+    TaskRegistry,
+    TasksCapability,
+    create_task_result,
+    new_task,
+    status_notification,
+    task_ttl_ms,
+)
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import RequestValidationError
 from veloce.helpers import _current_app_var, _current_request_var, g
@@ -66,6 +89,7 @@ from veloce.routing.router import RouteMatch
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.registry import MCPTool
+    from veloce.contrib.mcp.session import MCPSession
 
 _logger = logging.getLogger(__name__)
 
@@ -116,8 +140,63 @@ _notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = 
 # task, where it persists for the connection.
 _log_level_var: ContextVar[str | None] = ContextVar("_mcp_log_level", default=None)
 
+# The current request's in-flight registration, set by `handle_message` for an
+# id-bearing (cancellable) request so the invocation can attach its `MCPContext`.
+# `None` for a notification or off-dispatch construction. A ContextVar keeps
+# concurrent HTTP calls isolated, exactly like the notifier / log-level vars.
+_inflight_var: ContextVar[_InFlight | None] = ContextVar("_mcp_inflight", default=None)
+
+# The dispatching connection's session, set by `handle_message` when a stateful
+# transport passes one, so a per-connection method (`resources/subscribe`) reads
+# the session it should mutate without the handler signature gaining a parameter.
+# `None` on the stateless path. A ContextVar isolates concurrent connections.
+_session_var: ContextVar[MCPSession | None] = ContextVar("_mcp_session", default=None)
+
+# The current call's server->client request issuer, set by a bidirectional
+# transport so a tool's `MCPContext.sample` / `elicit` / `roots` can call the
+# client and await the correlated reply. `None` off a bidirectional transport (the
+# one-way HTTP/stdio default), where those methods raise. A ContextVar keeps
+# concurrent connections' requesters isolated, like the notifier var.
+_requester_var: ContextVar[Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None] = (
+    ContextVar("_mcp_requester", default=None)
+)
+
+# Set on a detached task runner (`_run_task`) so the serial stdio transport can
+# refuse a server->client request issued from it. A task-augmented call returns
+# its `CreateTaskResult` immediately, so the stdio serve loop resumes reading
+# stdin while the runner executes; if the runner called `ctx.sample` / `elicit` /
+# `roots` its `request()` would start a second reader of the same stdin, racing
+# the serve loop for inbound lines. `False` on the synchronous call path, where
+# the serve loop is parked in the handler and `request()` is the sole reader.
+_in_task_var: ContextVar[bool] = ContextVar("_mcp_in_task", default=False)
+
 
 # ── Helpers ───────────────────────────────────────────────
+
+
+class _InFlight:
+    """One id-bearing request the client may cancel while it runs.
+
+    Holds the request's task and - once `_invoke` builds it - the call's
+    `MCPContext`. `cancel` flips the context flag (so a cooperative handler that
+    polls `ctx.cancelled` stops) and cancels the task (so a handler blocked on an
+    `await` unwinds). The `initialize` request is never registered: the spec
+    forbids cancelling it.
+    """
+
+    __slots__ = ("task", "context")
+
+    def __init__(self, task: asyncio.Task[Any]) -> None:
+        self.task = task
+        # Attached by `_invoke` when the tool context exists; `None` for a method
+        # (resources/read, prompts/get) that builds no `MCPContext` to expose.
+        self.context: MCPContext | None = None
+
+    def cancel(self) -> None:
+        """Mark the call cancelled and unwind its task."""
+        if self.context is not None:
+            self.context._mark_cancelled()
+        self.task.cancel()
 
 
 # HTTP-method semantics mapped to MCP tool annotation hints. Read-only verbs do
@@ -129,23 +208,34 @@ _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRA
 _NON_DESTRUCTIVE_METHODS = frozenset({"GET", "HEAD", "POST", "OPTIONS", "TRACE"})
 
 
-def _tool_annotations(methods: list[str]) -> dict[str, Any] | None:
-    """Derive MCP tool annotation hints from a route's HTTP methods.
+def _tool_annotations(methods: list[str], title: str | None) -> dict[str, Any] | None:
+    """Derive MCP tool annotation hints from a route's HTTP methods and title.
 
     A multi-verb route is rated conservatively across every verb it serves:
     read-only and idempotent only when *all* verbs qualify, destructive when
     *any* verb is non-additive (so a `GET`+`DELETE` route is flagged
-    destructive, not read-only). A pure `@app.mcp_tool` (no route) has no HTTP
-    verb to map, so it carries no annotations.
+    destructive, not read-only). `openWorldHint` is `False` only for a fully
+    read-only route - an operation over the server's own data is closed-world;
+    any mutating route is left to the spec's open-world default (omitted). The
+    human-facing `title`, when the route declares a summary, is carried too. A
+    pure `@app.mcp_tool` (no route) has no HTTP verb to map; it still gets a
+    `title`-only annotation block when an explicit title was set.
     """
-    if not methods:
-        return None
-    verbs = {method.upper() for method in methods}
-    return {
-        "readOnlyHint": verbs <= _READONLY_METHODS,
-        "idempotentHint": verbs <= _IDEMPOTENT_METHODS,
-        "destructiveHint": not (verbs <= _NON_DESTRUCTIVE_METHODS),
-    }
+    annotations: dict[str, Any] = {}
+    if title:
+        annotations["title"] = title
+    if methods:
+        verbs = {method.upper() for method in methods}
+        read_only = verbs <= _READONLY_METHODS
+        annotations["readOnlyHint"] = read_only
+        annotations["idempotentHint"] = verbs <= _IDEMPOTENT_METHODS
+        annotations["destructiveHint"] = not (verbs <= _NON_DESTRUCTIVE_METHODS)
+        # A read-only route operates only on the server's own resources, so it is
+        # a closed-world operation; a mutating route may reach external systems,
+        # which the spec's omitted (open-world) default already covers.
+        if read_only:
+            annotations["openWorldHint"] = False
+    return annotations or None
 
 
 def _to_structured(value: Any) -> dict[str, Any] | None:
@@ -204,6 +294,54 @@ def _binary_result(response: Response) -> dict[str, Any] | None:
     return result
 
 
+# Response headers a route handler sets to deliver its MCP result as a resource
+# reference rather than inline content. Both are opt-in: a response without them
+# takes the unchanged text/structured/binary path, so the wire form is identical
+# for a route that uses neither. The link form references a resource the client
+# reads later (`resources/read`); the embedded form inlines the body's contents
+# so the agent reads the data without a follow-up call. The values are an MCP
+# resource URI; they are harmless custom headers on the HTTP door.
+_HEADER_RESOURCE_LINK = "x-mcp-resource-link"
+_HEADER_EMBEDDED_RESOURCE = "x-mcp-embedded-resource"
+
+
+def _mcp_resource_header(response: Response, name: str) -> str | None:
+    """Return a response header value by case-insensitive name, or `None`.
+
+    `Response.headers` is a plain dict keyed by the casing the handler chose, so
+    a fixed-case lookup would miss `X-MCP-Resource-Link` set as `x-mcp-...`. The
+    scan runs only on the MCP tool-call path (never the HTTP hot path) and over a
+    handful of headers, so the per-call cost is immaterial.
+    """
+    for key, value in response.headers.items():
+        if key.lower() == name:
+            return value
+    return None
+
+
+def _resource_result_from_response(tool: MCPTool, response: Response) -> dict[str, Any] | None:
+    """Emit a resource-link / embedded-resource result when the response asks for one.
+
+    A route signals the intent with the `X-MCP-Resource-Link` /
+    `X-MCP-Embedded-Resource` header carrying the resource URI. The link form
+    references the URI (the client follows it with `resources/read`); the
+    embedded form inlines the body's contents at that URI. A response carrying
+    neither header returns `None`, leaving the caller's existing shaping path
+    untouched.
+    """
+    link_uri = _mcp_resource_header(response, _HEADER_RESOURCE_LINK)
+    if link_uri:
+        block: ContentBlock = ResourceLink(
+            link_uri, tool.name, title=tool.title, description=tool.description
+        )
+        return {"content": [block.to_payload()]}
+    embed_uri = _mcp_resource_header(response, _HEADER_EMBEDDED_RESOURCE)
+    if embed_uri:
+        block = EmbeddedResource(_resource_contents(embed_uri, response))
+        return {"content": [block.to_payload()]}
+    return None
+
+
 def _describe_resource(resource: MCPResource) -> dict[str, Any]:
     """Shape a static resource into its `resources/list` entry."""
     entry: dict[str, Any] = {
@@ -213,6 +351,9 @@ def _describe_resource(resource: MCPResource) -> dict[str, Any]:
     }
     if resource.title:
         entry["title"] = resource.title
+    icons = render_icons(resource.icons)
+    if icons is not None:
+        entry["icons"] = icons
     return entry
 
 
@@ -225,6 +366,9 @@ def _describe_resource_template(resource: MCPResource) -> dict[str, Any]:
     }
     if resource.title:
         entry["title"] = resource.title
+    icons = render_icons(resource.icons)
+    if icons is not None:
+        entry["icons"] = icons
     return entry
 
 
@@ -248,6 +392,11 @@ def _resource_contents(uri: str, response: Response) -> dict[str, Any]:
 def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
     """Shape a prompt into its `prompts/list` entry."""
     entry: dict[str, Any] = {"name": prompt.name, "description": prompt.description}
+    if prompt.title:
+        entry["title"] = prompt.title
+    icons = render_icons(prompt.icons)
+    if icons is not None:
+        entry["icons"] = icons
     if prompt.arguments:
         entry["arguments"] = prompt.arguments
     return entry
@@ -416,11 +565,18 @@ class MCPServer:
         "prompts",
         "registry",
         "resources",
+        "server_instructions",
         "server_name",
+        "server_title",
         "server_version",
         "_call_timeout",
+        "_enforce_lifecycle",
+        "_subscriptions_enabled",
+        "_connections",
         "_capabilities",
         "_methods",
+        "_inflight",
+        "_tasks",
     )
 
     def __init__(
@@ -434,26 +590,83 @@ class MCPServer:
         self.registry = registry if registry is not None else build_registry(app)
         self.resources = resources if resources is not None else build_resource_registry(app)
         self.prompts = prompts if prompts is not None else build_prompt_registry(app)
+        # Bind every `@app.mcp_completer` registration onto its prompt / resource
+        # descriptor now the registries exist, so a misconfigured target surfaces
+        # at build time and `CompletionsCapability` finds the completers in place.
+        attach_completers(app, self.prompts, self.resources)
         self.server_name = getattr(app, "title", None) or "Veloce"
         self.server_version = getattr(app, "version", None) or "0.1.0"
+        # Human-facing display name and client-facing usage guidance for the
+        # `initialize` result, read from the same app metadata the OpenAPI
+        # document uses so the two doors describe the server identically. The
+        # title falls back to the identifier name; instructions prefer the longer
+        # `description`, then the one-line `summary`. Empty when neither is set.
+        self.server_title = getattr(app, "title", None) or None
+        self.server_instructions = (
+            getattr(app, "description", None) or getattr(app, "summary", None) or None
+        )
         # Optional per-call wall-clock budget (`MCP_CALL_TIMEOUT` seconds in
         # `app.config`). The stdio serve loop is serial, so a handler that awaits
         # forever wedges every later call; when set, a call exceeding the budget
         # is cancelled and surfaced as an in-band tool error. `None` disables it.
         config = getattr(app, "config", None)
         self._call_timeout = config.get("MCP_CALL_TIMEOUT") if config is not None else None
+        # Opt-in lifecycle ordering on a stateful connection (`MCP_ENFORCE_LIFECYCLE`
+        # in `app.config`). When on, a stateful transport's session rejects any
+        # request other than `initialize` / `ping` that precedes initialization
+        # (the spec's "initialization MUST be first" rule). Off by default so the
+        # existing stdio wire behavior is unchanged; the session still records the
+        # client's advertised capabilities either way.
+        self._enforce_lifecycle = bool(
+            config.get("MCP_ENFORCE_LIFECYCLE") if config is not None else False
+        )
+        # Opt-in resource subscriptions (`MCP_RESOURCE_SUBSCRIPTIONS` in
+        # `app.config`). When on, the resource capability advertises
+        # `subscribe`/`listChanged`, the subscribe / unsubscribe methods are
+        # served, and `notify_resource_updated` / `notify_resources_list_changed`
+        # fan changes out to subscribed connections. Off by default so the
+        # existing wire behavior and zero-overhead path are unchanged.
+        self._subscriptions_enabled = bool(
+            config.get("MCP_RESOURCE_SUBSCRIPTIONS") if config is not None else False
+        )
+        # The live stateful connections that may receive resource notifications;
+        # built only when subscriptions are on, so the default path holds nothing.
+        self._connections = ConnectionRegistry() if self._subscriptions_enabled else None
+        # Background task store + capability for task-augmented tool calls. The
+        # store is shared between `_tools_call` (which creates a task) and the
+        # capability (which serves `tasks/get|result|list|cancel`); it holds no
+        # task and costs nothing until a client opts a call into a task.
+        self._tasks = TaskRegistry()
         # The spec areas this server serves, each owning its `initialize`
         # advertisement and its method handlers. A new area is a capability
         # added here, not a branch edited into the dispatcher or `_initialize`.
-        self._capabilities: tuple[Capability, ...] = (
+        capabilities: list[Capability] = [
             ToolsCapability(self),
             ResourcesCapability(self),
             PromptsCapability(self),
+            CompletionsCapability(self),
+            TasksCapability(self),
             LoggingCapability(self),
-        )
+        ]
+        # The subscribe / unsubscribe methods are registered only when the feature
+        # is on, so an off server returns method-not-found for them (matching the
+        # `subscribe: false` it advertises) and pays no dispatch-map cost.
+        if self._subscriptions_enabled:
+            capabilities.append(SubscriptionsCapability(self))
+        self._capabilities: tuple[Capability, ...] = tuple(capabilities)
         # Built once at construction so per-request dispatch is one dict lookup.
         # A new method is registered here, never wired into a dispatcher branch.
         self._methods: dict[str, MethodHandler] = self._build_method_map()
+        # Cancellable requests in flight, keyed by `(connection_key, msg_id)` so a
+        # JSON-RPC id is unique only within its own connection. The client owns its
+        # id space per connection, so two HTTP clients of the same server routinely
+        # reuse id `1`; keying by id alone would let one client's
+        # `notifications/cancelled` reach a peer's call. The connection key is the
+        # dispatching session's identity (the stdio loop's one session, an HTTP
+        # `Mcp-Session-Id`'s session, or a stateless POST's ephemeral session);
+        # `None` only for a direct `handle_message` with no session. Populated only
+        # for an id-bearing request and popped when it settles.
+        self._inflight: dict[tuple[int | None, Any], _InFlight] = {}
 
     def _build_method_map(self) -> dict[str, MethodHandler]:
         """Map each supported JSON-RPC method to its async handler.
@@ -466,6 +679,7 @@ class MCPServer:
         methods: dict[str, MethodHandler] = {
             "initialize": self._handle_initialize,
             "notifications/initialized": self._handle_initialized,
+            "notifications/cancelled": self._handle_cancelled,
             "ping": self._handle_ping,
         }
         for capability in self._capabilities:
@@ -482,13 +696,100 @@ class MCPServer:
         """
         _notifier_var.set(notifier)
 
+    @staticmethod
+    def set_requester(
+        requester: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Wire the current context's server->client request issuer.
+
+        Sets the per-context `_requester_var`; a bidirectional transport (the stdio
+        loop) calls this once in its serve task so a tool's `MCPContext.sample` /
+        `elicit` / `roots` reaches the client. A one-way transport never calls it,
+        leaving those methods to raise.
+        """
+        _requester_var.set(requester)
+
+    @staticmethod
+    def current_session() -> MCPSession | None:
+        """Return the session of the connection currently dispatching, or `None`.
+
+        Set per dispatch by `handle_message` when a stateful transport supplies a
+        session; `None` on the stateless HTTP path or off-dispatch.
+        """
+        return _session_var.get()
+
+    # ── Resource subscriptions ────────────────────────────
+
+    def register_connection(
+        self, session: MCPSession, sink: Callable[[dict[str, Any]], Awaitable[None]]
+    ) -> object | None:
+        """Record an open stateful connection so it can receive resource updates.
+
+        Returns an opaque token a transport passes back to `unregister_connection`
+        to drop exactly this stream, so concurrent streams on one session are
+        tracked independently. A no-op returning `None` when subscriptions are
+        disabled, so a transport may call this unconditionally.
+        """
+        if self._connections is not None:
+            return self._connections.add(session, sink)
+        return None
+
+    def unregister_connection(self, token: object | None) -> None:
+        """Drop the connection named by its token (a no-op when token is `None`)."""
+        if self._connections is not None and token is not None:
+            self._connections.remove(token)
+
+    def evict_session(self, session: MCPSession) -> None:
+        """Reclaim everything an evicted session owns: its connection and tasks.
+
+        Called when a session's transport drops it (idle TTL on HTTP). Beyond
+        unregistering the subscription connection, this cancels and drops the
+        session's tasks - including a never-settling one TTL eviction would leave
+        in place - so an abandoned session cannot pin a task for the process
+        lifetime.
+        """
+        if self._connections is not None:
+            self._connections.remove_session(session)
+        for task in self._tasks.owned_by(session.connection_id):
+            if not task.is_terminal() and task.runner is not None and not task.runner.done():
+                task.runner.cancel()
+            self._tasks.drop(task)
+
+    async def notify_resource_updated(self, uri: str) -> None:
+        """Tell subscribed clients a resource changed (`notifications/resources/updated`).
+
+        Call this from the app when a resource's data changes; the server fans the
+        notification out to every connection subscribed to `uri`. A no-op when
+        subscriptions are disabled or no connection subscribed to `uri`.
+        """
+        if self._connections is not None:
+            await self._connections.notify_updated(uri)
+
+    async def notify_resources_list_changed(self) -> None:
+        """Tell clients the resource list changed (`notifications/resources/list_changed`).
+
+        Call this from the app when the set of available resources changes; the
+        server fans the notification out to every open connection. A no-op when
+        subscriptions are disabled.
+        """
+        if self._connections is not None:
+            await self._connections.notify_list_changed()
+
     # ── JSON-RPC dispatch ─────────────────────────────────
 
-    async def handle_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
+    async def handle_message(
+        self, message: dict[str, Any], session: MCPSession | None = None
+    ) -> dict[str, Any] | None:
         """Dispatch one decoded JSON-RPC request; return the response object.
 
         Returns `None` for a notification (a request with no ``id``), which
         carries no response per JSON-RPC 2.0 Sec. 4.1.
+
+        A stateful transport (the serial stdio loop) passes its `session` so the
+        server records the client's advertised capabilities from `initialize` and
+        enforces the lifecycle ordering: before `initialize` completes the only
+        requests answered are `initialize` and `ping`. The stateless HTTP
+        transport passes none, leaving its fast path unaffected.
         """
         msg_id = message.get("id")
         method = message.get("method")
@@ -499,6 +800,14 @@ class MCPServer:
         params = message.get("params") or {}
         is_notification = "id" not in message
 
+        # On a stateful connection the initialization exchange MUST be first: a
+        # request other than `initialize` / `ping` arriving before it completes is
+        # rejected, and the client's advertised capabilities are recorded here.
+        if session is not None:
+            rejection = self._gate_session(session, method, params, msg_id, is_notification)
+            if rejection is not None:
+                return rejection
+
         handler = self._methods.get(method)
         if handler is None:
             # An unknown notification carries no response; an unknown request is a
@@ -507,6 +816,19 @@ class MCPServer:
                 return None
             return _error(msg_id, _JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
 
+        # Register an id-bearing request as cancellable so a later
+        # `notifications/cancelled` can reach its task; `initialize` is excluded
+        # because the spec forbids cancelling it. A notification (no id) and the
+        # zero-cancellation common case never touch the registry. The registry is
+        # keyed per connection so one client cannot cancel a peer's colliding id.
+        connection_key = session.connection_id if session is not None else None
+        inflight_key = (connection_key, msg_id)
+        inflight = self._track_inflight(inflight_key, method) if not is_notification else None
+        token = _inflight_var.set(inflight)
+        # Expose the connection's session so a per-connection method
+        # (`resources/subscribe`) reaches the session it mutates; `None` on the
+        # stateless path leaves the subscribe handler to reject the call.
+        session_token = _session_var.set(session)
         try:
             result = await handler(params)
         except MCPError as exc:
@@ -519,10 +841,87 @@ class MCPServer:
         except Exception as exc:  # pragma: no cover - defensive
             _logger.exception("MCP method %s raised", method)
             return _error(msg_id, _JSONRPC_INTERNAL_ERROR, self._error_text(exc, "internal error"))
+        finally:
+            _inflight_var.reset(token)
+            _session_var.reset(session_token)
+            if inflight is not None:
+                self._inflight.pop(inflight_key, None)
 
         if is_notification:
             return None
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+    def _gate_session(
+        self,
+        session: MCPSession,
+        method: str,
+        params: dict[str, Any],
+        msg_id: Any,
+        is_notification: bool,
+    ) -> dict[str, Any] | None:
+        """Record client capabilities on a session and optionally enforce ordering.
+
+        Records the client's advertised capabilities from `initialize` and marks
+        the session initialized on the `notifications/initialized` ack - always,
+        so the recorded state is available regardless of the ordering policy. When
+        `MCP_ENFORCE_LIFECYCLE` is on, any request other than `initialize` / `ping`
+        that precedes initialization is rejected with an invalid-request error;
+        notifications always pass (the spec orders requests, not one-way messages).
+        Returns the JSON-RPC error to send back, or `None` to proceed.
+        """
+        if method == "initialize":
+            session.record_initialize(params)
+            return None
+        if method == "notifications/initialized":
+            session.initialized = True
+            return None
+        # Lifecycle ordering is a property of a persistent connection; a stateless
+        # per-request session is never initialized across messages, so enforcing it
+        # there would reject every independent POST.
+        if not self._enforce_lifecycle or not session.persistent:
+            return None
+        if session.initialized or is_notification or method == "ping":
+            return None
+        return _error(
+            msg_id,
+            _JSONRPC_INVALID_REQUEST,
+            f"Received {method!r} before initialization completed",
+        )
+
+    def _track_inflight(self, key: tuple[int | None, Any], method: str) -> _InFlight | None:
+        """Register an in-flight request so a cancel notification can reach it.
+
+        Skips `initialize` (the spec forbids cancelling it) and any request not
+        running inside a task (a bare synchronous driver). Returns the holder, or
+        `None` when the request is not tracked. `key` is `(connection_key, msg_id)`
+        so a cancel from one connection cannot reach another's colliding id.
+        """
+        if method == "initialize":
+            return None
+        task = asyncio.current_task()
+        if task is None:
+            return None
+        holder = _InFlight(task)
+        self._inflight[key] = holder
+        return holder
+
+    async def _handle_cancelled(self, params: dict[str, Any]) -> None:
+        """Cancel the request named by ``notifications/cancelled`` (a notification).
+
+        Resolves the ``requestId`` within the cancelling connection's own id space
+        and cancels its task, marking the call's context cancelled. An unknown id is
+        ignored: the request may have already completed, which the spec expects
+        clients to race. The lookup is scoped to the dispatching connection so a
+        client can cancel only its own in-flight request, never a peer's whose
+        JSON-RPC id happens to collide.
+        """
+        request_id = params.get("requestId")
+        session = _session_var.get()
+        connection_key = session.connection_id if session is not None else None
+        holder = self._inflight.get((connection_key, request_id))
+        if holder is not None:
+            holder.cancel()
+        return None
 
     # ── Dispatch adapters ─────────────────────────────────
     #
@@ -577,11 +976,22 @@ class MCPServer:
             entry = capability.advertise()
             if entry is not None:
                 capabilities.update(entry)
-        return {
+        # `serverInfo.title` is the human-facing display name; the app's `title`
+        # is that name (`name`/`version` already carry the identifier + version).
+        server_info: dict[str, Any] = {"name": self.server_name, "version": self.server_version}
+        if self.server_title:
+            server_info["title"] = self.server_title
+        result: dict[str, Any] = {
             "protocolVersion": version,
             "capabilities": capabilities,
-            "serverInfo": {"name": self.server_name, "version": self.server_version},
+            "serverInfo": server_info,
         }
+        # `instructions` is optional usage guidance the client may surface to its
+        # model; the app's `description` (falling back to its `summary`) is that
+        # guidance, derived from the same contract that documents the HTTP API.
+        if self.server_instructions:
+            result["instructions"] = self.server_instructions
+        return result
 
     def _tools_list(self) -> dict[str, Any]:
         return {"tools": [self._describe_tool(tool) for tool in self.registry.tools.values()]}
@@ -600,14 +1010,21 @@ class MCPServer:
             "description": tool.description,
             "inputSchema": tool.input_schema,
         }
-        title = tool.route_info.summary if tool.route_info is not None else None
-        if title:
-            entry["title"] = title
-        annotations = _tool_annotations(tool.route_methods)
+        if tool.title:
+            entry["title"] = tool.title
+        icons = render_icons(tool.icons)
+        if icons is not None:
+            entry["icons"] = icons
+        annotations = _tool_annotations(tool.route_methods, tool.title)
         if annotations is not None:
             entry["annotations"] = annotations
         if tool.output_schema is not None:
             entry["outputSchema"] = tool.output_schema
+        # A tool that opts into background execution advertises it so a client
+        # knows it may send a task-augmented `tools/call`. The spec's default is
+        # `"forbidden"`, so a non-opting tool omits the field entirely.
+        if tool.task_support:
+            entry["execution"] = {"taskSupport": "optional"}
         return entry
 
     async def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -629,7 +1046,30 @@ class MCPServer:
             await self._instrument(tool, started, status.HTTP_403_FORBIDDEN)
             raise AuthorizationError(tool.required_scopes)
 
-        progress_token = _progress_token(params)
+        # A task-augmented call (a `task` field naming the client's intent to run
+        # it as a background task) is started detached: the tool must opt in, and
+        # a `CreateTaskResult` is returned immediately instead of the synchronous
+        # tool result, which the client retrieves later via `tasks/result`.
+        if "task" in params:
+            return self._create_task(tool, arguments, params)
+
+        return await self._produce_tool_result(tool, arguments, started, _progress_token(params))
+
+    async def _produce_tool_result(
+        self,
+        tool: MCPTool,
+        arguments: dict[str, Any],
+        started: float,
+        progress_token: str | int | None,
+    ) -> dict[str, Any]:
+        """Invoke a tool and shape its return into the `tools/call` result object.
+
+        Shared by the synchronous `tools/call` and the background task runner so
+        a tool invoked either way runs the same handler dispatch and produces the
+        same result shape (one handler, two doors). Authorization is checked by
+        the caller; instrumentation and in-band error shaping happen here so both
+        callers report a call's real outcome identically.
+        """
         try:
             result = await self._run_invoke(tool, arguments, progress_token)
         except InvalidParamsError:
@@ -702,6 +1142,110 @@ class MCPServer:
                     "tool result does not conform to the declared output schema", is_error=True
                 )
         return self._success_result(tool, shaped)
+
+    # ── Tasks ─────────────────────────────────────────────
+
+    def _create_task(
+        self, tool: MCPTool, arguments: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Start a task-augmented tool call and return its `CreateTaskResult`.
+
+        A tool that did not opt into task support rejects the task-augmented call
+        (invalid-params), matching the ``execution.taskSupport: "forbidden"`` it
+        advertises. An opted-in tool's call is started detached - the handler runs
+        on a background asyncio task through the same `tools/call` result builder
+        the synchronous path uses - and the new task object is returned at once.
+        """
+        if not tool.task_support:
+            raise InvalidParamsError(
+                f"Tool {tool.name!r} does not support task execution; call it without a 'task' field."
+            )
+        self._tasks.evict_expired()
+        # The creating connection owns the task: a task method from a different
+        # connection cannot see or act on it (multi-client isolation on HTTP).
+        session = _session_var.get()
+        owner_key = session.connection_id if session is not None else None
+        task = new_task(tool.name, task_ttl_ms(params), owner_key)
+        self._tasks.register(task)
+        # `create_task` copies the current context, so the background runner sees
+        # the same notifier / log level / principal the request established here.
+        progress_token = _progress_token(params)
+        task.runner = asyncio.ensure_future(self._run_task(task, tool, arguments, progress_token))
+        return create_task_result(task)
+
+    async def _run_task(
+        self,
+        task: MCPTask,
+        tool: MCPTool,
+        arguments: dict[str, Any],
+        progress_token: str | int | None,
+    ) -> None:
+        """Run a task's tool call to completion, settling and notifying the client.
+
+        Produces the result through the shared `tools/call` builder (one handler,
+        two doors), then moves the task to `completed` / `failed` and emits a
+        ``notifications/tasks/status`` so a watching client learns the outcome.
+        A cancellation mid-run leaves the already-recorded `cancelled` status
+        untouched.
+        """
+        # Mark this as a detached task so a server->client request issued from the
+        # runner is refused on the serial stdio transport (its reply has no reader
+        # while the serve loop has already resumed reading stdin).
+        _in_task_var.set(True)
+        started = time.perf_counter()
+        try:
+            result = await self._produce_tool_result(tool, arguments, started, progress_token)
+        except asyncio.CancelledError:
+            # `_cancel_task` has already settled the task to `cancelled` and sent
+            # its notification; let the cancellation unwind without overwriting it.
+            raise
+        except InvalidParamsError as exc:
+            # A malformed argument surfaces synchronously on the non-task path; on
+            # the task path the call already started, so it settles the task as
+            # failed rather than propagating to a dead request.
+            task.settle(STATUS_FAILED, _text_result(str(exc), is_error=True), str(exc))
+        except Exception as exc:  # pragma: no cover - defensive
+            _logger.exception("MCP task %s raised", task.name)
+            text = self._error_text(exc, "the task raised an internal error")
+            task.settle(STATUS_FAILED, _text_result(text, is_error=True), text)
+        else:
+            # An in-band tool error is still a settled task: the call ran and
+            # produced a result the client retrieves; `isError` lives inside it.
+            is_error = bool(result.get("isError"))
+            task.settle(STATUS_FAILED if is_error else STATUS_COMPLETED, result)
+        await self._notify_task_status(task)
+
+    async def _cancel_task(self, task: MCPTask) -> None:
+        """Cancel a running task, settling it to `cancelled` and notifying.
+
+        A task already terminal is left untouched (a cancel racing completion is a
+        no-op per the spec); a working task is moved to `cancelled` and its runner
+        unwound. The status notification is awaited inline (the `tasks/cancel`
+        handler is async) so it cannot be dropped by garbage collection.
+        """
+        if task.is_terminal():
+            return
+        runner = task.runner
+        task.settle(STATUS_CANCELLED, _text_result("task cancelled", is_error=True), "cancelled")
+        if runner is not None and not runner.done():
+            runner.cancel()
+        await self._notify_task_status(task)
+
+    async def _notify_task_status(self, task: MCPTask) -> None:
+        """Emit ``notifications/tasks/status`` for a task transition, if a sink exists.
+
+        The notifier captured when the task was created carries the message; off a
+        transport (a bare construction) or once the originating request's stream
+        has closed there is no sink and the transition is silent - the client
+        still learns the outcome by polling ``tasks/get`` / ``tasks/result``.
+        """
+        notifier = _notifier_var.get()
+        if notifier is None:
+            return
+        try:
+            await notifier(status_notification(task))
+        except Exception:  # pragma: no cover - a dead sink must not fail the task
+            _logger.exception("MCP task status notification failed")
 
     async def _drain_stream(self, response: Response) -> None:
         """Buffer a streamed response into its body so it can be a tool result.
@@ -817,6 +1361,13 @@ class MCPServer:
         binary = _binary_result(response)
         if binary is not None:
             return binary
+        # A successful response may ask, via an opt-in header, that its result be
+        # delivered as a resource-link / embedded-resource block rather than inline
+        # text; a 4xx/5xx skips this and surfaces the error body as text below.
+        if response.status_code < 400:
+            resource = _resource_result_from_response(tool, response)
+            if resource is not None:
+                return resource
         shaped = self._shape_result(tool, response)
         # A 4xx/5xx is an in-band error: surface the body text and flag it,
         # without structured content (the error body is not the tool's output
@@ -1072,13 +1623,26 @@ class MCPServer:
         tool result. A pure `@app.mcp_tool` (no route) has no such lifecycle and
         its return value is passed back unchanged.
         """
+        # The client capabilities gating `ctx.sample` / `elicit` / `roots` come
+        # from the dispatching connection's session (recorded at `initialize`);
+        # empty off a stateful transport, which leaves those methods to reject.
+        session = _session_var.get()
+        client_capabilities = session.client_capabilities if session is not None else None
         context = MCPContext(
             tool.name,
             arguments,
             notifier=_notifier_var.get(),
             progress_token=progress_token,
             log_level=_log_level_var.get(),
+            requester=_requester_var.get(),
+            client_capabilities=client_capabilities,
         )
+        # Expose this context on its in-flight registration so a
+        # `notifications/cancelled` flips `ctx.cancelled` (cooperative stop) as
+        # well as cancelling the task. `None` off-dispatch or for an untracked call.
+        inflight = _inflight_var.get()
+        if inflight is not None:
+            inflight.context = context
         resolver = DependencyResolver()
         resolver._overrides = self.app._dependency_overrides
         resolver._override_subplans = self.app._override_subplans

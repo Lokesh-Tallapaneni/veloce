@@ -26,6 +26,31 @@ def test_base_carries_name_and_description():
     assert descriptor.description == "d"
 
 
+def test_base_carries_optional_title():
+    """The shared `title` lives on the base, keyword-only, defaulting to None."""
+    assert MCPDescriptor(name="n", description="d").title is None
+    assert MCPDescriptor(name="n", description="d", title="Nice").title == "Nice"
+
+
+def test_title_is_shared_across_primitives():
+    """Every primitive inherits `title` from the base rather than copying it."""
+    tool = MCPTool(
+        name="t", description="d", title="T", handler=lambda: None, plan=None, input_schema={}
+    )
+    resource = MCPResource(
+        name="r",
+        description="d",
+        title="R",
+        uri="config://app",
+        tool=_tool(),
+        is_template=False,
+        pattern=None,
+        uri_param_names=(),
+    )
+    prompt = MCPPrompt(name="p", description="d", title="P", tool=_tool(), arguments=[])
+    assert (tool.title, resource.title, prompt.title) == ("T", "R", "P")
+
+
 def test_tool_inherits_base_fields_and_keeps_its_own():
     """`MCPTool` keeps inherited name/description alongside its distinct fields."""
     tool = _tool()

@@ -16,7 +16,7 @@ handler must carry a non-empty description.
 from __future__ import annotations
 
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +27,7 @@ from veloce._model_backend import is_pydantic_model
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.descriptors import MCPDescriptor
+from veloce.contrib.mcp.icons import Icon, coerce_icons
 from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
 from veloce.contrib.mcp.safety import require_mcp_description
 
@@ -81,6 +82,12 @@ class MCPTool(MCPDescriptor):
     # tool / read this resource. Empty means no per-tool requirement; a non-empty
     # set is checked before invocation and a miss yields an authorization error.
     required_scopes: frozenset[str] = frozenset()
+    # Whether this tool may be invoked as a background task (task-augmented
+    # `tools/call`). `False` (the default) advertises no task support and rejects
+    # a task-augmented call; `True` lets a client run the call detached and poll
+    # it via `tasks/get` / `tasks/result`. Opt-in per tool so the synchronous
+    # path stays unchanged for every tool that does not ask for it.
+    task_support: bool = False
 
 
 @dataclass(slots=True)
@@ -191,6 +198,8 @@ def _register_explicit_tool(
     description: str | None,
     namespace: str | None,
     scopes: frozenset[str] | None = None,
+    icons: Sequence[Icon] | None = None,
+    task_support: bool = False,
 ) -> None:
     """Add an `@app.mcp_tool`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -209,6 +218,8 @@ def _register_explicit_tool(
             output_schema=output_schema,
             output_model=output_model,
             required_scopes=scopes or frozenset(),
+            icons=coerce_icons(icons),
+            task_support=task_support,
         )
     )
 
@@ -234,6 +245,7 @@ def _tool_from_route(
     return MCPTool(
         name=tool_name,
         description=desc,
+        title=info.summary or None,
         handler=info.handler,
         plan=plan,
         input_schema=schema,
@@ -244,6 +256,8 @@ def _tool_from_route(
         route_method=methods[0],
         route_methods=methods,
         required_scopes=info.mcp_scopes or frozenset(),
+        icons=coerce_icons(getattr(info, "mcp_icons", None)),
+        task_support=bool(getattr(info, "mcp_task_support", False)),
     )
 
 
@@ -252,8 +266,17 @@ def build_registry(app: Any) -> ToolRegistry:
     registry = ToolRegistry()
 
     # Explicit @app.mcp_tool registrations, recorded on the app at decoration
-    # time as `(handler, name, description, namespace, scopes)` tuples.
-    for handler, name, description, namespace, scopes in getattr(app, "_mcp_tools", ()):
+    # time as `(handler, name, description, namespace, scopes, icons,
+    # task_support)` tuples.
+    for (
+        handler,
+        name,
+        description,
+        namespace,
+        scopes,
+        icons,
+        task_support,
+    ) in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
             registry,
             handler,
@@ -261,6 +284,8 @@ def build_registry(app: Any) -> ToolRegistry:
             description=description,
             namespace=namespace,
             scopes=scopes,
+            icons=icons,
+            task_support=task_support,
         )
 
     # Routes flagged for exposure. Walk every route (including those hidden

@@ -24,9 +24,10 @@ from veloce import (
     current_principal,
     set_principal,
 )
-from veloce.contrib.mcp import MCPAuth
+from veloce.contrib.mcp import Icon, MCPAuth, MCPSession
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
+from veloce.contrib.mcp.tasks import STATUS_FAILED
 from veloce.contrib.mcp.transports.stdio import StdioTransport
 
 # -- In-process stdio driver ------------------------------------------
@@ -423,7 +424,7 @@ def test_parse_error_on_bad_json():
     app = Veloce(openapi_url=None)
     server = _server(app)
     transport = StdioTransport(server, None, None)  # type: ignore[arg-type]
-    out = asyncio.run(transport._dispatch_line(b"{not json"))
+    out = asyncio.run(transport._process_line(b"{not json", MCPSession()))
     assert out["error"]["code"] == -32700
 
 
@@ -433,6 +434,14 @@ def test_stdio_transport_satisfies_transport_contract():
     app = Veloce(openapi_url=None)
     transport = StdioTransport(_server(app), None, None)  # type: ignore[arg-type]
     assert isinstance(transport, Transport)
+
+
+def test_stdio_transport_satisfies_bidirectional_contract():
+    from veloce.contrib.mcp.transports.base import BidirectionalTransport
+
+    app = Veloce(openapi_url=None)
+    transport = StdioTransport(_server(app), None, None)  # type: ignore[arg-type]
+    assert isinstance(transport, BidirectionalTransport)
 
 
 def test_stdio_transport_send_writes_one_message():
@@ -833,7 +842,7 @@ def test_duplicate_tool_name_raises():
         return 1
 
     # A second tool resolving to the same name collides at registry build.
-    app._mcp_tools.append((dup, "dup", "Two", None, None))
+    app._mcp_tools.append((dup, "dup", "Two", None, None, None, False))
     with pytest.raises(ValueError, match="Duplicate"):
         build_registry(app)
 
@@ -1983,6 +1992,122 @@ def test_tool_without_summary_has_no_title():
     assert "title" not in _list_tools(app)["health"]
 
 
+def test_read_only_tool_is_closed_world():
+    """A read-only route operates on the server's own data, so openWorldHint=False."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/items", expose_as_mcp_tool=True, mcp_description="List items")
+    async def list_items() -> dict:
+        return {"items": []}
+
+    ann = _list_tools(app)["list_items"]["annotations"]
+    assert ann["openWorldHint"] is False
+
+
+def test_mutating_tool_omits_open_world_hint():
+    """A mutating route leaves openWorldHint to the spec's open-world default."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/items", expose_as_mcp_tool=True, mcp_description="Create item")
+    async def create_item() -> dict:
+        return {"ok": True}
+
+    assert "openWorldHint" not in _list_tools(app)["create_item"]["annotations"]
+
+
+def test_annotation_carries_title():
+    """The route summary appears as annotations.title alongside the top-level title."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/health",
+        summary="Health probe",
+        expose_as_mcp_tool=True,
+        mcp_description="Check health",
+    )
+    async def health() -> dict:
+        return {"ok": True}
+
+    ann = _list_tools(app)["health"]["annotations"]
+    assert ann["title"] == "Health probe"
+
+
+def test_pure_tool_without_title_has_no_annotations():
+    """A pure tool with no verb and no title still carries no annotation block."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    assert "annotations" not in _list_tools(app)["add"]
+
+
+# -- Schema dialect ---------------------------------------------------
+
+
+def test_input_schema_declares_2020_12_dialect():
+    """Every tool input schema declares the JSON Schema 2020-12 dialect."""
+    from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
+
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    assert _list_tools(app)["add"]["inputSchema"]["$schema"] == JSON_SCHEMA_DIALECT
+
+
+def test_output_schema_declares_2020_12_dialect():
+    """A declared output schema also declares the 2020-12 dialect."""
+    from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
+
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/me",
+        response_model=PublicUser,
+        expose_as_mcp_tool=True,
+        mcp_description="Current user",
+    )
+    async def me() -> dict:
+        return {"id": 1, "name": "ada"}
+
+    assert _list_tools(app)["me"]["outputSchema"]["$schema"] == JSON_SCHEMA_DIALECT
+
+
+# -- initialize instructions + serverInfo title -----------------------
+
+
+def test_initialize_emits_instructions_from_description():
+    """The app description becomes the initialize `instructions` field."""
+    app = Veloce(openapi_url=None, description="Use list_items before create_item.")
+    result = _initialize(app, {})["result"]
+    assert result["instructions"] == "Use list_items before create_item."
+
+
+def test_initialize_instructions_fall_back_to_summary():
+    """With no description, the one-line summary becomes the instructions."""
+    app = Veloce(openapi_url=None, summary="A small task API.")
+    result = _initialize(app, {})["result"]
+    assert result["instructions"] == "A small task API."
+
+
+def test_initialize_omits_instructions_when_unset():
+    """Neither description nor summary set: no instructions field is emitted."""
+    app = Veloce(openapi_url=None)
+    assert "instructions" not in _initialize(app, {})["result"]
+
+
+def test_initialize_serverinfo_carries_title():
+    """The app title is the human-facing serverInfo.title."""
+    app = Veloce(openapi_url=None, title="Task Service")
+    server_info = _initialize(app, {})["result"]["serverInfo"]
+    assert server_info["title"] == "Task Service"
+    assert server_info["name"] == "Task Service"
+
+
 # -- Output schema + structured content -------------------------------
 
 
@@ -2694,6 +2819,271 @@ def test_initialize_omits_resources_capability_when_none():
     assert "resources" not in caps
 
 
+def _subscriptions_app() -> Veloce:
+    """An app exposing one resource with resource subscriptions enabled."""
+    app = Veloce(openapi_url=None)
+    app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="Settings",
+    )
+    async def settings() -> dict:
+        return {"theme": "dark"}
+
+    return app
+
+
+def test_initialize_advertises_subscriptions_when_enabled():
+    caps = _initialize(_subscriptions_app(), {})["result"]["capabilities"]
+    assert caps["resources"] == {"subscribe": True, "listChanged": True}
+
+
+def test_subscribe_then_resource_updated_reaches_subscriber():
+    app = _subscriptions_app()
+
+    # A tool that signals a change to the subscribed resource mid-connection, so
+    # the resulting `notifications/resources/updated` is written on the same loop.
+    @app.mcp_tool(description="Mark settings changed")
+    async def touch() -> str:
+        await server.notify_resource_updated("config://app")
+        return "ok"
+
+    server = MCPServer(app)
+    pipe = _Pipe(server)
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    pipe.feed({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "touch"}})
+    out = asyncio.run(pipe.run())
+
+    updates = [m for m in out if m.get("method") == "notifications/resources/updated"]
+    assert len(updates) == 1
+    assert updates[0]["params"] == {"uri": "config://app"}
+
+
+def test_resource_updated_skips_unsubscribed_uri():
+    app = _subscriptions_app()
+
+    @app.mcp_tool(description="Mark a different resource changed")
+    async def touch_other() -> str:
+        await server.notify_resource_updated("config://other")
+        return "ok"
+
+    server = MCPServer(app)
+    pipe = _Pipe(server)
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    pipe.feed(
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "touch_other"}}
+    )
+    out = asyncio.run(pipe.run())
+
+    assert not [m for m in out if m.get("method") == "notifications/resources/updated"]
+
+
+def test_unsubscribe_stops_resource_updates():
+    app = _subscriptions_app()
+
+    @app.mcp_tool(description="Mark settings changed")
+    async def touch() -> str:
+        await server.notify_resource_updated("config://app")
+        return "ok"
+
+    server = MCPServer(app)
+    pipe = _Pipe(server)
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/unsubscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    pipe.feed({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "touch"}})
+    out = asyncio.run(pipe.run())
+
+    assert not [m for m in out if m.get("method") == "notifications/resources/updated"]
+
+
+def test_list_changed_reaches_open_connection():
+    app = _subscriptions_app()
+
+    @app.mcp_tool(description="Announce a new resource")
+    async def announce() -> str:
+        await server.notify_resources_list_changed()
+        return "ok"
+
+    server = MCPServer(app)
+    pipe = _Pipe(server)
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "announce"}})
+    out = asyncio.run(pipe.run())
+
+    changed = [m for m in out if m.get("method") == "notifications/resources/list_changed"]
+    assert len(changed) == 1
+    assert "params" not in changed[0]
+
+
+def test_subscribe_returns_empty_result():
+    pipe = _Pipe(_server(_subscriptions_app()))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    out = asyncio.run(pipe.run())[0]
+    assert out["result"] == {}
+
+
+def test_subscribe_rejects_missing_uri():
+    pipe = _Pipe(_server(_subscriptions_app()))
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/subscribe", "params": {}})
+    out = asyncio.run(pipe.run())[0]
+    assert out["error"]["code"] == -32602
+
+
+def test_subscribe_unknown_when_disabled():
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="config://app",
+        mcp_description="Settings",
+    )
+    async def settings() -> dict:
+        return {}
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "config://app"},
+        }
+    )
+    out = asyncio.run(pipe.run())[0]
+    # Not advertised, so the method is unknown when the feature is off.
+    assert out["error"]["code"] == -32601
+
+
+def test_notify_is_inert_when_disabled():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Touch")
+    async def touch() -> str:
+        await server.notify_resource_updated("config://app")
+        await server.notify_resources_list_changed()
+        return "ok"
+
+    server = MCPServer(app)
+    pipe = _Pipe(server)
+    pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "touch"}})
+    out = asyncio.run(pipe.run())
+    assert not [m for m in out if m.get("method", "").startswith("notifications/resources/")]
+
+
+def test_subscribe_on_stateless_request_is_invalid():
+    # The HTTP transport dispatches without a session, so a subscribe there is an
+    # invalid request (subscriptions are per-connection state).
+    server = MCPServer(_subscriptions_app())
+    out = asyncio.run(
+        server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "resources/subscribe",
+                "params": {"uri": "config://app"},
+            }
+        )
+    )
+    assert out["error"]["code"] == -32602
+
+
+def test_concurrent_streams_on_one_session_each_receive_updates():
+    # Two SSE streams may run concurrently under one session id; each registers
+    # its own sink, so a resource update must reach both, and one stream closing
+    # must not silence the other.
+    from veloce.contrib.mcp.subscriptions import ConnectionRegistry
+
+    registry = ConnectionRegistry()
+    session = MCPSession()
+    session.subscriptions.add("config://app")
+
+    received_a: list[dict] = []
+    received_b: list[dict] = []
+
+    async def sink_a(message: dict) -> None:
+        received_a.append(message)
+
+    async def sink_b(message: dict) -> None:
+        received_b.append(message)
+
+    token_a = registry.add(session, sink_a)
+    token_b = registry.add(session, sink_b)
+
+    asyncio.run(registry.notify_updated("config://app"))
+    assert len(received_a) == 1
+    assert len(received_b) == 1
+
+    # The first stream closes; the second must keep receiving.
+    registry.remove(token_a)
+    asyncio.run(registry.notify_updated("config://app"))
+    assert len(received_a) == 1
+    assert len(received_b) == 2
+
+    # Token reuse is harmless and the surviving stream is unaffected.
+    registry.remove(token_a)
+    registry.remove(token_b)
+    asyncio.run(registry.notify_updated("config://app"))
+    assert len(received_b) == 2
+
+
+def test_remove_session_drops_all_of_a_sessions_streams():
+    from veloce.contrib.mcp.subscriptions import ConnectionRegistry
+
+    registry = ConnectionRegistry()
+    session = MCPSession()
+    session.subscriptions.add("config://app")
+
+    received: list[dict] = []
+
+    async def sink(message: dict) -> None:
+        received.append(message)
+
+    registry.add(session, sink)
+    registry.add(session, sink)
+    registry.remove_session(session)
+
+    asyncio.run(registry.notify_updated("config://app"))
+    assert received == []
+
+
 def test_resource_on_mutating_route_is_rejected():
     app = Veloce(openapi_url=None)
 
@@ -3037,7 +3427,7 @@ def test_prompt_duplicate_name_raises():
     async def greet() -> str:
         return "one"
 
-    app._mcp_prompts.append((greet, "greet", "Two", None, None))
+    app._mcp_prompts.append((greet, "greet", "Two", None, None, None))
     with pytest.raises(ValueError, match="Duplicate MCP prompt"):
         _server(app)
 
@@ -3283,12 +3673,18 @@ def test_pure_tool_error_text_shown_with_debug():
 
 
 def _parse_sse(body: bytes) -> list[dict]:
-    """Extract the JSON payloads from the `data:` lines of an SSE body."""
+    """Extract the JSON payloads from the `data:` lines of an SSE body.
+
+    The stream's priming frame carries an empty `data:` field (no JSON), so an
+    empty payload is skipped rather than decoded.
+    """
     events: list[dict] = []
     for raw in body.split(b"\n"):
         line = raw.strip()
         if line.startswith(b"data:"):
-            events.append(orjson.loads(line[len(b"data:") :].strip()))
+            payload = line[len(b"data:") :].strip()
+            if payload:
+                events.append(orjson.loads(payload))
     return events
 
 
@@ -3469,6 +3865,509 @@ def test_http_sse_concurrent_calls_do_not_cross_notifications():
     b_tokens = {e["params"]["progressToken"] for e in b_events if e.get("method")}
     assert a_tokens == {"a"}
     assert b_tokens == {"b"}
+
+
+# -- HTTP per-connection isolation (multi-client) ---------------------
+
+
+async def _drive_stream(stream: object) -> None:
+    """Run an SSE response generator to exhaustion (its dispatch task settles)."""
+    async for _ in stream._stream:  # type: ignore[attr-defined]
+        pass
+
+
+async def test_http_cancel_does_not_cross_connections():
+    """One HTTP client's cancel must not cancel a peer's call with a colliding id."""
+    from veloce.contrib.mcp.transports.http import _stream_response
+
+    app = Veloce(openapi_url=None)
+    released = {"a": asyncio.Event(), "b": asyncio.Event()}
+    completed = {"a": asyncio.Event(), "b": asyncio.Event()}
+    started = {"a": asyncio.Event(), "b": asyncio.Event()}
+
+    @app.mcp_tool(description="Block until released")
+    async def work(which: str) -> str:
+        started[which].set()
+        await released[which].wait()
+        completed[which].set()
+        return which
+
+    server = MCPServer(app)
+    # Two distinct connections sharing the one server, each issuing id 1.
+    session_a = MCPSession()
+    session_b = MCPSession()
+    stream_a = _stream_response(server, _mcp_call_body("work", {"which": "a"}), None, session_a)
+    stream_b = _stream_response(server, _mcp_call_body("work", {"which": "b"}), None, session_b)
+    gen_a, gen_b = stream_a._stream, stream_b._stream
+    await gen_a.__anext__()
+    await gen_b.__anext__()
+    await asyncio.wait_for(started["a"].wait(), timeout=1)
+    await asyncio.wait_for(started["b"].wait(), timeout=1)
+
+    # Connection A cancels its own id 1; B's id 1 must be untouched.
+    await server.handle_message(
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}},
+        session_a,
+    )
+    await _drive_stream(stream_a)
+    # B finishes normally once released; A never reached completion.
+    released["b"].set()
+    await asyncio.wait_for(completed["b"].wait(), timeout=1)
+    await _drive_stream(stream_b)
+    released["a"].set()
+    await asyncio.sleep(0)
+
+    assert not completed["a"].is_set()
+    assert completed["b"].is_set()
+    assert server._inflight == {}
+
+
+async def test_http_subscriptions_advertised_and_served_with_sessions():
+    """Subscriptions advertise true and deliver updates over a stateful HTTP stream."""
+    from veloce.contrib.mcp.transports.http import _stream_response
+
+    app = Veloce(openapi_url=None)
+    app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @app.get(
+        "/doc",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://main",
+        mcp_description="A document",
+    )
+    async def doc() -> dict:
+        return {"v": 1}
+
+    @app.mcp_tool(description="Hold the stream open while a change is signalled")
+    async def hold() -> str:
+        started.set()
+        await release.wait()
+        return "ok"
+
+    server = MCPServer(app)
+    session = MCPSession()
+
+    # A stateful connection sees subscribe/listChanged advertised as true.
+    init = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, session
+    )
+    assert init["result"]["capabilities"]["resources"] == {
+        "subscribe": True,
+        "listChanged": True,
+    }
+
+    # Subscribe, then open a stream that registers the connection's sink and, while
+    # the call is held in flight, signal a change; the update reaches the stream.
+    await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/subscribe",
+            "params": {"uri": "doc://main"},
+        },
+        session,
+    )
+
+    stream = _stream_response(server, _mcp_call_body("hold", {}), None, session)
+    gen = stream._stream
+    await gen.__anext__()  # priming frame; registers the connection's sink
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await server.notify_resource_updated("doc://main")
+    release.set()
+    frames = b"".join([chunk async for chunk in gen])
+    methods = [e.get("method") for e in _parse_sse(frames)]
+    assert "notifications/resources/updated" in methods
+
+
+def test_http_subscribe_not_advertised_without_sessions():
+    """Stateless HTTP must advertise subscribe/listChanged as false (cannot serve them)."""
+    app = Veloce(openapi_url=None)
+    app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+    @app.get(
+        "/doc",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://main",
+        mcp_description="A document",
+    )
+    async def doc() -> dict:
+        return {"v": 1}
+
+    app.mount_mcp(transport="http")  # stateless: no sessions
+    resp = app.test_client().post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    caps = orjson.loads(resp.body)["result"]["capabilities"]
+    assert caps["resources"] == {"subscribe": False, "listChanged": False}
+
+
+def test_http_subscribe_advertised_true_with_sessions():
+    """With sessions on, the HTTP initialize advertises subscribe/listChanged true."""
+    app = Veloce(openapi_url=None)
+    app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+    @app.get(
+        "/doc",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://main",
+        mcp_description="A document",
+    )
+    async def doc() -> dict:
+        return {"v": 1}
+
+    app.mount_mcp(transport="http", sessions=True)
+    resp = app.test_client().post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    caps = orjson.loads(resp.body)["result"]["capabilities"]
+    assert caps["resources"] == {"subscribe": True, "listChanged": True}
+
+
+def test_http_subscribe_rejected_on_stateless_request():
+    """resources/subscribe over a stateless HTTP request errors (not advertised)."""
+    app = Veloce(openapi_url=None)
+    app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+    @app.get(
+        "/doc",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://main",
+        mcp_description="A document",
+    )
+    async def doc() -> dict:
+        return {"v": 1}
+
+    app.mount_mcp(transport="http")  # stateless
+    resp = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": {"uri": "doc://main"},
+        },
+    )
+    assert orjson.loads(resp.body)["error"]["code"] == -32602
+
+
+def test_http_tasks_isolated_per_session():
+    """A task created under one Mcp-Session-Id is invisible to another session."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Slow", task_support=True)
+    async def slow() -> str:
+        await asyncio.sleep(0.2)
+        return "done"
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+
+    def initialize() -> str:
+        init = client.post(
+            "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        )
+        return init.headers["mcp-session-id"]
+
+    sid_a = initialize()
+    sid_b = initialize()
+
+    created = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "slow", "arguments": {}, "task": {}},
+        },
+        headers={"mcp-session-id": sid_a},
+    )
+    task_id = orjson.loads(created.body)["result"]["task"]["taskId"]
+
+    # Client B cannot see A's task in its own list.
+    listed_b = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 3, "method": "tasks/list", "params": {}},
+        headers={"mcp-session-id": sid_b},
+    )
+    assert orjson.loads(listed_b.body)["result"]["tasks"] == []
+
+    # Client B cannot get / cancel A's task even with the id.
+    got_b = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 4, "method": "tasks/get", "params": {"taskId": task_id}},
+        headers={"mcp-session-id": sid_b},
+    )
+    assert orjson.loads(got_b.body)["error"]["code"] == -32002
+
+    cancel_b = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 5, "method": "tasks/cancel", "params": {"taskId": task_id}},
+        headers={"mcp-session-id": sid_b},
+    )
+    assert orjson.loads(cancel_b.body)["error"]["code"] == -32002
+
+    # Client A still sees and owns its task.
+    listed_a = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 6, "method": "tasks/list", "params": {}},
+        headers={"mcp-session-id": sid_a},
+    )
+    a_ids = [t["taskId"] for t in orjson.loads(listed_a.body)["result"]["tasks"]]
+    assert task_id in a_ids
+
+
+def test_http_task_support_requires_sessions():
+    """Mounting HTTP with a task_support tool and no sessions raises a clear error."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Slow", task_support=True)
+    async def slow() -> str:
+        return "done"
+
+    with pytest.raises(ValueError, match="requires sessions=True"):
+        app.mount_mcp(transport="http")
+
+
+def test_http_task_support_without_task_tools_allows_stateless():
+    """HTTP without sessions mounts fine when no tool opts into task support."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Quick")
+    async def quick() -> str:
+        return "done"
+
+    # No task_support tool, so the stateless default is valid and does not raise.
+    assert app.mount_mcp(transport="http") is None
+
+
+def test_http_client_capabilities_recorded_with_sessions():
+    """initialize capabilities are recorded on the HTTP session, gating ctx.sample."""
+    app = Veloce(openapi_url=None)
+
+    app.debug = True
+
+    @app.mcp_tool(description="Try sampling")
+    async def sample_tool(ctx: MCPContext) -> str:
+        await ctx.sample([{"role": "user", "content": "hi"}], max_tokens=16)
+        return "ok"
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+    sid = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"capabilities": {"sampling": {}}},
+        },
+    ).headers["mcp-session-id"]
+
+    # The capability is recorded, so the call passes the capability gate and then
+    # fails on the genuine transport limit (HTTP POST has no server->client reply
+    # channel), not on a missing-capability error - proving the session recorded it.
+    resp = client.post(
+        "/mcp",
+        json=_mcp_call_body("sample_tool", {}),
+        headers={"mcp-session-id": sid},
+    )
+    body = orjson.loads(resp.body)
+    # Not a top-level JSON-RPC error: a missing-capability gate would have produced
+    # one. Instead the call passed the gate and failed in-band on the genuine
+    # transport limit (a POST has no server->client reply channel).
+    assert "error" not in body
+    result = body["result"]
+    assert result["isError"] is True
+    assert "bidirectional" in result["content"][0]["text"]
+
+
+def test_http_lifecycle_gating_enforced_with_sessions():
+    """MCP_ENFORCE_LIFECYCLE rejects a pre-initialize call on a stateful HTTP session."""
+    app = Veloce(openapi_url=None)
+    app.config["MCP_ENFORCE_LIFECYCLE"] = True
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+    sid = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    ).headers["mcp-session-id"]
+
+    # A call before notifications/initialized is rejected.
+    early = client.post(
+        "/mcp", json=_mcp_call_body("add", {"a": 1, "b": 2}), headers={"mcp-session-id": sid}
+    )
+    assert orjson.loads(early.body)["error"]["code"] == -32600
+
+    # After the initialized ack, the same call succeeds.
+    client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        headers={"mcp-session-id": sid},
+    )
+    ok = client.post(
+        "/mcp", json=_mcp_call_body("add", {"a": 1, "b": 2}), headers={"mcp-session-id": sid}
+    )
+    assert orjson.loads(ok.body)["result"]["content"][0]["text"] == "3"
+
+
+def test_http_session_store_evicts_idle_sessions():
+    """An idle, never-DELETEd session is reclaimed by the store's idle TTL."""
+    from veloce.contrib.mcp.transports.session_store import HttpSessionStore
+
+    store = HttpSessionStore(idle_ttl=0.0)
+    sid, _session = store.create()
+    # With a zero idle window any subsequent resolution evicts the stale id.
+    assert store.resolve(sid) is None
+
+
+def test_event_store_caps_stream_count():
+    """The event store evicts the oldest stream once the stream cap is exceeded."""
+    from veloce.contrib.mcp.transports.event_store import SSEEventStore
+
+    store = SSEEventStore(max_streams=2)
+    store.record("s1", 1, {"v": 1})
+    store.record("s2", 1, {"v": 2})
+    store.record("s3", 1, {"v": 3})  # evicts s1 (oldest)
+    assert store.replay_after("s1.0") == []  # s1 history reclaimed
+    assert [p["v"] for _, p in store.replay_after("s3.0")] == [3]
+    assert [p["v"] for _, p in store.replay_after("s2.0")] == [2]
+
+
+def test_session_connection_ids_are_unique_and_monotonic():
+    """Each MCPSession gets a process-unique, never-recycled connection id."""
+    ids = [MCPSession().connection_id for _ in range(5)]
+    assert len(set(ids)) == 5
+    assert ids == sorted(ids)
+
+
+async def test_evict_session_reclaims_never_settling_task():
+    """An owning session's eviction cancels and drops its non-terminal task."""
+    app = Veloce(openapi_url=None)
+    started = asyncio.Event()
+
+    @app.mcp_tool(description="Never settles", task_support=True)
+    async def stuck() -> str:
+        started.set()
+        await asyncio.Event().wait()  # never completes on its own
+        return "unreachable"
+
+    server = MCPServer(app)
+    session = MCPSession()
+    created = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "stuck", "arguments": {}, "task": {}},
+        },
+        session,
+    )
+    task_id = created["result"]["task"]["taskId"]
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task = server._tasks.get(task_id)
+    assert task is not None and not task.is_terminal()
+    runner = task.runner
+
+    # Evicting the session reclaims its task: the runner is cancelled and the
+    # task is dropped from the store, so a stuck handler cannot pin memory.
+    server.evict_session(session)
+    assert server._tasks.get(task_id) is None
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+    assert runner.cancelled()
+
+
+async def test_task_ownership_survives_session_id_recycle():
+    """A task owner_key keys off the stable connection id, not id(session).
+
+    A later session cannot inherit an earlier session's tasks even if CPython
+    recycles the freed session's memory address.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Quick", task_support=True)
+    async def quick() -> str:
+        return "ok"
+
+    server = MCPServer(app)
+    session_a = MCPSession()
+    created = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "quick", "arguments": {}, "task": {}},
+        },
+        session_a,
+    )
+    task_id = created["result"]["task"]["taskId"]
+    await asyncio.sleep(0)
+
+    # A second session - even one CPython may give the freed address of the first -
+    # owns a distinct connection id, so A's task is invisible and inaccessible.
+    session_b = MCPSession()
+    assert session_b.connection_id != session_a.connection_id
+    got = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 2, "method": "tasks/get", "params": {"taskId": task_id}},
+        session_b,
+    )
+    assert got["error"]["code"] == -32002
+    listed = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 3, "method": "tasks/list", "params": {}},
+        session_b,
+    )
+    assert listed["result"]["tasks"] == []
+
+
+async def test_stdio_task_runner_rejects_server_request():
+    """A task-augmented stdio tool calling ctx.sample settles failed, not deadlocked.
+
+    The serve loop resumes reading stdin after returning the CreateTaskResult, so a
+    second reader inside request() would race it; the guard refuses the call and the
+    task settles as a failed result carrying an actionable message.
+    """
+    app = Veloce(openapi_url=None)
+    app.debug = True
+
+    @app.mcp_tool(description="Samples from a task", task_support=True)
+    async def sampler(ctx: MCPContext) -> str:
+        await ctx.sample([{"role": "user", "content": "hi"}], max_tokens=8)
+        return "unreachable"
+
+    pipe = _Pipe(_server(app))
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"capabilities": {"sampling": {}}},
+        }
+    )
+    pipe.feed(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "sampler", "arguments": {}, "task": {}},
+        }
+    )
+    out = await pipe.run()
+
+    task_id = out[-1]["result"]["task"]["taskId"]
+    runner = pipe.transport.server._tasks.get(task_id).runner
+    await runner
+
+    task = pipe.transport.server._tasks.get(task_id)
+    assert task.status == STATUS_FAILED
+    assert task.result["isError"] is True
+    text = task.result["content"][0]["text"]
+    assert "not supported from a task-augmented tool call on the stdio transport" in text
 
 
 # -- Principal + per-tool scopes --------------------------------------
@@ -3865,6 +4764,578 @@ def test_origin_empty_allowlist_rejects_all_browsers():
     assert app.test_client().post("/mcp", json=body).status_code == 200
 
 
+def test_get_on_mcp_endpoint_returns_405():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    # The endpoint has no standalone server-to-client stream, so a GET is the
+    # spec-conformant 405 (not the app's generic method-not-allowed), with Allow.
+    resp = app.test_client().get("/mcp")
+    assert resp.status_code == 405
+    assert resp.headers.get("allow") == "POST"
+
+
+def test_unsupported_protocol_version_header_is_400():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    client = app.test_client()
+    body = _mcp_call_body("add", {"a": 1, "b": 1})
+
+    # A present, unsupported version is rejected with a JSON-RPC error at 400.
+    bad = client.post("/mcp", json=body, headers={"mcp-protocol-version": "1999-01-01"})
+    assert bad.status_code == 400
+    assert orjson.loads(bad.body)["error"]["code"] == -32600
+    # A supported version passes.
+    ok = client.post("/mcp", json=body, headers={"mcp-protocol-version": "2025-06-18"})
+    assert ok.status_code == 200
+
+
+def test_missing_protocol_version_header_keeps_current_behavior():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    # No MCP-Protocol-Version header: the legacy path is unchanged (no 400).
+    resp = app.test_client().post("/mcp", json=_mcp_call_body("add", {"a": 1, "b": 1}))
+    assert resp.status_code == 200
+
+
+def test_sessions_disabled_by_default():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    client = app.test_client()
+    # The stateless default assigns no session id and never requires one.
+    init = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    assert init.headers.get("mcp-session-id") is None
+    call = client.post("/mcp", json=_mcp_call_body("add", {"a": 1, "b": 1}))
+    assert call.status_code == 200
+
+
+def test_session_id_assigned_on_initialize_and_required_after():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+
+    init = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    session_id = init.headers.get("mcp-session-id")
+    assert session_id
+    assert orjson.loads(init.body)["result"]["serverInfo"]["name"]
+
+    # A later request echoing the id is accepted and the id is echoed back.
+    ok = client.post(
+        "/mcp",
+        json=_mcp_call_body("add", {"a": 2, "b": 3}),
+        headers={"mcp-session-id": session_id},
+    )
+    assert ok.status_code == 200
+    assert ok.headers.get("mcp-session-id") == session_id
+    assert orjson.loads(ok.body)["result"]["content"][0]["text"] == "5"
+
+
+def test_missing_session_id_is_400():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", sessions=True)
+    # A non-initialize request without the session header is rejected at 400.
+    resp = app.test_client().post("/mcp", json=_mcp_call_body("add", {"a": 1, "b": 1}))
+    assert resp.status_code == 400
+    assert orjson.loads(resp.body)["error"]["code"] == -32600
+
+
+def test_unknown_session_id_is_404():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", sessions=True)
+    resp = app.test_client().post(
+        "/mcp",
+        json=_mcp_call_body("add", {"a": 1, "b": 1}),
+        headers={"mcp-session-id": "never-issued"},
+    )
+    assert resp.status_code == 404
+
+
+def test_delete_terminates_session_then_404():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+    init = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    session_id = init.headers["mcp-session-id"]
+
+    # DELETE terminates the live session (HTTP 204).
+    deleted = client.delete("/mcp", headers={"mcp-session-id": session_id})
+    assert deleted.status_code == 204
+
+    # A request on the terminated id is now 404; a second DELETE is too.
+    after = client.post(
+        "/mcp",
+        json=_mcp_call_body("add", {"a": 1, "b": 1}),
+        headers={"mcp-session-id": session_id},
+    )
+    assert after.status_code == 404
+    assert client.delete("/mcp", headers={"mcp-session-id": session_id}).status_code == 404
+
+
+def test_delete_without_sessions_is_405():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="http")
+    # Without session management the DELETE verb is unsupported.
+    resp = app.test_client().delete("/mcp")
+    assert resp.status_code == 405
+    assert resp.headers.get("allow") == "POST"
+
+
+def test_session_id_echoed_on_sse_response():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http", sessions=True)
+    client = app.test_client()
+    session_id = client.post(
+        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    ).headers["mcp-session-id"]
+
+    resp = client.post(
+        "/mcp",
+        json=_mcp_call_body("work"),
+        headers={"mcp-session-id": session_id, "accept": "text/event-stream"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("mcp-session-id") == session_id
+
+
+def test_sse_stream_opens_with_priming_event_and_closes_with_retry():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http")
+    resp = app.test_client().post(
+        "/mcp", json=_mcp_call_body("work"), headers={"accept": "text/event-stream"}
+    )
+    frames = resp.body.split(b"\n\n")
+    # First frame: a priming event carrying an id and an empty data field.
+    assert frames[0].startswith(b"id: ")
+    assert b"data: " in frames[0]
+    # Last non-empty frame: a retry field hinting the reconnect delay.
+    closing = [f for f in frames if f.strip()][-1]
+    assert closing.strip() == b"retry: 3000"
+    # The JSON-RPC response is still delivered between the two.
+    events = _parse_sse(resp.body)
+    assert events[-1]["result"]["content"][0]["text"] == "done"
+
+
+def _sse_event_ids(body: bytes) -> list[str]:
+    """Return the `id:` field values from an SSE body, in order."""
+    ids: list[str] = []
+    for raw in body.split(b"\n"):
+        line = raw.strip()
+        if line.startswith(b"id:"):
+            ids.append(line[len(b"id:") :].strip().decode("utf-8"))
+    return ids
+
+
+def test_resumability_disabled_by_default_get_is_405():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http")
+    client = app.test_client()
+    # Without resumability a GET (even carrying Last-Event-ID) stays unsupported,
+    # and a streamed POST attaches no payload event ids.
+    resp = client.get("/mcp", headers={"last-event-id": "anything.0"})
+    assert resp.status_code == 405
+    assert resp.headers.get("allow") == "POST"
+    streamed = client.post(
+        "/mcp", json=_mcp_call_body("work"), headers={"accept": "text/event-stream"}
+    )
+    payload_frames = [f for f in streamed.body.split(b"\n\n") if b"data: {" in f]
+    # The payload frame (the JSON-RPC response) carries no id field.
+    assert payload_frames and all(not f.strip().startswith(b"id:") for f in payload_frames)
+
+
+def test_resumable_stream_attaches_per_stream_event_ids():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work with progress")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 2)
+        await ctx.report_progress(2, 2)
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    resp = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "work", "arguments": {}, "_meta": {"progressToken": "p"}},
+        },
+        headers={"accept": "text/event-stream"},
+    )
+    ids = _sse_event_ids(resp.body)
+    # Priming id (sequence 0) plus one id per payload event (two progress + response).
+    assert len(ids) == 4
+    stream_id = ids[0].rsplit(".", 1)[0]
+    # Every id shares the one stream and the sequence advances 0,1,2,3.
+    assert [i.rsplit(".", 1)[0] for i in ids] == [stream_id] * 4
+    assert [int(i.rsplit(".", 1)[1]) for i in ids] == [0, 1, 2, 3]
+
+
+def test_resume_replays_only_the_missed_tail_of_the_same_stream():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work with progress")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 2)
+        await ctx.report_progress(2, 2)
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    client = app.test_client()
+    first = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "work", "arguments": {}, "_meta": {"progressToken": "p"}},
+        },
+        headers={"accept": "text/event-stream"},
+    )
+    ids = _sse_event_ids(first.body)
+    # Pretend the client received through the first progress event, then dropped.
+    last_seen = ids[1]
+
+    resumed = client.get("/mcp", headers={"last-event-id": last_seen})
+    assert resumed.status_code == 200
+    assert "text/event-stream" in resumed.content_type
+    # Only the events after the acknowledged one are replayed: the second progress
+    # notification and the final response.
+    replayed = _parse_sse(resumed.body)
+    assert len(replayed) == 2
+    assert replayed[0]["method"] == "notifications/progress"
+    assert replayed[0]["params"]["progress"] == 2
+    assert replayed[-1]["result"]["content"][0]["text"] == "done"
+    # The replayed ids stay on the originating stream.
+    assert all(
+        i.rsplit(".", 1)[0] == last_seen.rsplit(".", 1)[0] for i in _sse_event_ids(resumed.body)
+    )
+
+
+def test_resume_from_priming_id_replays_whole_stream():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work with progress")
+    async def work(ctx: MCPContext) -> str:
+        await ctx.report_progress(1, 1)
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    client = app.test_client()
+    first = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "work", "arguments": {}, "_meta": {"progressToken": "p"}},
+        },
+        headers={"accept": "text/event-stream"},
+    )
+    priming_id = _sse_event_ids(first.body)[0]
+    # Resuming from the priming id (sequence 0) replays every payload event.
+    resumed = client.get("/mcp", headers={"last-event-id": priming_id})
+    replayed = _parse_sse(resumed.body)
+    assert len(replayed) == 2
+    assert replayed[-1]["result"]["content"][0]["text"] == "done"
+
+
+def test_resume_does_not_cross_into_another_stream():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Echo")
+    async def echo(label: str) -> str:
+        return label
+
+    app.mount_mcp(transport="http", resumable=True)
+    client = app.test_client()
+
+    def call(label: str) -> bytes:
+        return client.post(
+            "/mcp",
+            json=_mcp_call_body("echo", {"label": label}),
+            headers={"accept": "text/event-stream"},
+        ).body
+
+    first_priming = _sse_event_ids(call("a"))[0]
+    call("b")  # a second, distinct stream the resume must not leak.
+
+    # Resuming the first stream replays only its events, never the second's.
+    resumed = client.get("/mcp", headers={"last-event-id": first_priming})
+    replayed = _parse_sse(resumed.body)
+    assert len(replayed) == 1
+    assert replayed[0]["result"]["content"][0]["text"] == "a"
+
+
+def test_resume_with_unknown_event_id_replays_nothing():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    client = app.test_client()
+    # An id for a stream that was never recorded yields an empty replay (still a
+    # well-formed SSE response closing with the reconnect hint), not a crash.
+    resumed = client.get("/mcp", headers={"last-event-id": "never-seen.3"})
+    assert resumed.status_code == 200
+    assert _parse_sse(resumed.body) == []
+    assert b"retry: 3000" in resumed.body
+
+
+def test_resume_without_last_event_id_is_405():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Work")
+    async def work() -> str:
+        return "done"
+
+    app.mount_mcp(transport="http", resumable=True)
+    # A GET with no Last-Event-ID is not a resume; there is no standalone stream.
+    resp = app.test_client().get("/mcp")
+    assert resp.status_code == 405
+
+
+def test_event_store_replays_after_eviction_window():
+    from veloce.contrib.mcp.transports.event_store import (
+        _MAX_EVENTS_PER_STREAM,
+        SSEEventStore,
+    )
+
+    store = SSEEventStore()
+    # Record more than the per-stream window so the oldest entries are evicted.
+    for seq in range(1, _MAX_EVENTS_PER_STREAM + 5):
+        store.record("s", seq, {"seq": seq})
+    # A resume from an evicted middle id replays whatever still remains, in order,
+    # rather than nothing or a crash.
+    overflow = _MAX_EVENTS_PER_STREAM + 4
+    missed = store.replay_after(f"s.{overflow - 2}")
+    assert [p["seq"] for _, p in missed] == [overflow - 1, overflow]
+
+
+def test_event_store_discards_unknown_stream_and_malformed_ids():
+    from veloce.contrib.mcp.transports.event_store import SSEEventStore
+
+    store = SSEEventStore()
+    store.record("s", 1, {"v": 1})
+    assert store.replay_after("other.0") == []  # unknown stream
+    assert store.replay_after("no-separator") == []  # malformed id
+    assert store.replay_after("s.x") == []  # non-numeric sequence
+
+
+async def test_sse_disconnection_does_not_cancel_the_call():
+    from veloce.contrib.mcp.server import MCPServer
+    from veloce.contrib.mcp.transports.http import _stream_response
+
+    app = Veloce(openapi_url=None)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    ran_to_completion = asyncio.Event()
+
+    @app.mcp_tool(description="Work whose completion is observable after disconnect")
+    async def work(ctx: MCPContext) -> str:
+        started.set()
+        # Block until the test releases the call, keeping it in flight across the
+        # consumer's disconnect so cancellation (if any) would land here.
+        await release.wait()
+        ran_to_completion.set()
+        return "done"
+
+    from veloce.contrib.mcp.session import MCPSession
+
+    stream = _stream_response(MCPServer(app), _mcp_call_body("work"), None, MCPSession())
+    gen = stream._stream
+    # Consume only the priming frame, then disconnect by closing the generator -
+    # simulating a client dropping the SSE stream while the call is in flight.
+    await gen.__anext__()
+    await started.wait()
+    await gen.aclose()
+    # The call is still blocked (in flight) at disconnect time; release it now.
+    release.set()
+
+    # The dispatched call is left running to completion; a dropped connection is
+    # not treated as the client cancelling its request (MCP transport rule).
+    await asyncio.wait_for(ran_to_completion.wait(), timeout=1)
+    assert ran_to_completion.is_set()
+
+
+def test_mcp_context_cancelled_defaults_false():
+    ctx = MCPContext("tool")
+    assert ctx.cancelled is False
+
+
+async def test_notifications_cancelled_cancels_in_flight_call():
+    app = Veloce(openapi_url=None)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    saw_cancel = asyncio.Event()
+
+    @app.mcp_tool(description="Cooperative work")
+    async def work(ctx: MCPContext) -> str:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            # The cancel notification flips the flag and unwinds the await.
+            assert ctx.cancelled is True
+            saw_cancel.set()
+            raise
+        return "done"
+
+    server = MCPServer(app)
+    call = asyncio.ensure_future(server.handle_message(_mcp_call_body("work", {})))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    # The client cancels the in-flight request by id; the call's task unwinds.
+    await server.handle_message(
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    await asyncio.wait_for(saw_cancel.wait(), timeout=1)
+    # The cancelled request is removed from the in-flight registry once settled.
+    assert server._inflight == {}
+
+
+async def test_notifications_cancelled_unknown_id_is_a_no_op():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    server = MCPServer(app)
+    # No request is in flight; cancelling an unknown id returns no response and
+    # does not raise (the request may have already completed).
+    result = await server.handle_message(
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 99}}
+    )
+    assert result is None
+
+
+async def test_initialize_request_is_not_cancellable():
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    server = MCPServer(app)
+    # `initialize` is never registered as cancellable (the spec forbids cancelling
+    # it), so dispatching it leaves the in-flight registry untouched.
+    await server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    assert server._inflight == {}
+    # A tracked tool call, by contrast, would register; verify the gate directly.
+    assert server._track_inflight(1, "initialize") is None
+    assert server._track_inflight(2, "tools/call") is not None
+
+
+async def test_http_sse_call_is_cancelled_by_notification():
+    from veloce.contrib.mcp.transports.http import _stream_response
+
+    app = Veloce(openapi_url=None)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    ran_to_completion = asyncio.Event()
+
+    @app.mcp_tool(description="Work cancelled mid-flight over SSE")
+    async def work(ctx: MCPContext) -> str:
+        started.set()
+        await release.wait()
+        ran_to_completion.set()
+        return "done"
+
+    from veloce.contrib.mcp.session import MCPSession
+
+    server = MCPServer(app)
+    # One connection: the cancel must arrive on the same session the call runs
+    # under, since cancellation is now scoped per connection.
+    session = MCPSession()
+    stream = _stream_response(server, _mcp_call_body("work"), None, session)
+    gen = stream._stream
+    await gen.__anext__()  # priming frame; schedules the runner task
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    # A cancel on the same connection reaches the concurrently-running call by id.
+    await server.handle_message(
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}},
+        session,
+    )
+    # Drain the stream to its close; the call never ran to completion.
+    async for _ in gen:
+        pass
+    release.set()
+    await asyncio.sleep(0)
+    assert not ran_to_completion.is_set()
+    assert server._inflight == {}
+
+
 def test_http_log_level_does_not_bleed_across_requests():
     app = Veloce(openapi_url=None)
 
@@ -3890,3 +5361,125 @@ def test_http_log_level_does_not_bleed_across_requests():
     resp = client.post("/mcp", json=_mcp_call_body("work"), headers={"accept": "text/event-stream"})
     messages = [e for e in _parse_sse(resp.body) if e.get("method") == "notifications/message"]
     assert len(messages) == 1  # the info log is emitted; the other request's setLevel did not bleed
+
+
+# -- Icons + resource-link / embedded content -------------------------
+
+
+def test_mcp_tool_icons_appear_in_tools_list():
+    """An `@app.mcp_tool` icon set surfaces as the tool's `icons` array."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(
+        description="Add two integers",
+        icons=[Icon("https://x/add.png", mime_type="image/png", sizes=("48x48",))],
+    )
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    entry = _list_tools(app)["add"]
+    assert entry["icons"] == [
+        {"src": "https://x/add.png", "mimeType": "image/png", "sizes": ["48x48"]}
+    ]
+
+
+def test_route_tool_icons_appear_in_tools_list():
+    """A route exposed as a tool carries its `mcp_icons` into tools/list."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/ping",
+        expose_as_mcp_tool=True,
+        mcp_description="Health probe",
+        mcp_icons=[Icon("https://x/ping.svg")],
+    )
+    async def ping():
+        return {"pong": True}
+
+    assert _list_tools(app)["ping"]["icons"] == [{"src": "https://x/ping.svg"}]
+
+
+def test_tool_without_icons_emits_no_icons_key():
+    """A tool with no icons omits the `icons` key entirely (unchanged wire form)."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Add two integers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    assert "icons" not in _list_tools(app)["add"]
+
+
+def test_resource_icons_appear_in_resources_list():
+    """A route exposed as a resource carries its `mcp_icons` into resources/list."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/settings",
+        expose_as_mcp_resource=True,
+        mcp_description="Settings",
+        mcp_resource_uri="config://app",
+        mcp_icons=[Icon("https://x/cfg.png")],
+    )
+    async def settings():
+        return {"debug": False}
+
+    assert _list_resources(app)["config://app"]["icons"] == [{"src": "https://x/cfg.png"}]
+
+
+def test_prompt_icons_appear_in_prompts_list():
+    """An `@app.mcp_prompt` icon set surfaces as the prompt's `icons` array."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_prompt(description="Summarise a topic", icons=[Icon("https://x/p.png")])
+    async def summarise(topic: str) -> str:
+        return f"Summarise {topic}."
+
+    assert _list_prompts(app)["summarise"]["icons"] == [{"src": "https://x/p.png"}]
+
+
+def test_route_result_emits_resource_link_block():
+    """A route setting the resource-link header returns a `resource_link` block."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/doc", expose_as_mcp_tool=True, mcp_description="Doc pointer")
+    async def doc() -> Response:
+        return Response(
+            body=b"see resource",
+            content_type="text/plain",
+            headers={"X-MCP-Resource-Link": "res://doc/1"},
+        )
+
+    block = _call(app, "doc", {})["result"]["content"][0]
+    assert block["type"] == "resource_link"
+    assert block["uri"] == "res://doc/1"
+    assert block["name"] == "doc"
+
+
+def test_route_result_emits_embedded_resource_block():
+    """A route setting the embedded header inlines its body as a `resource` block."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/inline", expose_as_mcp_tool=True, mcp_description="Inline data")
+    async def inline() -> Response:
+        return Response(
+            body=b"hello",
+            content_type="text/plain",
+            headers={"X-MCP-Embedded-Resource": "res://inline/1"},
+        )
+
+    block = _call(app, "inline", {})["result"]["content"][0]
+    assert block["type"] == "resource"
+    assert block["resource"] == {"uri": "res://inline/1", "mimeType": "text/plain", "text": "hello"}
+
+
+def test_route_result_without_resource_header_stays_text():
+    """A route with neither resource header keeps the plain text result shape."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/plain", expose_as_mcp_tool=True, mcp_description="Plain")
+    async def plain() -> Response:
+        return Response(body=b"hi", content_type="text/plain")
+
+    block = _call(app, "plain", {})["result"]["content"][0]
+    assert block == {"type": "text", "text": "hi"}

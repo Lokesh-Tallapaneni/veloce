@@ -54,6 +54,10 @@ class MCPError(Exception):
     # Class-level default; each subclass overrides with its JSON-RPC code.
     code: int = _JSONRPC_INTERNAL_ERROR
 
+    # HTTP status a transport-level violation maps to when raised before
+    # dispatch; only the transport pre-dispatch subclasses override it.
+    http_status: int = 400
+
     def __init__(self, message: str, *, data: Any = None) -> None:
         super().__init__(message)
         self.data = data
@@ -67,6 +71,50 @@ class InvalidRequestError(MCPError):
     """A malformed JSON-RPC request object."""
 
     code = _JSONRPC_INVALID_REQUEST
+
+
+class ProtocolVersionError(InvalidRequestError):
+    """The HTTP `MCP-Protocol-Version` header names a version this server rejects.
+
+    Per the MCP 2025-06-18 Streamable HTTP transport the server MUST answer a
+    request carrying an invalid or unsupported protocol version with HTTP 400.
+    """
+
+    http_status = 400
+
+
+class OriginNotAllowedError(InvalidRequestError):
+    """A request carries an `Origin` header outside the configured allowlist.
+
+    Per the MCP transport's DNS-rebinding defense the server MUST reject a
+    present, disallowed `Origin` with HTTP 403 (a missing `Origin`, a non-browser
+    client, is allowed).
+    """
+
+    http_status = 403
+
+
+class SessionRequiredError(InvalidRequestError):
+    """A post-initialization request omitted the required `Mcp-Session-Id` header.
+
+    Per the MCP 2025-06-18 Streamable HTTP transport, once the server has assigned
+    a session id the client MUST echo it on every later request; a request missing
+    it is answered HTTP 400.
+    """
+
+    http_status = 400
+
+
+class SessionNotFoundError(MCPError):
+    """A request named an `Mcp-Session-Id` the server no longer recognizes.
+
+    Per the MCP 2025-06-18 Streamable HTTP transport a terminated (or never
+    issued) session is answered HTTP 404, signalling the client to start a new
+    session.
+    """
+
+    code = _JSONRPC_INVALID_REQUEST
+    http_status = 404
 
 
 class MethodNotFoundError(MCPError):
@@ -105,6 +153,22 @@ class AuthorizationError(MCPError):
     def __init__(self, scopes: frozenset[str]) -> None:
         super().__init__(_insufficient_scope(scopes), data={"requiredScopes": sorted(scopes)})
         self.scopes = scopes
+
+
+class MCPCapabilityError(InvalidRequestError):
+    """A server->client request needs a client capability the client did not advertise.
+
+    Raised by `MCPContext.sample` / `elicit` / `roots` (and their sub-capabilities)
+    when the connected client did not advertise the matching capability in
+    ``initialize``, so the request cannot be issued.
+    """
+
+    def __init__(self, capability: str) -> None:
+        super().__init__(
+            f"client did not advertise the {capability!r} capability",
+            data={"capability": capability},
+        )
+        self.capability = capability
 
 
 class _ForbiddenError(MCPError):

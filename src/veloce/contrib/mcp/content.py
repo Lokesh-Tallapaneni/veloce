@@ -1,12 +1,14 @@
 """MCP content blocks — the polymorphic family behind every result content entry.
 
 A tool result, a prompt message, and a typed binary return all carry MCP
-*content blocks*: tagged objects (`{"type": "text" | "image" | "audio", ...}`)
-the client renders. `ContentBlock` is the base every block shares; `TextContent`,
-`ImageContent`, and `AudioContent` are the concrete kinds the server emits today.
-Each subclass renders itself through `to_payload()`, so a result builder shapes a
-block by calling the base method and the subclass decides the wire form — a new
-block kind is added by subclassing, not by hand-writing another inline dict.
+*content blocks*: tagged objects (`{"type": "text" | "image" | ..., ...}`) the
+client renders. `ContentBlock` is the base every block shares; `TextContent`,
+`ImageContent`, `AudioContent`, `ResourceLink` (a reference to a resource the
+client reads by URI), and `EmbeddedResource` (a resource's contents inlined in
+the result) are the concrete kinds the server emits. Each subclass renders itself
+through `to_payload()`, so a result builder shapes a block by calling the base
+method and the subclass decides the wire form — a new block kind is added by
+subclassing, not by hand-writing another inline dict.
 
 The base owns the optional `annotations` field (audience / priority /
 lastModified per the MCP spec) and merges it into every block's payload, so the
@@ -94,3 +96,62 @@ class AudioContent(ContentBlock):
 
     def _body(self) -> dict[str, Any]:
         return {"type": "audio", "data": self.data, "mimeType": self.mime_type}
+
+
+class ResourceLink(ContentBlock):
+    """A `resource_link` block referencing a resource by URI rather than inlining it.
+
+    A tool whose result points an agent at a server resource emits this in place
+    of the bytes: the client follows the `uri` with a `resources/read`. The
+    `name` is required by the spec; `title`, `description`, and `mime_type` are
+    optional hints and are omitted when unset.
+    """
+
+    __slots__ = ("uri", "name", "title", "description", "mime_type")
+
+    def __init__(
+        self,
+        uri: str,
+        name: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        mime_type: str | None = None,
+        annotations: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(annotations=annotations)
+        self.uri = uri
+        self.name = name
+        self.title = title
+        self.description = description
+        self.mime_type = mime_type
+
+    def _body(self) -> dict[str, Any]:
+        body: dict[str, Any] = {"type": "resource_link", "uri": self.uri, "name": self.name}
+        if self.title is not None:
+            body["title"] = self.title
+        if self.description is not None:
+            body["description"] = self.description
+        if self.mime_type is not None:
+            body["mimeType"] = self.mime_type
+        return body
+
+
+class EmbeddedResource(ContentBlock):
+    """A `resource` block inlining a resource's contents directly in the result.
+
+    Carries the resource-contents entry (the `uri`/`mimeType` plus a `text` or
+    base64 `blob` value) the client would otherwise fetch, so an agent reads the
+    data without a follow-up `resources/read`.
+    """
+
+    __slots__ = ("resource",)
+
+    def __init__(
+        self, resource: dict[str, Any], *, annotations: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(annotations=annotations)
+        self.resource = resource
+
+    def _body(self) -> dict[str, Any]:
+        return {"type": "resource", "resource": self.resource}

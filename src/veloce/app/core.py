@@ -64,7 +64,7 @@ from veloce.middleware import Middleware
 from veloce.routing.router import Router, _readd_route
 
 if TYPE_CHECKING:  # pragma: no cover
-    pass
+    from veloce.contrib.mcp.icons import Icon
 
 
 # Sentinel for cache misses where `None` is itself a valid cache hit
@@ -518,19 +518,25 @@ class Veloce(
         # membership test entirely and a hook with no exclusion pays nothing.
         self._instrumentation_excludes: dict[Callable, frozenset[str]] = {}
         # MCP-only tool registrations (contrib.mcp). Each entry is
-        # `(handler, name, description, namespace)`, recorded by
-        # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
-        # tool registry is assembled.
+        # `(handler, name, description, namespace, scopes, icons, task_support)`,
+        # recorded by `@app.mcp_tool(...)` and consumed once at `mount_mcp` time
+        # when the tool registry is assembled.
         self._mcp_tools: list[
-            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None]
+            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None, Any, bool]
         ] = []
         # MCP prompt registrations (contrib.mcp). Each entry is
-        # `(handler, name, description, namespace, scopes)`, recorded by
+        # `(handler, name, description, namespace, scopes, icons)`, recorded by
         # `@app.mcp_prompt(...)` and consumed once at `mount_mcp` time when the
         # prompt registry is assembled.
         self._mcp_prompts: list[
-            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None]
+            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None, Any]
         ] = []
+        # MCP argument-completer registrations (contrib.mcp). Each entry is
+        # `(kind, key, argument, completer)` where `kind` is "prompt" or
+        # "resource", `key` is the prompt name or resource URI, recorded by
+        # `@app.mcp_completer(...)` and bound onto its descriptor at `mount_mcp`
+        # time so `completion/complete` can answer for that argument.
+        self._mcp_completers: list[tuple[str, str, str, Callable]] = []
         # Dev-mode event-loop blocking watchdog - armed during startup only
         # when the `EVENT_LOOP_WATCHDOG` config key is set, so it is `None`
         # (and free) for every other app.
@@ -1693,6 +1699,8 @@ class Veloce(
         name: str | None = None,
         namespace: str | None = None,
         scopes: Sequence[str] | None = None,
+        icons: Sequence[Icon] | None = None,
+        task_support: bool = False,
     ) -> Callable:
         """Register an MCP-only tool callable by an AI agent (contrib.mcp).
 
@@ -1702,7 +1710,10 @@ class Veloce(
         `MCPContext` standing in for the HTTP `Request`. `description` is the
         required LLM-facing text (separate from the docstring). `namespace`
         prefixes the tool name (`<namespace>_<name>`), mirroring how a
-        blueprint namespaces an exposed route.
+        blueprint namespaces an exposed route. `icons` is an optional list of
+        `Icon` objects a client may render next to the tool. `task_support=True`
+        lets a client run the tool as a background task (task-augmented
+        `tools/call`, polled via `tasks/get` / `tasks/result`).
 
         Usage::
 
@@ -1716,7 +1727,9 @@ class Veloce(
 
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
-            self._mcp_tools.append((func, name, description, namespace, scope_set))
+            self._mcp_tools.append(
+                (func, name, description, namespace, scope_set, icons, task_support)
+            )
             return func
 
         return decorator
@@ -1728,6 +1741,7 @@ class Veloce(
         name: str | None = None,
         namespace: str | None = None,
         scopes: Sequence[str] | None = None,
+        icons: Sequence[Icon] | None = None,
     ) -> Callable:
         """Register an MCP prompt template fetchable by an AI agent (contrib.mcp).
 
@@ -1736,7 +1750,8 @@ class Veloce(
         messages ``prompts/get`` returns. `Depends()` params resolve through the
         same dependency machinery routes use, with an `MCPContext` standing in for
         the HTTP `Request`. `description` is the required LLM-facing text;
-        `namespace` prefixes the prompt name (`<namespace>_<name>`).
+        `namespace` prefixes the prompt name (`<namespace>_<name>`). `icons` is an
+        optional list of `Icon` objects a client may render next to the prompt.
 
         Usage::
 
@@ -1750,7 +1765,43 @@ class Veloce(
 
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
-            self._mcp_prompts.append((func, name, description, namespace, scope_set))
+            self._mcp_prompts.append((func, name, description, namespace, scope_set, icons))
+            return func
+
+        return decorator
+
+    def mcp_completer(
+        self,
+        *,
+        argument: str,
+        prompt: str | None = None,
+        resource: str | None = None,
+    ) -> Callable:
+        """Register an argument-value completer for an MCP prompt or resource (contrib.mcp).
+
+        The decorated callable suggests values for one `argument` of a `prompt`
+        (named) or a `resource` (by URI template) as the user types, answering the
+        MCP ``completion/complete`` request. It is called with the partial value
+        and a mapping of the sibling argument values already resolved, and returns
+        a sequence of candidate strings (or a `CompletionResult` for explicit
+        totals). Pass exactly one of `prompt` or `resource`. An argument with no
+        registered completer answers with an empty completion.
+
+        Usage::
+
+            @app.mcp_completer(prompt="greet", argument="name")
+            async def complete_name(value: str, context: dict[str, str]) -> list[str]:
+                return [n for n in KNOWN_NAMES if n.startswith(value)]
+        """
+        if prompt is not None and resource is None:
+            kind, key = "prompt", prompt
+        elif resource is not None and prompt is None:
+            kind, key = "resource", resource
+        else:
+            raise ValueError("mcp_completer requires exactly one of prompt= or resource=.")
+
+        def decorator(func: Callable) -> Callable:
+            self._mcp_completers.append((kind, key, argument, func))
             return func
 
         return decorator
@@ -1764,6 +1815,8 @@ class Veloce(
         principal: Any = None,
         allowed_origins: Sequence[str] | None = None,
         exclude_middleware: Sequence[str] | None = None,
+        sessions: bool = False,
+        resumable: bool = False,
     ) -> Any:
         """Build the MCP server and serve the registered tools.
 
@@ -1790,6 +1843,12 @@ class Veloce(
         RFC 9728 metadata. `allowed_origins` enables `Origin` validation
         (DNS-rebinding defense); `exclude_middleware` names app middleware the
         transport routes opt out of (an app-wide auth middleware `auth` replaces).
+        `sessions` opts into `Mcp-Session-Id` lifecycle: the server assigns a
+        session id on `initialize`, requires it on later requests (400 missing,
+        404 once terminated), and accepts a `DELETE` to terminate it.
+        `resumable` opts into SSE resumability: each streamed event gets an id
+        encoding its stream, and a `GET` carrying `Last-Event-ID` replays only that
+        stream's missed events so a client can reconnect after a dropped connection.
         Call this after the tool / resource / prompt routes are registered.
         """
         from veloce.contrib.mcp.server import MCPServer
@@ -1811,15 +1870,31 @@ class Veloce(
         if transport == "http":
             from veloce.contrib.mcp.transports.http import register_http_transport
 
+            server = MCPServer(self)
+            # A task-augmented call records the creating connection's identity and
+            # the follow-up tasks/get|result|list|cancel must run under that same
+            # connection. The stateless default mints a throwaway session (a fresh,
+            # never-recycled connection id) per POST, so a task created by one POST
+            # can never be retrieved by another. Require sessions=True so the
+            # connection persists and the task remains reachable.
+            if not sessions and any(tool.task_support for tool in server.registry.tools.values()):
+                raise ValueError(
+                    "MCP task support over the HTTP transport requires sessions=True; "
+                    "pass mount_mcp(transport='http', sessions=True) so a task created "
+                    "by one request can be retrieved by the follow-up tasks/* request."
+                )
+
             register_http_transport(
                 self,
-                MCPServer(self),
+                server,
                 path=path,
                 auth=auth,
                 allowed_origins=(
                     frozenset(allowed_origins) if allowed_origins is not None else None
                 ),
                 exclude_middleware=exclude_middleware,
+                sessions=sessions,
+                resumable=resumable,
             )
             return None
 

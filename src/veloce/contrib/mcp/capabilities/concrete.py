@@ -46,11 +46,19 @@ class ResourcesCapability(Capability):
         self._server = server
 
     def advertise(self) -> dict[str, Any] | None:
-        # `subscribe`/`listChanged` are off: resources are served on demand,
-        # with no update notifications on the serial loop.
+        # The `subscribe`/`listChanged` sub-capabilities are advertised only when
+        # the app opts into resource subscriptions AND the connection answering
+        # `initialize` is stateful. Subscriptions are per-connection state delivered
+        # over the connection's outbound stream, so a stateless request (no session)
+        # cannot serve them; advertising `true` there would invite a client to probe
+        # a primitive that errors. A stateful connection (the stdio loop, or an HTTP
+        # `Mcp-Session-Id` session) advertises and serves them.
         if not self._server.resources.resources:
             return None
-        return {"resources": {"subscribe": False, "listChanged": False}}
+        session = self._server.current_session()
+        stateful = session is not None and session.persistent
+        enabled = self._server._subscriptions_enabled and stateful
+        return {"resources": {"subscribe": enabled, "listChanged": enabled}}
 
     def handlers(self) -> dict[str, MethodHandler]:
         return {

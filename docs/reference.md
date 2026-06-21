@@ -52,9 +52,13 @@ callers that assemble or serve the registry themselves.
 ::: veloce.contrib.mcp.MCPTool
 ::: veloce.contrib.mcp.MCPResource
 ::: veloce.contrib.mcp.MCPPrompt
+::: veloce.contrib.mcp.MCPTask
 ::: veloce.contrib.mcp.ToolRegistry
 ::: veloce.contrib.mcp.ResourceRegistry
 ::: veloce.contrib.mcp.PromptRegistry
+::: veloce.contrib.mcp.TaskRegistry
+::: veloce.contrib.mcp.TasksCapability
+::: veloce.contrib.mcp.SubscriptionsCapability
 ::: veloce.contrib.mcp.build_registry
 ::: veloce.contrib.mcp.build_resource_registry
 ::: veloce.contrib.mcp.build_prompt_registry

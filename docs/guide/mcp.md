@@ -109,12 +109,17 @@ client can present it and reason about its effects without calling it:
 - **`title`** - the route's `summary`, shown as the tool's human-readable name.
 - **`annotations`** - advisory hints derived from the HTTP method: `readOnlyHint`
   (true for `GET`/`HEAD`), `idempotentHint` (true for `GET`/`HEAD`/`PUT`/`DELETE`),
-  and `destructiveHint` (true for `PUT`/`PATCH`/`DELETE`, false for the additive
-  `POST`). A client may surface a consent prompt for a destructive tool. A pure
-  `@app.mcp_tool` has no HTTP method, so it carries no annotations.
-- **`outputSchema`** - when the route declares a `response_model` (or the handler
-  returns a Pydantic model), the tool advertises a standalone JSON Schema for its
-  result. `tools/call` then returns the result as `structuredContent` alongside
+  `destructiveHint` (true for `PUT`/`PATCH`/`DELETE`, false for the additive
+  `POST`), and `openWorldHint` (false for a fully read-only route, since it
+  operates only on the server's own data; omitted otherwise, where the spec
+  treats the tool as open-world). The route summary is also carried as
+  `annotations.title`. A client may surface a consent prompt for a destructive
+  tool. A pure `@app.mcp_tool` has no HTTP method, so it carries no annotations.
+- **`inputSchema`** / **`outputSchema`** - when the route declares a
+  `response_model` (or the handler returns a Pydantic model), the tool advertises
+  a standalone JSON Schema for its result. Both schemas declare the JSON Schema
+  2020-12 dialect (`$schema`), so a strict client validates against it without
+  guessing. `tools/call` then returns the result as `structuredContent` alongside
   the text block, so a client receives the typed value the schema describes. A
   scalar or list result has no object schema and returns only the text block.
 
@@ -140,6 +145,35 @@ async def get_user(user_id: int) -> User:
 # tools/call -> structuredContent {"id": ..., "name": ...} plus the text block
 ```
 
+## Icons
+
+A tool, prompt, or resource may carry opt-in **icons** a client renders beside
+it. Pass `icons=[Icon(...)]` to `@app.mcp_tool` / `@app.mcp_prompt`, or
+`mcp_icons=[Icon(...)]` on an exposed route. Each `Icon` carries a required
+`src` URI plus an optional `mime_type` and `sizes` list. A primitive with no
+icons emits no `icons` key, so the wire form is unchanged for tools that do not
+use them.
+
+```python
+from veloce import Veloce
+from veloce.contrib.mcp import Icon
+
+app = Veloce()
+
+
+@app.mcp_tool(
+    description="Add two integers",
+    icons=[Icon("https://example.com/add.png", mime_type="image/png", sizes=["48x48"])],
+)
+async def add(a: int, b: int) -> int:
+    return a + b
+# tools/list -> icons: [{"src": "...", "mimeType": "image/png", "sizes": ["48x48"]}]
+```
+
+!!! note "Added in version 0.9"
+    Icons on tools, prompts, and resources, and the resource-link / embedded
+    content blocks below.
+
 ## Non-text tool content
 
 A tool whose handler returns an `image/*` or `audio/*` response emits the matching
@@ -164,6 +198,37 @@ block).
 
 !!! note "Added in version 0.5"
     Image/audio tool content blocks and the resources primitive below.
+
+### Resource-link and embedded-resource results
+
+A tool may point an agent at a resource instead of inlining the data, or inline a
+resource's contents directly. The handler signals which by setting a response
+header carrying the resource URI:
+
+- **`X-MCP-Resource-Link`** — the result is a `resource_link` block referencing
+  the URI; the client follows it with `resources/read`.
+- **`X-MCP-Embedded-Resource`** — the result is a `resource` block inlining the
+  body's contents at that URI, so the agent reads the data with no follow-up call.
+
+Both are opt-in: a response without either header takes the unchanged
+text/structured/binary path, and the header is a harmless custom header on the
+HTTP door.
+
+```python
+from veloce import Response, Veloce
+
+app = Veloce()
+
+
+@app.get("/report", expose_as_mcp_tool=True, mcp_description="The latest report")
+async def report() -> Response:
+    return Response(
+        body=b"see resource",
+        content_type="text/plain",
+        headers={"X-MCP-Resource-Link": "report://latest"},
+    )
+# tools/call -> content: [{"type": "resource_link", "uri": "report://latest", "name": "report"}]
+```
 
 ## Resources
 
@@ -225,6 +290,65 @@ file) as a base64 `blob`.
 The server advertises the `resources` capability only when at least one resource
 is registered.
 
+### Subscriptions
+
+A client may **subscribe** to a resource URI and be notified when that resource
+changes, so the agent re-reads only what moved. Subscriptions are opt-in: set
+`MCP_RESOURCE_SUBSCRIPTIONS` in the app config before mounting.
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+
+@app.get(
+    "/settings",
+    expose_as_mcp_resource=True,
+    mcp_resource_uri="config://app/settings",
+    mcp_description="The application settings",
+)
+async def settings() -> dict:
+    return {"debug": False}
+```
+
+With the flag on, the `resources` capability advertises `subscribe: true` and
+`listChanged: true`, and the server answers `resources/subscribe` and
+`resources/unsubscribe` (each carrying a `uri`). A subscription is per-connection,
+recorded on the connection's `MCPSession`.
+
+The framework cannot know when your data changes, so signal a change from the app —
+typically from the same handler that mutated the data. The server fans the
+notification out to every connection subscribed to that URI:
+
+```python
+from veloce.contrib.mcp.server import MCPServer
+
+server = MCPServer(app)
+
+
+@app.mcp_tool(description="Toggle debug mode")
+async def set_debug(on: bool) -> str:
+    # ... mutate the settings store ...
+    await server.notify_resource_updated("config://app/settings")
+    return "updated"
+```
+
+Call `server.notify_resources_list_changed()` when the *set* of resources changes
+(one is added or removed); it sends `notifications/resources/list_changed` to every
+open connection. Both signals are no-ops when subscriptions are disabled, so the
+default path stays inert.
+
+!!! note "Added in version 0.9"
+    Resource subscriptions require a stateful connection: the stdio transport, or
+    the HTTP transport with `sessions=True` (an `Mcp-Session-Id` connection).
+    Over such a connection the `resources` capability advertises `subscribe: true`
+    and `listChanged: true`, and `notifications/resources/updated` is delivered on
+    the connection's open SSE stream. A stateless HTTP request (the default, no
+    `sessions=True`) advertises `subscribe: false` and rejects a `resources/subscribe`,
+    since there is no connection to deliver updates over.
+
 ## Prompts
 
 A **prompt** is the MCP primitive for a reusable, parameterised message template a
@@ -265,6 +389,75 @@ with a default is an optional argument. As with tools and resources, a non-empty
 
 The server advertises the `prompts` capability only when at least one prompt is
 registered.
+
+## Argument completion
+
+A client can ask the server to suggest values for one argument of a prompt or a
+resource template as the user types, through the MCP `completion/complete` request.
+Completion is opt-in per argument: register a completer with `@app.mcp_completer`,
+naming the `prompt` (by name) or `resource` (by URI template) and the `argument`.
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+
+KNOWN_NAMES = ["ada", "alan", "grace"]
+
+
+@app.mcp_prompt(description="Greet a user by name")
+async def greet(name: str) -> str:
+    return f"Hello, {name}!"
+
+
+@app.mcp_completer(prompt="greet", argument="name")
+async def complete_name(value: str, context: dict[str, str]) -> list[str]:
+    return [n for n in KNOWN_NAMES if n.startswith(value)]
+# completion/complete {"ref": {"type": "ref/prompt", "name": "greet"},
+#                      "argument": {"name": "name", "value": "a"}}
+#   -> {"completion": {"values": ["ada", "alan"], "total": 2, "hasMore": false}}
+```
+
+The completer is called with the partial `value` the user has typed and a mapping
+of the sibling arguments already resolved (the request's `context.arguments`), so a
+completer can narrow its suggestions. It may be `async` or sync — a sync completer
+runs in the thread pool. Return a list of candidate strings, or a `CompletionResult`
+to declare the full match `total` and whether more values exist:
+
+```python
+from veloce.contrib.mcp import CompletionResult
+
+
+@app.mcp_completer(prompt="greet", argument="name")
+async def complete_name(value: str, context: dict[str, str]) -> CompletionResult:
+    matches = await directory.search(prefix=value)
+    return CompletionResult(matches[:100], total=len(matches))
+```
+
+A completer for a resource template names its argument by a URI-template variable:
+
+```python
+@app.get(
+    "/users/{user_id}",
+    expose_as_mcp_resource=True,
+    mcp_description="A user record",
+    mcp_resource_uri="users://{user_id}",
+)
+async def get_user(user_id: str) -> dict:
+    return {"id": user_id}
+
+
+@app.mcp_completer(resource="users://{user_id}", argument="user_id")
+async def complete_user_id(value: str, context: dict[str, str]) -> list[str]:
+    return [uid for uid in active_user_ids() if uid.startswith(value)]
+```
+
+!!! note
+    A single response is capped at 100 values; an over-cap return is truncated and
+    `hasMore` is set so the client knows more matches exist. An argument with no
+    registered completer answers with an empty completion (never an error), so a
+    client may always probe. The server advertises the `completions` capability
+    only when at least one completer is registered.
 
 ## The MCP context
 
@@ -307,6 +500,27 @@ Log messages use RFC 5424 levels (`debug`, `info`, `notice`, `warning`, `error`,
 `critical`, `alert`, `emergency`); the client can raise the minimum with
 `logging/setLevel`, and a message below it is dropped.
 
+### Cancellation
+
+When the client sends a `notifications/cancelled` naming an in-flight request, the
+server cancels that call's task and marks its context cancelled. A handler blocked
+on an `await` unwinds; a cooperative handler can poll `ctx.cancelled` and stop
+early:
+
+```python
+@app.mcp_tool(description="A long scan the client may cancel")
+async def scan(count: int, ctx: MCPContext) -> dict:
+    for i in range(count):
+        if ctx.cancelled:
+            return {"scanned": i, "cancelled": True}
+        await ctx.report_progress(i + 1, count)
+    return {"scanned": count}
+```
+
+The `initialize` request is never cancellable (the spec forbids it), and a cancel
+naming an already-finished or unknown request is ignored. Over the Streamable HTTP
+transport a cancelled call closes its SSE stream without a response frame.
+
 ### Call timeout
 
 The stdio transport serves calls one at a time, so a handler that blocks forever
@@ -314,6 +528,122 @@ would wedge every later call. Set `app.config["MCP_CALL_TIMEOUT"]` to a number o
 seconds to bound each call: a call that overruns it is cancelled and surfaced as an
 error (in-band `isError` for a tool, a JSON-RPC error for a resource read or
 prompt). It is unset (no timeout) by default.
+
+### Server-initiated requests
+
+Over the stdio transport the connection is bidirectional, so a tool may call back
+into the client mid-handler. `MCPContext` exposes three server-initiated requests,
+each gated on the client having advertised the matching capability in `initialize`
+— a call against a client that did not advertise it raises `MCPCapabilityError`
+(surfaced as an `isError` tool result).
+
+`ctx.sample(...)` asks the client's LLM to produce a completion
+(`sampling/createMessage`). It takes the message list and `max_tokens`, plus
+optional `model_preferences`, `system_prompt`, `temperature`, and `stop_sequences`;
+`tools` / `tool_choice` enable tool-using sampling and require the client's
+`sampling.tools` sub-capability:
+
+```python
+from veloce import MCPContext
+
+@app.mcp_tool(description="Summarise text with the client's model")
+async def summarise(text: str, ctx: MCPContext) -> str:
+    result = await ctx.sample(
+        [{"role": "user", "content": {"type": "text", "text": text}}],
+        max_tokens=128,
+        model_preferences={"intelligencePriority": 0.9},
+    )
+    return result["content"]["text"]
+```
+
+`ctx.elicit(...)` asks the client to gather input from its user
+(`elicitation/create`). Form mode passes a `requested_schema` (the JSON Schema of
+the fields to collect); URL mode passes a `url` the client opens instead:
+
+```python
+@app.mcp_tool(description="Confirm a destructive action")
+async def delete_all(ctx: MCPContext) -> dict:
+    answer = await ctx.elicit(
+        "Delete every record?",
+        requested_schema={"type": "object", "properties": {"confirm": {"type": "boolean"}}},
+    )
+    return {"action": answer["action"]}
+```
+
+`ctx.roots()` lists the filesystem roots the client exposes (`roots/list`),
+returning the `roots` array:
+
+```python
+@app.mcp_tool(description="List the client's workspace roots")
+async def workspace(ctx: MCPContext) -> list[dict]:
+    return await ctx.roots()
+```
+
+These require a bidirectional transport (stdio). Calling one off such a transport
+raises `RuntimeError`. The HTTP transport's per-POST model has no return channel
+for server-initiated requests, so they are stdio-only.
+
+!!! note "Added in version 0.9"
+    Server-initiated `sample` / `elicit` / `roots` require the client to advertise
+    the matching capability; existing one-way tools are unchanged.
+
+## Background tasks
+
+A long tool call can run as a background **task**: the client sends the
+`tools/call` with a `task` field, gets a task id back immediately, and retrieves
+the result later. Task support is opt-in per tool — pass `task_support=True` to
+`@app.mcp_tool` (or `mcp_task_support=True` on an exposed route):
+
+```python
+@app.mcp_tool(description="A long report the client can poll", task_support=True)
+async def build_report(rows: int) -> dict:
+    return {"rows": rows, "ready": True}
+```
+
+The same handler runs whether the call is synchronous or a task — a route stays
+one handler behind every door. An opted-in tool advertises
+`execution.taskSupport: "optional"` in `tools/list`; a tool that does not opt in
+rejects a task-augmented call.
+
+The client drives the task with four methods:
+
+- `tasks/get` — poll the task's status (`working`, then `completed` / `failed` /
+  `cancelled`).
+- `tasks/result` — retrieve the settled `tools/call` result.
+- `tasks/list` — list the calling connection's own tasks.
+- `tasks/cancel` — cancel a running task.
+
+A task is private to the connection that created it. Over the HTTP transport with
+`sessions=True`, one client's `tasks/list` shows only its own tasks, and another
+client cannot `tasks/get` / `result` / `cancel` a task it does not own — the id is
+treated as unknown.
+
+!!! warning "HTTP task support requires `sessions=True`"
+    A task is reachable only from the connection that created it, so a
+    task-augmented call over the HTTP transport needs a persistent session.
+    `mount_mcp(transport="http", sessions=True)` is required when any tool sets
+    `task_support=True`; the stateless default would mint a fresh connection per
+    request, leaving the task unretrievable, so it raises `ValueError` at mount
+    time instead.
+
+On the stdio transport a tool may use tasks freely, but a task runner cannot
+issue a server-to-client request (`ctx.sample` / `ctx.elicit` / `ctx.roots`):
+stdio has a single reader, and the serve loop resumes reading once the task is
+created, so the runner has no channel for the reply. Such a call settles the task
+as a failed result with an actionable message. Call the tool synchronously (no
+`task` field) when it needs sampling, elicitation, or roots over stdio.
+
+The server emits `notifications/tasks/status` on each transition (carrying the
+`io.modelcontextprotocol/related-task` `_meta` key), and the `CreateTaskResult`
+returned at creation carries the `io.modelcontextprotocol/model-immediate-response`
+hint. A task is retained for a bounded time-to-live (the client may set `ttl` in
+milliseconds on the `task` field); a settled task is evicted once it expires, and
+a session's tasks — settled or still working — are reclaimed when its
+`Mcp-Session-Id` is terminated or evicted, so an abandoned task cannot leak.
+
+!!! note "Added in version 0.9"
+    Task-augmented tool calls require a tool to opt in with `task_support=True`;
+    every other tool is unchanged.
 
 ## Raising a typed error
 
@@ -388,6 +718,29 @@ async def add(a: int, b: int) -> int:
 
 ## Serving over stdio
 
+### Server identity and instructions
+
+The `initialize` result describes the server from the same metadata that
+documents the HTTP API, so both doors present it identically:
+
+- **`serverInfo.title`** - the app `title`, the human-facing display name (the
+  `name`/`version` fields still carry the identifier and version).
+- **`instructions`** - the app `description` (falling back to the one-line
+  `summary`), surfaced to the client's model as usage guidance.
+
+```python
+from veloce import Veloce
+
+app = Veloce(
+    title="Task Service",
+    description="Call list_tasks before create_task; ids are opaque.",
+)
+# initialize -> serverInfo.title "Task Service", instructions the description
+```
+
+Neither field is emitted when its source is unset, so a client never sees an
+empty string.
+
 `app.mount_mcp(transport="stdio")` builds the tool registry (from
 `@app.mcp_tool` registrations plus every route flagged `expose_as_mcp_tool=True`)
 and returns a coroutine that serves JSON-RPC 2.0 on stdin/stdout until the
@@ -410,6 +763,24 @@ The serve loop runs inside the app's lifespan, so every `@app.on_startup`
 handler (database pools, `app.state`, caches) and the lifespan context manager
 run before the first tool is served, and the matching shutdown runs after the
 input closes - exactly as when the app is served by an ASGI server.
+
+### Connection lifecycle
+
+The stdio loop keeps one connection alive across many messages, so it tracks a
+single session. The session records the capabilities the client advertised in
+its `initialize` request, which the server can consult before relying on a client
+feature.
+
+The MCP lifecycle requires the initialization exchange to come first. To enforce
+that ordering, set `app.config["MCP_ENFORCE_LIFECYCLE"] = True`: any request other
+than `initialize` or `ping` that arrives before initialization completes is
+rejected with a JSON-RPC invalid-request error. One-way notifications are never
+ordered by this rule and always pass. The flag is off by default, so the existing
+stdio behavior is unchanged unless you opt in. The stateless HTTP transport has no
+persistent connection to order against, so this setting does not affect it.
+
+!!! note "Added in version 0.9"
+    `MCPSession` and `MCP_ENFORCE_LIFECYCLE` were added in version 0.9.
 
 ## Serving over HTTP
 
@@ -441,6 +812,68 @@ prompts. The client `POST`s one JSON-RPC message to the route and gets one reply
   carries the call's progress / log notifications followed by the JSON-RPC
   response. A request without it gets a single JSON response.
 - A notification (a message with no `id`) is answered with `202 Accepted` and no body.
+- A `GET` on the endpoint is answered `405 Method Not Allowed` (the transport keeps
+  no standalone server-to-client stream).
+
+The SSE stream opens with a priming event and closes with a `retry` reconnect hint,
+and a client dropping the stream does not cancel the in-flight call.
+
+!!! note "Transport conformance headers"
+    Pass `allowed_origins=[...]` to enable `Origin` validation (DNS-rebinding
+    defense): a present `Origin` outside the allowlist is rejected `403`, while a
+    missing `Origin` (a non-browser client) is allowed. A request carrying an
+    `MCP-Protocol-Version` header naming a revision the server does not support is
+    rejected `400`; a request with no such header is unaffected.
+
+### Session management
+
+The HTTP transport is stateless by default — each `POST` is an independent message.
+Pass `sessions=True` to opt into the MCP `Mcp-Session-Id` lifecycle:
+
+```python
+app.mount_mcp(transport="http", sessions=True)
+```
+
+- The server assigns a fresh `Mcp-Session-Id` header on the `initialize` response.
+- Every later request must echo that header. A request missing it is rejected
+  `400`; a request naming a terminated (or never-issued) id is rejected `404`,
+  signalling the client to start a new session.
+- A `DELETE` carrying the header terminates the session (`204`); a `DELETE` for an
+  unknown id is `404`. Without `sessions=True`, `DELETE` is `405`.
+- Each `Mcp-Session-Id` owns a real per-connection session: it records the client
+  capabilities from `initialize` (so `MCPContext.sample` / `elicit` / `roots` see
+  them), scopes the in-flight cancellation registry and task ownership to that one
+  client, and carries its resource subscriptions. A session a client never
+  `DELETE`s is reclaimed by an idle time-to-live.
+- With `MCP_ENFORCE_LIFECYCLE` set, a stateful HTTP session also rejects any request
+  other than `initialize` / `ping` that precedes the `notifications/initialized` ack.
+
+!!! note "Added in version 0.9"
+    HTTP session management (`sessions=True`) is opt-in; the stateless default is
+    unchanged and carries no per-request session bookkeeping. Even stateless, a
+    `notifications/cancelled` cancels only the request from the same `POST`, never a
+    concurrent client's call with a colliding JSON-RPC id.
+
+### Resumable streams
+
+When a tool call replies over SSE (the client sent `Accept: text/event-stream`), a
+dropped connection normally loses any events the client had not yet received. Pass
+`resumable=True` to let a client reconnect and replay only what it missed:
+
+```python
+app.mount_mcp(transport="http", resumable=True)
+```
+
+- Each streamed event carrying a payload gets an `id` encoding its originating
+  stream, and the events are kept in a bounded in-memory store.
+- A client that drops reconnects with a `GET` carrying the standard SSE
+  `Last-Event-ID` header. The server replays only the events that **one** stream
+  produced after the acknowledged id — never another stream's events — then closes.
+- Without `resumable=True` a `GET` is `405` and no event ids or history are kept.
+
+!!! note "Added in version 0.9"
+    SSE resumability (`resumable=True`) is opt-in; the default keeps no event ids or
+    replay history and answers a `GET` `405`.
 
 ## Authentication and authorization
 
