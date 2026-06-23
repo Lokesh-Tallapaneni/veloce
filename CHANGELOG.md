@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-24
+
 ### Added
 
 - `SecurityScheme` is the shared base for authentication schemes, owning `auto_error` and the `__call__(request)` contract. ([#240](https://github.com/Lokesh-Tallapaneni/veloce/pull/240))
