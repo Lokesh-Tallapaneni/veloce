@@ -1943,6 +1943,21 @@ def test_post_tool_is_additive_not_idempotent():
     assert ann["destructiveHint"] is False
 
 
+def test_query_tool_is_read_only_and_idempotent():
+    # QUERY is safe and idempotent (RFC 10008), so its tool annotations match
+    # GET rather than POST.
+    app = Veloce(openapi_url=None)
+
+    @app.query("/search", expose_as_mcp_tool=True, mcp_description="Search items")
+    async def search() -> dict:
+        return {"items": []}
+
+    ann = _list_tools(app)["search"]["annotations"]
+    assert ann["readOnlyHint"] is True
+    assert ann["idempotentHint"] is True
+    assert ann["destructiveHint"] is False
+
+
 def test_delete_tool_is_destructive_and_idempotent():
     app = Veloce(openapi_url=None)
 

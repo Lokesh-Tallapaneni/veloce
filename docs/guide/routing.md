@@ -29,8 +29,39 @@ async def create_item(request: Request):
     return {"created": True}
 ```
 
-`get`, `post`, `put`, `patch`, `delete`, `head`, `options`, and `trace`
-are all available.
+`get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `trace`, and
+`query` are all available.
+
+### The QUERY method
+
+`@app.query` registers a route for the HTTP `QUERY` method
+([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)). `QUERY` is **safe and
+idempotent like `GET` but carries a request body like `POST`** — for read-only
+operations whose parameters are too complex for a URL (search, filtering,
+paging). The handler reads the body exactly as a `POST` handler does:
+
+```python title="app.py"
+from pydantic import BaseModel
+from veloce import Veloce
+
+app = Veloce()
+
+
+class Search(BaseModel):
+    term: str
+    limit: int = 20
+
+
+@app.query("/search")
+async def search(q: Search) -> dict:
+    return {"term": q.term, "limit": q.limit}
+```
+
+!!! note "Practical scope"
+    Browser `fetch` and many CDNs do not yet speak `QUERY`, so it is best suited
+    to service-to-service APIs today. `QUERY` routes are omitted from the
+    generated OpenAPI 3.1 document (the Path Item Object has no `query` field);
+    native schema support awaits OpenAPI 3.2.
 
 ## Path parameters
 

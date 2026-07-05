@@ -21,6 +21,7 @@ from veloce._protocol_constants import (
     HTTP_METHOD_PATCH,
     HTTP_METHOD_POST,
     HTTP_METHOD_PUT,
+    HTTP_METHOD_QUERY,
     HTTP_METHOD_TRACE,
     ROUTE_METHOD_WEBSOCKET,
     URL_SCHEME_HTTP,
@@ -1854,6 +1855,16 @@ class Router:
     def trace(self, path: str, **kwargs) -> Callable:
         """`TRACE` route decorator - RFC 9110 Sec. 9.3.8."""
         return self.route(path, methods=[HTTP_METHOD_TRACE], **kwargs)
+
+    def query(self, path: str, **kwargs) -> Callable:
+        """`QUERY` route decorator - RFC 10008.
+
+        QUERY is safe and idempotent like GET but carries a request body like
+        POST, for read-only operations whose parameters do not fit a URL (search,
+        filtering, paging). The handler reads the body exactly as a POST handler
+        does (`request.get_json()` / a body model parameter).
+        """
+        return self.route(path, methods=[HTTP_METHOD_QUERY], **kwargs)
 
     def websocket(
         self,

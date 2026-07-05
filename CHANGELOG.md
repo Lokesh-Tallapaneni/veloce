@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `@app.query` registers a route for the HTTP `QUERY` method (RFC 10008) — safe and idempotent like `GET`, with a request body like `POST`.
+
 ## [0.9.0] - 2026-06-24
 
 ### Added

@@ -80,6 +80,7 @@ from veloce._protocol_constants import (
     HTTP_METHOD_GET,
     HTTP_METHOD_HEAD,
     HTTP_METHOD_OPTIONS,
+    HTTP_METHOD_QUERY,
     HTTP_METHOD_TRACE,
     URL_SCHEME_HTTPS,
 )
@@ -101,6 +102,7 @@ class CSRFMiddleware(Middleware):
             HTTP_METHOD_GET,
             HTTP_METHOD_HEAD,
             HTTP_METHOD_OPTIONS,
+            HTTP_METHOD_QUERY,
             HTTP_METHOD_TRACE,
         ),
         cookie_secure: bool = True,

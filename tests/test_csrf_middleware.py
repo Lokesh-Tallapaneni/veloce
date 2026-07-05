@@ -35,6 +35,21 @@ async def test_safe_method_no_cookie_passes_and_mints_cookie():
     assert "csrf_token=DETERMINISTIC" in set_cookie
 
 
+@pytest.mark.asyncio
+async def test_query_is_safe_and_bypasses_csrf():
+    # QUERY is safe (RFC 10008), so the default safe-method set exempts it from
+    # the token check the same way GET is exempted.
+    app = Veloce(debug=True, openapi_url=None)
+    app.add_middleware(CSRFMiddleware())
+
+    @app.query("/x")
+    async def x():
+        return {}
+
+    resp = await app.handle_request(_req("QUERY"))
+    assert resp.status_code == 200
+
+
 # ── State-changing methods require matching token ────────────────────
 
 

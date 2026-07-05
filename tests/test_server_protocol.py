@@ -2011,3 +2011,34 @@ def test_keepalive_setsockopt_failure_is_swallowed():
         assert proto._counted is True
     finally:
         loop.close()
+
+
+def test_native_server_serves_query_method_with_body():
+    """The native HttpProtocol parses the QUERY method (RFC 10008) and delivers
+    its body to the handler, returning the handler's response."""
+    loop = asyncio.new_event_loop()
+    try:
+        app = Veloce(openapi_url=None)
+
+        @app.query("/search")
+        async def search(request):  # noqa: ANN001, ANN202
+            payload = await request.json()
+            return {"term": payload["term"]}
+
+        proto = HttpProtocol(app, loop)
+        transport = _FakeTransport()
+        proto.connection_made(transport)
+
+        body = b'{"term":"veloce"}'
+        proto.data_received(
+            b"QUERY /search HTTP/1.1\r\nHost: x\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        )
+        _drain_loop(loop, proto)
+
+        emitted = b"".join(transport.writes)
+        assert emitted.startswith(b"HTTP/1.1 200")
+        assert b'"term":"veloce"' in emitted
+    finally:
+        loop.close()

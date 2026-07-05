@@ -113,9 +113,9 @@ class _InFlight:
 # not modify state; idempotent verbs are safe to retry; a mutating verb that is
 # not purely additive (PUT/PATCH/DELETE) is flagged destructive so a client can
 # prompt for consent. These are advisory hints a client may ignore.
-_READONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
-_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"})
-_NON_DESTRUCTIVE_METHODS = frozenset({"GET", "HEAD", "POST", "OPTIONS", "TRACE"})
+_READONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE", "QUERY"})
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE", "QUERY"})
+_NON_DESTRUCTIVE_METHODS = frozenset({"GET", "HEAD", "POST", "OPTIONS", "TRACE", "QUERY"})
 
 
 def _tool_annotations(methods: list[str], title: str | None) -> dict[str, Any] | None:
