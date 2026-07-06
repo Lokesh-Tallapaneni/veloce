@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
 from veloce._model_backend import is_msgspec_struct, is_pydantic_model
-from veloce._protocol_constants import OAUTH2_GRANT_TYPE_PASSWORD
+from veloce._protocol_constants import HTTP_METHOD_QUERY, OAUTH2_GRANT_TYPE_PASSWORD
 from veloce._route_contract import RouteContract, iter_param_descriptors
 from veloce.dependency import Depends
 from veloce.http.response import HTMLResponse, JSONResponse
@@ -1610,6 +1610,12 @@ def get_openapi_schema(app: Any) -> dict:
     needs_validation_error_schema = False
 
     for method, path, info in app._collect_all_routes():
+        # OpenAPI 3.1's Path Item Object has no `query` field, so a QUERY route
+        # cannot be represented without emitting an invalid operation. Omit it
+        # rather than produce an invalid document (native support awaits the
+        # OpenAPI 3.2 `query` operation - RFC 10008).
+        if method == HTTP_METHOD_QUERY:
+            continue
         method_lower = method.lower()
         if path not in schema["paths"]:
             schema["paths"][path] = {}
