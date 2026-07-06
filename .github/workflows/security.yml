@@ -1,0 +1,33 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly-disclosed advisory against an already-pinned
+    # dependency surfaces even with no code change.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      # Audit the locked runtime dependency set against the PyPI/OSV advisory
+      # databases. The committed uv.lock is fully hashed, so the export is
+      # deterministic and a known-vulnerable transitive dependency fails CI.
+      - name: Audit locked dependencies
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file requirements-audit.txt
+          uvx pip-audit -r requirements-audit.txt --progress-spinner off

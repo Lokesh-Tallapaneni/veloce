@@ -9,29 +9,16 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Test before release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-      - name: Lint
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
-      - name: Type check
-        run: uv run mypy src/veloce
-      - name: Test
-        run: uv run pytest -q
+  # Gate the tag on the same full matrix that gates a merge (3.10-3.13 +
+  # Windows + no-msgspec + fuzz + coverage), not a single-interpreter run, so
+  # a tag cannot ship an artifact broken on an interpreter/OS the matrix covers.
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
 
   build:
     name: Build sdist + wheel
-    needs: test
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -87,10 +74,13 @@ jobs:
         id: notes
         run: |
           version="${GITHUB_REF_NAME#v}"
-          awk -v ver="$version" '
+          # Literal substring match (no dynamically-built regex) so extraction
+          # is awk-implementation-independent: mawk and gawk treat escaped
+          # brackets in a string-built regex differently.
+          awk -v tag="[$version]" '
             /^## \[/ {
               if (found) exit
-              if ($0 ~ "^## \\[" ver "\\]") { found=1; next }
+              if (index($0, tag)) { found=1; next }
             }
             found { print }
           ' CHANGELOG.md > release-notes.md
