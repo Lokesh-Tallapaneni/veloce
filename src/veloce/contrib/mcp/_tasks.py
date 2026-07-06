@@ -67,6 +67,10 @@ _STREAM_DRAIN_TIMEOUT = 30.0
 class TasksMixin:
     """Background-task lifecycle and tool-result shaping, mixed into `MCPServer`."""
 
+    # `MCPServer` is slotted; a mixin must declare `__slots__` too or its
+    # instances regain a `__dict__` (see the __slots__ discipline rule).
+    __slots__ = ()
+
     if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host server (and `InvocationMixin`) provide.
         app: Any

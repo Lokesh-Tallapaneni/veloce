@@ -45,6 +45,10 @@ _logger = logging.getLogger(__name__)
 class InvocationMixin:
     """Handler dispatch, lifecycle replay, and instrumentation for `MCPServer`."""
 
+    # `MCPServer` is slotted; a mixin must declare `__slots__` too or its
+    # instances regain a `__dict__` (see the __slots__ discipline rule).
+    __slots__ = ()
+
     if TYPE_CHECKING:  # pragma: no cover
         # Attributes / methods the host server (and `TasksMixin`) provide.
         app: Any
