@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
+import tempfile
 from pathlib import Path
 
+import pytest
+
+from tests.conftest import make_request
+from veloce import Request, Veloce
 from veloce.http.datastructures import UploadFile
 
 
@@ -121,3 +127,128 @@ def test_save_can_be_called_multiple_times():
     upload.save(a)
     upload.save(b)
     assert a.getvalue() == b.getvalue() == b"abc"
+
+
+class TestUploadFile:
+    @pytest.mark.asyncio
+    async def test_upload_file_read(self):
+        f = UploadFile(filename="test.txt", file=io.BytesIO(b"hello"))
+        data = await f.read()
+        assert data == b"hello"
+
+    @pytest.mark.asyncio
+    async def test_upload_file_content(self):
+        f = UploadFile(filename="test.txt", file=io.BytesIO(b"content"))
+        assert f.content == b"content"
+
+    def test_upload_file_repr(self):
+        f = UploadFile(filename="photo.jpg", content_type="image/jpeg", size=1024)
+        assert "photo.jpg" in repr(f)
+
+    @pytest.mark.asyncio
+    async def test_multipart_file_upload(self):
+        app = Veloce(openapi_url=None)
+
+        @app.post("/upload")
+        async def upload(request: Request):
+            form = await request.form()
+            file = form.get("file")
+            if isinstance(file, UploadFile):
+                content = await file.read()
+                return {"filename": file.filename, "size": len(content)}
+            return {"error": "no file"}
+
+        # Build multipart body
+        body = (
+            b"------TestBoundary\r\n"
+            b'Content-Disposition: form-data; name="file"; filename="test.txt"\r\n'
+            b"Content-Type: text/plain\r\n"
+            b"\r\n"
+            b"Hello World\r\n"
+            b"------TestBoundary--\r\n"
+        )
+
+        req = make_request(
+            method="POST",
+            path="/upload",
+            body=body,
+            headers={"content-type": "multipart/form-data; boundary=----TestBoundary"},
+        )
+        resp = await app.handle_request(req)
+        import orjson
+
+        data = orjson.loads(resp.body)
+        assert data["filename"] == "test.txt"
+        assert data["size"] == 11
+
+
+class TestUploadFileContextManager:
+    """Test UploadFile async context manager."""
+
+    @pytest.mark.asyncio
+    async def test_async_with(self):
+        async with UploadFile(filename="test.txt", file=io.BytesIO(b"hello")) as f:
+            data = await f.read()
+            assert data == b"hello"
+        # File should be closed after exiting context
+        assert f.file.closed
+
+
+@pytest.mark.asyncio
+async def test_uploadfile_read_does_not_block_on_spilled_spool():
+    """Once the spool spills to disk, reads must hop to a thread —
+    not block the event loop. The smoke test: a background sentinel
+    coroutine must continue to run while a spilled-upload read is
+    in flight. (We use a SpooledTemporaryFile that already rolled over.)
+    """
+    # Manually construct a spooled file and force the rollover via the
+    # public `rollover()` API — avoids depending on the `_rolled`
+    # implementation-detail attribute. The spool's lifetime is owned by
+    # `UploadFile`, which closes it at the end of the test.
+    spool = tempfile.SpooledTemporaryFile(max_size=128)  # noqa: SIM115
+    spool.write(b"A" * 2048)
+    spool.rollover()
+    spool.seek(0)
+
+    upload = UploadFile(filename="big.bin", file=spool, size=2048)
+    ticked = 0
+
+    async def ticker() -> None:
+        nonlocal ticked
+        for _ in range(5):
+            await asyncio.sleep(0)
+            ticked += 1
+
+    # Drive both concurrently. If `read` is blocking the loop, the
+    # ticker won't run; the to_thread offload keeps the loop free.
+    data, _ = await asyncio.gather(upload.read(2048), ticker())
+    assert data == b"A" * 2048
+    assert ticked == 5
+
+    await upload.close()
+
+
+@pytest.mark.asyncio
+async def test_uploadfile_in_memory_read_stays_on_loop():
+    """The cheap in-memory path must not pay an executor-hop tax —
+    BytesIO reads stay on the loop."""
+    upload = UploadFile(filename="tiny.txt", file=io.BytesIO(b"hi"), size=2)
+    assert await upload.read() == b"hi"
+    await upload.close()
+
+
+@pytest.mark.asyncio
+async def test_uploadfile_unrolled_spool_stays_on_loop():
+    """The production multipart-parser path hands `UploadFile` a
+    `SpooledTemporaryFile`, not a `BytesIO`. A small upload that has
+    NOT rolled over is still in memory — it must stay on the loop, not
+    pay a thread-hop tax for every read/write."""
+    spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024)  # noqa: SIM115
+    spool.write(b"small")
+    spool.seek(0)
+    upload = UploadFile(filename="tiny.bin", file=spool, size=5)
+    # `_file_is_in_memory()` returns True for an unrolled spool —
+    # otherwise the optimisation never fires for real uploads.
+    assert upload._file_is_in_memory() is True
+    assert await upload.read() == b"small"
+    await upload.close()

@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from veloce import (
     hash_password,
+    hash_password_async,
     is_strong_password,
     needs_rehash,
     verify_and_needs_update,
     verify_and_needs_update_async,
     verify_password,
+    verify_password_async,
 )
 from veloce._internal import _b64encode
 
@@ -270,3 +274,35 @@ async def test_verify_and_needs_update_async_matches_sync():
     stored = hash_password("hunter2", method="pbkdf2:sha256")
     assert await verify_and_needs_update_async(stored, "hunter2") == (True, True)
     assert await verify_and_needs_update_async(stored, "wrong") == (False, False)
+
+
+@pytest.mark.asyncio
+async def test_hash_and_verify_password_async_round_trip():
+    """`hash_password_async` / `verify_password_async` are async-safe
+    wrappers around the scrypt KDF. Round-tripping a credential must
+    work the same way the sync versions do."""
+    stored = await hash_password_async("hunter2")
+    assert isinstance(stored, str)
+    assert "$" in stored
+    assert await verify_password_async(stored, "hunter2") is True
+    assert await verify_password_async(stored, "wrong-password") is False
+
+
+@pytest.mark.asyncio
+async def test_hash_password_async_does_not_block_the_loop():
+    """A handler calling `hash_password_async` must leave the loop
+    free for other tasks. Without the executor hop, scrypt would stall
+    the loop for ~100 ms and the ticker below would not advance."""
+    ticked = 0
+
+    async def ticker() -> None:
+        nonlocal ticked
+        # 50 ms is enough that a synchronous scrypt would clearly block
+        # past the first tick; we observe several.
+        deadline = asyncio.get_running_loop().time() + 0.05
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.005)
+            ticked += 1
+
+    _, _ = await asyncio.gather(hash_password_async("hunter2"), ticker())
+    assert ticked > 0

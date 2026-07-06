@@ -7,6 +7,7 @@ pipeline elsewhere but never tested at the unit level.
 
 from __future__ import annotations
 
+from veloce import URL, FormData, Headers
 from veloce.http.datastructures import Authorization
 
 
@@ -88,3 +89,32 @@ def test_single_token_no_space_treated_as_type():
     auth = Authorization.from_header("solo")
     assert auth is not None
     assert auth.type == "solo"
+
+
+class TestDataStructures:
+    def test_url_replace(self):
+        url = URL(scheme="http", host="example.com", path="/api")
+        new_url = url.replace(scheme="https")
+        assert new_url.scheme == "https"
+        assert new_url.host == "example.com"
+
+    def test_url_netloc_default_port(self):
+        url = URL(host="example.com", port=80)
+        assert url.netloc == "example.com"
+
+    def test_url_netloc_custom_port(self):
+        url = URL(host="example.com", port=9000)
+        assert url.netloc == "example.com:9000"
+
+    def test_headers_case_insensitive(self):
+        h = Headers({"Content-Type": "application/json"})
+        assert h.get("content-type") == "application/json"
+        assert h.get("CONTENT-TYPE") == "application/json"
+
+    def test_formdata_getlist(self):
+        # FormData is a MultiDict — repeated keys are stored as separate
+        # entries, not a list-as-value. Construction from a list of tuples
+        # is the multi-value idiom.
+        fd = FormData([("items", "a"), ("items", "b"), ("items", "c")])
+        assert fd.getlist("items") == ["a", "b", "c"]
+        assert fd.getlist("missing") == []

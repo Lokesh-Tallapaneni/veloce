@@ -10,6 +10,7 @@ import pytest
 
 from veloce import Request, Veloce
 from veloce.signals import (
+    ANY_SENDER,
     Namespace,
     Signal,
     got_request_exception,
@@ -623,3 +624,64 @@ def test_send_robust_logs_failures(caplog):
     )
     # The traceback (exc_info) must be attached so operators can debug.
     assert any(rec.exc_info for rec in caplog.records)
+
+
+def test_signal_sender_filter_only_fires_for_matching_sender():
+    """A receiver bound to one sender must not fire for another."""
+    sig = Signal("test-sender-filter")
+    calls_for_app: list = []
+    calls_for_other: list = []
+
+    sig.connect(lambda s, **kw: calls_for_app.append(s), weak=False, sender="app")
+    sig.connect(lambda s, **kw: calls_for_other.append(s), weak=False, sender="other")
+
+    sig.send("app", x=1)
+    sig.send("other", x=2)
+    sig.send("third", x=3)
+
+    assert calls_for_app == ["app"]
+    assert calls_for_other == ["other"]
+
+
+def test_signal_any_sender_receivers_fire_for_every_send():
+    sig = Signal("test-any-sender")
+    seen: list = []
+    # Default is ANY_SENDER, but pass it explicitly to document intent.
+    sig.connect(lambda s, **kw: seen.append(s), weak=False, sender=ANY_SENDER)
+    sig.send("a")
+    sig.send("b")
+    sig.send(None)
+    assert seen == ["a", "b", None]
+
+
+def test_signal_has_receivers_for_filters_by_sender():
+    sig = Signal("test-has-receivers")
+    sig.connect(lambda s, **kw: None, weak=False, sender="logged-in")
+    assert sig.has_receivers_for("logged-in")
+    assert not sig.has_receivers_for("anonymous")
+    assert not sig.has_receivers_for(ANY_SENDER)
+
+
+def test_signal_disconnect_targets_the_correct_subscription():
+    """A receiver connected for both ANY_SENDER and a specific sender
+    used to lose its ANY_SENDER subscription when the caller asked to
+    detach the per-sender one — `_matches(ANY_SENDER, ...)` returned
+    True, deleting the wrong entry. Disconnect now matches the stored
+    sender directly."""
+
+    def handler(sender, **kw):
+        pass
+
+    sig = Signal("test-disconnect-target")
+    sig.connect(handler, weak=False, sender=ANY_SENDER)
+    sig.connect(handler, weak=False, sender="login")
+
+    # Detach only the per-sender binding.
+    sig.disconnect(handler, sender="login")
+
+    # The ANY_SENDER subscription must survive — a send for an
+    # unrelated sender should still find it.
+    assert sig.has_receivers_for("anything")
+    # The per-sender one is gone (only one subscription remains).
+    assert len(sig._subs) == 1
+    assert sig._subs[0][0] is ANY_SENDER

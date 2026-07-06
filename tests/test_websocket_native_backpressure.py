@@ -223,3 +223,69 @@ async def test_asgi_send_path_has_no_drain_hook():
     await ws.send_text("hello")
     assert ws._send_drain is None
     assert sent[-1] == {"type": "websocket.send", "text": "hello"}
+
+
+def test_websocket_receive_queue_is_capped_by_default():
+    """The unbounded queue was a DoS vector. Default is now a finite
+    cap; the underlying `asyncio.Queue.maxsize` carries the limit."""
+
+    async def go() -> None:
+        ws = WebSocket(transport=None, headers={})  # type: ignore[arg-type]
+        assert ws._receive_queue.maxsize == WebSocket.DEFAULT_RECV_QUEUE_MAXSIZE
+
+    asyncio.run(go())
+
+
+def test_websocket_receive_queue_maxsize_override():
+    """Apps with legitimate high-burst peers can raise the cap via the
+    ctor — the override is honoured."""
+
+    async def go() -> None:
+        ws = WebSocket(transport=None, headers={}, recv_queue_maxsize=4)  # type: ignore[arg-type]
+        assert ws._receive_queue.maxsize == 4
+
+    asyncio.run(go())
+
+
+def test_websocket_queue_full_closes_connection_with_1009():
+    """When the receive queue fills up, the next inbound frame must not
+    raise `QueueFull` out of `feed_data` (which is a synchronous asyncio
+    Protocol callback). Instead the connection is closed with `1009
+    Message Too Big` and the transport is shut down — the documented
+    backpressure mechanism at this layer."""
+
+    closed: list[bool] = []
+    written: list[bytes] = []
+
+    class FakeTransport:
+        def write(self, data: bytes) -> None:
+            written.append(data)
+
+        def close(self) -> None:
+            closed.append(True)
+
+        def is_closing(self) -> bool:
+            return bool(closed)
+
+    async def go() -> None:
+        ws = WebSocket(
+            transport=FakeTransport(),  # type: ignore[arg-type]
+            headers={},
+            recv_queue_maxsize=2,
+        )
+        # A tiny unfragmented text frame: FIN=1, opcode=1, payload=b"x".
+        # Frame bytes: 0x81, 0x01, b'x'.
+        frame = b"\x81\x01x"
+        # Fill the queue, then deliver one more — the third one
+        # would have raised QueueFull; instead the WS closes itself.
+        ws.feed_data(frame)
+        ws.feed_data(frame)
+        ws.feed_data(frame)
+        assert ws._closed is True
+        assert closed == [True]
+        # A Close frame was sent first — opcode 0x8 with code 1009 in
+        # the payload (big-endian 16-bit).
+        assert written, "expected a Close frame on the way out"
+        assert written[-1][0] & 0x0F == 0x8
+
+    asyncio.run(go())

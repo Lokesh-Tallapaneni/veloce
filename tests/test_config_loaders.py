@@ -267,3 +267,18 @@ def test_app_config_loaders_chain():
     app.config.from_object(_Settings)
     assert app.config["DEBUG"] is True  # from_object overrode
     assert app.config["DB_URL"] == "postgres://x"
+
+
+def test_config_from_env_file_warning_on_unmatched_quote(tmp_path, caplog):
+    env = tmp_path / ".env"
+    env.write_text('FIRST=ok\nDB_URL="postgres://x@y/z\n')
+    app = Veloce(openapi_url=None)
+    with caplog.at_level("WARNING", logger="veloce.config"):
+        app.config.from_env_file(str(env))
+    assert app.config["FIRST"] == "ok"
+    assert app.config["DB_URL"] == "postgres://x@y/z"
+    msgs = [r for r in caplog.records if r.name == "veloce.config"]
+    assert msgs, "expected a warning on veloce.config"
+    msg = msgs[0].getMessage()
+    assert "DB_URL" in msg
+    assert "line 2" in msg

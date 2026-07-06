@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from tests.conftest import make_request
+from veloce import Request, Veloce, abort
 from veloce.exceptions import Aborter, Forbidden, HTTPException, NotFound
 
 
@@ -58,3 +59,26 @@ def test_app_aborter_settable():
     custom = Aborter()
     app.aborter = custom
     assert app.aborter is custom
+
+
+class TestAbort:
+    def test_abort_raises(self):
+        with pytest.raises(HTTPException) as exc_info:
+            abort(404)
+        assert exc_info.value.status_code == 404
+
+    def test_abort_with_detail(self):
+        with pytest.raises(HTTPException) as exc_info:
+            abort(403, "Forbidden")
+        assert exc_info.value.detail == "Forbidden"
+
+    @pytest.mark.asyncio
+    async def test_abort_in_handler(self):
+        app = Veloce(openapi_url=None)
+
+        @app.get("/fail")
+        async def fail(request: Request):
+            abort(418, "I'm a teapot")
+
+        resp = await app.handle_request(make_request(path="/fail"))
+        assert resp.status_code == 418

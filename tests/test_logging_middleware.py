@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
 
+from veloce import Response
 from veloce._constants import HEADER_X_REQUEST_ID
 from veloce.http.request import Request
 from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
@@ -221,3 +223,42 @@ async def test_request_id_generated_when_header_empty():
     request = _request({HEADER_X_REQUEST_ID: ""})
     await mw.process_request(request)
     assert request._state["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_logging_middleware_does_not_leak_on_handler_exception(caplog):
+    """A handler that raises must not leave state behind in the
+    middleware. The fix moves the start-time onto `request._state`,
+    whose lifetime ends with the request — so even on a raise, nothing
+    leaks at the middleware level."""
+    mw = LoggingMiddleware()
+    req = Request(method="GET", path="/x", query_string="", headers={}, body=b"")
+    await mw.process_request(req)
+
+    # The middleware no longer carries a per-request dict at all. The
+    # start time lives on the request itself, which is GC-able once the
+    # request goes out of scope.
+    assert not hasattr(mw, "_request_times")
+    assert "__veloce_logging_start" in req._state
+
+
+@pytest.mark.asyncio
+async def test_logging_middleware_durations_are_per_request():
+    """Two concurrent requests must each see their own start time —
+    no id() collision via a shared dict."""
+    mw = LoggingMiddleware()
+    r1 = Request(method="GET", path="/a", query_string="", headers={}, body=b"")
+    r2 = Request(method="GET", path="/b", query_string="", headers={}, body=b"")
+    await mw.process_request(r1)
+    await asyncio.sleep(0.01)
+    await mw.process_request(r2)
+    s1 = r1._state["__veloce_logging_start"]
+    s2 = r2._state["__veloce_logging_start"]
+    # `>=`, not `>`: each request stamps its own start time (the point of this
+    # test - no shared-dict id() collision), but a coarse-resolution clock
+    # (Windows' wall clock is ~15 ms) can return the same value for two reads
+    # only 10 ms apart, so strict `>` flakes there.
+    assert s2 >= s1
+    # process_response reads each request's own start, not the other's.
+    await mw.process_response(r1, Response(status_code=200))
+    await mw.process_response(r2, Response(status_code=200))

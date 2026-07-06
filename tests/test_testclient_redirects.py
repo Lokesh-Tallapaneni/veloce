@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import RedirectResponse, Veloce
+from veloce import RedirectResponse, Request, Response, Veloce
 from veloce.testclient import AsyncTestClient, TestClient
 
 
@@ -188,3 +188,39 @@ async def test_async_relative_redirect_still_works():
         resp = await client.get("/relative")
         assert resp.status_code == 200
         assert resp.json() == {"reached": "target", "qs": "q=v"}
+
+
+def test_testclient_absolute_redirect_same_host_follows():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/from")
+    async def src(request: Request):
+        return Response(
+            status_code=302,
+            body=b"",
+            headers={"Location": "http://testserver/to?x=1"},
+        )
+
+    @app.get("/to")
+    async def dst(request: Request):
+        return {"got": request.query_params.get("x")}
+
+    with TestClient(app) as client:
+        resp = client.get("/from", follow_redirects=True)
+    assert resp.status_code == 200
+    assert resp.json() == {"got": "1"}
+
+
+def test_testclient_absolute_redirect_cross_host_raises():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/from")
+    async def src(request: Request):
+        return Response(
+            status_code=302,
+            body=b"",
+            headers={"Location": "http://other-host/somewhere"},
+        )
+
+    with TestClient(app) as client, pytest.raises(RuntimeError, match="other-host"):
+        client.get("/from", follow_redirects=True)

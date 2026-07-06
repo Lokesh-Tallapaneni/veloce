@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+
 import pytest
 
 from veloce import Request, UploadFile, Veloce
+from veloce.testclient import TestClient
 
 
 def _echo_app() -> Veloce:
@@ -92,3 +95,45 @@ def test_post_files_invalid_spec_raises():
     client = app.test_client()
     with pytest.raises(TypeError, match="files\\['file'\\]"):
         client.post("/upload", files={"file": 12345})  # type: ignore[dict-item]
+
+
+def test_testclient_files_accepts_bytesio():
+    """`files={"f": BytesIO(b"...")}` should work without a TypeError.
+    Matches the `requests` / `httpx` API."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/upload")
+    async def upload(request):
+        form = await request.form()
+        uploaded = form.get("f")
+        return {
+            "filename": getattr(uploaded, "filename", None),
+            "content": uploaded.file.read().decode() if uploaded else None,
+        }
+
+    client = TestClient(app)
+    payload = b"hello from bytesio"
+    resp = client.post("/upload", files={"f": BytesIO(payload)})
+    assert resp.status_code == 200
+    assert resp.json()["content"] == "hello from bytesio"
+
+
+def test_testclient_files_accepts_tuple_with_filelike():
+    """3-tuple form with a file-like body — `(filename, BytesIO, ct)`."""
+    app = Veloce(openapi_url=None)
+
+    @app.post("/upload")
+    async def upload(request):
+        form = await request.form()
+        uploaded = form.get("f")
+        return {
+            "filename": getattr(uploaded, "filename", None),
+            "content": uploaded.file.read().decode() if uploaded else None,
+        }
+
+    client = TestClient(app)
+    resp = client.post("/upload", files={"f": ("report.txt", BytesIO(b"contents"), "text/plain")})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["filename"] == "report.txt"
+    assert body["content"] == "contents"
