@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import orjson
 
-from veloce.contrib.mcp.server import _in_task_var
+from veloce.contrib.mcp._helpers import _in_task_var
 from veloce.contrib.mcp.session import MCPSession
 
 if TYPE_CHECKING:  # pragma: no cover
