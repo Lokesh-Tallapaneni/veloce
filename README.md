@@ -115,7 +115,7 @@ Open <http://127.0.0.1:8000/items/42> to see `{"item_id": 42}`, or
 | Dependency inj.   | `Depends`, `Security`, `SecurityScopes`, `Annotated[T, Depends()]`, `yield` + teardown      |
 | Validation        | Pydantic v2 query / path / header / cookie / body, structured 422 errors                    |
 | OpenAPI           | OpenAPI 3.1, Swagger UI, ReDoc, security schemes, webhooks, callbacks, `operation_id`       |
-| WebSockets        | full ASGI surface, dependency injection, subprotocol negotiation, typed iter helpers        |
+| WebSockets        | full ASGI surface, dependency injection, subprotocol negotiation (under an ASGI server), typed iter helpers |
 | Middleware        | CORS, GZip, TrustedHost, HTTPSRedirect, ProxyFix, Session, CSRF, `BaseHTTPMiddleware`       |
 | Templating        | Jinja2 with `url_for` / `g` / `current_app` globals, async render, context processors       |
 | Sessions          | signed cookies, server-side backend, `permanent_lifetime`, secret rotation                  |

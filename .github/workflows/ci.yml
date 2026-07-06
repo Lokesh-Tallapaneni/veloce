@@ -1,8 +1,14 @@
 name: CI
 
 on:
+  # Branches only: a v* tag is handled by the release workflow, which invokes
+  # this one via workflow_call. Triggering standalone on the tag too would run
+  # a second matrix in the same concurrency group and could cancel the release.
   push:
+    branches: ['**']
   pull_request:
+  # Lets the release workflow gate a tag on this exact matrix.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -102,3 +108,20 @@ jobs:
         run: uv run pytest -m fuzz -q
         env:
           HYPOTHESIS_PROFILE: ci
+
+  test-layout:
+    name: test file layout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Catch-all / iteration-named test files are forbidden; each test
+      # belongs in test_<feature>.py. Enforce the rule structurally so it
+      # cannot drift back in.
+      - name: Forbid catch-all test files
+        run: |
+          bad=$(ls tests/ | grep -E '^test_(iteration[0-9]+|new_features|final_coverage|misc_e2e|reliability_fixes|vel[0-9]*_[a-z0-9_]*|reported_bugs|issues|bugs|fixes)\.py$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Catch-all / iteration-named test files are forbidden; place each test in test_<feature>.py. Offending: $bad"
+            exit 1
+          fi

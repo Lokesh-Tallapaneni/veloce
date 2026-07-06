@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from tests.conftest import make_request
+from veloce import Request, Veloce
 from veloce.testclient import TestClient
 
 
@@ -54,3 +55,23 @@ def test_add_url_rule_with_view_func_still_works():
     app.add_url_rule("/normal", endpoint="normal", view_func=handler)
     with TestClient(app) as client:
         assert client.get("/normal").json() == {"ok": True}
+
+
+class TestAddUrlRule:
+    @pytest.mark.asyncio
+    async def test_add_url_rule(self):
+        app = Veloce(openapi_url=None)
+
+        async def hello(request: Request):
+            return {"hello": "world"}
+
+        app.add_url_rule("/hello", endpoint="hello", view_func=hello)
+
+        resp = await app.handle_request(make_request(path="/hello"))
+        assert resp.status_code == 200
+        assert b"hello" in resp.body
+
+    def test_add_url_rule_no_func_raises(self):
+        app = Veloce(openapi_url=None)
+        with pytest.raises(ValueError):
+            app.add_url_rule("/nope")

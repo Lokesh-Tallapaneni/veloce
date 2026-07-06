@@ -20,3 +20,13 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: forbid-catch-all-tests
+        name: forbid catch-all / iteration-named test files
+        entry: >-
+          bash -c 'bad=$(ls tests/ | grep -E "^test_(iteration[0-9]+|new_features|final_coverage|misc_e2e|reliability_fixes|vel[0-9]*_[a-z0-9_]*|reported_bugs|issues|bugs|fixes)\.py$" || true); if [ -n "$bad" ]; then echo "Catch-all test files are forbidden; place each test in test_<feature>.py. Offending: $bad"; exit 1; fi'
+        language: system
+        pass_filenames: false
+        files: ^tests/

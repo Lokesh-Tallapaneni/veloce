@@ -224,11 +224,19 @@ ignore = [
 python_version = "3.10"
 mypy_path = "src"
 packages = ["veloce"]
-strict_optional = true
+strict = true
 warn_unused_ignores = true
 warn_redundant_casts = true
-check_untyped_defs = true
+plugins = ["pydantic.mypy"]
 exclude = ["build", "dist", "tests"]
+# Strict checks relaxed repo-wide because they conflict with deliberate design
+# choices, not because the code is wrong: leaf modules re-export internal
+# constants (the gateway-`__all__` convention) and the package subclasses /
+# calls untyped third-party bases (the gunicorn worker, the redis client).
+no_implicit_reexport = false
+disallow_subclassing_any = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
 module = [
@@ -242,3 +250,55 @@ module = [
     "watchfiles",
 ]
 ignore_missing_imports = true
+
+# Incremental strict burn-down: these modules still use bare generics
+# (`Callable`/`dict`/`list` without type parameters), return `Any`, or carry an
+# untyped def. strict applies to every other module and all new code; remove a
+# module from this list once it type-checks clean under the strict defaults.
+[[tool.mypy.overrides]]
+module = [
+    "veloce._handler_plan",
+    "veloce._pipeline",
+    "veloce._resolver_codegen",
+    "veloce.app.asgi",
+    "veloce.app.background",
+    "veloce.app.core",
+    "veloce.app.dispatch",
+    "veloce.app.errors",
+    "veloce.app.lifecycle",
+    "veloce.app.middleware",
+    "veloce.app.openapi",
+    "veloce.app.templating",
+    "veloce.background",
+    "veloce.blueprints",
+    "veloce.config",
+    "veloce.contrib.mcp.completion",
+    "veloce.contrib.mcp.descriptors",
+    "veloce.contrib.mcp.plan_bridge",
+    "veloce.contrib.mcp.prompts",
+    "veloce.contrib.mcp.registry",
+    "veloce.contrib.openapi",
+    "veloce.contrib.redis",
+    "veloce.contrib.templating",
+    "veloce.dependency",
+    "veloce.encoders",
+    "veloce.helpers",
+    "veloce.http.datastructures",
+    "veloce.http.request",
+    "veloce.middleware.base",
+    "veloce.middleware.compression",
+    "veloce.middleware.security",
+    "veloce.otel",
+    "veloce.routing.router",
+    "veloce.security._utils",
+    "veloce.serving.protocol",
+    "veloce.signals",
+    "veloce.testclient",
+    "veloce.views",
+    "veloce.websocket",
+    "veloce.workers",
+]
+disallow_any_generics = false
+warn_return_any = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false

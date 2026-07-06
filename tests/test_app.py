@@ -509,3 +509,13 @@ def test_run_rejects_multiple_workers():
     app = Veloce()
     with pytest.raises(ValueError, match="runs a single process"):
         app.run(workers=4)
+
+
+def test_app_still_works():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/")
+    async def index():
+        return {"ok": True}
+
+    assert app.test_client().get("/").json() == {"ok": True}

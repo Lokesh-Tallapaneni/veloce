@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from veloce import Request, Veloce
 
 
 def _make_app() -> Veloce:
@@ -100,3 +100,43 @@ def test_missing_path_param_still_raises():
     app = _make_app()
     with pytest.raises(BuildError):
         app.url_for("user", _external=True)
+
+
+class TestUrlFor:
+    def test_simple_url_for(self):
+        app = Veloce(openapi_url=None)
+
+        @app.get("/users", name="list_users")
+        async def users(request: Request):
+            return []
+
+        assert app.url_for("list_users") == "/users"
+
+    def test_url_for_with_params(self):
+        app = Veloce(openapi_url=None)
+
+        @app.get("/users/{user_id}/posts/{post_id}")
+        async def get_post(user_id: int, post_id: int):
+            return {}
+
+        url = app.url_for("get_post", user_id="42", post_id="7")
+        assert url == "/users/42/posts/7"
+
+    def test_url_for_missing_param(self):
+        app = Veloce(openapi_url=None)
+
+        @app.get("/users/{id}")
+        async def get_user(id: int):
+            return {}
+
+        from veloce import BuildError
+
+        with pytest.raises(BuildError):
+            app.url_for("get_user")
+
+    def test_url_for_unknown_route(self):
+        from veloce import BuildError
+
+        app = Veloce(openapi_url=None)
+        with pytest.raises(BuildError):
+            app.url_for("nonexistent")

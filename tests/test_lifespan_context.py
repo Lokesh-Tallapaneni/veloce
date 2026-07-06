@@ -73,3 +73,26 @@ async def test_lifespan_context_reusable_after_exit():
     async with app.lifespan_context():
         pass
     assert len(count) == 2
+
+
+class TestLifespan:
+    @pytest.mark.asyncio
+    async def test_lifespan_startup_shutdown(self):
+        log = []
+
+        async def lifespan(app):
+            log.append("startup")
+            app.state["db"] = {"connected": True}
+            yield
+            log.append("shutdown")
+
+        from contextlib import asynccontextmanager
+
+        app = Veloce(lifespan=asynccontextmanager(lifespan), openapi_url=None)
+
+        await app._run_lifecycle("startup")
+        assert "startup" in log
+        assert app.state["db"]["connected"] is True
+
+        await app._run_lifecycle("shutdown")
+        assert "shutdown" in log

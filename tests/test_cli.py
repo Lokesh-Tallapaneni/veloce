@@ -818,3 +818,23 @@ def test_generate_rejects_dir_under_a_file(tmp_path):
     afile.write_text("x", encoding="utf-8")
     with pytest.raises(SystemExit, match="not a directory"):
         main(["generate", "model", "thing", "--dir", str(afile / "subdir")])
+
+
+def test_cli_version_flag_prints_and_exits(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--version"])
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    output = (captured.out + captured.err).strip()
+    assert output == f"veloce {__version__}"
+
+
+def test_cli_version_short_flag(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["-V"])
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    output = (captured.out + captured.err).strip()
+    assert output == f"veloce {__version__}"

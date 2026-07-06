@@ -89,6 +89,21 @@ def test_set_cookie_samesite_override():
     assert "SameSite=Strict" in _cookie(resp)
 
 
+class TestDeleteCookie:
+    def test_delete_cookie(self):
+        resp = Response(status_code=200, body=b"ok")
+        resp.delete_cookie("session")
+        assert "Max-Age=0" in resp.headers["Set-Cookie"]
+
+    def test_multiple_cookies(self):
+        resp = Response(status_code=200, body=b"ok")
+        resp.set_cookie("a", "1")
+        resp.set_cookie("b", "2")
+        cookie_header = resp.headers["Set-Cookie"]
+        assert "a=1" in cookie_header
+        assert "b=2" in cookie_header
+
+
 def test_set_cookie_samesite_none_omits_attribute():
     """Explicit `samesite=None` drops the attribute entirely."""
     resp = Response()

@@ -333,3 +333,48 @@ def test_veloce_app_paths_resolve():
     app = importlib.import_module("veloce.app")
     missing = [name for name in VELOCE_APP_PATHS if not hasattr(app, name)]
     assert not missing, f"veloce.app.X paths broken by an internal split: {missing}"
+
+
+class TestSubPackageImports:
+    def test_routing_subpackage(self):
+        from veloce.routing import Query, Router
+
+        assert Router is not None
+        assert Query is not None
+
+    def test_http_subpackage(self):
+        from veloce.http import Request, UploadFile
+
+        assert Request is not None
+        assert UploadFile is not None
+
+    def test_middleware_subpackage(self):
+        from veloce.middleware import (
+            Middleware,
+            SessionMiddleware,
+        )
+
+        assert Middleware is not None
+        assert SessionMiddleware is not None
+
+    def test_security_subpackage(self):
+        from veloce.security import (
+            HTTPBasic,
+            OAuth2PasswordBearer,
+        )
+
+        assert HTTPBasic is not None
+        assert OAuth2PasswordBearer is not None
+
+    def test_serving_subpackage(self):
+        from veloce.serving import HttpProtocol
+
+        assert HttpProtocol is not None
+
+    def test_py_typed_exists(self):
+        import os
+
+        import veloce
+
+        pkg_dir = os.path.dirname(veloce.__file__)
+        assert os.path.exists(os.path.join(pkg_dir, "py.typed"))

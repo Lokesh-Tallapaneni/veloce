@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import Blueprint, Request, Veloce
+from veloce.testclient import TestClient
 
 
 def _req(path: str, method: str = "GET") -> Request:
@@ -329,3 +330,50 @@ def test_blueprint_websocket_route_is_registered():
 
     with app.test_client().websocket_connect("/bws") as ws:
         assert ws.receive_text() == "hi"
+
+
+def test_blueprint_bare_prefix_route_serves_bare_url():
+    """`@bp.get("")` against a prefixed blueprint must serve the bare
+    URL (`/x`), not redirect to `/x/`. The previous `_walk_routes`
+    coerced an empty stripped path to `/`, which made the app
+    register `/x/` and 308-redirect / 404 the bare URL."""
+    bp = Blueprint("x", url_prefix="/x")
+
+    @bp.get("")
+    def root_get():
+        return {"hit": "bare-prefix"}
+
+    @bp.post("")
+    def root_post():
+        return {"posted": True}
+
+    app = Veloce(openapi_url=None)
+    app.register_blueprint(bp)
+
+    client = TestClient(app)
+    # Bare URL — no trailing slash — must hit the handler directly.
+    resp = client.get("/x")
+    assert resp.status_code == 200
+    assert resp.json() == {"hit": "bare-prefix"}
+
+    # POST /x must also reach the handler without a 308 detour.
+    resp_post = client.post("/x")
+    assert resp_post.status_code == 200
+    assert resp_post.json() == {"posted": True}
+
+
+def test_blueprint_root_slash_route_still_serves_trailing_slash():
+    """The trailing-slash route shape `@bp.get("/")` must keep working
+    — distinct from `@bp.get("")` after the fix."""
+    bp = Blueprint("y", url_prefix="/y")
+
+    @bp.get("/")
+    def root_slash():
+        return {"hit": "trailing-slash"}
+
+    app = Veloce(openapi_url=None)
+    app.register_blueprint(bp)
+
+    resp = TestClient(app).get("/y/")
+    assert resp.status_code == 200
+    assert resp.json() == {"hit": "trailing-slash"}

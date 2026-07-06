@@ -13,8 +13,10 @@ import logging
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import (
     CORSMiddleware,
+    JSONResponse,
     LoggingMiddleware,
     ProxyFix,
     Request,
@@ -203,3 +205,80 @@ def test_logging_middleware_preserves_preconfigured_level(access_logger_state):
     assert resp.status_code == 200
     assert logger.level == logging.WARNING
     assert logger.handlers == [pre_handler]
+
+
+class TestMiddlewareHTTPDecorator:
+    """Test @app.middleware('http') with the call_next pattern."""
+
+    @pytest.mark.asyncio
+    async def test_middleware_http_modifies_response(self):
+        import orjson
+
+        app = Veloce(openapi_url=None)
+
+        @app.middleware("http")
+        async def add_timing(request: Request, call_next):
+            response = await call_next(request)
+            response.headers["X-Process"] = "true"
+            response._encoded = None
+            return response
+
+        @app.get("/data")
+        async def data(request: Request):
+            return {"value": 42}
+
+        resp = await app.handle_request(make_request(path="/data"))
+        assert resp.status_code == 200
+        assert resp.headers.get("X-Process") == "true"
+        assert orjson.loads(resp.body)["value"] == 42
+
+    @pytest.mark.asyncio
+    async def test_middleware_http_short_circuit(self):
+        app = Veloce(openapi_url=None)
+
+        @app.middleware("http")
+        async def block_everything(request: Request, call_next):
+            if request.path == "/blocked":
+                return JSONResponse({"error": "blocked"}, status_code=403)
+            return await call_next(request)
+
+        @app.get("/blocked")
+        async def blocked(request: Request):
+            return {"should_not": "reach"}
+
+        @app.get("/allowed")
+        async def allowed(request: Request):
+            return {"ok": True}
+
+        resp = await app.handle_request(make_request(path="/blocked"))
+        assert resp.status_code == 403
+
+        resp = await app.handle_request(make_request(path="/allowed"))
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_multiple_http_middleware_chain(self):
+        app = Veloce(openapi_url=None)
+        order = []
+
+        @app.middleware("http")
+        async def mw1(request: Request, call_next):
+            order.append("mw1_before")
+            response = await call_next(request)
+            order.append("mw1_after")
+            return response
+
+        @app.middleware("http")
+        async def mw2(request: Request, call_next):
+            order.append("mw2_before")
+            response = await call_next(request)
+            order.append("mw2_after")
+            return response
+
+        @app.get("/chain")
+        async def chain(request: Request):
+            order.append("handler")
+            return {"ok": True}
+
+        await app.handle_request(make_request(path="/chain"))
+        assert order == ["mw1_before", "mw2_before", "handler", "mw2_after", "mw1_after"]

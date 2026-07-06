@@ -84,3 +84,23 @@ def test_current_app_in_veloce_exports():
     from veloce import current_app as ca
 
     assert ca is current_app
+
+
+def test_current_app_proxy_resolves_in_request_context():
+    app = Veloce(openapi_url=None)
+    app.config["SENTINEL"] = "I-resolved"
+    observed = {}
+
+    @app.get("/cfg")
+    async def cfg_route(request: Request):
+        observed["sentinel"] = current_app.config.get("SENTINEL")
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        client.get("/cfg")
+    assert observed["sentinel"] == "I-resolved"
+
+
+def test_current_app_proxy_outside_request_raises():
+    with pytest.raises(RuntimeError):
+        _ = current_app.config

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from veloce import Veloce
+import pytest
+
+from tests.conftest import make_request
+from veloce import Request, Veloce
 from veloce.config import Config
 
 
@@ -51,3 +54,56 @@ def test_permanent_session_lifetime_default():
     app = Veloce()
     # 31 days in seconds — the default.
     assert app.config["PERMANENT_SESSION_LIFETIME"] == 2678400
+
+
+class TestAppConfig:
+    def test_config_dict(self):
+        app = Veloce(openapi_url=None)
+        app.config["DATABASE_URL"] = "postgres://localhost/db"
+        app.config["DEBUG"] = True
+        assert app.config["DATABASE_URL"] == "postgres://localhost/db"
+
+    def test_config_update(self):
+        app = Veloce(openapi_url=None)
+        app.config.update(
+            SECRET_KEY="my-secret",
+            MAX_CONTENT_LENGTH=16 * 1024 * 1024,
+        )
+        assert app.config["SECRET_KEY"] == "my-secret"
+
+    def test_secret_key(self):
+        app = Veloce(openapi_url=None)
+        app.secret_key = "super-secret"
+        assert app.secret_key == "super-secret"
+
+
+class TestConfigAndExtensions:
+    """Test config, secret_key, extensions."""
+
+    @pytest.mark.asyncio
+    async def test_config_accessible_from_request(self):
+        import orjson
+
+        app = Veloce(openapi_url=None)
+        app.config["API_KEY"] = "secret123"
+
+        @app.get("/config")
+        async def get_config(request: Request):
+            return {"key": request.app.config["API_KEY"]}
+
+        resp = await app.handle_request(make_request(path="/config"))
+        assert orjson.loads(resp.body)["key"] == "secret123"
+
+    @pytest.mark.asyncio
+    async def test_secret_key_from_request(self):
+        import orjson
+
+        app = Veloce(openapi_url=None)
+        app.secret_key = "super-secret"
+
+        @app.get("/secret")
+        async def get_secret(request: Request):
+            return {"has_secret": request.app.secret_key is not None}
+
+        resp = await app.handle_request(make_request(path="/secret"))
+        assert orjson.loads(resp.body)["has_secret"] is True

@@ -1248,9 +1248,9 @@ def test_pure_tool_streaming_response_is_buffered():
 def test_streaming_response_over_buffer_limit_is_in_band_error(monkeypatch):
     """A stream past the buffer limit yields an in-band error, not unbounded use."""
     from veloce import StreamingResponse
-    from veloce.contrib.mcp import server as mcp_server
+    from veloce.contrib.mcp import _tasks as mcp_tasks
 
-    monkeypatch.setattr(mcp_server, "_STREAM_BUFFER_LIMIT", 8)
+    monkeypatch.setattr(mcp_tasks, "_STREAM_BUFFER_LIMIT", 8)
 
     app = Veloce(openapi_url=None)
 
@@ -2400,9 +2400,9 @@ def test_slow_stream_times_out_in_band(monkeypatch):
     """A streamed result that does not complete within the drain budget yields an
     in-band error and does not hang the serve loop."""
     from veloce import StreamingResponse
-    from veloce.contrib.mcp import server as mcp_server
+    from veloce.contrib.mcp import _tasks as mcp_tasks
 
-    monkeypatch.setattr(mcp_server, "_STREAM_DRAIN_TIMEOUT", 0.05)
+    monkeypatch.setattr(mcp_tasks, "_STREAM_DRAIN_TIMEOUT", 0.05)
 
     app = Veloce(openapi_url=None)
 
@@ -2426,9 +2426,9 @@ def test_oversized_stream_closes_producer_promptly(monkeypatch):
     """The size-cap path closes the producing generator so its finally runs
     immediately, not only at GC."""
     from veloce import StreamingResponse
-    from veloce.contrib.mcp import server as mcp_server
+    from veloce.contrib.mcp import _tasks as mcp_tasks
 
-    monkeypatch.setattr(mcp_server, "_STREAM_BUFFER_LIMIT", 8)
+    monkeypatch.setattr(mcp_tasks, "_STREAM_BUFFER_LIMIT", 8)
 
     app = Veloce(openapi_url=None)
     closed = []
@@ -2455,9 +2455,9 @@ def test_slow_stream_with_awaiting_cleanup_stays_in_budget(monkeypatch):
     """A generator whose teardown awaits cannot re-wedge the serve loop past the
     drain deadline: the cleanup aclose() is itself bounded."""
     from veloce import StreamingResponse
-    from veloce.contrib.mcp import server as mcp_server
+    from veloce.contrib.mcp import _tasks as mcp_tasks
 
-    monkeypatch.setattr(mcp_server, "_STREAM_DRAIN_TIMEOUT", 0.05)
+    monkeypatch.setattr(mcp_tasks, "_STREAM_DRAIN_TIMEOUT", 0.05)
 
     app = Veloce(openapi_url=None)
 
