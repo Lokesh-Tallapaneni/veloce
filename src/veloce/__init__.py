@@ -255,10 +255,11 @@ try:
     __version__ = _pkg_version("veloceframework")
     del _pkg_version, _PackageNotFoundError
 except Exception:
-    # Editable install before metadata is materialised, or an
-    # unsupported runtime. Fall back to a hand-maintained constant so
-    # `veloce.__version__` is never undefined.
-    __version__ = "0.9.0"
+    # Editable install before metadata is materialised, or an unsupported
+    # runtime. The installed package metadata is the single source of the
+    # version (`pyproject.toml`); fall back to a non-version sentinel rather
+    # than a second hand-maintained literal so the two cannot drift.
+    __version__ = "0.0.0+unknown"
 
 # `APIRouter` aliases `Router`, whose constructor takes the keyword
 # surface that name implies (`prefix=`, `tags=`, `dependencies=`,
