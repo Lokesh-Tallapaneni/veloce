@@ -1181,6 +1181,8 @@ class AsyncTestClient:
     test's own running event loop instead of through a private loop. The
     request methods (`get` / `post` / ...) are coroutines.
 
+    Usage::
+
         async with AsyncTestClient(app) as client:
             resp = await client.get("/")
 

@@ -68,7 +68,21 @@ def _merge_scoped(
 
 
 class Blueprint(Router):
-    """Deferred-registration route collection."""
+    """Deferred-registration route collection.
+
+    Usage::
+
+        from veloce import Blueprint, Veloce
+
+        bp = Blueprint("admin", url_prefix="/admin")
+
+        @bp.get("/ping")
+        async def ping():
+            return {"ok": True}
+
+        app = Veloce()
+        app.register_blueprint(bp)  # serves GET /admin/ping
+    """
 
     def __init__(
         self,
