@@ -131,6 +131,12 @@ Veloce follows [semantic versioning](https://semver.org/): the public
 API surface — the names exported from `veloce/__init__.py` — is what each
 release commits to. The current version is shown by the PyPI badge above.
 
+## Sponsor
+
+Veloce is developed in the open. If it is useful to you, you can support its
+continued development through
+[GitHub Sponsors](https://github.com/sponsors/Lokesh-Tallapaneni).
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
