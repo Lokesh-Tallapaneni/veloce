@@ -44,6 +44,7 @@ from veloce.app.lifecycle import LifecycleMixin
 from veloce.app.middleware import MiddlewareMixin
 from veloce.app.mounting import MountingMixin
 from veloce.app.openapi import OpenAPIMixin
+from veloce.app.plugins import PluginsMixin
 from veloce.app.serving import ServingMixin
 from veloce.app.templating import TemplatingMixin
 from veloce.app.testing import TestingMixin
@@ -81,6 +82,7 @@ class Veloce(
     MiddlewareMixin,
     MountingMixin,
     OpenAPIMixin,
+    PluginsMixin,
     ServingMixin,
     TestingMixin,
     BackgroundTasksMixin,
