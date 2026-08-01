@@ -157,6 +157,7 @@ nav:
       - Templates: guide/templates.md
       - Static Files: guide/static-files.md
       - Sub-applications & Mounts: guide/sub-applications.md
+      - Plugins: guide/plugins.md
       - Sessions: guide/sessions.md
       - Databases: guide/databases.md
       - Caching: guide/caching.md

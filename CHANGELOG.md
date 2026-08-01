@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `app.install(plugin)` registers an extension in one call; any object with `install(self, app)` is a plugin, and a `name` attribute records it under `app.extensions`. ([#NNN](https://github.com/Lokesh-Tallapaneni/veloce/pull/NNN))
+
 ## [0.10.0] - 2026-07-06
 
 ### Added
