@@ -1,3 +1,8 @@
+---
+description: Bundle a component's routes, middleware, and startup hooks behind a single app.install(plugin) call.
+tags: [plugins, extensions, install]
+---
+
 # Plugins
 
 A plugin bundles a component's setup — routes, middleware, startup hooks, shared

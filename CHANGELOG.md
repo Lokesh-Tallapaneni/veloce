@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `app.install(plugin)` registers an extension in one call; any object with `install(self, app)` is a plugin, and a `name` attribute records it under `app.extensions`. ([#NNN](https://github.com/Lokesh-Tallapaneni/veloce/pull/NNN))
+- `app.install(plugin)` registers an app extension in one call — any object with an `install(self, app)` method. ([#NNN](https://github.com/Lokesh-Tallapaneni/veloce/pull/NNN))
+- `name`, when set on a plugin, records it under `app.extensions`. ([#NNN](https://github.com/Lokesh-Tallapaneni/veloce/pull/NNN))
 
 ## [0.10.0] - 2026-07-06
 
