@@ -13,3 +13,4 @@ from veloce.app.core import _URLMap  # noqa: F401  - reached as veloce.app._URLM
 from veloce.app.dispatch import (  # noqa: F401  - reached as veloce.app._exc_handler_sig_cache
     _exc_handler_sig_cache,
 )
+from veloce.app.plugins import Plugin  # noqa: F401  - reached as veloce.app.Plugin

@@ -90,6 +90,7 @@ VELOCE_ALL = {
     "OpenIdConnect",
     "Path",
     "PlainTextResponse",
+    "Plugin",
     "Principal",
     "ProxyFix",
     "Query",

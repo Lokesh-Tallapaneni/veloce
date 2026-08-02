@@ -21,7 +21,7 @@ from __future__ import annotations
 
 # Status codes
 from veloce import status
-from veloce.app import URLRule, Veloce
+from veloce.app import Plugin, URLRule, Veloce
 
 # Background tasks
 from veloce.background import BackgroundTask, BackgroundTasks
@@ -270,6 +270,7 @@ APIRouter = Router
 __all__ = [
     # Core
     "Veloce",
+    "Plugin",
     "Request",
     "Router",
     "Blueprint",
