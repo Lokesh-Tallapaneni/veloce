@@ -10,9 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `app.install(plugin)` registers an app extension in one call — any object with an `install(self, app)` method. ([#253](https://github.com/Lokesh-Tallapaneni/veloce/pull/253))
 - `name`, when set on a plugin, records it under `app.extensions`. ([#253](https://github.com/Lokesh-Tallapaneni/veloce/pull/253))
+
 ### Fixed
 
-- `veloce custom` prints the app's CLI group help instead of crashing when no command is given. ([#NNN](https://github.com/Lokesh-Tallapaneni/veloce/pull/NNN))
+- `veloce custom` prints the app's CLI group help instead of crashing when no command is given. ([#254](https://github.com/Lokesh-Tallapaneni/veloce/pull/254))
 
 ## [0.10.0] - 2026-07-06
 
