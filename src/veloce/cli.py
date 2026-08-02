@@ -240,14 +240,30 @@ def _cmd_custom(args: argparse.Namespace) -> int:
     _apply_env_file(args)
     app = _load_app(args.app)
     _require_app_attr(app, "cli", "`.cli`")
+    # `click` backs the optional `[cli]` extra. It is imported here, not at
+    # module top, because it is guaranteed present once `app.cli` exists but
+    # must not be a hard dependency of the `veloce` entry point.
+    import click
+
     with app.app_context():
-        # `app.cli` is a `click.Group`. Call it with the remaining argv
-        # and `standalone_mode=False` so we own the exit code path.
+        # `app.cli` is a `click.Group`. Call it with the remaining argv and
+        # `standalone_mode=False` so we own the exit-code path - which means
+        # reproducing the handling Click's standalone mode would otherwise do:
+        # `--help` and `ctx.exit()` raise `SystemExit`; a usage problem or the
+        # no-arguments group help (Click's `NoArgsIsHelpError`, a `ClickException`
+        # that is NOT a `SystemExit`) is shown via `.show()` and returns its
+        # `.exit_code`; an interrupted prompt raises `Abort`.
         try:
             return int(app.cli.main(args.cli_args, standalone_mode=False) or 0)
         except SystemExit as exc:  # Click raises on --help etc.
             code = exc.code
             return int(code) if isinstance(code, int) else (1 if code else 0)
+        except click.exceptions.Abort:
+            print("Aborted!", file=sys.stderr)
+            return 1
+        except click.exceptions.ClickException as exc:
+            exc.show()
+            return exc.exit_code
 
 
 def _cmd_routes(args: argparse.Namespace) -> int:

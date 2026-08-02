@@ -384,6 +384,46 @@ def test_custom_no_env_file_before_app():
     assert args.cli_args == ["run"]
 
 
+# ── `veloce custom` invocation against a live app.cli group ────────────
+
+
+def _app_with_cli_command():
+    from veloce import Veloce
+
+    app = Veloce()
+
+    @app.cli.command()
+    def greet() -> None:
+        print("hi from greet")
+
+    return app
+
+
+def test_custom_no_args_prints_group_help(monkeypatch, capsys):
+    # A `custom` invocation with no forwarded command must print the Click
+    # group's help and return, not crash: Click raises `NoArgsIsHelpError`
+    # (a `ClickException`, not a `SystemExit`) for a group invoked with no
+    # subcommand, so `_cmd_custom` has to handle `ClickException` too.
+    pytest.importorskip("click")
+    app = _app_with_cli_command()
+    monkeypatch.setattr(cli_module, "_load_app", lambda ref: app)
+    args = build_parser().parse_args(["custom", "demo:app", "--no-env-file"])
+    rc = cli_module._cmd_custom(args)
+    captured = capsys.readouterr()
+    assert "Usage:" in captured.out + captured.err
+    assert rc == 2  # Click's no-arguments group-help exit code
+
+
+def test_custom_runs_registered_subcommand(monkeypatch, capsys):
+    pytest.importorskip("click")
+    app = _app_with_cli_command()
+    monkeypatch.setattr(cli_module, "_load_app", lambda ref: app)
+    args = build_parser().parse_args(["custom", "demo:app", "--no-env-file", "--", "greet"])
+    rc = cli_module._cmd_custom(args)
+    assert "hi from greet" in capsys.readouterr().out
+    assert rc == 0
+
+
 # ── Entry-point plugin command discovery ──────────────────────────────
 
 
