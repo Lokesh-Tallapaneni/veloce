@@ -230,6 +230,37 @@ class TestOpenAPI:
         assert resp.status_code == 200
         assert b"redoc" in resp.body
 
+    def test_docs_pages_carry_the_csp_nonce(self):
+        # Under a nonced policy the docs pages must nonce every script, style,
+        # and stylesheet link, using the same nonce the header advertises -
+        # otherwise the inline SwaggerUIBundle boot script cannot execute.
+        import re
+
+        from veloce.middleware.security import CSPMiddleware
+
+        app = Veloce()
+        app.add_middleware(CSPMiddleware, policy="default-src 'self'; script-src {nonce}")
+        client = app.test_client()
+
+        for path in ("/docs", "/redoc"):
+            resp = client.get(path)
+            assert resp.status_code == 200
+            nonces = re.findall(r'nonce="([^"]+)"', resp.text)
+            assert nonces, f"{path} carries no nonce attribute"
+            assert len(set(nonces)) == 1, f"{path} used more than one nonce"
+            header = next(
+                v for k, v in resp.headers.items() if k.lower() == "content-security-policy"
+            )
+            assert f"'nonce-{nonces[0]}'" in header
+
+    def test_docs_pages_omit_nonce_without_csp(self):
+        # No CSP middleware means no nonce is armed; the markup must stay
+        # byte-identical to the pre-nonce output rather than emit `nonce=""`.
+        app = Veloce()
+        page = app.test_client().get("/docs").text
+        assert 'nonce="' not in page
+        assert "SwaggerUIBundle" in page
+
     @pytest.mark.asyncio
     async def test_openapi_disabled(self):
         app = Veloce(openapi_url=None)

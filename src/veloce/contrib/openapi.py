@@ -1714,7 +1714,7 @@ SWAGGER_HTML = (
       href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/__SUV__/swagger-ui.min.css"
       integrity="__SUC__"
       crossorigin="anonymous"
-      referrerpolicy="no-referrer">
+      referrerpolicy="no-referrer"{nonce}>
 </head>
 <body>
     <div id="swagger-ui"></div>
@@ -1722,8 +1722,8 @@ SWAGGER_HTML = (
       src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/__SUV__/swagger-ui-bundle.min.js"
       integrity="__SUJ__"
       crossorigin="anonymous"
-      referrerpolicy="no-referrer"></script>
-    <script>
+      referrerpolicy="no-referrer"{nonce}></script>
+    <script{nonce}>
     const ui = SwaggerUIBundle({{
         url: "{openapi_url}",
         dom_id: '#swagger-ui',
@@ -1746,8 +1746,8 @@ REDOC_HTML = """<!DOCTYPE html>
     <title>{title} - ReDoc</title>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
-    <style>body {{ margin: 0; padding: 0; }}</style>
+    <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet"{nonce}>
+    <style{nonce}>body {{ margin: 0; padding: 0; }}</style>
 </head>
 <body>
     <redoc spec-url='{openapi_url}'></redoc>
@@ -1755,9 +1755,27 @@ REDOC_HTML = """<!DOCTYPE html>
       src="https://unpkg.com/redoc@__RDV__/bundles/redoc.standalone.js"
       integrity="__RDJ__"
       crossorigin="anonymous"
-      referrerpolicy="no-referrer"></script>
+      referrerpolicy="no-referrer"{nonce}></script>
 </body>
 </html>""".replace("__RDV__", _REDOC_VERSION).replace("__RDJ__", _REDOC_JS_INTEGRITY)
+
+
+def _nonce_attr(request: Any) -> str:
+    """Render the CSP `nonce` attribute for the docs pages, or an empty string.
+
+    `CSPMiddleware` arms a per-request nonce; the docs templates carry it on
+    every script, style, and stylesheet-link tag so a strict policy renders the
+    UI without allow-listing the asset hosts (a nonced element is permitted
+    regardless of its source per CSP Level 3). An app with no CSP nonce armed
+    gets an empty string, leaving the markup byte-identical to before.
+    """
+    # Imported here rather than at module top: `contrib.openapi` is loaded for
+    # every app that serves a schema, and this pulls the middleware package in
+    # only for apps that actually render the docs pages.
+    from veloce.middleware.security import csp_nonce
+
+    nonce = csp_nonce(request)
+    return f' nonce="{html.escape(nonce, quote=True)}"' if nonce else ""
 
 
 def setup_openapi_routes(
@@ -1803,12 +1821,15 @@ def setup_openapi_routes(
             openapi_url=html.escape(openapi_url),
             ui_params=ui_params,
             init_oauth=init_oauth,
+            nonce=_nonce_attr(request),
         )
         return HTMLResponse(html_page)
 
     async def redoc_ui(request: Any):
         html_page = REDOC_HTML.format(
-            title=html.escape(app.title), openapi_url=html.escape(openapi_url)
+            title=html.escape(app.title),
+            openapi_url=html.escape(openapi_url),
+            nonce=_nonce_attr(request),
         )
         return HTMLResponse(html_page)
 
