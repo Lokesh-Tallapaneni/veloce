@@ -163,6 +163,7 @@ class LifecycleMixin:
         _lifespan_stack: Any
         _started_subapps: Any
         _mounted_apps: Any
+        _middlewares: Any
         _watchdog: Any
         _drain_spawned_tasks: Callable[..., Any]
 
@@ -416,6 +417,17 @@ class LifecycleMixin:
                     )
                     self._watchdog.start()
                     stack.push_async_callback(self._stop_watchdog)
+
+                # Middleware whose configuration references the route table can
+                # only be checked once every route exists, which is here - after
+                # the startup handlers and the sub-app fan-out have registered
+                # theirs. A middleware validates by exposing `_validate_config`;
+                # raising from it fails the boot, so a misconfiguration surfaces
+                # at startup instead of as an error on every later request.
+                for _mw in self._middlewares:
+                    _validate = getattr(_mw, "_validate_config", None)
+                    if _validate is not None:
+                        _validate(self)
             except BaseException:
                 # Unwind whatever startup acquired before the failure, then let
                 # the original error propagate so the ASGI/native caller emits

@@ -220,8 +220,16 @@ def _encode_response_head(
             _reject_header_crlf(value, f"{name} header value")
             parts.append(f"{name}: {_encode_header_value(value)}\r\n")
 
+    # HTTP field names are case-insensitive (RFC 9110 Sec. 5.1), so two
+    # spellings of one field must not both reach the wire - a duplicate
+    # `Content-Security-Policy` is intersected by browsers to the most
+    # restrictive, silently narrowing the policy the later writer intended.
+    # The slot map lets a second spelling overwrite the first. `Set-Cookie` is
+    # excluded: it is legitimately multi-valued.
+    slot_by_name: dict[str, int] = {}
     for key, value in headers.items():
-        if key.lower() == "set-cookie":
+        key_lower = str(key).lower()
+        if key_lower == "set-cookie":
             # One `Set-Cookie` dict entry may carry several cookies joined
             # by the internal separator; emit and CRLF-validate each line.
             for line in str(value).split(SET_COOKIE_JOINER):
@@ -231,7 +239,13 @@ def _encode_response_head(
             _reject_header_crlf(str(key), MSG_LABEL_HEADER_NAME)
             sval = str(value)
             _reject_header_crlf(sval, f"{key} header value")
-            parts.append(f"{key}: {_encode_header_value(sval)}\r\n")
+            line = f"{key}: {_encode_header_value(sval)}\r\n"
+            slot = slot_by_name.get(key_lower)
+            if slot is None:
+                slot_by_name[key_lower] = len(parts)
+                parts.append(line)
+            else:
+                parts[slot] = line
     return parts
 
 

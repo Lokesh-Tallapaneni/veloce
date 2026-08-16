@@ -371,6 +371,36 @@ def test_valid_override_key_passes_validation():
     assert mw._route_strategies is built
 
 
+def test_unknown_override_key_fails_startup_not_every_request():
+    # An override key matching no route must fail the boot with the naming
+    # error, not surface as a 500 on each request once traffic arrives.
+    app = Veloce(openapi_url=None)
+
+    @app.get("/cheap")
+    async def cheap(request: Request):
+        return {}
+
+    app.add_middleware(
+        RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/nope": FixedWindow(1)})
+    )
+    with pytest.raises(ValueError, match="match no registered route"):
+        TestClient(app)
+
+
+def test_valid_override_key_starts_up_cleanly():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/strict")
+    async def strict(request: Request):
+        return {}
+
+    app.add_middleware(
+        RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/strict": FixedWindow(5, 60)})
+    )
+    with TestClient(app) as tc:
+        assert tc.get("/strict", headers=_UA).status_code == 200
+
+
 def test_blueprint_override_key_needs_prefix():
     from veloce import Blueprint
 
