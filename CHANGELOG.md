@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A scalar `Body()` parameter is documented in the OpenAPI `requestBody` instead of omitted. ([#267](https://github.com/Lokesh-Tallapaneni/veloce/pull/267))
 - `Body(embed=True)` params document one JSON object body, required only when a field is. ([#267](https://github.com/Lokesh-Tallapaneni/veloce/pull/267))
+- On Python 3.10, an `Annotated[T, Body()]` parameter defaulting to `None` is read from the body, not the query string. ([#267](https://github.com/Lokesh-Tallapaneni/veloce/pull/267))
 
 ## [0.12.0] - 2026-08-16
 

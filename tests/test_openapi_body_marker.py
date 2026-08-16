@@ -92,6 +92,23 @@ def test_documented_embed_body_matches_the_runtime():
     assert client.post("/echo", json={}).status_code == 422
 
 
+def test_marker_survives_a_none_default_on_every_version():
+    # Python 3.10's `get_type_hints` wraps a `None`-defaulted parameter in
+    # `Optional[...]`, which pushes `Annotated` out of the outermost position.
+    # The marker must still be found, or the parameter silently rebinds to the
+    # query string and is read from the wrong place.
+    app = Veloce(openapi_url=None)
+
+    @app.post("/opt")
+    async def opt(
+        a: Annotated[str, Body(embed=True)],
+        b: Annotated[int | None, Body(None, embed=True)] = None,
+    ):
+        return {"a": a, "b": b}
+
+    assert app.test_client().post("/opt", json={"a": "x", "b": 2}).json() == {"a": "x", "b": 2}
+
+
 def test_model_body_still_takes_precedence():
     app = Veloce()
 

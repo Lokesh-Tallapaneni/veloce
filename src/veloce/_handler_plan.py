@@ -630,6 +630,18 @@ def build_plan(
         default = param.default
         has_default = default is not inspect.Parameter.empty
 
+        # Python 3.10's `get_type_hints` still applies the implicit-Optional rule
+        # that PEP 484 dropped in 3.11: a parameter defaulting to `None` comes
+        # back as `Optional[Annotated[T, marker]]`, so `Annotated` is no longer
+        # outermost and the marker below would be missed - silently rebinding a
+        # `Body()` / `Header()` / `Cookie()` parameter to the query string. Peel
+        # that wrapper so every supported version sees the same shape; on 3.11+
+        # the wrapper is never added and this is a no-op.
+        if annotation is not None and not hasattr(annotation, "__metadata__"):
+            _was_optional, _inner_annotation = _unwrap_optional(annotation)
+            if _was_optional and hasattr(_inner_annotation, "__metadata__"):
+                annotation = _inner_annotation
+
         # PEP 593: `Annotated[T, Depends(...)]` or `Annotated[T, Query(...)]`.
         # If the metadata carries a `Depends` (or `ParamBase` marker) and
         # the user didn't ALSO set it as the default, hoist the marker
