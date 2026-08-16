@@ -16,6 +16,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 from veloce import status
 from veloce._constants import (
@@ -371,6 +372,55 @@ class RateLimitMiddleware(Middleware):
         request._state[_RL_STATE_KEY] = result
         return None
 
+    def _collect_route_strategies(self, app: Any) -> tuple[dict[str, RateLimitStrategy], set[str]]:
+        """Scan `app`'s routes for `@rate_limit` tags, returning them and every template.
+
+        Shared by the startup validation and the per-request build so the two
+        read one route scan and cannot drift. `include_hidden=True` so a
+        `@rate_limit` tag on a route registered with `include_in_schema=False`
+        (a login form POST, an internal endpoint - the routes most worth
+        throttling) is still discovered; the default schema view would silently
+        drop it.
+        """
+        tagged_strategies: dict[str, RateLimitStrategy] = {}
+        known: set[str] = set()
+        for _method, _path, info in app._collect_all_routes(include_hidden=True):
+            known.add(info.path_template)
+            tagged = getattr(info.handler, RATE_LIMIT_ATTR, None)
+            if isinstance(tagged, RateLimitStrategy):
+                tagged_strategies[info.path_template] = tagged
+        return tagged_strategies, known
+
+    def _reject_unknown_overrides(self, known: set[str]) -> None:
+        """Raise when an override key matches no registered route template.
+
+        A key that matches nothing means a route the operator believes is
+        throttled but is not, so it is rejected rather than ignored.
+        """
+        if self._overrides is None:
+            return
+        unknown = sorted(key for key in self._overrides if key not in known)
+        if unknown:
+            raise ValueError(
+                f"RateLimitMiddleware overrides reference route template(s) {unknown} "
+                "that match no registered route; an override key is the full route "
+                "template as registered, including any blueprint url_prefix "
+                "(for example '/api/login', not '/login')"
+            )
+
+    def _validate_config(self, app: Any) -> None:
+        """Validate the `overrides` map against `app`'s routes at startup.
+
+        Called once per app startup, after every route is registered, so a stale
+        or misspelled override key fails the boot with a message naming it -
+        rather than surfacing as a `500` on each subsequent request, which is
+        what the per-request build alone would produce.
+        """
+        if self._strategy is None or self._overrides is None:
+            return
+        _tagged, known = self._collect_route_strategies(app)
+        self._reject_unknown_overrides(known)
+
     def _build_route_strategies(
         self, request: Request, gen: int | None = None
     ) -> dict[str, RateLimitStrategy]:
@@ -384,28 +434,11 @@ class RateLimitMiddleware(Middleware):
             # No app to scan yet (e.g. a bare unit-test request); don't cache, so
             # the real first request resolves the table.
             return {}
-        combined: dict[str, RateLimitStrategy] = {}
-        known: set[str] = set()
-        # `include_hidden=True` so a `@rate_limit` tag on a route registered with
-        # `include_in_schema=False` (a login form POST, an internal endpoint - the
-        # routes most worth throttling) is still discovered; the default schema
-        # view would silently drop it.
-        for _method, _path, info in app._collect_all_routes(include_hidden=True):
-            known.add(info.path_template)
-            tagged = getattr(info.handler, RATE_LIMIT_ATTR, None)
-            if isinstance(tagged, RateLimitStrategy):
-                combined[info.path_template] = tagged
+        combined, known = self._collect_route_strategies(app)
         if self._overrides is not None:
-            # Fail fast on an override key that matches no route - the silent
-            # alternative is a route the operator believes is throttled but is not.
-            unknown = sorted(key for key in self._overrides if key not in known)
-            if unknown:
-                raise ValueError(
-                    f"RateLimitMiddleware overrides reference route template(s) {unknown} "
-                    "that match no registered route; an override key is the full route "
-                    "template as registered, including any blueprint url_prefix "
-                    "(for example '/api/login', not '/login')"
-                )
+            # Startup validation already rejected unknown keys; this repeats the
+            # check because a route table can change after startup.
+            self._reject_unknown_overrides(known)
             combined.update(self._overrides)
         self._route_strategies = combined
         self._route_strategies_gen = gen if gen is not None else -1
