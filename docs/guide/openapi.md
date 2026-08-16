@@ -289,9 +289,62 @@ The request body references `ItemIn`; the `200` response references `ItemOut`.
 
 !!! tip
     Declaring distinct `…In` / `…Out` models keeps your request and response
-    contracts explicit. `response_model` is **not** inferred from the return
-    annotation — declare it on the route to document the output schema. See
-    [Requests and responses](requests-responses.md).
+    contracts explicit. See [Requests and responses](requests-responses.md).
+
+### The return annotation is the response model
+
+A handler that names a model in its return annotation needs no `response_model=`
+— the annotation becomes the contract, and is used to filter the response and to
+document it:
+
+```python
+from pydantic import BaseModel
+
+from veloce import Veloce
+
+
+class Item(BaseModel):
+    id: int
+    name: str
+
+
+app = Veloce()
+
+
+@app.get("/items/{item_id}")
+async def read_item(item_id: int) -> Item:
+    return Item(id=item_id, name="Portal Gun")
+```
+
+Because the annotation *filters*, returning a richer object under a narrower
+annotation is the way to keep internal fields off the wire while a type checker
+still accepts the return:
+
+```python
+class ItemInternal(Item):
+    cost_price: float
+
+
+@app.get("/safe/{item_id}")
+async def read_safe(item_id: int) -> Item:
+    # `cost_price` is dropped from the response — the contract is `Item`.
+    return ItemInternal(id=item_id, name="Portal Gun", cost_price=1.5)
+```
+
+An explicit `response_model=` always wins over the annotation. An annotation that
+names no model — a [`Response`](../reference.md#veloce.Response) subclass, `Any`,
+a bare `dict` — declares no contract and needs no opt-out. To keep a model
+annotation for your editor while declaring no contract, pass `response_model=None`.
+
+!!! note "Changed in version 0.12"
+    The return annotation previously had no effect on the response. A handler
+    annotated with a model now filters its response to that model's fields. Run
+    `veloce check` to see which routes are affected before upgrading.
+
+!!! tip "Find undocumented routes"
+    `veloce check` reports every route that publishes no response schema, and
+    every route whose `response_model=` contradicts its return annotation — so a
+    broken contract is visible before deploying rather than at request time.
 
 ## Per-route configuration
 

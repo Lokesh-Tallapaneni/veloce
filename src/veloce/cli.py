@@ -297,13 +297,24 @@ def _cmd_check(args: argparse.Namespace) -> int:
     _require_app_attr(app, "security_audit", "`.security_audit()`")
 
     issues = app.security_audit()
-    if not issues:
+    if issues:
+        print(f"Security audit: {len(issues)} issue(s) found:")
+        for issue in issues:
+            print(f"  - {issue}")
+    else:
         print("Security audit: no issues found.")
-        return 0
-    print(f"Security audit: {len(issues)} issue(s) found:")
-    for issue in issues:
-        print(f"  - {issue}")
-    return 1
+
+    # Response contracts are reported alongside the security posture so a route
+    # that documents nothing - or contradicts its own annotation - is visible
+    # before deploying, rather than surfacing as a client-side surprise.
+    contracts = app.response_contract_audit()
+    if contracts:
+        print(f"Response contracts: {len(contracts)} finding(s):")
+        for finding in contracts:
+            print(f"  - {finding}")
+    else:
+        print("Response contracts: every route publishes a response schema.")
+    return 1 if issues else 0
 
 
 def _cmd_new(args: argparse.Namespace) -> int:

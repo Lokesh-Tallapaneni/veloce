@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 from typing_extensions import Doc
 
 from veloce._constants import MSG_SUCCESSFUL_RESPONSE
+from veloce._model_backend import resolve_return_model
 from veloce._protocol_constants import (
     HTTP_METHOD_DELETE,
     HTTP_METHOD_GET,
@@ -46,6 +47,13 @@ from veloce.status import HTTP_200_OK
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 
 _logger = logging.getLogger(__name__)
+
+# Default for `response_model=`, distinguishing "not supplied" (derive the model
+# from the handler's return annotation) from an explicit `response_model=None`
+# (declare no response contract, even when the handler is annotated). Without the
+# sentinel a route could not keep a model return annotation for its type checker
+# while opting out of filtering and the OpenAPI response schema.
+_INFER_RESPONSE_MODEL: Any = object()
 
 # ── Module constants and helpers ───────────────────────────
 
@@ -981,9 +989,11 @@ class Router:
         response_model: Annotated[
             Any,
             Doc(
-                "Type used to filter and serialize the handler's return value and the OpenAPI response schema."
+                "Type used to filter and serialize the handler's return value and the OpenAPI "
+                "response schema. Defaults to the handler's return annotation when it names a "
+                "model; pass `None` to declare no response contract."
             ),
-        ] = None,
+        ] = _INFER_RESPONSE_MODEL,
         tags: Annotated[
             list[str] | None,
             Doc("OpenAPI tags for this route, combined with the router-level tags."),
@@ -1159,6 +1169,15 @@ class Router:
         combined_deps = list(self.router_dependencies)
         if dependencies:
             combined_deps.extend(dependencies)
+        # A handler that declares its response type in the return annotation gets
+        # that model as its contract, so the annotation is enforced rather than
+        # merely advisory: it filters the handler's return and documents the
+        # response. An explicit `response_model=` always wins, and an explicit
+        # `None` opts out. An annotation naming no model (a `Response` subclass,
+        # `Any`, a bare `dict`) resolves to `None` and declares no contract.
+        if response_model is _INFER_RESPONSE_MODEL:
+            response_model = resolve_return_model(handler)
+
         route_info = RouteInfo(
             handler=handler,
             param_names=param_names,
@@ -1625,9 +1644,11 @@ class Router:
         response_model: Annotated[
             Any,
             Doc(
-                "Type used to filter and serialize the handler's return value and the OpenAPI response schema."
+                "Type used to filter and serialize the handler's return value and the OpenAPI "
+                "response schema. Defaults to the handler's return annotation when it names a "
+                "model; pass `None` to declare no response contract."
             ),
-        ] = None,
+        ] = _INFER_RESPONSE_MODEL,
         tags: Annotated[
             list[str] | None,
             Doc("OpenAPI tags for this route, combined with the router-level tags."),

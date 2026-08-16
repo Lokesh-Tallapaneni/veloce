@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A handler's return annotation now supplies `response_model`, so the response is filtered to the annotated model. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+- Pass `response_model=None` to keep a model return annotation while declaring no response contract. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+
+### Added
+
+- `veloce check` reports routes with no response schema and routes whose `response_model` contradicts the return annotation. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+- `app.response_contract_audit()` returns those findings for a pre-deploy script or test. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+
+### Fixed
+
+- A `response_model` subclass instance is re-shaped to the declared model instead of leaking its extra fields. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+
 ## [0.11.0] - 2026-08-03
 
 ### Added

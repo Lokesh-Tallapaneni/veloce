@@ -15,7 +15,6 @@ handler must carry a non-empty description.
 
 from __future__ import annotations
 
-import typing
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -23,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from veloce._handler_plan import build_plan
-from veloce._model_backend import is_pydantic_model
+from veloce._model_backend import is_pydantic_model, resolve_return_model
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.descriptors import MCPDescriptor
@@ -120,24 +119,6 @@ class ToolRegistry(Registry[MCPTool]):
         self.register(tool)
 
 
-def _return_model(handler: Callable) -> type[BaseModel] | None:
-    """Return the handler's Pydantic return type, or `None`.
-
-    Resolved through `get_type_hints` so a `from __future__ import annotations`
-    string annotation still yields the real class. Any resolution failure (an
-    unresolvable forward reference, an exotic annotation) degrades to `None` -
-    the tool simply carries no output schema.
-    """
-    try:
-        hints = typing.get_type_hints(handler)
-    except Exception:
-        return None
-    annotation = hints.get("return")
-    if is_pydantic_model(annotation):
-        return annotation
-    return None
-
-
 def _output_schema_for(
     handler: Callable, route_info: Any, schemas_registry: dict[str, dict[str, Any]]
 ) -> tuple[dict[str, Any] | None, type[BaseModel] | None]:
@@ -162,7 +143,7 @@ def _output_schema_for(
             model = response_model
             by_alias = route_info.response_model_by_alias
     if model is None:
-        model = _return_model(handler)
+        model = resolve_return_model(handler)
     if model is None:
         return None, None
     schema = build_output_schema(model, schemas_registry, by_alias=by_alias)
