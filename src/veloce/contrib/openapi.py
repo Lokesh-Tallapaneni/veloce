@@ -736,9 +736,12 @@ def _pydantic_to_schema(
 def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> dict | None:
     """Render `response_model` into an OpenAPI schema object.
 
-    Handles three shapes:
+    Handles four shapes:
     - `MyModel` (Pydantic BaseModel subclass) -> `{"$ref": ".../MyModel"}`.
     - `list[MyModel]` (or any `Sequence[MyModel]`) -> array-of-refs.
+    - `A | B` / `A | None` (a union of models) -> `oneOf`, with `None`
+      rendered as the JSON Schema null type so an optional result is documented
+      rather than dropped.
     - Anything else -> `None` (caller omits the schema).
 
     Response models render under the model's serialization JSON Schema so
@@ -751,6 +754,21 @@ def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> 
             inner = registry.ref(args[0], mode="serialization")
             return {"type": "array", "items": inner}
         return {"type": "array", "items": {}}
+
+    if origin in (Union, types.UnionType):
+        variants: list[dict] = []
+        for arg in get_args(response_model):
+            if arg is type(None):
+                variants.append({"type": "null"})
+            elif _is_model_type(arg):
+                variants.append(registry.ref(arg, mode="serialization"))
+            else:
+                # A member with no schema form makes the whole union
+                # inexpressible; omit rather than document it partially.
+                return None
+        if not variants:
+            return None
+        return variants[0] if len(variants) == 1 else {"oneOf": variants}
 
     if _is_model_type(response_model):
         return registry.ref(response_model, mode="serialization")

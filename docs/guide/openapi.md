@@ -331,6 +331,28 @@ async def read_safe(item_id: int) -> Item:
     return ItemInternal(id=item_id, name="Portal Gun", cost_price=1.5)
 ```
 
+`list[Model]` works the same way — the response is documented as an array and its
+elements are filtered:
+
+```python
+@app.get("/items")
+async def list_items() -> list[Item]:
+    return [ItemInternal(id=1, name="Portal Gun", cost_price=1.5)]  # filtered to Item
+```
+
+A union documents its alternatives as `oneOf`. `Model | None` additionally
+documents the null case, and returning `None` is allowed:
+
+```python
+@app.get("/search")
+async def search() -> Item | None:
+    return None            # documented as oneOf [Item, null]
+```
+
+A union is **documented but not filtered** — which member a value should be
+re-shaped through is ambiguous — so use a single model when you need the
+response narrowed.
+
 An explicit `response_model=` always wins over the annotation. An annotation that
 names no model — a [`Response`](../reference.md#veloce.Response) subclass, `Any`,
 a bare `dict` — declares no contract and needs no opt-out. To keep a model
@@ -345,6 +367,9 @@ annotation for your editor while declaring no contract, pass `response_model=Non
     `veloce check` reports every route that publishes no response schema, and
     every route whose `response_model=` contradicts its return annotation — so a
     broken contract is visible before deploying rather than at request time.
+    `Veloce(debug=True)` logs the same findings at startup, so an undocumented
+    route surfaces on the first boot rather than when someone reads the docs
+    page.
 
 ## Per-route configuration
 
