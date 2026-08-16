@@ -8,6 +8,8 @@ it absent every msgspec branch is dead and behaviour is identical to today.
 
 from __future__ import annotations
 
+import typing
+from collections.abc import Callable
 from enum import IntEnum
 from typing import Any
 
@@ -38,6 +40,30 @@ class ModelBackend(IntEnum):
 def is_pydantic_model(tp: Any) -> bool:
     """Return True when `tp` is a `pydantic.BaseModel` subclass."""
     return isinstance(tp, type) and issubclass(tp, _PydanticModel)
+
+
+def resolve_return_model(handler: Callable[..., Any]) -> Any:
+    """Return the model type a handler declares as its return annotation, or `None`.
+
+    Registration-time only. Resolved through `get_type_hints` so a
+    `from __future__ import annotations` string annotation still yields the real
+    class. Only a model type is returned: a transport shape (`Response` and its
+    subclasses), `Any`, a bare `dict`, `None`, or any annotation that cannot be
+    resolved degrades to `None`, so an unrepresentable return type simply
+    declares no contract instead of needing an explicit opt-out.
+
+    Single source of the return-annotation contract, so the HTTP door
+    (`response_model`, OpenAPI) and the MCP door (`outputSchema`) derive the
+    same model from the same handler.
+    """
+    try:
+        hints = typing.get_type_hints(handler)
+    except Exception:
+        return None
+    annotation = hints.get("return")
+    if is_pydantic_model(annotation) or is_msgspec_struct(annotation):
+        return annotation
+    return None
 
 
 def is_msgspec_struct(tp: Any) -> bool:

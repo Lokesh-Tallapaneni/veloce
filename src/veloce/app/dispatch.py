@@ -1304,25 +1304,35 @@ class DispatchMixin:
                 if is_pydantic_model(inner):
                     dumped: list[Any] = []
                     for item in result:
-                        # Fast path: an element already of the target model
+                        # Fast path: an element already exactly the target model
                         # is dumped directly - skipping a re-validation
                         # round-trip and preserving the fields-set markers
                         # that `exclude_unset` reads (matching the scalar
-                        # branch below).
-                        if isinstance(item, inner):
+                        # branch below). A subclass is re-shaped instead, so it
+                        # cannot leak fields the declared element type excludes.
+                        if type(item) is inner:
                             dumped.append(item.model_dump(**dump_kwargs))
                         else:
-                            dumped.append(inner.model_validate(item).model_dump(**dump_kwargs))
+                            # Dump a model element to a dict before validating:
+                            # Pydantic does not revalidate an instance that
+                            # already satisfies the target type, so a subclass
+                            # would pass through carrying its own extra fields.
+                            payload = (
+                                item.model_dump() if isinstance(item, _PydanticBaseModel) else item
+                            )
+                            dumped.append(inner.model_validate(payload).model_dump(**dump_kwargs))
                     return dumped
             return result
 
         # Scalar Pydantic model.
         if is_pydantic_model(model):
-            # If the handler returned an instance of the target model, use
-            # it directly - the dump-then-validate roundtrip would erase
-            # the `__pydantic_fields_set__` info that drives
-            # `exclude_unset`.
-            if isinstance(result, model):
+            # Exactly the target model dumps directly - the dump-then-validate
+            # roundtrip would erase the `__pydantic_fields_set__` info that
+            # drives `exclude_unset`. A SUBCLASS must not take this path: it
+            # would dump the subclass's own fields, so a richer object returned
+            # under a base-model contract would leak the fields the contract
+            # excludes. It goes through validation below and is re-shaped.
+            if type(result) is model:
                 return result.model_dump(**dump_kwargs)
             # Cross-model or dict input: dump any incoming BaseModel to a
             # dict first so model_validate can re-shape it. Cross-model
