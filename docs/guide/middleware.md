@@ -339,6 +339,41 @@ app.add_http_middleware(RequestIDMiddleware())
 Middleware runs in the order it is added on the way in, and in reverse
 on the way out — the first one added is the outermost layer.
 
+That ordering covers the middleware registered with `add_middleware()`.
+Function middleware registered with `@app.middleware("http")` is a separate
+layer that always wraps the whole `add_middleware()` chain, so its position in
+your source file relative to an `add_middleware()` call does not change the
+result:
+
+```python
+from veloce import Middleware, Veloce
+
+app = Veloce()
+
+
+class Stamp(Middleware):
+    async def process_response(self, request, response):
+        response.headers["X-Stamp"] = "1"
+        return response
+
+
+@app.middleware("http")
+async def outer(request, call_next):
+    # Runs before Stamp on the way in, and after it on the way out —
+    # regardless of whether this decorator appears above or below
+    # `app.add_middleware(Stamp)`.
+    return await call_next(request)
+
+
+app.add_middleware(Stamp)
+```
+
+!!! note
+    Because the two registration styles form separate layers, a function
+    middleware always sees the response *after* every `add_middleware()`
+    middleware has processed it. Register both halves of a cooperating pair in
+    the same style if their relative order matters.
+
 ## Excluding middleware per route
 
 A route can opt out of named middleware with `exclude_middleware`. Each entry
