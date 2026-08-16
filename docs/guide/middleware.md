@@ -374,6 +374,34 @@ app.add_middleware(Stamp)
     middleware has processed it. Register both halves of a cooperating pair in
     the same style if their relative order matters.
 
+## Short-circuiting the request
+
+`process_request` returns `None` to let the request carry on. Returning a
+[`Response`](../reference.md#veloce.Response) instead **short-circuits** the
+pipeline: the handler never runs, and neither does the `process_request` of any
+middleware added after this one. The returned response still travels back out
+through the response phase.
+
+```python
+from veloce import JSONResponse, Middleware, Request, Response, Veloce
+
+app = Veloce()
+
+
+class APIKeyMiddleware(Middleware):
+    async def process_request(self, request: Request) -> Response | None:
+        if request.headers.get("X-API-Key") != "expected-key":
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return None  # carry on to the handler
+
+
+app.add_middleware(APIKeyMiddleware)
+```
+
+This is how every built-in that rejects a request before it reaches your code
+works — `CSRFMiddleware`, `RateLimitMiddleware`, `TrustedHostMiddleware`, and
+`CORSMiddleware`'s preflight reply all short-circuit from `process_request`.
+
 ## Excluding middleware per route
 
 A route can opt out of named middleware with `exclude_middleware`. Each entry

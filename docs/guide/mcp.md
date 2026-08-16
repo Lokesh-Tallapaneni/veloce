@@ -64,8 +64,8 @@ async def create_user(user: User):
 ```
 
 An exposed route keeps every guard it has as an HTTP endpoint — its `Security`
-schemes, `Depends`, and middleware all run on the agent-facing call too, so
-exposing a route never bypasses its authorization.
+schemes, `Depends`, and request middleware all run on the agent-facing call too,
+so exposing a route never bypasses its authorization.
 
 Every exposed handler must carry a non-empty `mcp_description`. A missing
 description raises at registration time, before the server starts.
@@ -79,6 +79,21 @@ A middleware or hook that returns a response (an auth `401`, for example)
 short-circuits the call - the handler is not invoked, `teardown_request` still
 runs, and the response becomes the tool result, surfaced as an error when its
 status is `4xx`/`5xx`.
+
+!!! note "Only the request phase is replayed"
+    [`Middleware.process_response`](middleware.md#veloce-middleware-vs-asgi-middleware)
+    does not run on an MCP call. A tool result is derived from the response body,
+    not from a wire response, so a middleware that decorates the response —
+    `GZipMiddleware`, `SecurityHeadersMiddleware`, `ConditionalGetMiddleware` —
+    has nothing to act on. One that spans both phases still does its request-phase
+    work: `SessionMiddleware` loads the session for the handler, but writes no
+    cookie back, since an MCP client has no cookie jar.
+
+    Dispatch-shape middleware — `@app.middleware("http")` and
+    [`BaseHTTPMiddleware`](middleware.md#class-based-middleware) — is not replayed
+    either. It wraps the ASGI request, and a replayed tool call never becomes one.
+    Put logic that must run on both doors in a
+    [`Middleware`](middleware.md#veloce-middleware-vs-asgi-middleware) subclass.
 
 The synthetic `request` carries the wrapped route's real HTTP method and rule
 path, so a handler, dependency, or hook that branches on `request.method` /
@@ -274,11 +289,11 @@ async def user(user_id: int) -> dict:
 ```
 
 A resource read replays the route through the same request lifecycle a tool call
-does, so its `Depends`, `Security`, middleware, and `response_model` all run — a
-field outside the response model never reaches the agent, and a guard that rejects
-the call fails the read. The response body becomes the resource contents: a JSON or
-`text/*` body is returned as `text`, and any other media type (an image, a binary
-file) as a base64 `blob`.
+does, so its `Depends`, `Security`, request middleware, and `response_model` all
+run — a field outside the response model never reaches the agent, and a guard
+that rejects the call fails the read. The response body becomes the resource
+contents: a JSON or `text/*` body is returned as `text`, and any other media type
+(an image, a binary file) as a base64 `blob`.
 
 !!! warning "Resources are read-only"
     Only a `GET`/`HEAD` route may be a resource; exposing a mutating route this way
@@ -968,16 +983,21 @@ app.add_middleware(AuthMiddleware)
 app.mount_mcp(transport="http", auth=MCPAuth(...), exclude_middleware=["AuthMiddleware"])
 ```
 
-An exposed route's `Depends`, `Security`, and middleware **run** on the agent call
-(the lifecycle is replayed), but the synthetic MCP request carries no browser
-credential. So an app-wide auth middleware needs to step aside in two places, each
-with a first-class mechanism (no path matching).
+An exposed route's `Depends`, `Security`, and request middleware **run** on the
+agent call (the lifecycle is replayed), but the synthetic MCP request carries no
+browser credential. So an app-wide auth middleware needs to step aside in two
+places, each with a first-class mechanism (no path matching).
 
 `exclude_middleware` covers the `POST /mcp` request; `request.is_mcp` covers the
 replayed tool calls. Business middleware and dependencies (a DB session, request-id
-injection) need no change — they run identically on both doors. (`exclude_middleware`
-matches `Middleware`-class middleware by name; a dispatch-style `@app.middleware("http")`
-wrapper should check `request.is_mcp` itself.)
+injection) need no change — they run identically on both doors.
+
+Both mechanisms address a [`Middleware`](middleware.md#veloce-middleware-vs-asgi-middleware)
+subclass: `exclude_middleware` matches one by name, and `request.is_mcp` is `True`
+only on a replayed call. Neither reaches dispatch-shape middleware, which is not
+replayed at all and sees `request.is_mcp` as `False` on the transport request — so
+an auth check written as `@app.middleware("http")` has no way to step aside. Write
+it as a `Middleware` subclass instead.
 
 !!! warning "Tool arguments are not credentials"
     Veloce does **not** seed an agent's tool arguments into the synthetic request's
