@@ -830,14 +830,24 @@ def _apply_marker_constraints(param_schema: dict[str, Any], marker: Any) -> None
 
 def _extract_parameters(
     info: Any, schemas_registry: SchemaRegistry
-) -> tuple[list[dict], dict | None, list[tuple[str, dict, bool, bool]]]:
+) -> tuple[
+    list[dict],
+    dict | None,
+    list[tuple[str, dict, bool, bool]],
+    list[tuple[str, dict, bool]],
+    tuple[dict, bool] | None,
+]:
     """Classify every parameter by lowering the route's handler plan.
 
-    Returns `(parameters, request_body_schema, form_fields)`:
+    Returns `(parameters, request_body_schema, form_fields, body_fields, scalar_body)`:
     - `parameters` - OpenAPI parameter objects for path/query/header/cookie.
     - `request_body_schema` - schema of the request body model (or None).
     - `form_fields` - `(alias, schema, required, is_file)` tuples for
       `Form()` / `File()` params, consumed by `_extract_request_body`.
+    - `body_fields` - `(alias, schema, required)` tuples for `Body(embed=True)`
+      params, which the resolver reads as named keys of a JSON object body.
+    - `scalar_body` - `(schema, required)` for a non-embedded `Body()` over a
+      non-model, which the resolver fills from the whole JSON body.
 
     Walks the same `HandlerPlan` the resolver executes (via
     `iter_param_descriptors`), so the documented contract matches the one the
@@ -847,6 +857,8 @@ def _extract_parameters(
     parameters: list[dict] = []
     request_body_schema: dict | None = None
     form_fields: list[tuple[str, dict, bool, bool]] = []
+    body_fields: list[tuple[str, dict, bool]] = []
+    scalar_body: tuple[dict, bool] | None = None
 
     for d in iter_param_descriptors(RouteContract.from_route_info(info)):
         marker = d.marker
@@ -858,11 +870,32 @@ def _extract_parameters(
 
         if location == "body":
             # A bare model or `Body()`-wrapped model is the JSON request body. A
-            # `Body()` over a non-model carries no documentable schema, matching
-            # the previous walk which dropped it. A JSON body is always required:
-            # the resolver 422s on a missing body even for an `Optional` model.
+            # JSON body is always required there: the resolver 422s on a missing
+            # body even for an `Optional` model.
             if d.model is not None:
                 request_body_schema = schemas_registry.ref(d.model, mode="validation")
+                continue
+            # A `Body()` over a non-model still has a documentable shape, and
+            # which shape depends on `embed`: an embedded param is one named key
+            # of a JSON object body, while a non-embedded one receives the whole
+            # body. Both are collected here so the operation documents the body
+            # the resolver actually reads.
+            body_schema: dict[str, Any] = _python_type_to_schema(d.target_type)
+            if d.is_list:
+                body_schema = {"type": "array", "items": body_schema}
+            if marker is not None:
+                _apply_marker_constraints(body_schema, marker)
+                body_required = not (marker.has_default or d.is_optional)
+                body_alias = marker.alias or d.name
+                embedded = bool(getattr(marker, "embed", False))
+            else:
+                body_required = not (d.has_default or d.is_optional)
+                body_alias = d.name
+                embedded = False
+            if embedded:
+                body_fields.append((body_alias, body_schema, body_required))
+            elif scalar_body is None:
+                scalar_body = (body_schema, body_required)
             continue
 
         if location == "form":
@@ -939,12 +972,14 @@ def _extract_parameters(
 
         parameters.append(param_info)
 
-    return parameters, request_body_schema, form_fields
+    return parameters, request_body_schema, form_fields, body_fields, scalar_body
 
 
 def _extract_request_body(
     request_body_schema: dict | None,
     form_fields: list[tuple[str, dict, bool, bool]],
+    body_fields: list[tuple[str, dict, bool]] | None = None,
+    scalar_body: tuple[dict, bool] | None = None,
 ) -> dict | None:
     """Build the OpenAPI `requestBody` object, or `None` when no body params exist.
 
@@ -962,6 +997,28 @@ def _extract_request_body(
             "required": True,
             "content": {MIME_JSON: {"schema": request_body_schema}},
         }
+    # `Body(embed=True)` params are named keys of one JSON object body. The body
+    # is only required when at least one of them is, matching a resolver that
+    # accepts an absent body when every field carries a default.
+    if body_fields:
+        embed_properties: dict[str, Any] = {}
+        embed_required: list[str] = []
+        for bname, bschema, breq in body_fields:
+            embed_properties[bname] = bschema
+            if breq:
+                embed_required.append(bname)
+        embed_schema: dict[str, Any] = {"type": "object", "properties": embed_properties}
+        if embed_required:
+            embed_schema["required"] = embed_required
+        return {
+            "required": bool(embed_required),
+            "content": {MIME_JSON: {"schema": embed_schema}},
+        }
+    # A non-embedded `Body()` over a non-model receives the whole JSON body, so
+    # the body schema is that value's own schema rather than an object wrapper.
+    if scalar_body is not None:
+        schema, required = scalar_body
+        return {"required": required, "content": {MIME_JSON: {"schema": schema}}}
     if not form_fields:
         return None
     has_file = any(is_file for _, _, _, is_file in form_fields)
@@ -1362,11 +1419,13 @@ def _build_operation(
     if getattr(info, "callbacks", None):
         operation["callbacks"] = info.callbacks
 
-    parameters, request_body_schema, form_fields = _extract_parameters(info, schemas_registry)
+    parameters, request_body_schema, form_fields, body_fields, scalar_body = _extract_parameters(
+        info, schemas_registry
+    )
     if parameters:
         operation["parameters"] = parameters
 
-    request_body = _extract_request_body(request_body_schema, form_fields)
+    request_body = _extract_request_body(request_body_schema, form_fields, body_fields, scalar_body)
     if request_body is not None:
         operation["requestBody"] = request_body
 

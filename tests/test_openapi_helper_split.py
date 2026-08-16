@@ -119,8 +119,10 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     routes = list(app._collect_all_routes())
     method, path, info = next((m, p, i) for m, p, i in routes if p == "/items" and m == "POST")
     schemas_registry = SchemaRegistry()
-    params, body_schema, form_fields = _extract_parameters(info, schemas_registry)
-    request_body = _extract_request_body(body_schema, form_fields)
+    params, body_schema, form_fields, body_fields, scalar_body = _extract_parameters(
+        info, schemas_registry
+    )
+    request_body = _extract_request_body(body_schema, form_fields, body_fields, scalar_body)
     # POST /items carries a JSON body, so its request is validatable and the
     # 422 response is auto-added — mirror the orchestrator's argument.
     has_validatable_params = bool(params) or request_body is not None
