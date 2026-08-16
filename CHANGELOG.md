@@ -8,8 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A scalar `Body()` parameter is documented in the OpenAPI `requestBody` instead of omitted. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
-- `Body(embed=True)` params document one JSON object body, required only when a field is. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+- A scalar `Body()` parameter is documented in the OpenAPI `requestBody` instead of omitted. ([#267](https://github.com/Lokesh-Tallapaneni/veloce/pull/267))
+- `Body(embed=True)` params document one JSON object body, required only when a field is. ([#267](https://github.com/Lokesh-Tallapaneni/veloce/pull/267))
 
 ## [0.12.0] - 2026-08-16
 
