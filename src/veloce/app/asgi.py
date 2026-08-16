@@ -118,6 +118,15 @@ def _build_asgi_headers(
     has_ct = False
     has_cl = False
     asgi_headers: list[tuple[bytes, bytes]] = []
+    # `Response.headers` is a case-SENSITIVE dict, but HTTP field names are
+    # case-insensitive (RFC 9110 Sec. 5.1): `Content-Security-Policy` and
+    # `content-security-policy` are one field, and emitting both would ship a
+    # duplicate that browsers intersect to the most restrictive - silently
+    # narrowing the policy the later writer intended. Track where each folded
+    # name was emitted so a second spelling overwrites the first rather than
+    # appending beside it. `Set-Cookie` is excluded: it is legitimately
+    # multi-valued, so every entry is emitted.
+    slot_by_name: dict[str, int] = {}
     for k, v in headers.items():
         k_lower = k.lower()
         if k_lower == "set-cookie":
@@ -136,7 +145,13 @@ def _build_asgi_headers(
                     continue
             _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
             _reject_header_crlf(v, f"{k} header value")
-            asgi_headers.append((k_lower.encode(), _encode_header_value(v).encode("latin-1")))
+            entry = (k_lower.encode(), _encode_header_value(v).encode("latin-1"))
+            slot = slot_by_name.get(k_lower)
+            if slot is None:
+                slot_by_name[k_lower] = len(asgi_headers)
+                asgi_headers.append(entry)
+            else:
+                asgi_headers[slot] = entry
     return asgi_headers, has_ct, has_cl
 
 
