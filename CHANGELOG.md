@@ -10,13 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `app.install(plugin)` registers an app extension in one call — any object with an `install(self, app)` method. ([#253](https://github.com/Lokesh-Tallapaneni/veloce/pull/253))
 - `name`, when set on a plugin, records it under `app.extensions`. ([#253](https://github.com/Lokesh-Tallapaneni/veloce/pull/253))
-- The `/docs` and `/redoc` pages carry the CSP nonce on every script, style, and stylesheet tag. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+- The `/docs` and `/redoc` pages carry the CSP nonce on every script, style, and stylesheet tag. ([#260](https://github.com/Lokesh-Tallapaneni/veloce/pull/260))
 
 ### Fixed
 
-- A response emits one header line per field name, so two casings of one header no longer both ship. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
-- `RateLimitMiddleware` rejects an override key matching no route at startup, not on every request. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
-
+- A response emits one header line per field name, so two casings of one header no longer both ship. ([#260](https://github.com/Lokesh-Tallapaneni/veloce/pull/260))
+- `RateLimitMiddleware` rejects an override key matching no route at startup, not on every request. ([#260](https://github.com/Lokesh-Tallapaneni/veloce/pull/260))
 - `veloce custom` prints the app's CLI group help instead of crashing when no command is given. ([#254](https://github.com/Lokesh-Tallapaneni/veloce/pull/254))
 
 ## [0.10.0] - 2026-07-06
