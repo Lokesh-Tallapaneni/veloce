@@ -164,6 +164,8 @@ class LifecycleMixin:
         _started_subapps: Any
         _mounted_apps: Any
         _middlewares: Any
+        debug: Any
+        response_contract_audit: Callable[[], list[str]]
         _watchdog: Any
         _drain_spawned_tasks: Callable[..., Any]
 
@@ -428,6 +430,14 @@ class LifecycleMixin:
                     _validate = getattr(_mw, "_validate_config", None)
                     if _validate is not None:
                         _validate(self)
+
+                # In debug, surface response contracts at first boot: a route
+                # that publishes no schema, or whose `response_model` disagrees
+                # with its return annotation, otherwise degrades silently and is
+                # only noticed by reading the rendered docs.
+                if self.debug:
+                    for _finding in self.response_contract_audit():
+                        self.logger.warning("response contract: %s", _finding)
             except BaseException:
                 # Unwind whatever startup acquired before the failure, then let
                 # the original error propagate so the ASGI/native caller emits

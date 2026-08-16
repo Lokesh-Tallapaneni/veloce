@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 from typing_extensions import Doc
 
 from veloce._constants import MSG_SUCCESSFUL_RESPONSE
-from veloce._model_backend import resolve_return_model
+from veloce._model_backend import resolve_response_contract
 from veloce._protocol_constants import (
     HTTP_METHOD_DELETE,
     HTTP_METHOD_GET,
@@ -1176,7 +1176,7 @@ class Router:
         # `None` opts out. An annotation naming no model (a `Response` subclass,
         # `Any`, a bare `dict`) resolves to `None` and declares no contract.
         if response_model is _INFER_RESPONSE_MODEL:
-            response_model = resolve_return_model(handler)
+            response_model = resolve_response_contract(handler)
 
         route_info = RouteInfo(
             handler=handler,

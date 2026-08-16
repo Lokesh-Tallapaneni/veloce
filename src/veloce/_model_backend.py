@@ -8,10 +8,11 @@ it absent every msgspec branch is dead and behaviour is identical to today.
 
 from __future__ import annotations
 
+import types
 import typing
 from collections.abc import Callable
 from enum import IntEnum
-from typing import Any
+from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel as _PydanticModel
 
@@ -62,6 +63,50 @@ def resolve_return_model(handler: Callable[..., Any]) -> Any:
         return None
     annotation = hints.get("return")
     if is_pydantic_model(annotation) or is_msgspec_struct(annotation):
+        return annotation
+    return None
+
+
+def _is_model_union(tp: Any) -> bool:
+    """True when `tp` is a union whose members are all models or `None`."""
+    if get_origin(tp) not in (typing.Union, types.UnionType):
+        return False
+    args = get_args(tp)
+    if not args:
+        return False
+    members = [a for a in args if a is not type(None)]
+    return bool(members) and all(is_pydantic_model(a) or is_msgspec_struct(a) for a in members)
+
+
+def resolve_response_contract(handler: Callable[..., Any]) -> Any:
+    """Return the response contract a handler declares in its return annotation.
+
+    Registration-time only. Widens `resolve_return_model` to the shapes a route
+    can document and serialize: a model, `list[Model]`, and a union of models
+    (including `Model | None`). A union documents its alternatives but is not
+    used to filter - which member a value should be re-shaped through is
+    ambiguous - so only a model and `list[Model]` reach the response filter.
+
+    Anything else - a transport class, `Any`, a bare `dict`, an unresolvable
+    annotation - returns `None`, declaring no contract without needing an
+    explicit opt-out.
+    """
+    try:
+        hints = typing.get_type_hints(handler)
+    except Exception:
+        return None
+    annotation = hints.get("return")
+    if annotation is None:
+        return None
+    if is_pydantic_model(annotation) or is_msgspec_struct(annotation):
+        return annotation
+    origin = get_origin(annotation)
+    if origin is list:
+        args = get_args(annotation)
+        if args and (is_pydantic_model(args[0]) or is_msgspec_struct(args[0])):
+            return annotation
+        return None
+    if _is_model_union(annotation):
         return annotation
     return None
 

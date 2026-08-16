@@ -131,6 +131,50 @@ def test_transport_and_untyped_annotations_declare_no_contract():
     assert _schema_for(app, "/html") is None
 
 
+def test_list_annotation_documents_and_filters():
+    app = Veloce()
+
+    @app.get("/items")
+    async def items() -> list[Item]:
+        return [ItemWithSecret(id=1, name="ada", secret="SECRET")]
+
+    schema = _schema_for(app, "/items")["application/json"]["schema"]
+    assert schema["type"] == "array"
+    assert schema["items"]["$ref"].endswith("/Item")
+    # A `list[Model]` contract filters its elements too.
+    assert app.test_client().get("/items").json() == [{"id": 1, "name": "ada"}]
+
+
+def test_union_annotation_documents_alternatives():
+    app = Veloce()
+
+    @app.get("/either")
+    async def either() -> Item | Other:
+        return Item(id=1, name="a")
+
+    schema = _schema_for(app, "/either")["application/json"]["schema"]
+    refs = {v["$ref"].rsplit("/", 1)[-1] for v in schema["oneOf"]}
+    assert refs == {"Item", "Other"}
+    # A union documents its alternatives but does not filter - which member to
+    # re-shape through is ambiguous - so the value serializes unchanged.
+    assert app.test_client().get("/either").json() == {"id": 1, "name": "a"}
+
+
+def test_optional_annotation_documents_null_and_allows_none():
+    app = Veloce()
+
+    @app.get("/maybe")
+    async def maybe() -> Item | None:
+        return None
+
+    schema = _schema_for(app, "/maybe")["application/json"]["schema"]
+    assert {"type": "null"} in schema["oneOf"]
+    # Returning None under an optional contract must not fail the request.
+    resp = app.test_client().get("/maybe")
+    assert resp.status_code == 200
+    assert resp.json() is None
+
+
 # ── Response-contract audit ──────────────────────────────────────────
 
 
@@ -154,6 +198,20 @@ def test_audit_lists_routes_with_no_response_schema():
 
     findings = app.response_contract_audit()
     assert any("publish no response schema" in f and "/free" in f for f in findings)
+
+
+def test_debug_logs_the_contract_findings_at_startup(caplog):
+    # The findings must reach a developer at first boot, not only when someone
+    # runs `veloce check` or reads the rendered docs.
+    app = Veloce(openapi_url=None, debug=True)
+
+    @app.get("/free")
+    async def free():
+        return {"a": 1}
+
+    with caplog.at_level("WARNING"):
+        app.test_client()  # constructing the client runs startup
+    assert any("publish no response schema" in r.getMessage() for r in caplog.records)
 
 
 def test_audit_is_quiet_when_every_route_is_documented():

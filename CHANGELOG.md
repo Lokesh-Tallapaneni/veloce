@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `veloce check` reports routes with no response schema and routes whose `response_model` contradicts the return annotation. ([#263](https://github.com/Lokesh-Tallapaneni/veloce/pull/263))
 - `app.response_contract_audit()` returns those findings for a pre-deploy script or test. ([#263](https://github.com/Lokesh-Tallapaneni/veloce/pull/263))
+- A `list[Model]` return annotation documents an array response and filters its elements. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+- A union return annotation (`A | B`, `A | None`) documents its alternatives as `oneOf`. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+- `Veloce(debug=True)` logs the response-contract findings at startup. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
 
 ### Fixed
 
