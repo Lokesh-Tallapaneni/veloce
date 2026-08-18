@@ -151,6 +151,10 @@ class SessionStore:
     the contract without any real awaiting.
     """
 
+    # Empty so a slotted concrete store actually stays slotted; without it the
+    # subclasses' own `__slots__` are inert and every instance carries a dict.
+    __slots__ = ()
+
     async def read(self, session_id: str) -> dict[str, Any] | None:
         """Return the stored payload for `session_id`, or `None` when it
         is absent, expired, or has been revoked."""

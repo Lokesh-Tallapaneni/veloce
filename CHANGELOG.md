@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `WebSocket` declares `__slots__`, cutting per-connection memory; attach data to `ws.state`. ([#270](https://github.com/Lokesh-Tallapaneni/veloce/pull/270))
+- `SessionStore` declares `__slots__`, so a slotted store subclass no longer carries a `__dict__`. ([#270](https://github.com/Lokesh-Tallapaneni/veloce/pull/270))
 
 ### Added
 
