@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ws.app` exposes the serving application on a WebSocket, mirroring `request.app`. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+- `RateLimitMiddleware(strict_overrides=False)` warns instead of failing on an override key matching no route. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+
+### Fixed
+
+- A parameter marker's default is applied when an MCP tool call omits the field. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+- An MCP tool's `inputSchema` advertises a parameter marker's declared default. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+- `X-RateLimit-Reset` never advertises a wait longer than the configured window. ([#PRNUM](https://github.com/Lokesh-Tallapaneni/veloce/pull/PRNUM))
+
 ## [0.12.1] - 2026-08-16
 
 ### Fixed
