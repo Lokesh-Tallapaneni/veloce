@@ -111,3 +111,72 @@ def test_send_bytes_connectionreset_normalized():
             await ws.send_bytes(b"x")
 
     asyncio.new_event_loop().run_until_complete(run())
+
+
+# -- `ws.state` scratch namespace + slotted connection object ---------
+
+
+def test_state_namespace_holds_per_connection_data():
+    app = Veloce()
+    seen: list[tuple[str, str]] = []
+
+    @app.websocket("/s")
+    async def h(ws: WebSocket):
+        await ws.accept()
+        ws.state.user = await ws.receive_text()
+        ws.state["room"] = "lobby"
+        seen.append((ws.state.user, ws.state["room"]))
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/s") as ws:
+            ws.send_text("ada")
+        with client.websocket_connect("/s") as ws:
+            ws.send_text("grace")
+
+    # Each connection gets its own namespace rather than sharing one.
+    assert seen == [("ada", "lobby"), ("grace", "lobby")]
+
+
+def test_connection_rejects_undeclared_attributes():
+    """`WebSocket` is slotted, so application data goes on `ws.state`."""
+    import pytest
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        pass
+
+    ws = WebSocket.from_asgi({"type": "websocket", "path": "/", "headers": []}, receive, send)
+
+    assert not hasattr(ws, "__dict__")
+    with pytest.raises(AttributeError):
+        ws.user = "ada"
+
+
+def test_both_constructors_initialise_every_slot():
+    """A field added to one construction path only would surface as an
+    `AttributeError` at runtime, so both paths must fill every slot."""
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        pass
+
+    class _Transport:
+        def write(self, data): ...
+        def close(self): ...
+        def get_extra_info(self, name, default=None):
+            return default
+
+    asgi = WebSocket.from_asgi({"type": "websocket", "path": "/", "headers": []}, receive, send)
+    native = WebSocket.from_transport(
+        _Transport(),
+        {"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="},
+        {"type": "websocket", "path": "/", "headers": []},
+    )
+
+    for name in WebSocket.__slots__:
+        assert hasattr(asgi, name), f"{name} unset on the ASGI path"
+        assert hasattr(native, name), f"{name} unset on the raw-transport path"

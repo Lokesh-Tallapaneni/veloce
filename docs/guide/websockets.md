@@ -345,6 +345,37 @@ WebSocket handler too, so either works. Veloce does not populate an
     `ws.app`. Earlier versions reached the application only through
     `current_app`.
 
+### Per-connection data
+
+`ws.state` is the namespace for data that belongs to one connection — the
+authenticated user, a subscription id, a per-socket counter. It accepts both
+attribute and item syntax, and is discarded when the connection ends:
+
+```python
+from veloce import Veloce, WebSocket
+
+app = Veloce()
+
+
+@app.websocket("/ws")
+async def chat(ws: WebSocket) -> None:
+    await ws.accept()
+    ws.state.user = ws.query_params.get("user", "anonymous")
+    ws.state["room"] = ws.query_params.get("room", "lobby")
+
+    async for message in ws.iter_text():
+        await ws.send_text(f"[{ws.state['room']}] {ws.state.user}: {message}")
+```
+
+Assigning to the connection object itself (`ws.user = ...`) raises
+`AttributeError`. `WebSocket` is slotted so that a server holding thousands of
+open connections does not carry a per-connection `__dict__`, and `ws.state` is
+the supported place for application data.
+
+!!! note "Changed in version 0.13"
+    `WebSocket` declares `__slots__`. Code that attached its own attributes
+    directly to the connection object should move that data to `ws.state`.
+
 !!! warning "Close before `accept()` loses the close code"
     A WebSocket close code travels in a close *frame*, which only exists once
     the handshake has completed. Closing before `accept()` therefore rejects the
