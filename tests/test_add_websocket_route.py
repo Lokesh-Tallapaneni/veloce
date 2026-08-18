@@ -38,3 +38,28 @@ def test_websocket_route_decorator_alias():
 
 def test_websocket_route_is_websocket_alias():
     assert Veloce.websocket_route is Veloce.websocket
+
+
+def test_websocket_exposes_the_application():
+    # `ws.app` mirrors `request.app` so a handler reaches app state directly;
+    # the ASGI `scope` carries no `app` key, so this is the supported accessor.
+    from veloce import Veloce
+
+    app = Veloce(openapi_url=None)
+    app.state.marker = "value"
+    seen = {}
+
+    @app.websocket("/ws")
+    async def handler(ws: WebSocket) -> None:
+        seen["is_app"] = ws.app is app
+        seen["state"] = ws.app.state.marker
+        seen["scope_has_app"] = "app" in ws.scope
+        await ws.accept()
+        await ws.close()
+
+    with app.test_client().websocket_connect("/ws"):
+        pass
+
+    assert seen["is_app"] is True
+    assert seen["state"] == "value"
+    assert seen["scope_has_app"] is False

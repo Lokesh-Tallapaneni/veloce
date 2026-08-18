@@ -318,6 +318,52 @@ The `WebSocket` exposes `query_params`, `headers`, `cookies`, `client`,
 WebSocket handlers too, so authentication and shared setup are resolved
 the same way as for HTTP routes.
 
+### Reaching the application
+
+`ws.app` is the application serving the connection, mirroring
+[`request.app`](../reference.md#veloce.Request) — use it to read
+`app.state`, config, or an installed extension:
+
+```python
+from veloce import Veloce, WebSocket
+
+app = Veloce()
+app.state.broker = object()
+
+
+@app.websocket("/ws")
+async def feed(ws: WebSocket) -> None:
+    broker = ws.app.state.broker
+    await ws.accept()
+```
+
+The [`current_app`](../reference.md#veloce.current_app) proxy resolves inside a
+WebSocket handler too, so either works. Veloce does not populate an
+`app` key in the ASGI `scope`, so `ws.scope["app"]` raises `KeyError`.
+
+!!! note "Added in version 0.13"
+    `ws.app`. Earlier versions reached the application only through
+    `current_app`.
+
+!!! warning "Close before `accept()` loses the close code"
+    A WebSocket close code travels in a close *frame*, which only exists once
+    the handshake has completed. Closing before `accept()` therefore rejects the
+    handshake at the HTTP layer, and the client sees an abnormal closure rather
+    than the code you passed:
+
+    ```python
+    @app.websocket("/ws")
+    async def guard(ws: WebSocket) -> None:
+        if not authorised(ws):
+            await ws.accept()                       # accept first,
+            await ws.close(code=4001, reason="bad key")   # then close with the code
+            return
+        await ws.accept()
+    ```
+
+    Accept, then close, whenever the client needs to read a specific code such
+    as `4001`. This is a property of the WebSocket handshake, not of Veloce.
+
 ## Testing WebSockets
 
 The in-memory `TestClient` can drive a WebSocket without a network — see
