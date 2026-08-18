@@ -268,6 +268,9 @@ class AsgiMixin:
         # so the contextvar set here is scoped to the dispatch task and falls
         # through naturally when it ends - mirroring the HTTP dispatch pattern.
         _current_app_var.set(self)
+        # Mirror `Request.app` so a WebSocket handler reaches its application
+        # directly, not only through the `current_app` proxy.
+        ws.app = self
         g._reset()
         # A fresh resolver per connection: a WebSocket is long-lived,
         # so its yield-dependency teardown stack must not be cleared

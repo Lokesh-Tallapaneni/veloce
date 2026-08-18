@@ -311,6 +311,11 @@ class WebSocket:
         send/receive callables, and the scope/path that `from_asgi` and
         `from_transport` fill in.
         """
+        # The owning application, stamped by `Veloce._run_websocket` for both
+        # transports, so a handler reaches it the way `Request.app` does. ASGI's
+        # `scope["app"]` is not populated, so this is the supported accessor
+        # alongside the `current_app` proxy.
+        self.app: Any = None
         self._accepted = False
         self._closed = False
         # Peer-initiated close tracking for the raw-transport close handshake

@@ -638,3 +638,58 @@ async def test_rate_limit_middleware_evicts_stale_buckets():
     # The 100 stale buckets are evicted; the live bucket is kept.
     assert not any(k.startswith("stale-") for k in mw._buckets)
     assert "fresh" in mw._buckets
+
+
+def test_reset_never_exceeds_the_window():
+    # `X-RateLimit-Reset` describes a wait inside the window, so it must never
+    # advertise longer than the window itself - a coarse clock can otherwise
+    # round the remainder past it.
+    from collections import deque
+
+    mw = RateLimitMiddleware(max_requests=1, window_seconds=60)
+    now = 1000.0
+    # Oldest stamp equal to (and, defensively, later than) `now`.
+    assert mw._reset_after(deque([now]), now) <= 60
+    assert mw._reset_after(deque([now + 5]), now) <= 60
+    # A partly-elapsed window still reports the real remainder.
+    assert mw._reset_after(deque([now - 30]), now) == 30
+    # An expired stamp reports nothing left to wait for.
+    assert mw._reset_after(deque([now - 120]), now) == 0
+
+
+def test_strict_overrides_false_warns_instead_of_failing_startup(caplog):
+    # One app that mounts a different set of routers per deployment shares a
+    # single override map, so an unmatched key must be skippable.
+    app = Veloce(openapi_url=None)
+
+    @app.get("/real")
+    async def real(request: Request):
+        return {"ok": True}
+
+    app.add_middleware(
+        RateLimitMiddleware(
+            strategy=FixedWindow(100, 60),
+            overrides={"/real": FixedWindow(5, 60), "/not-mounted": FixedWindow(2, 60)},
+            strict_overrides=False,
+        )
+    )
+    with caplog.at_level("WARNING"), TestClient(app) as tc:
+        assert tc.get("/real", headers=_UA).status_code == 200
+    assert any("/not-mounted" in r.getMessage() for r in caplog.records)
+
+
+def test_strict_overrides_defaults_to_failing_startup():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/real")
+    async def real(request: Request):
+        return {"ok": True}
+
+    app.add_middleware(
+        RateLimitMiddleware(
+            strategy=FixedWindow(100, 60),
+            overrides={"/not-mounted": FixedWindow(2, 60)},
+        )
+    )
+    with pytest.raises(ValueError, match="match no registered route"):
+        TestClient(app)

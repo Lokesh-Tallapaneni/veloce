@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import math
 import secrets
 import time
@@ -51,6 +52,8 @@ from veloce.ratelimit import (
     RateLimitResult,
     RateLimitStrategy,
 )
+
+_logger = logging.getLogger(__name__)
 
 # Stash key used to thread bucket state from process_request -> process_response
 # so the response path can emit X-RateLimit-* without recomputing.
@@ -283,10 +286,16 @@ class RateLimitMiddleware(Middleware):
         strategy: RateLimitStrategy | None = None,
         backend: RateLimitBackend | None = None,
         overrides: dict[str, RateLimitStrategy] | None = None,
+        strict_overrides: bool = True,
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
         self._strategy = strategy
+        # An override key naming no route is a configuration error by default.
+        # One app that mounts a different set of routers per deployment shares a
+        # single override map across them, so `strict_overrides=False` downgrades
+        # the unmatched keys to a warning and starts anyway.
+        self._strict_overrides = strict_overrides
         if strategy is None:
             if backend is not None:
                 raise ValueError("backend requires a strategy; pass strategy= as well")
@@ -400,6 +409,13 @@ class RateLimitMiddleware(Middleware):
         if self._overrides is None:
             return
         unknown = sorted(key for key in self._overrides if key not in known)
+        if unknown and not self._strict_overrides:
+            _logger.warning(
+                "RateLimitMiddleware overrides reference route template(s) %s that match no "
+                "registered route; those overrides are inactive",
+                unknown,
+            )
+            return
         if unknown:
             raise ValueError(
                 f"RateLimitMiddleware overrides reference route template(s) {unknown} "
@@ -553,6 +569,13 @@ class RateLimitMiddleware(Middleware):
         # Ceil so a sub-second remainder reports >=1, never 0 while a client
         # still has to wait (a floored 0.6s would advertise "retry now").
         remaining = math.ceil(bucket[0] + self.window_seconds - now)
+        # A stamp can never expire more than a full window from now, so clamp:
+        # a coarse clock (Windows monotonic ticks at ~15ms) makes the oldest
+        # stamp and `now` compare equal or invert across a tick boundary, which
+        # rounds the remainder past the window and advertises a wait longer than
+        # the limit it describes.
+        if remaining > self.window_seconds:
+            return self.window_seconds
         return remaining if remaining > 0 else 0
 
     def _apply_headers(self, response: Response, limit: int, remaining: int, reset: int) -> None:
