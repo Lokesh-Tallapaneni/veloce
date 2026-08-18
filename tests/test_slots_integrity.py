@@ -87,3 +87,22 @@ def test_hot_path_objects_are_slotted() -> None:
         HandlerPlan,
     ):
         assert cls.__dictoffset__ == 0, f"{cls.__name__} regained a per-instance __dict__"
+
+
+def test_contrib_hot_path_objects_are_slotted() -> None:
+    """The same holds for the objects contrib builds per message or per event."""
+    from veloce.contrib.mcp.context import MCPContext
+    from veloce.contrib.mcp.session import MCPSession
+    from veloce.contrib.mcp.tasks import MCPTask
+    from veloce.http.response import FileResponse
+    from veloce.sse import EventSourceResponse, ServerSentEvent
+
+    for cls in (
+        MCPSession,
+        MCPContext,
+        MCPTask,
+        ServerSentEvent,
+        EventSourceResponse,
+        FileResponse,
+    ):
+        assert cls.__dictoffset__ == 0, f"{cls.__name__} regained a per-instance __dict__"
