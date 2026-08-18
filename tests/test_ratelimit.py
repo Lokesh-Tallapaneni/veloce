@@ -655,3 +655,41 @@ def test_reset_never_exceeds_the_window():
     assert mw._reset_after(deque([now - 30]), now) == 30
     # An expired stamp reports nothing left to wait for.
     assert mw._reset_after(deque([now - 120]), now) == 0
+
+
+def test_strict_overrides_false_warns_instead_of_failing_startup(caplog):
+    # One app that mounts a different set of routers per deployment shares a
+    # single override map, so an unmatched key must be skippable.
+    app = Veloce(openapi_url=None)
+
+    @app.get("/real")
+    async def real(request: Request):
+        return {"ok": True}
+
+    app.add_middleware(
+        RateLimitMiddleware(
+            strategy=FixedWindow(100, 60),
+            overrides={"/real": FixedWindow(5, 60), "/not-mounted": FixedWindow(2, 60)},
+            strict_overrides=False,
+        )
+    )
+    with caplog.at_level("WARNING"), TestClient(app) as tc:
+        assert tc.get("/real", headers=_UA).status_code == 200
+    assert any("/not-mounted" in r.getMessage() for r in caplog.records)
+
+
+def test_strict_overrides_defaults_to_failing_startup():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/real")
+    async def real(request: Request):
+        return {"ok": True}
+
+    app.add_middleware(
+        RateLimitMiddleware(
+            strategy=FixedWindow(100, 60),
+            overrides={"/not-mounted": FixedWindow(2, 60)},
+        )
+    )
+    with pytest.raises(ValueError, match="match no registered route"):
+        TestClient(app)
