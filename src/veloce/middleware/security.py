@@ -553,6 +553,13 @@ class RateLimitMiddleware(Middleware):
         # Ceil so a sub-second remainder reports >=1, never 0 while a client
         # still has to wait (a floored 0.6s would advertise "retry now").
         remaining = math.ceil(bucket[0] + self.window_seconds - now)
+        # A stamp can never expire more than a full window from now, so clamp:
+        # a coarse clock (Windows monotonic ticks at ~15ms) makes the oldest
+        # stamp and `now` compare equal or invert across a tick boundary, which
+        # rounds the remainder past the window and advertises a wait longer than
+        # the limit it describes.
+        if remaining > self.window_seconds:
+            return self.window_seconds
         return remaining if remaining > 0 else 0
 
     def _apply_headers(self, response: Response, limit: int, remaining: int, reset: int) -> None:

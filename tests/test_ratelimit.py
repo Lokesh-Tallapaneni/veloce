@@ -638,3 +638,20 @@ async def test_rate_limit_middleware_evicts_stale_buckets():
     # The 100 stale buckets are evicted; the live bucket is kept.
     assert not any(k.startswith("stale-") for k in mw._buckets)
     assert "fresh" in mw._buckets
+
+
+def test_reset_never_exceeds_the_window():
+    # `X-RateLimit-Reset` describes a wait inside the window, so it must never
+    # advertise longer than the window itself - a coarse clock can otherwise
+    # round the remainder past it.
+    from collections import deque
+
+    mw = RateLimitMiddleware(max_requests=1, window_seconds=60)
+    now = 1000.0
+    # Oldest stamp equal to (and, defensively, later than) `now`.
+    assert mw._reset_after(deque([now]), now) <= 60
+    assert mw._reset_after(deque([now + 5]), now) <= 60
+    # A partly-elapsed window still reports the real remainder.
+    assert mw._reset_after(deque([now - 30]), now) == 30
+    # An expired stamp reports nothing left to wait for.
+    assert mw._reset_after(deque([now - 120]), now) == 0
