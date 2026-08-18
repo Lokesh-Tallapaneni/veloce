@@ -287,8 +287,18 @@ def _slot_schema(
     else:
         prop = _python_type_to_schema(d.target_type)
 
-    if d.marker is not None and getattr(d.marker, "description", None):
-        prop = {**prop, "description": d.marker.description}
+    if d.marker is not None:
+        if getattr(d.marker, "description", None):
+            prop = {**prop, "description": d.marker.description}
+        if getattr(d.marker, "title", None):
+            prop = {**prop, "title": d.marker.title}
+        # Advertise the declared default so a schema-aware client can populate
+        # the field itself instead of omitting it and relying on the server's
+        # fallback. A `default_factory` builds a per-call value with no single
+        # value to publish, so only a static default is emitted.
+        marker_default = getattr(d.marker, "default", ...)
+        if marker_default is not ... and getattr(d.marker, "default_factory", None) is None:
+            prop = {**prop, "default": marker_default}
 
     return prop, not (d.has_default or d.is_optional)
 
@@ -581,6 +591,13 @@ async def bind_arguments(
 
         if name in arguments:
             kwargs[name] = _coerce_argument(slot, arguments[name])
+        elif (marker := slot.marker) is not None and marker.has_default:
+            # A parameter marker owns its declared default (`Body(500)`), and the
+            # slot's own `default` holds the hoisted marker rather than the value,
+            # so the marker is the only source of the real one. `resolve_default`
+            # also runs a `default_factory`, giving each call a fresh value -
+            # matching what the HTTP resolver does for the same declaration.
+            kwargs[name] = marker.resolve_default()
         elif slot.has_default:
             kwargs[name] = slot.default
         elif slot.is_optional:
