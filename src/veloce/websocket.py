@@ -227,6 +227,44 @@ class WebSocket:
     symmetry but never starts a timer.
     """
 
+    # A server holds one instance per live connection for the connection's whole
+    # lifetime, so the per-instance `__dict__` is the dominant fixed cost at high
+    # concurrency. Both constructors converge on exactly this attribute set, so
+    # slotting is complete; `state` remains the namespace for application data.
+    __slots__ = (
+        "_accepted",
+        "_asgi_receive",
+        "_asgi_send",
+        "_close_frame_sent",
+        "_closed",
+        "_cookies",
+        "_frag_buffer",
+        "_frag_opcode",
+        "_frag_validator",
+        "_handshake_sent",
+        "_hb_handle",
+        "_hb_next_token",
+        "_hb_saw_inbound",
+        "_hb_token",
+        "_heartbeat",
+        "_idle_timeout",
+        "_peer_close_event",
+        "_peer_closed",
+        "_query_params",
+        "_receive_queue",
+        "_recv_buffer",
+        "_send_drain",
+        "_state",
+        "app",
+        "close_code",
+        "close_reason",
+        "headers",
+        "path",
+        "path_params",
+        "scope",
+        "transport",
+    )
+
     # RFC 6455 Sec. 1.3 magic GUID, concatenated with the client's
     # `Sec-WebSocket-Key` and SHA-1+base64'd to form `Sec-WebSocket-Accept`.
     # The standalone `compute_accept` helper / `_WS_ACCEPT_GUID` carry the same
@@ -316,6 +354,9 @@ class WebSocket:
         # `scope["app"]` is not populated, so this is the supported accessor
         # alongside the `current_app` proxy.
         self.app: Any = None
+        # Backs the lazily-built `state` namespace; a declared slot starts unset,
+        # so the sentinel is assigned here to keep the property a plain read.
+        self._state: State | None = None
         self._accepted = False
         self._closed = False
         # Peer-initiated close tracking for the raw-transport close handshake
@@ -528,10 +569,9 @@ class WebSocket:
         Lazily-created `State` (a dict subclass) supporting both
         `ws.state.user = ...` attribute access and `ws.state["user"]`.
         """
-        existing = getattr(self, "_state", None)
+        existing = self._state
         if existing is None:
-            existing = State()
-            object.__setattr__(self, "_state", existing)
+            existing = self._state = State()
         return existing
 
     @property

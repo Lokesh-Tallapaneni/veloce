@@ -130,12 +130,12 @@ async def test_oversized_declared_frame_closes_with_1009():
     assert struct.unpack("!H", close_frames[-1][2:4])[0] == 1009
 
 
-async def test_fragmented_message_past_cap_closes_with_1009():
+async def test_fragmented_message_past_cap_closes_with_1009(monkeypatch):
     """A fragmented message whose continuation frames push the reassembly
     buffer past MAX_MESSAGE_SIZE closes with 1009 instead of growing the
     buffer without limit (each frame is individually under the cap)."""
+    monkeypatch.setattr(WebSocket, "MAX_MESSAGE_SIZE", 4096)  # keep the test small
     ws, transport = _make_ws()
-    ws.MAX_MESSAGE_SIZE = 4096  # shrink the cap so the test stays small
     chunk = b"x" * 1024
     ws.feed_data(_client_frame(0x1, chunk, fin=False))  # opening fragment
     # Stream continuation frames until the cumulative size crosses the cap.
