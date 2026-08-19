@@ -8,9 +8,88 @@ from collections.abc import Sequence
 from typing import Any
 
 from veloce.background import BackgroundTask
-from veloce.helpers import _current_app_var, current_app, g, get_flashed_messages
+from veloce.helpers import _current_app_var, current_app, g, get_flashed_messages, request
 from veloce.http.response import HTMLResponse, Response
+from veloce.middleware.security import csp_nonce
 from veloce.status import HTTP_200_OK
+
+
+class _CSPNonceGlobal:
+    """Template global resolving the current request's CSP nonce.
+
+    Renders as the nonce itself so a template writes the natural
+    `<script nonce="{{ csp_nonce }}">`; calling it (`{{ csp_nonce() }}`)
+    yields the same string for templates that prefer the call form used by
+    `get_flashed_messages()`. Supporting the bare form is a correctness
+    requirement rather than sugar: a call-only global renders its own repr
+    into the attribute, which a browser rejects as silently as the empty
+    nonce this replaces.
+
+    Resolves to the empty string when no nonce is armed - with CSP disabled
+    a page must still render rather than raise mid-template.
+    """
+
+    __slots__ = ()
+
+    def __call__(self) -> str:
+        return csp_nonce() or ""
+
+    def __str__(self) -> str:
+        return csp_nonce() or ""
+
+    def __bool__(self) -> bool:
+        return bool(csp_nonce())
+
+    def __repr__(self) -> str:
+        return "<csp_nonce>"
+
+
+# Stateless, so one instance serves every environment and every request.
+_CSP_NONCE_GLOBAL = _CSPNonceGlobal()
+
+# Request-scoped names templates may reference without the caller threading
+# them through the render context. They are resolved on lookup rather than
+# installed into `env.globals`, because Jinja copies the globals mapping into
+# a fresh context dict on every single render - two more entries there is a
+# measurable per-render tax on templates that never mention them, while a
+# miss-time lookup costs only the templates that do.
+_LAZY_TEMPLATE_NAMES: dict[str, Any] = {
+    "request": request,
+    "csp_nonce": _CSP_NONCE_GLOBAL,
+}
+
+
+# Built on first environment construction, not at import: `veloce` imports this
+# module eagerly, and touching `jinja2.runtime` at module scope would drag Jinja
+# into every process that never renders a template.
+_context_class: Any = None
+
+
+def _veloce_context_class() -> Any:
+    """Return the render-context subclass resolving Veloce's template names."""
+    global _context_class
+    if _context_class is None:
+        from jinja2.runtime import Context, missing
+
+        class _VeloceContext(Context):
+            """Render context that falls back to Veloce's request-scoped names.
+
+            `resolve_or_missing` is Jinja's documented lookup hook. The explicit
+            render context and `env.globals` are both consulted first, so a
+            caller passing `{"request": request}` still wins over the default.
+            """
+
+            __slots__ = ()
+
+            def resolve_or_missing(self, key: str) -> Any:
+                value = super().resolve_or_missing(key)
+                if value is missing:
+                    return _LAZY_TEMPLATE_NAMES.get(key, missing)
+                return value
+
+        _context_class = _VeloceContext
+    return _context_class
+
 
 # Sentinel attribute name written onto each Jinja Environment to memoize
 # the result of `_sync_app_jinja_helpers`. Holds a (id(app), filter/global/
@@ -31,9 +110,11 @@ def _sync_app_jinja_helpers(env: Any) -> None:
     `current_app`, and `get_flashed_messages` - so templates can
     `{{ url_for('endpoint') }}`, `{{ g.user }}`, and
     `{% for m in get_flashed_messages() %}` without manual context plumbing.
-    `request` is not injected here; being request-scoped, it is supplied by
-    the caller's render context (e.g.
-    `TemplateResponse("page.html", {"request": request, ...})`).
+    `request` and `csp_nonce` are deliberately *not* installed here: Jinja
+    copies this mapping into a fresh dict on every render, so each entry taxes
+    templates that never mention it. They resolve through the environment's
+    `context_class` instead (see `_veloce_context_class`), which costs only the
+    templates that reference them.
 
     Memoized per (env, app) - re-syncing is idempotent but it still
     runs three loops and several attribute lookups per render, which
@@ -219,6 +300,7 @@ class Jinja2Templates:
             enable_async=False,
             autoescape=autoescape,
         )
+        self.env.context_class = _veloce_context_class()
         # Lazily-built async-enabled twin used by `render_async`. Built
         # on first use so apps that never render async pay nothing.
         self._async_directory = directory
@@ -366,6 +448,7 @@ class Jinja2Templates:
                 enable_async=True,
                 autoescape=self._async_autoescape,
             )
+            self._async_env.context_class = _veloce_context_class()
         self._apply_auto_reload(self._async_env)
         _sync_app_jinja_helpers(self._async_env)
         template = self._resolve_template(self._async_env, name)
@@ -458,4 +541,5 @@ def render_template_string(source: str, **context: Any) -> str:
         from jinja2 import Environment, select_autoescape
 
         _fallback_env = Environment(autoescape=select_autoescape(["html", "htm", "xml", "xhtml"]))
+        _fallback_env.context_class = _veloce_context_class()
     return _fallback_env.from_string(source).render(context)

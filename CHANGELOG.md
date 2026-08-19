@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `request` and `csp_nonce` resolve in templates without threading them through the render context. ([#272](https://github.com/Lokesh-Tallapaneni/veloce/pull/272))
+- `csp_nonce()` reads the request being handled when called without one. ([#272](https://github.com/Lokesh-Tallapaneni/veloce/pull/272))
+
+### Changed
+
+- `instrument_with_prometheus` reports a collector-name collision with the `registry=` and `prefix=` fixes. ([#272](https://github.com/Lokesh-Tallapaneni/veloce/pull/272))
+
 ## [0.13.0] - 2026-08-19
 
 ### Added
