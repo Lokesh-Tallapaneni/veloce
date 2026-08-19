@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An `HTTPException` reports the same body over MCP and background tasks as it does over HTTP. ([#275](https://github.com/Lokesh-Tallapaneni/veloce/pull/275))
+
 ## [0.14.0] - 2026-08-19
 
 ### Added

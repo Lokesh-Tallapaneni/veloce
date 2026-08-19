@@ -1349,7 +1349,9 @@ def test_exposed_route_httpexception_default_body():
     assert "error" not in out
     assert out["result"]["isError"] is True
     payload = orjson.loads(out["result"]["content"][0]["text"])
-    assert payload == {"detail": "nope"}
+    # Identical to what the HTTP door emits for the same exception; the two
+    # error builders drifting apart is the failure this pins against.
+    assert payload == {"detail": "nope", "status_code": 404}
 
 
 def test_exposed_route_path_param_visible_in_dependency():
