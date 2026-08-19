@@ -413,6 +413,26 @@ class Request:
     @property
     def content_length(self) -> int | None:
         """Return the Content-Length as an integer, or None."""
+        raw = self._headers_raw
+        if raw is not None:
+            # The body-size guard reads this on every request, so going through
+            # `self.headers` here would latin-1 decode and index every header
+            # for a request whose handler may never read one - defeating the
+            # deferral `__init__` sets up. Scan the raw tuples instead. The
+            # length test rejects nearly every header before the comparison,
+            # and ASGI servers send lower-cased names (the fallback covers a
+            # transport that does not).
+            cl_raw = None
+            for k, v in raw:
+                if len(k) == 14 and (k == b"content-length" or k.lower() == b"content-length"):
+                    cl_raw = v
+                    break
+            if cl_raw is None:
+                return None
+            try:
+                return int(cl_raw)
+            except (ValueError, TypeError):
+                return None
         cl = self.headers.get(HEADER_CONTENT_LENGTH)
         if not cl:
             return None
