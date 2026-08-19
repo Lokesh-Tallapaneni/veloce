@@ -48,6 +48,10 @@ K_UPLOAD_FILE = 8
 K_SECURITY_SCOPES = 11
 K_RESPONSE = 12
 K_WEBSOCKET = 13
+# A model whose FIELDS are read from one request source (query/header/cookie/
+# form) rather than the body - `Annotated[Filters, Query()]`. The field walk
+# happens once at registration; per request it is one dict build + one validate.
+K_MODEL_GROUP = 14
 
 # Marker kinds (for K_PARAM_MARKER slots).
 MK_QUERY = 0
@@ -93,6 +97,41 @@ def _unwrap_list(annotation: Any) -> tuple[bool, Any]:
         args = get_args(annotation)
         return True, (args[0] if args else str)
     return False, annotation
+
+
+def _group_field_specs(
+    model: Any, backend: ModelBackend, mk: int
+) -> tuple[tuple[str, str, bool], ...]:
+    """Resolve a grouped model's fields to `(validate_key, lookup_key, is_list)`.
+
+    Two names, because they differ: the value is READ from the source under
+    `lookup_key` (an alias, or a `Header` field's hyphenated spelling) and
+    VALIDATED under `validate_key` - an aliased field is populated by its
+    alias, not by its Python name.
+
+    Aliases, `Header`'s underscore conversion and list detection are all decided
+    here at registration so the per-request path is a plain `dict` build.
+    """
+    specs: list[tuple[str, str, bool]] = []
+    if backend is ModelBackend.PYDANTIC:
+        items = [
+            (name, getattr(f, "alias", None), getattr(f, "annotation", None))
+            for name, f in model.model_fields.items()
+        ]
+    else:
+        import msgspec.structs
+
+        items = [(f.name, f.encode_name, f.type) for f in msgspec.structs.fields(model)]
+    for name, alias, annotation in items:
+        validate_key = alias or name
+        key = validate_key
+        # An un-aliased `Header` field spells `x_token` on the wire as `x-token`,
+        # matching what a scalar `Header()` marker does.
+        if mk == MK_HEADER and not alias:
+            key = key.replace("_", "-")
+        origin = get_origin(annotation)
+        specs.append((validate_key, key, origin in (list, set, tuple)))
+    return tuple(specs)
 
 
 def _marker_kind(marker: ParamBase) -> int:
@@ -192,6 +231,7 @@ class _Slot:
         "marker",
         "marker_kind",
         "lookup_name",
+        "group_fields",
         "sub_plan",
         "use_cache",
         "dep_callable",
@@ -218,6 +258,9 @@ class _Slot:
         self.marker: ParamBase | None = None
         self.marker_kind = MK_QUERY
         self.lookup_name = ""
+        # K_MODEL_GROUP only: `(field, lookup_key, is_list)` per model field,
+        # resolved at registration so the request path does no introspection.
+        self.group_fields: tuple[tuple[str, str, bool], ...] = ()
         self.sub_plan: HandlerPlan | None = None
         self.use_cache = True
         self.dep_callable: Callable | None = None
@@ -735,6 +778,35 @@ def build_plan(
             # handler default applies instead of crashing at resolve time.
             if websocket and marker_kind in (MK_BODY, MK_FORM, MK_FILE):
                 continue
+            # A model annotation under a query/header/cookie/form marker groups
+            # that source's fields instead of naming a single key. `Body`/`File`
+            # keep the existing whole-body binding.
+            _grp_opt, _grp_inner = (
+                _unwrap_optional(annotation) if annotation else (False, annotation)
+            )
+            _grp_backend = backend_of(_grp_inner) if _grp_inner else ModelBackend.NONE
+            if (
+                getattr(default, "group", False)
+                and _grp_backend is not ModelBackend.NONE
+                and marker_kind
+                in (
+                    MK_QUERY,
+                    MK_HEADER,
+                    MK_COOKIE,
+                    MK_FORM,
+                )
+            ):
+                slot = _Slot(K_MODEL_GROUP, param_name)
+                slot.marker = default
+                slot.marker_kind = marker_kind
+                slot.model = _grp_inner
+                slot.backend = _grp_backend
+                slot.is_optional = _grp_opt
+                slot.has_default = has_default or default.has_default
+                slot.group_fields = _group_field_specs(_grp_inner, _grp_backend, marker_kind)
+                slots.append(slot)
+                continue
+
             slot = _Slot(K_PARAM_MARKER, param_name)
             slot.marker = default
             slot.marker_kind = marker_kind

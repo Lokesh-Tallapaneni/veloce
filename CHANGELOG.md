@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Query(group=True)` reads a model annotation's fields from the query string. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
+- `group=True` is accepted by `Header`, `Cookie`, and `Form` for the same field spread. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
+
 ### Fixed
 
 - An `HTTPException` reports the same body over MCP and background tasks as it does over HTTP. ([#275](https://github.com/Lokesh-Tallapaneni/veloce/pull/275))
