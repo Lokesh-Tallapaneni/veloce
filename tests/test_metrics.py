@@ -251,3 +251,63 @@ def test_separate_registries_no_duplicate_error() -> None:
 
     assert app1.test_client().get("/items/1").status_code == 200
     assert app2.test_client().get("/items/2").status_code == 200
+
+
+def test_duplicate_registration_names_the_way_out() -> None:
+    """prometheus_client reports a collision as a bare "Duplicated timeseries"
+    naming only the series, which does not say which knob resolves it. The
+    exporter restates it in terms of `registry=` and `prefix=`."""
+    pytest.importorskip("prometheus_client")
+
+    from prometheus_client import CollectorRegistry
+
+    from veloce.metrics import instrument_with_prometheus
+
+    registry = CollectorRegistry()
+    instrument_with_prometheus(Veloce(openapi_url=None), registry=registry)
+
+    with pytest.raises(ValueError) as excinfo:
+        instrument_with_prometheus(Veloce(openapi_url=None), registry=registry)
+
+    message = str(excinfo.value)
+    assert "http_*" in message
+    assert "registry=" in message
+    assert "prefix=" in message
+    # The original prometheus_client text is preserved for anyone grepping it.
+    assert "Duplicated timeseries" in message
+
+
+def test_a_distinct_prefix_or_registry_resolves_the_collision() -> None:
+    """Both documented escape hatches have to actually work."""
+    pytest.importorskip("prometheus_client")
+
+    from prometheus_client import CollectorRegistry
+
+    from veloce.metrics import instrument_with_prometheus
+
+    registry = CollectorRegistry()
+    instrument_with_prometheus(Veloce(openapi_url=None), registry=registry)
+
+    instrument_with_prometheus(Veloce(openapi_url=None), registry=CollectorRegistry())
+    instrument_with_prometheus(Veloce(openapi_url=None), registry=registry, prefix="other")
+
+
+def test_a_failed_registration_leaves_no_partial_series() -> None:
+    """A collision must not leave half the exporter's collectors behind, or a
+    caller that recovers from the error fails on a different metric next time."""
+    pytest.importorskip("prometheus_client")
+
+    from prometheus_client import CollectorRegistry
+
+    from veloce.metrics import instrument_with_prometheus
+
+    registry = CollectorRegistry()
+    instrument_with_prometheus(Veloce(openapi_url=None), registry=registry, prefix="a")
+
+    # Collide on the histogram only: the counter name is free, the histogram is not.
+    with pytest.raises(ValueError):
+        instrument_with_prometheus(Veloce(openapi_url=None), registry=registry, prefix="a")
+
+    # Registering under a fresh prefix still works, and the failed attempt did
+    # not leave its counter behind under the old one.
+    instrument_with_prometheus(Veloce(openapi_url=None), registry=registry, prefix="b")

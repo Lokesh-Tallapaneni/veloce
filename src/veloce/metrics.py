@@ -101,6 +101,29 @@ _DEFAULT_BUCKETS: tuple[float, ...] = (
 _UNMATCHED_ROUTE = "<unmatched>"
 
 
+def _rewrite_duplicate(err: ValueError, prefix: str, is_global: bool) -> ValueError:
+    """Restate a collector-name collision as something the caller can act on.
+
+    prometheus_client reports a collision as a bare "Duplicated timeseries"
+    naming only the series, which says nothing about which knob fixes it. Any
+    other `ValueError` is returned untouched.
+    """
+    if "Duplicated" not in str(err):
+        return err
+    where = (
+        "prometheus_client's process-global registry (the default, so that a "
+        "second app or a test that rebuilds the app collides)"
+        if is_global
+        else "the registry passed as `registry=`"
+    )
+    return ValueError(
+        f"metrics named '{prefix}_*' are already registered on {where}. "
+        f"Pass a fresh registry per app - `instrument_with_prometheus(app, "
+        f"registry=CollectorRegistry())` - or a distinct `prefix=`. "
+        f"Original error: {err}"
+    )
+
+
 def instrument_with_prometheus(
     app: Veloce,
     *,
@@ -149,19 +172,29 @@ def instrument_with_prometheus(
 
     registry = registry if registry is not None else _prom.REGISTRY
 
-    requests_total = Counter(
-        f"{prefix}_requests_total",
-        "Total HTTP requests",
-        labelnames=("method", "route", "status"),
-        registry=registry,
-    )
-    request_duration = Histogram(
-        f"{prefix}_request_duration_seconds",
-        "HTTP request duration in seconds",
-        labelnames=("method", "route"),
-        buckets=tuple(buckets) if buckets is not None else _DEFAULT_BUCKETS,
-        registry=registry,
-    )
+    try:
+        requests_total = Counter(
+            f"{prefix}_requests_total",
+            "Total HTTP requests",
+            labelnames=("method", "route", "status"),
+            registry=registry,
+        )
+    except ValueError as err:
+        raise _rewrite_duplicate(err, prefix, registry is _prom.REGISTRY) from err
+    try:
+        request_duration = Histogram(
+            f"{prefix}_request_duration_seconds",
+            "HTTP request duration in seconds",
+            labelnames=("method", "route"),
+            buckets=tuple(buckets) if buckets is not None else _DEFAULT_BUCKETS,
+            registry=registry,
+        )
+    except ValueError as err:
+        # The counter registered before the histogram failed. Drop it so the
+        # registry does not keep half of this exporter's series, which would
+        # make a later retry fail on the counter instead of the histogram.
+        registry.unregister(requests_total)
+        raise _rewrite_duplicate(err, prefix, registry is _prom.REGISTRY) from err
 
     def _record(metrics: RequestMetrics) -> None:
         # Always label by the route template, never the concrete path: an

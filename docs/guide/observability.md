@@ -93,9 +93,23 @@ This registers two series:
 An unmatched request (404/405) uses the constant `"<unmatched>"` route label.
 
 Override the metric name `prefix`, the histogram `buckets`, or pass a custom
-`registry=...` to isolate apps (use a fresh registry per app — instrumenting
-twice against the same registry raises prometheus_client's "Duplicated
-timeseries" error).
+`registry=...` to isolate apps.
+
+The collectors bind to prometheus_client's process-global registry by default,
+which is what the exposition helpers (`generate_latest`, `make_asgi_app`,
+`start_http_server`) read. That is right for a single app per process, but it
+means instrumenting twice in one process collides — a second app, or a test
+suite that builds the app once per test:
+
+```python
+from prometheus_client import CollectorRegistry
+
+registry = CollectorRegistry()
+instrument_with_prometheus(app, registry=registry)
+```
+
+Pass a fresh registry per app, or a distinct `prefix=`. Serve that registry
+from your `/metrics` route rather than the global one.
 
 Calling `instrument_with_prometheus` without the extra installed raises an
 `ImportError` with an install hint.
