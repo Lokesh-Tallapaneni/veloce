@@ -181,7 +181,7 @@ templates = Jinja2Templates(directory="templates", autoescape=True)
 
 ## Built-in template globals
 
-When a template is rendered inside a request, Veloce makes four names
+When a template is rendered inside a request, Veloce makes six names
 available without adding them to the context:
 
 - `url_for` — build a URL for a named route, e.g. `{{ url_for('hello', name='world') }}`.
@@ -190,13 +190,26 @@ available without adding them to the context:
 - `get_flashed_messages` — read the messages queued with `flash()`, e.g.
   `{% for m in get_flashed_messages() %}{{ m }}{% endfor %}`. It returns an
   empty list outside a request.
+- `request` — the request being handled, e.g. `{{ request.path }}`.
+- `csp_nonce` — the nonce armed by
+  [`CSPMiddleware`](middleware.md#content-security-policy-with-a-nonce), for inline
+  `<script>`/`<style>` tags. Empty when no nonce is armed.
 
 ```html title="templates/nav.html"
 <a href="{{ url_for('hello', name='world') }}">Say hello</a>
+<script nonce="{{ csp_nonce }}">console.log("{{ request.path }}");</script>
 ```
+
+Passing a name explicitly still wins, so a handler that already threads
+`{"request": request}` through `TemplateResponse` keeps working unchanged.
 
 The route name passed to `url_for` is the handler's function name unless you
 override it. See [Routing](routing.md) for reverse URL generation.
+
+!!! note "Added in version 0.14"
+    `request` and `csp_nonce`. Earlier versions required the handler to pass
+    both through the render context, and a template using `{{ csp_nonce }}`
+    without doing so rendered an empty `nonce=""` that browsers reject.
 
 ## Filters, globals, and tests
 

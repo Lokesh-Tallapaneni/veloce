@@ -42,6 +42,7 @@ from veloce._constants import (
 )
 from veloce._internal import _extract_host
 from veloce._protocol_constants import URL_SCHEME_HTTPS, URL_SCHEME_WSS
+from veloce.helpers import _current_request_var
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, header_present
 from veloce.middleware.base import Middleware
@@ -63,13 +64,18 @@ _RL_STATE_KEY = "rate_limit_state"
 CSP_NONCE_STATE_KEY = "csp_nonce"
 
 
-def csp_nonce(request: Request) -> str | None:
+def csp_nonce(request: Request | None = None) -> str | None:
     """Return the per-request CSP nonce, materializing it on first access.
 
     Templating helpers and handlers embed this on `<script>`/`<style>` tags
-    as `nonce="..."`. Returns None when CSPMiddleware did not arm a nonce
-    for this request.
+    as `nonce="..."`. Pass the request explicitly, or omit it to read the one
+    currently being handled. Returns None when CSPMiddleware did not arm a
+    nonce for this request, or when there is no request in scope.
     """
+    if request is None:
+        request = _current_request_var.get()
+        if request is None:
+            return None
     cached = request._state.get(CSP_NONCE_STATE_KEY)
     if cached is None:
         return None

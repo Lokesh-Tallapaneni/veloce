@@ -185,11 +185,25 @@ app.add_middleware(
 )
 ```
 
-Read the nonce inside a handler or template with
-[`csp_nonce(request)`](../reference.md#veloce.csp_nonce) and place it on the
-matching `<script>`/`<style>` tags as `nonce="..."`. The nonce is
-materialised lazily on first read, so a request that never embeds one pays
-no extra cost. A static, nonce-free policy can stay on
+Read the nonce inside a handler with
+[`csp_nonce(request)`](../reference.md#veloce.csp_nonce), or write
+`{{ csp_nonce }}` straight into a template, and place it on the matching
+`<script>`/`<style>` tags as `nonce="..."`:
+
+```html
+<script nonce="{{ csp_nonce }}">
+  console.log("this one runs");
+</script>
+```
+
+The nonce is materialised lazily on first read, so a request that never
+embeds one pays no extra cost.
+
+!!! warning "A missing nonce fails silently"
+    A `<script>` whose `nonce` does not match the policy is refused by the
+    browser with no server-side signal - no error in the response, the log,
+    or the test suite, since `TestClient` does not enforce CSP. If inline
+    scripts stop running, check the rendered `nonce=""` attribute first. A static, nonce-free policy can stay on
 `SecurityHeadersMiddleware`; use `CSPMiddleware` when you need a nonce or a
 report-only policy.
 
