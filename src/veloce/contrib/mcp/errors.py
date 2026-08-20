@@ -34,6 +34,12 @@ _JSONRPC_RESOURCE_NOT_FOUND = -32002
 # HTTP 403 insufficient_scope).
 _JSONRPC_FORBIDDEN = -32003
 
+# The 2026-07-28 revision partitions the JSON-RPC server-error range: -32000 to
+# -32019 stays implementation-defined (existing SDK usage is grandfathered) and
+# -32020 to -32099 is reserved for the specification. `UnsupportedProtocolVersion`
+# is allocated -32022 there.
+_JSONRPC_UNSUPPORTED_PROTOCOL_VERSION = -32022
+
 
 def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
     """Build a JSON-RPC 2.0 error response object."""
@@ -81,6 +87,30 @@ class ProtocolVersionError(InvalidRequestError):
     """
 
     http_status = 400
+
+
+class UnsupportedProtocolVersionError(MCPError):
+    """A request declares a protocol version this server does not serve.
+
+    Modern (2026-07-28 and later) clients carry their protocol version on every
+    request rather than negotiating once, so the rejection has to travel per
+    request and has to be recoverable: `data.supported` lets the client pick a
+    mutually supported version and retry.
+
+    This is also the error that identifies the server as modern. A client
+    probing an older server gets an unrecognised error (method-not-found) and
+    falls back to the `initialize` handshake; getting *this* code back tells it
+    the server speaks the modern protocol and only the version was wrong.
+    """
+
+    code = _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION
+    http_status = 400
+
+    def __init__(self, requested: str, supported: tuple[str, ...]) -> None:
+        super().__init__(
+            "Unsupported protocol version",
+            data={"supported": list(supported), "requested": requested},
+        )
 
 
 class OriginNotAllowedError(InvalidRequestError):
