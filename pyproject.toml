@@ -143,6 +143,9 @@ dev = [
     # In-memory Redis fake so the contrib.redis store/limiter tests run without a
     # real Redis server.
     "fakeredis>=2.20",
+    # CodSpeed's pytest plugin — powers the `benchmarks/` suite (`pytest
+    # benchmarks --codspeed`) that CI runs to track request-path performance.
+    "pytest-codspeed>=5.0.3",
 ]
 docs = [
     "mkdocs-material[imaging]>=9.5",

@@ -66,12 +66,21 @@ pytest --cov=veloce --cov-fail-under=90
 
 # Parser fuzzing: CI runs the hypothesis leg with a larger example budget.
 HYPOTHESIS_PROFILE=ci pytest -m fuzz
+
+# Benchmarks: CI runs them on CodSpeed and reports the delta on the PR.
+# Two instruments - see benchmarks/README.md for which suite a benchmark
+# belongs in and why.
+pytest benchmarks --ignore=benchmarks/walltime --ignore=benchmarks/memory --codspeed
+pytest benchmarks/walltime --codspeed   # thread-crossing paths
+pytest benchmarks/memory --codspeed     # allocation of held structures
 ```
 
 - Tests use `pytest-asyncio` in auto mode: write async tests as plain
   `async def test_*` functions (do **not** add `@pytest.mark.asyncio`).
 - Add a regression test for every bug fix, placed in the test module for the
   feature it exercises - not in a catch-all file.
+- Benchmarks live in `benchmarks/` (outside `testpaths`, so a plain `pytest`
+  never collects them). See `benchmarks/README.md` before adding one.
 - `mkdocs build --strict` must succeed for any docs change.
 
 ## Making a change
