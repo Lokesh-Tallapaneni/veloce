@@ -35,10 +35,22 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --dev
 
-      - name: Run benchmarks
+      # Instruction counting: deterministic, no noise floor, so a small
+      # regression is visible. It cannot see system calls, which is why the
+      # thread-crossing benchmarks are excluded here and measured below.
+      - name: Run benchmarks (CPU simulation)
         uses: CodSpeedHQ/action@v5
         with:
           mode: simulation
           # `benchmarks/` sits outside `testpaths`, so it is only ever
           # collected when named explicitly - as here.
-          run: uv run pytest benchmarks --codspeed
+          run: uv run pytest benchmarks --ignore=benchmarks/walltime --codspeed
+
+      # Sync handlers and offloaded compression spend most of their cost in a
+      # thread hop, which simulation mode excludes from the measure. Wall time
+      # is the only instrument that sees it.
+      - name: Run benchmarks (wall time)
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: walltime
+          run: uv run pytest benchmarks/walltime --codspeed
