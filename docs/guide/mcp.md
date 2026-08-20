@@ -1024,6 +1024,76 @@ app.mount_mcp(transport="http", allowed_origins=["https://app.example.com"])
 - An insufficient-scope failure surfaces as an HTTP **403** with a
   `WWW-Authenticate` scope challenge over the JSON transport.
 
+## Protocol versions
+
+MCP has two eras, and Veloce serves both from the same endpoint:
+
+- **Modern** (`2026-07-28`) — no handshake and no protocol-level session. A
+  client declares its version, identity and capabilities in `_meta` on every
+  request, and the server answers each one independently.
+- **Handshake** (`2025-11-25`, `2025-06-18`) — the client opens with
+  `initialize`, negotiates once, and the connection carries that state.
+
+Which era applies is decided by how the client opens: a request carrying
+`io.modelcontextprotocol/protocolVersion` in `_meta` is served the modern way,
+while an `initialize` request selects the handshake semantics. Nothing needs
+configuring.
+
+### Discovery
+
+A modern client may call `server/discover` before anything else to learn what
+the server supports in one request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "d1",
+  "method": "server/discover",
+  "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "d1",
+  "result": {
+    "resultType": "complete",
+    "supportedVersions": ["2026-07-28", "2025-11-25", "2025-06-18"],
+    "capabilities": {"tools": {"listChanged": false}, "logging": {}},
+    "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "WeatherServer", "version": "1.0.0"}},
+    "instructions": "Weather utilities."
+  }
+}
+```
+
+`supportedVersions` is ordered newest-first, so a client taking the head gets
+the newest revision both sides speak. `instructions` comes from the app's
+`description`, the same text the HTTP API documents itself with.
+
+### Version mismatch
+
+A request declaring a version the server does not serve is rejected with
+`-32022`, naming what *is* served so the client can retry rather than fail:
+
+```json
+{
+  "error": {
+    "code": -32022,
+    "message": "Unsupported protocol version",
+    "data": {"supported": ["2026-07-28", "2025-11-25", "2025-06-18"], "requested": "1900-01-01"}
+  }
+}
+```
+
+Every modern result also carries `resultType: "complete"`. Handshake-era
+results do not — that field belongs to the modern revision only.
+
+!!! note "Added in version 0.15"
+    `server/discover`, per-request `_meta` version selection, `resultType`, and
+    the `-32022` rejection. Earlier versions served only the handshake eras, so
+    a modern client's opening probe failed and it fell back to `initialize`.
+
 ## Instrumentation
 
 Each tool call fires the same `app.add_instrumentation` hooks an HTTP request

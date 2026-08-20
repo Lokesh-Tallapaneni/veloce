@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP serves the `2026-07-28` revision alongside the handshake revisions, selected per request. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
+- `server/discover` advertises the served protocol versions, capabilities, and server identity. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
+- An MCP request naming an unserved protocol version is rejected with `-32022` listing what is served. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
+
 - `Query(group=True)` reads a model annotation's fields from the query string. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
 - `group=True` is accepted by `Header`, `Cookie`, and `Form` for the same field spread. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
 - `SessionAuth` resolves a cookie session into the request's `Principal`. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))

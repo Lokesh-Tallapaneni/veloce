@@ -66,6 +66,7 @@ from veloce.contrib.mcp.errors import (
     InvalidParamsError,
     MCPError,
     ResourceNotFoundError,
+    UnsupportedProtocolVersionError,
     _error,
     _ForbiddenError,
     _InBandError,
@@ -102,6 +103,36 @@ LATEST_PROTOCOL_VERSION = "2025-11-25"
 # predates the ``title`` / ``outputSchema`` / ``structuredContent`` fields this
 # server emits.
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", LATEST_PROTOCOL_VERSION})
+
+# The first "modern" revision: no `initialize` handshake, no protocol-level
+# session. A client declares its version, identity and capabilities in `_meta`
+# on every request, and the server answers each one independently.
+MODERN_PROTOCOL_VERSION = "2026-07-28"
+
+# Every revision this server serves, newest first. Ordering matters: it is
+# echoed verbatim in `server/discover` and in an `UnsupportedProtocolVersion`
+# error, and a client picks from the front.
+SERVED_PROTOCOL_VERSIONS: tuple[str, ...] = (
+    MODERN_PROTOCOL_VERSION,
+    LATEST_PROTOCOL_VERSION,
+    "2025-06-18",
+)
+
+# `_meta` keys the modern revision reserves. Prefixed per the spec's naming
+# rules, so an application's own `_meta` entries cannot collide with them.
+META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+
+# Every modern result carries this discriminator. `"complete"` is an ordinary
+# result; `"input_required"` marks a multi-round-trip interim result, which this
+# server does not yet produce.
+RESULT_TYPE_COMPLETE = "complete"
+
+# Membership set for the per-request version check; the tuple above is the
+# ordered form clients are shown.
+_SERVED_VERSION_SET = frozenset(SERVED_PROTOCOL_VERSIONS)
 
 
 class MCPServer(TasksMixin, InvocationMixin):
@@ -233,6 +264,7 @@ class MCPServer(TasksMixin, InvocationMixin):
             "notifications/initialized": self._handle_initialized,
             "notifications/cancelled": self._handle_cancelled,
             "ping": self._handle_ping,
+            "server/discover": self._handle_discover,
         }
         for capability in self._capabilities:
             methods.update(capability.handlers())
@@ -352,6 +384,23 @@ class MCPServer(TasksMixin, InvocationMixin):
         params = message.get("params") or {}
         is_notification = "id" not in message
 
+        # Era selection. A modern client states its version in `_meta` on every
+        # request; a legacy one opens with `initialize` and negotiates once. The
+        # two are served side by side, so the same endpoint answers both.
+        meta = params.get("_meta") if isinstance(params, dict) else None
+        raw_version = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
+        requested_version: str | None = raw_version if isinstance(raw_version, str) else None
+        is_modern = requested_version is not None
+        if requested_version is not None and requested_version not in _SERVED_VERSION_SET:
+            # Recoverable by design: the client picks from `supported` and
+            # retries. Returning this code is also what identifies the server as
+            # modern, so a probing client stops falling back to `initialize`.
+            if is_notification:
+                return None
+            return UnsupportedProtocolVersionError(
+                requested_version, SERVED_PROTOCOL_VERSIONS
+            ).to_error(msg_id)
+
         # On a stateful connection the initialization exchange MUST be first: a
         # request other than `initialize` / `ping` arriving before it completes is
         # rejected, and the client's advertised capabilities are recorded here.
@@ -401,6 +450,11 @@ class MCPServer(TasksMixin, InvocationMixin):
 
         if is_notification:
             return None
+        if is_modern and isinstance(result, dict) and "resultType" not in result:
+            # Required on every modern result. A legacy client must never see it:
+            # its revision has no such field and the server info below belongs to
+            # the modern shape only.
+            result = {"resultType": RESULT_TYPE_COMPLETE, **result}
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
     def _gate_session(
@@ -525,19 +579,8 @@ class MCPServer(TasksMixin, InvocationMixin):
             if isinstance(requested, str) and requested in _SUPPORTED_PROTOCOL_VERSIONS
             else LATEST_PROTOCOL_VERSION
         )
-        # Each held capability advertises its own entry (tools/logging always,
-        # resources/prompts only when the app exposes one); a `None` advertisement
-        # is dropped so the client does not probe an empty primitive.
-        capabilities: dict[str, Any] = {}
-        for capability in self._capabilities:
-            entry = capability.advertise()
-            if entry is not None:
-                capabilities.update(entry)
-        # `serverInfo.title` is the human-facing display name; the app's `title`
-        # is that name (`name`/`version` already carry the identifier + version).
-        server_info: dict[str, Any] = {"name": self.server_name, "version": self.server_version}
-        if self.server_title:
-            server_info["title"] = self.server_title
+        capabilities = self._advertised_capabilities()
+        server_info = self._server_info()
         result: dict[str, Any] = {
             "protocolVersion": version,
             "capabilities": capabilities,
@@ -549,6 +592,49 @@ class MCPServer(TasksMixin, InvocationMixin):
         if self.server_instructions:
             result["instructions"] = self.server_instructions
         return result
+
+    def _advertised_capabilities(self) -> dict[str, Any]:
+        """Collect every held capability's advertisement.
+
+        A `None` advertisement is dropped so a client never probes a primitive
+        the app does not expose.
+        """
+        capabilities: dict[str, Any] = {}
+        for capability in self._capabilities:
+            entry = capability.advertise()
+            if entry is not None:
+                capabilities.update(entry)
+        return capabilities
+
+    def _server_info(self) -> dict[str, Any]:
+        """Identity block shared by `initialize` and `server/discover`.
+
+        `title` is the human-facing display name; `name` / `version` carry the
+        identifier and version.
+        """
+        info: dict[str, Any] = {"name": self.server_name, "version": self.server_version}
+        if self.server_title:
+            info["title"] = self.server_title
+        return info
+
+    async def _handle_discover(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Answer `server/discover` with the versions, capabilities and identity.
+
+        The modern revision replaces the `initialize` handshake with this single
+        probe, and requires servers to implement it. `supportedVersions` is the
+        load-bearing field: a client picks one and declares it on every later
+        request. It is ordered newest-first so a client taking the head gets the
+        newest revision both sides serve.
+
+        `serverInfo` travels in `_meta` here rather than as a top-level field,
+        which is where the modern revision moved it.
+        """
+        return {
+            "supportedVersions": list(SERVED_PROTOCOL_VERSIONS),
+            "capabilities": self._advertised_capabilities(),
+            "_meta": {META_SERVER_INFO: self._server_info()},
+            **({"instructions": self.server_instructions} if self.server_instructions else {}),
+        }
 
     def _tools_list(self) -> dict[str, Any]:
         return {"tools": [self._describe_tool(tool) for tool in self.registry.tools.values()]}
