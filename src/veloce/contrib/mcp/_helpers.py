@@ -81,7 +81,6 @@ _requester_var: ContextVar[Callable[[str, dict[str, Any]], Awaitable[dict[str, A
 # `roots` its `request()` would start a second reader of the same stdin, racing
 # the serve loop for inbound lines. `False` on the synchronous call path, where
 # the serve loop is parked in the handler and `request()` is the sole reader.
-_in_task_var: ContextVar[bool] = ContextVar("_mcp_in_task", default=False)
 
 
 class _InFlight:

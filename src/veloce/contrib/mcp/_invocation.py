@@ -125,7 +125,9 @@ class InvocationMixin:
         # from the dispatching connection's session (recorded at `initialize`);
         # empty off a stateful transport, which leaves those methods to reject.
         session = _session_var.get()
-        client_capabilities = session.client_capabilities if session is not None else None
+        # The session and the server are passed as references, not unpacked: the
+        # context exposes what they hold through properties, so a call that never
+        # asks for them pays only these two assignments.
         context = MCPContext(
             tool.name,
             arguments,
@@ -133,7 +135,8 @@ class InvocationMixin:
             progress_token=progress_token,
             log_level=_log_level_var.get(),
             requester=_requester_var.get(),
-            client_capabilities=client_capabilities,
+            session=session,
+            server=self,
         )
         # Expose this context on its in-flight registration so a
         # `notifications/cancelled` flips `ctx.cancelled` (cooperative stop) as

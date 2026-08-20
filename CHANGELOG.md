@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `mount_mcp(tool_filter=...)` narrows which tools `tools/list` reports per caller.
 - A tool's declared `scopes` now also hide it from `tools/list` when a filter is set.
+- `MCPContext` reports `session_id`, `client_info`, `client_capabilities` and `is_background_task`.
+- `MCPContext.client_supports(name)` tests an advertised client capability, nested with dots.
+- `MCPContext.debug`/`info`/`warning`/`error` are shorthands for the matching `log` level.
+- `MCPContext.read_resource` and `get_prompt` reach the server's own components, scope checks included.
+- `MCPContext.list_resources` and `list_prompts` enumerate what the list methods report.
+- `MCPContext.send_notification` sends an arbitrary JSON-RPC notification to the client.
+
+### Fixed
+
+- An authorization failure inside a tool is reported as forbidden, not as an internal error.
 
 ## [0.15.0] - 2026-08-20
 

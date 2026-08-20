@@ -796,6 +796,14 @@ class MCPServer(TasksMixin, InvocationMixin):
             return _text_result(
                 f"tool call exceeded the {self._call_timeout}s timeout", is_error=True
             )
+        except AuthorizationError:
+            # A tool reading a scoped resource or prompt through its `MCPContext`
+            # hits the same check a direct `resources/read` would. That failure is a
+            # protocol-level forbidden error wherever it arises - the same treatment
+            # a tool lacking its own scopes gets above - so it must not be flattened
+            # into an in-band "internal error" that tells the model nothing.
+            await self._instrument(tool, started, status.HTTP_403_FORBIDDEN)
+            raise
         except Exception as exc:
             # A pure `@app.mcp_tool` (no route) has no exception-handler
             # machinery to run through, so its handler error is surfaced

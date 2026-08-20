@@ -496,6 +496,9 @@ supplies it.
 
 ### Progress and logging
 
+`ctx.debug(...)`, `ctx.info(...)`, `ctx.warning(...)` and `ctx.error(...)` are
+shorthands for the matching `ctx.log(level, ...)` call.
+
 `await ctx.report_progress(done, total)` sends a `notifications/progress` message
 to the client mid-call, and `await ctx.log(level, message)` sends a
 `notifications/message`. Both work in tools, resource reads, and prompts:
@@ -514,6 +517,74 @@ the call (per the MCP progress utility); without one, `report_progress` is a no-
 Log messages use RFC 5424 levels (`debug`, `info`, `notice`, `warning`, `error`,
 `critical`, `alert`, `emergency`); the client can raise the minimum with
 `logging/setLevel`, and a message below it is dropped.
+
+### Who is calling
+
+The context reports the connection it is serving, so a tool can adapt to the client
+without the agent passing anything:
+
+```python
+from veloce import MCPContext, Veloce
+
+app = Veloce(title="Ops")
+
+
+@app.mcp_tool(description="Describe the calling session")
+async def whois(ctx: MCPContext) -> dict:
+    return {
+        "session": ctx.session_id,
+        "client": ctx.client_info.get("name"),
+        "can_sample": ctx.client_supports("sampling"),
+        "backgrounded": ctx.is_background_task,
+    }
+```
+
+- `session_id` — the dispatching connection's id, or `None` on the stateless path.
+- `client_info` — the client's `implementation` block from `initialize`.
+- `client_capabilities` — what the client advertised, and `client_supports("a.b")`
+  to test one, nested with dots.
+- `is_background_task` — whether this call is running as a task rather than inline.
+
+### Reading the server's own resources and prompts
+
+A tool can read a resource or render a prompt that the same server exposes:
+
+```python
+from veloce import MCPContext, Veloce
+
+app = Veloce(title="Ops")
+
+
+@app.get(
+    "/config",
+    expose_as_mcp_resource=True,
+    mcp_resource_uri="config://app",
+    mcp_description="Runtime configuration",
+)
+async def config() -> dict:
+    return {"theme": "dark"}
+
+
+@app.mcp_tool(description="Summarise the current configuration")
+async def summarise(ctx: MCPContext) -> dict:
+    contents = await ctx.read_resource("config://app")
+    return {"read": contents, "available": [r["uri"] for r in ctx.list_resources()]}
+```
+
+`read_resource` and `get_prompt` go through the same handlers `resources/read` and
+`prompts/get` serve, **including their scope checks**. A tool cannot reach a resource
+its caller could not have read directly — the authorization is not bypassed by going
+through a tool.
+
+`list_resources()` and `list_prompts()` return what the corresponding list method
+reports. `await ctx.send_notification(method, params)` sends an arbitrary JSON-RPC
+notification, and is inert when no channel is wired.
+
+!!! note "Added in version 0.16"
+
+    `session_id`, `client_info`, `client_capabilities`, `client_supports`,
+    `is_background_task`, `debug`/`info`/`warning`/`error`, `read_resource`,
+    `get_prompt`, `list_resources`, `list_prompts` and `send_notification`.
 
 ### Cancellation
 

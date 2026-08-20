@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 
 from veloce.contrib.mcp._helpers import (
     _binary_result,
-    _in_task_var,
     _notifier_var,
     _progress_token,
     _resource_result_from_response,
@@ -26,6 +25,7 @@ from veloce.contrib.mcp._helpers import (
     _text_result,
     _to_structured,
 )
+from veloce.contrib.mcp.context import _in_task_var
 from veloce.contrib.mcp.errors import (
     InvalidParamsError,
     _StreamTimeoutError,

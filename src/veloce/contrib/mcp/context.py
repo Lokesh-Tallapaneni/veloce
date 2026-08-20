@@ -24,9 +24,16 @@ bidirectional transport raises `RuntimeError`.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import Any
 
 from veloce.contrib.mcp.errors import MCPCapabilityError
+
+# Whether the current call is running as a background task rather than inline.
+# Set by the task runner; read by `MCPContext.is_background_task` and by the stdio
+# transport. It lives here rather than in `_helpers` because `_helpers` imports this
+# module, so the dependency has to run in this direction.
+_in_task_var: ContextVar[bool] = ContextVar("_mcp_in_task", default=False)
 
 # RFC 5424 severity order, the scale MCP uses for ``logging/setLevel`` and
 # ``notifications/message``. A log message below the client's set minimum level is
@@ -64,6 +71,8 @@ class MCPContext:
         "_log_level",
         "_requester",
         "_client_capabilities",
+        "_session",
+        "_server",
     )
 
     def __init__(
@@ -76,6 +85,8 @@ class MCPContext:
         log_level: str | None = None,
         requester: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
         client_capabilities: dict[str, Any] | None = None,
+        session: Any = None,
+        server: Any = None,
     ) -> None:
         self.tool_name = tool_name
         # The raw, un-coerced argument mapping the client sent in ``tools/call``.
@@ -94,7 +105,21 @@ class MCPContext:
         # the client advertised in `initialize` - together they make `sample` /
         # `elicit` / `roots` live, gated on the matching client capability.
         self._requester = requester
-        self._client_capabilities: dict[str, Any] = client_capabilities or {}
+        # The dispatching connection and the serving `MCPServer`. Both are held as
+        # references rather than unpacked into fields: every value they expose is a
+        # property computed on access, so a call that never asks pays nothing beyond
+        # the two assignments. `None` off a stateful transport / bare construction.
+        self._session = session
+        self._server = server
+        # Resolved once here rather than on every capability gate. A direct
+        # attribute read rather than `getattr` with a default: `session` is either a
+        # session or `None`, and this runs on every tool call.
+        if client_capabilities is not None:
+            self._client_capabilities: dict[str, Any] = client_capabilities
+        elif session is not None:
+            self._client_capabilities = session.client_capabilities
+        else:
+            self._client_capabilities = {}
 
     @property
     def cancelled(self) -> bool:
@@ -104,6 +129,61 @@ class MCPContext:
     def _mark_cancelled(self) -> None:
         """Record that the client cancelled this call (set by the server)."""
         self._cancelled = True
+
+    # ── Call metadata ─────────────────────────────────────────
+
+    @property
+    def session_id(self) -> str | None:
+        """The dispatching connection's id, or None on the stateless path."""
+        session = self._session
+        return session.connection_id if session is not None else None
+
+    @property
+    def client_info(self) -> dict[str, Any]:
+        """The client's `implementation` block from `initialize`, or empty."""
+        session = self._session
+        return (session.client_info or {}) if session is not None else {}
+
+    @property
+    def client_capabilities(self) -> dict[str, Any]:
+        """The capabilities the client advertised, or empty off a stateful transport."""
+        return self._client_capabilities
+
+    @property
+    def is_background_task(self) -> bool:
+        """Whether this call is running as a task rather than inline."""
+        return _in_task_var.get()
+
+    def client_supports(self, capability: str) -> bool:
+        """Return whether the client advertised `capability` (dotted for nested).
+
+        `ctx.client_supports("sampling")` and `ctx.client_supports("sampling.tools")`
+        both work; the same lookup the server-initiated requests gate on.
+        """
+        node: Any = self._client_capabilities
+        for part in capability.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return False
+            node = node[part]
+        return node is not False
+
+    # ── Logging ───────────────────────────────────────────────
+
+    async def debug(self, message: Any, logger: str | None = None) -> None:
+        """Send a debug-level log message to the client."""
+        await self.log("debug", message, logger)
+
+    async def info(self, message: Any, logger: str | None = None) -> None:
+        """Send an info-level log message to the client."""
+        await self.log("info", message, logger)
+
+    async def warning(self, message: Any, logger: str | None = None) -> None:
+        """Send a warning-level log message to the client."""
+        await self.log("warning", message, logger)
+
+    async def error(self, message: Any, logger: str | None = None) -> None:
+        """Send an error-level log message to the client."""
+        await self.log("error", message, logger)
 
     async def log(self, level: str, message: Any, logger: str | None = None) -> None:
         """Send a log message to the MCP client (notifications/message).
@@ -142,6 +222,70 @@ class MCPContext:
         await self._notifier(
             {"jsonrpc": "2.0", "method": "notifications/progress", "params": params}
         )
+
+    # ── Reading the server's own components ───────────────────
+
+    def _require_server(self, what: str) -> Any:
+        """Return the serving `MCPServer`, or explain why it is unavailable."""
+        server = self._server
+        if server is None:
+            raise RuntimeError(
+                f"{what} needs the serving MCPServer, which a bare MCPContext has "
+                "no reference to. It is wired for a real tool invocation."
+            )
+        return server
+
+    async def read_resource(self, uri: str) -> dict[str, Any]:
+        """Read one of this server's registered resources by URI.
+
+        Goes through the same handler `resources/read` serves, so the resource's
+        declared scopes are enforced against the calling principal exactly as they
+        would be for a direct client read - a tool cannot reach a resource its
+        caller could not have read itself.
+        """
+        server = self._require_server("read_resource")
+        contents: dict[str, Any] = await server._resources_read({"uri": uri})
+        return contents
+
+    async def get_prompt(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Render one of this server's registered prompts by name.
+
+        Goes through the same handler `prompts/get` serves, including its scope
+        check, for the same reason `read_resource` does.
+        """
+        server = self._require_server("get_prompt")
+        params: dict[str, Any] = {"name": name}
+        if arguments is not None:
+            params["arguments"] = arguments
+        rendered: dict[str, Any] = await server._prompts_get(params)
+        return rendered
+
+    def list_resources(self) -> list[dict[str, Any]]:
+        """List this server's registered resources, as `resources/list` reports them."""
+        server = self._require_server("list_resources")
+        resources: list[dict[str, Any]] = server._resources_list()["resources"]
+        return resources
+
+    def list_prompts(self) -> list[dict[str, Any]]:
+        """List this server's registered prompts, as `prompts/list` reports them."""
+        server = self._require_server("list_prompts")
+        prompts: list[dict[str, Any]] = server._prompts_list()["prompts"]
+        return prompts
+
+    async def send_notification(self, method: str, params: dict[str, Any] | None = None) -> None:
+        """Send a JSON-RPC notification to the client.
+
+        Inert when no notification channel is wired, matching `log` and
+        `report_progress`.
+        """
+        if self._notifier is None:
+            return
+        message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
+        await self._notifier(message)
 
     # ── Server-initiated requests ─────────────────────────────
 
