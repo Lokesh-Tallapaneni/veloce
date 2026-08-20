@@ -220,10 +220,13 @@ from veloce.security import (
     OAuth2PasswordRequestFormStrict,
     OpenIdConnect,
     SecurityScheme,
+    SessionAuth,
     UnsupportedAlgorithmError,
     check_reset_token,
     decode_jwt,
     encode_jwt,
+    login_session,
+    logout_session,
     make_reset_token,
 )
 
@@ -370,6 +373,9 @@ __all__ = [
     "APIKeyHeader",
     "APIKeyQuery",
     "APIKeyCookie",
+    "SessionAuth",
+    "login_session",
+    "logout_session",
     "OAuth2PasswordBearer",
     "OAuth2PasswordRequestForm",
     "OAuth2PasswordRequestFormStrict",

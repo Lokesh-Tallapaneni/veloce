@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Query(group=True)` reads a model annotation's fields from the query string. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
 - `group=True` is accepted by `Header`, `Cookie`, and `Form` for the same field spread. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
+- `SessionAuth` resolves a cookie session into the request's `Principal`. ([#277](https://github.com/Lokesh-Tallapaneni/veloce/pull/277))
+- `login_session` and `logout_session` sign a subject in and out, rotating the session id. ([#277](https://github.com/Lokesh-Tallapaneni/veloce/pull/277))
 
 ### Fixed
 

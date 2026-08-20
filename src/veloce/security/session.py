@@ -1,0 +1,164 @@
+"""Session authentication — turn a signed-in session into a `Principal`.
+
+`SessionAuth` is the cookie-session counterpart to the bearer and API-key
+schemes: it reads the identity a login handler stored on `request.session` and
+publishes it through `set_principal`, so a permission check written against
+`current_principal()` behaves the same whether the caller arrived over HTTP
+with a session cookie or over MCP with a token.
+
+Without it, `request.session` and `Principal` are two unrelated notions of
+"who is calling": a session-logged-in user resolves to `current_principal()
+is None`, and any guard written against the principal sees an anonymous
+caller.
+
+Session cookie security attributes are RFC 6265 section 4.1.2; the id rotation
+performed at login is the session-fixation defence (OWASP Session Management).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Annotated, Any, cast
+
+from typing_extensions import Doc
+
+from veloce.exceptions import Unauthorized
+from veloce.principal import Principal, set_principal
+from veloce.security.base import SecurityScheme
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.http.request import Request
+    from veloce.sessions import Session
+
+# Session key holding the authenticated subject. Named rather than inlined so
+# the login/logout helpers and the scheme cannot drift apart.
+SESSION_SUBJECT_KEY = "_auth_subject"
+
+# Session key holding the granted scopes, stored as a list because a session
+# payload round-trips through JSON.
+SESSION_SCOPES_KEY = "_auth_scopes"
+
+
+class SessionAuth(SecurityScheme):
+    """Resolve the current `Principal` from the request's session.
+
+    Usage::
+
+        from veloce import Depends, Veloce
+        from veloce.security.session import SessionAuth, login_session
+
+        app = Veloce(secret_key="...")
+        app.add_middleware(SessionMiddleware, secret_key="...")
+        session_auth = SessionAuth()
+
+        @app.post("/login")
+        async def login(request: Request):
+            login_session(request, "user-42", scopes={"items:read"})
+            return {"ok": True}
+
+        @app.get("/me")
+        async def me(principal=Depends(session_auth)):
+            return {"user": principal.subject}
+
+    Returns the `Principal` and publishes it via `set_principal`, so
+    `current_principal()` resolves for anything further down the request -
+    including a dependency shared with an MCP-exposed handler.
+
+    With `auto_error=False` an anonymous request resolves to `None` instead of
+    raising, for routes that render differently when signed in.
+
+    Pass `loader=` to build a richer principal from the stored subject (a
+    database lookup, say); it receives `(request, subject)` and returns a
+    `Principal`, or `None` to reject the session.
+    """
+
+    __slots__ = ("loader", "scopes_key", "subject_key")
+
+    def __init__(
+        self,
+        *,
+        auto_error: Annotated[
+            bool,
+            Doc("Raise 401 when the session carries no subject; False resolves to None."),
+        ] = True,
+        subject_key: Annotated[
+            str,
+            Doc("Session key holding the authenticated subject."),
+        ] = SESSION_SUBJECT_KEY,
+        scopes_key: Annotated[
+            str,
+            Doc("Session key holding the granted scopes."),
+        ] = SESSION_SCOPES_KEY,
+        loader: Annotated[
+            Callable[[Request, str], Principal | None] | None,
+            Doc("Build the principal from the stored subject instead of the default mapping."),
+        ] = None,
+    ) -> None:
+        self.auto_error = auto_error
+        self.subject_key = subject_key
+        self.scopes_key = scopes_key
+        self.loader = loader
+
+    def __call__(self, request: Request) -> Principal | None:
+        """Return the session's `Principal`, publishing it for the request."""
+        session: Any = getattr(request, "session", None)
+        subject = session.get(self.subject_key) if session is not None else None
+        if not subject:
+            if self.auto_error:
+                raise Unauthorized("Not authenticated")
+            return None
+
+        if self.loader is not None:
+            principal = self.loader(request, subject)
+            if principal is None:
+                if self.auto_error:
+                    raise Unauthorized("Not authenticated")
+                return None
+        else:
+            principal = Principal(
+                subject=subject,
+                scopes=frozenset(session.get(self.scopes_key) or ()),
+            )
+        set_principal(principal)
+        return principal
+
+
+def login_session(
+    request: Request,
+    subject: str,
+    *,
+    scopes: Iterable[str] = (),
+    **claims: Any,
+) -> None:
+    """Sign `subject` into the request's session and publish the principal.
+
+    Rotates the session id first, so a session id planted before login cannot
+    be replayed against the now-authenticated session.
+    """
+    # `Request.session` is annotated as a plain dict for the common accessor
+    # case; the object the middleware installs is a `Session`, which is what
+    # carries `regenerate_id`.
+    session = cast("Session", request.session)
+    session.regenerate_id()
+    session[SESSION_SUBJECT_KEY] = subject
+    scope_list = list(scopes)
+    if scope_list:
+        session[SESSION_SCOPES_KEY] = scope_list
+    else:
+        session.pop(SESSION_SCOPES_KEY, None)
+    for key, value in claims.items():
+        session[key] = value
+    set_principal(Principal(subject=subject, scopes=frozenset(scope_list), claims=dict(claims)))
+
+
+def logout_session(request: Request) -> None:
+    """Clear the session's identity and the request's principal.
+
+    Clears the whole session rather than only the identity keys: leftover
+    per-user state on a session that has changed hands is a data-leak shape,
+    not a convenience.
+    """
+    session = cast("Session", request.session)
+    session.clear()
+    session.regenerate_id()
+    set_principal(None)

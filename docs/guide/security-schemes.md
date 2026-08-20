@@ -377,6 +377,54 @@ Each route names the scopes it needs in its `Security(..., scopes=[...])`
 call. The shared `get_current_user` dependency reads those scopes from
 `security_scopes` and checks them against what the token actually carries.
 
+## Session (cookie) authentication
+
+`SessionAuth` turns a signed-in cookie session into a `Principal`, so a guard
+written against `current_principal()` behaves the same for a browser session as
+it does for a bearer token:
+
+```python
+from veloce import Depends, Veloce, current_principal
+from veloce.middleware.sessions import SessionMiddleware
+from veloce.security import SessionAuth, login_session, logout_session
+
+app = Veloce(secret_key="change-me")
+app.add_middleware(SessionMiddleware, secret_key="change-me")
+session_auth = SessionAuth()
+
+
+@app.post("/login")
+async def login(request):
+    login_session(request, "user-42", scopes={"items:read"})
+    return {"ok": True}
+
+
+@app.get("/me")
+async def me(principal=Depends(session_auth)):
+    return {"user": principal.subject, "via": current_principal().subject}
+
+
+@app.post("/logout")
+async def logout(request):
+    logout_session(request)
+    return {"ok": True}
+```
+
+`login_session` rotates the session id before writing the identity, so a
+session id planted before sign-in cannot be replayed against the authenticated
+session. `logout_session` clears the whole session rather than only the
+identity keys, so per-user state cannot survive into the next user of that
+cookie.
+
+Pass `auto_error=False` for pages that render differently when signed in, and
+`loader=` to build a richer principal from the stored subject (a database
+lookup) or to reject a session whose user has since been deleted.
+
+!!! note "Added in version 0.15"
+    `SessionAuth`, `login_session`, `logout_session`. Earlier versions left the
+    session and the `Principal` unconnected, so a session-logged-in user
+    resolved to `current_principal() is None`.
+
 ## Optional authentication
 
 Pass `auto_error=False` to make a scheme return `None` instead of raising
