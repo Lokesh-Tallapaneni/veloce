@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SessionAuth` resolves a cookie session into the request's `Principal`. ([#277](https://github.com/Lokesh-Tallapaneni/veloce/pull/277))
 - `login_session` and `logout_session` sign a subject in and out, rotating the session id. ([#277](https://github.com/Lokesh-Tallapaneni/veloce/pull/277))
 - `HealthPlugin` serves `/livez` and `/readyz`, failing readiness once shutdown begins. ([#278](https://github.com/Lokesh-Tallapaneni/veloce/pull/278))
+- `app.add_lifespan()` registers additional lifespan context managers on the app's exit stack. ([#279](https://github.com/Lokesh-Tallapaneni/veloce/pull/279))
 
 ### Fixed
 

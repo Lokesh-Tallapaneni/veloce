@@ -325,6 +325,10 @@ class Veloce(
         self.config["DEBUG"] = debug
         self.extensions: dict[str, Any] = {}  # Extensions registry
         self._lifespan = lifespan
+        # Additional lifespan context managers contributed by plugins and
+        # extensions. Entered on the same exit stack as `lifespan=`, so they
+        # inherit its reverse-order teardown and error aggregation.
+        self._extra_lifespans: list[Any] = []
         self._init_runtime_state()
         # `exception_handlers=` ctor mapping - keys are
         # exception classes or integer status codes.

@@ -251,6 +251,50 @@ async def test_lifespan_runs():
     startup/shutdown cycle across its `async with` block when you need full
     request testing on the event loop.
 
+## Additional lifespans
+
+`lifespan=` is one slot owned by the application. A plugin or extension that
+needs its own scoped resource registers another with `add_lifespan`, keeping
+setup and teardown in a single `try/finally` instead of splitting them across
+`on_startup` and `on_shutdown`:
+
+```python
+import contextlib
+
+from veloce import Veloce
+
+
+class BrokerPlugin:
+    name = "broker"
+
+    def install(self, app):
+        app.add_lifespan(self.lifespan)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(self, app):
+        self.conn = await connect()
+        try:
+            yield
+        finally:
+            await self.conn.close()
+
+
+app = Veloce()
+app.install(BrokerPlugin())
+```
+
+Registered lifespans share the application's exit stack, so they inherit its
+guarantees: teardown runs in reverse registration order, a failure part-way
+through startup unwinds only what was already entered, and teardown errors are
+aggregated rather than masking one another.
+
+The application's own `lifespan=` is entered first and exits last, so a
+registered lifespan may depend on what it provided.
+
+!!! note "Added in version 0.15"
+    `app.add_lifespan()`. Earlier versions offered a single `lifespan=` slot,
+    so an extension had to split its resource across two event handlers.
+
 ## Next steps
 
 - [Databases](databases.md) — open a connection pool in the lifespan and inject it into handlers.
