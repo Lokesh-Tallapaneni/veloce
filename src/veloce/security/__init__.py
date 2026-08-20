@@ -37,8 +37,12 @@ from veloce.security.reset_token import (
     check_reset_token,
     make_reset_token,
 )
+from veloce.security.session import SessionAuth, login_session, logout_session
 
 __all__ = [
+    "SessionAuth",
+    "login_session",
+    "logout_session",
     "SecurityScheme",
     "HTTPBasic",
     "HTTPBasicCredentials",

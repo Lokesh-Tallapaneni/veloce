@@ -18,7 +18,7 @@ from veloce.exceptions import (
 async def test_http_exception_handler_renders_detail():
     resp = await http_exception_handler(None, HTTPException(404, "missing"))
     assert resp.status_code == 404
-    assert orjson.loads(resp.body) == {"detail": "missing"}
+    assert orjson.loads(resp.body) == {"detail": "missing", "status_code": 404}
 
 
 @pytest.mark.asyncio

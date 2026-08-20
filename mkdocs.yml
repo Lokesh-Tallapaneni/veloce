@@ -184,6 +184,7 @@ nav:
       - Run a Server Manually: deployment/manually.md
       - Server Workers: deployment/workers.md
       - Docker: deployment/docker.md
+      - Kubernetes: deployment/kubernetes.md
       - HTTPS: deployment/https.md
       - Deployment Concepts: deployment/concepts.md
       - Versioning & Pinning: deployment/versions.md

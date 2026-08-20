@@ -173,10 +173,11 @@ class ErrorsMixin:
         """Build the response for an `HTTPException`.
 
         Walks registered status-code + class handlers first (matching
-        `abort()` semantics), falling back to JSON `{"detail": exc.detail}`
-        with `exc.headers` applied. Useful for code paths outside the
-        normal request cycle (e.g. background tasks) that want
-        framework-consistent error shapes.
+        `abort()` semantics), falling back to JSON
+        `{"detail": exc.detail, "status_code": exc.status_code}` with
+        `exc.headers` applied - byte-identical to what the request cycle
+        emits for the same exception, so a handler reached over MCP or from
+        a background task reports the error exactly as it does over HTTP.
 
         Pass `request=` when calling from inside a request scope so the
         registered error handler receives the real failing request
@@ -198,7 +199,10 @@ class ErrorsMixin:
             return self._coerce_response(result)
         structured = getattr(exc, "errors", None)
         return JSONResponse(
-            {"detail": structured if structured is not None else (exc.detail or "Error")},
+            {
+                "detail": structured if structured is not None else (exc.detail or "Error"),
+                "status_code": exc.status_code,
+            },
             status_code=exc.status_code,
             headers=exc.headers,
         )

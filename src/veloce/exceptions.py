@@ -438,7 +438,7 @@ def exception_for_status(status_code: int) -> type[HTTPException]:
 
 
 async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
-    """Render an ``HTTPException`` as a JSON ``{"detail": ...}`` response.
+    """Render an ``HTTPException`` as a JSON ``{"detail": ..., "status_code": ...}`` response.
 
     Honours ``exc.status_code``, ``exc.detail`` (falling back to the
     subclass description), and ``exc.headers``.
@@ -446,7 +446,7 @@ async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
     status = exc.status_code or HTTP_500_INTERNAL_SERVER_ERROR
     detail = exc.detail or getattr(exc, "description", "") or "Error"
     return JSONResponse(
-        {"detail": detail},
+        {"detail": detail, "status_code": status},
         status_code=status,
         headers=dict(exc.headers) if getattr(exc, "headers", None) else None,
     )

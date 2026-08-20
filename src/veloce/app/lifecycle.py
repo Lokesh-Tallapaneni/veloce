@@ -159,6 +159,7 @@ class LifecycleMixin:
         _on_startup: Any
         _on_shutdown: Any
         _lifespan: Any
+        _extra_lifespans: Any
         _lifespan_cm: Any
         _lifespan_stack: Any
         _started_subapps: Any
@@ -304,6 +305,42 @@ class LifecycleMixin:
 
         return decorator
 
+    def add_lifespan(self, factory: Callable[..., Any]) -> Callable[..., Any]:
+        """Register an additional lifespan context manager.
+
+        `lifespan=` is a single slot owned by the application, which leaves a
+        plugin or blueprint no way to own a resource with paired setup and
+        teardown - it has to split the pair across `on_startup` / `on_shutdown`
+        and lose the `try/finally` (and the yielded handle) between them.
+
+        `factory` is called with the app and must return an async context
+        manager. Every registered lifespan is entered on the same exit stack as
+        `lifespan=`, so teardown runs in reverse registration order, a failure
+        part-way through startup unwinds only what was entered, and teardown
+        errors are aggregated rather than masking one another.
+
+        The yielded value is not consumed - a plugin holds its own handle,
+        the same way it holds any other state it owns.
+
+        Usage::
+
+            class BrokerPlugin:
+                name = "broker"
+
+                def install(self, app):
+                    app.add_lifespan(self.lifespan)
+
+                @contextlib.asynccontextmanager
+                async def lifespan(self, app):
+                    broker = await connect()
+                    try:
+                        yield {"broker": broker}
+                    finally:
+                        await broker.close()
+        """
+        self._extra_lifespans.append(factory)
+        return factory
+
     def on_startup(self, func: Callable) -> Callable:
         """Register a startup event handler."""
         self._on_startup.append(func)
@@ -378,6 +415,12 @@ class LifecycleMixin:
                 if self._lifespan is not None:
                     self._lifespan_cm = self._lifespan(self)
                     await stack.enter_async_context(self._lifespan_cm)
+
+                # Registered after the app's own lifespan so they exit before
+                # it: a plugin resource may depend on what `lifespan=` provided,
+                # never the other way round.
+                for factory in self._extra_lifespans:
+                    await stack.enter_async_context(factory(self))
 
                 for handler in self._on_startup:
                     await self._run_handler(handler)

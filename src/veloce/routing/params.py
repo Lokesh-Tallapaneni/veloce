@@ -53,6 +53,7 @@ class ParamBase:
         "examples",
         "embed",
         "convert_underscores",
+        "group",
         "include_in_schema",
     )
 
@@ -140,6 +141,13 @@ class ParamBase:
                 "For `Header` markers, rewrite underscores in the name to hyphens (`x_token` to `x-token`)."
             ),
         ] = True,
+        group: Annotated[
+            bool,
+            Doc(
+                "Read a model annotation's fields from this source instead of one "
+                "key holding a JSON document (`Annotated[Filters, Query(group=True)]`)."
+            ),
+        ] = False,
         include_in_schema: Annotated[
             bool,
             Doc(
@@ -190,6 +198,10 @@ class ParamBase:
         # an un-aliased `Header` param's name has `_` rewritten to `-`
         # (`x_token` -> `x-token`). Only meaningful for `Header` markers.
         self.convert_underscores = convert_underscores
+        # Opt-in: spread a model annotation across this source's keys. Off by
+        # default because a bare model annotation already means "one key holding
+        # a JSON document", which is existing, documented behaviour.
+        self.group = group
         # `include_in_schema` - when False the parameter is
         # still resolved at runtime but omitted from the OpenAPI
         # `parameters` list.

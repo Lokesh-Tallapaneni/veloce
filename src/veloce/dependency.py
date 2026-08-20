@@ -26,6 +26,7 @@ from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
     K_DEPENDS,
+    K_MODEL_GROUP,
     K_PARAM_MARKER,
     K_PATH,
     K_QUERY,
@@ -36,6 +37,9 @@ from veloce._handler_plan import (
     K_UPLOAD_FILE,
     K_WEBSOCKET,
     MARKER_LOC,
+    MK_COOKIE,
+    MK_FORM,
+    MK_HEADER,
     _slot_parallel_safe,
     parallel_group_end,
 )
@@ -755,6 +759,11 @@ class DependencyResolver:
                 i += 1
                 continue
 
+            if kind == K_MODEL_GROUP:
+                kwargs[name] = await self._resolve_model_group(slot, request)
+                i += 1
+                continue
+
             if kind == K_UPLOAD_FILE:
                 await self._resolve_upload_file(slot, request, kwargs)
                 i += 1
@@ -866,6 +875,64 @@ class DependencyResolver:
     def _slot_safe_for_parallel(self, slot: Any, seen_plans: set[int]) -> bool:
         """Compat shim delegating to the shared parallel-safety check."""
         return _slot_parallel_safe(slot, seen_plans)
+
+    async def _resolve_model_group(self, slot: Any, request: Request) -> Any:
+        """Bind a model whose fields come from one request source.
+
+        `Annotated[Filters, Query()]` reads every field of `Filters` off the
+        query string rather than looking for a single key named `filters`. The
+        field walk is precomputed on the slot at registration, so this is one
+        dict build and one validate; errors are remapped onto
+        `["query", "<field>"]` so a bad `limit` blames `limit`, not the group.
+        """
+        mk = slot.marker_kind
+        if mk == MK_FORM:
+            source = await request.form()
+        elif mk == MK_HEADER:
+            source = request.headers
+        elif mk == MK_COOKIE:
+            source = request.cookies
+        else:
+            source = request.query_params
+
+        getlist = getattr(source, "getlist", None)
+        raw: dict[str, Any] = {}
+        for validate_key, key, is_list in slot.group_fields:
+            if is_list and getlist is not None:
+                values = getlist(key.lower() if mk == MK_HEADER else key)
+                if values:
+                    raw[validate_key] = values
+                continue
+            value = source.get(key.lower() if mk == MK_HEADER else key)
+            if value is not None:
+                raw[validate_key] = value
+
+        loc = MARKER_LOC[mk]
+        if not raw and (slot.is_optional or slot.marker.has_default):
+            # Nothing supplied for any field: fall back rather than reporting
+            # every field as missing.
+            return slot.marker.resolve_default() if slot.marker.has_default else None
+        try:
+            if slot.backend == ModelBackend.MSGSPEC:
+                import msgspec
+
+                return msgspec.convert(raw, type=slot.model, strict=False)
+            return slot.model.model_validate(raw)
+        except PydanticValidationError as e:
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": [loc, *(str(part) for part in err["loc"])],
+                        "msg": err["msg"],
+                        "type": err["type"],
+                    }
+                    for err in e.errors()
+                ]
+            ) from e
+        except Exception as err:
+            raise RequestValidationError(
+                [{"loc": [loc], "msg": str(err), "type": "value_error"}]
+            ) from err
 
     async def _resolve_body_model(self, slot: Any, request: Request) -> Any:
         if slot.backend == ModelBackend.MSGSPEC:

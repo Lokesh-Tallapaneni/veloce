@@ -255,6 +255,52 @@ async def read_session(request: Request, session_id: str = Cookie(default=None))
     return {"session_id": session_id}
 ```
 
+## Grouping a model over one source
+
+A model annotation under a marker means **one key holding a JSON document** —
+`?f={"token":"abc"}`. Pass `group=True` to read the model's **fields** from
+that source instead, so a shared filter or pagination model is declared once
+and reused:
+
+```python
+from pydantic import BaseModel
+
+from veloce import Query, Veloce
+
+app = Veloce()
+
+
+class Filters(BaseModel):
+    token: str
+    skip: int = 0
+    limit: int = 100
+
+
+@app.get("/items")
+async def read_items(filters: Filters = Query(group=True)):
+    return {"skip": filters.skip, "limit": filters.limit}
+```
+
+`GET /items?token=abc&skip=5&limit=10` fills each field, and absent fields fall
+back to the model's own defaults. Validation errors name the offending field,
+not the group — a bad `limit` reports `["query", "limit"]`.
+
+`group=True` works on `Query`, `Header`, `Cookie`, and `Form`. Field aliases are
+honoured (`Field(alias="pageSize")` reads `?pageSize=`), a `Header` field's
+underscores become hyphens (`x_token` reads `x-token`), and a `list`-typed field
+collects repeated keys.
+
+!!! note "Added in version 0.15"
+    `group=True`. Without it a model annotation keeps its existing meaning of a
+    single JSON-document key, so existing handlers are unaffected.
+
+!!! warning "Grouped parameters skip the compiled resolver"
+    A grouped model resolves through the interpreted path rather than the
+    compiled per-route resolver, which measures slower than declaring the same
+    fields as individual parameters. Prefer loose parameters on hot routes;
+    reach for `group=True` when sharing one model across many handlers is worth
+    more than the per-request difference.
+
 ## Declaring markers with Annotated
 
 Following [PEP 593](https://peps.python.org/pep-0593/), you can attach a

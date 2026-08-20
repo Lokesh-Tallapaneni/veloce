@@ -14,6 +14,9 @@ import veloce
 
 VELOCE_ALL = {
     "APIKeyCookie",
+    "SessionAuth",
+    "login_session",
+    "logout_session",
     "APIKeyHeader",
     "APIKeyQuery",
     "APIRouter",
@@ -259,6 +262,9 @@ SUBPACKAGE_ALL = {
     },
     "veloce.security": {
         "APIKeyCookie",
+        "SessionAuth",
+        "login_session",
+        "logout_session",
         "APIKeyHeader",
         "APIKeyQuery",
         "BadResetToken",
