@@ -68,7 +68,7 @@ from veloce.contrib.mcp.errors import (
     SessionRequiredError,
     _error,
 )
-from veloce.contrib.mcp.server import _SUPPORTED_PROTOCOL_VERSIONS, MCPServer, _notifier_var
+from veloce.contrib.mcp.server import _SERVED_VERSION_SET, MCPServer, _notifier_var
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.event_store import SSEEventStore
 from veloce.contrib.mcp.transports.session_store import HttpSessionStore
@@ -373,7 +373,7 @@ def _validate_protocol_version(request: Request) -> None:
     `ProtocolVersionError`.
     """
     version = request.headers.get("mcp-protocol-version")
-    if version is not None and version not in _SUPPORTED_PROTOCOL_VERSIONS:
+    if version is not None and version not in _SERVED_VERSION_SET:
         raise ProtocolVersionError(f"unsupported MCP-Protocol-Version: {version}")
 
 

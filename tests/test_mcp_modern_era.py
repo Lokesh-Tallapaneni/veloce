@@ -176,3 +176,13 @@ async def test_a_modern_notification_with_a_bad_version_gets_no_response():
         ],
     )
     assert out == []
+
+
+def test_the_http_transport_accepts_the_modern_version_header():
+    """On HTTP the version also travels in `MCP-Protocol-Version`; rejecting the
+    modern value there would block a modern client before dispatch."""
+    from veloce.contrib.mcp.server import _SERVED_VERSION_SET
+
+    assert MODERN_PROTOCOL_VERSION in _SERVED_VERSION_SET
+    for version in SERVED_PROTOCOL_VERSIONS:
+        assert version in _SERVED_VERSION_SET
