@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mount_mcp(tool_filter=...)` narrows which tools `tools/list` reports per caller.
+- A tool's declared `scopes` now also hide it from `tools/list` when a filter is set.
+
 ## [0.15.0] - 2026-08-20
 
 ### Added

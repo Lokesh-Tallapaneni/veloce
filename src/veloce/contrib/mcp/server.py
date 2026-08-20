@@ -20,10 +20,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable, Iterable
+from typing import TYPE_CHECKING, Any, cast
 
 from veloce import status
+from veloce._internal import _is_async_callable, offload
 from veloce.contrib.mcp._helpers import (
     _binary_result,
     _describe_prompt,
@@ -74,11 +75,12 @@ from veloce.contrib.mcp.errors import (
 )
 from veloce.contrib.mcp.icons import render_icons
 from veloce.contrib.mcp.prompts import PromptRegistry, build_prompt_registry
-from veloce.contrib.mcp.registry import ToolRegistry, build_registry
+from veloce.contrib.mcp.registry import ToolFilter, ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import ResourceRegistry, build_resource_registry
 from veloce.contrib.mcp.subscriptions import ConnectionRegistry, SubscriptionsCapability
 from veloce.contrib.mcp.tasks import TaskRegistry, TasksCapability
 from veloce.http.response import Response
+from veloce.principal import current_principal
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.registry import MCPTool
@@ -136,6 +138,13 @@ RESULT_TYPE_COMPLETE = "complete"
 _SERVED_VERSION_SET = frozenset(SERVED_PROTOCOL_VERSIONS)
 
 
+def _apply_sync_tool_filter(
+    tool_filter: Any, tools: list[MCPTool], principal: Any
+) -> list[MCPTool]:
+    """Run a synchronous visibility policy over the whole candidate set."""
+    return [tool for tool in tools if tool_filter(tool, principal)]
+
+
 class MCPServer(TasksMixin, InvocationMixin):
     """Serve a Veloce app's MCP tools over JSON-RPC 2.0.
 
@@ -155,6 +164,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         "server_version",
         "_call_timeout",
         "_enforce_lifecycle",
+        "_tool_filter",
         "_subscriptions_enabled",
         "_connections",
         "_capabilities",
@@ -169,8 +179,13 @@ class MCPServer(TasksMixin, InvocationMixin):
         registry: ToolRegistry | None = None,
         resources: ResourceRegistry | None = None,
         prompts: PromptRegistry | None = None,
+        tool_filter: ToolFilter | None = None,
     ) -> None:
         self.app = app
+        # Optional per-caller `tools/list` visibility policy. `None` - the default -
+        # leaves listing unfiltered, so an application that does not opt in pays
+        # nothing and sees exactly the pre-existing behaviour.
+        self._tool_filter = tool_filter
         self.registry = registry if registry is not None else build_registry(app)
         self.resources = resources if resources is not None else build_resource_registry(app)
         self.prompts = prompts if prompts is not None else build_prompt_registry(app)
@@ -555,7 +570,11 @@ class MCPServer(TasksMixin, InvocationMixin):
         return {}
 
     async def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._tools_list()
+        # Unfiltered is the default and stays a plain synchronous build - no awaits,
+        # no per-tool predicate - so opting out costs nothing.
+        if self._tool_filter is None:
+            return self._tools_list()
+        return self._describe_tools(await self._visible_tools())
 
     async def _handle_resources_list(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._resources_list()
@@ -638,7 +657,52 @@ class MCPServer(TasksMixin, InvocationMixin):
         }
 
     def _tools_list(self) -> dict[str, Any]:
-        return {"tools": [self._describe_tool(tool) for tool in self.registry.tools.values()]}
+        return self._describe_tools(self.registry.tools.values())
+
+    def _describe_tools(self, tools: Iterable[MCPTool]) -> dict[str, Any]:
+        """Shape an already-selected sequence of tools into a `tools/list` result."""
+        return {"tools": [self._describe_tool(tool) for tool in tools]}
+
+    async def _visible_tools(self) -> list[MCPTool]:
+        """The tools the calling principal may see, in registration order.
+
+        Visibility is scoped by the *same* check `tools/call` performs, so a tool is
+        never listed for a caller that cannot invoke it. A configured filter narrows
+        that set further; it can hide a tool, never reveal one the scope check
+        rejected. Hiding a tool does not change what happens if it is called anyway -
+        an unlisted tool still raises `AuthorizationError` - so a visibility policy
+        can never be mistaken for the authorization decision.
+
+        The spec permits exactly this axis: the tool set "MAY vary by the
+        authorization presented on the request [...] since credentials are
+        per-request input, not connection state". It is evaluated per request and
+        never memoized - the framework cannot know when a principal's grants change,
+        and `tools/list` is a session-start call rather than a hot path.
+        """
+        principal = current_principal()
+        scoped = [
+            tool
+            for tool in self.registry.tools.values()
+            if not _principal_lacks_scopes(tool.required_scopes)
+        ]
+        tool_filter = self._tool_filter
+        if tool_filter is None:
+            return scoped
+        if _is_async_callable(tool_filter):
+            visible = []
+            for tool in scoped:
+                # `_is_async_callable` establishes the awaitable branch; the alias
+                # is a union of both call shapes, which the checker cannot narrow.
+                if await cast("Awaitable[bool]", tool_filter(tool, principal)):
+                    visible.append(tool)
+            return visible
+        # A sync policy may consult a database, so it is kept off the event loop -
+        # but as one handoff for the whole pass, not one per tool. Offloading each
+        # predicate individually turns a microsecond scan into milliseconds.
+        return cast(
+            "list[MCPTool]",
+            await offload(_apply_sync_tool_filter, tool_filter, scoped, principal),
+        )
 
     @staticmethod
     def _describe_tool(tool: MCPTool) -> dict[str, Any]:

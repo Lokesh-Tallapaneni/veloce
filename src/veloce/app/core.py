@@ -1868,6 +1868,7 @@ class Veloce(
         exclude_middleware: Sequence[str] | None = None,
         sessions: bool = False,
         resumable: bool = False,
+        tool_filter: Any = None,
     ) -> Any:
         """Build the MCP server and serve the registered tools.
 
@@ -1900,6 +1901,12 @@ class Veloce(
         `resumable` opts into SSE resumability: each streamed event gets an id
         encoding its stream, and a `GET` carrying `Last-Event-ID` replays only that
         stream's missed events so a client can reconnect after a dropped connection.
+        `tool_filter` narrows what `tools/list` reports per caller: a callable
+        `(tool, principal) -> bool` (sync or async) that hides tools an agent has no
+        business seeing, so its context is not spent on tools it cannot invoke. The
+        caller's declared `mcp_scopes` are applied first regardless, so a filter can
+        only hide further, never reveal; hiding a tool does not change what happens
+        if it is called anyway. Left unset, listing is unfiltered.
         Call this after the tool / resource / prompt routes are registered.
         """
         from veloce.contrib.mcp.server import MCPServer
@@ -1908,7 +1915,7 @@ class Veloce(
             from veloce.contrib.mcp.transports.stdio import serve_stdio
             from veloce.principal import set_principal
 
-            server = MCPServer(self)
+            server = MCPServer(self, tool_filter=tool_filter)
 
             async def _serve() -> None:
                 if principal is not None:
@@ -1921,7 +1928,7 @@ class Veloce(
         if transport == "http":
             from veloce.contrib.mcp.transports.http import register_http_transport
 
-            server = MCPServer(self)
+            server = MCPServer(self, tool_filter=tool_filter)
             # A task-augmented call records the creating connection's identity and
             # the follow-up tasks/get|result|list|cancel must run under that same
             # connection. The stateless default mints a throwaway session (a fresh,

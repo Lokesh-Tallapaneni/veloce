@@ -15,7 +15,7 @@ handler must carry a non-empty description.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +32,13 @@ from veloce.contrib.mcp.safety import require_mcp_description
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan
+
+
+# A `tools/list` visibility policy: given a registered tool and the request
+# principal, return whether that caller may see it. Sync or async; a sync policy is
+# offloaded so a blocking permission lookup cannot stall the event loop. It narrows
+# the scope-checked set and can never widen it.
+ToolFilter = Callable[["MCPTool", Any], "bool | Awaitable[bool]"]
 
 
 @dataclass(slots=True)

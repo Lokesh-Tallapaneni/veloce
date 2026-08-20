@@ -1024,6 +1024,100 @@ app.mount_mcp(transport="http", allowed_origins=["https://app.example.com"])
 - An insufficient-scope failure surfaces as an HTTP **403** with a
   `WWW-Authenticate` scope challenge over the JSON transport.
 
+## Deciding which tools a caller sees
+
+Scopes decide what a caller may *invoke*. By default every registered tool is still
+*listed*, so an agent spends context on tool descriptions it can never use. Pass a
+`tool_filter` to narrow the listing per caller:
+
+```python
+from veloce import Veloce, Principal
+
+app = Veloce(title="Ops")
+
+
+@app.mcp_tool(description="Read service status")
+async def read_status() -> dict:
+    return {"up": True}
+
+
+@app.mcp_tool(description="Delete a tenant", scopes=["admin"])
+async def delete_tenant(tenant_id: str) -> dict:
+    return {"deleted": tenant_id}
+
+
+def visible(tool, principal: Principal | None) -> bool:
+    """Hide anything experimental from callers without the beta grant."""
+    if "experimental" in (getattr(tool.route_info, "tags", None) or ()):
+        return principal is not None and "beta" in principal.scopes
+    return True
+
+
+app.mount_mcp(transport="http", tool_filter=visible)
+```
+
+The filter runs on every `tools/list`, receives the registered tool and the request
+principal, and returns whether that caller may see it. It may be `async def` if the
+policy needs to await.
+
+Three properties are worth knowing:
+
+- **The declared scopes apply first.** A caller lacking a tool's `scopes` never sees
+  it, whatever the filter returns — the same check `tools/call` performs, so a tool is
+  never listed to someone who cannot invoke it.
+- **A filter can hide, never reveal.** It narrows the scoped set; it cannot widen it.
+- **Hiding is not enforcement.** An unlisted tool that is called anyway still raises
+  the same authorization error. The filter controls the agent's context, not access.
+
+!!! note "Added in version 0.16"
+
+    Without `tool_filter`, listing is unfiltered and unchanged.
+
+### Configuring it for many endpoints
+
+An `APIRouter` applies its `tags` to every route registered on it, so one rule can
+govern a whole group without touching individual routes:
+
+```python
+from veloce import APIRouter, Veloce
+
+app = Veloce(title="Ops")
+admin = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@admin.get("/purge", expose_as_mcp_tool=True, mcp_description="Purge stale records")
+async def purge() -> dict:
+    return {"purged": True}
+
+
+@app.get("/status", expose_as_mcp_tool=True, mcp_description="Service status")
+async def service_status() -> dict:
+    return {"up": True}
+
+
+app.include_router(admin)
+
+
+def visible(tool, principal) -> bool:
+    tags = set(getattr(tool.route_info, "tags", None) or ())
+    if "admin" in tags:
+        return principal is not None and "ops" in principal.scopes
+    return True
+
+
+app.mount_mcp(transport="http", tool_filter=visible)
+```
+
+An anonymous caller now lists only `service_status`; a caller holding `ops` lists both.
+
+!!! warning "Do not cache the result yourself"
+
+    The filter is evaluated per request and never memoized by the framework, because
+    only your application knows when a principal's grants change. If your policy
+    performs a database or identity-provider lookup, cache inside the callback where
+    the invalidation rules live — and prefer an `async def` filter so the lookup is
+    not offloaded to a worker thread.
+
 ## Protocol versions
 
 MCP has two eras, and Veloce serves both from the same endpoint:
