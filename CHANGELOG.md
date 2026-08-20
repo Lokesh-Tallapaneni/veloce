@@ -8,16 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `Query(group=True)` reads a model annotation's fields from the query string. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
-- `group=True` is accepted by `Header`, `Cookie`, and `Form` for the same field spread. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
-- `SessionAuth` resolves a cookie session into the request's `Principal`. ([#277](https://github.com/Lokesh-Tallapaneni/veloce/pull/277))
-- `login_session` and `logout_session` sign a subject in and out, rotating the session id. ([#277](https://github.com/Lokesh-Tallapaneni/veloce/pull/277))
-- `HealthPlugin` serves `/livez` and `/readyz`, failing readiness once shutdown begins. ([#278](https://github.com/Lokesh-Tallapaneni/veloce/pull/278))
-- `app.add_lifespan()` registers additional lifespan context managers on the app's exit stack. ([#279](https://github.com/Lokesh-Tallapaneni/veloce/pull/279))
+- `Query(group=True)` reads a model annotation's fields from the query string. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
+- `group=True` is accepted by `Header`, `Cookie`, and `Form` for the same field spread. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
+- `SessionAuth` resolves a cookie session into the request's `Principal`. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
+- `login_session` and `logout_session` sign a subject in and out, rotating the session id. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
+- `HealthPlugin` serves `/livez` and `/readyz`, failing readiness once shutdown begins. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
+- `app.add_lifespan()` registers additional lifespan context managers on the app's exit stack. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
 
 ### Fixed
 
-- An `HTTPException` reports the same body over MCP and background tasks as it does over HTTP. ([#275](https://github.com/Lokesh-Tallapaneni/veloce/pull/275))
+- An `HTTPException` reports the same body over MCP and background tasks as it does over HTTP. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
 
 ## [0.14.0] - 2026-08-19
 
