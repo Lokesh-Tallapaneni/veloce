@@ -373,8 +373,14 @@ def test_missing_required_argument_is_invalid_params():
     out = asyncio.run(pipe.run())
     # Argument-binding failure routes to the JSON-RPC error channel, not an
     # in-band result, so the agent learns its call was malformed.
-    assert "result" not in out[0]
-    assert out[0]["error"]["code"] == -32602
+    # Input validation is a *tool execution* error, not a protocol error: the
+    # spec reserves the JSON-RPC channel for an unknown tool, a malformed
+    # request, or a server fault, and clients feed only execution errors back
+    # to the model. Reporting a bad argument on the error channel would deny
+    # the model the one signal it can act on.
+    assert out[0]["result"]["isError"] is True
+    # Names the argument the model left out, so it can supply it and retry.
+    assert "b" in out[0]["result"]["content"][0]["text"]
 
 
 def test_handler_internal_type_error_is_in_band():
@@ -648,8 +654,13 @@ def test_malformed_argument_type_is_invalid_params():
         }
     )
     out = asyncio.run(pipe.run())
-    assert "result" not in out[0]
-    assert out[0]["error"]["code"] == -32602
+    # Input validation is a *tool execution* error, not a protocol error: the
+    # spec reserves the JSON-RPC channel for an unknown tool, a malformed
+    # request, or a server fault, and clients feed only execution errors back
+    # to the model. Reporting a bad argument on the error channel would deny
+    # the model the one signal it can act on.
+    assert out[0]["result"]["isError"] is True
+    assert "n" in out[0]["result"]["content"][0]["text"]
 
 
 def test_malformed_model_argument_is_invalid_params():
@@ -671,8 +682,13 @@ def test_malformed_model_argument_is_invalid_params():
         }
     )
     out = asyncio.run(pipe.run())
-    assert "result" not in out[0]
-    assert out[0]["error"]["code"] == -32602
+    # Input validation is a *tool execution* error, not a protocol error: the
+    # spec reserves the JSON-RPC channel for an unknown tool, a malformed
+    # request, or a server fault, and clients feed only execution errors back
+    # to the model. Reporting a bad argument on the error channel would deny
+    # the model the one signal it can act on.
+    assert out[0]["result"]["isError"] is True
+    assert "qty" in out[0]["result"]["content"][0]["text"]
 
 
 def test_security_scopes_param_injected():
@@ -1509,8 +1525,13 @@ def test_sub_dependency_query_marker_coercion_failure_is_invalid_params():
         return {"n": n}
 
     out = _call(app, "cnt", {"count": "not-an-int"})
-    assert "result" not in out
-    assert out["error"]["code"] == -32602
+    # Input validation is a *tool execution* error, not a protocol error: the
+    # spec reserves the JSON-RPC channel for an unknown tool, a malformed
+    # request, or a server fault, and clients feed only execution errors back
+    # to the model. Reporting a bad argument on the error channel would deny
+    # the model the one signal it can act on.
+    assert out["result"]["isError"] is True
+    assert "Invalid arguments" in out["result"]["content"][0]["text"]
 
 
 def test_before_request_short_circuit_still_runs_teardown_request():

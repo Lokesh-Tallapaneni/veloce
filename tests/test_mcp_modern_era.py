@@ -186,3 +186,62 @@ def test_the_http_transport_accepts_the_modern_version_header():
     assert MODERN_PROTOCOL_VERSION in _SERVED_VERSION_SET
     for version in SERVED_PROTOCOL_VERSIONS:
         assert version in _SERVED_VERSION_SET
+
+
+# ── Argument validation is a tool execution error ─────────────────
+
+
+async def _call_tool(app: Veloce, name: str, arguments: dict) -> dict:
+    out = await _drive(
+        app,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments, "_meta": MODERN_META},
+            }
+        ],
+    )
+    return out[-1]
+
+
+async def test_a_bad_argument_is_reported_in_band_not_on_the_error_channel():
+    """The spec splits tool failures in two, and clients feed only *execution*
+    errors back to the model. A bad argument on the JSON-RPC error channel is
+    the one thing the model could have fixed, reported where it will not see
+    it."""
+    out = await _call_tool(_app(), "add", {"a": "not-an-int", "b": 3})
+    assert "error" not in out
+    assert out["result"]["isError"] is True
+
+
+async def test_the_message_names_the_offending_argument():
+    out = await _call_tool(_app(), "add", {"a": "not-an-int", "b": 3})
+    text = out["result"]["content"][0]["text"]
+    assert "a" in text
+    assert "'loc'" not in text, "a Python repr is not something a model can act on"
+
+
+async def test_a_missing_argument_names_what_is_missing():
+    out = await _call_tool(_app(), "add", {"a": 1})
+    assert out["result"]["isError"] is True
+    assert "b" in out["result"]["content"][0]["text"]
+
+
+async def test_an_unknown_tool_stays_on_the_protocol_error_channel():
+    """Unknown tool is a protocol error per the spec - the model cannot fix it
+    by adjusting arguments, so it does not belong in-band."""
+    out = await _call_tool(_app(), "nosuch", {})
+    assert out["error"]["code"] == -32602
+
+
+async def test_the_validation_message_is_not_redacted_when_debug_is_off():
+    """A handler exception is redacted because it may carry a secret. A
+    validation message is built from the tool's own schema and the caller's own
+    input, so redacting it would leave the model nothing to correct."""
+    app = _app()
+    assert app.debug is False
+    out = await _call_tool(app, "add", {"a": "not-an-int", "b": 3})
+    text = out["result"]["content"][0]["text"]
+    assert "internal error" not in text

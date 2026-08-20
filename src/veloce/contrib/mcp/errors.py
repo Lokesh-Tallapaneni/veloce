@@ -220,6 +220,26 @@ class _InBandError(MCPError):
     """
 
 
+class _InvalidArgumentsError(_InBandError):
+    """Tool arguments failed validation — reported in-band so the model can retry.
+
+    The spec splits tool failures in two: a *protocol* error (unknown tool, a
+    request that does not satisfy the `CallToolRequest` schema, a server fault)
+    and a *tool execution* error, which explicitly includes input validation.
+    Only the second is fed back to the language model, because only it carries
+    something the model can act on — so reporting a bad argument as
+    `-32602 Invalid params` denies the model the one signal that would let it
+    correct the call and retry.
+
+    The code is still `-32602`, because `isError` is a *tool result* field:
+    resources and prompts have no in-band channel, so the same failure has to
+    travel as a JSON-RPC error there. The tool path catches this type before it
+    reaches `to_error`; the other paths let it through with the right code.
+    """
+
+    code = _JSONRPC_INVALID_PARAMS
+
+
 class _StreamTooLargeError(_InBandError):
     """A streamed tool result exceeded the buffer limit — reported in-band."""
 

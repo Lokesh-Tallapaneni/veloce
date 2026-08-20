@@ -11,7 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP serves the `2026-07-28` revision alongside the handshake revisions, selected per request. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
 - `server/discover` advertises the served protocol versions, capabilities, and server identity. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
 - An MCP request naming an unserved protocol version is rejected with `-32022` listing what is served. ([#276](https://github.com/Lokesh-Tallapaneni/veloce/pull/276))
-
 - `Query(group=True)` reads a model annotation's fields from the query string. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
 - `group=True` is accepted by `Header`, `Cookie`, and `Form` for the same field spread. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
 - `SessionAuth` resolves a cookie session into the request's `Principal`. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
@@ -26,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - An `HTTPException` reports the same body over MCP and background tasks as it does over HTTP. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
+- An MCP tool call with invalid arguments is reported in-band as `isError`, not as a protocol error. ([#277](https://github.com/Lokesh-Tallapaneni/veloce/pull/277))
+- An MCP argument-validation message names the offending argument instead of rendering a Python repr. ([#277](https://github.com/Lokesh-Tallapaneni/veloce/pull/277))
 
 ## [0.14.0] - 2026-08-19
 

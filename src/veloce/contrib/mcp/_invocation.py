@@ -27,7 +27,7 @@ from veloce.contrib.mcp._helpers import (
     _ShortCircuit,
 )
 from veloce.contrib.mcp.context import MCPContext
-from veloce.contrib.mcp.errors import InvalidParamsError
+from veloce.contrib.mcp.errors import InvalidParamsError, _InvalidArgumentsError
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import RequestValidationError
@@ -40,6 +40,33 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.registry import MCPTool
 
 _logger = logging.getLogger(__name__)
+
+
+def _argument_error_text(errors: Any) -> str:
+    """Render binding errors as text a language model can act on.
+
+    The wire form used to be `str()` of the error list - a Python repr, with
+    single quotes and a `loc` path that reads as framework internals. A model
+    receiving that has to guess which argument it got wrong; naming the argument
+    and the expectation is the difference between a retry that can succeed and
+    one that cannot.
+    """
+    if not isinstance(errors, list) or not errors:
+        return "Invalid arguments"
+    lines = []
+    for err in errors:
+        if not isinstance(err, dict):
+            lines.append(str(err))
+            continue
+        loc = err.get("loc") or ()
+        # Drop the source segment (`body` / `query` / `path`): over MCP every
+        # value arrives as a tool argument, so only the argument name is
+        # meaningful to the caller.
+        parts = [str(p) for p in loc if p not in ("body", "query", "path", "header", "cookie")]
+        name = ".".join(parts) if parts else "arguments"
+        lines.append(f"{name}: {err.get('msg', 'invalid value')}")
+    joined = "; ".join(lines)
+    return f"Invalid arguments - {joined}"
 
 
 class InvocationMixin:
@@ -251,11 +278,11 @@ class InvocationMixin:
                     _logger.exception("MCP background task failed")
             await self._run_response_background(response)
             return _RouteResponse(response, model_filtered)
-        except InvalidParamsError:
-            # A malformed argument is a transport-level invalid-params error,
-            # not a handled application failure - re-raise so `_tools_call`
-            # surfaces it on the JSON-RPC error channel. It still flows through
-            # the `finally` so teardowns run.
+        except (InvalidParamsError, _InvalidArgumentsError):
+            # Not a handled application failure: a malformed argument is shaped
+            # by `_tools_call` (in-band, so the model can retry) and an explicit
+            # `InvalidParamsError` goes on the JSON-RPC error channel. Both still
+            # flow through the `finally` so teardowns run.
             raise
         except BaseException as err:  # noqa: BLE001 - re-raised / routed after teardown
             exc = err
@@ -311,11 +338,14 @@ class InvocationMixin:
     ) -> Any:
         """Bind the handler kwargs from `arguments` and call the handler.
 
-        The argument-binding boundary is the only place that maps a malformed
-        argument to an invalid-params transport error (`InvalidParamsError`): a
-        missing argument (TypeError), a failed coercion (RequestValidationError)
-        or a failed model validation (ValueError). The handler call lives outside
-        that guard so a genuine TypeError / ValueError raised in the handler body
+        The argument-binding boundary maps a malformed argument to an in-band
+        tool-execution error: a missing argument (TypeError), a failed coercion
+        (RequestValidationError) or a failed model validation (ValueError). The
+        spec classes input validation as a tool execution error rather than a
+        protocol error, because it is the class of failure a model can act on -
+        clients feed execution errors back to the model to self-correct, and
+        protocol errors generally not at all. The handler call lives outside that
+        guard so a genuine TypeError / ValueError raised in the handler body
         propagates unchanged - surfaced in-band for a pure tool, routed through
         the app's exception handlers for a route-backed one.
         """
@@ -334,8 +364,10 @@ class InvocationMixin:
                 request=request,
                 route_defaults=route_defaults,
             )
-        except (TypeError, ValueError, RequestValidationError) as err:
-            raise InvalidParamsError(str(err)) from err
+        except RequestValidationError as err:
+            raise _InvalidArgumentsError(_argument_error_text(err.errors)) from err
+        except (TypeError, ValueError) as err:
+            raise _InvalidArgumentsError(str(err)) from err
 
         handler = tool.handler
         if _is_async_callable(handler):
