@@ -62,6 +62,57 @@ serialization work. Pass your own `logger=...` to route records into an
 existing logging setup. Register this **instead of** `LoggingMiddleware`, not
 in addition — doing both double-logs each request.
 
+### Keeping log writes off the event loop
+
+The bootstrapped handler is a `StreamHandler`, and `logging` writes
+synchronously: the write happens on the event loop, so a slow or blocked
+destination stalls request handling. On a local terminal or a container's
+stdout that is negligible; over a network handler, or with stdout piped to
+something that stops reading, it is not.
+
+The stdlib fix is a queue: the handler on the hot path only enqueues, and a
+listener thread performs the actual write.
+
+```python
+import logging
+import logging.handlers
+import queue
+
+from veloce import Veloce
+from veloce.observability import instrument_access_log
+
+log_queue: queue.Queue = queue.Queue(-1)
+
+access_logger = logging.getLogger("veloce.access")
+access_logger.handlers.clear()
+access_logger.addHandler(logging.handlers.QueueHandler(log_queue))
+access_logger.setLevel(logging.INFO)
+
+listener = logging.handlers.QueueListener(log_queue, logging.StreamHandler())
+listener.start()
+
+app = Veloce()
+instrument_access_log(app, json=True)
+```
+
+`QueueHandler.emit` is a `put_nowait`, so the request path never blocks on the
+destination. Stop the listener during shutdown so buffered records are flushed:
+
+```python
+@app.on_shutdown
+async def stop_log_listener() -> None:
+    listener.stop()
+```
+
+Configure the handler *before* the first request: `instrument_access_log` and
+`LoggingMiddleware` only install their own `StreamHandler` when the logger has
+none, so a handler you added first is left alone.
+
+An async logging library is not needed for this, and Veloce does not ship one.
+Choosing the transport is the application's decision — the queue pattern works
+with any handler, adds no dependency, and is what the framework's own loggers
+inherit once you configure them.
+
 ## Prometheus metrics
 
 `instrument_with_prometheus` (from `veloce.metrics`) exports a request counter

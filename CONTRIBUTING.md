@@ -68,7 +68,10 @@ pytest --cov=veloce --cov-fail-under=90
 HYPOTHESIS_PROFILE=ci pytest -m fuzz
 
 # Benchmarks: CI runs them on CodSpeed and reports the delta on the PR.
-pytest benchmarks --codspeed
+# Two instruments - see benchmarks/README.md for which suite a benchmark
+# belongs in and why.
+pytest benchmarks --ignore=benchmarks/walltime --codspeed   # instruction counts
+pytest benchmarks/walltime --codspeed                       # thread-crossing paths
 ```
 
 - Tests use `pytest-asyncio` in auto mode: write async tests as plain
