@@ -6,8 +6,8 @@ tags: [errors, exceptions, abort, http-status]
 # Error Handling
 
 Veloce turns errors into HTTP responses through a small set of pieces: the
-[`HTTPException`](../reference.md#veloce.HTTPException) class, the
-[`abort()`](../reference.md#veloce.abort) shortcut for raising one, and
+[`HTTPException`](../reference/exceptions.md#veloce.HTTPException) class, the
+[`abort()`](../reference/helpers.md#veloce.abort) shortcut for raising one, and
 error handlers that convert a raised exception into the response the client
 sees.
 
@@ -69,7 +69,7 @@ async def limited():
 
 ## Raising HTTPException directly
 
-`abort()` is a shorthand; you can raise [`HTTPException`](../reference.md#veloce.HTTPException)
+`abort()` is a shorthand; you can raise [`HTTPException`](../reference/exceptions.md#veloce.HTTPException)
 yourself when you want full control. The constructor is
 `HTTPException(status_code=None, detail="", headers=None)`.
 
@@ -127,7 +127,7 @@ Subclasses available under `veloce.exceptions` include, among others:
 | 503         | `ServiceUnavailable`    |
 
 !!! note
-    The [API reference](../reference.md) documents `HTTPException` itself; the
+    The [API reference](../reference/index.md) documents `HTTPException` itself; the
     named subclasses live in `veloce.exceptions`.
 
 ## The default error response
@@ -135,7 +135,7 @@ Subclasses available under `veloce.exceptions` include, among others:
 Without any custom handler, an `HTTPException` renders as JSON. The body is
 `{"detail": <detail or description>}`, the status code is `exc.status_code`,
 and any `exc.headers` are applied. This is what
-[`http_exception_handler`](../reference.md#veloce.http_exception_handler)
+[`http_exception_handler`](../reference/exceptions.md#veloce.http_exception_handler)
 produces, and it is the framework default for every error raised through
 `abort()` or `HTTPException`.
 
@@ -231,7 +231,7 @@ def create_app() -> Veloce:
 ## Custom error pages
 
 An error handler can return any response shape, so HTML error pages are
-just a handler that returns an [`HTMLResponse`](../reference.md#veloce.HTMLResponse).
+just a handler that returns an [`HTMLResponse`](../reference/responses.md#veloce.HTMLResponse).
 Combine a status-code handler with a template for a polished 404 page:
 
 ```python
@@ -274,7 +274,7 @@ async def not_found(request: Request, exc: NotFound):
 
 When a typed handler parameter fails to parse — a bad path converter, a
 missing required query value, an invalid body — the dependency resolver
-raises [`RequestValidationError`](../reference.md#veloce.RequestValidationError),
+raises [`RequestValidationError`](../reference/exceptions.md#veloce.RequestValidationError),
 a `422` carrying a structured `errors` list. You do **not** need to register a
 handler to get a useful response — the default body is a structured error list,
 one entry per failed field with `loc` (where it failed), `msg`, and `type`:
@@ -288,7 +288,7 @@ one entry per failed field with `loc` (where it failed), `msg`, and `type`:
 }
 ```
 
-The exported [`request_validation_exception_handler`](../reference.md#veloce.request_validation_exception_handler)
+The exported [`request_validation_exception_handler`](../reference/exceptions.md#veloce.request_validation_exception_handler)
 renders the same per-field `detail` list as `{"detail": [...]}` (without the
 top-level `status_code` field the default dispatch adds). Register it explicitly,
 or reshape the response with your own handler:
@@ -353,5 +353,5 @@ dispatch instead of being converted to a `500`. See
   test client.
 - [Requests & Responses](requests-responses.md) — the response shapes an
   error handler can return.
-- The [API reference](../reference.md) lists `HTTPException`, `abort`, and
+- The [API reference](../reference/index.md) lists `HTTPException`, `abort`, and
   the registration methods with full signatures.

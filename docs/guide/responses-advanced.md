@@ -6,12 +6,12 @@ tags: [responses, cookies, headers, status]
 # Advanced responses
 
 By default a handler that returns a dict or model is serialised to a
-[`JSONResponse`](../reference.md#veloce.JSONResponse), with status `200` and the
+[`JSONResponse`](../reference/responses.md#veloce.JSONResponse), with status `200` and the
 headers Veloce computes for you.
 
 This page covers the levers for taking that control back:
 
-- picking a different [`Response`](../reference.md#veloce.Response) class
+- picking a different [`Response`](../reference/responses.md#veloce.Response) class
 - documenting extra status codes in the OpenAPI schema
 - setting cookies and headers with typed helpers
 - changing the status code from inside the handler
@@ -139,7 +139,7 @@ statuses — that is the job of `status_code=`, `HTTPException`, or returning a
 ## Status codes
 
 Set the default success status with `status_code=`. The named constants in
-[`status`](../reference.md) read better than bare integers:
+[`status`](../reference/index.md) read better than bare integers:
 
 ```python title="app.py"
 from veloce import Veloce, status
@@ -210,7 +210,7 @@ status you set is applied.
 ## Headers
 
 Set a one-off header through the injected response's `headers` dict, or use the
-typed setters and properties on [`Response`](../reference.md#veloce.Response) for
+typed setters and properties on [`Response`](../reference/responses.md#veloce.Response) for
 the standard fields:
 
 ```python title="app.py"
@@ -240,9 +240,9 @@ strings:
 
 ### Conditional responses and `Vary`
 
-[`add_vary`](../reference.md#veloce.Response.add_vary) tells caches which request
+[`add_vary`](../reference/responses.md#veloce.Response.add_vary) tells caches which request
 headers the response depends on, so a `Vary: Cookie` response is not served to a
-different user. [`make_conditional`](../reference.md#veloce.Response.make_conditional)
+different user. [`make_conditional`](../reference/responses.md#veloce.Response.make_conditional)
 downgrades a response to `304 Not Modified` when the request's `If-None-Match` or
 `If-Modified-Since` preconditions already match (RFC 9110 §13):
 
@@ -262,7 +262,7 @@ async def profile(request):
 
 ## Cookies
 
-Set cookies with [`set_cookie`](../reference.md#veloce.Response.set_cookie) on the
+Set cookies with [`set_cookie`](../reference/responses.md#veloce.Response.set_cookie) on the
 injected response. The validated parameters build a correct RFC 6265 `Set-Cookie`
 header, and multiple calls append rather than overwrite:
 
@@ -284,7 +284,7 @@ cross-site cookie, or `samesite=None` to omit the attribute entirely.
 !!! warning "Match the attributes when deleting"
     A browser only replaces an existing cookie when `Path`, `Domain`, and the
     `Secure` / `SameSite` / `Partitioned` attributes match. Pass the same flags to
-    [`delete_cookie`](../reference.md#veloce.Response.delete_cookie) that you used
+    [`delete_cookie`](../reference/responses.md#veloce.Response.delete_cookie) that you used
     to set it, or the cookie is stored twice instead of removed.
 
 ### Partitioned cookies
@@ -314,7 +314,7 @@ The cookie travels on the wire as `__Host-session`.
 
 ## Testing responses
 
-Use the in-memory [`TestClient`](../reference.md#veloce.TestClient) to assert the
+Use the in-memory [`TestClient`](../reference/testing.md#veloce.TestClient) to assert the
 status, headers, and cookies without a server:
 
 ```python
@@ -350,4 +350,4 @@ assert resp.status_code == 200
 - Shape and filter the response body with models — see [Request models](request-models.md).
 - Control how values are serialised to JSON — see [JSON and encoding](encoding.md).
 - Document operations and schemas — see [OpenAPI](openapi.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

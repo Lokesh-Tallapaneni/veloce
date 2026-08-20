@@ -1110,4 +1110,4 @@ wiring. The `RequestMetrics` record carries:
 
 - [Dependency injection](dependency-injection.md) — `Depends()` and `Security()`, which run in tools exactly as in routes.
 - [Request models](request-models.md) — body models that become a tool's input schema.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

@@ -5,7 +5,7 @@ tags: [proxy, deployment, headers, security]
 
 # Behind a proxy
 
-When Veloce runs behind a reverse proxy (nginx, Caddy, an ALB, Cloudflare), the TCP peer is the proxy, not the original client, and the proxy may strip a path prefix before forwarding. [`ProxyFix`](../reference.md#veloce.ProxyFix) recovers the original client IP, scheme, host, and prefix from the proxy's forwarding headers, and `request.root_path` / `request.script_root` expose the mounted prefix. This page covers both.
+When Veloce runs behind a reverse proxy (nginx, Caddy, an ALB, Cloudflare), the TCP peer is the proxy, not the original client, and the proxy may strip a path prefix before forwarding. [`ProxyFix`](../reference/middleware.md#veloce.ProxyFix) recovers the original client IP, scheme, host, and prefix from the proxy's forwarding headers, and `request.root_path` / `request.script_root` expose the mounted prefix. This page covers both.
 
 ## The two problems a proxy introduces
 
@@ -13,12 +13,12 @@ A reverse proxy changes what the application sees in two distinct ways. Each has
 
 | Symptom | What the proxy did | Fix |
 | --- | --- | --- |
-| `request.client_host` is the proxy IP, scheme is `http` behind TLS | Terminated the connection and re-issued the request | [`ProxyFix`](../reference.md#veloce.ProxyFix) reads `X-Forwarded-*` |
+| `request.client_host` is the proxy IP, scheme is `http` behind TLS | Terminated the connection and re-issued the request | [`ProxyFix`](../reference/middleware.md#veloce.ProxyFix) reads `X-Forwarded-*` |
 | The app is served under `/api` but routes are registered at `/` | Mounted the app under a prefix and stripped it | `root_path` / `script_root` |
 
 ## Trusting forwarded headers with ProxyFix
 
-A proxy injects headers describing the original request. Add [`ProxyFix`](../reference.md#veloce.ProxyFix) and tell it how many hops to trust for each header.
+A proxy injects headers describing the original request. Add [`ProxyFix`](../reference/middleware.md#veloce.ProxyFix) and tell it how many hops to trust for each header.
 
 ```python title="app.py"
 from veloce import ProxyFix, Request, Veloce
@@ -61,7 +61,7 @@ Each field independently selects the Nth value from the right of its header. `0`
 
 ### The standard Forwarded header
 
-[`ProxyFix`](../reference.md#veloce.ProxyFix) also reads the RFC 7239 `Forwarded` header. When both forms are present, `Forwarded` wins. Set `trust_forwarded=False` to ignore it and use only the `X-Forwarded-*` headers.
+[`ProxyFix`](../reference/middleware.md#veloce.ProxyFix) also reads the RFC 7239 `Forwarded` header. When both forms are present, `Forwarded` wins. Set `trust_forwarded=False` to ignore it and use only the `X-Forwarded-*` headers.
 
 ```python
 app.add_middleware(ProxyFix(x_for=2, x_proto=1, trust_forwarded=False))
@@ -116,7 +116,7 @@ async def items(request: Request):
 
 ## url_for behind a proxy
 
-[`url_for`](../reference.md#veloce.Veloce.url_for) reverse-resolves a route name to a path. It builds from the registered route template and does **not** prepend `root_path` or `script_root`, so a relative result is root-relative to the application, not to the public mount point.
+[`url_for`](../reference/application.md#veloce.Veloce.url_for) reverse-resolves a route name to a path. It builds from the registered route template and does **not** prepend `root_path` or `script_root`, so a relative result is root-relative to the application, not to the public mount point.
 
 ```python title="app.py"
 from veloce import Request, Veloce
@@ -142,7 +142,7 @@ app.config["PREFERRED_URL_SCHEME"] = "https"
 
 ## Testing it
 
-Drive the forwarding headers through [`TestClient`](../reference.md#veloce.TestClient) and assert the recovered values.
+Drive the forwarding headers through [`TestClient`](../reference/testing.md#veloce.TestClient) and assert the recovered values.
 
 ```python
 from veloce import ProxyFix, Request, TestClient, Veloce
@@ -183,4 +183,4 @@ assert resp.json() == {
 - [Middleware](middleware.md) — where `ProxyFix` sits in the request pipeline and how to order it.
 - [Configuration](configuration.md) — set `SERVER_NAME` and `PREFERRED_URL_SCHEME` for absolute `url_for`.
 - [Deployment](deployment.md) — run the app behind a real proxy in production.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

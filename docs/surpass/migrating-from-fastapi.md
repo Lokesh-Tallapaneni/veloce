@@ -67,7 +67,7 @@ app = Veloce()
 app.include_router(router)
 ```
 
-Veloce also has [`Blueprint`](../reference.md#veloce.Blueprint) — a *named*
+Veloce also has [`Blueprint`](../reference/routers.md#veloce.Blueprint) — a *named*
 route group carrying its own request hooks and scoped error handlers
 (Flask's primitive). Reach for it when a group needs per-group
 `before_request` / `errorhandler` behaviour; plain prefix-and-tags grouping
@@ -75,7 +75,7 @@ needs only `APIRouter` / `Router`.
 
 ## Exception-handler scope includes validation errors
 
-In Veloce, [`RequestValidationError`](../reference.md#veloce.RequestValidationError)
+In Veloce, [`RequestValidationError`](../reference/exceptions.md#veloce.RequestValidationError)
 (and `ValidationError`) subclass `HTTPException`, so a handler registered for
 `HTTPException` also intercepts 422 validation failures. A FastAPI app that
 relies on validation errors bypassing its `HTTPException` handler should
@@ -113,7 +113,7 @@ async def show(user=Depends(lookup_user, offload=True)):
 
 ## OAuth2 `token_url`
 
-[`OAuth2PasswordBearer`](../reference.md#veloce.OAuth2PasswordBearer) takes
+[`OAuth2PasswordBearer`](../reference/security.md#veloce.OAuth2PasswordBearer) takes
 `token_url` in snake_case, matching the rest of the Veloce API.
 
 ```python
@@ -130,8 +130,8 @@ async def me(token: str = Depends(oauth2)):
 ```
 
 The advanced schemes —
-[`OAuth2AuthorizationCodeBearer`](../reference.md#veloce.OAuth2AuthorizationCodeBearer)
-and [`OpenIdConnect`](../reference.md#veloce.OpenIdConnect) — keep the camelCase
+[`OAuth2AuthorizationCodeBearer`](../reference/security.md#veloce.OAuth2AuthorizationCodeBearer)
+and [`OpenIdConnect`](../reference/security.md#veloce.OpenIdConnect) — keep the camelCase
 spelling because those are the field names the OpenAPI security-scheme object
 defines, so a scheme copied from a standard OpenAPI document maps over without
 renaming. The camelCase fields are:
@@ -279,7 +279,7 @@ Each knob defaults to its usual path; set any to `None` to remove just that one.
 
 ## `Response(body=, content_type=)`
 
-The base [`Response`](../reference.md#veloce.Response) constructor uses `body`
+The base [`Response`](../reference/responses.md#veloce.Response) constructor uses `body`
 and `content_type`, not `content` and `media_type`.
 
 ```python
@@ -306,14 +306,14 @@ not pending features.
 - No query/cookie/header **parameter models** (a Pydantic model that fans out
   into individual query/header params). Declare the parameters individually.
 - No `bytes = File()` or `list[UploadFile]` shorthand — use
-  [`UploadFile`](../reference.md#veloce.UploadFile) per file.
+  [`UploadFile`](../reference/requests.md#veloce.UploadFile) per file.
 - No `generate_unique_id_function`. Set `operation_id=` per route; colliding
   auto-generated IDs are deterministically suffixed when
   `disambiguate_operation_ids` is on (the default).
 
 ## TestClient has no `raise_server_exceptions`
 
-Veloce's [`TestClient`](../reference.md#veloce.TestClient) signature is
+Veloce's [`TestClient`](../reference/testing.md#veloce.TestClient) signature is
 `TestClient(app, base_url=..., follow_redirects=False)`. There is no
 `raise_server_exceptions`, `backend`, or `root_path` argument. To make an
 unhandled handler exception re-raise into the test instead of becoming a `500`,
@@ -380,9 +380,9 @@ if __name__ == "__main__":
 
 ### In-memory TestClient and request helpers
 
-The [`TestClient`](../reference.md#veloce.TestClient) constructs ASGI scopes
+The [`TestClient`](../reference/testing.md#veloce.TestClient) constructs ASGI scopes
 directly and runs handlers on its own loop — no socket. The Flask-style helpers
-[`g`](../guide/helpers.md), [`flash`](../reference.md#veloce.flash), and
+[`g`](../guide/helpers.md), [`flash`](../reference/helpers.md#veloce.flash), and
 [`current_app`](../guide/helpers.md) are backed by contextvars,
 so they stay correct per-request under concurrency.
 
@@ -405,7 +405,7 @@ assert resp.status_code == 200
 assert resp.json() == {"user": "ada"}
 ```
 
-For async tests, [`AsyncTestClient`](../reference.md#veloce.AsyncTestClient) runs
+For async tests, [`AsyncTestClient`](../reference/testing.md#veloce.AsyncTestClient) runs
 on the test's own running loop:
 
 ```python
@@ -431,4 +431,4 @@ async def test_index():
 - [Requests and responses](../guide/requests-responses.md) — `Response(body=, content_type=)` and return-value semantics.
 - [Testing](../guide/testing.md) — `TestClient`, `AsyncTestClient`, and exception propagation.
 - [Deployment](../guide/deployment.md) — running the migrated app under uvicorn, gunicorn, or `app.run()`.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

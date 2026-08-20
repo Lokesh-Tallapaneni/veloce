@@ -8,17 +8,17 @@ tags: [json, encoding, serialisation, orjson]
 Veloce serialises responses with [orjson](https://github.com/ijl/orjson) and a
 small conversion layer that turns rich Python objects — Pydantic models,
 dataclasses, `datetime`, `UUID`, `Decimal`, `set`, `Path` — into JSON-safe
-values. [`jsonable_encoder`](../reference.md#veloce.jsonable_encoder) exposes
-that conversion directly, [`register_encoder`](../reference.md#veloce.register_encoder)
+values. [`jsonable_encoder`](../reference/openapi.md#veloce.jsonable_encoder) exposes
+that conversion directly, [`register_encoder`](../reference/openapi.md#veloce.register_encoder)
 extends it for your own types, and the
-[`JSONProvider`](../reference.md#veloce.JSONProvider) interface lets you replace
+[`JSONProvider`](../reference/openapi.md#veloce.JSONProvider) interface lets you replace
 the serialiser entirely. orjson ships as a Veloce dependency, so there is
 nothing extra to install.
 
 ## How a return value becomes JSON
 
 When a handler returns a `dict`, `list`, or Pydantic model, Veloce wraps it in a
-[`JSONResponse`](../reference.md#veloce.JSONResponse) and encodes it with orjson.
+[`JSONResponse`](../reference/responses.md#veloce.JSONResponse) and encodes it with orjson.
 
 orjson handles the common leaf types (`str`, `int`, `float`, `bool`, `None`,
 `datetime`, `UUID`, `Enum`, dataclass) at C speed; anything it cannot encode
@@ -55,13 +55,13 @@ assert resp.json() == {
 ```
 
 A bare `str` return is sent as `text/html`, not JSON; return a `dict`/`list` or
-a [`JSONResponse`](../reference.md#veloce.JSONResponse) when you want a JSON body.
+a [`JSONResponse`](../reference/responses.md#veloce.JSONResponse) when you want a JSON body.
 See [Requests and responses](requests-responses.md) for the full return-value
 rules.
 
 ## jsonable_encoder
 
-Use [`jsonable_encoder`](../reference.md#veloce.jsonable_encoder) when you need
+Use [`jsonable_encoder`](../reference/openapi.md#veloce.jsonable_encoder) when you need
 the JSON-safe form of an object *before* it reaches a response — for example to
 store it, log it, or pass it to a non-orjson serialiser. Unlike the response
 path, it walks the whole object graph and returns plain `dict`/`list`/scalar
@@ -153,13 +153,13 @@ jsonable_encoder(
     the stack overflows.
 
 !!! warning "Secrets are refused"
-    A [`Secret`](../reference.md#veloce.Secret) reaching either JSON path raises
+    A [`Secret`](../reference/security.md#veloce.Secret) reaching either JSON path raises
     `TypeError`. Call `.reveal()` explicitly at the point you intend to expose
     the value, so a secret never leaks into a response by accident.
 
 ## Registering an encoder for a custom type
 
-[`register_encoder`](../reference.md#veloce.register_encoder) installs a
+[`register_encoder`](../reference/openapi.md#veloce.register_encoder) installs a
 process-wide encoder for a type and its subclasses. It applies to both
 `jsonable_encoder` and the response path, so a registered type serialises the
 same way everywhere. Registering a type that already has a built-in handler
@@ -193,7 +193,7 @@ assert client.get("/brand").json() == {"primary": "#ff0000"}
 The encoder receives one instance and must return a JSON-able value (a scalar,
 or a list/dict of such). Resolution walks the type's MRO, so subclasses of a
 registered type are covered too. Remove a registration with
-[`unregister_encoder`](../reference.md#veloce.unregister_encoder); it is a no-op
+[`unregister_encoder`](../reference/openapi.md#veloce.unregister_encoder); it is a no-op
 if the type was never registered.
 
 ```python
@@ -208,8 +208,8 @@ unregister_encoder(Color)
 
 ## Choosing the serialiser with JSONProvider
 
-`app.json` is the active [`JSONProvider`](../reference.md#veloce.JSONProvider).
-Veloce's default is [`DefaultJSONProvider`](../reference.md#veloce.DefaultJSONProvider),
+`app.json` is the active [`JSONProvider`](../reference/openapi.md#veloce.JSONProvider).
+Veloce's default is [`DefaultJSONProvider`](../reference/openapi.md#veloce.DefaultJSONProvider),
 an orjson-backed provider, instantiated lazily on first access. A provider
 exposes three methods:
 
@@ -259,9 +259,9 @@ assert client.get("/ping").json() == {"pong": True}
 
 ## Tuning the default provider
 
-[`DefaultJSONProvider`](../reference.md#veloce.DefaultJSONProvider) reads two
+[`DefaultJSONProvider`](../reference/openapi.md#veloce.DefaultJSONProvider) reads two
 [config](configuration.md) flags into an orjson option bitmask when it is first
-instantiated. [`config_orjson_options`](../reference.md#veloce.config_orjson_options)
+instantiated. [`config_orjson_options`](../reference/openapi.md#veloce.config_orjson_options)
 builds that bitmask and is shared with the `jsonify` helper so the two paths
 cannot drift.
 
@@ -297,4 +297,4 @@ assert client.get("/").body == b'{"a":1,"b":2}'
 - Return JSON, HTML, and streaming bodies from handlers — see [Requests and responses](requests-responses.md).
 - Validate and shape request/response bodies with models — see [Request models](request-models.md).
 - Swap in a Struct-based encoder for hot endpoints — see [msgspec](msgspec.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

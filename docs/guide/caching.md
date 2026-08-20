@@ -62,7 +62,7 @@ async def load_user(user_id: int) -> dict:
 
 ## Backends
 
-[`InMemoryCache`](../reference.md#veloce.InMemoryCache) is process-local and
+[`InMemoryCache`](../reference/tasks.md#veloce.InMemoryCache) is process-local and
 size-bounded (`max_entries`, default 1024, evicting expired then oldest entries).
 It is not shared across workers.
 

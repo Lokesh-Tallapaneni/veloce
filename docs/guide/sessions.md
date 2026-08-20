@@ -6,15 +6,15 @@ tags: [sessions, cookies, security]
 # Sessions
 
 A session is a per-user dictionary that survives across requests. Veloce
-offers two backends: [`SessionMiddleware`](../reference.md#veloce.SessionMiddleware)
+offers two backends: [`SessionMiddleware`](../reference/middleware.md#veloce.SessionMiddleware)
 keeps the whole payload in a signed, timestamped cookie, and
-[`ServerSessionMiddleware`](../reference.md#veloce.ServerSessionMiddleware)
+[`ServerSessionMiddleware`](../reference/middleware.md#veloce.ServerSessionMiddleware)
 keeps only an opaque id in the cookie and stores the payload server-side.
 
 ## A first session
 
-Install [`SessionMiddleware`](../reference.md#veloce.SessionMiddleware) with a
-secret key, then read and write [`request.session`](../reference.md#veloce.Request)
+Install [`SessionMiddleware`](../reference/middleware.md#veloce.SessionMiddleware) with a
+secret key, then read and write [`request.session`](../reference/requests.md#veloce.Request)
 like a dict:
 
 ```python
@@ -45,8 +45,8 @@ only when the session was modified.
 
 ## The Session object
 
-[`request.session`](../reference.md#veloce.Request) is a
-[`Session`](../reference.md#veloce.Session), a `dict` subclass that tracks its
+[`request.session`](../reference/requests.md#veloce.Request) is a
+[`Session`](../reference/sessions.md#veloce.Session), a `dict` subclass that tracks its
 own state. Two attributes drive the middleware:
 
 - `session.new` — `True` when the request arrived without a valid
@@ -166,13 +166,13 @@ way out, so an active user is kept logged in and only an idle gap longer than
 
 With the cookie middleware this re-signs the cookie (new server-side timestamp
 and `Max-Age`); with
-[`ServerSessionMiddleware`](../reference.md#veloce.ServerSessionMiddleware) it
+[`ServerSessionMiddleware`](../reference/middleware.md#veloce.ServerSessionMiddleware) it
 refreshes the store entry's TTL (through `SessionStore.touch`) and re-stamps the
 cookie. The default is `False`, preserving the write-only behavior.
 
 ## SessionMiddleware options
 
-[`SessionMiddleware`](../reference.md#veloce.SessionMiddleware) accepts these
+[`SessionMiddleware`](../reference/middleware.md#veloce.SessionMiddleware) accepts these
 keyword arguments:
 
 | Argument             | Default        | Meaning                                                        |
@@ -227,7 +227,7 @@ own omitted cookie settings from the same config keys.
     guidance — keep `httponly=True` to keep the cookie out of JavaScript.
 
 The cookie body is signed and timestamped by
-[`Signer`](../reference.md#veloce.Signer), and `max_age` is enforced
+[`Signer`](../reference/security.md#veloce.Signer), and `max_age` is enforced
 server-side on read — an attacker cannot extend a session by replaying an old
 cookie.
 
@@ -262,14 +262,14 @@ app.add_middleware(
 
 ## Server-side sessions
 
-[`ServerSessionMiddleware`](../reference.md#veloce.ServerSessionMiddleware)
-stores the payload in a [`SessionStore`](../reference.md#veloce.SessionStore)
+[`ServerSessionMiddleware`](../reference/middleware.md#veloce.ServerSessionMiddleware)
+stores the payload in a [`SessionStore`](../reference/sessions.md#veloce.SessionStore)
 and puts only an opaque, unguessable id in the cookie. This keeps the cookie
 small and, crucially, makes sessions *revocable* — emptying the session or
 deleting its id from the store destroys it server-side immediately.
 
 The default store is a process-local
-[`InMemorySessionStore`](../reference.md#veloce.InMemorySessionStore), which is
+[`InMemorySessionStore`](../reference/sessions.md#veloce.InMemorySessionStore), which is
 fine for a single process and for tests:
 
 ```python
@@ -285,13 +285,13 @@ async def login(request: Request):
     return {"ok": True}
 ```
 
-The same [`Session`](../reference.md#veloce.Session) API applies — read and
+The same [`Session`](../reference/sessions.md#veloce.Session) API applies — read and
 write `request.session`, and the middleware persists changes to the store.
 
 !!! warning "InMemorySessionStore does not scale across workers"
     `InMemorySessionStore` keeps state in one process. A multi-worker or
     multi-host deployment needs a shared backend (Redis, a database)
-    implementing the [`SessionStore`](../reference.md#veloce.SessionStore)
+    implementing the [`SessionStore`](../reference/sessions.md#veloce.SessionStore)
     interface, or each worker will see a different set of sessions.
 
 For multi-worker deployments, the batteries-included
@@ -348,7 +348,7 @@ defence](https://owasp.org/www-community/attacks/Session_fixation).
 ## Writing a custom SessionStore
 
 To back sessions with Redis or a database, subclass
-[`SessionStore`](../reference.md#veloce.SessionStore) and implement its async
+[`SessionStore`](../reference/sessions.md#veloce.SessionStore) and implement its async
 methods. The interface is async so a network-backed store does not block the
 event loop:
 
@@ -432,5 +432,5 @@ request-scoped proxies.
   rest of the request-scoped helpers.
 - [Middleware](middleware.md) — ordering, function middleware, and the
   full middleware table.
-- The [API reference](../reference.md) documents the `Signer` that backs
+- The [API reference](../reference/index.md) documents the `Signer` that backs
   the session cookie.

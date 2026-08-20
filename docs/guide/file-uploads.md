@@ -6,9 +6,9 @@ tags: [uploads, multipart, UploadFile, FormData]
 # File uploads
 
 Veloce parses `multipart/form-data` and `application/x-www-form-urlencoded`
-bodies on demand. Uploaded files arrive as [`UploadFile`](../reference.md#veloce.UploadFile)
+bodies on demand. Uploaded files arrive as [`UploadFile`](../reference/requests.md#veloce.UploadFile)
 objects with an async read/write interface; text fields and files together
-live in a [`FormData`](../reference.md#veloce.FormData) multi-value mapping.
+live in a [`FormData`](../reference/requests.md#veloce.FormData) multi-value mapping.
 
 The multipart parser ships with Veloce. There is no `python-multipart`
 dependency to install — form and file handling works out of the box.
@@ -89,7 +89,7 @@ async def attachments(request: Request):
     `enctype="multipart/form-data"`, so the field arrives as plain text and is
     absent from `request.files()`. When the application runs with `debug=True`,
     a missing-key lookup such as `files["avatar"]` raises
-    [`FilesKeyError`](../reference.md#veloce.FilesKeyError) — a `KeyError`
+    [`FilesKeyError`](../reference/exceptions.md#veloce.FilesKeyError) — a `KeyError`
     subclass whose message names the cause (missing `enctype`, a JSON body, or
     no multipart body at all). In production the lookup raises a plain
     `KeyError`. Use `files.get("avatar")` or `files.get_upload("avatar")` to
@@ -97,7 +97,7 @@ async def attachments(request: Request):
 
 ## The UploadFile object
 
-[`UploadFile`](../reference.md#veloce.UploadFile) wraps the uploaded
+[`UploadFile`](../reference/requests.md#veloce.UploadFile) wraps the uploaded
 bytes behind an async interface. Small uploads stay in memory; larger
 ones are spooled to a temporary file by the multipart parser, and the
 read/write methods transparently hop to a thread when the spool has
@@ -171,7 +171,7 @@ async def save(request: Request):
 !!! warning "Sanitise file names"
     Never trust `upload.filename` as a path component. A malicious client
     can send `../../etc/passwd`. Run it through
-    [`secure_filename`](../reference.md#veloce.secure_filename) (or build the
+    [`secure_filename`](../reference/security.md#veloce.secure_filename) (or build the
     destination from a server-controlled name) before writing to disk.
     See the [OWASP file upload guidance](https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload).
 
@@ -187,8 +187,8 @@ async def save(request: Request):
 
 Instead of reaching into `request.form()` by hand, declare the upload as
 a parameter. Annotating a parameter as `UploadFile` binds it from the
-multipart form by parameter name. Use [`File`](../reference.md#veloce.File)
-for an explicit marker and [`Form`](../reference.md#veloce.Form) for text
+multipart form by parameter name. Use [`File`](../reference/parameters.md#veloce.File)
+for an explicit marker and [`Form`](../reference/parameters.md#veloce.Form) for text
 fields submitted alongside it.
 
 ```python
@@ -349,5 +349,5 @@ assert response.json() == {
 - [Requests and responses](requests-responses.md) — the rest of the
   `Request` API and the response shapes a handler can return.
 - [Testing](testing.md) — driving the app with `TestClient`.
-- API reference: [`UploadFile`](../reference.md#veloce.UploadFile),
-  [`FormData`](../reference.md#veloce.FormData).
+- API reference: [`UploadFile`](../reference/requests.md#veloce.UploadFile),
+  [`FormData`](../reference/requests.md#veloce.FormData).

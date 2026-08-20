@@ -162,7 +162,7 @@ async def save(request):
 
 ### Reaching signals through the app
 
-The [`app.signal_namespace`](../reference.md#veloce.Veloce.signal_namespace)
+The [`app.signal_namespace`](../reference/application.md#veloce.Veloce.signal_namespace)
 property returns the `veloce.signals` module, so
 `app.signal_namespace.request_started` is the same object you would import
 directly:
@@ -329,6 +329,6 @@ if metrics.has_receivers_for("web"):
   the request context the lifecycle signals fire within.
 - [Middleware](middleware.md) — for cross-cutting request/response
   logic that needs to modify the response, not just observe it.
-- The [API reference](../reference.md) documents the public `veloce`
+- The [API reference](../reference/index.md) documents the public `veloce`
   surface; `Signal`, `Namespace`, and the standard signals live in
   `veloce.signals`.

@@ -97,7 +97,7 @@ is a complete setup. Explicit constructor arguments always win over config.
 
 !!! warning "Set a real SECRET_KEY before using sessions"
     `SECRET_KEY` defaults to `None`. Signed sessions, flash messages, and
-    the [`Signer`](../reference.md#veloce.Signer) require a non-empty,
+    the [`Signer`](../reference/security.md#veloce.Signer) require a non-empty,
     unpredictable key. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`
     and load it from the environment, never hard-code it in source.
 
@@ -355,5 +355,5 @@ precedence order.
 - [Sessions](sessions.md) and [Middleware](middleware.md) — the
   `SESSION_COOKIE_*` and `SECRET_KEY` keys drive session signing and cookie
   attributes.
-- The [API reference](../reference.md) documents the public `veloce`
+- The [API reference](../reference/index.md) documents the public `veloce`
   surface; `Config` and its loader methods live in `veloce.config`.

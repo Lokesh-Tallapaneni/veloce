@@ -8,7 +8,7 @@ tags: [docker, deployment, uvicorn, proxyfix]
 Veloce is a plain ASGI application, so it containerises like any other Python
 web app. A Veloce image needs only the interpreter, the `veloceframework`
 package, and your code — there is no mandatory ASGI server in the request path,
-since [`app.run()`](../reference.md#veloce.Veloce.run) ships a built-in HTTP/1.1
+since [`app.run()`](../reference/application.md#veloce.Veloce.run) ships a built-in HTTP/1.1
 and WebSocket server. This page builds a minimal image for both serving paths.
 
 ## A minimal Dockerfile
@@ -220,5 +220,5 @@ assert resp.json() == {"client": "203.0.113.7", "scheme": "https"}
 - [Server workers](workers.md) — multi-process serving and the per-worker state table.
 - [HTTPS concepts](https.md) — TLS termination at the proxy or load balancer.
 - [Behind a proxy](../guide/behind-a-proxy.md) — `ProxyFix`, `root_path`, and mount prefixes in depth.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).
 ```

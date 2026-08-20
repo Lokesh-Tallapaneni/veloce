@@ -6,7 +6,7 @@ tags: [debugging, debug, traceback, testing]
 # Debugging
 
 Veloce has two development conveniences for unhandled errors: a rich HTML
-traceback page served when [`debug`](../reference.md#veloce.Veloce.debug) is on, and
+traceback page served when [`debug`](../reference/application.md#veloce.Veloce.debug) is on, and
 a `PROPAGATE_EXCEPTIONS` switch that re-raises exceptions out of dispatch so a
 test sees the real traceback instead of a `500`. Both ship with Veloce — there
 is nothing to install.
@@ -151,4 +151,4 @@ app.config["TESTING"] = True        # DEBUG + TESTING -> exceptions propagate
 - Convert raised exceptions into responses — see [Error handling](error-handling.md).
 - Write tests against the in-memory client — see [Testing](testing.md).
 - Run the app for local development — see [Deployment](deployment.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

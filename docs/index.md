@@ -18,7 +18,7 @@ test client — all in one tree.
 </p>
 
 [Get started](getting-started.md){ .md-button .md-button--primary }
-[API reference](reference.md){ .md-button }
+[API reference](reference/index.md){ .md-button }
 
 <p class="vl-hero__badges" markdown>
 <span class="vl-badge">Python 3.10+</span>

@@ -10,15 +10,15 @@ it stops — open a database pool, warm a cache, connect a message broker, then
 release all of it on the way down.
 
 Veloce gives you two surfaces: a single
-[`lifespan=`](../reference.md#veloce.Veloce) async context manager passed to the
-constructor, or the [`on_startup`](../reference.md#veloce.Veloce.on_startup) /
-[`on_shutdown`](../reference.md#veloce.Veloce.on_shutdown) handler decorators.
+[`lifespan=`](../reference/application.md#veloce.Veloce) async context manager passed to the
+constructor, or the [`on_startup`](../reference/application.md#veloce.Veloce.on_startup) /
+[`on_shutdown`](../reference/application.md#veloce.Veloce.on_shutdown) handler decorators.
 
 ## The lifespan context manager
 
 Write an `async` context manager that does setup before its `yield` and teardown
 after it. Veloce calls it with the app instance, so you can stash resources on
-[`app.state`](../reference.md#veloce.Veloce) for handlers to read.
+[`app.state`](../reference/application.md#veloce.Veloce) for handlers to read.
 
 ```python title="app.py"
 import contextlib
@@ -80,8 +80,8 @@ grouped once the cycle completes.
 
 ### `before_serving` and `after_serving`
 
-[`before_serving`](../reference.md#veloce.Veloce.before_serving) and
-[`after_serving`](../reference.md#veloce.Veloce.after_serving) are aliases for
+[`before_serving`](../reference/application.md#veloce.Veloce.before_serving) and
+[`after_serving`](../reference/application.md#veloce.Veloce.after_serving) are aliases for
 `on_startup` and `on_shutdown` — they register into the same lists. Use whichever
 name reads better at the call site.
 
@@ -98,7 +98,7 @@ async def flush_cache():
 
 ### The deprecated `on_event` API
 
-[`on_event`](../reference.md#veloce.Veloce.on_event) (and the imperative
+[`on_event`](../reference/application.md#veloce.Veloce.on_event) (and the imperative
 `add_event_handler`) still work but are deprecated.
 
 ```python
@@ -151,7 +151,7 @@ async def open_broker():
 
 ## Mounted sub-application lifecycle
 
-A Veloce sub-app mounted with [`mount`](../reference.md#veloce.Veloce.mount) is
+A Veloce sub-app mounted with [`mount`](../reference/application.md#veloce.Veloce.mount) is
 dispatched through the parent pipeline and never receives its own ASGI lifespan.
 The parent fans its lifecycle out to mounted Veloce children automatically.
 
@@ -183,7 +183,7 @@ app.mount("/api", api)
 
 ## Testing the lifecycle
 
-[`TestClient`](../reference.md#veloce.TestClient) runs startup when it is
+[`TestClient`](../reference/testing.md#veloce.TestClient) runs startup when it is
 constructed and shutdown when it is closed, so values set by your startup
 handlers are available to the requests you make. Use it as a context manager to
 guarantee shutdown runs.
@@ -217,7 +217,7 @@ with TestClient(app) as client:
 
 ### Driving the cycle directly with `lifespan_context()`
 
-[`lifespan_context()`](../reference.md#veloce.Veloce.lifespan_context) returns an
+[`lifespan_context()`](../reference/application.md#veloce.Veloce.lifespan_context) returns an
 async context manager that runs the full startup sequence on entry and the
 shutdown sequence on exit, with no ASGI server or request in the loop. Use it to
 embed the app, or to assert on startup state in an async test.
@@ -247,7 +247,7 @@ async def test_lifespan_runs():
 !!! note
     `pytest` is configured with `asyncio_mode = "auto"`, so an `async def test_`
     function runs without an explicit marker. The
-    [`AsyncTestClient`](../reference.md#veloce.AsyncTestClient) runs the same
+    [`AsyncTestClient`](../reference/testing.md#veloce.AsyncTestClient) runs the same
     startup/shutdown cycle across its `async with` block when you need full
     request testing on the event loop.
 
@@ -300,4 +300,4 @@ registered lifespan may depend on what it provided.
 - [Databases](databases.md) — open a connection pool in the lifespan and inject it into handlers.
 - [Background Tasks](background-tasks.md) — run work after the response instead of at startup.
 - [Testing](testing.md) — the full `TestClient` and `AsyncTestClient` surface.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

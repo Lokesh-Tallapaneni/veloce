@@ -6,7 +6,7 @@ tags: [openapi, docs, production, security]
 # Conditional OpenAPI
 
 Veloce serves the generated OpenAPI document and two interactive explorers by
-default. [`Veloce`](../reference.md#veloce.Veloce) accepts `openapi_url`,
+default. [`Veloce`](../reference/application.md#veloce.Veloce) accepts `openapi_url`,
 `docs_url`, and `redoc_url` to relocate or disable each one.
 
 Pass `None` to a URL to turn that endpoint off entirely — useful for hiding your
@@ -86,7 +86,7 @@ is the right granularity for a deployment switch.
 
 ## Gating on app config
 
-If you already centralise settings in [`Config`](../reference.md#veloce.Config),
+If you already centralise settings in [`Config`](../reference/application.md#veloce.Config),
 load the flag before constructing the app and feed it into the constructor.
 
 ```python title="app.py"
@@ -151,7 +151,7 @@ if __name__ == "__main__":
 ## Testing the toggle
 
 Construct the app with the docs disabled and assert the endpoints are gone with
-the in-memory [`TestClient`](../reference.md#veloce.TestClient).
+the in-memory [`TestClient`](../reference/testing.md#veloce.TestClient).
 
 ```python
 from veloce import Request, TestClient, Veloce
@@ -179,4 +179,4 @@ Flip the construction to the defaults and the same three paths return `200`.
 - Configure the document itself — see [OpenAPI, metadata and docs](../guide/openapi.md).
 - Centralise the gating flag — see [Configuration](../guide/configuration.md).
 - Protect the routes the docs would have described — see [Security schemes](../guide/security-schemes.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

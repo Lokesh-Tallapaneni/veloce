@@ -8,8 +8,8 @@ tags: [sse, streaming, events, eventsource]
 Server-Sent Events (SSE) push a one-way stream of updates from the server to
 the client over a single long-lived HTTP connection. The browser consumes
 them with the native [`EventSource`](https://developer.mozilla.org/en-US/docs/Web/API/EventSource)
-API. Veloce models them with [`EventSourceResponse`](../reference.md#veloce.EventSourceResponse),
-which streams [`ServerSentEvent`](../reference.md#veloce.ServerSentEvent) objects
+API. Veloce models them with [`EventSourceResponse`](../reference/websockets.md#veloce.EventSourceResponse),
+which streams [`ServerSentEvent`](../reference/websockets.md#veloce.ServerSentEvent) objects
 as they are produced.
 
 ## A first example
@@ -48,7 +48,7 @@ source.onmessage = (e) => console.log(e.data);
 
 ## The `ServerSentEvent` fields
 
-[`ServerSentEvent`](../reference.md#veloce.ServerSentEvent) maps directly onto
+[`ServerSentEvent`](../reference/websockets.md#veloce.ServerSentEvent) maps directly onto
 the SSE wire format defined by the
 [WHATWG HTML specification](https://html.spec.whatwg.org/multipage/server-sent-events.html).
 The only required field is `data`; the rest are optional:
@@ -119,7 +119,7 @@ pre-formatted text, HTML fragments, or CSV lines.
 ## What the generator may yield
 
 The iterator passed to `EventSourceResponse` may yield
-[`ServerSentEvent`](../reference.md#veloce.ServerSentEvent) objects, plain
+[`ServerSentEvent`](../reference/websockets.md#veloce.ServerSentEvent) objects, plain
 `str`, or already-encoded `bytes`. A `ServerSentEvent` is encoded into the SSE
 field format; a `str` is UTF-8 encoded and sent verbatim; `bytes` are passed
 through unchanged. For anything beyond raw text you almost always want
@@ -262,5 +262,5 @@ def test_sse():
   `StreamingResponse` for streaming non-SSE payloads.
 - [Background tasks](background-tasks.md) — run work after the response is
   sent.
-- API reference: [`EventSourceResponse`](../reference.md#veloce.EventSourceResponse),
-  [`ServerSentEvent`](../reference.md#veloce.ServerSentEvent).
+- API reference: [`EventSourceResponse`](../reference/websockets.md#veloce.EventSourceResponse),
+  [`ServerSentEvent`](../reference/websockets.md#veloce.ServerSentEvent).

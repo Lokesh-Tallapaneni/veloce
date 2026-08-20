@@ -102,4 +102,4 @@ python -W error::DeprecationWarning -m pytest
 
 - Read the guarantees in full — see the [versioning and stability policy](../policies.md).
 - Serve the pinned app — see [Run a server manually](manually.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

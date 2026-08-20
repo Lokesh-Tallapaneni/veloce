@@ -6,7 +6,7 @@ tags: [openapi, docs, swagger, oauth2]
 # Configure Swagger UI
 
 Veloce serves the Swagger UI explorer at `/docs` by default. Two
-[`Veloce`](../reference.md#veloce.Veloce) constructor arguments tune that page:
+[`Veloce`](../reference/application.md#veloce.Veloce) constructor arguments tune that page:
 `swagger_ui_parameters` overrides the underlying `SwaggerUIBundle` options, and
 `swagger_ui_init_oauth` pre-fills the OAuth2 **Authorize** dialog. Both are
 plain dicts serialised straight into the page's inline script.
@@ -137,7 +137,7 @@ if __name__ == "__main__":
 ## Testing the docs page
 
 Both settings end up as literals inside the `/docs` HTML. Render the page with
-the in-memory [`TestClient`](../reference.md#veloce.TestClient) and assert the
+the in-memory [`TestClient`](../reference/testing.md#veloce.TestClient) and assert the
 values are present.
 
 ```python
@@ -172,4 +172,4 @@ regardless of these two arguments.
 - Turn the docs page off in production — see [Conditional OpenAPI](conditional-openapi.md).
 - Declare the schemes the Authorize dialog drives — see [Security schemes](../guide/security-schemes.md).
 - Customise the document the page renders — see [OpenAPI, metadata and docs](../guide/openapi.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

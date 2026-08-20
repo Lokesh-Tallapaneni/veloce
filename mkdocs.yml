@@ -198,11 +198,28 @@ nav:
       - Generating Clients & SDKs: how-to/generate-clients.md
       - GraphQL: how-to/graphql.md
       - Customising the Request or Route: how-to/custom-request-route.md
-  - API Reference: reference.md
-  # Seven tabs rather than twelve. Every single-page section that used to own a
-  # tab of its own - Comparison, Versioning, Changelog - sits under About, and
-  # the essays move under it too: a tab is for a place you navigate around in,
-  # not a page you read once.
+  # The reference was one generated page: ~400 screens of scrolling, 1,142
+  # headings, and a contents rail with 1,142 entries. It is split by topic so
+  # each page is navigable and the rail tracks something useful.
+  - API Reference:
+      - Overview: reference/index.md
+      - Application: reference/application.md
+      - Routers, Blueprints & Views: reference/routers.md
+      - Parameters & Converters: reference/parameters.md
+      - Requests: reference/requests.md
+      - Responses: reference/responses.md
+      - Dependency Injection: reference/dependencies.md
+      - Middleware: reference/middleware.md
+      - Security: reference/security.md
+      - Sessions: reference/sessions.md
+      - Helpers & Context: reference/helpers.md
+      - Templating & Static Files: reference/templating.md
+      - WebSockets & SSE: reference/websockets.md
+      - Background, Caching & Rate Limiting: reference/tasks.md
+      - Exceptions & Status Codes: reference/exceptions.md
+      - OpenAPI & Encoding: reference/openapi.md
+      - Testing: reference/testing.md
+      - MCP (AI Tools): reference/mcp.md
   - About:
       - Why Veloce Exists: surpass/why-veloce-exists.md
       - Performance: surpass/performance.md
@@ -211,8 +228,8 @@ nav:
       - Veloce vs Starlette: surpass/veloce-vs-starlette.md
       - Migrating from FastAPI: surpass/migrating-from-fastapi.md
       - Versioning & Stability: policies.md
-      - Changelog: changelog.md
       - Blog:
           - Overview: blog/index.md
           - Why I wrote an ASGI framework from scratch: blog/why-from-scratch.md
           - Reflection-free request dispatch: blog/reflection-free-dispatch.md
+  - Release Notes: changelog.md

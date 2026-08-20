@@ -11,12 +11,12 @@ tags: [openapi, clients, sdk, codegen]
 Veloce serves a standards-compliant OpenAPI 3.1 document at `/openapi.json`, so any
 OpenAPI-aware code generator can produce a typed client for your API. This page covers
 fetching the document, running two common generators, and controlling the generated
-method names with `operation_id` on the [`Router`](../reference.md#veloce.Router) decorators and Veloce's
+method names with `operation_id` on the [`Router`](../reference/routers.md#veloce.Router) decorators and Veloce's
 automatic collision handling.
 
 ## The OpenAPI document
 
-Every [`Veloce`](../reference.md#veloce.Veloce) app exposes its schema at `/openapi.json`
+Every [`Veloce`](../reference/application.md#veloce.Veloce) app exposes its schema at `/openapi.json`
 by default. Generators read this single file — they never need access to your source.
 
 ```python title="app.py"
@@ -42,7 +42,7 @@ if __name__ == "__main__":
 ```
 
 The schema is built lazily and cached on first request. Fetch it from a running server,
-or render it in-process with the [`TestClient`](../reference.md#veloce.TestClient) so the
+or render it in-process with the [`TestClient`](../reference/testing.md#veloce.TestClient) so the
 generator step needs no live port.
 
 ```python
@@ -74,7 +74,7 @@ assert "/items/{item_id}" in schema["paths"]
 !!! note
     The path is set by the `openapi_url` constructor argument (default `"/openapi.json"`).
     Pass `openapi_url=None` to disable the schema endpoint entirely, in which case you must
-    dump the document to a file with the [`TestClient`](../reference.md#veloce.TestClient)
+    dump the document to a file with the [`TestClient`](../reference/testing.md#veloce.TestClient)
     before running a generator.
 
 ## Dumping the schema to a file
@@ -293,4 +293,4 @@ module) by most generators, mirroring how the operation appears in the interacti
 - [OpenAPI, metadata and docs](../guide/openapi.md) — shape the document the generators read.
 - [Migrating from FastAPI](../surpass/migrating-from-fastapi.md) — `operation_id=` in place of `generate_unique_id_function`.
 - [Testing](../guide/testing.md) — render `/openapi.json` in-process with the `TestClient`.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

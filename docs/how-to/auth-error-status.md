@@ -5,9 +5,9 @@ tags: [security, auth, status-codes, errors]
 
 # 401 vs 403 auth errors
 
-Every built-in security scheme — [`HTTPBasic`](../reference.md#veloce.HTTPBasic),
-[`HTTPBearer`](../reference.md#veloce.HTTPBearer),
-[`OAuth2PasswordBearer`](../reference.md#veloce.OAuth2PasswordBearer), and the
+Every built-in security scheme — [`HTTPBasic`](../reference/security.md#veloce.HTTPBasic),
+[`HTTPBearer`](../reference/security.md#veloce.HTTPBearer),
+[`OAuth2PasswordBearer`](../reference/security.md#veloce.OAuth2PasswordBearer), and the
 API-key schemes — rejects a missing or malformed credential with **401
 Unauthorized** and a `WWW-Authenticate` challenge header.
 
@@ -20,9 +20,9 @@ This page covers when each status fires and how to control it.
 
 ## What the schemes do by default
 
-When a scheme is wired in with [`Security`](../reference.md#veloce.Security) (or
-[`Depends`](../reference.md#veloce.Depends)) and the credential is missing or
-malformed, the scheme raises an [`HTTPException`](../reference.md#veloce.HTTPException)
+When a scheme is wired in with [`Security`](../reference/dependencies.md#veloce.Security) (or
+[`Depends`](../reference/dependencies.md#veloce.Depends)) and the credential is missing or
+malformed, the scheme raises an [`HTTPException`](../reference/exceptions.md#veloce.HTTPException)
 with status **401** before your handler runs.
 
 ```python title="app.py"
@@ -107,9 +107,9 @@ assert client.get(
 ## Raising a custom 403 from a dependency
 
 To enforce a permission, resolve the identity first, then raise a 403 yourself.
-[`HTTPException`](../reference.md#veloce.HTTPException) takes
+[`HTTPException`](../reference/exceptions.md#veloce.HTTPException) takes
 `(status_code, detail, headers)`; use the constant from
-[`status`](../reference.md) for clarity.
+[`status`](../reference/index.md) for clarity.
 
 ```python title="app.py"
 from veloce import Depends, HTTPException, Security, TestClient, Veloce, status
@@ -191,4 +191,4 @@ assert resp.headers["www-authenticate"] == 'Basic realm="Staff area"'
 
 - Build a full login-to-bearer flow — see [Security schemes](../guide/security-schemes.md).
 - Wire authorization through the resolver — see [Dependency injection](../guide/dependency-injection.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

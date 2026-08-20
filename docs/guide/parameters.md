@@ -7,10 +7,10 @@ tags: [parameters, query, path, body, form, validation]
 
 Veloce binds handler arguments to parts of the request by name and type.
 When the defaults are not enough, the parameter marker classes —
-[`Query`](../reference.md#veloce.Query), [`Path`](../reference.md#veloce.Path),
-[`Body`](../reference.md#veloce.Body), [`Form`](../reference.md#veloce.Form),
-[`File`](../reference.md#veloce.File), [`Header`](../reference.md#veloce.Header),
-and [`Cookie`](../reference.md#veloce.Cookie) — let you set an alias, a
+[`Query`](../reference/parameters.md#veloce.Query), [`Path`](../reference/parameters.md#veloce.Path),
+[`Body`](../reference/parameters.md#veloce.Body), [`Form`](../reference/parameters.md#veloce.Form),
+[`File`](../reference/parameters.md#veloce.File), [`Header`](../reference/parameters.md#veloce.Header),
+and [`Cookie`](../reference/parameters.md#veloce.Cookie) — let you set an alias, a
 default, validation constraints, and OpenAPI metadata.
 
 ```python title="app.py"
@@ -81,7 +81,7 @@ The most useful keyword arguments are:
 
 ## Query
 
-[`Query`](../reference.md#veloce.Query) reads from the URL query string. Use
+[`Query`](../reference/parameters.md#veloce.Query) reads from the URL query string. Use
 `alias` to bind a wire name that is not a valid Python identifier, and the
 constraint arguments to validate the value.
 
@@ -144,7 +144,7 @@ async def list_items(request: Request, archived: bool = False):
 
 ## Path
 
-[`Path`](../reference.md#veloce.Path) annotates a value taken from a path
+[`Path`](../reference/parameters.md#veloce.Path) annotates a value taken from a path
 segment. The argument name must match the `{...}` placeholder in the route.
 Path parameters are always required, so a `default` is not meaningful, but the
 constraints and documentation arguments still apply.
@@ -162,7 +162,7 @@ async def get_item(item_id: int = Path(ge=1, description="Item ID")):
 
 ## Body
 
-[`Body`](../reference.md#veloce.Body) binds the raw request body, or a named
+[`Body`](../reference/parameters.md#veloce.Body) binds the raw request body, or a named
 field within a JSON body when `embed=True`. For structured payloads, prefer a
 Pydantic model (see [Requests & responses](requests-responses.md)); use
 `Body` for a single scalar value.
@@ -184,7 +184,7 @@ is treated as the value.
 
 ## Form
 
-[`Form`](../reference.md#veloce.Form) reads a field from an
+[`Form`](../reference/parameters.md#veloce.Form) reads a field from an
 `application/x-www-form-urlencoded` or `multipart/form-data` body.
 
 ```python
@@ -200,9 +200,9 @@ async def login(username: str = Form(), password: str = Form(min_length=8)):
 
 ## File
 
-[`File`](../reference.md#veloce.File) declares an uploaded file field in a
+[`File`](../reference/parameters.md#veloce.File) declares an uploaded file field in a
 `multipart/form-data` body. To receive the upload itself, annotate the
-argument with [`UploadFile`](../reference.md#veloce.UploadFile).
+argument with [`UploadFile`](../reference/requests.md#veloce.UploadFile).
 
 ```python
 from veloce import File, UploadFile, Veloce
@@ -220,7 +220,7 @@ See [File uploads](file-uploads.md) for the full `UploadFile` API.
 
 ## Header
 
-[`Header`](../reference.md#veloce.Header) reads an HTTP request header. By
+[`Header`](../reference/parameters.md#veloce.Header) reads an HTTP request header. By
 default an un-aliased header argument has its underscores rewritten to
 hyphens, so `x_token` reads the `X-Token` header. Set
 `convert_underscores=False` to disable that, or pass an explicit `alias`.
@@ -242,7 +242,7 @@ conversion does not apply.
 
 ## Cookie
 
-[`Cookie`](../reference.md#veloce.Cookie) reads a single cookie value.
+[`Cookie`](../reference/parameters.md#veloce.Cookie) reads a single cookie value.
 
 ```python
 from veloce import Cookie, Request, Veloce
@@ -342,5 +342,5 @@ See [Error handling](error-handling.md) for customising the response.
 - [File uploads](file-uploads.md) — `UploadFile` and multipart forms.
 - [Dependency injection](dependency-injection.md) — share parameter parsing
   across handlers with `Depends`.
-- [API reference](../reference.md) — `Query`, `Path`, `Body`, `Form`, `File`,
+- [API reference](../reference/index.md) — `Query`, `Path`, `Body`, `Form`, `File`,
   `Header`, `Cookie`.

@@ -6,8 +6,8 @@ tags: [request, response, streaming, status]
 
 # Requests and responses
 
-[`Request`](../reference.md#veloce.Request) exposes the incoming message; the
-[`Response`](../reference.md#veloce.Response) family builds what goes back. A
+[`Request`](../reference/requests.md#veloce.Request) exposes the incoming message; the
+[`Response`](../reference/responses.md#veloce.Response) family builds what goes back. A
 handler can return a plain value and let Veloce coerce it, or construct a
 response itself for full control over status, body, and headers.
 
@@ -75,7 +75,7 @@ case.
 
 !!! warning "Forwarded headers are spoofable"
     `X-Forwarded-For` and `access_route` reflect whatever the caller sent. Only
-    trust them when you have added [`ProxyFix`](../reference.md#veloce.ProxyFix)
+    trust them when you have added [`ProxyFix`](../reference/middleware.md#veloce.ProxyFix)
     and configured the correct hop depth — see
     [Behind a proxy](behind-a-proxy.md).
 
@@ -210,7 +210,7 @@ async def login(request: Request):
 
 !!! tip
     For typed, validated bodies prefer a Pydantic model parameter or the
-    [`Form`](../reference.md#veloce.Form) marker — see
+    [`Form`](../reference/parameters.md#veloce.Form) marker — see
     [Parameters](parameters.md) and [File uploads](file-uploads.md). Reach for
     `request.form()` only when you want the raw mapping.
 
@@ -258,7 +258,7 @@ In the `(body, status)` tuple the second element may be an `int` status, in
 
 ### Status codes
 
-Import [`status`](../reference.md) for named status constants
+Import [`status`](../reference/index.md) for named status constants
 instead of bare integers — they read better and are RFC-named.
 
 ```python title="app.py"
@@ -317,10 +317,10 @@ async def json(request: Request):
   a string for you. Use `HTMLResponse` / `PlainTextResponse` for `str` content.
 - `JSONResponse(data, status_code=...)` and `HTMLResponse(content, status_code=...)`
   take their payload as the first positional argument.
-- Other classes: [`RedirectResponse`](../reference.md#veloce.RedirectResponse),
-  [`FileResponse`](../reference.md#veloce.FileResponse),
-  [`ORJSONResponse`](../reference.md#veloce.ORJSONResponse),
-  [`UJSONResponse`](../reference.md#veloce.UJSONResponse).
+- Other classes: [`RedirectResponse`](../reference/responses.md#veloce.RedirectResponse),
+  [`FileResponse`](../reference/responses.md#veloce.FileResponse),
+  [`ORJSONResponse`](../reference/responses.md#veloce.ORJSONResponse),
+  [`UJSONResponse`](../reference/responses.md#veloce.UJSONResponse).
 
 !!! warning "`Response` body is bytes, not text"
     `Response(body=...)` expects `bytes`. Passing a `str` raises when the
@@ -457,7 +457,7 @@ It also accepts these filter flags:
 
 ## Streaming responses
 
-[`StreamingResponse`](../reference.md#veloce.StreamingResponse) sends chunks as
+[`StreamingResponse`](../reference/responses.md#veloce.StreamingResponse) sends chunks as
 they are produced, without buffering the whole body. It accepts an async
 iterator **or** a plain sync generator. `str` chunks are encoded to UTF-8
 automatically.
@@ -531,7 +531,7 @@ assert lines == [{"seq": 0}, {"seq": 1}, {"seq": 2}]
 !!! note
     A streaming response has no `Content-Length`; it is sent with chunked
     transfer encoding. For Server-Sent Events use
-    [`EventSourceResponse`](../reference.md#veloce.EventSourceResponse) instead —
+    [`EventSourceResponse`](../reference/websockets.md#veloce.EventSourceResponse) instead —
     see [Server-sent events](sse.md).
 
 ## A complete program
@@ -560,4 +560,4 @@ if __name__ == "__main__":
 - [File uploads](file-uploads.md) — `UploadFile`, multipart forms, and size limits.
 - [Server-sent events](sse.md) — push streams with `EventSourceResponse`.
 - [Caching](caching.md) — ETags, conditional requests, and `Cache-Control`.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

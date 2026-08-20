@@ -99,7 +99,7 @@ Accessing `current_app` outside an active request raises `RuntimeError`.
 
 ### request
 
-`request` proxies to the [`Request`](../reference.md#veloce.Request)
+`request` proxies to the [`Request`](../reference/requests.md#veloce.Request)
 being handled. The usual way to reach the request is to annotate a
 handler parameter as `Request` (see
 [Requests & Responses](requests-responses.md)); the `request` proxy is
@@ -142,12 +142,12 @@ async def visits():
 
 The proxy supports item access (`session["k"]`), `in`, iteration,
 `len()`, and the dict methods of the underlying
-[`Session`](../reference.md#veloce.Session).
+[`Session`](../reference/sessions.md#veloce.Session).
 
 ## abort
 
-[`abort`](../reference.md#veloce.abort) raises an
-[`HTTPException`](../reference.md#veloce.HTTPException) by status code. For
+[`abort`](../reference/helpers.md#veloce.abort) raises an
+[`HTTPException`](../reference/exceptions.md#veloce.HTTPException) by status code. For
 known codes it raises the matching typed subclass (`NotFound` for 404,
 `Forbidden` for 403) so error handlers registered against that subclass match:
 
@@ -168,8 +168,8 @@ used. See [Error handling](error-handling.md) for custom handlers.
 
 ## jsonify
 
-[`jsonify`](../reference.md#veloce.jsonify) builds a
-[`JSONResponse`](../reference.md#veloce.JSONResponse). Pass keyword arguments
+[`jsonify`](../reference/helpers.md#veloce.jsonify) builds a
+[`JSONResponse`](../reference/responses.md#veloce.JSONResponse). Pass keyword arguments
 to build an object, or a single positional value (dict, list, or any
 JSON-serialisable value):
 
@@ -196,7 +196,7 @@ called inside a request, `jsonify` honours two `app.config` flags:
 
 ## redirect
 
-[`redirect`](../reference.md#veloce.redirect) builds a redirect response. The
+[`redirect`](../reference/helpers.md#veloce.redirect) builds a redirect response. The
 default status code is `302`:
 
 ```python
@@ -222,8 +222,8 @@ method.
 
 ## make_response
 
-[`make_response`](../reference.md#veloce.make_response) coerces a body, status
-code, and headers into a [`Response`](../reference.md#veloce.Response), picking
+[`make_response`](../reference/helpers.md#veloce.make_response) coerces a body, status
+code, and headers into a [`Response`](../reference/responses.md#veloce.Response), picking
 the response type from the body. A `str` becomes an HTML response, `bytes` an
 octet-stream, and a `dict` or `list` a JSON response:
 
@@ -251,8 +251,8 @@ serialised to JSON.
 
 ## send_file
 
-[`send_file`](../reference.md#veloce.send_file) serves a file from a filesystem
-path and returns a [`FileResponse`](../reference.md#veloce.FileResponse) with
+[`send_file`](../reference/helpers.md#veloce.send_file) serves a file from a filesystem
+path and returns a [`FileResponse`](../reference/responses.md#veloce.FileResponse) with
 conditional-GET headers (`Last-Modified`, `ETag`) already set:
 
 ```python
@@ -291,7 +291,7 @@ auto-generated ETag, and `max_age=` to add a `Cache-Control` header.
     reference](https://owasp.org/www-community/attacks/Path_Traversal).
 
 !!! warning "send_file blocks inside async handlers"
-    `send_file` calls the blocking [`FileResponse`](../reference.md#veloce.FileResponse)
+    `send_file` calls the blocking [`FileResponse`](../reference/responses.md#veloce.FileResponse)
     constructor, which reads file metadata synchronously and emits a
     `DeprecationWarning` when invoked from an `async def` handler on a running
     event loop. Inside async routes use the async-safe alternatives instead:
@@ -320,7 +320,7 @@ async def download():
 
 ## flash
 
-[`flash`](../reference.md#veloce.flash) queues a one-time message for the next
+[`flash`](../reference/helpers.md#veloce.flash) queues a one-time message for the next
 request — the classic POST/redirect/GET pattern. Because the message has
 to survive a redirect, the queue is carried in the session, so `flash`
 requires `SessionMiddleware` (or `ServerSessionMiddleware`):
@@ -382,5 +382,5 @@ an empty list, so it is safe to call during a template render.
   return.
 - [Templates](templates.md) — `get_flashed_messages` is designed to be
   called from a template.
-- The [API reference](../reference.md) lists every helper with full
+- The [API reference](../reference/index.md) lists every helper with full
   signatures.

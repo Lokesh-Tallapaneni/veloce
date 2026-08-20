@@ -7,7 +7,7 @@ tags: [deployment, https, tls, certificates]
 
 Production traffic should reach your app over TLS. There are two places to
 terminate it: at a reverse proxy in front of Veloce (the production default),
-or in-process via the [`ssl_context`](../reference.md#veloce.Veloce.run)
+or in-process via the [`ssl_context`](../reference/application.md#veloce.Veloce.run)
 argument to `app.run()` (development and single-binary deploys). This page
 covers both, how to obtain certificates, a self-signed flow for local testing,
 and how to redirect plain HTTP to HTTPS.
@@ -52,7 +52,7 @@ uvicorn app:app --host 127.0.0.1 --port 8000
 Because TLS terminates at the proxy, Veloce receives plain HTTP. To make
 `request.scheme` report `https` (so generated URLs and redirects use the right
 scheme), trust the proxy's forwarding headers with
-[`ProxyFix`](../reference.md#veloce.ProxyFix).
+[`ProxyFix`](../reference/middleware.md#veloce.ProxyFix).
 
 ```python title="app.py" hl_lines="4"
 from veloce import ProxyFix, Request, Veloce
@@ -174,12 +174,12 @@ The app now answers at `https://localhost:8443`.
 
 ## Redirecting HTTP to HTTPS
 
-Add [`HTTPSRedirectMiddleware`](../reference.md#veloce.HTTPSRedirectMiddleware)
+Add [`HTTPSRedirectMiddleware`](../reference/middleware.md#veloce.HTTPSRedirectMiddleware)
 to send plain HTTP requests to the `https://` URL with a 308 Permanent Redirect
 (so non-GET methods keep their method and body).
 
 It resolves the scheme from the ASGI scope first, then `X-Forwarded-Proto`.
-Behind a proxy, install [`ProxyFix`](../reference.md#veloce.ProxyFix) first so
+Behind a proxy, install [`ProxyFix`](../reference/middleware.md#veloce.ProxyFix) first so
 the forwarded scheme is trusted.
 
 ```python title="app.py"
@@ -214,7 +214,7 @@ HTTP-01 validation still reaches the app over plain HTTP.
 
 ## Testing the redirect
 
-The in-memory [`TestClient`](../reference.md#veloce.TestClient) drives the
+The in-memory [`TestClient`](../reference/testing.md#veloce.TestClient) drives the
 middleware without a socket. Set `X-Forwarded-Proto: http` to simulate an
 insecure request arriving through the trusted proxy.
 
@@ -243,4 +243,4 @@ assert resp.headers["location"].startswith("https://")
 - Serve the app under uvicorn or the native server — see [Run a server manually](manually.md).
 - Run multiple worker processes behind the proxy — see [Server workers](workers.md).
 - Containerise the app and proxy together — see [Docker](docker.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

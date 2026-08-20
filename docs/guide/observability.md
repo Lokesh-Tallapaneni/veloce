@@ -12,9 +12,9 @@ same way.
 
 ## The instrumentation hook
 
-[`app.add_instrumentation(hook)`](../reference.md#veloce.Veloce.add_instrumentation)
+[`app.add_instrumentation(hook)`](../reference/application.md#veloce.Veloce.add_instrumentation)
 registers a callable that receives a
-[`RequestMetrics`](../reference.md#veloce.RequestMetrics) record after each
+[`RequestMetrics`](../reference/tasks.md#veloce.RequestMetrics) record after each
 request finishes. The hook may be a plain function or a coroutine function,
 and a hook that raises is logged and skipped so instrumentation never breaks
 a response. With no hook registered the request path carries no
@@ -43,7 +43,7 @@ an attacker-controlled URL can never explode label cardinality.
 
 ## Access logging
 
-[`instrument_access_log`](../reference.md#veloce.instrument_access_log) emits
+[`instrument_access_log`](../reference/tasks.md#veloce.instrument_access_log) emits
 one access-log record per request, sourced from the same `RequestMetrics`
 record so logs and traces stay joinable on `(route, status)`. It bootstraps a
 default handler on the `veloce.access` logger and supports a text or JSON

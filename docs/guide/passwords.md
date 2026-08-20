@@ -6,9 +6,9 @@ tags: [security, passwords, hashing, scrypt, pbkdf2]
 # Passwords
 
 Veloce includes salted, slow password hashing built entirely on the
-standard library. [`hash_password`](../reference.md#veloce.hash_password) turns
+standard library. [`hash_password`](../reference/security.md#veloce.hash_password) turns
 a plaintext password into a self-describing verifier string, and
-[`verify_password`](../reference.md#veloce.verify_password) checks a candidate
+[`verify_password`](../reference/security.md#veloce.verify_password) checks a candidate
 against a stored verifier in constant time. Never store plaintext passwords;
 store the output of `hash_password`.
 
@@ -78,7 +78,7 @@ PBKDF2 to scrypt. Rather than forcing a password reset, re-derive a
 stored hash at the current strength the next time the user logs in —
 that is the one moment the plaintext is available.
 
-[`verify_and_needs_update`](../reference.md#veloce.verify_and_needs_update)
+[`verify_and_needs_update`](../reference/security.md#veloce.verify_and_needs_update)
 checks the password and reports whether the stored verifier is weaker
 than the current defaults, returning `(ok, needs_update)`.
 
@@ -99,9 +99,9 @@ if ok and needs_update:
 method, or scrypt cost parameters below the current defaults. It is
 always `False` on a failed verify — there is nothing to upgrade for a
 credential that did not match.
-[`needs_rehash`](../reference.md#veloce.needs_rehash) exposes the same
+[`needs_rehash`](../reference/security.md#veloce.needs_rehash) exposes the same
 check without verifying, and
-[`verify_and_needs_update_async`](../reference.md#veloce.verify_and_needs_update_async)
+[`verify_and_needs_update_async`](../reference/security.md#veloce.verify_and_needs_update_async)
 runs the verify on a worker thread for `async` handlers.
 
 ## Async handlers
@@ -109,8 +109,8 @@ runs the verify on a worker thread for `async` handlers.
 The key derivation is deliberately slow — roughly 100 ms of CPU — so
 calling `hash_password` or `verify_password` directly from an `async`
 handler blocks the event loop for that whole time. From async code, use
-[`hash_password_async`](../reference.md#veloce.hash_password_async) and
-[`verify_password_async`](../reference.md#veloce.verify_password_async), which
+[`hash_password_async`](../reference/security.md#veloce.hash_password_async) and
+[`verify_password_async`](../reference/security.md#veloce.verify_password_async), which
 run the KDF on a worker thread and leave the loop free for other requests.
 
 ```python
@@ -170,7 +170,7 @@ is no event loop to protect.
 
 ## Password strength policy
 
-[`is_strong_password`](../reference.md#veloce.is_strong_password) is a cheap
+[`is_strong_password`](../reference/security.md#veloce.is_strong_password) is a cheap
 baseline policy check. It returns `True` only when the password is at least
 `min_length` characters (default 8) and contains at least one letter and
 at least one digit.
@@ -231,7 +231,7 @@ async def signup(request: Request):
   requests with HTTP Basic, Bearer, API key, and OAuth2 schemes.
 - [Signing](signing.md) — issue signed, time-limited tokens for sessions
   and password-reset links.
-- The [API reference](../reference.md) has full signatures for every
+- The [API reference](../reference/index.md) has full signatures for every
   hashing helper.
 
 For background on the algorithms and storage advice, see the

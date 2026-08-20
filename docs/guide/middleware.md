@@ -39,11 +39,11 @@ Middleware can also be passed when constructing the app, via the
 `add_middleware` accepts two distinct shapes, and it tells them apart by
 what the class subclasses:
 
-- A [`Middleware`](../reference.md#veloce.Middleware) subclass (or
+- A [`Middleware`](../reference/middleware.md#veloce.Middleware) subclass (or
   instance) is **Veloce-native middleware**. It defines
   `process_request(request)` and/or `process_response(request, response)`
   and runs inside Veloce's own pipeline, with access to the parsed
-  [`Request`](../reference.md#veloce.Request) and per-route
+  [`Request`](../reference/requests.md#veloce.Request) and per-route
   [exclusion](#excluding-middleware-per-route). Every built-in in the
   [table below](#built-in-middleware) is this shape.
 - Any other class is treated as a **standard ASGI middleware**: Veloce
@@ -186,7 +186,7 @@ app.add_middleware(
 ```
 
 Read the nonce inside a handler with
-[`csp_nonce(request)`](../reference.md#veloce.csp_nonce), or write
+[`csp_nonce(request)`](../reference/middleware.md#veloce.csp_nonce), or write
 `{{ csp_nonce }}` straight into a template, and place it on the matching
 `<script>`/`<style>` tags as `nonce="..."`:
 
@@ -391,7 +391,7 @@ app.add_middleware(Stamp)
 ## Short-circuiting the request
 
 `process_request` returns `None` to let the request carry on. Returning a
-[`Response`](../reference.md#veloce.Response) instead **short-circuits** the
+[`Response`](../reference/responses.md#veloce.Response) instead **short-circuits** the
 pipeline: the handler never runs, and neither does the `process_request` of any
 middleware added after this one. The returned response still travels back out
 through the response phase.
@@ -482,4 +482,4 @@ exclusions run every registered middleware and pay no extra per-request cost.
 - [Deployment](deployment.md)
 - [Routing](routing.md)
 - [Dependency injection](dependency-injection.md)
-- The [API reference](../reference.md) lists every middleware class.
+- The [API reference](../reference/index.md) lists every middleware class.

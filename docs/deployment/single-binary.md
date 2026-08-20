@@ -10,7 +10,7 @@ tags: [pyinstaller, deployment, single-binary, packaging]
 
 Veloce apps freeze cleanly into a single executable with
 [PyInstaller](https://pyinstaller.org/), because production serving needs no
-uvicorn subprocess: [`app.run()`](../reference.md#veloce.Veloce.run) drives the
+uvicorn subprocess: [`app.run()`](../reference/application.md#veloce.Veloce.run) drives the
 built-in HTTP/1.1 and WebSocket server in-process, so the whole app is one
 Python program with one entry point. This page builds a worked `--onefile`
 binary.
@@ -173,4 +173,4 @@ by string at runtime, so PyInstaller cannot trace them and you must add them as
 - [Docker](docker.md) — containerise the same `app.run()` program instead of freezing it.
 - [Run a server manually](manually.md) — `app.run()`, `veloce run`, and uvicorn compared.
 - [Native server deep dive](../surpass/native-server.md) — what the built-in server does and its hardening knobs.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

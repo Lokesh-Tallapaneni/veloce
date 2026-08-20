@@ -150,7 +150,7 @@ assert bad.json()["detail"][0]["loc"] == ["price"]
 ```
 
 !!! note
-    `Field` is a Pydantic symbol (`from pydantic import Field`), not a Veloce one. Veloce's own [`Body`](../reference.md#veloce.Body), [`Query`](../reference.md#veloce.Query), and [`Path`](../reference.md#veloce.Path) markers carry the same constraint keywords for scalar parameters that are not model fields — see [Parameters](parameters.md).
+    `Field` is a Pydantic symbol (`from pydantic import Field`), not a Veloce one. Veloce's own [`Body`](../reference/parameters.md#veloce.Body), [`Query`](../reference/parameters.md#veloce.Query), and [`Path`](../reference/parameters.md#veloce.Path) markers carry the same constraint keywords for scalar parameters that are not model fields — see [Parameters](parameters.md).
 
 ## Extra value types
 
@@ -352,4 +352,4 @@ assert resp.json() == {"name": "Widget", "price": 12.5, "tags": []}
 - [Requests and responses](requests-responses.md) — read the raw body, shape responses, and use `response_model=`.
 - [Error handling](error-handling.md) — the `422` validation-error body and custom handlers.
 - [msgspec models](msgspec.md) — validate bodies with `msgspec.Struct` instead of Pydantic.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

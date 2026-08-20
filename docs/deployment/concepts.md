@@ -9,7 +9,7 @@ A production deployment needs more than a serving command: a process manager to
 start the app, restart it on crash, and stop it cleanly.
 
 Veloce drains in-flight requests on `SIGTERM` on every serving path — the native
-[`app.run()`](../reference.md#veloce.Veloce.run) server, the gunicorn
+[`app.run()`](../reference/application.md#veloce.Veloce.run) server, the gunicorn
 [`VeloceWorker`](workers.md), and uvicorn — so a
 well-behaved process manager gets a clean handoff for free.
 
@@ -251,7 +251,7 @@ The same contract holds on the other serving paths:
 ## Verifying lifecycle teardown
 
 You do not need a running server to confirm startup and shutdown fire. The
-in-memory [`TestClient`](../reference.md#veloce.TestClient) runs the `startup`
+in-memory [`TestClient`](../reference/testing.md#veloce.TestClient) runs the `startup`
 lifecycle on construction and the `shutdown` lifecycle when its context exits.
 
 ```python
@@ -291,5 +291,5 @@ assert events == ["startup", "shutdown"]
 - Run the app in a container and let the orchestrator restart it — see [Docker](docker.md).
 - Run startup and shutdown code correctly — see [Lifespan events](../guide/lifespan.md).
 - Audit an app before deploying with `veloce check` — see [Deployment overview](../guide/deployment.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).
 ```
