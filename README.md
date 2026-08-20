@@ -10,6 +10,7 @@
   <a href="https://github.com/Lokesh-Tallapaneni/veloce/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/pypi/l/veloceframework.svg"></a>
   <a href="https://github.com/Lokesh-Tallapaneni/veloce/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Lokesh-Tallapaneni/veloce/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/Lokesh-Tallapaneni/veloce/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/Lokesh-Tallapaneni/veloce/actions/workflows/docs.yml/badge.svg"></a>
+  <a href="https://app.codspeed.io/Lokesh-Tallapaneni/veloce?utm_source=badge"><img src="https://img.shields.io/endpoint?url=https://codspeed.io/badge.json" alt="CodSpeed"/></a>
   <a href="https://github.com/sponsors/Lokesh-Tallapaneni"><img alt="Sponsor" src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-ff69b4?logo=githubsponsors&logoColor=white"></a>
 </p>
 

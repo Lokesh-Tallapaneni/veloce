@@ -1,0 +1,44 @@
+name: CodSpeed
+
+on:
+  # Establishes the performance baseline every PR is compared against.
+  push:
+    branches: [main]
+  # Required for CodSpeed to report the delta on a pull request.
+  pull_request:
+  # Lets CodSpeed trigger a backtest run to seed historical data.
+  workflow_dispatch:
+
+concurrency:
+  group: codspeed-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # OpenID Connect authentication with CodSpeed - no token secret needed.
+  id-token: write
+
+jobs:
+  benchmarks:
+    name: Run benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      # The benchmarks import the optional backends the framework ships
+      # (msgspec, uvicorn, redis), so the environment matches the CI test legs.
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          # `benchmarks/` sits outside `testpaths`, so it is only ever
+          # collected when named explicitly - as here.
+          run: uv run pytest benchmarks --codspeed
