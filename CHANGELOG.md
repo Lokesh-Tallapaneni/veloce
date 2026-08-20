@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An `HTTPException` reports the same body over MCP and background tasks as it does over HTTP. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
 ### Changed
 
-- `Request.content_length` reads the raw header tuples instead of materializing `Headers`. ([#274](https://github.com/Lokesh-Tallapaneni/veloce/pull/274))
+- `Request.content_length` reads the raw header tuples instead of materializing `Headers`. ([#275](https://github.com/Lokesh-Tallapaneni/veloce/pull/275))
 
 ## [0.14.0] - 2026-08-19
 
