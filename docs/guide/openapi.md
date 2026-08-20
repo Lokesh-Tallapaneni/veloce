@@ -10,9 +10,9 @@ tags: [openapi, docs, swagger, metadata]
 
 Veloce generates an [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0) document
 from your registered routes and serves it alongside two interactive explorers.
-[`Veloce`](../reference.md#veloce.Veloce) exposes the document at `/openapi.json`,
+[`Veloce`](../reference/application.md#veloce.Veloce) exposes the document at `/openapi.json`,
 Swagger UI at `/docs`, and ReDoc at `/redoc` by default. The schema is built lazily
-on first access and cached on [`app.openapi_schema`](../reference.md#veloce.Veloce).
+on first access and cached on [`app.openapi_schema`](../reference/application.md#veloce.Veloce).
 
 ```python title="app.py"
 from veloce import Request, Veloce
@@ -162,7 +162,7 @@ assert client.get("/openapi.json").status_code == 200
 
 ## Extending the schema
 
-[`app.openapi()`](../reference.md#veloce.Veloce.openapi) returns the generated
+[`app.openapi()`](../reference/application.md#veloce.Veloce.openapi) returns the generated
 document, building it on first call and caching it on `app.openapi_schema`.
 
 The returned dict is the live cached object, so mutating it in place is the supported
@@ -354,7 +354,7 @@ re-shaped through is ambiguous — so use a single model when you need the
 response narrowed.
 
 An explicit `response_model=` always wins over the annotation. An annotation that
-names no model — a [`Response`](../reference.md#veloce.Response) subclass, `Any`,
+names no model — a [`Response`](../reference/responses.md#veloce.Response) subclass, `Any`,
 a bare `dict` — declares no contract and needs no opt-out. To keep a model
 annotation for your editor while declaring no contract, pass `response_model=None`.
 
@@ -570,4 +570,4 @@ app = Veloce(validate_openapi=True)
 - [Requests and responses](requests-responses.md) — `response_model` and the request/response contract the schema documents.
 - [Parameters](parameters.md) — how path, query, header and cookie parameters become OpenAPI parameter objects.
 - [Routing](routing.md) — the full path-operation decorator surface.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

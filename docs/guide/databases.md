@@ -97,7 +97,7 @@ The app owns the Redis client and its pool; hand it to either helper.
 ### Shared sessions
 
 `RedisSessionStore` implements the
-[`SessionStore`](../reference.md#veloce.SessionStore) interface using native
+[`SessionStore`](../reference/sessions.md#veloce.SessionStore) interface using native
 Redis TTLs for expiry, sliding renewal (`EXPIRE`), and a race-safe conditional
 write (`SET ... XX`):
 

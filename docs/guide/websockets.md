@@ -321,7 +321,7 @@ the same way as for HTTP routes.
 ### Reaching the application
 
 `ws.app` is the application serving the connection, mirroring
-[`request.app`](../reference.md#veloce.Request) — use it to read
+[`request.app`](../reference/requests.md#veloce.Request) — use it to read
 `app.state`, config, or an installed extension:
 
 ```python
@@ -337,7 +337,7 @@ async def feed(ws: WebSocket) -> None:
     await ws.accept()
 ```
 
-The [`current_app`](../reference.md#veloce.current_app) proxy resolves inside a
+The [`current_app`](../reference/helpers.md#veloce.current_app) proxy resolves inside a
 WebSocket handler too, so either works. Veloce does not populate an
 `app` key in the ASGI `scope`, so `ws.scope["app"]` raises `KeyError`.
 

@@ -7,7 +7,7 @@ tags: [cors, middleware, security, browser]
 
 A browser blocks JavaScript on one origin from reading a response served by
 another unless that response opts in with CORS headers.
-[`CORSMiddleware`](../reference.md#veloce.CORSMiddleware) adds those headers and
+[`CORSMiddleware`](../reference/middleware.md#veloce.CORSMiddleware) adds those headers and
 answers the preflight `OPTIONS` request the browser sends first.
 
 It is
@@ -153,7 +153,7 @@ app.add_middleware(
 
 ## Testing CORS
 
-Drive the in-memory [`TestClient`](../reference.md#veloce.TestClient) with an
+Drive the in-memory [`TestClient`](../reference/testing.md#veloce.TestClient) with an
 `Origin` header to inspect the headers, and send an `OPTIONS` with
 `Access-Control-Request-Method` to exercise the preflight.
 
@@ -208,4 +208,4 @@ assert denied.status_code == 400
 - See the other built-in middleware and ordering rules in [Middleware](middleware.md).
 - Reject cross-site WebSocket handshakes with `WebSocketOriginMiddleware` — see [WebSockets](websockets.md).
 - Lock down host headers and add hardening headers in [Security schemes](security-schemes.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

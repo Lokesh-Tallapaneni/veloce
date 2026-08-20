@@ -8,12 +8,12 @@ tags: [workers, deployment, gunicorn, uvicorn]
 A single process serves requests on one CPU core. To use every core on a host
 you run several worker processes behind one listening socket. Veloce supports
 two multi-process paths: any ASGI server's worker flag (`uvicorn --workers`)
-and the gunicorn [`VeloceWorker`](../reference.md),
+and the gunicorn [`VeloceWorker`](../reference/index.md),
 which lets gunicorn supervise processes while each worker drives Veloce's own
 native HTTP/1.1 server with no ASGI shim.
 
 !!! note
-    The built-in [`app.run()`](../reference.md#veloce.Veloce.run) server is
+    The built-in [`app.run()`](../reference/application.md#veloce.Veloce.run) server is
     single-process. Passing `workers=` anything other than `1` raises
     `ValueError` — it does not pre-fork. Use one of the paths below for
     multiple processes.
@@ -80,7 +80,7 @@ below instead.
 `VeloceWorker` is an advanced alternative for stacks already built on gunicorn.
 gunicorn owns process supervision (forking, restarts, signals, `--max-requests`
 recycling) while each worker runs Veloce's native
-[`HttpProtocol`](../reference.md#veloce.Veloce.run) — the same raw HTTP/1.1 and
+[`HttpProtocol`](../reference/application.md#veloce.Veloce.run) — the same raw HTTP/1.1 and
 WebSocket server `app.run()` uses — directly on an asyncio loop, bypassing ASGI
 entirely.
 
@@ -207,4 +207,4 @@ I/O-bound async handlers
 - [Docker](docker.md) — one worker per container and scaling with the orchestrator.
 - [Caching](../guide/caching.md) — swap the in-memory cache for a shared Redis backend.
 - [HTTPS concepts](https.md) — terminating TLS at the proxy versus in the worker.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

@@ -6,7 +6,7 @@ tags: [deployment, server, uvicorn, cli]
 # Run a server manually
 
 A Veloce app is a plain ASGI application, so it serves the same three ways:
-the built-in [`app.run()`](../reference.md#veloce.Veloce.run) server, the
+the built-in [`app.run()`](../reference/application.md#veloce.Veloce.run) server, the
 [`veloce run`](#the-veloce-run-cli) CLI, and any ASGI server such as
 uvicorn. This page covers when to reach for each and how to set the host,
 port, TLS context, and worker count.
@@ -176,7 +176,7 @@ uvicorn brings worker management, graceful reloads, and TLS termination.
 see [Server workers](workers.md) for the per-worker state table.
 
 When uvicorn sits behind a reverse proxy, add
-[`ProxyFix`](../reference.md#veloce.ProxyFix) so the app trusts the
+[`ProxyFix`](../reference/middleware.md#veloce.ProxyFix) so the app trusts the
 proxy's `X-Forwarded-*` headers for the real client IP and scheme:
 
 ```python title="app.py"
@@ -191,7 +191,7 @@ app.add_middleware(ProxyFix, x_for=1, x_proto=1)
 ## Verifying the app serves
 
 You do not need a running server to check the app responds. The in-memory
-[`TestClient`](../reference.md#veloce.TestClient) dispatches requests
+[`TestClient`](../reference/testing.md#veloce.TestClient) dispatches requests
 straight through the ASGI app — no socket, no uvicorn.
 
 ```python
@@ -217,4 +217,4 @@ assert resp.json() == {"message": "Hello from Veloce"}
 - Run multiple processes and externalise shared state — see [Server workers](workers.md).
 - Terminate TLS correctly in production — see [HTTPS concepts](https.md).
 - Put the app behind a reverse proxy or container — see [Docker](docker.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

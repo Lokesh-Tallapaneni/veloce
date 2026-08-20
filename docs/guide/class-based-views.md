@@ -6,9 +6,9 @@ tags: [views, class-based, MethodView, dispatch]
 # Class-based views
 
 Class-based views group related logic into a class instead of a flat
-function. Veloce offers two styles: [`View`](../reference.md#veloce.View), where
+function. Veloce offers two styles: [`View`](../reference/routers.md#veloce.View), where
 one class handles a URL through a single `dispatch_request`, and
-[`MethodView`](../reference.md#veloce.MethodView), where one async method maps to
+[`MethodView`](../reference/routers.md#veloce.MethodView), where one async method maps to
 each HTTP verb.
 
 ```python
@@ -27,7 +27,7 @@ app.add_url_rule("/", view_func=IndexView.as_view("index"))
 
 `as_view("index")` builds an async view function from the class and gives
 it the name `"index"` (used by `url_for` and route introspection).
-[`add_url_rule`](../reference.md#veloce.Veloce.add_url_rule) registers it like
+[`add_url_rule`](../reference/application.md#veloce.Veloce.add_url_rule) registers it like
 any other handler.
 
 ## How `as_view` works
@@ -58,12 +58,12 @@ app.add_url_rule("/bye", view_func=GreetView.as_view("bye", "Goodbye"))
 
 The generated view function carries `view_class`, `methods`, and
 `__name__` for the router. The first argument `dispatch_request` receives
-is the [`Request`](../reference.md#veloce.Request); path parameters follow as
+is the [`Request`](../reference/requests.md#veloce.Request); path parameters follow as
 keyword arguments.
 
 ## Method-based dispatch with `MethodView`
 
-[`MethodView`](../reference.md#veloce.MethodView) dispatches to a method named
+[`MethodView`](../reference/routers.md#veloce.MethodView) dispatches to a method named
 after the HTTP verb. Define `get`, `post`, `put`, `patch`, `delete`,
 `head`, or `options` as `async def`; the allowed methods are inferred from
 which verbs you implement.
@@ -243,5 +243,5 @@ def test_ping():
 - [Parameters](parameters.md) — declarative markers usable on view methods.
 - [Dependency injection](dependency-injection.md) — `Depends` and
   `Security` in view methods.
-- API reference: [`View`](../reference.md#veloce.View),
-  [`MethodView`](../reference.md#veloce.MethodView).
+- API reference: [`View`](../reference/routers.md#veloce.View),
+  [`MethodView`](../reference/routers.md#veloce.MethodView).

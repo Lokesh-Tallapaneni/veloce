@@ -22,7 +22,7 @@ This page explains each mechanism against the real source.
 
 ## Radix-tree routing
 
-The [`Router`](../reference.md#veloce.Router) matches paths against a radix tree,
+The [`Router`](../reference/routers.md#veloce.Router) matches paths against a radix tree,
 not a list of compiled regexes. Path parameters are extracted during a single
 tree traversal, so lookup cost grows with path depth, not with the number of
 registered routes, and a static segment always wins over a parameterised one at
@@ -95,7 +95,7 @@ Per request it walks that frozen plan instead of re-inspecting the signature.
 
 ## The compiled dependency-graph resolver
 
-A linear [`Depends`](../reference.md#veloce.Depends) chain — dependencies with no
+A linear [`Depends`](../reference/dependencies.md#veloce.Depends) chain — dependencies with no
 parallel-safe batching, no `Security` scopes, no `yield`-teardown, and no body or
 async markers — has no concurrency to preserve. For such a graph Veloce generates
 a straight-line `async` resolver once at registration
@@ -170,7 +170,7 @@ exactly once and the hot path never touches the registry.
 
 ## Zero-recopy JSON responses
 
-[`JSONResponse.from_bytes`](../reference.md#veloce.JSONResponse) builds a response
+[`JSONResponse.from_bytes`](../reference/responses.md#veloce.JSONResponse) builds a response
 from JSON bytes that are already encoded, skipping the orjson re-encode that the
 normal constructor performs. Use it when the caller has produced the JSON body
 itself — for example via a cache, a custom `orjson` option set, or a
@@ -241,4 +241,4 @@ shape difference and when the trade-off is worth it.
 - [msgspec backend](../guide/msgspec.md) — opt an endpoint into msgspec validation and serialisation.
 - [Migrating from FastAPI](migrating-from-fastapi.md) — the divergence map and the Veloce-only wins.
 - [Native server deep dive](native-server.md) — the `HttpProtocol` request loop and its hardening knobs.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

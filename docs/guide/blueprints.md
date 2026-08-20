@@ -5,9 +5,9 @@ tags: [blueprints, apirouter, routing, structure]
 
 # Blueprints
 
-A [`Blueprint`](../reference.md#veloce.Blueprint) is a deferred-registration
+A [`Blueprint`](../reference/routers.md#veloce.Blueprint) is a deferred-registration
 collection of routes, hooks, and error handlers that you attach to an
-application later with [`register_blueprint`](../reference.md#veloce.Veloce.register_blueprint).
+application later with [`register_blueprint`](../reference/application.md#veloce.Veloce.register_blueprint).
 It lets you split a large application into self-contained modules and mount
 each one under its own URL prefix.
 
@@ -47,7 +47,7 @@ blog = Blueprint(
 )
 ```
 
-`Blueprint` extends [`Router`](../reference.md#veloce.Router), so it accepts
+`Blueprint` extends [`Router`](../reference/routers.md#veloce.Router), so it accepts
 the same keyword arguments: `url_prefix`, `default_response_class`,
 `dependencies`, and `responses`. The route decorators (`get`, `post`, `put`,
 `patch`, `delete`, `head`, `options`, the generic `route`, and `websocket`)
@@ -135,7 +135,7 @@ The hook above runs for `/admin/me` but not for any app-level route. Use
 
 ## Scoped error handlers
 
-[`errorhandler`](../reference.md#veloce.Blueprint.errorhandler) registers an
+[`errorhandler`](../reference/routers.md#veloce.Blueprint.errorhandler) registers an
 error handler that catches exceptions raised by the blueprint's own
 handlers. Integer keys register against a status code; class keys register
 against an exception type (matched by MRO). App-level handlers act as the
@@ -171,7 +171,7 @@ See [Error handling](error-handling.md) for the full handler model.
 ## Nested blueprints
 
 A blueprint can mount another blueprint with its own
-[`register_blueprint`](../reference.md#veloce.Blueprint.register_blueprint).
+[`register_blueprint`](../reference/routers.md#veloce.Blueprint.register_blueprint).
 The child's routes register under the parent prefix plus the child prefix,
 and the child's hooks and error handlers are merged into the parent. The
 child's routes only reach the app once the parent is itself registered.
@@ -203,9 +203,9 @@ cannot be registered as a child of itself — doing so raises `ValueError`.
 
 ## Inspecting registered blueprints
 
-After registration, [`app.blueprints`](../reference.md#veloce.Veloce.blueprints)
+After registration, [`app.blueprints`](../reference/application.md#veloce.Veloce.blueprints)
 returns a fresh dictionary mapping each blueprint name to its instance, and
-[`app.iter_blueprints()`](../reference.md#veloce.Veloce.iter_blueprints)
+[`app.iter_blueprints()`](../reference/application.md#veloce.Veloce.iter_blueprints)
 yields the blueprint objects in registration order.
 
 ```python
@@ -260,4 +260,4 @@ model.
   header, and cookie parameters on your blueprint handlers.
 - [Routing](routing.md) — path converters, query parameters, and `url_for`.
 - [Dependency injection](dependency-injection.md) — `Depends` and `Security`.
-- [API reference](../reference.md) — `Blueprint`, `APIRouter`, `Router`.
+- [API reference](../reference/index.md) — `Blueprint`, `APIRouter`, `Router`.

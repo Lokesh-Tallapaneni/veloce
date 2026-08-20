@@ -5,10 +5,10 @@ tags: [mounts, asgi, wsgi, routing]
 
 # Sub-applications and mounts
 
-[`app.mount`](../reference.md#veloce.Veloce.mount) attaches a second application
+[`app.mount`](../reference/application.md#veloce.Veloce.mount) attaches a second application
 under a path prefix on the parent app. The mounted thing can be another
-[`Veloce`](../reference.md#veloce.Veloce) instance, any ASGI application, or a
-[`StaticFiles`](../reference.md#veloce.StaticFiles) handler. This lets you
+[`Veloce`](../reference/application.md#veloce.Veloce) instance, any ASGI application, or a
+[`StaticFiles`](../reference/templating.md#veloce.StaticFiles) handler. This lets you
 compose a large service from independently-built pieces that each own a subtree
 of the URL space.
 
@@ -125,7 +125,7 @@ child's resources are ready before the first request and released on exit.
 !!! note
     Mount the sub-app **before** the parent starts. Mounting is a setup-time
     operation; a child mounted after the parent has already started will not have
-    its startup driven. The in-memory [`TestClient`](../reference.md#veloce.TestClient)
+    its startup driven. The in-memory [`TestClient`](../reference/testing.md#veloce.TestClient)
     runs the parent's startup on construction, so build the full mount tree
     before creating the client.
 
@@ -172,7 +172,7 @@ scopes only.
 !!! warning "ASGI mounts run only under an ASGI server"
     ASGI mounts are dispatched in Veloce's ASGI entry point, which is exercised
     by an ASGI server (uvicorn, hypercorn) and by the in-memory `TestClient`.
-    The native [`app.run()`](../reference.md#veloce.Veloce.run) transport
+    The native [`app.run()`](../reference/application.md#veloce.Veloce.run) transport
     dispatches Veloce sub-apps and static handlers, but does not route into
     arbitrary ASGI mounts. Serve a tree that uses ASGI mounts through an ASGI
     server.
@@ -186,7 +186,7 @@ scopes only.
 
 ## Mounting StaticFiles
 
-A [`StaticFiles`](../reference.md#veloce.StaticFiles) handler looks ASGI-shaped
+A [`StaticFiles`](../reference/templating.md#veloce.StaticFiles) handler looks ASGI-shaped
 but speaks Veloce's internal `handle` protocol, so `mount` special-cases it: the
 mount prefix becomes the handler's serving prefix and it is registered as a
 static handler rather than an ASGI mount.
@@ -203,7 +203,7 @@ if __name__ == "__main__":
 ```
 
 For the common case of serving one directory, prefer
-[`app.mount_static`](../reference.md#veloce.Veloce.mount_static), which builds
+[`app.mount_static`](../reference/application.md#veloce.Veloce.mount_static), which builds
 the `StaticFiles` handler for you. See [Static files](static-files.md) for the
 full handler options.
 
@@ -305,4 +305,4 @@ client = TestClient(app)
   [Lifespan events](lifespan.md).
 - Serve a static directory at a prefix — see [Static files](static-files.md).
 - Sit the whole tree behind a reverse proxy — see [Behind a proxy](behind-a-proxy.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

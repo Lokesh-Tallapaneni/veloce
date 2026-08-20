@@ -8,7 +8,7 @@ tags: [native, server, asyncio, hardening]
 
 # Native server
 
-[`Veloce.run()`](../reference.md#veloce.Veloce.run) starts a from-scratch HTTP/1.1 server built on a
+[`Veloce.run()`](../reference/application.md#veloce.Veloce.run) starts a from-scratch HTTP/1.1 server built on a
 raw `asyncio` transport — no uvicorn, no ASGI layer in the request path. This page covers the `run()`
 signature, the native WebSocket handshake, the two-phase graceful drain on shutdown, and the
 hardening knobs that bound slowloris attacks, idle connections, and connection floods. It also states
@@ -306,4 +306,4 @@ spec, and full subprotocol negotiation all come for free.
 
 - [WebSockets](../guide/websockets.md) — idle timeouts, heartbeats, and origin checks on both paths.
 - [Migrating from FastAPI](migrating-from-fastapi.md) — every divergence in one place.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

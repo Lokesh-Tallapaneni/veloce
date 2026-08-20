@@ -6,8 +6,8 @@ tags: [templates, jinja2, html, rendering]
 # Templates
 
 Veloce renders HTML with [Jinja2](https://jinja.palletsprojects.com/). You can
-use the class-based [`Jinja2Templates`](../reference.md#veloce.Jinja2Templates)
-API explicitly, or the Flask-style [`render_template`](../reference.md#veloce.render_template)
+use the class-based [`Jinja2Templates`](../reference/templating.md#veloce.Jinja2Templates)
+API explicitly, or the Flask-style [`render_template`](../reference/templating.md#veloce.render_template)
 shortcut once a template folder is configured on the app. Jinja2 ships with
 Veloce as a runtime dependency, so `pip install veloceframework` is all you need.
 
@@ -41,7 +41,7 @@ async def hello(request: Request, name: str):
 ```
 
 `TemplateResponse(name, context)` renders the named template against the
-`context` dict and returns an [`HTMLResponse`](../reference.md#veloce.HTMLResponse).
+`context` dict and returns an [`HTMLResponse`](../reference/responses.md#veloce.HTMLResponse).
 The context is a plain dictionary — every variable the template uses must be a
 key in it.
 
@@ -81,9 +81,9 @@ templates.RESOLVED_CACHE_MAX = 256
 
 ## Configuring the template folder on the app
 
-The Flask-style helpers — [`render_template`](../reference.md#veloce.render_template),
-[`render_template_string`](../reference.md#veloce.render_template_string),
-and [`stream_template`](../reference.md#veloce.stream_template) — look up a
+The Flask-style helpers — [`render_template`](../reference/templating.md#veloce.render_template),
+[`render_template_string`](../reference/templating.md#veloce.render_template_string),
+and [`stream_template`](../reference/templating.md#veloce.stream_template) — look up a
 `Jinja2Templates` instance bound to the active application. The simplest way to
 bind one is to pass `template_folder` to the `Veloce` constructor:
 
@@ -127,7 +127,7 @@ async def missing(request: Request):
 
 ## Inline string templates
 
-[`render_template_string`](../reference.md#veloce.render_template_string)
+[`render_template_string`](../reference/templating.md#veloce.render_template_string)
 renders a template from a source string rather than a file. It is convenient
 for short, one-off fragments:
 
@@ -152,7 +152,7 @@ app's registered filters, globals, and context processors.
 By default `Jinja2Templates` autoescapes templates whose name ends in `.html`,
 `.htm`, `.xhtml`, or `.xml`. Variables interpolated into those templates are
 HTML-escaped, which protects against [cross-site scripting](https://owasp.org/www-community/attacks/xss/).
-To render a value as raw HTML, mark it safe with [`Markup`](../reference.md#veloce.Markup):
+To render a value as raw HTML, mark it safe with [`Markup`](../reference/helpers.md#veloce.Markup):
 
 ```python title="app.py"
 from veloce import Markup, Request, Veloce, render_template_string
@@ -287,9 +287,9 @@ app.jinja_env.lstrip_blocks = True
 ## Streaming large templates
 
 For a response whose body is large or expensive to build, render it
-incrementally instead of buffering the whole string. [`stream_template`](../reference.md#veloce.stream_template)
+incrementally instead of buffering the whole string. [`stream_template`](../reference/templating.md#veloce.stream_template)
 returns an iterator of string chunks; wrap it in a
-[`StreamingResponse`](../reference.md#veloce.StreamingResponse):
+[`StreamingResponse`](../reference/responses.md#veloce.StreamingResponse):
 
 ```python title="app.py" hl_lines="10"
 from veloce import Request, StreamingResponse, Veloce, stream_template
@@ -336,4 +336,4 @@ asynchronously pay nothing for it.
 - Build links inside templates with `url_for` — see [Routing](routing.md).
 - Use `g`, `flash`, and `current_app` from templates and handlers — see
   [Flask-style helpers](helpers.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

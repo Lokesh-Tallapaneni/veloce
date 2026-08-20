@@ -7,7 +7,7 @@ tags: [dependency-injection, depends, security, testing]
 
 Dependency injection lets a handler declare what it needs — a database
 handle, the current user, a parsed setting — and have Veloce provide it.
-[`Depends`](../reference.md#veloce.Depends) marks a parameter as injected;
+[`Depends`](../reference/dependencies.md#veloce.Depends) marks a parameter as injected;
 dependencies are resolved from a plan compiled once at registration, so
 there is no per-request reflection.
 
@@ -233,7 +233,7 @@ async def admin_panel(request: Request):
 ## App-level and router-level dependencies
 
 The same `dependencies=` argument exists on `Veloce(...)`, on a
-[`Router`](../reference.md#veloce.Router), and on the individual route, so
+[`Router`](../reference/routers.md#veloce.Router), and on the individual route, so
 a dependency can apply at three widening scopes. App-level dependencies run
 on every request, router-level on every route the router carries, and
 route-level on that one route. They run outermost-first, with the route's
@@ -369,9 +369,9 @@ teardown rather than passing on the already-built response.
 
 ## Security dependencies
 
-[`Security`](../reference.md#veloce.Security) is a specialised `Depends`
+[`Security`](../reference/dependencies.md#veloce.Security) is a specialised `Depends`
 for authentication schemes, and
-[`SecurityScopes`](../reference.md#veloce.SecurityScopes) lets a dependency
+[`SecurityScopes`](../reference/dependencies.md#veloce.SecurityScopes) lets a dependency
 inspect the scopes required by the route. Veloce ships HTTP Basic/Bearer/Digest,
 API-key, and OAuth2 schemes under `veloce.security` — see
 [Security schemes](security-schemes.md).
@@ -385,7 +385,7 @@ that does not read its scopes, still resolve once per request.
 
 ## Overriding dependencies in tests
 
-[`app.dependency_overrides`](../reference.md#veloce.Veloce.dependency_overrides)
+[`app.dependency_overrides`](../reference/application.md#veloce.Veloce.dependency_overrides)
 is a mutable map from a dependency callable to its replacement. The
 resolver consults it on every request, so a test can swap a real
 dependency for a fake without touching a database or network:
@@ -437,4 +437,4 @@ not the replacement.
 - Build authentication on top of `Security` — see [Security schemes](security-schemes.md).
 - Read injected values from the request — see [Requests and responses](requests-responses.md).
 - Override dependencies as part of a wider test suite — see [Testing](testing.md#overriding-dependencies).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

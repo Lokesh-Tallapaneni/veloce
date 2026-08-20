@@ -6,7 +6,7 @@ tags: [openapi, schema, customisation, docs]
 # Extending OpenAPI
 
 Veloce builds the OpenAPI 3.1 document for you from your routes, but the result is a
-plain Python dict you are free to reshape. Call [`app.openapi()`](../reference.md#veloce.Veloce)
+plain Python dict you are free to reshape. Call [`app.openapi()`](../reference/application.md#veloce.Veloce)
 to build (and cache) it, or assign your own dict to `app.openapi_schema` to replace the
 build entirely. The JSON endpoint and the Swagger / ReDoc UIs all read back through
 `app.openapi()`, so any change you make there is what clients and the docs pages serve.
@@ -115,7 +115,7 @@ schema["tags"] = sorted(schema.get("tags", []), key=lambda t: t["name"])
 ## Adding a global security requirement
 
 The generator emits per-operation `security` entries for every reachable
-[`Security()`](../reference.md#veloce.Security) scheme. To apply one scheme to the *whole*
+[`Security()`](../reference/dependencies.md#veloce.Security) scheme. To apply one scheme to the *whole*
 API, register the scheme component and add a document-level `security` list.
 
 ```python title="app.py"
@@ -144,7 +144,7 @@ if __name__ == "__main__":
 !!! warning "A document-level requirement is documentation, not enforcement"
     Adding `security` to the schema only advertises the requirement to clients and the
     docs UI. It does **not** make Veloce reject unauthenticated requests. Enforce auth in
-    your handlers or dependencies with [`Security()`](../reference.md#veloce.Security) — the
+    your handlers or dependencies with [`Security()`](../reference/dependencies.md#veloce.Security) — the
     OpenAPI document describes the contract, it does not police it.
 
 ## Replacing the build entirely
@@ -205,7 +205,7 @@ app.openapi_schema = schema         # cache the mutated copy
 
 ## Testing the customised document
 
-Use the in-memory [`TestClient`](../reference.md#veloce.TestClient) to fetch
+Use the in-memory [`TestClient`](../reference/testing.md#veloce.TestClient) to fetch
 `/openapi.json` and assert your fields survived into the served document.
 
 ```python
@@ -235,4 +235,4 @@ assert body["openapi"] == "3.1.0"
 
 - Turn the docs on or off per environment — see [Conditional OpenAPI](conditional-openapi.md).
 - Document responses, metadata, and security schemes — see [OpenAPI, metadata and docs](../guide/openapi.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

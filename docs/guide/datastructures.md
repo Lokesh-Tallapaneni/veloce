@@ -6,13 +6,13 @@ tags: [request, headers, parsing, http]
 # HTTP data structures
 
 Veloce parses the raw request line and headers into typed objects you read off
-the [`Request`](../reference.md#veloce.Request).
+the [`Request`](../reference/requests.md#veloce.Request).
 
-[`URL`](../reference.md#veloce.URL),
-[`Headers`](../reference.md#veloce.Headers),
-[`AcceptHeader`](../reference.md#veloce.AcceptHeader),
-[`RangeSpec`](../reference.md#veloce.RangeSpec), and
-[`Authorization`](../reference.md#veloce.Authorization) are all importable from the
+[`URL`](../reference/requests.md#veloce.URL),
+[`Headers`](../reference/requests.md#veloce.Headers),
+[`AcceptHeader`](../reference/requests.md#veloce.AcceptHeader),
+[`RangeSpec`](../reference/requests.md#veloce.RangeSpec), and
+[`Authorization`](../reference/requests.md#veloce.Authorization) are all importable from the
 top-level package, but you rarely construct them yourself — each surfaces as a
 cached property on the request.
 
@@ -26,7 +26,7 @@ These types ship with Veloce; nothing extra to install.
 
 ## Headers
 
-`request.headers` is a [`Headers`](../reference.md#veloce.Headers) — a case-insensitive,
+`request.headers` is a [`Headers`](../reference/requests.md#veloce.Headers) — a case-insensitive,
 multi-valued mapping backed by `multidict.CIMultiDict`. Lookups ignore case, duplicate
 header names are preserved, and `getlist` returns every value for a name (empty list when
 absent, where `multidict`'s native `getall` would raise).
@@ -71,7 +71,7 @@ h.getlist("Content-Disposition")  # ['attachment; filename="my file.txt"']
 
 ## URL
 
-`request.url` is a [`URL`](../reference.md#veloce.URL) — a parsed, lazily-constructed
+`request.url` is a [`URL`](../reference/requests.md#veloce.URL) — a parsed, lazily-constructed
 view of the request target with component access. The scheme, host, and port are
 resolved from the ASGI scope and the validated `Host` header.
 
@@ -117,7 +117,7 @@ Several request properties are thin views over `url`:
 
 ## AcceptHeader
 
-The four `Accept-*` headers parse into an [`AcceptHeader`](../reference.md#veloce.AcceptHeader),
+The four `Accept-*` headers parse into an [`AcceptHeader`](../reference/requests.md#veloce.AcceptHeader),
 which models RFC 9110 §12.5 q-value semantics. Each is a cached property on the request:
 
 | Property | Header | Matching |
@@ -177,7 +177,7 @@ acc.accepts_identity()           # False
 ## RangeSpec
 
 `request.range` parses the `Range:` header (RFC 9110 §14.2) into a
-[`RangeSpec`](../reference.md#veloce.RangeSpec), or `None` when the header is absent or
+[`RangeSpec`](../reference/requests.md#veloce.RangeSpec), or `None` when the header is absent or
 unparseable. `unit` is the range unit (usually `"bytes"`) and `ranges` is a list of
 `(start, end)` tuples, with `None` standing in for an open endpoint.
 
@@ -211,14 +211,14 @@ an ETag and `("", timestamp)` when it parses as a date, so a `Range` request can
 to a full `200` when the cached resource is stale.
 
 !!! note
-    Veloce's [`FileResponse`](../reference.md#veloce.FileResponse) and the
+    Veloce's [`FileResponse`](../reference/responses.md#veloce.FileResponse) and the
     [StaticFiles](static-files.md) mount already honour `Range` and `If-Range` for you.
     Parse `request.range` yourself only when you serve byte ranges from a custom source.
 
 ## Authorization
 
 `request.auth` lazily parses the `Authorization:` header into an
-[`Authorization`](../reference.md#veloce.Authorization), or `None` when the header is
+[`Authorization`](../reference/requests.md#veloce.Authorization), or `None` when the header is
 missing or empty. `Basic` and `Bearer` are first-class; other schemes carry their
 parameters in `.params`.
 
@@ -255,13 +255,13 @@ What each scheme populates:
 !!! warning "Parsing is not verification"
     `Authorization.from_header` decodes structure only — it does not check credentials. A
     well-formed `Basic` header gives you a username and password, but you must still
-    compare them (use [`constant_time_compare`](../reference.md#veloce.constant_time_compare))
+    compare them (use [`constant_time_compare`](../reference/security.md#veloce.constant_time_compare))
     against your store. For token flows, prefer the
     [security schemes](security-schemes.md), which integrate with the OpenAPI UI.
 
 ## Testing these structures
 
-The in-memory [`TestClient`](../reference.md#veloce.TestClient) lets you drive each path
+The in-memory [`TestClient`](../reference/testing.md#veloce.TestClient) lets you drive each path
 without a server. Set request headers via `headers=` and assert on the parsed result.
 
 ```python
@@ -299,4 +299,4 @@ assert resp.json() == {"host": "testserver", "best": "text/html", "user": "alice
 - Set typed and conditional response headers — see [Responses (Advanced)](responses-advanced.md).
 - Read the body, query params, and cookies off the request — see [Requests and responses](requests-responses.md).
 - Wire `Authorization` into a login flow — see [Security schemes](security-schemes.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

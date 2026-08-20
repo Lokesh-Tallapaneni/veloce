@@ -121,7 +121,7 @@ Veloce ships no `WSGIMiddleware`. Starlette and FastAPI expose one to run a
 WSGI application (Flask, Django) inside the ASGI app; Veloce has no equivalent
 class. Instead, wrap the WSGI app in any ASGI-to-WSGI bridge (for example
 [`a2wsgi`](https://pypi.org/project/a2wsgi/)) and mount the resulting ASGI app
-with [`app.mount`](reference.md#veloce.Veloce.mount). A mounted non-Veloce ASGI
+with [`app.mount`](reference/application.md#veloce.Veloce.mount). A mounted non-Veloce ASGI
 app is dispatched at the ASGI layer: the prefix is stripped from the request
 path and moved onto `root_path`, so the WSGI app sees a root-relative request.
 
@@ -156,7 +156,7 @@ if __name__ == "__main__":
 
 ## CORS private-network access
 
-Veloce's [`CORSMiddleware`](reference.md#veloce.CORSMiddleware) implements the
+Veloce's [`CORSMiddleware`](reference/middleware.md#veloce.CORSMiddleware) implements the
 [Private Network Access](https://wicg.github.io/private-network-access/) (PNA)
 preflight handshake, which is not part of Starlette's CORS middleware. Pass
 `allow_private_network=True` (default `False`); when a preflight carries

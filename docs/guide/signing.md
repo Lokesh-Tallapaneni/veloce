@@ -5,7 +5,7 @@ tags: [security, signing, hmac, tokens]
 
 # Signing
 
-[`Signer`](../reference.md#veloce.Signer) turns a JSON-serialisable value into
+[`Signer`](../reference/security.md#veloce.Signer) turns a JSON-serialisable value into
 a signed, timestamped, URL-safe token and verifies it later.
 
 Use it when the server hands a value to the client, the client returns it, and the
@@ -38,9 +38,9 @@ assert data == {"user_id": 42}
 
 ## Signing and reading values
 
-[`Signer.dumps`](../reference.md#veloce.Signer.dumps) serialises the value to
+[`Signer.dumps`](../reference/security.md#veloce.Signer.dumps) serialises the value to
 JSON, appends a timestamp, and signs both.
-[`Signer.loads`](../reference.md#veloce.Signer.loads) verifies the signature
+[`Signer.loads`](../reference/security.md#veloce.Signer.loads) verifies the signature
 and returns the original value. The signature is checked before the payload
 is decoded, so a tampered token is rejected before its JSON ever reaches the
 parser.
@@ -86,7 +86,7 @@ same; the salt keeps the namespaces apart.
 
 ## Timed signatures
 
-Pass `max_age` (in seconds) to [`Signer.loads`](../reference.md#veloce.Signer.loads)
+Pass `max_age` (in seconds) to [`Signer.loads`](../reference/security.md#veloce.Signer.loads)
 to reject tokens older than a window. This is what makes a password-reset
 link expire.
 
@@ -116,13 +116,13 @@ also raises `BadTimeSignature`.
 ## Handling failures
 
 Verification raises one of three exceptions, all subclasses of
-[`BadSignature`](../reference.md#veloce.BadSignature):
+[`BadSignature`](../reference/security.md#veloce.BadSignature):
 
-- [`BadSignature`](../reference.md#veloce.BadSignature) — the signature did not
+- [`BadSignature`](../reference/security.md#veloce.BadSignature) — the signature did not
   match the configured secret (tampering, wrong secret, or wrong salt).
-- [`BadTimeSignature`](../reference.md#veloce.BadTimeSignature) — the signature
+- [`BadTimeSignature`](../reference/security.md#veloce.BadTimeSignature) — the signature
   verified but the token is older than `max_age` (or future-dated).
-- [`BadData`](../reference.md#veloce.BadData) — the token was structurally
+- [`BadData`](../reference/security.md#veloce.BadData) — the token was structurally
   malformed (bad base64, invalid JSON, or not a string).
 
 Because `BadTimeSignature` and `BadData` both inherit from
@@ -154,7 +154,7 @@ for all of them, which avoids leaking why a token was rejected.
 
 To change the signing secret without invalidating tokens already in the
 wild, configure the new secret as primary and register the old one as a
-fallback with [`add_fallback_secret`](../reference.md#veloce.Signer.add_fallback_secret).
+fallback with [`add_fallback_secret`](../reference/security.md#veloce.Signer.add_fallback_secret).
 New tokens are signed with the primary secret; tokens signed with the
 fallback still verify during the rotation window.
 
@@ -179,5 +179,5 @@ passed and old tokens have expired.
   endpoint that issues your signed tokens.
 - [Sessions](sessions.md) — Veloce's session support builds on the same
   signing primitives.
-- The [API reference](../reference.md) has full signatures for `Signer`
+- The [API reference](../reference/index.md) has full signatures for `Signer`
   and the exception hierarchy.

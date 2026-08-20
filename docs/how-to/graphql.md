@@ -9,7 +9,7 @@ tags: [graphql, mount, asgi, sub-applications]
 
 Veloce has no built-in GraphQL layer, and it does not need one. A GraphQL library that exposes an
 ASGI application — Strawberry, Ariadne, graphql-core via its ASGI wrapper — mounts straight onto a
-Veloce app with [`app.mount`](../reference.md#veloce.Veloce.mount).
+Veloce app with [`app.mount`](../reference/application.md#veloce.Veloce.mount).
 
 The GraphQL app owns its prefix subtree and runs at the ASGI layer; your REST routes keep running
 through the normal pipeline.
@@ -70,7 +70,7 @@ at the root.
 ## Serve the tree under an ASGI server
 
 ASGI mounts are dispatched in Veloce's ASGI entry point, so the tree must be served by an ASGI
-server. The in-memory [`TestClient`](../reference.md#veloce.TestClient) drives that same entry point,
+server. The in-memory [`TestClient`](../reference/testing.md#veloce.TestClient) drives that same entry point,
 which is why the assertions below work in-process.
 
 ```bash
@@ -79,7 +79,7 @@ uvicorn app:app --port 8000
 ```
 
 !!! warning "ASGI mounts do not run on the native transport"
-    The native [`app.run()`](../reference.md#veloce.Veloce.run) transport dispatches Veloce sub-apps
+    The native [`app.run()`](../reference/application.md#veloce.Veloce.run) transport dispatches Veloce sub-apps
     and static handlers, but does not route into arbitrary ASGI mounts. The `app.run()` block above
     starts the server and serves your native routes; to expose the mounted GraphQL endpoint, run the
     app under an ASGI server (`uvicorn`, `hypercorn`) instead.
@@ -187,4 +187,4 @@ mounted Strawberry app, and neither interferes with the other.
 - [Sub-applications and mounts](../guide/sub-applications.md) — the full `app.mount` contract: ASGI vs Veloce mounts, prefix-overlap rules, and WSGI mounting.
 - [Lifespan and events](../guide/lifespan.md) — `on_startup` / `on_shutdown` and the `lifespan=` context manager that own parent-side resources.
 - [Behind a proxy](../guide/behind-a-proxy.md) — how `root_path` and a stripped prefix interact with mounted applications.
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

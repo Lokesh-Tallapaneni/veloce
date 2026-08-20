@@ -5,7 +5,7 @@ tags: [static, files, assets, caching]
 
 # Static files
 
-[`StaticFiles`](../reference.md#veloce.StaticFiles) serves files from a
+[`StaticFiles`](../reference/templating.md#veloce.StaticFiles) serves files from a
 directory — CSS, JavaScript, images, downloads. All file I/O runs in a thread
 pool so the event loop is never blocked, and responses carry `ETag`,
 `Last-Modified`, and `Cache-Control` headers and honour conditional and range
@@ -17,7 +17,7 @@ pip install veloceframework
 
 ## Mounting a static directory
 
-The quickest way to serve a folder is [`app.mount_static`](../reference.md#veloce.Veloce.mount_static),
+The quickest way to serve a folder is [`app.mount_static`](../reference/application.md#veloce.Veloce.mount_static),
 which constructs a `StaticFiles` handler and registers it on the app:
 
 ```python title="app.py"
@@ -45,8 +45,8 @@ app.mount_static(directory="build/static", must_exist=False)
 
 ## Using the StaticFiles class directly
 
-You can also construct [`StaticFiles`](../reference.md#veloce.StaticFiles)
-and attach it with [`app.mount`](../reference.md#veloce.Veloce.mount). When you
+You can also construct [`StaticFiles`](../reference/templating.md#veloce.StaticFiles)
+and attach it with [`app.mount`](../reference/application.md#veloce.Veloce.mount). When you
 mount a `StaticFiles` instance, the mount prefix becomes its serving prefix:
 
 ```python title="app.py"
@@ -257,8 +257,8 @@ async def index(request: Request):
 
 ## Serving a single file from the app's static folder
 
-For one-off file serving, [`app.send_static_file_async`](../reference.md#veloce.Veloce.send_static_file_async)
-returns a [`FileResponse`](../reference.md#veloce.FileResponse) for a file in
+For one-off file serving, [`app.send_static_file_async`](../reference/application.md#veloce.Veloce.send_static_file_async)
+returns a [`FileResponse`](../reference/responses.md#veloce.FileResponse) for a file in
 the app's `static_folder` (default `"static"`, resolved against the app's
 package directory). It is traversal-safe via the same join logic and reads the
 file in an executor, so it never blocks the event loop from an async handler:
@@ -275,11 +275,11 @@ async def favicon(request: Request):
 ```
 
 !!! warning
-    The synchronous [`app.send_static_file`](../reference.md#veloce.Veloce.send_static_file)
+    The synchronous [`app.send_static_file`](../reference/application.md#veloce.Veloce.send_static_file)
     reads the file on the calling thread and emits a `DeprecationWarning` when
     invoked on a running event loop. From async handlers, use
     `app.send_static_file_async` (above) or
-    [`send_from_directory_async`](../reference.md#veloce.send_from_directory_async).
+    [`send_from_directory_async`](../reference/helpers.md#veloce.send_from_directory_async).
 
 `app.static_folder` and `app.static_url_path` (default `"/static"`) hold the
 defaults used when wiring up static serving; assign to them before mounting to
@@ -293,4 +293,4 @@ change the conventions for your app.
   and [Flask-style helpers](helpers.md).
 - Add compression and caching middleware around static responses — see
   [Middleware](middleware.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

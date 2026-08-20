@@ -5,8 +5,8 @@ tags: [testing, testclient, websockets, pytest]
 
 # Testing
 
-Veloce ships an in-memory [`TestClient`](../reference.md#veloce.TestClient) and
-[`AsyncTestClient`](../reference.md#veloce.AsyncTestClient). They construct ASGI
+Veloce ships an in-memory [`TestClient`](../reference/testing.md#veloce.TestClient) and
+[`AsyncTestClient`](../reference/testing.md#veloce.AsyncTestClient). They construct ASGI
 scopes directly and call the app's `__call__` surface, so the radix router,
 dependency resolver, middleware chain, response encoder, and the lifespan
 handshake all run — no socket, no separate server.
@@ -140,7 +140,7 @@ and the `lifespan=` context-manager form.
 ## Async tests with `AsyncTestClient`
 
 When the test itself is `async def`, use
-[`AsyncTestClient`](../reference.md#veloce.AsyncTestClient) so each request is
+[`AsyncTestClient`](../reference/testing.md#veloce.AsyncTestClient) so each request is
 awaited on the test's own running loop instead of a private one. It is always
 used as an **async context manager** — requests are refused outside `async with`:
 
@@ -339,4 +339,4 @@ Propagation is also implied when both `DEBUG` and `TESTING` are enabled.
 - Wire fakes into your routes — see [Dependency injection](dependency-injection.md).
 - Run startup and shutdown hooks under test — see [Lifespan and events](lifespan.md).
 - Swap a real database for an in-memory fake — see [Databases](databases.md).
-- Full signatures are in the [API reference](../reference.md).
+- Full signatures are in the [API reference](../reference/index.md).

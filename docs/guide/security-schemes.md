@@ -7,10 +7,10 @@ tags: [security, authentication, oauth2, dependency-injection]
 
 Veloce ships a set of authentication schemes that extract credentials from
 an incoming request. Each scheme is a callable, so you use it as a
-dependency with [`Depends`](../reference.md#veloce.Depends) or
-[`Security`](../reference.md#veloce.Security) and Veloce resolves it before
+dependency with [`Depends`](../reference/dependencies.md#veloce.Depends) or
+[`Security`](../reference/dependencies.md#veloce.Security) and Veloce resolves it before
 your handler runs. When a credential is missing or malformed the scheme raises
-[`HTTPException`](../reference.md#veloce.HTTPException) with a `401` and the
+[`HTTPException`](../reference/exceptions.md#veloce.HTTPException) with a `401` and the
 appropriate `WWW-Authenticate` header.
 
 ```python
@@ -57,9 +57,9 @@ authentication as optional.
 
 ## HTTP Basic
 
-[`HTTPBasic`](../reference.md#veloce.HTTPBasic) decodes the
+[`HTTPBasic`](../reference/security.md#veloce.HTTPBasic) decodes the
 `Authorization: Basic <base64>` header into an
-[`HTTPBasicCredentials`](../reference.md#veloce.HTTPBasicCredentials) with
+[`HTTPBasicCredentials`](../reference/security.md#veloce.HTTPBasicCredentials) with
 `username` and `password`. Compare the password in constant time to avoid
 leaking it through timing.
 
@@ -99,9 +99,9 @@ it is included in the `WWW-Authenticate: Basic realm="..."` header on a
 
 ## HTTP Digest
 
-[`HTTPDigest`](../reference.md#veloce.HTTPDigest) parses an
+[`HTTPDigest`](../reference/security.md#veloce.HTTPDigest) parses an
 `Authorization: Digest ...` header (RFC 7616) into an
-[`HTTPDigestCredentials`](../reference.md#veloce.HTTPDigestCredentials) — a
+[`HTTPDigestCredentials`](../reference/security.md#veloce.HTTPDigestCredentials) — a
 struct of the named fields:
 
 | Field |
@@ -162,7 +162,7 @@ def verify_digest(creds: HTTPDigestCredentials = Depends(digest)) -> str:
 
 ## HTTP Bearer
 
-[`HTTPBearer`](../reference.md#veloce.HTTPBearer) extracts the token that
+[`HTTPBearer`](../reference/security.md#veloce.HTTPBearer) extracts the token that
 follows `Authorization: Bearer `. It returns the token string with no further
 interpretation — decoding or validating a JWT is up to you (see
 [JSON Web Tokens](#json-web-tokens) below).
@@ -196,10 +196,10 @@ advertise a non-standard scheme.
 ## API key
 
 The three API-key schemes read a named credential from a different part
-of the request: [`APIKeyHeader`](../reference.md#veloce.APIKeyHeader) from a
-request header, [`APIKeyQuery`](../reference.md#veloce.APIKeyQuery) from a
+of the request: [`APIKeyHeader`](../reference/security.md#veloce.APIKeyHeader) from a
+request header, [`APIKeyQuery`](../reference/security.md#veloce.APIKeyQuery) from a
 query-string parameter, and
-[`APIKeyCookie`](../reference.md#veloce.APIKeyCookie) from a cookie. All three
+[`APIKeyCookie`](../reference/security.md#veloce.APIKeyCookie) from a cookie. All three
 take the parameter `name` and an optional `auto_error`, and return the key as
 a `str`.
 
@@ -243,7 +243,7 @@ api_key = APIKeyHeader(name="X-API-Key", realm="admin")
 
 ## OAuth2 password bearer
 
-[`OAuth2PasswordBearer`](../reference.md#veloce.OAuth2PasswordBearer) is the
+[`OAuth2PasswordBearer`](../reference/security.md#veloce.OAuth2PasswordBearer) is the
 scheme for the resource-owner password flow. It extracts the same
 `Authorization: Bearer ` token as `HTTPBearer`, but it also records the token
 URL and scopes for OpenAPI so interactive clients know where to obtain a token.
@@ -272,7 +272,7 @@ async def read_me(user: dict = Depends(get_current_user)):
 ### Parsing the token request
 
 A `/token` endpoint reads a standard OAuth2 password-grant form.
-[`OAuth2PasswordRequestForm`](../reference.md#veloce.OAuth2PasswordRequestForm)
+[`OAuth2PasswordRequestForm`](../reference/security.md#veloce.OAuth2PasswordRequestForm)
 parses it for you; instantiate it from the request with its `from_request`
 classmethod. It exposes `username`, `password`, `scope`, `client_id`,
 `client_secret`, and `grant_type`.
@@ -298,15 +298,15 @@ async def issue_token(request: Request):
     return {"access_token": form.username, "token_type": "bearer"}
 ```
 
-[`OAuth2PasswordRequestFormStrict`](../reference.md#veloce.OAuth2PasswordRequestFormStrict)
+[`OAuth2PasswordRequestFormStrict`](../reference/security.md#veloce.OAuth2PasswordRequestFormStrict)
 is the same form but requires `grant_type` to be present and exactly
 `password`, rejecting anything else with a `422`. Use it when you want to
 enforce RFC 6749 §4.3.2 strictly.
 
 !!! note "Other OAuth2 / OIDC schemes"
-    [`OAuth2AuthorizationCodeBearer`](../reference.md#veloce.OAuth2AuthorizationCodeBearer)
+    [`OAuth2AuthorizationCodeBearer`](../reference/security.md#veloce.OAuth2AuthorizationCodeBearer)
     takes `authorizationUrl`, `tokenUrl`, an optional `refreshUrl`, and
-    `scopes`; [`OpenIdConnect`](../reference.md#veloce.OpenIdConnect) takes a
+    `scopes`; [`OpenIdConnect`](../reference/security.md#veloce.OpenIdConnect) takes a
     single `openIdConnectUrl`. Both extract a Bearer token exactly like
     `OAuth2PasswordBearer` — they differ only in the OpenAPI metadata
     they advertise to interactive clients.
@@ -314,8 +314,8 @@ enforce RFC 6749 §4.3.2 strictly.
 ## Scopes with `Security`
 
 When a token carries OAuth2 scopes, declare them with
-[`Security`](../reference.md#veloce.Security) instead of `Depends`. A
-dependency that takes a [`SecurityScopes`](../reference.md#veloce.SecurityScopes)
+[`Security`](../reference/dependencies.md#veloce.Security) instead of `Depends`. A
+dependency that takes a [`SecurityScopes`](../reference/dependencies.md#veloce.SecurityScopes)
 parameter receives the union of all scopes requested between the route
 and that point in the dependency graph, available as `.scopes` (a list)
 and `.scope_str` (the space-joined string from RFC 6749 §3.3).
@@ -474,8 +474,8 @@ assert ok.json() == {"token": "abc123"}
 
 ## JSON Web Tokens
 
-[`encode_jwt`](../reference.md#veloce.encode_jwt) and
-[`decode_jwt`](../reference.md#veloce.decode_jwt) sign and verify compact
+[`encode_jwt`](../reference/security.md#veloce.encode_jwt) and
+[`decode_jwt`](../reference/security.md#veloce.decode_jwt) sign and verify compact
 JWTs using the HMAC-SHA2 family (`HS256`/`HS384`/`HS512`) with no external
 dependency. RSA/EC algorithms and `alg: "none"` are unsupported by design;
 the signature is always verified before the payload JSON is decoded.
@@ -492,7 +492,7 @@ The `algorithms` allow-list is required — there is no default — which is
 what defeats algorithm-confusion attacks. `decode_jwt` validates `exp`
 and `nbf` (with optional `leeway`) and can additionally check `audience`,
 `issuer`, and a `require` list of claim names. Each failure raises a
-distinct subclass of [`JWTError`](../reference.md#veloce.JWTError):
+distinct subclass of [`JWTError`](../reference/security.md#veloce.JWTError):
 
 | Subclass |
 | --- |
@@ -508,7 +508,7 @@ distinct subclass of [`JWTError`](../reference.md#veloce.JWTError):
 `InvalidTokenError` covers a malformed token.
 
 A successful decode returns a read-only
-[`Claims`](../reference.md#veloce.Claims) mapping.
+[`Claims`](../reference/security.md#veloce.Claims) mapping.
 
 ## End-to-end: OAuth2 password flow with JWT
 
@@ -617,7 +617,7 @@ assert denied.status_code == 401
 
 !!! warning "Catch `JWTError`, not bare `Exception`, in production"
     The example catches `Exception` so it stays short. In real code catch
-    [`JWTError`](../reference.md#veloce.JWTError) (the base of every decode
+    [`JWTError`](../reference/security.md#veloce.JWTError) (the base of every decode
     failure) so genuine bugs are not converted into a `401`. `decode_jwt`
     raises `ValueError` for a misconfigured (empty) secret — a programmer
     error you want to surface, not swallow.
@@ -680,7 +680,7 @@ assert schema["paths"]["/users/me"]["get"]["security"] == [{"OAuth2PasswordBeare
 ```
 
 !!! note "Pre-filling OAuth2 credentials"
-    Pass `swagger_ui_init_oauth=` to [`Veloce`](../reference.md#veloce.Veloce)
+    Pass `swagger_ui_init_oauth=` to [`Veloce`](../reference/application.md#veloce.Veloce)
     to seed the Authorize dialog (for example a default `clientId`). The
     Authorize button only appears for schemes reached through `Depends` or
     `Security`; a scheme constructed but never used as a dependency emits no
@@ -688,8 +688,8 @@ assert schema["paths"]["/users/me"]["get"]["security"] == [{"OAuth2PasswordBeare
 
 ## Password-reset tokens
 
-[`make_reset_token`](../reference.md#veloce.make_reset_token) and
-[`check_reset_token`](../reference.md#veloce.check_reset_token) issue
+[`make_reset_token`](../reference/security.md#veloce.make_reset_token) and
+[`check_reset_token`](../reference/security.md#veloce.check_reset_token) issue
 storage-free, self-invalidating password-reset links. They bind an opaque
 caller-supplied state fingerprint — typically the user id plus password
 hash — into a signed, expiring token built on
@@ -714,7 +714,7 @@ previous secret.
 
 ## Wrapping secrets
 
-[`Secret`](../reference.md#veloce.Secret) wraps a `str`/`bytes` secret so it
+[`Secret`](../reference/security.md#veloce.Secret) wraps a `str`/`bytes` secret so it
 resists accidental disclosure: `repr`, `str`, f-strings, and `%`
 interpolation all render `***`, and the plaintext only escapes through an
 explicit `.reveal()`. Equality is constant-time, the wrapper is unhashable,
@@ -738,5 +738,5 @@ send(token.reveal())    # the real value
   alternative to JWTs.
 - [Dependency injection](dependency-injection.md) — how `Depends` and
   `Security` resolve, including `yield` teardown and overrides.
-- The [API reference](../reference.md) documents the full signature of
+- The [API reference](../reference/index.md) documents the full signature of
   every scheme.

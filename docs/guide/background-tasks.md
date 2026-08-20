@@ -8,8 +8,8 @@ tags: [background, tasks, async, response]
 A background task runs *after* the response has been sent to the client. Use
 it for work that should not delay the reply — sending a confirmation email,
 writing an audit log, invalidating a cache. Veloce ships two primitives:
-[`BackgroundTask`](../reference.md#veloce.BackgroundTask) for a single callable
-and [`BackgroundTasks`](../reference.md#veloce.BackgroundTasks) for an ordered
+[`BackgroundTask`](../reference/tasks.md#veloce.BackgroundTask) for a single callable
+and [`BackgroundTasks`](../reference/tasks.md#veloce.BackgroundTasks) for an ordered
 queue of them.
 
 ## A first example
@@ -123,8 +123,8 @@ async def mix(tasks: BackgroundTasks):
 
 ## Attaching a task to a response
 
-If you build a [`Response`](../reference.md#veloce.Response) object yourself,
-attach a single [`BackgroundTask`](../reference.md#veloce.BackgroundTask) — or
+If you build a [`Response`](../reference/responses.md#veloce.Response) object yourself,
+attach a single [`BackgroundTask`](../reference/tasks.md#veloce.BackgroundTask) — or
 a whole `BackgroundTasks` queue — through the `background` argument:
 
 ```python
@@ -176,9 +176,9 @@ async def report():
 ```
 
 !!! warning "The `background` argument is on the base `Response` only"
-    Only the base [`Response`](../reference.md#veloce.Response) constructor
+    Only the base [`Response`](../reference/responses.md#veloce.Response) constructor
     accepts `background=`. The convenience subclasses —
-    [`JSONResponse`](../reference.md#veloce.JSONResponse), `PlainTextResponse`,
+    [`JSONResponse`](../reference/responses.md#veloce.JSONResponse), `PlainTextResponse`,
     `StreamingResponse`, `RedirectResponse` — do **not** take a `background`
     keyword. To attach a task to one of those, set the attribute after
     constructing it:
@@ -302,5 +302,5 @@ request-scoped background tasks.
   attach tasks to.
 - [Dependency injection](dependency-injection.md) — for request-scoped
   values supplied via `Depends`.
-- API reference: [`BackgroundTask`](../reference.md#veloce.BackgroundTask),
-  [`BackgroundTasks`](../reference.md#veloce.BackgroundTasks).
+- API reference: [`BackgroundTask`](../reference/tasks.md#veloce.BackgroundTask),
+  [`BackgroundTasks`](../reference/tasks.md#veloce.BackgroundTasks).
