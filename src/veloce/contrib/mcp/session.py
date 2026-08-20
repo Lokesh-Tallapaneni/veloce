@@ -28,6 +28,12 @@ from typing import Any
 _connection_id_counter = itertools.count(1)
 
 
+# The `_meta` keys a modern request carries its client identity in. Duplicated as
+# module constants rather than imported from `server`, which imports this module.
+_META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+_META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+
+
 class MCPSession:
     """Lifecycle state for one stateful MCP connection.
 
@@ -74,6 +80,25 @@ class MCPSession:
         self.client_capabilities = capabilities if isinstance(capabilities, dict) else {}
         client_info = params.get("clientInfo")
         self.client_info = client_info if isinstance(client_info, dict) else None
+
+    def record_request_meta(self, meta: dict[str, Any] | None) -> None:
+        """Record the client identity a modern request carries in its `_meta`.
+
+        The modern revision has no `initialize`: a client states who it is and what
+        it supports on every request. Recording it here keeps one place -
+        `client_info` / `client_capabilities` - answering for both eras, so nothing
+        downstream has to know which handshake produced them. Absent keys leave the
+        previous values alone rather than clearing them, since a session may be
+        persistent across requests.
+        """
+        if not isinstance(meta, dict):
+            return
+        client_info = meta.get(_META_CLIENT_INFO)
+        if isinstance(client_info, dict):
+            self.client_info = client_info
+        capabilities = meta.get(_META_CLIENT_CAPABILITIES)
+        if isinstance(capabilities, dict):
+            self.client_capabilities = capabilities
 
     def supports(self, capability: str) -> bool:
         """Return whether the client advertised the named top-level capability."""

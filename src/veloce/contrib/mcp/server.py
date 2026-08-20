@@ -439,6 +439,16 @@ class MCPServer(TasksMixin, InvocationMixin):
         raw_version = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
         requested_version: str | None = raw_version if isinstance(raw_version, str) else None
         is_modern = requested_version is not None
+        if is_modern and session is not None:
+            # A modern client never sends `initialize`, so its identity and
+            # capabilities arrive in `_meta` on every request instead. Recording
+            # them on the session is what makes `MCPContext.client_info` /
+            # `client_capabilities` answer, and what lets the server-initiated
+            # requests (`sample` / `elicit` / `roots`) see the capabilities the
+            # client actually advertised rather than an empty set. Both shipped
+            # transports pass a session; a bare `handle_message` has none, and
+            # then there is nowhere to record it.
+            session.record_request_meta(meta)
         if requested_version is not None and requested_version not in _SERVED_VERSION_SET:
             # Recoverable by design: the client picks from `supported` and
             # retries. Returning this code is also what identifies the server as

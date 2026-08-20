@@ -540,6 +540,9 @@ async def whois(ctx: MCPContext) -> dict:
 ```
 
 - `session_id` — the dispatching connection's id, or `None` on the stateless path.
+- On the modern revision there is no `initialize`: the client states its identity and
+  capabilities in every request's `_meta`, and these read from there instead. Nothing
+  in your handler has to know which revision the caller speaks.
 - `client_info` — the client's `implementation` block from `initialize`.
 - `client_capabilities` — what the client advertised, and `client_supports("a.b")`
   to test one, nested with dots.
