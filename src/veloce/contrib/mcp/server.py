@@ -132,6 +132,24 @@ META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 # result; `"input_required"` marks a multi-round-trip interim result, which this
 # server does not yet produce.
 RESULT_TYPE_COMPLETE = "complete"
+# The methods the spec requires caching hints on, for a `complete` result.
+_CACHEABLE_METHODS = frozenset(
+    {
+        "server/discover",
+        "tools/list",
+        "prompts/list",
+        "resources/list",
+        "resources/templates/list",
+        "resources/read",
+    }
+)
+# How long a client may consider a list result fresh. The registries are built once
+# at startup and never change shape afterwards, so a generous default costs nothing
+# in staleness and saves an agent re-listing on every reconnect.
+DEFAULT_CACHE_TTL_MS = 300_000
+# A result that can differ between callers must not be cached by a shared proxy.
+_CACHE_SCOPE_PUBLIC = "public"
+_CACHE_SCOPE_PRIVATE = "private"
 
 # Membership set for the per-request version check; the tuple above is the
 # ordered form clients are shown.
@@ -165,6 +183,9 @@ class MCPServer(TasksMixin, InvocationMixin):
         "_call_timeout",
         "_enforce_lifecycle",
         "_tool_filter",
+        "_cache_ttl_ms",
+        "_any_scoped_tools",
+        "_any_scoped_prompts",
         "_subscriptions_enabled",
         "_connections",
         "_capabilities",
@@ -180,12 +201,16 @@ class MCPServer(TasksMixin, InvocationMixin):
         resources: ResourceRegistry | None = None,
         prompts: PromptRegistry | None = None,
         tool_filter: ToolFilter | None = None,
+        cache_ttl_ms: int = DEFAULT_CACHE_TTL_MS,
     ) -> None:
         self.app = app
         # Optional per-caller `tools/list` visibility policy. `None` - the default -
         # leaves listing unfiltered, so an application that does not opt in pays
         # nothing and sees exactly the pre-existing behaviour.
         self._tool_filter = tool_filter
+        # Freshness hint sent with cacheable results. The spec requires `>= 0`;
+        # zero tells the client to treat every result as immediately stale.
+        self._cache_ttl_ms = max(0, cache_ttl_ms)
         self.registry = registry if registry is not None else build_registry(app)
         self.resources = resources if resources is not None else build_resource_registry(app)
         self.prompts = prompts if prompts is not None else build_prompt_registry(app)
@@ -193,6 +218,13 @@ class MCPServer(TasksMixin, InvocationMixin):
         # descriptor now the registries exist, so a misconfigured target surfaces
         # at build time and `CompletionsCapability` finds the completers in place.
         attach_completers(app, self.prompts, self.resources)
+        # Whether either list can differ between two authorized callers, decided
+        # once here: the registries are fixed after build, so the cache-scope
+        # decision must not walk them per request.
+        self._any_scoped_tools = any(tool.required_scopes for tool in self.registry.tools.values())
+        self._any_scoped_prompts = any(
+            prompt.tool.required_scopes for prompt in self.prompts.prompts.values()
+        )
         self.server_name = getattr(app, "title", None) or "Veloce"
         self.server_version = getattr(app, "version", None) or "0.1.0"
         # Human-facing display name and client-facing usage guidance for the
@@ -471,6 +503,8 @@ class MCPServer(TasksMixin, InvocationMixin):
             # its revision has no such field and the server info below belongs to
             # the modern shape only.
             result = {"resultType": RESULT_TYPE_COMPLETE, **result}
+            if method in _CACHEABLE_METHODS:
+                self._add_cache_hints(method, result)
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
     def _gate_session(
@@ -658,6 +692,34 @@ class MCPServer(TasksMixin, InvocationMixin):
 
     def _tools_list(self) -> dict[str, Any]:
         return self._describe_tools(self.registry.tools.values())
+
+    def _add_cache_hints(self, method: str, result: dict[str, Any]) -> None:
+        """Attach `ttlMs` / `cacheScope` to a cacheable `complete` result.
+
+        The scope is the load-bearing half. A result that can differ between
+        callers - a `tools/list` narrowed by a visibility policy or by declared
+        scopes, or a `resources/read` whose route authorizes per principal - is
+        `private`, so a shared gateway cannot serve one caller's answer to another.
+        Everything else is `public`. The spec is explicit that `cacheScope` is a
+        hint and never a substitute for the per-primitive access control that
+        already runs on each of these paths.
+        """
+        result["ttlMs"] = self._cache_ttl_ms
+        result["cacheScope"] = (
+            _CACHE_SCOPE_PRIVATE if self._varies_by_caller(method) else _CACHE_SCOPE_PUBLIC
+        )
+
+    def _varies_by_caller(self, method: str) -> bool:
+        """Whether this method's result can differ between two authorized callers."""
+        if method == "resources/read":
+            # Its route runs the full request lifecycle under the caller's
+            # principal, so the body it returns is caller-dependent by construction.
+            return True
+        if method == "tools/list":
+            return self._tool_filter is not None or self._any_scoped_tools
+        if method == "prompts/list":
+            return self._any_scoped_prompts
+        return False
 
     def _describe_tools(self, tools: Iterable[MCPTool]) -> dict[str, Any]:
         """Shape an already-selected sequence of tools into a `tools/list` result."""

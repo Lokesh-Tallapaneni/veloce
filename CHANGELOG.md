@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MCPContext.read_resource` and `get_prompt` reach the server's own components, scope checks included.
 - `MCPContext.list_resources` and `list_prompts` enumerate what the list methods report.
 - `MCPContext.send_notification` sends an arbitrary JSON-RPC notification to the client.
+- Cacheable MCP results carry `ttlMs` and `cacheScope` on the modern revision.
+- `mount_mcp(cache_ttl_ms=...)` sets the freshness hint sent with those results.
 
 ### Fixed
 

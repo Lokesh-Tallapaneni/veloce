@@ -1259,6 +1259,42 @@ results do not — that field belongs to the modern revision only.
     the `-32022` rejection. Earlier versions served only the handshake eras, so
     a modern client's opening probe failed and it fell back to `initialize`.
 
+## Result caching
+
+On the modern revision, list results and `resources/read` carry the caching hints the
+spec requires, so a client can avoid re-fetching a tool list on every reconnect:
+
+```json
+{
+  "resultType": "complete",
+  "tools": [],
+  "ttlMs": 300000,
+  "cacheScope": "public"
+}
+```
+
+`ttlMs` is how long the client may consider the result fresh; set it with
+`app.mount_mcp(cache_ttl_ms=...)`, where `0` means immediately stale.
+
+`cacheScope` is decided for you, and it is the half that matters:
+
+- **`public`** — the list is identical for every caller, so a shared gateway may
+  serve one client's copy to another.
+- **`private`** — the result can differ between callers, so it must not be shared
+  across authorization contexts. Veloce marks a result private when a `tool_filter`
+  is configured, when any tool or prompt declares `scopes`, or for every
+  `resources/read` (whose route runs under the calling principal).
+
+!!! warning "Scope is a hint, not a control"
+
+    A cache scope tells clients what they may share. It is not access control —
+    the per-tool and per-resource checks still run on every call, and you should not
+    rely on `cacheScope` to keep anything private.
+
+Handshake-era clients receive no hints, since those revisions have no such fields.
+
+!!! note "Added in version 0.16"
+
 ## Instrumentation
 
 Each tool call fires the same `app.add_instrumentation` hooks an HTTP request

@@ -1869,6 +1869,7 @@ class Veloce(
         sessions: bool = False,
         resumable: bool = False,
         tool_filter: Any = None,
+        cache_ttl_ms: int | None = None,
     ) -> Any:
         """Build the MCP server and serve the registered tools.
 
@@ -1907,15 +1908,23 @@ class Veloce(
         caller's declared `mcp_scopes` are applied first regardless, so a filter can
         only hide further, never reveal; hiding a tool does not change what happens
         if it is called anyway. Left unset, listing is unfiltered.
+        `cache_ttl_ms` sets the freshness hint sent with cacheable results
+        (`tools/list`, `prompts/list`, `resources/list`, `resources/read` and
+        `server/discover`) on the modern protocol revision; `0` marks them
+        immediately stale. A list that can differ between callers is additionally
+        marked private so a shared proxy cannot serve one caller's answer to another.
         Call this after the tool / resource / prompt routes are registered.
         """
-        from veloce.contrib.mcp.server import MCPServer
+        from veloce.contrib.mcp.server import DEFAULT_CACHE_TTL_MS, MCPServer
+
+        # Omitted means the server's own default freshness hint.
+        cache_ttl = DEFAULT_CACHE_TTL_MS if cache_ttl_ms is None else cache_ttl_ms
 
         if transport == "stdio":
             from veloce.contrib.mcp.transports.stdio import serve_stdio
             from veloce.principal import set_principal
 
-            server = MCPServer(self, tool_filter=tool_filter)
+            server = MCPServer(self, tool_filter=tool_filter, cache_ttl_ms=cache_ttl)
 
             async def _serve() -> None:
                 if principal is not None:
@@ -1928,7 +1937,7 @@ class Veloce(
         if transport == "http":
             from veloce.contrib.mcp.transports.http import register_http_transport
 
-            server = MCPServer(self, tool_filter=tool_filter)
+            server = MCPServer(self, tool_filter=tool_filter, cache_ttl_ms=cache_ttl)
             # A task-augmented call records the creating connection's identity and
             # the follow-up tasks/get|result|list|cancel must run under that same
             # connection. The stateless default mints a throwaway session (a fresh,
