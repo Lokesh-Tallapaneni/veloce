@@ -43,7 +43,6 @@ theme:
     - navigation.top
     - navigation.footer
     - toc.follow
-    - toc.integrate
     - search.suggest
     - search.highlight
     - content.code.copy
@@ -130,8 +129,10 @@ plugins:
 
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
+  # `getting-started` leads the tutorial rather than owning a tab: it is the
+  # first thing a reader does, not a section they navigate around in.
   - Tutorial:
+      - Getting Started: getting-started.md
       - Overview: tutorial/index.md
       - 1. Your first app: tutorial/first-app.md
       - 2. Path & query parameters: tutorial/path-and-query-params.md
@@ -197,17 +198,21 @@ nav:
       - Generating Clients & SDKs: how-to/generate-clients.md
       - GraphQL: how-to/graphql.md
       - Customising the Request or Route: how-to/custom-request-route.md
-  - Why Veloce:
+  - API Reference: reference.md
+  # Seven tabs rather than twelve. Every single-page section that used to own a
+  # tab of its own - Comparison, Versioning, Changelog - sits under About, and
+  # the essays move under it too: a tab is for a place you navigate around in,
+  # not a page you read once.
+  - About:
       - Why Veloce Exists: surpass/why-veloce-exists.md
-      - Veloce vs Starlette: surpass/veloce-vs-starlette.md
       - Performance: surpass/performance.md
       - Native Server Deep Dive: surpass/native-server.md
+      - Comparison: comparison.md
+      - Veloce vs Starlette: surpass/veloce-vs-starlette.md
       - Migrating from FastAPI: surpass/migrating-from-fastapi.md
-  - Comparison: comparison.md
-  - Blog:
-      - Overview: blog/index.md
-      - Why I wrote an ASGI framework from scratch: blog/why-from-scratch.md
-      - Reflection-free request dispatch: blog/reflection-free-dispatch.md
-  - Versioning & Stability: policies.md
-  - API Reference: reference.md
-  - Changelog: changelog.md
+      - Versioning & Stability: policies.md
+      - Changelog: changelog.md
+      - Blog:
+          - Overview: blog/index.md
+          - Why I wrote an ASGI framework from scratch: blog/why-from-scratch.md
+          - Reflection-free request dispatch: blog/reflection-free-dispatch.md
