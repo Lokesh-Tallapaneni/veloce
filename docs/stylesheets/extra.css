@@ -12,6 +12,133 @@
   --vl-dur: 200ms;
 }
 
+/* ==========================================================================
+   Reading rhythm
+   The defect this fixes: the gap between two blocks (16px) was SMALLER than the
+   line-height inside a paragraph (25.6px), so lines within a paragraph sat
+   further apart than the boundary between a paragraph and a code block, and
+   every block fused into its neighbour. The governing rule below is therefore:
+   any gap between two blocks must exceed the body line-height.
+
+   Body size is deliberately unchanged. Shrinking it lowers the leading, which
+   makes the fusion worse, not better.
+   ========================================================================== */
+
+.md-typeset {
+  line-height: 1.625;
+}
+
+/* Adjacent margins collapse to the larger of the two, so each block declares
+   the space it wants around itself and the ladder falls out of the maximums. */
+.md-typeset p {
+  margin-block: 22px;
+}
+
+/* A list belongs to the sentence that introduces it, so it sits closer to its
+   lead-in than two paragraphs sit to each other, and further from what follows. */
+.md-typeset ul,
+.md-typeset ol {
+  margin-block: 18px 28px;
+}
+
+.md-typeset p:has(+ ul),
+.md-typeset p:has(+ ol) {
+  margin-bottom: 18px;
+}
+
+/* List items are separate thoughts and were running together. */
+.md-typeset li + li {
+  margin-top: 10px;
+}
+
+.md-typeset li > p {
+  margin-block: 10px;
+}
+
+/* A code block is a change of voice: more space around it than prose gets
+   between its own paragraphs, and real room inside its frame. Code was set at
+   1.40 leading with 10.5px of vertical padding - the place the eye should rest
+   was the tightest thing on the page. */
+.md-typeset pre {
+  margin-block: 28px;
+}
+
+.md-typeset pre > code {
+  padding: 16px 20px;
+  line-height: 1.55;
+}
+
+.md-typeset pre > code,
+.md-typeset code {
+  border-radius: 8px;
+}
+
+/* Headings carry the page's structure. The gap ABOVE one is the strongest
+   signal that a new section began, so it is roughly 3x the gap below. */
+.md-typeset h2 {
+  margin-top: 64px;
+  margin-bottom: 20px;
+  line-height: 1.35;
+}
+
+.md-typeset h3 {
+  margin-top: 44px;
+  margin-bottom: 16px;
+  line-height: 1.4;
+}
+
+.md-typeset h4 {
+  margin-top: 32px;
+  margin-bottom: 12px;
+}
+
+/* A hairline turns a long scroll into visibly separate sections. */
+.md-typeset h2::before {
+  content: "";
+  display: block;
+  border-top: 1px solid var(--vl-border);
+  margin-bottom: 24px;
+  transform: translateY(-24px);
+}
+
+/* Admonitions shipped with zero vertical padding. */
+.md-typeset .admonition,
+.md-typeset details,
+.md-typeset .tabbed-set,
+.md-typeset table:not([class]) {
+  margin-block: 28px;
+}
+
+/* The title band bleeds to the box edges with a negative margin, so its inset
+   has to stay the exact negative of the container's padding or it detaches. */
+.md-typeset .admonition,
+.md-typeset details {
+  padding: 0 16px 16px;
+}
+
+.md-typeset .admonition > .admonition-title,
+.md-typeset details > summary {
+  margin: 0 -16px 16px;
+  padding: 10px 16px 10px 44px;
+}
+
+.md-typeset .admonition > .admonition-title::before,
+.md-typeset details > summary::before {
+  left: 16px;
+  top: 10px;
+}
+
+.md-typeset table:not([class]) th,
+.md-typeset table:not([class]) td {
+  padding: 12px 16px;
+}
+
+/* The article was pinned under the sticky tab bar with 12px above it. */
+.md-main .md-content__inner {
+  padding-block: 40px 64px;
+}
+
+
 /* ----------------------------------------------------------------- Light -- */
 [data-md-color-scheme="default"] {
   --vl-violet:       #5b3df0;
@@ -96,6 +223,12 @@
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+/* `background-clip: text` clips to the glyphs of descendants too, so the
+   anchor's pilcrow is painted by the gradient no matter its own opacity. */
+.md-typeset .vl-hero h1.vl-hero__title .headerlink {
+  display: none;
 }
 .md-typeset .vl-hero .vl-hero__tagline {
   max-width: 36rem;
@@ -295,12 +428,42 @@
   --vl-glass-edge:      rgba(255, 255, 255, 0.70);
   --vl-glass-shadow:    0 1px 2px rgba(27, 27, 37, 0.06), 0 12px 32px rgba(27, 27, 37, 0.10);
   --vl-glass-chrome-bg: rgba(91, 61, 240, 0.72);
+  --vl-tabs-bg:         rgba(255, 255, 255, 0.72);
+  --vl-sticky-bg:       var(--md-default-bg-color);
+  --vl-search-bg:        rgba(255, 255, 255, 0.14);
+  --vl-search-bg-hover:  rgba(255, 255, 255, 0.20);
+  --vl-search-bg-focus:  rgba(255, 255, 255, 0.24);
+  --vl-search-edge:      rgba(255, 255, 255, 0.18);
+  --vl-search-edge-focus: rgba(255, 255, 255, 0.40);
+  --vl-search-ring:      rgba(255, 255, 255, 0.22);
+  --vl-search-sheen:          rgba(255, 255, 255, 0.26);
+  --vl-search-sheen-hover:    rgba(255, 255, 255, 0.34);
+  --vl-search-highlight:      rgba(255, 255, 255, 0.34);
+  --vl-search-highlight-focus: rgba(255, 255, 255, 0.55);
+  --vl-search-panel-bg:  rgba(252, 252, 254, 0.94);
+  --vl-search-meta-bg:   rgba(255, 255, 255, 0.55);
+  --vl-search-scrim:     rgba(23, 20, 45, 0.30);
 }
 [data-md-color-scheme="slate"] {
   --vl-glass-bg:        rgba(28, 28, 40, 0.55);
   --vl-glass-edge:      rgba(255, 255, 255, 0.12);
   --vl-glass-shadow:    0 1px 2px rgba(0, 0, 0, 0.30), 0 12px 32px rgba(0, 0, 0, 0.42);
   --vl-glass-chrome-bg: rgba(20, 20, 31, 0.72);
+  --vl-tabs-bg:         rgba(20, 20, 31, 0.72);
+  --vl-sticky-bg:       var(--md-default-bg-color);
+  --vl-search-bg:        rgba(255, 255, 255, 0.08);
+  --vl-search-bg-hover:  rgba(255, 255, 255, 0.12);
+  --vl-search-bg-focus:  rgba(255, 255, 255, 0.16);
+  --vl-search-edge:      rgba(255, 255, 255, 0.12);
+  --vl-search-edge-focus: rgba(255, 255, 255, 0.32);
+  --vl-search-ring:      rgba(125, 99, 244, 0.45);
+  --vl-search-sheen:          rgba(255, 255, 255, 0.14);
+  --vl-search-sheen-hover:    rgba(255, 255, 255, 0.20);
+  --vl-search-highlight:      rgba(255, 255, 255, 0.18);
+  --vl-search-highlight-focus: rgba(255, 255, 255, 0.32);
+  --vl-search-panel-bg:  rgba(24, 24, 34, 0.94);
+  --vl-search-meta-bg:   rgba(255, 255, 255, 0.06);
+  --vl-search-scrim:     rgba(6, 5, 14, 0.50);
 }
 
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
@@ -537,4 +700,365 @@
   .md-footer__link:hover {
     transform: none;
   }
+}
+
+
+/* --------------------------------------------------------------- Tab bar -- */
+/* The header and the tab bar were both full-bleed brand violet, stacking ~96px
+   of saturated colour above every page. The tab bar reads as page surface
+   instead, so one brand band remains and the chrome stops competing with the
+   content. Placed after the @supports chrome rule so it wins at equal
+   specificity. */
+.md-tabs {
+  background-color: var(--vl-tabs-bg);
+  color: var(--md-default-fg-color);
+  border-bottom: 1px solid var(--vl-border);
+  box-shadow: none;
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .md-tabs {
+    background-color: var(--vl-tabs-bg);
+    -webkit-backdrop-filter: blur(12px) saturate(1.6);
+    backdrop-filter: blur(12px) saturate(1.6);
+  }
+}
+
+.md-tabs__link {
+  color: var(--md-default-fg-color--light);
+  opacity: 1;
+  transition: color 0.15s ease;
+}
+
+.md-tabs__link:focus,
+.md-tabs__link:hover {
+  color: var(--md-default-fg-color);
+}
+
+/* The active tab carries the brand colour the bar gave up. */
+.md-tabs__item--active .md-tabs__link,
+.md-tabs__link--active {
+  color: var(--md-typeset-a-color);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------ Dark accent -- */
+/* The theme's palette sheet pins the dark link colour under
+   [data-md-color-scheme="slate"][data-md-color-primary="indigo"] - two attribute
+   selectors, which outrank a plain scheme block regardless of load order, so the
+   dark scheme rendered stock indigo #5488e8 instead of the project's violet.
+   Match that specificity without pinning the primary's value. */
+[data-md-color-scheme="slate"][data-md-color-primary] {
+  --md-typeset-a-color: var(--vl-violet);
+}
+
+/* ------------------------------------------------------- Sticky nav label -- */
+/* The pinned section label is an 18px box, but the nav row scrolling under it
+   is 19px tall, so ~10px of that row sits below the label's own background.
+   Material covers the remainder with a blurred shadow, which is translucent at
+   its edges - the row ghosts through it. Give the label a box tall enough to
+   cover a full row and make the extension solid instead of blurred. The fill
+   must be fully opaque: at 94% the row underneath still reads as grey ghost
+   text through it. */
+/* Matches the theme's own lifted-nav selector so this wins on specificity
+   rather than on !important. */
+.md-sidebar--primary .md-nav--lifted > .md-nav__list > .md-nav__item--active > .md-nav__link {
+  padding-bottom: 12px;
+  background-color: var(--vl-sticky-bg);
+  box-shadow: 0 6px 0 6px var(--vl-sticky-bg);
+}
+
+/* The table-of-contents label needs the same masking, but the horizontal spread
+   used above painted a slab wider than the rail's own content and offset
+   unevenly from the sidebar edges, so it read as a panel floating over the page
+   rather than as the list's heading. The contents list is shorter than the rail,
+   so nothing ever scrolls under this label and the mask bought nothing: it is a
+   plain heading with a rule under it. */
+.md-sidebar--secondary .md-nav--secondary .md-nav__title {
+  position: static;
+  padding-bottom: 10px;
+  margin-bottom: 4px;
+  background-color: transparent;
+  border-bottom: 1px solid var(--vl-border);
+  box-shadow: none;
+}
+
+/* ---------------------------------------------------------------- Search -- */
+/* The field was a flat rgba(0,0,0,.26) rectangle at a 2px radius whose focus
+   state was pixel-identical to its resting state - nothing told you the field
+   had taken the caret. It now reads as glass recessed into the header, and
+   focus is carried by fill, ring and lift together rather than by the browser
+   outline alone. */
+/* The header is a flat colour, so there is nothing behind the field for a
+   backdrop blur to refract - blur alone just produced a lighter rectangle.
+   Glass here has to be built from the things that actually read as glass on a
+   solid ground: a vertical gradient so the surface catches light unevenly, a
+   bright top edge, a hairline rim, and an inner shadow along the bottom so the
+   field sits *into* the bar rather than on top of it. */
+.md-search__form {
+  border-radius: 12px;
+  background-color: transparent;
+  background-image: linear-gradient(
+    180deg,
+    var(--vl-search-sheen) 0%,
+    var(--vl-search-bg) 45%,
+    var(--vl-search-bg) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 var(--vl-search-highlight),
+    inset 0 0 0 1px var(--vl-search-edge),
+    inset 0 -8px 14px -8px rgba(0, 0, 0, 0.30);
+  transition:
+    background-image 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.md-search__form:hover {
+  background-image: linear-gradient(
+    180deg,
+    var(--vl-search-sheen-hover) 0%,
+    var(--vl-search-bg-hover) 45%,
+    var(--vl-search-bg-hover) 100%
+  );
+}
+
+.md-search__form:focus-within {
+  background-image: linear-gradient(
+    180deg,
+    var(--vl-search-sheen-hover) 0%,
+    var(--vl-search-bg-focus) 45%,
+    var(--vl-search-bg-focus) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 var(--vl-search-highlight-focus),
+    inset 0 0 0 1px var(--vl-search-edge-focus),
+    0 0 0 3px var(--vl-search-ring),
+    0 8px 22px rgba(0, 0, 0, 0.22);
+}
+
+/* The ring above is the focus indicator, so the default outline would double it. */
+.md-search__input:focus,
+.md-search__input:focus-visible {
+  outline: none;
+}
+
+.md-search__input::placeholder {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+/* Keyboard hint. The theme binds "/", "s" and "f" to focus search, so "/" is
+   the honest one to advertise. It is decorative, hence aria-hidden semantics
+   via content alone, and it steps aside once the field is active so it cannot
+   collide with the clear button. */
+.md-search__form::after {
+  content: "/";
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.20);
+  color: rgba(255, 255, 255, 0.86);
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 12px;
+  line-height: 1;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+
+.md-search__form:focus-within::after {
+  opacity: 0;
+}
+
+/* Opening search flips the theme's own toggle, which turns the field opaque so
+   it reads as one surface with the results panel below. Keep that - a
+   translucent field over an opaque dropdown looks detached - but carry the ring
+   and the corner radius through, and join the two into a single rounded panel. */
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form {
+  border-radius: 10px 10px 0 0;
+  box-shadow:
+    0 0 0 3px var(--vl-search-ring),
+    0 10px 28px rgba(0, 0, 0, 0.20);
+}
+
+[data-md-toggle="search"]:checked ~ .md-header .md-search__input::placeholder {
+  color: var(--md-default-fg-color--lighter);
+}
+
+/* The results panel is the same material as the field it drops out of. The
+   theme rounds it to 2px from a rule that outranks a bare .md-search__output,
+   so match that rule's shape; `overflow: hidden` is what actually clips the
+   opaque scroll surface inside to the rounded corners. */
+[data-md-toggle="search"]:checked ~ .md-header .md-search__output {
+  border-radius: 0 0 12px 12px;
+  overflow: hidden;
+}
+
+/* This - not .md-search__output - is the surface the panel actually paints, and
+   it was fully opaque. It is the glass the page shows through. */
+.md-search__scrollwrap {
+  background-color: var(--vl-search-panel-bg);
+}
+
+/* The "N matching documents" bar reads as the panel's own header. */
+.md-search-result__meta {
+  background-color: var(--vl-search-meta-bg);
+  border-bottom: 1px solid var(--vl-border);
+  color: var(--md-default-fg-color--light);
+}
+
+/* Frosting the scrim is what makes the popup read as glass: the page behind it
+   defocuses instead of just darkening. */
+.md-search__overlay {
+  background-color: var(--vl-search-scrim);
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .md-search__scrollwrap {
+    -webkit-backdrop-filter: blur(20px) saturate(1.8);
+    backdrop-filter: blur(20px) saturate(1.8);
+  }
+
+  /* The backdrop carries the effect, so it blurs hard: the page defocuses
+     rather than merely darkening, and the panel stays legible on top. */
+  .md-search__overlay {
+    -webkit-backdrop-filter: blur(8px) saturate(0.9);
+    backdrop-filter: blur(8px) saturate(0.9);
+  }
+
+  /* An element with backdrop-filter becomes a backdrop root: descendants can
+     then only sample within it, never the page behind. The search overlay and
+     the results panel are both inside the header, so the header's own frosting
+     silently cancelled theirs - the popup only ever ghosted the page through a
+     translucent fill. Release the root while search is open; the header is
+     covered by the overlay at that point, so it loses nothing. */
+  [data-md-toggle="search"]:checked ~ .md-header {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .md-search__form {
+    -webkit-backdrop-filter: blur(6px) saturate(1.4);
+    backdrop-filter: blur(6px) saturate(1.4);
+  }
+
+  .md-search__form:focus-within {
+    -webkit-backdrop-filter: blur(12px) saturate(1.8);
+    backdrop-filter: blur(12px) saturate(1.8);
+  }
+}
+
+/* Below the tablet breakpoint the theme turns search into a full-screen
+   overlay, where a recessed pill and a keyboard hint make no sense. */
+@media screen and (max-width: 76.1875em) {
+  .md-search__form {
+    border-radius: 0;
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+  }
+
+  .md-search__form::after {
+    content: none;
+  }
+}
+
+/* ------------------------------------------------------------- Wayfinding -- */
+/* In-page jumps were instant, so following a contents link teleported the
+   reader with no sense of how far they moved. Smoothing the document wholesale
+   is wrong, though: instant navigation scrolls to the top on every page change,
+   and with smooth scrolling that became an ~840ms animated crawl up through the
+   new page before it settled. Scoping to `:has(:target)` limits smoothing to
+   the case where a fragment is actually being navigated to. The reduced-motion
+   block at the end of this file forces `auto`, so it stays opt-out. */
+html {
+  scroll-behavior: auto;
+}
+
+html:has(:target) {
+  scroll-behavior: smooth;
+}
+
+/* The contents list tracks the reader's position, but the active entry was
+   rendered in exactly the same colour and weight as every other entry - the
+   state existed and nothing showed it. On a long page there was no answer to
+   "which section am I in". */
+.md-sidebar--secondary .md-nav__link {
+  position: relative;
+  transition: color 0.15s ease;
+}
+
+.md-sidebar--secondary .md-nav__link:hover {
+  color: var(--md-default-fg-color);
+}
+
+.md-sidebar--secondary .md-nav__link--active {
+  color: var(--md-typeset-a-color);
+  font-weight: 600;
+}
+
+.md-sidebar--secondary .md-nav__link--active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background-color: var(--md-typeset-a-color);
+}
+
+/* The current page in the navigation was violet but at the same weight as its
+   neighbours, so it read as a link rather than as "you are here". */
+.md-sidebar--primary .md-nav__link {
+  position: relative;
+}
+
+.md-sidebar--primary .md-nav__link--active {
+  font-weight: 600;
+}
+
+.md-sidebar--primary .md-nav__link--active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background-color: var(--md-typeset-a-color);
+}
+
+/* The active tab carried colour and weight but no underline, which is the
+   conventional affordance for a tab strip. */
+.md-tabs__item--active .md-tabs__link {
+  position: relative;
+}
+
+.md-tabs__item--active .md-tabs__link::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 2px;
+  border-radius: 1px;
+  background-color: var(--md-typeset-a-color);
+}
+
+/* Heading anchors appear on hover; easing them in stops the flicker as the
+   pointer crosses a heading. */
+.md-typeset .headerlink {
+  transition:
+    opacity 0.15s ease,
+    color 0.15s ease;
 }
