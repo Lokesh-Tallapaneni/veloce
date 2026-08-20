@@ -70,6 +70,7 @@ from veloce.contrib.mcp.errors import (
     _error,
     _ForbiddenError,
     _InBandError,
+    _InvalidArgumentsError,
 )
 from veloce.contrib.mcp.icons import render_icons
 from veloce.contrib.mcp.prompts import PromptRegistry, build_prompt_registry
@@ -717,6 +718,15 @@ class MCPServer(TasksMixin, InvocationMixin):
             result = await self._run_invoke(tool, arguments, progress_token)
         except InvalidParamsError:
             raise
+        except _InvalidArgumentsError as exc:
+            # Surfaced verbatim, unlike a handler exception: the message names
+            # the offending argument and what was expected, both derived from
+            # the tool's own declared schema and the caller's own input, so
+            # there is nothing to redact. Redacting it would leave the model
+            # with "internal error" and nothing to correct - the opposite of
+            # what an execution error is for.
+            await self._instrument(tool, started, status.HTTP_422_UNPROCESSABLE_ENTITY)
+            return _text_result(str(exc), is_error=True)
         except asyncio.TimeoutError:
             await self._instrument(tool, started, status.HTTP_504_GATEWAY_TIMEOUT)
             return _text_result(
