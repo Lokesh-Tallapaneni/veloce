@@ -4,8 +4,18 @@ on:
   # Establishes the performance baseline every PR is compared against.
   push:
     branches: [main]
+    paths: &benchmark_paths
+      - "src/veloce/**"
+      - "benchmarks/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/codspeed.yml"
   # Required for CodSpeed to report the delta on a pull request.
   pull_request:
+    # A docs-only or test-only change cannot move a benchmark, and a run that
+    # measures nothing still costs several minutes of CI and adds a comparison
+    # against a baseline that did not move.
+    paths: *benchmark_paths
   # Lets CodSpeed trigger a backtest run to seed historical data.
   workflow_dispatch:
 
@@ -22,6 +32,8 @@ jobs:
   benchmarks:
     name: Run benchmarks
     runs-on: ubuntu-latest
+    # A hung benchmark should fail the job, not occupy a runner.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -44,7 +56,9 @@ jobs:
           mode: simulation
           # `benchmarks/` sits outside `testpaths`, so it is only ever
           # collected when named explicitly - as here.
-          run: uv run pytest benchmarks --ignore=benchmarks/walltime --codspeed
+          run: >-
+            uv run pytest benchmarks
+            --ignore=benchmarks/walltime --ignore=benchmarks/memory --codspeed
 
       # Sync handlers and offloaded compression spend most of their cost in a
       # thread hop, which simulation mode excludes from the measure. Wall time
@@ -54,3 +68,14 @@ jobs:
         with:
           mode: walltime
           run: uv run pytest benchmarks/walltime --codspeed
+
+      # Allocation rather than speed: the compiled route table, a deep
+      # dependency graph, and the per-connection objects a server holds for as
+      # long as a client stays connected. A `__slots__` entry lost in a refactor
+      # restores the per-instance dict and shows up here as a step change,
+      # while both timing instruments stay flat.
+      - name: Run benchmarks (memory)
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: memory
+          run: uv run pytest benchmarks/memory --codspeed

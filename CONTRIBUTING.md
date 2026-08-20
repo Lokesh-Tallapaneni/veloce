@@ -70,8 +70,9 @@ HYPOTHESIS_PROFILE=ci pytest -m fuzz
 # Benchmarks: CI runs them on CodSpeed and reports the delta on the PR.
 # Two instruments - see benchmarks/README.md for which suite a benchmark
 # belongs in and why.
-pytest benchmarks --ignore=benchmarks/walltime --codspeed   # instruction counts
-pytest benchmarks/walltime --codspeed                       # thread-crossing paths
+pytest benchmarks --ignore=benchmarks/walltime --ignore=benchmarks/memory --codspeed
+pytest benchmarks/walltime --codspeed   # thread-crossing paths
+pytest benchmarks/memory --codspeed     # allocation of held structures
 ```
 
 - Tests use `pytest-asyncio` in auto mode: write async tests as plain

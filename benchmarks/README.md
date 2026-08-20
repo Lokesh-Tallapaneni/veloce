@@ -57,13 +57,29 @@ compression. Under simulation those benchmarks report a number that omits
 their dominant cost - CodSpeed flagged the gzip one as "2.7 ms" while noting
 that 32 system calls worth 257.5 ms had been left out.
 
+**Memory** (`benchmarks/memory/`) measures allocation rather than speed, so it
+covers what the framework *holds*: the compiled route table, a deep dependency
+graph, the OpenAPI schema, and the per-connection objects a server keeps alive
+for as long as a client is connected. `WebSocket` and `Request` are slotted to
+keep those small; an attribute added without a matching `__slots__` entry
+restores the per-instance `__dict__` and undoes it - invisible to both timing
+instruments, a step change here.
+
 Run them separately, the way CI does:
 
 ```bash
-uv run pytest benchmarks --ignore=benchmarks/walltime --codspeed
+uv run pytest benchmarks --ignore=benchmarks/walltime --ignore=benchmarks/memory --codspeed
 uv run pytest benchmarks/walltime --codspeed
+uv run pytest benchmarks/memory --codspeed
 ```
 
-A benchmark that crosses a thread boundary belongs in `walltime/`. Putting it
-in the simulation suite produces a figure that looks stable while the real cost
-moves underneath it.
+Choosing a suite is a property of what the benchmark measures, not a
+preference. A benchmark that crosses a thread boundary belongs in `walltime/`:
+in the simulation suite it produces a figure that looks stable while the real
+cost moves underneath it. One that measures a structure's footprint belongs in
+`memory/`, where the instrument can see it.
+
+Beware of memoised work. `app.openapi()` caches onto `app.openapi_schema`, so a
+benchmark that calls it repeatedly measures an attribute read - it reported
+`0ns` over six million iterations before the cache reset was added. Clear any
+cache inside the benchmarked callable.
