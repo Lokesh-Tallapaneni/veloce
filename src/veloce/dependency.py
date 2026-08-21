@@ -44,7 +44,7 @@ from veloce._handler_plan import (
     parallel_group_end,
 )
 from veloce._internal import _BaseExceptionGroup, _is_async_callable, offload
-from veloce._model_backend import ModelBackend, is_pydantic_model
+from veloce._model_backend import ModelBackend, _msgspec, is_pydantic_model
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
@@ -914,9 +914,7 @@ class DependencyResolver:
             return slot.marker.resolve_default() if slot.marker.has_default else None
         try:
             if slot.backend == ModelBackend.MSGSPEC:
-                import msgspec
-
-                return msgspec.convert(raw, type=slot.model, strict=False)
+                return _msgspec.convert(raw, type=slot.model, strict=False)
             return slot.model.model_validate(raw)
         except PydanticValidationError as e:
             raise RequestValidationError(
@@ -974,8 +972,6 @@ class DependencyResolver:
     async def _resolve_msgspec_body(self, slot: Any, request: Request) -> Any:
         # Reached only for a msgspec.Struct body slot, which the registration
         # tagging in `_handler_plan` produces only when msgspec is installed.
-        import msgspec
-
         raw = await request.body()
         # An empty or whitespace-only body is "missing", not a decode error -
         # `msgspec.json.decode(b"")` would raise an opaque truncation error.
@@ -988,8 +984,8 @@ class DependencyResolver:
         try:
             # `strict=True` (the default) enforces types on decode: a `str` for an
             # `int` field is rejected rather than coerced.
-            return msgspec.json.decode(raw, type=slot.model)
-        except msgspec.ValidationError as e:
+            return _msgspec.json.decode(raw, type=slot.model)
+        except _msgspec.ValidationError as e:
             # `ValidationError` SUBCLASSES `DecodeError`, so it must be caught
             # first - reversing the order would let the `DecodeError` arm swallow
             # it. msgspec embeds the offending field path inside the message
@@ -999,7 +995,7 @@ class DependencyResolver:
             raise RequestValidationError(
                 [{"loc": ["body"], "msg": str(e), "type": "value_error"}]
             ) from e
-        except msgspec.DecodeError as e:
+        except _msgspec.DecodeError as e:
             raise RequestValidationError(
                 [{"loc": ["body"], "msg": "Invalid JSON body", "type": "value_error"}]
             ) from e

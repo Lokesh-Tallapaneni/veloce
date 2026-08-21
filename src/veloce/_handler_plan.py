@@ -22,7 +22,7 @@ from collections.abc import Callable
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from veloce._internal import _is_async_callable
-from veloce._model_backend import ModelBackend, backend_of
+from veloce._model_backend import ModelBackend, _msgspec, backend_of
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
 from veloce.http.request import Request
@@ -119,9 +119,7 @@ def _group_field_specs(
             for name, f in model.model_fields.items()
         ]
     else:
-        import msgspec.structs
-
-        items = [(f.name, f.encode_name, f.type) for f in msgspec.structs.fields(model)]
+        items = [(f.name, f.encode_name, f.type) for f in _msgspec.structs.fields(model)]
     for name, alias, annotation in items:
         validate_key = alias or name
         key = validate_key

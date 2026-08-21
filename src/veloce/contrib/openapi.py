@@ -19,7 +19,7 @@ import orjson
 from pydantic import BaseModel
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
-from veloce._model_backend import is_msgspec_struct, is_pydantic_model
+from veloce._model_backend import _msgspec, is_msgspec_struct, is_pydantic_model
 from veloce._protocol_constants import HTTP_METHOD_QUERY, OAUTH2_GRANT_TYPE_PASSWORD
 from veloce._route_contract import RouteContract, iter_param_descriptors
 from veloce.dependency import Depends
@@ -581,10 +581,8 @@ class _SchemaEntry:
         prefix the document rewriter already repoints into `components.schemas`,
         so nested structs resolve with no extra translation.
         """
-        import msgspec
-
         try:
-            schemas, components = msgspec.json.schema_components(
+            schemas, components = _msgspec.json.schema_components(
                 [self.model], ref_template="#/$defs/{name}"
             )
         except Exception as exc:
