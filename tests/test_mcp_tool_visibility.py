@@ -7,6 +7,7 @@ change what happens when it is called. These tests pin both halves.
 
 from __future__ import annotations
 
+import functools
 from typing import Any
 
 import pytest
@@ -142,6 +143,44 @@ async def test_async_policy_is_awaited():
         return tool.name == "read_public"
 
     server = MCPServer(_app(), tool_filter=only_public)
+    set_principal(Principal(subject="root", scopes=frozenset({"admin", "billing"})))
+    assert _names(await _list(server)) == {"read_public"}
+
+
+async def test_an_async_callable_object_policy_is_awaited():
+    """A bare `iscoroutinefunction` misses an `async def __call__`.
+
+    Misreading one as synchronous runs it in a worker thread, where it returns an
+    un-awaited coroutine. Every coroutine is truthy, so the policy would admit
+    every tool - failing open rather than closed.
+    """
+
+    class OnlyPublic:
+        async def __call__(self, tool: Any, principal: Any) -> bool:
+            return tool.name == "read_public"
+
+    server = MCPServer(_app(), tool_filter=OnlyPublic())
+    set_principal(Principal(subject="root", scopes=frozenset({"admin", "billing"})))
+    assert _names(await _list(server)) == {"read_public"}
+
+
+async def test_a_partially_applied_async_policy_is_awaited():
+    """`functools.partial` around an `async def` must not read as synchronous."""
+
+    async def only(tool: Any, principal: Any, *, keep: str) -> bool:
+        return tool.name == keep
+
+    server = MCPServer(_app(), tool_filter=functools.partial(only, keep="read_public"))
+    set_principal(Principal(subject="root", scopes=frozenset({"admin", "billing"})))
+    assert _names(await _list(server)) == {"read_public"}
+
+
+async def test_a_synchronous_callable_object_policy_still_applies():
+    class OnlyPublic:
+        def __call__(self, tool: Any, principal: Any) -> bool:
+            return tool.name == "read_public"
+
+    server = MCPServer(_app(), tool_filter=OnlyPublic())
     set_principal(Principal(subject="root", scopes=frozenset({"admin", "billing"})))
     assert _names(await _list(server)) == {"read_public"}
 
