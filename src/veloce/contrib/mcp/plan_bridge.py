@@ -156,12 +156,32 @@ def build_output_schema(
     return schema
 
 
+def _spread_model_fields(
+    model: Any,
+    properties: dict[str, Any],
+    required: list[str],
+    schemas_registry: dict[str, dict[str, Any]],
+) -> None:
+    """Declare a model's fields as top-level inputs, by alias where one is set."""
+    ref = _pydantic_to_schema(model, schemas_registry)
+    resolved = _collect_defs({"__probe__": ref}, schemas_registry)
+    body = resolved.get(model.__name__, {})
+    field_required = set(body.get("required", ()))
+    for name, field_schema in (body.get("properties") or {}).items():
+        if name in properties:
+            continue
+        properties[name] = field_schema
+        if name in field_required and name not in required:
+            required.append(name)
+
+
 def _collect_input_slots(
     slots: list[_Slot],
     properties: dict[str, Any],
     required: list[str],
     schemas_registry: dict[str, dict[str, Any]],
     seen_plans: set[int],
+    in_depends: bool = False,
 ) -> None:
     """Accumulate client-supplied input properties from a slot list.
 
@@ -184,10 +204,20 @@ def _collect_input_slots(
             if plan_id in seen_plans:
                 continue
             seen_plans.add(plan_id)
-            _collect_input_slots(sub_plan.slots, properties, required, schemas_registry, seen_plans)
+            _collect_input_slots(
+                sub_plan.slots, properties, required, schemas_registry, seen_plans, True
+            )
             continue
 
         if slot.kind == K_REQUEST or _is_context_slot(slot):
+            continue
+
+        # A body model on a sub-dependency validates against the whole argument
+        # mapping, not against `arguments[name]` the way a top-level one does, so
+        # its fields are the tool's inputs. Declaring the parameter name instead
+        # would publish a shape the call path rejects.
+        if in_depends and slot.kind == K_BODY_MODEL and is_pydantic_model(slot.model):
+            _spread_model_fields(slot.model, properties, required, schemas_registry)
             continue
 
         # A name already declared (by an earlier sibling or sub-dependency)

@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A sub-dependency's body model advertises its fields, so a call built from the schema is accepted. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A tool returning `bytes` reports the decoded text, or base64 when the bytes are not text. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A `@dataclass` parameter is validated and passed as the dataclass instead of failing on every call. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A `TypedDict` parameter declares an object schema, matching what the handler accepts. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))

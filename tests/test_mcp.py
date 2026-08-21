@@ -1687,12 +1687,15 @@ def test_dependency_body_model_fields_advertised_in_input_schema():
         return {"label": label}
 
     schema = build_registry(app).tools["mk2"].input_schema
-    # The dependency's body model surfaces as an input property referencing the
-    # inlined `Item` def, whose fields (name, qty) are resolvable in-schema.
-    assert "item" in schema["properties"]
-    assert "Item" in schema.get("$defs", {})
-    item_def = schema["$defs"]["Item"]
-    assert set(item_def["properties"]) == {"name", "qty"}
+    # The model validates against the whole argument mapping, so its fields are
+    # the tool's inputs. Declaring the parameter name instead would publish a
+    # shape the call path rejects.
+    assert set(schema["properties"]) == {"name", "qty"}
+    assert "item" not in schema["properties"]
+    # The published contract has to be the one a caller can actually satisfy.
+    out = _call(app, "mk2", {"name": "widget", "qty": 3})
+    assert "error" not in out
+    assert not out["result"].get("isError"), out["result"]["content"][0]["text"]
 
 
 def test_route_backed_tool_sees_route_method_and_path():
