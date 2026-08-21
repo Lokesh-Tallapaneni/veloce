@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A resource template accepts `{+name}`, binding a whole path - separators included - to one variable. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- `veloce mcp run` serves an app's MCP tools, which is what a client config file launches. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- `veloce mcp list` prints the tools, resources and prompts a client would see. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - `mount_mcp(session_backend=...)` shares HTTP MCP sessions between workers. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - `SessionBackend` and `SessionRecord` are exported for implementing that store. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - `mount_mcp(page_size=...)` paginates the MCP list methods with the spec's opaque cursor. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))

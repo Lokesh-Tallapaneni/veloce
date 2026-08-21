@@ -310,6 +310,8 @@ SUBPACKAGE_ALL = {
     "veloce.contrib.mcp.transports": {
         "BidirectionalTransport",
         "MCPRequestError",
+        "SessionBackend",
+        "SessionRecord",
         "StdioTransport",
         "Transport",
         "register_http_transport",

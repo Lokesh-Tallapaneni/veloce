@@ -972,7 +972,14 @@ if __name__ == "__main__":
     asyncio.run(app.mount_mcp(transport="stdio"))
 ```
 
-Point your MCP client at this script as a subprocess command; it will receive
+Or skip the script: `veloce mcp run app:app` serves the same thing, which is what
+a client's config file names as its command.
+
+```json
+{"mcpServers": {"inventory": {"command": "veloce", "args": ["mcp", "run", "app:app"]}}}
+```
+
+Point your MCP client at either as a subprocess command; it will receive
 `initialize` (negotiating the protocol version with the client), `ping`,
 `tools/list`, `tools/call`, and — when resources or prompts are registered —
 `resources/list`, `resources/templates/list`, `resources/read`, `prompts/list`, and

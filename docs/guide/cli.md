@@ -111,6 +111,58 @@ issuing requests:
 veloce routes app:app
 ```
 
+## Serve MCP: `veloce mcp`
+
+An MCP client launches its servers from a config file naming a command and its
+arguments, so this is what goes there — no wrapper script whose only job is to
+call `mount_mcp`:
+
+```json
+{
+  "mcpServers": {
+    "inventory": {
+      "command": "veloce",
+      "args": ["mcp", "run", "app:app"]
+    }
+  }
+}
+```
+
+`stdio` is the default because that is the form a client launches. The process
+speaks JSON-RPC on stdout, so nothing else is written there — every message the
+command emits goes to stderr.
+
+Serve the same tools over HTTP instead with `--transport http`:
+
+```bash
+veloce mcp run app:app --transport http --port 8000 --path /mcp
+veloce mcp run app:app --transport http --sessions   # Mcp-Session-Id lifecycle
+```
+
+`veloce mcp list` is the MCP counterpart to `veloce routes` — it answers "did my
+tool register, and under what name" without launching a client to ask:
+
+```bash
+veloce mcp list app:app
+```
+
+```
+TOOLS
+  stock_level  Count the units on hand for a part
+  reserve      Reserve units of a part
+
+RESOURCES
+  part://{part}  One part record
+
+PROMPTS
+  restock_note  Draft a restock request
+```
+
+See the [MCP guide](mcp.md) for what those primitives are and how to declare them.
+
+!!! note "Added in version 0.16"
+    `veloce mcp run` and `veloce mcp list`.
+
 ## Other commands
 
 ```bash
