@@ -28,6 +28,7 @@ from veloce._internal import _is_async_callable, offload
 from veloce.contrib.mcp._helpers import (
     _DEFERRED_RESPONSE,
     _binary_result,
+    _declared_mime_type,
     _describe_prompt,
     _describe_resource,
     _describe_resource_template,
@@ -1153,7 +1154,7 @@ class MCPServer(TasksMixin, InvocationMixin):
             ):
                 raise _ForbiddenError(body)
             raise InternalError(body)
-        return {"contents": [_resource_contents(uri, response)]}
+        return {"contents": [_resource_contents(uri, response, _declared_mime_type(resource))]}
 
     # ── Prompts ───────────────────────────────────────────
 

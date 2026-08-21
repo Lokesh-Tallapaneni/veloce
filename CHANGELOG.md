@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mcp_resource_mime_type=` declares the media type a resource listing advertises. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - `render_template`, `render_template_string` and `stream_template` are exported from `veloce.contrib`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 - `MCPRequestError` is exported from `veloce.contrib.mcp.transports`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 - `mount_mcp(tool_filter=...)` narrows which tools `tools/list` reports per caller.

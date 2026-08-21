@@ -243,6 +243,7 @@ class RouteInfo:
         "mcp_description",
         "expose_as_mcp_resource",
         "mcp_resource_uri",
+        "mcp_resource_mime_type",
         "mcp_scopes",
         "mcp_icons",
         "mcp_task_support",
@@ -284,6 +285,7 @@ class RouteInfo:
         mcp_description: str | None = None,
         expose_as_mcp_resource: bool = False,
         mcp_resource_uri: str | None = None,
+        mcp_resource_mime_type: str | None = None,
         mcp_scopes: Sequence[str] | None = None,
         mcp_icons: Sequence[Any] | None = None,
         mcp_task_support: bool = False,
@@ -378,6 +380,10 @@ class RouteInfo:
         # variables bind the route's path parameters.
         self.expose_as_mcp_resource = expose_as_mcp_resource
         self.mcp_resource_uri = mcp_resource_uri
+        # Declared media type for the resource listing. Never inferred: the
+        # response class is chosen from the handler's actual return value, so a
+        # guess made from its annotation could disagree with what a read returns.
+        self.mcp_resource_mime_type = mcp_resource_mime_type
         # MCP authorization scopes required to call this route as a tool / read it
         # as a resource. `None` means no scope requirement; a non-empty set is
         # enforced against the request principal's granted scopes.
@@ -696,6 +702,7 @@ class Router:
         "mcp_description",
         "expose_as_mcp_resource",
         "mcp_resource_uri",
+        "mcp_resource_mime_type",
         "mcp_scopes",
         "mcp_icons",
         "mcp_task_support",
@@ -882,6 +889,7 @@ class Router:
             mcp_description=info.mcp_description,
             expose_as_mcp_resource=info.expose_as_mcp_resource,
             mcp_resource_uri=info.mcp_resource_uri,
+            mcp_resource_mime_type=info.mcp_resource_mime_type,
             mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
             mcp_icons=info.mcp_icons,
             mcp_task_support=info.mcp_task_support,
@@ -1115,6 +1123,13 @@ class Router:
                 "template (`users://{user_id}`) binding its path parameters."
             ),
         ] = None,
+        mcp_resource_mime_type: Annotated[
+            str | None,
+            Doc(
+                "Media type advertised for the route's MCP resource. Declared rather "
+                "than inferred, so the listing never disagrees with what a read returns."
+            ),
+        ] = None,
         mcp_scopes: Annotated[
             Sequence[str] | None,
             Doc("Authorization scopes required to call this route over MCP."),
@@ -1214,6 +1229,7 @@ class Router:
             mcp_description=mcp_description,
             expose_as_mcp_resource=expose_as_mcp_resource,
             mcp_resource_uri=mcp_resource_uri,
+            mcp_resource_mime_type=mcp_resource_mime_type,
             mcp_scopes=mcp_scopes,
             mcp_icons=mcp_icons,
             mcp_task_support=mcp_task_support,
@@ -1770,6 +1786,10 @@ class Router:
                 "template (`users://{user_id}`) binding its path parameters."
             ),
         ] = None,
+        mcp_resource_mime_type: Annotated[
+            str | None,
+            Doc("Media type advertised for the route's MCP resource."),
+        ] = None,
         mcp_scopes: Annotated[
             Sequence[str] | None,
             Doc("Authorization scopes required to call this route over MCP."),
@@ -1842,6 +1862,7 @@ class Router:
                 mcp_description=mcp_description,
                 expose_as_mcp_resource=expose_as_mcp_resource,
                 mcp_resource_uri=mcp_resource_uri,
+                mcp_resource_mime_type=mcp_resource_mime_type,
                 mcp_scopes=mcp_scopes,
                 mcp_icons=mcp_icons,
                 mcp_task_support=mcp_task_support,

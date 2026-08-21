@@ -295,6 +295,37 @@ that rejects the call fails the read. The response body becomes the resource
 contents: a JSON or `text/*` body is returned as `text`, and any other media type
 (an image, a binary file) as a base64 `blob`.
 
+### Advertising a media type
+
+`resources/list` carries a `mimeType` when the route declares one, so an agent can
+tell what a resource holds without reading it first:
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+
+
+@app.get(
+    "/readme",
+    expose_as_mcp_resource=True,
+    mcp_resource_uri="docs://readme",
+    mcp_description="Project readme",
+    mcp_resource_mime_type="text/markdown",
+)
+async def readme() -> dict:
+    return {"body": "# Veloce"}
+# resources/list -> {"uri": "docs://readme", "mimeType": "text/markdown", ...}
+```
+
+A declared type is authoritative: `resources/read` reports the same value, so the
+listing and the read can never disagree. Declaring `response_class=HTMLResponse`
+supplies the type too. A route that declares neither carries no `mimeType` at all
+rather than a guess — the response class is chosen from the handler's actual
+return value, so a type inferred from its annotation could contradict the read.
+
+!!! note "Added in version 0.16"
+
 !!! warning "Resources are read-only"
     Only a `GET`/`HEAD` route may be a resource; exposing a mutating route this way
     raises at startup. Expose a mutating route as a tool

@@ -296,10 +296,37 @@ def _build_resource_listing_entry(resource: MCPResource, uri_key: str) -> dict[s
     }
     if resource.title:
         entry["title"] = resource.title
+    mime_type = _declared_mime_type(resource)
+    if mime_type:
+        entry["mimeType"] = mime_type
     icons = render_icons(resource.icons)
     if icons is not None:
         entry["icons"] = icons
     return entry
+
+
+def _declared_mime_type(resource: MCPResource) -> str | None:
+    """Return the media type the route declares for a resource, if any.
+
+    Only a declared type is advertised. The response class is picked from the
+    handler's actual return value, so a type inferred from its annotation could
+    disagree with what `resources/read` goes on to return - and a listing that
+    contradicts the read is worse than one that stays silent.
+    """
+    route_info = resource.tool.route_info
+    if route_info is None:
+        return None
+    declared = getattr(route_info, "mcp_resource_mime_type", None)
+    if isinstance(declared, str) and declared:
+        return declared
+    response_class = getattr(route_info, "response_class", None)
+    media_type = getattr(response_class, "default_media_type", None)
+    if not isinstance(media_type, str):
+        return None
+    # A read reports the bare media type, so the listing drops any parameters
+    # (RFC 9110 Sec. 8.3.1) rather than advertising `text/html; charset=utf-8`
+    # against a read that answers `text/html`.
+    return media_type.split(";", 1)[0].strip() or None
 
 
 def _describe_resource(resource: MCPResource) -> dict[str, Any]:
@@ -318,14 +345,18 @@ def _describe_resource_template(resource: MCPResource) -> dict[str, Any]:
     return entry
 
 
-def _resource_contents(uri: str, response: Response) -> dict[str, Any]:
+def _resource_contents(
+    uri: str, response: Response, declared_mime_type: str | None = None
+) -> dict[str, Any]:
     """Shape a resource route's response body into one MCP resource-contents entry.
 
     A JSON or `text/*` body is returned as `text` (the value an agent reads); any
     other media type is returned as a base64 `blob`. The entry carries the read
-    URI and the response's media type.
+    URI and the resource's media type: the one the route declared when it named
+    one, so a read reports what the listing advertised, and the response's own
+    otherwise.
     """
-    mimetype = response.mimetype
+    mimetype = declared_mime_type or response.mimetype
     body = response.body or b""
     entry: dict[str, Any] = {"uri": uri, "mimeType": mimetype}
     if is_json_mimetype(mimetype) or mimetype.startswith("text/"):
