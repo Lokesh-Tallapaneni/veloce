@@ -60,10 +60,12 @@ class HeaderSet:
         self.discard(header)
 
     def update(self, headers: Iterable[str]) -> None:
+        """Add every header in `headers`, ignoring ones already present."""
         for h in headers:
             self.add(h)
 
     def clear(self) -> None:
+        """Remove every header."""
         self._items.clear()
         self._lower.clear()
 

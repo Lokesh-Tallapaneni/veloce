@@ -268,6 +268,7 @@ class Request:
 
     @property
     def path_params(self) -> dict[str, str]:
+        """Path parameters captured by the matched route pattern."""
         return self._path_params
 
     @path_params.setter
