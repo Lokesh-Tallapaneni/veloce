@@ -47,7 +47,7 @@ def test_the_peer_is_read_from_the_asgi_scope():
 
 
 def test_remote_addr_answers_on_the_asgi_scope():
-    """`remote_addr` is the name a Flask app reaches for; it must not be None."""
+    """`remote_addr` is the alias most access logs read; it must not be None."""
     request = _request(scope={"client": ("203.0.113.7", 54321)})
     assert request.remote_addr == "203.0.113.7"
 
