@@ -10,9 +10,11 @@ as a concrete URI or as a template but never both.
 
 from __future__ import annotations
 
-from veloce import Veloce
+from veloce import Principal, Veloce
+from veloce.contrib.mcp.registry import MCPTool
 from veloce.contrib.mcp.server import MCPServer, _build_tool_listing_entry
 from veloce.contrib.mcp.session import MCPSession
+from veloce.principal import set_principal
 
 MODERN = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
 
@@ -226,6 +228,44 @@ async def test_a_static_resource_never_appears_as_a_template():
     }
     assert listed and templated
     assert listed.isdisjoint(templated)
+
+
+async def test_two_principals_receive_identical_entries():
+    """The memo is shared across callers, so an entry must hold nothing per-caller.
+
+    A future field derived from the request principal would make one caller's
+    entry visible to the next; this fails the moment that happens.
+    """
+    server = MCPServer(_app())
+    set_principal(Principal(subject="alice", scopes=frozenset({"read"})))
+    first = await _list(server)
+    set_principal(Principal(subject="bob", scopes=frozenset({"admin"})))
+    second = await _list(server)
+    set_principal(None)
+    assert first == second
+
+
+async def test_a_tool_registered_after_a_listing_is_described_correctly():
+    """The memo is per primitive and lazy, so a late arrival builds its own."""
+    app = _app()
+    server = MCPServer(app)
+    assert len(await _list(server)) == 3
+
+    late = MCPTool(
+        name="late",
+        description="Registered after the first listing",
+        handler=lambda: None,
+        plan=None,
+        input_schema={"type": "object", "properties": {}},
+    )
+    server.registry.add(late)
+    entries = await _list(server)
+    assert len(entries) == 4
+    assert entries[-1] == {
+        "name": "late",
+        "description": "Registered after the first listing",
+        "inputSchema": {"type": "object", "properties": {}},
+    }
 
 
 async def test_listing_resources_before_templates_does_not_corrupt_either():
