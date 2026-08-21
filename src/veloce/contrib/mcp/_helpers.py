@@ -400,7 +400,7 @@ def _normalize_prompt_messages(result: Any) -> list[dict[str, Any]]:
 # Returned by a handler whose request is answered later rather than now. A
 # `subscriptions/listen` is a long-lived request: its response is the graceful
 # close, so the dispatcher must emit nothing when the handler returns.
-DEFERRED_RESPONSE = object()
+_DEFERRED_RESPONSE = object()
 
 
 def _principal_lacks_scopes(required: frozenset[str]) -> bool:

@@ -25,7 +25,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from veloce.contrib.mcp._helpers import DEFERRED_RESPONSE
+from veloce.contrib.mcp._helpers import _DEFERRED_RESPONSE
 from veloce.contrib.mcp.capabilities.base import _ServerCapability
 from veloce.contrib.mcp.errors import InvalidParamsError
 
@@ -275,7 +275,7 @@ class SubscriptionsCapability(_ServerCapability):
         await self._server.send_to_current_connection(
             subscription_acknowledged_notification(subscription_id, agreed)
         )
-        return DEFERRED_RESPONSE
+        return _DEFERRED_RESPONSE
 
     async def _subscribe(self, params: dict[str, Any]) -> dict[str, Any]:
         """Record this connection's interest in a resource URI (`resources/subscribe`)."""

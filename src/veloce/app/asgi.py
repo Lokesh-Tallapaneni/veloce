@@ -316,7 +316,7 @@ class AsgiMixin:
             ws_exc = exc
             if ws._needs_close:
                 with contextlib.suppress(Exception):
-                    await ws.close(code=status.WS_1011_INTERNAL_ERROR)  # internal error
+                    await ws.close(code=status.WS_1011_INTERNAL_ERROR)
             raise
         else:
             # Clean exit. On the raw path a peer-initiated close has set

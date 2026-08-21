@@ -317,7 +317,7 @@ class Veloce(
         # config key from the constructor arg - this is the single source of
         # truth, keeping `app.debug` and `config["DEBUG"]` from drifting apart.
         self.config["DEBUG"] = debug
-        self.extensions: dict[str, Any] = {}  # Extensions registry
+        self.extensions: dict[str, Any] = {}
         self._lifespan = lifespan
         # Additional lifespan context managers contributed by plugins and
         # extensions. Entered on the same exit stack as `lifespan=`, so they

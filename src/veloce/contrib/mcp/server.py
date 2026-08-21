@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 from veloce import status
 from veloce._internal import _is_async_callable, offload
 from veloce.contrib.mcp._helpers import (
-    DEFERRED_RESPONSE,
+    _DEFERRED_RESPONSE,
     _binary_result,
     _describe_prompt,
     _describe_resource,
@@ -618,7 +618,7 @@ class MCPServer(TasksMixin, InvocationMixin):
 
         if is_notification:
             return None
-        if result is DEFERRED_RESPONSE:
+        if result is _DEFERRED_RESPONSE:
             # A long-lived request answered by its own closure, not here.
             return None
         if is_modern and isinstance(result, dict) and "resultType" in result:
