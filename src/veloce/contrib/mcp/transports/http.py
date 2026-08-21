@@ -335,7 +335,7 @@ def _handle_get(
 
     if event_store is None:
         return _method_not_allowed()
-    last_event_id = request.headers.get("last-event-id")
+    last_event_id = request.headers.get(_LAST_EVENT_ID_HEADER)
     if not last_event_id:
         return _method_not_allowed()
     missed = event_store.replay_after(last_event_id)

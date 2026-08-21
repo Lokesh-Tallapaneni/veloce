@@ -547,11 +547,6 @@ def parse_converter(spec: str | None) -> _Converter:
 # set (a raw regex like `[0-9]+`) forces the route onto the regex fallback.
 _TREE_EXPRESSIBLE = frozenset(_BUILTIN)
 
-# A whole-segment placeholder: the brace spans the entire segment, e.g.
-# `{id}` or `{id:int}`. `{n}/x` partial segments and multi-brace segments
-# like `{name}.{ext}` are deliberately rejected by `is_regex_path`.
-_WHOLE_SEGMENT_PARAM_RE = re.compile(r"^\{([^{}]*)\}$")
-
 
 class _Placeholder:
     """One `{...}` placeholder located in a path: its span, name, and spec.

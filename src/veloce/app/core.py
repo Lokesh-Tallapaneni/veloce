@@ -69,12 +69,6 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon
 
 
-# Sentinel for cache misses where `None` is itself a valid cache hit
-# (e.g. "no exception handler matched this type"). Plain `cache.get(k)`
-# would re-walk the MRO every time for an unhandled exception type.
-_MISSING: Any = object()
-
-
 class Veloce(
     AsgiMixin,
     DispatchMixin,
