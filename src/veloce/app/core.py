@@ -122,6 +122,20 @@ class Veloce(
             str | None,
             Doc("Short one-line API summary emitted into the OpenAPI document."),
         ] = None,
+        website_url: Annotated[
+            str | None,
+            Doc(
+                "Page describing this server, published in the MCP `serverInfo` so a "
+                "client can link to it."
+            ),
+        ] = None,
+        mcp_icons: Annotated[
+            Sequence[Icon] | None,
+            Doc(
+                "Icons published in the MCP `serverInfo`, for a client rendering this "
+                "server beside others."
+            ),
+        ] = None,
         debug: Annotated[
             bool,
             Doc("Enable debug mode: verbose error pages and development conveniences."),
@@ -274,6 +288,10 @@ class Veloce(
         self.import_name = import_name
         self.title = title
         self.version = version
+        # Identity the MCP `serverInfo` publishes beyond name and version. Held on
+        # the app so one server describes itself in one place, whichever door.
+        self.website_url = website_url
+        self.mcp_icons = mcp_icons
         self.description = description
         # OpenAPI 3.1 Sec. 4.8.2 `info.summary` - a short one-line summary
         # of the API, distinct from the longer `description`.

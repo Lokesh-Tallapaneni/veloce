@@ -77,7 +77,7 @@ from veloce.contrib.mcp.errors import (
     _InBandError,
     _InvalidArgumentsError,
 )
-from veloce.contrib.mcp.icons import render_icons
+from veloce.contrib.mcp.icons import coerce_icons, render_icons
 from veloce.contrib.mcp.pagination import paginate
 from veloce.contrib.mcp.prompts import PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolFilter, ToolRegistry, build_registry
@@ -272,6 +272,8 @@ class MCPServer(TasksMixin, InvocationMixin):
         "server_name",
         "server_title",
         "server_version",
+        "server_icons",
+        "server_website_url",
         "_call_timeout",
         "_enforce_lifecycle",
         "_tool_filter",
@@ -334,6 +336,11 @@ class MCPServer(TasksMixin, InvocationMixin):
         # title falls back to the identifier name; instructions prefer the longer
         # `description`, then the one-line `summary`. Empty when neither is set.
         self.server_title = getattr(app, "title", None) or None
+        # Identity the spec lets a server publish about itself beyond its name:
+        # icons a client can render beside it, and a page describing it. Both come
+        # from the app, so one server identity is declared in one place.
+        self.server_icons = coerce_icons(getattr(app, "mcp_icons", None))
+        self.server_website_url = getattr(app, "website_url", None) or None
         self.server_instructions = (
             getattr(app, "description", None) or getattr(app, "summary", None) or None
         )
@@ -915,6 +922,11 @@ class MCPServer(TasksMixin, InvocationMixin):
         info: dict[str, Any] = {"name": self.server_name, "version": self.server_version}
         if self.server_title:
             info["title"] = self.server_title
+        icons = render_icons(self.server_icons)
+        if icons is not None:
+            info["icons"] = icons
+        if self.server_website_url:
+            info["websiteUrl"] = self.server_website_url
         return info
 
     async def _handle_discover(self, params: dict[str, Any]) -> dict[str, Any]:

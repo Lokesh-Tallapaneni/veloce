@@ -31,6 +31,11 @@ from typing import Any
 from veloce._internal import _current_request_var
 from veloce.contrib.mcp.errors import MCPCapabilityError
 
+# What a sampling request may ask the client to attach to the prompt. The client
+# MAY ignore the request, so this is a hint; a value outside the set is a typo the
+# client would silently drop, so it is refused here.
+_SAMPLING_CONTEXT_MODES = frozenset({"none", "thisServer", "allServers"})
+
 # Bytes of entropy in a minted `elicitationId`. The id names one interaction so a
 # later `notifications/elicitation/complete` can be matched to it; it travels to
 # the client, so it is unguessable rather than sequential.
@@ -338,13 +343,23 @@ class MCPContext:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        include_context: str | None = None,
     ) -> dict[str, Any]:
         """Ask the client's LLM to sample a completion (sampling/createMessage).
 
         Returns the client's result (its chosen model, role, and content). Requires
         a bidirectional transport and a client that advertised the ``sampling``
         capability; `tools` / `tool_choice` additionally require ``sampling.tools``.
+
+        `include_context` asks the client to attach context from MCP servers to the
+        prompt - ``"none"``, ``"thisServer"``, or ``"allServers"``. The client MAY
+        ignore the request, so it is a hint rather than a guarantee.
         """
+        if include_context is not None and include_context not in _SAMPLING_CONTEXT_MODES:
+            raise ValueError(
+                f"include_context must be one of {sorted(_SAMPLING_CONTEXT_MODES)}, "
+                f"got {include_context!r}"
+            )
         params: dict[str, Any] = {"messages": messages, "maxTokens": max_tokens}
         if model_preferences is not None:
             params["modelPreferences"] = model_preferences
@@ -362,6 +377,8 @@ class MCPContext:
                 params["toolChoice"] = tool_choice
         if metadata is not None:
             params["metadata"] = metadata
+        if include_context is not None:
+            params["includeContext"] = include_context
         return await self._request("sampling/createMessage", "sampling", params)
 
     async def elicit(
