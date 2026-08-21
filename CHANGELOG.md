@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ping` and `logging/setLevel` are not served to a modern client; both revisions keep their own surface.
 - A modern client sets its log level per request via `_meta`; a request naming none receives no log notifications.
 - `tools/list`, `prompts/list` and `resources/list` build each entry once and reuse it. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `veloce.app` exports `Veloce`, `URLRule` and `Plugin`; `import *` no longer pulls in stdlib names. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- A test-client websocket read raises `RuntimeError`, not bare `Exception`, when the peer closes. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 
 ### Fixed
 
