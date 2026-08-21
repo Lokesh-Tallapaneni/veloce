@@ -187,6 +187,37 @@ def _apply_sync_tool_filter(
     return [tool for tool in tools if tool_filter(tool, principal)]
 
 
+def _build_tool_listing_entry(tool: MCPTool) -> dict[str, Any]:
+    """Shape one registered tool into its `tools/list` entry.
+
+    Beyond the required `name` / `description` / `inputSchema`, a route-backed
+    tool carries a human-readable `title` (its route summary), HTTP-derived
+    `annotations` (read-only / idempotent / destructive hints), and an
+    `outputSchema` when its result has a declared object shape.
+    """
+    entry: dict[str, Any] = {
+        "name": tool.name,
+        "description": tool.description,
+        "inputSchema": tool.input_schema,
+    }
+    if tool.title:
+        entry["title"] = tool.title
+    icons = render_icons(tool.icons)
+    if icons is not None:
+        entry["icons"] = icons
+    annotations = _tool_annotations(tool.route_methods, tool.title)
+    if annotations is not None:
+        entry["annotations"] = annotations
+    if tool.output_schema is not None:
+        entry["outputSchema"] = tool.output_schema
+    # A tool that opts into background execution advertises it so a client
+    # knows it may send a task-augmented `tools/call`. The spec's default is
+    # `"forbidden"`, so a non-opting tool omits the field entirely.
+    if tool.task_support:
+        entry["execution"] = {"taskSupport": "optional"}
+    return entry
+
+
 class MCPServer(TasksMixin, InvocationMixin):
     """Serve a Veloce app's MCP tools over JSON-RPC 2.0.
 
@@ -903,33 +934,17 @@ class MCPServer(TasksMixin, InvocationMixin):
 
     @staticmethod
     def _describe_tool(tool: MCPTool) -> dict[str, Any]:
-        """Shape one registered tool into its `tools/list` entry.
+        """Return this tool's `tools/list` entry, building it once per tool.
 
-        Beyond the required `name` / `description` / `inputSchema`, a
-        route-backed tool carries a human-readable `title` (its route summary),
-        HTTP-derived `annotations` (read-only / idempotent / destructive hints),
-        and an `outputSchema` when its result has a declared object shape.
+        The entry is memoized on the tool because it is a pure function of
+        registration data: nothing it reads can change once the registry is
+        built, and it holds nothing caller- or revision-specific. Callers treat
+        the returned mapping as read-only - the dispatcher stamps `ttlMs` /
+        `cacheScope` onto the enclosing result, never onto an entry.
         """
-        entry: dict[str, Any] = {
-            "name": tool.name,
-            "description": tool.description,
-            "inputSchema": tool.input_schema,
-        }
-        if tool.title:
-            entry["title"] = tool.title
-        icons = render_icons(tool.icons)
-        if icons is not None:
-            entry["icons"] = icons
-        annotations = _tool_annotations(tool.route_methods, tool.title)
-        if annotations is not None:
-            entry["annotations"] = annotations
-        if tool.output_schema is not None:
-            entry["outputSchema"] = tool.output_schema
-        # A tool that opts into background execution advertises it so a client
-        # knows it may send a task-augmented `tools/call`. The spec's default is
-        # `"forbidden"`, so a non-opting tool omits the field entirely.
-        if tool.task_support:
-            entry["execution"] = {"taskSupport": "optional"}
+        entry = tool.listing_entry
+        if entry is None:
+            entry = tool.listing_entry = _build_tool_listing_entry(tool)
         return entry
 
     async def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:

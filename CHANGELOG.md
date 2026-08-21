@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tasks/list` and `tasks/result` are not served to a modern client; `tasks/get` carries the result.
 - `ping` and `logging/setLevel` are not served to a modern client; both revisions keep their own surface.
 - A modern client sets its log level per request via `_meta`; a request naming none receives no log notifications.
+- `tools/list` builds each tool's entry once and reuses it across requests. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 
 ### Fixed
 
