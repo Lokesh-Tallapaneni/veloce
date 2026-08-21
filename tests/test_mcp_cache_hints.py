@@ -87,7 +87,10 @@ async def test_resources_read_carries_hints():
 
 
 async def test_a_non_cacheable_method_carries_no_hints():
-    response = await _call(MCPServer(_app()), "ping")
+    """`prompts/get` renders one prompt and is not on the cacheable list."""
+    response = await _call(
+        MCPServer(_app()), "prompts/get", {"name": "open_prompt", "arguments": {}}
+    )
     assert "ttlMs" not in response["result"]
     assert "cacheScope" not in response["result"]
 

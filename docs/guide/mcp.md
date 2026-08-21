@@ -1262,6 +1262,43 @@ results do not — that field belongs to the modern revision only.
     the `-32022` rejection. Earlier versions served only the handshake eras, so
     a modern client's opening probe failed and it fell back to `initialize`.
 
+## Logging, and what the modern revision removed
+
+`ping`, `logging/setLevel` and `notifications/roots/list_changed` are not part of the
+modern revision. A modern client asking for one is told the method does not exist; a
+handshake-era client keeps all three.
+
+The log level moved with them. Instead of setting it once per connection, a modern
+client names it on each request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "reindex",
+    "arguments": {"shard": "a"},
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/logLevel": "warning"
+    }
+  }
+}
+```
+
+Your handler is unchanged — `await ctx.info(...)` and friends work the same. What
+changes is who hears them:
+
+- A request naming a level receives messages at that level and above.
+- **A request naming no level receives none.** The spec requires a server not to emit
+  `notifications/message` for a request that did not ask for logging, so a modern
+  client that wants logs must ask on every request.
+- A handshake-era request is unaffected: it logs everything unless `logging/setLevel`
+  narrowed it.
+
+!!! note "Added in version 0.16"
+
 ## Tasks on the modern revision
 
 Tasks moved out of the core protocol into the `io.modelcontextprotocol/tasks`

@@ -35,6 +35,11 @@ from veloce.contrib.mcp.errors import MCPCapabilityError
 # module, so the dependency has to run in this direction.
 _in_task_var: ContextVar[bool] = ContextVar("_mcp_in_task", default=False)
 
+# Suppresses every `notifications/message`, whatever its level. The modern revision
+# sets the log level per request and requires a server to send no log notifications
+# for a request that named none, which no RFC 5424 level can express.
+LOG_LEVEL_OFF = "off"
+
 # RFC 5424 severity order, the scale MCP uses for ``logging/setLevel`` and
 # ``notifications/message``. A log message below the client's set minimum level is
 # dropped.
@@ -191,7 +196,7 @@ class MCPContext:
         Dropped when no notification channel is wired, or when `level` is below the
         client's `logging/setLevel` minimum.
         """
-        if self._notifier is None:
+        if self._notifier is None or self._log_level == LOG_LEVEL_OFF:
             return
         if self._log_level is not None and _LOG_RANKS.get(level, 0) < _LOG_RANKS.get(
             self._log_level, 0

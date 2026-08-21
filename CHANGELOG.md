@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A modern client must declare the tasks extension before a task handle is returned.
 - `tasks/list` and `tasks/result` are not served to a modern client; `tasks/get` carries the result.
+- `ping` and `logging/setLevel` are not served to a modern client; both revisions keep their own surface.
+- A modern client sets its log level per request via `_meta`; a request naming none receives no log notifications.
 
 ### Fixed
 

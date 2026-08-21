@@ -59,7 +59,7 @@ from veloce.contrib.mcp.capabilities import (
     ToolsCapability,
 )
 from veloce.contrib.mcp.completion import CompletionsCapability, attach_completers
-from veloce.contrib.mcp.context import _LOG_RANKS
+from veloce.contrib.mcp.context import _LOG_RANKS, LOG_LEVEL_OFF
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
     _JSONRPC_INVALID_REQUEST,
@@ -132,6 +132,9 @@ SERVED_PROTOCOL_VERSIONS: tuple[str, ...] = (
 META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
 META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+# The modern revision sets the log level per request rather than per connection. A
+# request that omits it gets no `notifications/message` at all.
+META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
 META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 
 # Every modern result carries this discriminator. `"complete"` is an ordinary
@@ -140,10 +143,20 @@ META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 RESULT_TYPE_COMPLETE = "complete"
 RESULT_TYPE_TASK = "task"
 # The methods the spec requires caching hints on, for a `complete` result.
-# Retired by the tasks extension: a modern client polls `tasks/get`, which carries
-# the result once the task completes. Still served to a handshake-era client, whose
-# revision defined them.
-_HANDSHAKE_ONLY_METHODS = frozenset({"tasks/list", "tasks/result"})
+# Methods a handshake-era client has and a modern one does not. Still served to the
+# revision that defined them, reported as not found to the revision that removed
+# them, so a client discovers the surface it actually has.
+_HANDSHAKE_ONLY_METHODS = frozenset(
+    {
+        # Retired by the tasks extension.
+        "tasks/list",
+        "tasks/result",
+        # Removed by the modern revision. A modern client sets its log level per
+        # request in `_meta` instead of once per connection, and has no `ping`.
+        "ping",
+        "logging/setLevel",
+    }
+)
 _CACHEABLE_METHODS = frozenset(
     {
         "server/discover",
@@ -479,6 +492,10 @@ class MCPServer(TasksMixin, InvocationMixin):
         params = message.get("params") or {}
         is_notification = "id" not in message
 
+        # Set by the era block below when a modern request names a log level, and
+        # reset with the other per-message context in the `finally`.
+        log_level_token = None
+
         # Era selection. A modern client states its version in `_meta` on every
         # request; a legacy one opens with `initialize` and negotiates once. The
         # two are served side by side, so the same endpoint answers both.
@@ -496,6 +513,12 @@ class MCPServer(TasksMixin, InvocationMixin):
             # transports pass a session; a bare `handle_message` has none, and
             # then there is nowhere to record it.
             session.record_request_meta(meta)
+        if is_modern:
+            # Per request, not per connection: a modern request that names no level
+            # receives no log notifications, which the spec requires.
+            raw_level = meta.get(META_LOG_LEVEL) if isinstance(meta, dict) else None
+            level = raw_level if isinstance(raw_level, str) and raw_level in _LOG_RANKS else None
+            log_level_token = _log_level_var.set(level if level is not None else LOG_LEVEL_OFF)
         if requested_version is not None and requested_version not in _SERVED_VERSION_SET:
             # Recoverable by design: the client picks from `supported` and
             # retries. Returning this code is also what identifies the server as
@@ -557,6 +580,8 @@ class MCPServer(TasksMixin, InvocationMixin):
             _inflight_var.reset(token)
             _session_var.reset(session_token)
             _request_id_var.reset(request_id_token)
+            if log_level_token is not None:
+                _log_level_var.reset(log_level_token)
             if inflight is not None:
                 self._inflight.pop(inflight_key, None)
 
