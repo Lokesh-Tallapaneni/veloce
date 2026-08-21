@@ -1,10 +1,11 @@
-"""The memoized `tools/list` entry.
+"""The memoized `tools/list`, `prompts/list` and `resources/list` entries.
 
-An entry is a pure function of registration data, so it is built once per tool and
-reused. That is only safe while three things hold, and each is pinned here: the
-memoized listing equals the freshly-built one, the entry carries nothing
-caller- or revision-specific, and the per-request cache hints land on the enclosing
-result rather than on an entry.
+An entry is a pure function of registration data, so it is built once per
+primitive and reused. That is only safe while four things hold, and each is
+pinned here: the memoized listing equals the freshly-built one, the entry
+carries nothing caller- or revision-specific, the per-request cache hints land
+on the enclosing result rather than on an entry, and a resource is listed either
+as a concrete URI or as a template but never both.
 """
 
 from __future__ import annotations
@@ -148,3 +149,93 @@ async def test_filtering_does_not_disturb_an_unfiltered_server():
     plain = MCPServer(app)
     assert [e["name"] for e in await _list(filtered)] == ["plain"]
     assert len(await _list(plain)) == 3
+
+
+# ── Prompts and resources memoize the same way ───────────────────────
+
+
+def _rich_app() -> Veloce:
+    app = Veloce(title="RichProbe", version="1.0.0", openapi_url=None)
+
+    @app.mcp_prompt(description="Draft something for a topic")
+    async def drafter(topic: str) -> str:
+        return f"Write about {topic}"
+
+    @app.get(
+        "/static",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="res://static",
+        mcp_description="A concrete resource",
+    )
+    async def static_res() -> dict:
+        return {"ok": True}
+
+    @app.get(
+        "/item/{item_id}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="res://item/{item_id}",
+        mcp_description="A templated resource",
+    )
+    async def template_res(item_id: str) -> dict:
+        return {"item_id": item_id}
+
+    return app
+
+
+async def _call(server: MCPServer, method: str) -> dict:
+    response = await server.handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": {"_meta": MODERN}},
+        MCPSession(),
+    )
+    return response["result"]
+
+
+async def test_a_prompt_listing_is_stable_and_reused():
+    server = MCPServer(_rich_app())
+    first = (await _call(server, "prompts/list"))["prompts"]
+    second = (await _call(server, "prompts/list"))["prompts"]
+    assert first == second
+    assert first[0] is second[0]
+    assert first[0]["arguments"]
+
+
+async def test_a_resource_listing_is_stable_and_reused():
+    server = MCPServer(_rich_app())
+    first = (await _call(server, "resources/list"))["resources"]
+    second = (await _call(server, "resources/list"))["resources"]
+    assert first == second
+    assert first[0] is second[0]
+    assert first[0]["uri"] == "res://static"
+
+
+async def test_a_template_listing_keeps_its_own_uri_key():
+    """A template is listed under `uriTemplate`, never `uri`."""
+    server = MCPServer(_rich_app())
+    templates = (await _call(server, "resources/templates/list"))["resourceTemplates"]
+    assert templates[0]["uriTemplate"] == "res://item/{item_id}"
+    assert "uri" not in templates[0]
+
+
+async def test_a_static_resource_never_appears_as_a_template():
+    """The shared memo is only safe because the two lists are disjoint."""
+    server = MCPServer(_rich_app())
+    listed = {e["uri"] for e in (await _call(server, "resources/list"))["resources"]}
+    templated = {
+        e["uriTemplate"]
+        for e in (await _call(server, "resources/templates/list"))["resourceTemplates"]
+    }
+    assert listed and templated
+    assert listed.isdisjoint(templated)
+
+
+async def test_listing_resources_before_templates_does_not_corrupt_either():
+    """Order must not matter: each resource only ever takes one of the two shapes."""
+    server = MCPServer(_rich_app())
+    await _call(server, "resources/list")
+    templates = (await _call(server, "resources/templates/list"))["resourceTemplates"]
+    assert templates[0]["uriTemplate"] == "res://item/{item_id}"
+
+    reversed_server = MCPServer(_rich_app())
+    await _call(reversed_server, "resources/templates/list")
+    statics = (await _call(reversed_server, "resources/list"))["resources"]
+    assert statics[0]["uri"] == "res://static"

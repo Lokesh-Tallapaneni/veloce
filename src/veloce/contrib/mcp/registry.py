@@ -94,14 +94,6 @@ class MCPTool(MCPDescriptor):
     # it via `tasks/get` / `tasks/result`. Opt-in per tool so the synchronous
     # path stays unchanged for every tool that does not ask for it.
     task_support: bool = False
-    # The tool's `tools/list` entry, built on first listing and reused after.
-    # Every field it is derived from is fixed once the tool is registered, and it
-    # carries no per-caller or per-revision content, so one entry serves every
-    # request from every client. Excluded from `__init__` / `repr` / `eq` so it
-    # stays an internal memo rather than part of the descriptor's identity.
-    listing_entry: dict[str, Any] | None = field(
-        default=None, init=False, repr=False, compare=False
-    )
 
 
 @dataclass(slots=True)

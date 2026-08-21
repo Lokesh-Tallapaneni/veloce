@@ -256,10 +256,10 @@ def _resource_result_from_response(tool: MCPTool, response: Response) -> dict[st
     return None
 
 
-def _describe_resource(resource: MCPResource) -> dict[str, Any]:
-    """Shape a static resource into its `resources/list` entry."""
+def _build_resource_listing_entry(resource: MCPResource, uri_key: str) -> dict[str, Any]:
+    """Shape a resource into its list entry under the given URI key."""
     entry: dict[str, Any] = {
-        "uri": resource.uri,
+        uri_key: resource.uri,
         "name": resource.name,
         "description": resource.description,
     }
@@ -271,18 +271,19 @@ def _describe_resource(resource: MCPResource) -> dict[str, Any]:
     return entry
 
 
+def _describe_resource(resource: MCPResource) -> dict[str, Any]:
+    """Return a static resource's `resources/list` entry, built once per resource."""
+    entry = resource.listing_entry
+    if entry is None:
+        entry = resource.listing_entry = _build_resource_listing_entry(resource, "uri")
+    return entry
+
+
 def _describe_resource_template(resource: MCPResource) -> dict[str, Any]:
-    """Shape a template resource into its `resources/templates/list` entry."""
-    entry: dict[str, Any] = {
-        "uriTemplate": resource.uri,
-        "name": resource.name,
-        "description": resource.description,
-    }
-    if resource.title:
-        entry["title"] = resource.title
-    icons = render_icons(resource.icons)
-    if icons is not None:
-        entry["icons"] = icons
+    """Return a template's `resources/templates/list` entry, built once per resource."""
+    entry = resource.listing_entry
+    if entry is None:
+        entry = resource.listing_entry = _build_resource_listing_entry(resource, "uriTemplate")
     return entry
 
 
@@ -303,7 +304,7 @@ def _resource_contents(uri: str, response: Response) -> dict[str, Any]:
     return entry
 
 
-def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
+def _build_prompt_listing_entry(prompt: MCPPrompt) -> dict[str, Any]:
     """Shape a prompt into its `prompts/list` entry."""
     entry: dict[str, Any] = {"name": prompt.name, "description": prompt.description}
     if prompt.title:
@@ -313,6 +314,14 @@ def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
         entry["icons"] = icons
     if prompt.arguments:
         entry["arguments"] = prompt.arguments
+    return entry
+
+
+def _describe_prompt(prompt: MCPPrompt) -> dict[str, Any]:
+    """Return this prompt's `prompts/list` entry, built once per prompt."""
+    entry = prompt.listing_entry
+    if entry is None:
+        entry = prompt.listing_entry = _build_prompt_listing_entry(prompt)
     return entry
 
 

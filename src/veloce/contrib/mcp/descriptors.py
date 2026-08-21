@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from veloce.contrib.mcp.icons import Icon
 
@@ -51,3 +52,16 @@ class MCPDescriptor:
     title: str | None = field(default=None, kw_only=True)
     icons: tuple[Icon, ...] = field(default=(), kw_only=True)
     completers: dict[str, Callable] = field(default_factory=dict, kw_only=True)
+    # The primitive's entry in whichever list method advertises it, built on the
+    # first listing and reused after. Every field an entry is derived from is
+    # fixed once the primitive is registered, and an entry holds nothing
+    # caller- or revision-specific, so one serves every request from every
+    # client. It lives on the base for the same reason `title` and `icons` do -
+    # declared once rather than copied per subclass. A resource is listed either
+    # as a concrete URI or as a template, never both (`is_template` partitions
+    # them), so a single field covers both shapes. Excluded from `__init__` /
+    # `repr` / `eq` so it stays an internal memo rather than part of the
+    # primitive's identity.
+    listing_entry: dict[str, Any] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
