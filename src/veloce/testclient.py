@@ -1126,7 +1126,7 @@ class _WebSocketSession:
         async def _r() -> Any:
             msg = await self._from_handler.get()
             if msg.get("type") == ASGI_EVENT_WS_CLOSE:
-                raise Exception(f"WebSocket closed: {msg.get('code', WS_1000_NORMAL_CLOSURE)}")
+                raise RuntimeError(f"WebSocket closed: {msg.get('code', WS_1000_NORMAL_CLOSURE)}")
             return msg[key]
 
         return self._client._loop.run_until_complete(_r())
