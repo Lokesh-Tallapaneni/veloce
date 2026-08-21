@@ -1073,6 +1073,58 @@ app.mount_mcp(transport="http", sessions=True)
 - With `MCP_ENFORCE_LIFECYCLE` set, a stateful HTTP session also rejects any request
   other than `initialize` / `ping` that precedes the `notifications/initialized` ack.
 
+#### Running more than one worker
+
+A session lives in the worker that minted it. Behind a load balancer a client's
+second request may reach a different worker, which has never seen the id and
+answers `404` — the client then starts over. Either pin a session to a worker
+(sticky routing on the `Mcp-Session-Id` header), or give the workers a shared
+store:
+
+```python
+import json
+from dataclasses import asdict
+
+from veloce.contrib.mcp import SessionRecord
+
+
+class RedisSessions:
+    def __init__(self, client):
+        self._client = client
+
+    async def read(self, session_id):
+        raw = await self._client.get(f"mcp:{session_id}")
+        return None if raw is None else SessionRecord(**json.loads(raw))
+
+    async def write(self, session_id, record, ttl):
+        await self._client.set(f"mcp:{session_id}", json.dumps(asdict(record)), ex=int(ttl))
+
+    async def delete(self, session_id):
+        await self._client.delete(f"mcp:{session_id}")
+
+
+app.mount_mcp(transport="http", sessions=True, session_backend=RedisSessions(redis))
+```
+
+Any object with those three `async` methods is a `SessionBackend` — there is no
+base class to inherit. They are async because a shared store is I/O, and a
+blocking call would stall the worker's event loop.
+
+Only part of a session travels. A `SessionRecord` holds what is true wherever the
+session is served: whether it has initialized, the capabilities the client
+advertised, and its `clientInfo`. Subscriptions, open listen streams, background
+tasks and the in-flight cancellation registry belong to the worker holding the
+connection — a task cannot be cancelled from a process that is not running it — so
+each worker keeps its own and a session adopted elsewhere starts with them empty.
+
+The record is read on every request rather than cached, which is how one worker
+learns that another ended the session or completed its handshake. A `DELETE`
+reaching any worker ends the session everywhere; a worker reclaiming its own idle
+copy does not, since another may still be serving it.
+
+!!! note "Added in version 0.16"
+    `session_backend`, `SessionBackend` and `SessionRecord`.
+
 !!! note "Added in version 0.9"
     HTTP session management (`sessions=True`) is opt-in; the stateless default is
     unchanged and carries no per-request session bookkeeping. Even stateless, a

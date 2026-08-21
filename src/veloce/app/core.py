@@ -1875,6 +1875,7 @@ class Veloce(
         tool_filter: Any = None,
         cache_ttl_ms: int | None = None,
         page_size: int | None = None,
+        session_backend: Any = None,
     ) -> Any:
         """Build the MCP server and serve the registered tools.
 
@@ -1918,6 +1919,10 @@ class Veloce(
         `server/discover`) on the modern protocol revision; `0` marks them
         immediately stale. A list that can differ between callers is additionally
         marked private so a shared proxy cannot serve one caller's answer to another.
+        `session_backend` shares HTTP sessions between workers - any object with
+        async `read` / `write` / `delete` methods over a `SessionRecord`. Without
+        one a session lives in the worker that minted it, so a request reaching a
+        different worker is answered 404 and the client starts a new session.
         `page_size` opts the list methods into cursor pagination: each answers with
         at most that many entries plus a `nextCursor` while more remain, so a large
         catalogue reaches the agent a page at a time instead of filling its context
@@ -1977,6 +1982,7 @@ class Veloce(
                 exclude_middleware=exclude_middleware,
                 sessions=sessions,
                 resumable=resumable,
+                session_backend=session_backend,
             )
             return None
 

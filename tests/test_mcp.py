@@ -4264,14 +4264,14 @@ def test_http_lifecycle_gating_enforced_with_sessions():
     assert orjson.loads(ok.body)["result"]["content"][0]["text"] == "3"
 
 
-def test_http_session_store_evicts_idle_sessions():
+async def test_http_session_store_evicts_idle_sessions():
     """An idle, never-DELETEd session is reclaimed by the store's idle TTL."""
     from veloce.contrib.mcp.transports.session_store import HttpSessionStore
 
     store = HttpSessionStore(idle_ttl=0.0)
-    sid, _session = store.create()
+    sid, _session = await store.create()
     # With a zero idle window any subsequent resolution evicts the stale id.
-    assert store.resolve(sid) is None
+    assert await store.resolve(sid) is None
 
 
 def test_event_store_caps_stream_count():

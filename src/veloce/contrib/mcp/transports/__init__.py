@@ -3,17 +3,24 @@
 Ships the stdio transport (`StdioTransport`, `serve_stdio`) and the Streamable
 HTTP transport (`register_http_transport`). Both satisfy the `Transport` contract
 in `base.py`, so the server pushes outbound notifications without knowing the wire.
+
+`SessionBackend` and `SessionRecord` are the seam for sharing HTTP sessions
+between workers; implement the first over your own store to hand the second
+around.
 """
 
 from __future__ import annotations
 
 from veloce.contrib.mcp.transports.base import BidirectionalTransport, Transport
 from veloce.contrib.mcp.transports.http import register_http_transport
+from veloce.contrib.mcp.transports.session_store import SessionBackend, SessionRecord
 from veloce.contrib.mcp.transports.stdio import MCPRequestError, StdioTransport, serve_stdio
 
 __all__ = [
     "BidirectionalTransport",
     "MCPRequestError",
+    "SessionBackend",
+    "SessionRecord",
     "StdioTransport",
     "Transport",
     "register_http_transport",

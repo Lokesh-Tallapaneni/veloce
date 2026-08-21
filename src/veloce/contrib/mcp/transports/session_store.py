@@ -17,13 +17,27 @@ A session that a client never `DELETE`s is reclaimed by an idle time-to-live so 
 long-running server does not accumulate abandoned ids without bound. The store is
 created only when the feature is enabled, so the default stateless path allocates
 nothing and pays no per-request cost.
+
+Sessions live in this process. Behind more than one worker a client's second
+request may reach a worker that never saw its id, which answers 404 and makes the
+client start over. A `SessionBackend` closes that: the store consults it for what
+a session id means independently of who is serving it, so any worker can pick up
+a session another minted.
+
+Only part of a session travels. `initialized`, the client's advertised
+capabilities and its `clientInfo` are true wherever the session is served, so they
+are what a backend holds. Subscriptions, open listen streams, background tasks and
+the in-flight cancellation registry belong to the worker holding the connection -
+a task cannot be cancelled from a process that is not running it - so they stay
+local and are rebuilt per worker.
 """
 
 from __future__ import annotations
 
 import secrets
 import time
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from veloce.contrib.mcp.session import MCPSession
 
@@ -42,6 +56,61 @@ _SESSION_ID_ENTROPY_BYTES = 24
 _DEFAULT_IDLE_TTL_SECONDS = 3600.0
 
 
+@dataclass(slots=True)
+class SessionRecord:
+    """What a session id means, independently of the worker serving it.
+
+    This is the whole of what a shared backend stores: the lifecycle flag and the
+    identity the client declared. Everything else a session owns is bound to one
+    worker's connection and is rebuilt there.
+    """
+
+    initialized: bool = False
+    client_capabilities: dict[str, Any] = field(default_factory=dict)
+    client_info: dict[str, Any] | None = None
+
+
+@runtime_checkable
+class SessionBackend(Protocol):
+    """Where session records live when more than one worker serves a client.
+
+    The methods are async because a shared backend is I/O - a round trip to Redis
+    or a database - and a blocking call would stall the worker's event loop.
+
+    Usage::
+
+        class RedisSessions:
+            def __init__(self, client):
+                self._client = client
+
+            async def read(self, session_id):
+                raw = await self._client.get(f"mcp:{session_id}")
+                return None if raw is None else SessionRecord(**json.loads(raw))
+
+            async def write(self, session_id, record, ttl):
+                await self._client.set(
+                    f"mcp:{session_id}", json.dumps(asdict(record)), ex=int(ttl)
+                )
+
+            async def delete(self, session_id):
+                await self._client.delete(f"mcp:{session_id}")
+
+        app.mount_mcp(transport="http", sessions=True, session_backend=RedisSessions(redis))
+    """
+
+    async def read(self, session_id: str) -> SessionRecord | None:
+        """Return the record for `session_id`, or `None` if it is not live."""
+        ...
+
+    async def write(self, session_id: str, record: SessionRecord, ttl: float) -> None:
+        """Store `record` under `session_id`, expiring it after `ttl` idle seconds."""
+        ...
+
+    async def delete(self, session_id: str) -> None:
+        """Drop `session_id`, whether or not it was live."""
+        ...
+
+
 class _LiveSession:
     """One live `Mcp-Session-Id`: its `MCPSession` and last-touched timestamp."""
 
@@ -55,52 +124,111 @@ class _LiveSession:
 class HttpSessionStore:
     """Track live `Mcp-Session-Id` values and their sessions for the HTTP transport."""
 
-    __slots__ = ("_live", "_idle_ttl", "_on_evict")
+    __slots__ = ("_live", "_idle_ttl", "_on_evict", "_backend")
 
     def __init__(
         self,
         idle_ttl: float = _DEFAULT_IDLE_TTL_SECONDS,
         on_evict: Callable[[MCPSession], None] | None = None,
+        backend: SessionBackend | None = None,
     ) -> None:
         self._live: dict[str, _LiveSession] = {}
         self._idle_ttl = idle_ttl
+        # Where session records are shared with other workers. `None` - the
+        # default - keeps sessions in this process, which is what a single-worker
+        # deployment wants and costs nothing.
+        self._backend = backend
         # Called with a session when its id is terminated or evicted, so the
         # transport can reclaim what the session owns (its subscription connection
         # and its tasks). `None` when no cleanup is needed.
         self._on_evict = on_evict
 
-    def create(self) -> tuple[str, MCPSession]:
+    async def create(self) -> tuple[str, MCPSession]:
         """Mint a new session id with its `MCPSession`, record it, and return both."""
         self._evict_idle()
         session_id = secrets.token_urlsafe(_SESSION_ID_ENTROPY_BYTES)
         session = MCPSession()
         self._live[session_id] = _LiveSession(session)
+        if self._backend is not None:
+            await self._backend.write(session_id, _record_of(session), self._idle_ttl)
         return session_id, session
 
-    def resolve(self, session_id: str) -> MCPSession | None:
+    async def resolve(self, session_id: str) -> MCPSession | None:
         """Return the live session for `session_id`, touching it, or `None`.
 
         Resolving an id refreshes its idle deadline so an actively-used session is
         never reclaimed; an unknown or already-evicted id returns `None`.
+
+        With a backend the record is read on every resolution, not cached: it is
+        how this worker learns that another ended the session or completed its
+        handshake. What stays local is the connection-bound state - an id this
+        worker has not served before is adopted with that state empty, which is
+        what it means for another worker to take over the conversation.
         """
         self._evict_idle()
+        if self._backend is None:
+            entry = self._live.get(session_id)
+            if entry is None:
+                return None
+            entry.touched_at = time.monotonic()
+            return entry.session
+
+        record = await self._backend.read(session_id)
+        if record is None:
+            # Ended or expired elsewhere: this worker's copy is stale.
+            self._drop_local(session_id)
+            return None
         entry = self._live.get(session_id)
         if entry is None:
-            return None
-        entry.touched_at = time.monotonic()
-        return entry.session
+            entry = _LiveSession(MCPSession())
+            self._live[session_id] = entry
+        else:
+            entry.touched_at = time.monotonic()
+        session = entry.session
+        session.initialized = record.initialized
+        session.client_capabilities = record.client_capabilities
+        session.client_info = record.client_info
+        return session
 
-    def terminate(self, session_id: str) -> bool:
+    async def persist(self, session_id: str, session: MCPSession) -> None:
+        """Publish what a dispatch changed about `session` to the backend.
+
+        Called after each message so a later request served by another worker sees
+        the handshake this one completed. Without a backend there is nobody to
+        publish to and this returns immediately.
+        """
+        if self._backend is None:
+            return
+        await self._backend.write(session_id, _record_of(session), self._idle_ttl)
+
+    async def terminate(self, session_id: str) -> bool:
         """Drop `session_id`; return whether it had been live (a no-op otherwise)."""
         entry = self._live.pop(session_id, None)
-        if entry is None:
-            return False
-        if self._on_evict is not None:
+        if entry is not None and self._on_evict is not None:
             self._on_evict(entry.session)
-        return True
+        if self._backend is None:
+            return entry is not None
+        # The client asked for the session to end, so it ends everywhere - not only
+        # on the worker that happened to receive the DELETE. Whether it was live is
+        # the backend's answer, since the DELETE may reach a worker that never
+        # served it; an id nobody ever minted is still a no-op.
+        was_live = await self._backend.read(session_id) is not None
+        await self._backend.delete(session_id)
+        return was_live or entry is not None
+
+    def _drop_local(self, session_id: str) -> None:
+        """Release what this worker holds for a session that is no longer live."""
+        entry = self._live.pop(session_id, None)
+        if entry is not None and self._on_evict is not None:
+            self._on_evict(entry.session)
 
     def _evict_idle(self) -> None:
-        """Reclaim sessions untouched past the idle time-to-live."""
+        """Reclaim sessions untouched past the idle time-to-live.
+
+        This reclaims what this worker holds. A shared record is left for its own
+        expiry: another worker may still be serving the session, and dropping the
+        record because *this* worker went quiet would end a live conversation.
+        """
         if not self._live:
             return
         # `<=` so a session exactly at the deadline is reclaimed: with `idle_ttl=0`
@@ -112,3 +240,12 @@ class HttpSessionStore:
             entry = self._live.pop(sid, None)
             if entry is not None and self._on_evict is not None:
                 self._on_evict(entry.session)
+
+
+def _record_of(session: MCPSession) -> SessionRecord:
+    """Return the portable part of `session`."""
+    return SessionRecord(
+        initialized=session.initialized,
+        client_capabilities=session.client_capabilities,
+        client_info=session.client_info,
+    )

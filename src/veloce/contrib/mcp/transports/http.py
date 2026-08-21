@@ -72,7 +72,7 @@ from veloce.contrib.mcp.errors import (
 from veloce.contrib.mcp.server import _SERVED_VERSION_SET, MCPServer, _notifier_var
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.event_store import SSEEventStore
-from veloce.contrib.mcp.transports.session_store import HttpSessionStore
+from veloce.contrib.mcp.transports.session_store import HttpSessionStore, SessionBackend
 from veloce.http.response import JSONResponse, Response
 from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
@@ -124,6 +124,7 @@ def register_http_transport(
     exclude_middleware: Sequence[str] | None = None,
     sessions: bool = False,
     resumable: bool = False,
+    session_backend: SessionBackend | None = None,
 ) -> None:
     """Mount the Streamable HTTP transport for `server` at `path` on `app`.
 
@@ -138,6 +139,9 @@ def register_http_transport(
     id on the `initialize` result, requires it on every later request (HTTP 400 if
     missing, 404 once terminated), and accepts a `DELETE` to terminate it. The
     default keeps the stateless behavior with no per-request session bookkeeping.
+    `session_backend` shares those sessions between workers: without one a session
+    lives in the process that minted it, so a request reaching another worker is
+    answered 404 and the client starts over.
 
     `resumable` opts into SSE resumability: each streamed event carrying a payload
     gets an id encoding its originating stream, the events are kept in a bounded
@@ -149,7 +153,11 @@ def register_http_transport(
     # session owns: its subscription connection (so a closed connection receives
     # nothing further) and its tasks (so a never-settling task does not leak past
     # its owner).
-    store = HttpSessionStore(on_evict=server.evict_session) if sessions else None
+    store = (
+        HttpSessionStore(on_evict=server.evict_session, backend=session_backend)
+        if sessions
+        else None
+    )
     event_store = SSEEventStore() if resumable else None
 
     async def mcp_endpoint(request: Request) -> Response:
@@ -159,7 +167,7 @@ def register_http_transport(
         # is on (it carries Last-Event-ID), else there is no standalone
         # server-to-client stream this server keeps, so a GET is answered 405.
         if request.method == "DELETE":
-            return _handle_delete(store, request)
+            return await _handle_delete(store, request)
         if request.method == "GET":
             return _handle_get(event_store, request, allowed_origins)
         return await _handle_http(server, request, auth, allowed_origins, store, event_store)
@@ -239,7 +247,7 @@ async def _handle_http(
     session: MCPSession
     if store is not None:
         try:
-            session_id, session = _bind_session(store, request, is_initialize)
+            session_id, session = await _bind_session(store, request, is_initialize)
         except MCPError as exc:
             return JSONResponse(exc.to_error(message.get("id")), status_code=exc.http_status)
     else:
@@ -257,6 +265,10 @@ async def _handle_http(
         )
 
     response = await server.handle_message(message, session)
+    # Publish what this message changed - the handshake above all - so a later
+    # request that lands on another worker sees it. A no-op without a backend.
+    if store is not None and session_id is not None:
+        await store.persist(session_id, session)
     if response is None:
         # A notification or a response carries no reply (JSON-RPC 2.0 Sec. 4.1).
         return _with_session(Response(status_code=status.HTTP_202_ACCEPTED), session_id)
@@ -272,7 +284,7 @@ async def _handle_http(
     return _with_session(JSONResponse(response), session_id)
 
 
-def _bind_session(
+async def _bind_session(
     store: HttpSessionStore, request: Request, is_initialize: bool
 ) -> tuple[str, MCPSession]:
     """Resolve the `(id, MCPSession)` for a request under session management.
@@ -283,11 +295,11 @@ def _bind_session(
     raises `SessionNotFoundError` (HTTP 404).
     """
     if is_initialize:
-        return store.create()
+        return await store.create()
     session_id = request.headers.get("mcp-session-id")
     if not session_id:
         raise SessionRequiredError("missing Mcp-Session-Id header")
-    session = store.resolve(session_id)
+    session = await store.resolve(session_id)
     if session is None:
         raise SessionNotFoundError("unknown or terminated session")
     return session_id, session
@@ -300,7 +312,7 @@ def _with_session(response: Response, session_id: str | None) -> Response:
     return response
 
 
-def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response:
+async def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response:
     """Terminate the session named by `Mcp-Session-Id` (HTTP 204), or 404/405.
 
     A `DELETE` is meaningful only under session management: without it the verb is
@@ -310,7 +322,7 @@ def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response
     if store is None:
         return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
     session_id = request.headers.get("mcp-session-id")
-    if not session_id or not store.terminate(session_id):
+    if not session_id or not await store.terminate(session_id):
         return JSONResponse(
             SessionNotFoundError("unknown or terminated session").to_error(None),
             status_code=status.HTTP_404_NOT_FOUND,
