@@ -47,6 +47,7 @@ class MCPSession:
         "client_capabilities",
         "client_info",
         "subscriptions",
+        "listen_streams",
         "persistent",
     )
 
@@ -73,6 +74,12 @@ class MCPSession:
         # holding the changed URI here. Empty until the connection subscribes, so
         # a connection that never subscribes pays nothing.
         self.subscriptions: set[str] = set()
+        # Open `subscriptions/listen` streams on this connection, keyed by the
+        # JSON-RPC id of the request that opened each one - which the spec defines
+        # as the subscription id. The value is the notification filter that request
+        # asked for. A connection that never listens keeps an empty dict, so the
+        # fan-out skips it without allocating.
+        self.listen_streams: dict[Any, dict[str, Any]] = {}
 
     def record_initialize(self, params: dict[str, Any]) -> None:
         """Record the client's advertised capabilities and info from `initialize`."""

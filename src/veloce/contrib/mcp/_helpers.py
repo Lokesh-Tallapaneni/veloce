@@ -65,6 +65,11 @@ _inflight_var: ContextVar[_InFlight | None] = ContextVar("_mcp_inflight", defaul
 # `None` on the stateless path. A ContextVar isolates concurrent connections.
 _session_var: ContextVar[MCPSession | None] = ContextVar("_mcp_session", default=None)
 
+# The JSON-RPC id of the request being dispatched. A `subscriptions/listen` needs
+# it because the spec defines the stream's subscription id as that id, and the
+# handler signature carries only params. Set once per message beside the session.
+_request_id_var: ContextVar[Any] = ContextVar("_mcp_request_id", default=None)
+
 # The current call's server->client request issuer, set by a bidirectional
 # transport so a tool's `MCPContext.sample` / `elicit` / `roots` can call the
 # client and await the correlated reply. `None` off a bidirectional transport (the
@@ -350,6 +355,12 @@ def _normalize_prompt_messages(result: Any) -> list[dict[str, Any]]:
     if isinstance(result, list):
         return [_normalize_prompt_message(item) for item in result]
     return [_user_text_message(_stringify(result))]
+
+
+# Returned by a handler whose request is answered later rather than now. A
+# `subscriptions/listen` is a long-lived request: its response is the graceful
+# close, so the dispatcher must emit nothing when the handler returns.
+DEFERRED_RESPONSE = object()
 
 
 def _principal_lacks_scopes(required: frozenset[str]) -> bool:

@@ -1262,6 +1262,85 @@ results do not — that field belongs to the modern revision only.
     the `-32022` rejection. Earlier versions served only the handshake eras, so
     a modern client's opening probe failed and it fell back to `initialize`.
 
+## Notification streams
+
+On the modern revision a client opens a long-lived stream with
+`subscriptions/listen`, naming the notification types it wants. It replaces the
+handshake-era `resources/subscribe` and the HTTP GET stream, and it is opt-in on the
+same flag:
+
+```python
+from veloce import Veloce
+
+app = Veloce(title="Ops")
+app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+```
+
+A client asks for what it wants:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "subscriptions/listen",
+  "params": {
+    "notifications": {
+      "toolsListChanged": true,
+      "resourceSubscriptions": ["config://service"]
+    }
+  }
+}
+```
+
+The server acknowledges first, reporting the subset it will honour, and every message
+on the stream carries the subscription id — the JSON-RPC id of the request that opened
+it — so a client sharing one stdio channel can tell its streams apart.
+
+Signal a change from your application; the server delivers it only to the streams that
+asked for that type. Hold the server the mount returns, then signal from wherever your
+data changes:
+
+```python
+from veloce import Veloce
+from veloce.contrib.mcp.server import MCPServer
+
+app = Veloce(title="Ops")
+app.config["MCP_RESOURCE_SUBSCRIPTIONS"] = True
+
+
+@app.get(
+    "/config",
+    expose_as_mcp_resource=True,
+    mcp_resource_uri="config://service",
+    mcp_description="Runtime configuration",
+)
+async def service_config() -> dict:
+    return {"tier": "standard"}
+
+
+server = MCPServer(app)
+
+
+async def on_config_written() -> None:
+    """Call this from whatever writes the configuration."""
+    await server.notify_resource_updated("config://service")
+    await server.notify_resources_list_changed()
+    await server.notify_tools_list_changed()
+    await server.notify_prompts_list_changed()
+```
+
+A stream ends when the client cancels it (`notifications/cancelled` naming the listen
+request's id), at which point the server answers the original request with a completion
+result. A transport that drops without that response tells the client the disconnect
+was unexpected.
+
+!!! note "A stream is per-connection state"
+
+    `subscriptions/listen` needs a stateful connection — stdio, or HTTP with
+    `sessions=True`. A stateless POST holds no stream and the request is rejected.
+
+!!! note "Added in version 0.16"
+
 ## Result caching
 
 On the modern revision, list results and `resources/read` carry the caching hints the

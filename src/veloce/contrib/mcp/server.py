@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 from veloce import status
 from veloce._internal import _is_async_callable, offload
 from veloce.contrib.mcp._helpers import (
+    DEFERRED_RESPONSE,
     _binary_result,
     _describe_prompt,
     _describe_resource,
@@ -37,6 +38,7 @@ from veloce.contrib.mcp._helpers import (
     _notifier_var,
     _principal_lacks_scopes,
     _progress_token,
+    _request_id_var,
     _requester_var,
     _resource_contents,
     _response_body_value,
@@ -77,7 +79,11 @@ from veloce.contrib.mcp.icons import render_icons
 from veloce.contrib.mcp.prompts import PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolFilter, ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import ResourceRegistry, build_resource_registry
-from veloce.contrib.mcp.subscriptions import ConnectionRegistry, SubscriptionsCapability
+from veloce.contrib.mcp.subscriptions import (
+    ConnectionRegistry,
+    SubscriptionsCapability,
+    subscription_closed_response,
+)
 from veloce.contrib.mcp.tasks import TaskRegistry, TasksCapability
 from veloce.http.response import Response
 from veloce.principal import current_principal
@@ -342,6 +348,18 @@ class MCPServer(TasksMixin, InvocationMixin):
         _requester_var.set(requester)
 
     @staticmethod
+    def current_request_id() -> Any:
+        """The JSON-RPC id of the request being dispatched, or None for a notification."""
+        return _request_id_var.get()
+
+    @staticmethod
+    async def send_to_current_connection(message: dict[str, Any]) -> None:
+        """Send one server-initiated message down the dispatching connection."""
+        notifier = _notifier_var.get()
+        if notifier is not None:
+            await notifier(message)
+
+    @staticmethod
     def current_session() -> MCPSession | None:
         """Return the session of the connection currently dispatching, or `None`.
 
@@ -367,8 +385,14 @@ class MCPServer(TasksMixin, InvocationMixin):
         return None
 
     def unregister_connection(self, token: object | None) -> None:
-        """Drop the connection named by its token (a no-op when token is `None`)."""
+        """Drop the connection named by its token (a no-op when token is `None`).
+
+        Any `subscriptions/listen` streams the connection held go with it: the
+        transport is gone, so there is nowhere to send a graceful close, and a
+        stream left registered would keep a dead session reachable by fan-out.
+        """
         if self._connections is not None and token is not None:
+            self._connections.forget_streams(token)
             self._connections.remove(token)
 
     def evict_session(self, session: MCPSession) -> None:
@@ -406,6 +430,24 @@ class MCPServer(TasksMixin, InvocationMixin):
         """
         if self._connections is not None:
             await self._connections.notify_list_changed()
+
+    async def notify_tools_list_changed(self) -> None:
+        """Tell listening clients the tool list changed.
+
+        Reaches only the `subscriptions/listen` streams that asked for
+        `toolsListChanged`; the spec forbids sending a type a client did not
+        request. A no-op when nothing is listening.
+        """
+        if self._connections is not None:
+            await self._connections.notify_topic("toolsListChanged")
+
+    async def notify_prompts_list_changed(self) -> None:
+        """Tell listening clients the prompt list changed.
+
+        Reaches only the streams that asked for `promptsListChanged`.
+        """
+        if self._connections is not None:
+            await self._connections.notify_topic("promptsListChanged")
 
     # ── JSON-RPC dispatch ─────────────────────────────────
 
@@ -488,6 +530,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         # (`resources/subscribe`) reaches the session it mutates; `None` on the
         # stateless path leaves the subscribe handler to reject the call.
         session_token = _session_var.set(session)
+        request_id_token = _request_id_var.set(msg_id)
         try:
             result = await handler(params)
         except MCPError as exc:
@@ -503,10 +546,14 @@ class MCPServer(TasksMixin, InvocationMixin):
         finally:
             _inflight_var.reset(token)
             _session_var.reset(session_token)
+            _request_id_var.reset(request_id_token)
             if inflight is not None:
                 self._inflight.pop(inflight_key, None)
 
         if is_notification:
+            return None
+        if result is DEFERRED_RESPONSE:
+            # A long-lived request answered by its own closure, not here.
             return None
         if is_modern and isinstance(result, dict) and "resultType" not in result:
             # Required on every modern result. A legacy client must never see it:
@@ -571,6 +618,16 @@ class MCPServer(TasksMixin, InvocationMixin):
         self._inflight[key] = holder
         return holder
 
+    async def close_listen_stream(self, session: MCPSession, subscription_id: Any) -> None:
+        """End one open stream, answering its long-lived request as it closes.
+
+        The response is what tells the client the subscription ended cleanly, as
+        opposed to a transport that simply dropped.
+        """
+        if session.listen_streams.pop(subscription_id, None) is None:
+            return
+        await self.send_to_current_connection(subscription_closed_response(subscription_id))
+
     async def _handle_cancelled(self, params: dict[str, Any]) -> None:
         """Cancel the request named by ``notifications/cancelled`` (a notification).
 
@@ -588,6 +645,12 @@ class MCPServer(TasksMixin, InvocationMixin):
         if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
             return None
         session = _session_var.get()
+        # A `subscriptions/listen` is never in-flight - it returned as soon as it
+        # opened the stream - so cancelling one means ending its stream. On stdio
+        # this notification is the only way a client closes a subscription.
+        if session is not None and request_id in session.listen_streams:
+            await self.close_listen_stream(session, request_id)
+            return None
         connection_key = session.connection_id if session is not None else None
         holder = self._inflight.get((connection_key, request_id))
         if holder is not None:

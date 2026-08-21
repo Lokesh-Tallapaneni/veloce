@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MCPContext.send_notification` sends an arbitrary JSON-RPC notification to the client.
 - Cacheable MCP results carry `ttlMs` and `cacheScope` on the modern revision.
 - `mount_mcp(cache_ttl_ms=...)` sets the freshness hint sent with those results.
+- `subscriptions/listen` opens a filtered notification stream, replacing `resources/subscribe`.
+- `notify_tools_list_changed()` and `notify_prompts_list_changed()` signal those lists changed.
 
 ### Fixed
 
