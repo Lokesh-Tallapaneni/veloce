@@ -14,6 +14,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from veloce._model_backend import shape_through_model
 from veloce.contrib.mcp._helpers import (
     _binary_result,
     _notifier_var,
@@ -376,7 +377,7 @@ class TasksMixin:
                 # validate every return (raw value or handler-built body) through
                 # the model so a field outside it cannot leak.
                 try:
-                    shaped = tool.output_model.model_validate(shaped).model_dump(mode="json")
+                    shaped = shape_through_model(shaped, tool.output_model)
                 except Exception:
                     return _text_result(_stringify(shaped))
         return self._success_result(tool, shaped)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import orjson
 
 from veloce._internal import is_json_mimetype
+from veloce._model_backend import shape_through_model
 from veloce._protocol_constants import (
     HTTP_METHOD_DELETE,
     HTTP_METHOD_GET,
@@ -195,6 +197,13 @@ def _to_structured(value: Any) -> dict[str, Any] | None:
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         dumped = model_dump(mode="json")
+        if isinstance(dumped, dict):
+            return dumped
+    # A dataclass instance carries the same object form its declared schema
+    # describes; dump it through the adapter so nested dates and enums render
+    # the way the schema says they will.
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        dumped = shape_through_model(value, type(value))
         if isinstance(dumped, dict):
             return dumped
     return None

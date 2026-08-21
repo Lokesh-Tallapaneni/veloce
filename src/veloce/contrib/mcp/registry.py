@@ -19,8 +19,6 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
-
 from veloce._handler_plan import build_plan
 from veloce._model_backend import is_pydantic_model, resolve_return_model
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
@@ -83,7 +81,7 @@ class MCPTool(MCPDescriptor):
     # can validate / coerce its raw return into a value that conforms to the
     # advertised schema before it is emitted as `structuredContent`. `None`
     # whenever `output_schema` is `None`.
-    output_model: type[BaseModel] | None = None
+    output_model: Any = None
     # MCP authorization scopes the request principal must hold to invoke this
     # tool / read this resource. Empty means no per-tool requirement; a non-empty
     # set is checked before invocation and a miss yields an authorization error.
@@ -128,7 +126,7 @@ class ToolRegistry(Registry[MCPTool]):
 
 def _output_schema_for(
     handler: Callable, route_info: Any, schemas_registry: dict[str, dict[str, Any]]
-) -> tuple[dict[str, Any] | None, type[BaseModel] | None]:
+) -> tuple[dict[str, Any] | None, Any]:
     """Build the tool's MCP output schema and the model it was derived from.
 
     A route `response_model` is the authoritative output contract and wins; a
@@ -137,7 +135,7 @@ def _output_schema_for(
     has no object schema and yields `(None, None)`. The model is returned
     alongside the schema so a pure tool can validate its raw return against it.
     """
-    model: type[BaseModel] | None = None
+    model: Any = None
     # The schema's alias usage must match how the structured value is dumped: a
     # route `response_model` is dumped with the route's `response_model_by_alias`
     # (default False), while a return-type model and a pure tool dump with field

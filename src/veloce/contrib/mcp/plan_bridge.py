@@ -31,7 +31,12 @@ from veloce._handler_plan import (
     K_SECURITY_SCOPES,
     MK_BODY,
 )
-from veloce._model_backend import ModelBackend, adapter_for, is_pydantic_model
+from veloce._model_backend import (
+    ModelBackend,
+    adapter_for,
+    is_adaptable_model,
+    is_pydantic_model,
+)
 from veloce._route_contract import describe_slot
 from veloce.background import BackgroundTasks
 from veloce.contrib.mcp.context import MCPContext
@@ -126,7 +131,7 @@ def build_input_schema(
 
 
 def build_output_schema(
-    model: type[BaseModel],
+    model: Any,
     schemas_registry: dict[str, dict[str, Any]],
     by_alias: bool = True,
 ) -> dict[str, Any] | None:
@@ -145,7 +150,10 @@ def build_output_schema(
     matches the schema's property keys to how the structured value will be
     dumped, so the emitted `structuredContent` conforms to the advertised schema.
     """
-    ref = _pydantic_to_schema(model, schemas_registry, mode="serialization", by_alias=by_alias)
+    if is_adaptable_model(model):
+        ref = _adapted_to_schema(model, schemas_registry)
+    else:
+        ref = _pydantic_to_schema(model, schemas_registry, mode="serialization", by_alias=by_alias)
     name = ref["$ref"][len(_OPENAPI_REF_PREFIX) :]
     base = schemas_registry.get(name)
     if base is None:

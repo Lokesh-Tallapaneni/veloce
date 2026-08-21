@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A tool returning a `@dataclass` or `TypedDict` publishes an `outputSchema` and `structuredContent`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - An optional tool parameter advertises its null branch, and a parameter's default is published. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A sub-dependency's body model advertises its fields, so a call built from the schema is accepted. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A tool returning `bytes` reports the decoded text, or base64 when the bytes are not text. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))

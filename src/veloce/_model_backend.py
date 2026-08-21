@@ -69,6 +69,10 @@ def resolve_return_model(handler: Callable[..., Any]) -> Any:
     annotation = hints.get("return")
     if is_pydantic_model(annotation) or is_msgspec_struct(annotation):
         return annotation
+    # A dataclass or `TypedDict` return declares an object shape as much as a
+    # model does, so it is the same contract on both doors.
+    if is_adaptable_model(annotation):
+        return annotation
     return None
 
 
@@ -156,6 +160,19 @@ def adapter_for(tp: Any) -> TypeAdapter[Any]:
     with contextlib.suppress(TypeError):
         _adapters[tp] = built
     return built
+
+
+def shape_through_model(value: Any, model: Any) -> Any:
+    """Validate `value` against `model` and dump it as JSON-compatible data.
+
+    One shaper for every backend, so a declared output contract is enforced the
+    same way whichever kind of type declared it. Raises when the value does not
+    conform; the caller decides how to report that.
+    """
+    if is_pydantic_model(model):
+        return model.model_validate(value).model_dump(mode="json")
+    adapter = adapter_for(model)
+    return adapter.dump_python(adapter.validate_python(value), mode="json")
 
 
 def backend_of(tp: Any) -> ModelBackend:

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from veloce import status
 from veloce._internal import _is_async_callable, offload
+from veloce._model_backend import shape_through_model
 from veloce.contrib.mcp._helpers import (
     _DEFERRED_RESPONSE,
     _binary_result,
@@ -1087,7 +1088,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         # schema's object shape is an in-band error, not a non-conforming result.
         if tool.output_model is not None:
             try:
-                shaped = tool.output_model.model_validate(shaped).model_dump(mode="json")
+                shaped = shape_through_model(shaped, tool.output_model)
             except Exception:
                 return _text_result(
                     "tool result does not conform to the declared output schema", is_error=True
