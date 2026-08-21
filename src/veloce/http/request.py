@@ -862,7 +862,7 @@ class Request:
         return host.split(".", 1)[0]
 
     @property
-    def environ(self) -> dict:
+    def environ(self) -> dict[str, Any]:
         """Alias for the ASGI `scope` dict.
 
         Third-party code paths reach for `request.environ` (WSGI); ASGI

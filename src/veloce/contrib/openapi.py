@@ -1647,7 +1647,7 @@ def _validate_document(schema: dict[str, Any]) -> None:
 # ── Public API ─────────────────────────────────────────────
 
 
-def get_openapi_schema(app: Any) -> dict:
+def get_openapi_schema(app: Any) -> dict[str, Any]:
     """Generate OpenAPI 3.1 schema from the app's registered routes."""
     schema: dict[str, Any] = {
         "openapi": "3.1.0",

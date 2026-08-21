@@ -1073,10 +1073,10 @@ class _WebSocketSession:
                 "subprotocols": list(self._subprotocols),
             }
 
-            async def receive() -> dict:
+            async def receive() -> dict[str, Any]:
                 return await self._to_handler.get()
 
-            async def send(msg: dict) -> None:
+            async def send(msg: dict[str, Any]) -> None:
                 await self._from_handler.put(msg)
 
             # Kick the handshake.

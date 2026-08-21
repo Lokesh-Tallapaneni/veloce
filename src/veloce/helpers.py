@@ -651,7 +651,7 @@ def flash(message: str, category: str = "message") -> None:
 
 def get_flashed_messages(
     with_categories: bool = False, category_filter: Sequence[str] | None = None
-) -> list:
+) -> list[str] | list[tuple[str, str]]:
     """Get flashed messages - call in templates.
 
     Usage::

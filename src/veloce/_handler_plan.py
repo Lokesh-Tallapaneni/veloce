@@ -888,7 +888,7 @@ def build_plan(
     return HandlerPlan(handler, slots, [])
 
 
-def build_route_dep_plans(route_dependencies: list, *, websocket: bool = False) -> list[_Slot]:
+def build_route_dep_plans(route_dependencies: list[Any], *, websocket: bool = False) -> list[_Slot]:
     """Pre-plan a route's `dependencies=[Depends(...), ...]` list."""
     from veloce.dependency import Depends  # local import breaks the cycle
 

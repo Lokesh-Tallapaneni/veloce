@@ -337,7 +337,7 @@ class AsgiMixin:
             except Exception:
                 self.logger.exception("yield-dependency teardown raised")
 
-    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+    async def __call__(self, scope: dict[str, Any], receive: Callable, send: Callable) -> None:
         """ASGI interface - allows running under uvicorn/hypercorn if desired.
 
         Any third-party ASGI middleware registered via `add_middleware` (and the

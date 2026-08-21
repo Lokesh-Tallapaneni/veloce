@@ -465,7 +465,7 @@ class _LiveSpanMiddleware:
         self._tracer = tracer
         self._propagator = propagator
 
-    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+    async def __call__(self, scope: dict[str, Any], receive: Callable, send: Callable) -> None:
         if scope.get("type") != ASGI_SCOPE_HTTP:
             await self._app(scope, receive, send)
             return
