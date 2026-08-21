@@ -15,7 +15,12 @@ from veloce._constants import (
     HEADER_LAST_MODIFIED,
     MSG_ACCESS_DENIED,
 )
-from veloce._internal import MIME_HTML, MIME_OCTET
+from veloce._internal import (
+    MIME_HTML,
+    MIME_OCTET,
+    _current_app_var,
+    _current_request_var,
+)
 from veloce.exceptions import exception_for_status
 from veloce.http.dates import http_date
 from veloce.http.response import FileResponse, JSONResponse, RedirectResponse, Response
@@ -25,20 +30,10 @@ from veloce.status import HTTP_200_OK, HTTP_302_FOUND, HTTP_403_FORBIDDEN
 
 # ── Context vars ──────────────────────────────────────────
 
-# The active app is stashed on this ContextVar by `Veloce.handle_request`.
-# `current_app` is a proxy that resolves to the active app on every
-# attribute access - so `current_app.config["DEBUG"]` works from any
-# coroutine/task spawned during request handling.
-_current_app_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
-    "veloce_current_app", default=None
-)
-
-# Outside-request stash for `app.test_request_context()` - the dispatch
-# pipeline passes the live request through arguments, so this is only
-# consulted by code that explicitly enters a test_request_context block.
-_current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
-    "veloce_current_request", default=None
-)
+# `current_app` and `request` are proxies over these vars: each attribute
+# access resolves against the active task, so `current_app.config["DEBUG"]`
+# works from any coroutine spawned during request handling, and
+# `_current_request_var` additionally backs `app.test_request_context()`.
 
 
 # ── Proxy classes ─────────────────────────────────────────

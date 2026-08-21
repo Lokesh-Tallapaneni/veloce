@@ -15,7 +15,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from veloce._internal import _is_async_callable, offload
+from veloce._internal import _current_app_var, _current_request_var, _is_async_callable, offload
 from veloce.contrib.mcp._helpers import (
     _inflight_var,
     _log_level_var,
@@ -31,7 +31,7 @@ from veloce.contrib.mcp.errors import InvalidParamsError, _InvalidArgumentsError
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import RequestValidationError
-from veloce.helpers import _current_app_var, _current_request_var, g
+from veloce.helpers import g
 from veloce.http.response import Response
 from veloce.instrumentation import RequestMetrics
 from veloce.routing.router import RouteMatch

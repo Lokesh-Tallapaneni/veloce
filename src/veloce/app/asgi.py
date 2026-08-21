@@ -27,6 +27,7 @@ from veloce._internal import (
     MIME_HTML,
     MIME_JSON,
     MIME_OCTET,
+    _current_app_var,
     _encode_header_value,
     _extract_host,
     _reject_header_crlf,
@@ -64,7 +65,7 @@ from veloce.exceptions import (
     WebSocketException,
     WebSocketRequestValidationError,
 )
-from veloce.helpers import _current_app_var, g
+from veloce.helpers import g
 from veloce.http._body import ASGIBodySource
 from veloce.http.request import Request
 from veloce.http.response import (

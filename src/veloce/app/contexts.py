@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from veloce._internal import _current_app_var, _current_request_var
 from veloce._protocol_constants import LIFECYCLE_SHUTDOWN, LIFECYCLE_STARTUP
-from veloce.helpers import _current_app_var, _current_request_var, _RequestGlobals
+from veloce.helpers import _RequestGlobals
 from veloce.http.request import Request
 from veloce.sessions import Session
 from veloce.signals import appcontext_popped, appcontext_pushed, appcontext_tearing_down

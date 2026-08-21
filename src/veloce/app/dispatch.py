@@ -39,6 +39,8 @@ from veloce._internal import (
     MIME_HTML,
     MIME_JSON,
     _coerce_bool,
+    _current_app_var,
+    _current_request_var,
     _extract_host,
     _is_async_callable,
     offload,
@@ -62,7 +64,7 @@ from veloce.dependency import DependencyResolver, Depends
 from veloce.exceptions import (
     HTTPException,
 )
-from veloce.helpers import _current_app_var, _current_request_var, g
+from veloce.helpers import g
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,

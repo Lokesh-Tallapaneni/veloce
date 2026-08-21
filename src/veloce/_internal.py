@@ -413,3 +413,15 @@ def _ws_handshake_rejection(middlewares: Iterable[object], host: str, origin: st
         if origin_check is not None and not origin_check(origin):
             return True
     return False
+
+
+# The active app and request for the current task. They live here rather than in
+# `helpers` because four subpackages (`app`, `contrib`, `middleware`) read them
+# directly, and a public module is the wrong place to reach into for a private
+# name. `helpers` re-exports them for the `current_app` / `request` proxies.
+_current_app_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "veloce_current_app", default=None
+)
+_current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "veloce_current_request", default=None
+)
