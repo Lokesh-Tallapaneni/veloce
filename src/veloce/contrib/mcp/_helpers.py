@@ -18,6 +18,16 @@ from typing import TYPE_CHECKING, Any
 import orjson
 
 from veloce._internal import is_json_mimetype
+from veloce._protocol_constants import (
+    HTTP_METHOD_DELETE,
+    HTTP_METHOD_GET,
+    HTTP_METHOD_HEAD,
+    HTTP_METHOD_OPTIONS,
+    HTTP_METHOD_POST,
+    HTTP_METHOD_PUT,
+    HTTP_METHOD_QUERY,
+    HTTP_METHOD_TRACE,
+)
 from veloce.contrib.mcp.content import (
     AudioContent,
     ContentBlock,
@@ -117,9 +127,30 @@ class _InFlight:
 # not modify state; idempotent verbs are safe to retry; a mutating verb that is
 # not purely additive (PUT/PATCH/DELETE) is flagged destructive so a client can
 # prompt for consent. These are advisory hints a client may ignore.
-_READONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE", "QUERY"})
-_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE", "QUERY"})
-_NON_DESTRUCTIVE_METHODS = frozenset({"GET", "HEAD", "POST", "OPTIONS", "TRACE", "QUERY"})
+_READONLY_METHODS = frozenset(
+    {HTTP_METHOD_GET, HTTP_METHOD_HEAD, HTTP_METHOD_OPTIONS, HTTP_METHOD_TRACE, HTTP_METHOD_QUERY}
+)
+_IDEMPOTENT_METHODS = frozenset(
+    {
+        HTTP_METHOD_GET,
+        HTTP_METHOD_HEAD,
+        HTTP_METHOD_PUT,
+        HTTP_METHOD_DELETE,
+        HTTP_METHOD_OPTIONS,
+        HTTP_METHOD_TRACE,
+        HTTP_METHOD_QUERY,
+    }
+)
+_NON_DESTRUCTIVE_METHODS = frozenset(
+    {
+        HTTP_METHOD_GET,
+        HTTP_METHOD_HEAD,
+        HTTP_METHOD_POST,
+        HTTP_METHOD_OPTIONS,
+        HTTP_METHOD_TRACE,
+        HTTP_METHOD_QUERY,
+    }
+)
 
 
 def _tool_annotations(methods: list[str], title: str | None) -> dict[str, Any] | None:

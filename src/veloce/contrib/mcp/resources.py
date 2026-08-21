@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
+from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_HEAD, ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.icons import coerce_icons
@@ -30,7 +30,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 # A resource is read-only data, so only a safe (non-mutating) verb may back one.
 # A route carrying a mutating verb is a tool, never a resource.
-_RESOURCE_METHODS = frozenset({"GET", "HEAD"})
+_RESOURCE_METHODS = frozenset({HTTP_METHOD_GET, HTTP_METHOD_HEAD})
 
 # RFC 6570 simple variable (`{name}`) inside a URI template. Each variable maps
 # to one route path parameter and matches a single non-slash URI segment.
