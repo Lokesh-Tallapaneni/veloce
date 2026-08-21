@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `render_template`, `render_template_string` and `stream_template` are exported from `veloce.contrib`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `MCPRequestError` is exported from `veloce.contrib.mcp.transports`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 - `mount_mcp(tool_filter=...)` narrows which tools `tools/list` reports per caller.
 - A tool's declared `scopes` now also hide it from `tools/list` when a filter is set.
 - `MCPContext` reports `session_id`, `client_info`, `client_capabilities` and `is_background_task`.

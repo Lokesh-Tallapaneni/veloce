@@ -302,7 +302,18 @@ SUBPACKAGE_ALL = {
         "RedisSessionStore",
         "StaticFiles",
         "get_openapi_schema",
+        "render_template",
+        "render_template_string",
         "setup_openapi_routes",
+        "stream_template",
+    },
+    "veloce.contrib.mcp.transports": {
+        "BidirectionalTransport",
+        "MCPRequestError",
+        "StdioTransport",
+        "Transport",
+        "register_http_transport",
+        "serve_stdio",
     },
 }
 

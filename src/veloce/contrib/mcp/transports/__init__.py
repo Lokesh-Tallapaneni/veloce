@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from veloce.contrib.mcp.transports.base import BidirectionalTransport, Transport
 from veloce.contrib.mcp.transports.http import register_http_transport
-from veloce.contrib.mcp.transports.stdio import StdioTransport, serve_stdio
+from veloce.contrib.mcp.transports.stdio import MCPRequestError, StdioTransport, serve_stdio
 
 __all__ = [
     "BidirectionalTransport",
+    "MCPRequestError",
     "StdioTransport",
     "Transport",
     "register_http_transport",
