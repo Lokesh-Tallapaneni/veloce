@@ -54,9 +54,10 @@ from veloce.app.urls import _URLMap
 from veloce.blueprints import _endpoint_blueprint
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.exceptions import (
+    BuildError,
     SetupError,
 )
-from veloce.helpers import g
+from veloce.helpers import Aborter, g, jsonify, send_from_directory, send_from_directory_async
 from veloce.http.datastructures import State
 from veloce.http.request import Request
 from veloce.http.response import (
@@ -1012,8 +1013,6 @@ class Veloce(
         `DeprecationWarning` when called on a running loop. From async
         handlers, prefer `send_static_file_async`.
         """
-        from veloce.helpers import send_from_directory
-
         directory = self.static_folder
         if not os.path.isabs(directory):
             directory = os.path.join(self.package_root, directory)
@@ -1026,8 +1025,6 @@ class Veloce(
         it never blocks the event loop. Prefer this from async handlers
         over the sync `send_static_file`.
         """
-        from veloce.helpers import send_from_directory_async
-
         directory = self.static_folder
         if not os.path.isabs(directory):
             directory = os.path.join(self.package_root, directory)
@@ -1117,8 +1114,6 @@ class Veloce(
         mappings; veloce returns a fresh `Aborter` instance per access
         so users can mutate `_mapping` per-app without affecting others.
         """
-        from veloce.helpers import Aborter  # breaks app -> exceptions -> helpers cycle
-
         if self._aborter is None:
             self._aborter = Aborter()
         return self._aborter
@@ -1274,8 +1269,6 @@ class Veloce(
         - `tuple` of `(body,)`, `(body, status)`, `(body, status, headers)`,
           or `(body, headers)` -> unpacked and re-coerced
         """
-        from veloce.helpers import jsonify
-
         if isinstance(value, Response):
             return value
         if isinstance(value, tuple):
@@ -1503,8 +1496,6 @@ class Veloce(
         non-None return is used. If none recovers, a `BuildError` is
         raised.
         """
-        from veloce.exceptions import BuildError
-
         if self._url_default_funcs:
             # Copy so the callbacks can mutate without changing the caller's
             # kwargs dict.
