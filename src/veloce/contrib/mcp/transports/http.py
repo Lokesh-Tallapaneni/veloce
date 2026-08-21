@@ -57,6 +57,7 @@ from collections.abc import Sequence
 from itertools import count
 from typing import TYPE_CHECKING, Any, cast
 
+from veloce import status
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
 from veloce.contrib.mcp.errors import (
     _JSONRPC_FORBIDDEN,
@@ -215,9 +216,15 @@ async def _handle_http(
     try:
         message = await request.json()
     except Exception:
-        return JSONResponse(_error(None, _JSONRPC_PARSE_ERROR, "Parse error"), status_code=400)
+        return JSONResponse(
+            _error(None, _JSONRPC_PARSE_ERROR, "Parse error"),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
     if not isinstance(message, dict):
-        return JSONResponse(_error(None, _JSONRPC_PARSE_ERROR, "Parse error"), status_code=400)
+        return JSONResponse(
+            _error(None, _JSONRPC_PARSE_ERROR, "Parse error"),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
 
     # When session management is on, every request except `initialize` must echo a
     # live session id (HTTP 400 if missing, 404 once terminated); `initialize`
@@ -252,7 +259,7 @@ async def _handle_http(
     response = await server.handle_message(message, session)
     if response is None:
         # A notification or a response carries no reply (JSON-RPC 2.0 Sec. 4.1).
-        return _with_session(Response(status_code=202), session_id)
+        return _with_session(Response(status_code=status.HTTP_202_ACCEPTED), session_id)
     # An authorization failure (insufficient scope) is surfaced as an HTTP 403 with
     # an RFC 6750 scope challenge, not a 200 carrying a JSON-RPC error, so a client
     # can drive a step-up authorization flow. This applies to the JSON path only;
@@ -301,14 +308,14 @@ def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response
     missing / already-terminated id is HTTP 404.
     """
     if store is None:
-        return Response(status_code=405, headers={"Allow": "POST"})
+        return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
     session_id = request.headers.get("mcp-session-id")
     if not session_id or not store.terminate(session_id):
         return JSONResponse(
             SessionNotFoundError("unknown or terminated session").to_error(None),
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
         )
-    return Response(status_code=204)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _handle_get(
@@ -379,7 +386,7 @@ def _validate_protocol_version(request: Request) -> None:
 
 def _method_not_allowed() -> Response:
     """Answer a GET on the MCP endpoint with HTTP 405 (no server-push stream)."""
-    return Response(status_code=405, headers={"Allow": "POST"})
+    return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
 
 
 def _forbidden(response: dict[str, Any], scopes: list[str]) -> Response:
@@ -387,7 +394,11 @@ def _forbidden(response: dict[str, Any], scopes: list[str]) -> Response:
     parts = ['Bearer error="insufficient_scope"']
     if scopes:
         parts.append(f'scope="{" ".join(scopes)}"')
-    return JSONResponse(response, status_code=403, headers={"WWW-Authenticate": ", ".join(parts)})
+    return JSONResponse(
+        response,
+        status_code=status.HTTP_403_FORBIDDEN,
+        headers={"WWW-Authenticate": ", ".join(parts)},
+    )
 
 
 async def _authenticate(
