@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The MCP protected-resource metadata advertises `bearer_methods_supported`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A percent-encoded resource template value reaches the handler decoded. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - The most specific resource template serves a URI, not whichever was registered first. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - An MCP call no longer leaves its request bound, which corrupted the HTTP transport's own request. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))

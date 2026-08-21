@@ -4684,6 +4684,26 @@ def test_http_protected_resource_metadata_served():
     assert doc["resource"] == "https://api.example.com/mcp"
     assert doc["authorization_servers"] == ["https://auth.example.com"]
     assert doc["scopes_supported"] == ["mcp:tools"]
+    # RFC 9728 section 2: the client is told how to present the token. Only the
+    # header form is read, and the MCP spec forbids the query-string form.
+    assert doc["bearer_methods_supported"] == ["header"]
+
+
+def test_http_query_string_token_is_not_accepted():
+    """The advertised bearer method is the only one honoured."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Echo subject")
+    async def whoami() -> str:
+        principal = current_principal()
+        return principal.subject if principal else "anon"
+
+    app.mount_mcp(transport="http", auth=_auth())
+    response = app.test_client().post(
+        "/mcp?access_token=ok",
+        json=_mcp_call_body("whoami", {}),
+    )
+    assert response.status_code == 401
 
 
 def test_http_auth_async_verifier():

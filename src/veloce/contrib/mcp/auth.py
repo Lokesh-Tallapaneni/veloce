@@ -89,4 +89,9 @@ class MCPAuth:
             document["authorization_servers"] = list(self.authorization_servers)
         if self.scopes_supported:
             document["scopes_supported"] = list(self.scopes_supported)
+        # RFC 9728 section 2: how the client is to present its token. The transport
+        # reads the `Authorization` header and nothing else - the MCP authorization
+        # spec forbids carrying an access token in the query string - so a client
+        # reading this document is told exactly what will be accepted.
+        document["bearer_methods_supported"] = ["header"]
         return document
