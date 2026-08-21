@@ -941,7 +941,7 @@ class Request:
     # ── Client and connection ─────────────────────────────
     @property
     def client_host(self) -> str | None:
-        """Return the client's IP address from the ASGI scope."""
+        """Return the client's IP address, or `None` when the peer is unknown."""
         # If a ProxyFix-style middleware ran upstream, it stashed the
         # trusted client IP on `_state`. Prefer that over the raw TCP peer.
         proxied = self._state.get("proxy_fix_client")
@@ -951,16 +951,22 @@ class Request:
             peername = self.transport.get_extra_info("peername")
             if peername:
                 return peername[0]
-        return None
+        # ASGI path - the peer lives on the scope, not a transport. Reading it
+        # here (rather than in each caller) is what keeps `remote_addr` and the
+        # rate limiter's client bucket from silently degrading under an ASGI
+        # server, where `transport` is always None.
+        client = self.scope.get("client") if self.scope else None
+        return client[0] if client else None
 
     @property
     def client_port(self) -> int | None:
-        """Return the client's port number from the ASGI scope."""
+        """Return the client's port number, or `None` when the peer is unknown."""
         if self.transport:
             peername = self.transport.get_extra_info("peername")
             if peername and len(peername) >= 2:
                 return peername[1]
-        return None
+        client = self.scope.get("client") if self.scope else None
+        return client[1] if client and len(client) >= 2 else None
 
     @property
     def client(self) -> Address | None:
@@ -973,13 +979,8 @@ class Request:
         """
         host = self.client_host
         if host is None:
-            # ASGI scope path - `scope["client"]` is `(host, port)`.
-            scope_client = self.scope.get("client") if self.scope else None
-            if scope_client:
-                return Address(scope_client[0], scope_client[1])
             return None
-        port = self.client_port or 0
-        return Address(host, port)
+        return Address(host, self.client_port or 0)
 
     @property
     def remote_addr(self) -> str | None:
@@ -1008,11 +1009,6 @@ class Request:
         forwarded = self.headers.get(HEADER_X_FORWARDED_FOR, "")
         chain: list[str] = [v.strip() for v in forwarded.split(",") if v.strip()]
         peer = self.client_host
-        if not peer:
-            # ASGI scope path - `scope["client"]` is `(host, port)` per spec.
-            client = self.scope.get("client") if self.scope else None
-            if client:
-                peer = client[0]
         if peer:
             chain.append(peer)
         return chain

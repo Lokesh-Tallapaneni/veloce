@@ -205,8 +205,9 @@ def test_proxy_fix_disabled_when_count_zero():
         "/info",
         headers={"X-Forwarded-For": "evil.example.com"},
     )
-    # No proxy_fix_client was stored; client_host falls back to transport (None).
-    assert resp.json()["client"] is None
+    # No proxy_fix_client was stored, so the reported address is the peer that
+    # actually connected - never the value the untrusted header asked for.
+    assert resp.json()["client"] != "evil.example.com"
 
 
 def test_parse_forwarded_extracts_prefix_extension():
@@ -340,7 +341,9 @@ def test_proxy_fix_chain_too_short_does_not_fabricate():
     app = _make_app_with_proxy_fix(x_for=5)
     client = TestClient(app)
     resp = client.get("/info", headers={"X-Forwarded-For": "only-one"})
-    assert resp.json()["client"] is None
+    # The short chain is refused, so the single forwarded entry is never
+    # promoted to the client identity; the real peer is reported instead.
+    assert resp.json()["client"] != "only-one"
 
 
 # ── Quoted-delimiter handling (RFC 7239) ────────────────────────────────────

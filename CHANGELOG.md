@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `RateLimitMiddleware` keys on the caller's address under ASGI; a changing `User-Agent` no longer bypasses it. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+
 ### Added
 
 - `render_template`, `render_template_string` and `stream_template` are exported from `veloce.contrib`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
@@ -37,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `client_host`, `client_port` and `remote_addr` report the peer on the ASGI path. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - An authorization failure inside a tool is reported as forbidden, not as an internal error.
 - A modern-revision client's identity and capabilities are read from each request's `_meta`.
 

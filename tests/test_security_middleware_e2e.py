@@ -164,20 +164,21 @@ def test_ratelimit_429_carries_retry_after_and_headers():
     assert "X-RateLimit-Reset" in rejected.headers
 
 
-def test_ratelimit_anonymous_traffic_does_not_share_one_bucket():
-    """Two anonymous requests (no client_host, no X-Forwarded-For, no
-    User-Agent) must each get their own bucket — otherwise a single
-    anonymous source exhausts the limit for every other anonymous
-    caller. With max_requests=1, both requests must still succeed."""
+def test_ratelimit_buckets_two_calls_from_one_peer_together():
+    """The test client reports a peer, so both calls are the same caller and
+    share one budget - a second call past `max_requests=1` is refused.
+
+    The complementary property (callers with *no* resolvable address must not
+    share a bucket) is pinned at the key level in
+    `tests/test_request_client_peer.py`, where a peerless request can actually
+    be constructed."""
     app = _rl_app(max_requests=1, window_seconds=60)
     with TestClient(app) as client:
-        # Strip the default UA from the base headers so the request truly
-        # carries no UA / no XFF / no transport peer.
         first = client.get("/ping")
         second = client.get("/ping")
 
     assert first.status_code == 200
-    assert second.status_code == 200
+    assert second.status_code == 429
 
 
 def test_reset_after_ceils_subsecond_remainder():
