@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mount_mcp(cache_ttl_ms=...)` sets the freshness hint sent with those results.
 - `subscriptions/listen` opens a filtered notification stream, replacing `resources/subscribe`.
 - `notify_tools_list_changed()` and `notify_prompts_list_changed()` signal those lists changed.
+- MCP tasks are served as the `io.modelcontextprotocol/tasks` extension on the modern revision.
+- `tasks/update` delivers responses to a task's outstanding input requests.
+
+### Changed
+
+- A modern client must declare the tasks extension before a task handle is returned.
+- `tasks/list` and `tasks/result` are not served to a modern client; `tasks/get` carries the result.
 
 ### Fixed
 

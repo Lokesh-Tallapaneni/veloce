@@ -35,6 +35,7 @@ from veloce.contrib.mcp.tasks import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
     STATUS_FAILED,
+    TASKS_EXTENSION,
     create_task_result,
     new_task,
     status_notification,
@@ -62,6 +63,26 @@ _STREAM_BUFFER_LIMIT = 5 * 1024 * 1024
 # stream wedges the serial stdio serve loop, blocking every later request.
 # Crossing it closes the stream and yields an in-band tool error.
 _STREAM_DRAIN_TIMEOUT = 30.0
+
+
+# The `_meta` key a modern request states its revision in. Duplicated here rather
+# than imported from `server`, which imports this module.
+_META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+
+
+def _modern_request(params: dict[str, Any]) -> bool:
+    """Whether this request declared a modern protocol version in its `_meta`."""
+    meta = params.get("_meta")
+    return isinstance(meta, dict) and isinstance(meta.get(_META_PROTOCOL_VERSION), str)
+
+
+def _client_declared_tasks() -> bool:
+    """Whether the calling client advertised the tasks extension."""
+    session = _session_var.get()
+    if session is None:
+        return False
+    extensions = session.client_capabilities.get("extensions")
+    return isinstance(extensions, dict) and TASKS_EXTENSION in extensions
 
 
 class TasksMixin:
@@ -95,6 +116,15 @@ class TasksMixin:
             raise InvalidParamsError(
                 f"Tool {tool.name!r} does not support task execution; call it without a 'task' field."
             )
+        # A task is never handed to a client that did not declare the extension:
+        # it would be given a handle it has no `tasks/*` methods to resolve.
+        modern = _modern_request(params)
+        if modern and not _client_declared_tasks():
+            raise InvalidParamsError(
+                "This client did not declare the "
+                f"{TASKS_EXTENSION!r} extension, so a task cannot be returned; "
+                "call the tool without a 'task' field."
+            )
         self._tasks.evict_expired()
         # The creating connection owns the task: a task method from a different
         # connection cannot see or act on it (multi-client isolation on HTTP).
@@ -106,7 +136,7 @@ class TasksMixin:
         # the same notifier / log level / principal the request established here.
         progress_token = _progress_token(params)
         task.runner = asyncio.ensure_future(self._run_task(task, tool, arguments, progress_token))
-        return create_task_result(task)
+        return create_task_result(task, modern=modern)
 
     async def _run_task(
         self,

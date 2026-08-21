@@ -138,7 +138,12 @@ META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 # result; `"input_required"` marks a multi-round-trip interim result, which this
 # server does not yet produce.
 RESULT_TYPE_COMPLETE = "complete"
+RESULT_TYPE_TASK = "task"
 # The methods the spec requires caching hints on, for a `complete` result.
+# Retired by the tasks extension: a modern client polls `tasks/get`, which carries
+# the result once the task completes. Still served to a handshake-era client, whose
+# revision defined them.
+_HANDSHAKE_ONLY_METHODS = frozenset({"tasks/list", "tasks/result"})
 _CACHEABLE_METHODS = frozenset(
     {
         "server/discover",
@@ -510,6 +515,11 @@ class MCPServer(TasksMixin, InvocationMixin):
                 return rejection
 
         handler = self._methods.get(method)
+        if handler is not None and is_modern and method in _HANDSHAKE_ONLY_METHODS:
+            # The tasks extension retired these; a modern client polls `tasks/get`,
+            # whose result carries the completed answer. Reported as not found so a
+            # client discovers the surface it actually has.
+            handler = None
         if handler is None:
             # An unknown notification carries no response; an unknown request is a
             # method-not-found error.
@@ -555,7 +565,13 @@ class MCPServer(TasksMixin, InvocationMixin):
         if result is DEFERRED_RESPONSE:
             # A long-lived request answered by its own closure, not here.
             return None
-        if is_modern and isinstance(result, dict) and "resultType" not in result:
+        if is_modern and isinstance(result, dict) and "resultType" in result:
+            pass
+        elif is_modern and isinstance(result, dict) and "task" in result:
+            # A task handle is its own result type; the client polls rather than
+            # reading a completed answer here.
+            result = {"resultType": RESULT_TYPE_TASK, **result}
+        elif is_modern and isinstance(result, dict):
             # Required on every modern result. A legacy client must never see it:
             # its revision has no such field and the server info below belongs to
             # the modern shape only.
@@ -756,12 +772,33 @@ class MCPServer(TasksMixin, InvocationMixin):
         `serverInfo` travels in `_meta` here rather than as a top-level field,
         which is where the modern revision moved it.
         """
+        capabilities = self._advertised_capabilities()
+        extensions = self._advertised_extensions()
+        if extensions:
+            capabilities = {**capabilities, "extensions": extensions}
         return {
             "supportedVersions": list(SERVED_PROTOCOL_VERSIONS),
-            "capabilities": self._advertised_capabilities(),
+            "capabilities": capabilities,
             "_meta": {META_SERVER_INFO: self._server_info()},
             **({"instructions": self.server_instructions} if self.server_instructions else {}),
         }
+
+    def _advertised_extensions(self) -> dict[str, Any]:
+        """The protocol extensions this server implements, for `server/discover`.
+
+        A capability contributes an entry only when the feature it names is
+        actually available, so a server with no task-capable tool advertises no
+        tasks extension and a client will never offer one.
+        """
+        advertised: dict[str, Any] = {}
+        for capability in self._capabilities:
+            contributed = getattr(capability, "extensions", None)
+            if contributed is None:
+                continue
+            entry = contributed()
+            if entry:
+                advertised.update(entry)
+        return advertised
 
     def _tools_list(self) -> dict[str, Any]:
         return self._describe_tools(self.registry.tools.values())

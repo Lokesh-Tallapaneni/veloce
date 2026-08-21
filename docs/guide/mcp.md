@@ -1262,6 +1262,47 @@ results do not — that field belongs to the modern revision only.
     the `-32022` rejection. Earlier versions served only the handshake eras, so
     a modern client's opening probe failed and it fell back to `initialize`.
 
+## Tasks on the modern revision
+
+Tasks moved out of the core protocol into the `io.modelcontextprotocol/tasks`
+extension. Declaring a tool task-capable is unchanged:
+
+```python
+from veloce import Veloce
+
+app = Veloce(title="Ops")
+
+
+@app.mcp_tool(description="Rebuild the search index", task_support=True)
+async def reindex(shard: str) -> dict:
+    return {"reindexed": shard}
+```
+
+What changed is what a modern client sees:
+
+- The server advertises `io.modelcontextprotocol/tasks` in `server/discover`,
+  but only when some tool is task-capable.
+- A client must declare the extension in its per-request capabilities before the
+  server will hand it a task. A client that has not is told to call the tool without
+  a `task` field, rather than being given a handle it has no methods to resolve.
+- The handle comes back as `resultType: "task"`.
+- The duration fields are `ttlMs` and `pollIntervalMs`.
+- `tasks/list` and `tasks/result` no longer exist. A client polls `tasks/get`, and a
+  completed task carries its result there.
+- `tasks/update` delivers responses to a task's outstanding input requests and is
+  acknowledged with an empty result.
+
+A handshake-era client keeps all four original methods and the field names its
+revision defined, so nothing that works today stops working.
+
+!!! note "Tasks over HTTP need a session"
+
+    A task created by one request is retrieved by a later one, so the HTTP transport
+    requires `mount_mcp(transport="http", sessions=True)`. Over stdio the connection
+    is the session and nothing extra is needed.
+
+!!! note "Added in version 0.16"
+
 ## Notification streams
 
 On the modern revision a client opens a long-lived stream with
