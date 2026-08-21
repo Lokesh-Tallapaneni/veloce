@@ -471,6 +471,12 @@ def _stringify(result: Any) -> str:
     """Serialise a handler return value to the text content of a tool result."""
     if isinstance(result, str):
         return result
+    # A bare byte string is the text form of the result, not a value inside it,
+    # so it is handed over as text rather than JSON-encoded into a quoted
+    # string. Bytes nested in a mapping or sequence go through the encoder's
+    # fallback below and are quoted like any other member.
+    if isinstance(result, (bytes, bytearray, memoryview)):
+        return _bytes_to_text(result)
     try:
         return orjson.dumps(result, default=_orjson_default).decode()
     except (TypeError, orjson.JSONEncodeError):
@@ -481,7 +487,26 @@ def _orjson_default(value: Any) -> Any:
     """Fallback serialiser for values orjson cannot encode natively."""
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return _bytes_to_text(value)
     return str(value)
+
+
+def _bytes_to_text(value: bytes | bytearray | memoryview) -> str:
+    """Render a raw byte string as tool-result text.
+
+    A tool result carries text, so the bytes have to become a string. Decoded
+    UTF-8 is what a caller returning `b"..."` means; bytes that are not UTF-8
+    are binary and are base64-encoded rather than decoded with replacement,
+    which would corrupt them irrecoverably. This mirrors how a resource body
+    picks between `text` and a base64 `blob`, deciding on whether the bytes are
+    text rather than on a media type a bare return value does not carry.
+    """
+    raw = bytes(value)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return base64.b64encode(raw).decode("ascii")
 
 
 class _ShortCircuit:
