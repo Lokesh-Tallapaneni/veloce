@@ -558,7 +558,18 @@ class MCPServer(TasksMixin, InvocationMixin):
         msg_id = message.get("id")
         method = message.get("method")
 
-        if message.get("jsonrpc") != "2.0" or not isinstance(method, str):
+        if message.get("jsonrpc") != "2.0":
+            return _error(msg_id, _JSONRPC_INVALID_REQUEST, "Invalid JSON-RPC 2.0 request")
+        if not isinstance(method, str):
+            # A reply to a server->client request carries an id and a result or an
+            # error instead of a method. It is an answer, not a request: it needs
+            # no response of its own, so it is accepted and dispatch stops here.
+            # The stdio transport resolves the waiting future before reaching this
+            # point; a transport that issues no requests has nothing to resolve and
+            # simply accepts it, which is what the spec's `202` means. Anything else
+            # carrying no method is malformed.
+            if "id" in message and ("result" in message or "error" in message):
+                return None
             return _error(msg_id, _JSONRPC_INVALID_REQUEST, "Invalid JSON-RPC 2.0 request")
 
         params = message.get("params") or {}
