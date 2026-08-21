@@ -994,9 +994,15 @@ The MCP lifecycle requires the initialization exchange to come first. To enforce
 that ordering, set `app.config["MCP_ENFORCE_LIFECYCLE"] = True`: any request other
 than `initialize` or `ping` that arrives before initialization completes is
 rejected with a JSON-RPC invalid-request error. One-way notifications are never
-ordered by this rule and always pass. The flag is off by default, so the existing
-stdio behavior is unchanged unless you opt in. The stateless HTTP transport has no
-persistent connection to order against, so this setting does not affect it.
+ordered by this rule and always pass. Turn it on to hold clients to the spec's
+ordering: a client that skips the handshake has a bug, and enforcing surfaces it
+while you are developing against the server rather than later.
+
+The flag is off by default, because rejecting an un-handshaked request also
+rejects the legitimate ways a server is driven without one — a test or an
+application dispatching `handle_message` directly, or a client that only ever
+sends one request. The stateless HTTP transport has no persistent connection to
+order against, so this setting does not affect it at all.
 
 !!! note "Added in version 0.9"
     `MCPSession` and `MCP_ENFORCE_LIFECYCLE` were added in version 0.9.
