@@ -1257,6 +1257,84 @@ For the **stdio** transport there is no OAuth handshake — the process is launc
 locally and trusted — so pass a static identity instead:
 `app.mount_mcp(principal=Principal(subject="local", scopes={"mcp:tools"}))`.
 
+### Issuing the tokens yourself
+
+The section above validates a token someone else issued — the usual arrangement,
+where an identity provider is the authorization server. When there is no such
+provider, Veloce can be one:
+
+```python
+from veloce import Principal, RedirectResponse
+from veloce.contrib.mcp import (
+    MCPAuth, MCPAuthorizationServer, register_authorization_server,
+)
+
+
+def authenticate(request):
+    """Who is approving this? Only your application knows."""
+    user = request.session.get("user")
+    if user is None:
+        return RedirectResponse("/login")      # sent to the browser instead
+    return Principal(subject=user, scopes={"mcp:tools"})
+
+
+authorization = MCPAuthorizationServer(
+    issuer="https://api.example.com",
+    authenticate=authenticate,
+    scopes_supported=["mcp:tools"],
+)
+register_authorization_server(app, authorization)
+
+app.mount_mcp(transport="http", auth=MCPAuth(
+    verify=authorization.verifier(),
+    resource_server_url="https://api.example.com/mcp",
+    authorization_servers=["https://api.example.com"],
+))
+```
+
+That serves the four endpoints an MCP client walks:
+
+| Endpoint | What it does |
+|---|---|
+| `/.well-known/oauth-authorization-server` | RFC 8414 metadata — where everything else is |
+| `/register` | RFC 7591 dynamic registration, so a client needs nothing arranged in advance |
+| `/authorize` | Authenticates the user through your callback, returns a single-use code |
+| `/token` | Exchanges the code for a token, and refreshes it later |
+
+A client discovers this from the resource metadata the transport already serves,
+so the whole flow starts from the MCP endpoint itself.
+
+**What it enforces.** PKCE is required and only `S256` is accepted — a code
+intercepted on the redirect is useless without the verifier. A code is
+single-use, expires in a minute, and is bound to the client, the redirect URI and
+the challenge it was issued for. `redirect_uri` must match a registered one
+exactly, and an error is only ever redirected to a URI that already matched, so
+this cannot be used as an open redirector. Refresh tokens rotate, so a stolen one
+stops working the moment the real client refreshes. The `resource` parameter
+(RFC 8707) is recorded on the token, so a token minted for one server is
+identifiable as such.
+
+**What it stores.** Tokens are opaque — 256 bits from `secrets` — and kept as
+SHA-256 digests, so there is no signing key to manage and a leaked store yields
+nothing that can be presented. A client secret is shown once at registration and
+kept only as a digest; a public client is issued none at all, because PKCE is
+what proves it.
+
+!!! warning "The default store is a single process"
+    `InMemoryAuthorizationStore` loses every token on restart and shares nothing
+    between workers. Implement `AuthorizationStore` over your own database for
+    anything else — the protocol is eight async methods keyed by digest.
+
+!!! note "Prefer an identity provider when you have one"
+    Running an authorization server means owning credential storage, session
+    handling, and the login and consent screens that `authenticate` returns.
+    Where an IdP already exists, point `authorization_servers` at it and keep
+    Veloce a resource server.
+
+!!! note "Added in version 0.16"
+    `MCPAuthorizationServer`, `register_authorization_server`,
+    `AuthorizationStore` and `InMemoryAuthorizationStore`.
+
 ### Per-tool scopes
 
 Declare the scopes a tool, resource, or prompt requires; a principal lacking them

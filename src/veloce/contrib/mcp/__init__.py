@@ -46,6 +46,15 @@ and the Streamable HTTP transport (``mount_mcp(transport="http")``) are supporte
 from __future__ import annotations
 
 from veloce.contrib.mcp.auth import MCPAuth
+from veloce.contrib.mcp.authorization import (
+    AccessToken,
+    AuthorizationCode,
+    AuthorizationStore,
+    InMemoryAuthorizationStore,
+    MCPAuthorizationServer,
+    OAuthClient,
+    register_authorization_server,
+)
 from veloce.contrib.mcp.completion import CompletionResult, CompletionsCapability
 from veloce.contrib.mcp.content import (
     AudioContent,
@@ -116,6 +125,13 @@ __all__ = [
     "OriginNotAllowedError",
     "PromptRegistry",
     "ProtocolVersionError",
+    "AccessToken",
+    "AuthorizationCode",
+    "AuthorizationStore",
+    "InMemoryAuthorizationStore",
+    "MCPAuthorizationServer",
+    "OAuthClient",
+    "register_authorization_server",
     "ResourceLink",
     "SessionBackend",
     "SessionRecord",
