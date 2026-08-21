@@ -3475,7 +3475,7 @@ def test_prompt_duplicate_name_raises():
     async def greet() -> str:
         return "one"
 
-    app._mcp_prompts.append((greet, "greet", "Two", None, None, None))
+    app._mcp_prompts.append((greet, "greet", "Two", None, None, None, None))
     with pytest.raises(ValueError, match="Duplicate MCP prompt"):
         _server(app)
 

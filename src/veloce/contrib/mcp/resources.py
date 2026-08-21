@@ -65,6 +65,11 @@ class MCPResource(MCPDescriptor):
     # more of the URI is the one that meant it. Computed at build time so a read
     # ranks candidates without re-reading their templates.
     specificity: int = 0
+    # Size in bytes a client may show before reading, and the annotations
+    # (audience, priority) saying who the resource is for. Both are declared
+    # rather than measured: a listing must not have to read every resource.
+    size: int | None = None
+    annotations: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -214,6 +219,9 @@ def _resource_from_route(
         specificity=_template_specificity(uri),
         title=info.summary or None,
         icons=coerce_icons(getattr(info, "mcp_icons", None)),
+        meta=getattr(info, "mcp_meta", None),
+        size=getattr(info, "mcp_resource_size", None),
+        annotations=getattr(info, "mcp_resource_annotations", None),
     )
 
 

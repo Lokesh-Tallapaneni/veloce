@@ -343,6 +343,12 @@ def _build_resource_listing_entry(resource: MCPResource, uri_key: str) -> dict[s
     icons = render_icons(resource.icons)
     if icons is not None:
         entry["icons"] = icons
+    if resource.size is not None:
+        entry["size"] = resource.size
+    if resource.annotations:
+        entry["annotations"] = resource.annotations
+    if resource.meta:
+        entry["_meta"] = resource.meta
     return entry
 
 
@@ -417,6 +423,8 @@ def _build_prompt_listing_entry(prompt: MCPPrompt) -> dict[str, Any]:
         entry["icons"] = icons
     if prompt.arguments:
         entry["arguments"] = prompt.arguments
+    if prompt.meta:
+        entry["_meta"] = prompt.meta
     return entry
 
 

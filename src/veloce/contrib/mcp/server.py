@@ -239,6 +239,8 @@ def _build_tool_listing_entry(tool: MCPTool) -> dict[str, Any]:
     # `"forbidden"`, so a non-opting tool omits the field entirely.
     if tool.task_support:
         entry["execution"] = {"taskSupport": "optional"}
+    if tool.meta:
+        entry["_meta"] = tool.meta
     return entry
 
 

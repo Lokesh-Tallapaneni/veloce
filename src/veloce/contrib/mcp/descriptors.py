@@ -52,6 +52,11 @@ class MCPDescriptor:
     title: str | None = field(default=None, kw_only=True)
     icons: tuple[Icon, ...] = field(default=(), kw_only=True)
     completers: dict[str, Callable] = field(default_factory=dict, kw_only=True)
+    # `_meta` the author attached to this primitive's definition. The protocol
+    # reserves the field for metadata it does not itself define, which is how an
+    # extension carries its own data on a tool, resource or prompt. It lives here
+    # so all three share one declaration; `None` emits nothing.
+    meta: dict[str, Any] | None = field(default=None, kw_only=True)
     # The primitive's entry in whichever list method advertises it, built on the
     # first listing and reused after. Every field an entry is derived from is
     # fixed once the primitive is registered, and an entry holds nothing

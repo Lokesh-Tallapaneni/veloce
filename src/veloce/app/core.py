@@ -552,6 +552,7 @@ class Veloce(
                 Any,
                 bool,
                 dict[str, Any] | None,
+                dict[str, Any] | None,
             ]
         ] = []
         # MCP prompt registrations (contrib.mcp). Each entry is
@@ -559,7 +560,15 @@ class Veloce(
         # `@app.mcp_prompt(...)` and consumed once at `mount_mcp` time when the
         # prompt registry is assembled.
         self._mcp_prompts: list[
-            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None, Any]
+            tuple[
+                Callable,
+                str | None,
+                str | None,
+                str | None,
+                frozenset[str] | None,
+                Any,
+                dict[str, Any] | None,
+            ]
         ] = []
         # MCP argument-completer registrations (contrib.mcp). Each entry is
         # `(kind, key, argument, completer)` where `kind` is "prompt" or
@@ -1767,6 +1776,7 @@ class Veloce(
         icons: Sequence[Icon] | None = None,
         task_support: bool = False,
         annotations: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> Callable:
         """Register an MCP-only tool callable by an AI agent (contrib.mcp).
 
@@ -1807,6 +1817,7 @@ class Veloce(
                     icons,
                     task_support,
                     declared,
+                    meta,
                 )
             )
             return func
@@ -1821,6 +1832,7 @@ class Veloce(
         namespace: str | None = None,
         scopes: Sequence[str] | None = None,
         icons: Sequence[Icon] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> Callable:
         """Register an MCP prompt template fetchable by an AI agent (contrib.mcp).
 
@@ -1844,7 +1856,7 @@ class Veloce(
 
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
-            self._mcp_prompts.append((func, name, description, namespace, scope_set, icons))
+            self._mcp_prompts.append((func, name, description, namespace, scope_set, icons, meta))
             return func
 
         return decorator

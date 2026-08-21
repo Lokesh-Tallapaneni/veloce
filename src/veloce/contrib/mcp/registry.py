@@ -198,6 +198,7 @@ def _register_explicit_tool(
     icons: Sequence[Icon] | None = None,
     task_support: bool = False,
     annotations: dict[str, Any] | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> None:
     """Add an `@app.mcp_tool`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -220,6 +221,7 @@ def _register_explicit_tool(
             icons=coerce_icons(icons),
             task_support=task_support,
             annotations=validate_tool_annotations(annotations),
+            meta=meta,
         )
     )
 
@@ -249,6 +251,7 @@ def _tool_from_route(
         handler=info.handler,
         plan=plan,
         input_schema=schema,
+        meta=getattr(info, "mcp_meta", None),
         output_schema=output_schema,
         output_model=output_model,
         route_dep_plans=info.route_dep_plans,
@@ -268,7 +271,7 @@ def build_registry(app: Any) -> ToolRegistry:
 
     # Explicit @app.mcp_tool registrations, recorded on the app at decoration
     # time as `(handler, name, description, namespace, scopes, tags, icons,
-    # task_support, annotations)` tuples.
+    # task_support, annotations, meta)` tuples.
     for (
         handler,
         name,
@@ -279,6 +282,7 @@ def build_registry(app: Any) -> ToolRegistry:
         icons,
         task_support,
         declared_annotations,
+        declared_meta,
     ) in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
             registry,
@@ -291,6 +295,7 @@ def build_registry(app: Any) -> ToolRegistry:
             icons=icons,
             task_support=task_support,
             annotations=declared_annotations,
+            meta=declared_meta,
         )
 
     # Routes flagged for exposure. Walk every route (including those hidden
