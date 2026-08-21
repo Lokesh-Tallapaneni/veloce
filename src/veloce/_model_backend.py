@@ -1,4 +1,4 @@
-"""Model-backend detection — Pydantic vs msgspec.
+"""Model-backend detection — Pydantic, msgspec, and Pydantic-adapted types.
 
 Detection is registration-time on the request side (a plan slot is tagged with
 the backend once) and a single `isinstance` on the response side. msgspec is an
@@ -8,13 +8,17 @@ it absent every msgspec branch is dead and behaviour is identical to today.
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import types
 import typing
+import weakref
 from collections.abc import Callable
 from enum import IntEnum
 from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel as _PydanticModel
+from pydantic import TypeAdapter
 
 # msgspec is optional. Probe once at import; never required. `_MSGSPEC_STRUCT` is
 # typed `Any` (not `type | None`) so `issubclass(tp, _MSGSPEC_STRUCT)` type-checks
@@ -36,6 +40,7 @@ class ModelBackend(IntEnum):
     NONE = 0  # not a model - orjson / JSONResponse straight through
     PYDANTIC = 1  # subclass of pydantic.BaseModel
     MSGSPEC = 2  # subclass of msgspec.Struct
+    ADAPTED = 3  # stdlib object type Pydantic validates through a TypeAdapter
 
 
 def is_pydantic_model(tp: Any) -> bool:
@@ -117,15 +122,54 @@ def is_msgspec_struct(tp: Any) -> bool:
     return _HAS_MSGSPEC and isinstance(tp, type) and issubclass(tp, _MSGSPEC_STRUCT)
 
 
+def is_adaptable_model(tp: Any) -> bool:
+    """Return True for a dataclass or `TypedDict` Pydantic can validate.
+
+    These describe an object shape without being a `BaseModel`, so without this
+    they fall to the scalar path and are advertised as a string while the
+    handler is handed the raw mapping.
+    """
+    if typing.is_typeddict(tp):
+        return True
+    # `is_dataclass` answers True for an instance too; a slot annotation is a
+    # type. A Pydantic dataclass is still a dataclass, and the adapter handles
+    # it, so it needs no separate branch.
+    return isinstance(tp, type) and dataclasses.is_dataclass(tp)
+
+
+# One adapter per type, built on first use at registration. Construction runs a
+# schema build (hundreds of microseconds), so it must never happen per request.
+# Weak keys let a type defined inside a test or a factory be collected with it.
+_adapters: weakref.WeakKeyDictionary[Any, TypeAdapter[Any]] = weakref.WeakKeyDictionary()
+
+
+def adapter_for(tp: Any) -> TypeAdapter[Any]:
+    """Return the memoised `TypeAdapter` validating `tp`."""
+    try:
+        cached = _adapters.get(tp)
+    except TypeError:  # pragma: no cover - unhashable annotation
+        return TypeAdapter(tp)
+    if cached is not None:
+        return cached
+    built = TypeAdapter(tp)
+    # A type that does not support weak references simply goes uncached.
+    with contextlib.suppress(TypeError):
+        _adapters[tp] = built
+    return built
+
+
 def backend_of(tp: Any) -> ModelBackend:
     """Classify a single, already-unwrapped type. Registration-time only.
 
     A class cannot subclass both `BaseModel` and `msgspec.Struct` (their
     metaclasses conflict), so the Pydantic-first order is for clarity, not
-    correctness.
+    correctness. `ADAPTED` is tested last: a Pydantic dataclass is a dataclass
+    too, and the dedicated backends describe such a type more precisely.
     """
     if is_pydantic_model(tp):
         return ModelBackend.PYDANTIC
     if is_msgspec_struct(tp):
         return ModelBackend.MSGSPEC
+    if is_adaptable_model(tp):
+        return ModelBackend.ADAPTED
     return ModelBackend.NONE

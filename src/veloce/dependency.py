@@ -44,7 +44,7 @@ from veloce._handler_plan import (
     parallel_group_end,
 )
 from veloce._internal import _BaseExceptionGroup, _is_async_callable, offload
-from veloce._model_backend import ModelBackend, _msgspec, is_pydantic_model
+from veloce._model_backend import ModelBackend, _msgspec, adapter_for, is_pydantic_model
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
@@ -915,6 +915,8 @@ class DependencyResolver:
         try:
             if slot.backend == ModelBackend.MSGSPEC:
                 return _msgspec.convert(raw, type=slot.model, strict=False)
+            if slot.backend == ModelBackend.ADAPTED:
+                return adapter_for(slot.model).validate_python(raw)
             return slot.model.model_validate(raw)
         except PydanticValidationError as e:
             raise RequestValidationError(
@@ -935,7 +937,32 @@ class DependencyResolver:
     async def _resolve_body_model(self, slot: Any, request: Request) -> Any:
         if slot.backend == ModelBackend.MSGSPEC:
             return await self._resolve_msgspec_body(slot, request)
+        if slot.backend == ModelBackend.ADAPTED:
+            return await self._resolve_adapted_body(slot, request)
         return await self._resolve_pydantic_body(slot, request)
+
+    async def _resolve_adapted_body(self, slot: Any, request: Request) -> Any:
+        """Validate a dataclass / `TypedDict` body through its cached adapter."""
+        raw = await request.body()
+        if not raw.strip():
+            if slot.is_optional:
+                return None
+            raise RequestValidationError(
+                [{"loc": ["body"], "msg": "field required", "type": "missing"}]
+            )
+        try:
+            return adapter_for(slot.model).validate_json(raw)
+        except PydanticValidationError as e:
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": ["body", *(str(part) for part in err["loc"])],
+                        "msg": err["msg"],
+                        "type": err["type"],
+                    }
+                    for err in e.errors()
+                ]
+            ) from e
 
     async def _resolve_pydantic_body(self, slot: Any, request: Request) -> Any:
         try:

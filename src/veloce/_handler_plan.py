@@ -118,6 +118,10 @@ def _group_field_specs(
             (name, getattr(f, "alias", None), getattr(f, "annotation", None))
             for name, f in model.model_fields.items()
         ]
+    elif backend is ModelBackend.ADAPTED:
+        # A dataclass or TypedDict declares no aliases, so the wire name is the
+        # field name and the annotation comes from the type's own hints.
+        items = [(name, None, tp) for name, tp in get_type_hints(model).items()]
     else:
         items = [(f.name, f.encode_name, f.type) for f in _msgspec.structs.fields(model)]
     for name, alias, annotation in items:

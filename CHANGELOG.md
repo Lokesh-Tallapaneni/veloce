@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `@dataclass` parameter is validated and passed as the dataclass instead of failing on every call. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- A `TypedDict` parameter declares an object schema, matching what the handler accepts. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - `client_host`, `client_port` and `remote_addr` report the peer on the ASGI path. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - An authorization failure inside a tool is reported as forbidden, not as an internal error.
 - A modern-revision client's identity and capabilities are read from each request's `_meta`.

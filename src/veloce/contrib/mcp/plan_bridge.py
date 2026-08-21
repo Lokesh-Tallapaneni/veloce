@@ -31,11 +31,15 @@ from veloce._handler_plan import (
     K_SECURITY_SCOPES,
     MK_BODY,
 )
-from veloce._model_backend import is_pydantic_model
+from veloce._model_backend import ModelBackend, adapter_for, is_pydantic_model
 from veloce._route_contract import describe_slot
 from veloce.background import BackgroundTasks
 from veloce.contrib.mcp.context import MCPContext
-from veloce.contrib.openapi import _pydantic_to_schema, _python_type_to_schema
+from veloce.contrib.openapi import (
+    _adapted_to_schema,
+    _pydantic_to_schema,
+    _python_type_to_schema,
+)
 from veloce.dependency import SecurityScopes, _coerce_scalar, _coerce_value
 from veloce.http.datastructures import FormData, QueryParams
 from veloce.http.request import Request
@@ -280,6 +284,8 @@ def _slot_schema(
     if d.model is not None:
         if is_pydantic_model(d.model):
             prop = _pydantic_to_schema(d.model, schemas_registry)
+        elif slot.backend == ModelBackend.ADAPTED:
+            prop = _adapted_to_schema(d.model, schemas_registry)
         else:
             prop = {"type": "object"}
     elif d.is_list:
@@ -311,6 +317,8 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         model = slot.model
         if is_pydantic_model(model):
             return _validate_model(value, model)
+        if slot.backend == ModelBackend.ADAPTED:
+            return _validate_adapted(value, model)
         return value
 
     if kind == K_PARAM_MARKER:
@@ -333,6 +341,18 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         return _coerce_scalar(value, slot.target_type, slot.name, "body")
 
     return value
+
+
+def _validate_adapted(value: Any, model: Any) -> Any:
+    """Validate `value` onto a dataclass / `TypedDict`, re-raising as a clear error.
+
+    Mirrors `_validate_model` so an adapted type reports failures the same way a
+    `BaseModel` parameter does.
+    """
+    try:
+        return adapter_for(model).validate_python(value)
+    except PydanticValidationError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _validate_model(value: Any, model: type[BaseModel]) -> Any:
