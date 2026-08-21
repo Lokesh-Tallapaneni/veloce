@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The MCP protected-resource metadata advertises `bearer_methods_supported`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- URL-mode elicitation sends the required `elicitationId`, so a conforming client accepts it. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- URL-mode elicitation is refused unless the client declared `elicitation.url`. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - A percent-encoded resource template value reaches the handler decoded. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - The most specific resource template serves a URI, not whichever was registered first. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A path parameter no handler parameter declares is documented in OpenAPI and in the tool schema. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))

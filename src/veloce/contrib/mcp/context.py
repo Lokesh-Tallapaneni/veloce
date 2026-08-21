@@ -23,12 +23,18 @@ bidirectional transport raises `RuntimeError`.
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import Any
 
 from veloce._internal import _current_request_var
 from veloce.contrib.mcp.errors import MCPCapabilityError
+
+# Bytes of entropy in a minted `elicitationId`. The id names one interaction so a
+# later `notifications/elicitation/complete` can be matched to it; it travels to
+# the client, so it is unguessable rather than sequential.
+_ELICITATION_ID_ENTROPY_BYTES = 16
 
 # Whether the current call is running as a background task rather than inline.
 # Set by the task runner; read by `MCPContext.is_background_task` and by the stdio
@@ -364,6 +370,7 @@ class MCPContext:
         *,
         requested_schema: dict[str, Any] | None = None,
         url: str | None = None,
+        elicitation_id: str | None = None,
     ) -> dict[str, Any]:
         """Ask the client to gather input from its user (elicitation/create).
 
@@ -371,13 +378,27 @@ class MCPContext:
         collect); URL mode passes a `url` the client opens instead. Returns the
         client's response (its action and any collected content). Requires a
         bidirectional transport and a client that advertised ``elicitation``.
+
+        URL mode also carries the `elicitationId` the spec requires, which names
+        the interaction in a later `notifications/elicitation/complete`. One is
+        minted per call; pass `elicitation_id` to use an identifier the URL flow
+        already knows, so the completion can be correlated with whatever happens
+        out of band.
         """
         if requested_schema is not None and url is not None:
             raise ValueError("elicit takes either requested_schema (form) or url, not both")
         params: dict[str, Any] = {"message": message}
         if url is not None:
+            # A client advertising `elicitation` without `url` cannot open one, and
+            # the spec forbids sending a mode the client did not declare. An empty
+            # `elicitation: {}` means form-only, which this rejects correctly - so
+            # only URL mode is gated, never form.
+            self._require_sub_capability("elicitation", "url")
             params["mode"] = "url"
             params["url"] = url
+            params["elicitationId"] = elicitation_id or secrets.token_urlsafe(
+                _ELICITATION_ID_ENTROPY_BYTES
+            )
         elif requested_schema is not None:
             params["requestedSchema"] = requested_schema
         return await self._request("elicitation/create", "elicitation", params)

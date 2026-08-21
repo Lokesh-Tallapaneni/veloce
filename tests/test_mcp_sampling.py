@@ -227,9 +227,13 @@ def test_elicit_url_mode_sends_url():
     def respond(request: dict) -> dict:
         assert request["params"]["mode"] == "url"
         assert request["params"]["url"] == "https://example.test/auth"
+        # Required by the spec so a later completion notification can name it.
+        assert request["params"]["elicitationId"]
         return {"result": {"action": "accept"}}
 
-    client = _Client(MCPServer(app), {"elicitation": {}}, respond)
+    # The client must declare `elicitation.url`; the bare `{"elicitation": {}}`
+    # this once used means form-only, and URL mode is refused for it.
+    client = _Client(MCPServer(app), {"elicitation": {"url": {}}}, respond)
     asyncio.run(client.run(_call("authorize")))
     assert len(client.requests) == 1
 

@@ -789,6 +789,28 @@ async def delete_all(ctx: MCPContext) -> dict:
     return {"action": answer["action"]}
 ```
 
+URL mode additionally carries an `elicitationId` naming the interaction, which is
+minted for you. Pass `elicitation_id=` to reuse an identifier the URL flow already
+knows, so a later `notifications/elicitation/complete` (sent with
+`ctx.send_notification`) can be matched to it:
+
+```python
+@app.mcp_tool(description="Authorize this server against an upstream API")
+async def authorize(ctx: MCPContext) -> dict:
+    answer = await ctx.elicit(
+        "Authorize access", url="https://example.com/oauth/start", elicitation_id="flow-42"
+    )
+    return {"action": answer["action"]}
+```
+
+!!! warning "URL mode requires the client to have declared it"
+    A client advertises `elicitation: {"url": {}}` to accept URL mode. One
+    advertising `elicitation: {}` — or only `{"form": {}}` — is telling you it
+    handles forms and nothing else, so sending it a URL raises
+    `MCPCapabilityError` rather than putting a request on the wire the client
+    cannot act on. Form mode is never gated this way, since the empty capability
+    is exactly what a form-only client sends.
+
 `ctx.roots()` lists the filesystem roots the client exposes (`roots/list`),
 returning the `roots` array:
 
