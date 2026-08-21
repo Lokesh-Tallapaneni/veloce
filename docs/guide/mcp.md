@@ -1131,10 +1131,10 @@ app.mount_mcp(transport="http", tool_filter=visible)
 ```
 
 The filter runs on every `tools/list`, receives the registered tool and the request
-principal, and returns whether that caller may see it. It may be `async def` if the
-policy needs to await.
+principal, and returns whether that caller may see it. It may be `async def`, which is
+also the cheaper shape — see the last property below.
 
-Three properties are worth knowing:
+Four properties are worth knowing:
 
 - **The declared scopes apply first.** A caller lacking a tool's `scopes` never sees
   it, whatever the filter returns — the same check `tools/call` performs, so a tool is
@@ -1142,6 +1142,12 @@ Three properties are worth knowing:
 - **A filter can hide, never reveal.** It narrows the scoped set; it cannot widen it.
 - **Hiding is not enforcement.** An unlisted tool that is called anyway still raises
   the same authorization error. The filter controls the agent's context, not access.
+- **A `def` filter runs in a worker thread; an `async def` filter does not.** Running a
+  synchronous policy off the event loop is what lets it consult a database or another
+  blocking service safely, but it costs one thread handoff per `tools/list` — around
+  0.1 ms, independent of how many tools you have. An `async def` filter is awaited
+  directly with no handoff. So write `async def` when the policy only inspects the tool
+  and the principal, and `def` when it blocks.
 
 !!! note "Added in version 0.16"
 
