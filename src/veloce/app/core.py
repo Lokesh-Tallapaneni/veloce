@@ -1876,6 +1876,7 @@ class Veloce(
         cache_ttl_ms: int | None = None,
         page_size: int | None = None,
         session_backend: Any = None,
+        message_path: str = "/messages",
     ) -> Any:
         """Build the MCP server and serve the registered tools.
 
@@ -1919,6 +1920,12 @@ class Veloce(
         `server/discover`) on the modern protocol revision; `0` marks them
         immediately stale. A list that can differ between callers is additionally
         marked private so a shared proxy cannot serve one caller's answer to another.
+        `transport="sse"` mounts the deprecated split-endpoint wire of MCP revision
+        2024-11-05, for a client that speaks only that: a `GET` at `path`
+        (defaulting to `/sse`) opens a stream that names `message_path` as the URL
+        to POST to, each POST is acknowledged `202` and its JSON-RPC response
+        arrives on the stream. Prefer `transport="http"` for anything new - one
+        endpoint, and a dropped connection can be resumed.
         `session_backend` shares HTTP sessions between workers - any object with
         async `read` / `write` / `delete` methods over a `SessionRecord`. Without
         one a session lives in the worker that minted it, so a request reaching a
@@ -1986,8 +1993,28 @@ class Veloce(
             )
             return None
 
+        if transport == "sse":
+            from veloce.contrib.mcp.transports.sse import register_sse_transport
+
+            server = MCPServer(
+                self, tool_filter=tool_filter, cache_ttl_ms=cache_ttl, page_size=page_size
+            )
+            register_sse_transport(
+                self,
+                server,
+                path=path if path != "/mcp" else "/sse",
+                message_path=message_path,
+                auth=auth,
+                allowed_origins=(
+                    frozenset(allowed_origins) if allowed_origins is not None else None
+                ),
+                exclude_middleware=exclude_middleware,
+            )
+            return None
+
         raise ValueError(
-            f"Unsupported MCP transport {transport!r}; supported transports are 'stdio' and 'http'."
+            f"Unsupported MCP transport {transport!r}; supported transports are "
+            "'stdio', 'http', and 'sse' (the deprecated split-endpoint wire)."
         )
 
     # ── ASGI compatibility layer ──────────────────────────

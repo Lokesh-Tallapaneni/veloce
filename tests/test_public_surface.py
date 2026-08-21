@@ -315,6 +315,7 @@ SUBPACKAGE_ALL = {
         "StdioTransport",
         "Transport",
         "register_http_transport",
+        "register_sse_transport",
         "serve_stdio",
     },
 }

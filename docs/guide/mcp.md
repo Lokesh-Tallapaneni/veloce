@@ -1159,6 +1159,58 @@ app.mount_mcp(transport="http", resumable=True)
     SSE resumability (`resumable=True`) is opt-in; the default keeps no event ids or
     replay history and answers a `GET` `405`.
 
+## Serving the legacy SSE transport
+
+Before Streamable HTTP there were two endpoints: a long-lived `GET` carrying
+everything the server says, and a `POST` carrying everything the client says.
+Some clients still speak only that wire.
+
+```python
+app.mount_mcp(transport="sse")                        # GET /sse, POST /messages
+app.mount_mcp(transport="sse", path="/agent/sse", message_path="/agent/messages")
+```
+
+The client is told where to POST by the stream itself: the first frame is an
+`endpoint` event whose data is the message URL, carrying the session id that ties
+the two halves together.
+
+```
+GET /sse
+  event: endpoint
+  data: /messages?sessionId=r_LfXhDwCm1nd4I4lOoDk5x-LcnNx7It
+
+POST /messages?sessionId=...   ->  202 Accepted, empty body
+
+GET /sse (still open)
+  event: message
+  data: {"jsonrpc":"2.0","id":1,"result":{...}}
+```
+
+The asymmetry is the design: a `POST` is acknowledged `202` with **no body**, and
+its JSON-RPC response arrives later on the open stream, together with any progress
+or log notifications the call produced, in the order they were produced. A client
+that is not reading its stream never sees its answers.
+
+`auth=` and `allowed_origins=` work exactly as on the Streamable HTTP transport —
+both endpoints are ordinary routes on this app.
+
+!!! warning "Prefer `transport="http"` for anything new"
+    This transport is deprecated. It needs two endpoints and a connection held
+    open for the session's whole life, and a dropped stream loses everything in
+    flight — Streamable HTTP does the same work over one endpoint and can resume.
+    Session state lives in the process that opened the stream, so it does not
+    survive a restart or spread across workers.
+
+!!! note "The wire is old; the protocol revision is not"
+    This is the 2024-11-05 *transport*. The handshake still negotiates the
+    revisions this server implements, so a client that opens an SSE stream and
+    asks for `2024-11-05` is answered with the server's own revision and decides
+    whether to proceed. Serving the 2024-11-05 protocol itself is a separate
+    question from serving its wire.
+
+!!! note "Added in version 0.16"
+    `transport="sse"`.
+
 ## Authentication and authorization
 
 MCP authenticates at the **transport**, not per tool call, following the MCP OAuth
