@@ -9,6 +9,7 @@ import enum
 import html
 import inspect
 import logging
+import pathlib
 import types
 import uuid
 import weakref
@@ -167,6 +168,12 @@ _SCALAR_TYPE_SCHEMAS: dict[Any, dict[str, Any]] = {
     datetime.timedelta: {"type": "string", "format": "duration"},
     uuid.UUID: {"type": "string", "format": "uuid"},
     Decimal: {"type": "number"},
+    # A filesystem path arrives as a string. `path` is not a registered JSON
+    # Schema format, but the keyword is an open annotation, so naming it tells a
+    # client what the string means rather than leaving it indistinguishable from
+    # free text. `PurePath` covers the platform-specific subclasses too.
+    pathlib.PurePath: {"type": "string", "format": "path"},
+    pathlib.Path: {"type": "string", "format": "path"},
 }
 
 

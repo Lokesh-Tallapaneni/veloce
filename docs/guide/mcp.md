@@ -1153,7 +1153,7 @@ async def delete_tenant(tenant_id: str) -> dict:
 
 def visible(tool, principal: Principal | None) -> bool:
     """Hide anything experimental from callers without the beta grant."""
-    if "experimental" in (getattr(tool.route_info, "tags", None) or ()):
+    if "experimental" in tool.tags:
         return principal is not None and "beta" in principal.scopes
     return True
 
@@ -1171,6 +1171,11 @@ Four properties are worth knowing:
   it, whatever the filter returns — the same check `tools/call` performs, so a tool is
   never listed to someone who cannot invoke it.
 - **A filter can hide, never reveal.** It narrows the scoped set; it cannot widen it.
+- **Every tool carries `tags`.** A route-backed tool inherits its route's `tags`;
+  a tool registered with `@app.mcp_tool(tags=[...])` declares its own. The field is
+  always a `frozenset`, so one policy reads both kinds without a `None` check. Tags
+  stay server-side — the protocol defines no tag field on a tool, so they are never
+  published in `tools/list`.
 - **Hiding is not enforcement.** An unlisted tool that is called anyway still raises
   the same authorization error. The filter controls the agent's context, not access.
 - **A `def` filter runs in a worker thread; an `async def` filter does not.** Running a
@@ -1210,7 +1215,7 @@ app.include_router(admin)
 
 
 def visible(tool, principal) -> bool:
-    tags = set(getattr(tool.route_info, "tags", None) or ())
+    tags = tool.tags
     if "admin" in tags:
         return principal is not None and "ops" in principal.scopes
     return True

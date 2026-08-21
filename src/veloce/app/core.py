@@ -524,7 +524,16 @@ class Veloce(
         # recorded by `@app.mcp_tool(...)` and consumed once at `mount_mcp` time
         # when the tool registry is assembled.
         self._mcp_tools: list[
-            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None, Any, bool]
+            tuple[
+                Callable,
+                str | None,
+                str | None,
+                str | None,
+                frozenset[str] | None,
+                frozenset[str] | None,
+                Any,
+                bool,
+            ]
         ] = []
         # MCP prompt registrations (contrib.mcp). Each entry is
         # `(handler, name, description, namespace, scopes, icons)`, recorded by
@@ -1735,6 +1744,7 @@ class Veloce(
         name: str | None = None,
         namespace: str | None = None,
         scopes: Sequence[str] | None = None,
+        tags: Sequence[str] | None = None,
         icons: Sequence[Icon] | None = None,
         task_support: bool = False,
     ) -> Callable:
@@ -1764,7 +1774,16 @@ class Veloce(
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
             self._mcp_tools.append(
-                (func, name, description, namespace, scope_set, icons, task_support)
+                (
+                    func,
+                    name,
+                    description,
+                    namespace,
+                    scope_set,
+                    frozenset(tags) if tags else None,
+                    icons,
+                    task_support,
+                )
             )
             return func
 

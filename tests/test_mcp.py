@@ -860,7 +860,12 @@ def test_duplicate_tool_name_raises():
         return 1
 
     # A second tool resolving to the same name collides at registry build.
-    app._mcp_tools.append((dup, "dup", "Two", None, None, None, False))
+    # Registered through the decorator so the test does not depend on the shape
+    # of the private registration tuple.
+    @app.mcp_tool(description="Two", name="dup")
+    async def other():
+        return 2
+
     with pytest.raises(ValueError, match="Duplicate"):
         build_registry(app)
 
