@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `resources/read` and `prompts/get` refuse a task-augmented request instead of answering synchronously. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A modern client must declare the tasks extension before a task handle is returned.
 - `tasks/list` and `tasks/result` are not served to a modern client; `tasks/get` carries the result.
 - `ping` and `logging/setLevel` are not served to a modern client; both revisions keep their own surface.

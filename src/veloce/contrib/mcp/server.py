@@ -218,6 +218,19 @@ def _build_tool_listing_entry(tool: MCPTool) -> dict[str, Any]:
     return entry
 
 
+def _reject_task_augmentation(method: str, params: dict[str, Any]) -> None:
+    """Refuse a task-augmented request for a method that runs synchronously.
+
+    Only `tools/call` opts primitives into background execution. Ignoring the
+    field on the others would answer synchronously while the caller waits for a
+    handle to poll, so the request is refused instead of silently reinterpreted.
+    """
+    if "task" in params:
+        raise InvalidParamsError(
+            f"{method} does not support task execution; call it without a 'task' field."
+        )
+
+
 class MCPServer(TasksMixin, InvocationMixin):
     """Serve a Veloce app's MCP tools over JSON-RPC 2.0.
 
@@ -1104,6 +1117,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         handler 4xx/5xx surfaces as a JSON-RPC error, since a resource read has no
         in-band error channel.
         """
+        _reject_task_augmentation("resources/read", params)
         uri = params.get("uri")
         if not isinstance(uri, str):
             raise InvalidParamsError("resources/read requires a string 'uri'")
@@ -1155,6 +1169,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         ``prompts/get`` returns. An unknown name or a malformed argument is an
         invalid-params error.
         """
+        _reject_task_augmentation("prompts/get", params)
         name = params.get("name")
         if not isinstance(name, str):
             raise InvalidParamsError("prompts/get requires a string 'name'")
