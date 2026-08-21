@@ -533,6 +533,7 @@ class Veloce(
                 frozenset[str] | None,
                 Any,
                 bool,
+                dict[str, Any] | None,
             ]
         ] = []
         # MCP prompt registrations (contrib.mcp). Each entry is
@@ -1747,6 +1748,7 @@ class Veloce(
         tags: Sequence[str] | None = None,
         icons: Sequence[Icon] | None = None,
         task_support: bool = False,
+        annotations: dict[str, Any] | None = None,
     ) -> Callable:
         """Register an MCP-only tool callable by an AI agent (contrib.mcp).
 
@@ -1767,12 +1769,15 @@ class Veloce(
             async def add(a: int, b: int) -> int:
                 return a + b
         """
-        from veloce.contrib.mcp.safety import require_mcp_description
+        from veloce.contrib.mcp.safety import require_mcp_description, validate_tool_annotations
 
         scope_set = frozenset(scopes) if scopes else None
 
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
+            # Validated here rather than at mount time, so a misspelled hint is
+            # reported against the decorator that wrote it.
+            declared = validate_tool_annotations(annotations)
             self._mcp_tools.append(
                 (
                     func,
@@ -1783,6 +1788,7 @@ class Veloce(
                     frozenset(tags) if tags else None,
                     icons,
                     task_support,
+                    declared,
                 )
             )
             return func

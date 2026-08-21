@@ -26,7 +26,7 @@ from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.icons import Icon, coerce_icons
 from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
-from veloce.contrib.mcp.safety import require_mcp_description
+from veloce.contrib.mcp.safety import require_mcp_description, validate_tool_annotations
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan
@@ -97,6 +97,11 @@ class MCPTool(MCPDescriptor):
     # it via `tasks/get` / `tasks/result`. Opt-in per tool so the synchronous
     # path stays unchanged for every tool that does not ask for it.
     task_support: bool = False
+    # Behaviour hints the author declared (`readOnlyHint` and friends). A
+    # route-backed tool derives these from its HTTP verb; a tool with no route has
+    # no verb to read from, so it either says what it does or says nothing. `None`
+    # leaves the spec's own defaults in force, which assume the cautious reading.
+    annotations: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -192,6 +197,7 @@ def _register_explicit_tool(
     tags: frozenset[str] | None = None,
     icons: Sequence[Icon] | None = None,
     task_support: bool = False,
+    annotations: dict[str, Any] | None = None,
 ) -> None:
     """Add an `@app.mcp_tool`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -213,6 +219,7 @@ def _register_explicit_tool(
             tags=tags or frozenset(),
             icons=coerce_icons(icons),
             task_support=task_support,
+            annotations=validate_tool_annotations(annotations),
         )
     )
 
@@ -261,7 +268,7 @@ def build_registry(app: Any) -> ToolRegistry:
 
     # Explicit @app.mcp_tool registrations, recorded on the app at decoration
     # time as `(handler, name, description, namespace, scopes, tags, icons,
-    # task_support)` tuples.
+    # task_support, annotations)` tuples.
     for (
         handler,
         name,
@@ -271,6 +278,7 @@ def build_registry(app: Any) -> ToolRegistry:
         tags,
         icons,
         task_support,
+        declared_annotations,
     ) in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
             registry,
@@ -282,6 +290,7 @@ def build_registry(app: Any) -> ToolRegistry:
             tags=tags,
             icons=icons,
             task_support=task_support,
+            annotations=declared_annotations,
         )
 
     # Routes flagged for exposure. Walk every route (including those hidden

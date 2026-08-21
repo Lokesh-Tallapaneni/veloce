@@ -129,7 +129,25 @@ client can present it and reason about its effects without calling it:
   operates only on the server's own data; omitted otherwise, where the spec
   treats the tool as open-world). The route summary is also carried as
   `annotations.title`. A client may surface a consent prompt for a destructive
-  tool. A pure `@app.mcp_tool` has no HTTP method, so it carries no annotations.
+  tool.
+
+    A pure `@app.mcp_tool` has no HTTP method to derive from, so it declares its
+    own hints instead:
+
+    ```python
+    @app.mcp_tool(
+        description="Delete a widget",
+        annotations={"destructiveHint": True, "idempotentHint": True},
+    )
+    async def delete_widget(widget_id: str) -> str:
+        ...
+    ```
+
+    Declaring nothing is still meaningful: the spec's defaults are the cautious
+    reading (destructive, open-world), so an undeclared tool is never assumed
+    safe. A hint outside the spec's set is refused at the decorator rather than
+    sent as wire data no client reads. A route-backed tool may pass
+    `annotations=` too, to correct a hint its verb implies.
 - **`inputSchema`** / **`outputSchema`** - when the route declares a
   `response_model` (or the handler returns a Pydantic model), the tool advertises
   a standalone JSON Schema for its result. Both schemas declare the JSON Schema

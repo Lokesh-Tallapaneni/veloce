@@ -224,8 +224,13 @@ def _build_tool_listing_entry(tool: MCPTool) -> dict[str, Any]:
     icons = render_icons(tool.icons)
     if icons is not None:
         entry["icons"] = icons
+    # Derived from the route's verb, then overlaid with whatever the author
+    # declared - so a tool can correct a hint the verb implies, and a tool with no
+    # verb can state hints of its own.
     annotations = _tool_annotations(tool.route_methods, tool.title)
-    if annotations is not None:
+    if tool.annotations:
+        annotations = {**(annotations or {}), **tool.annotations}
+    if annotations:
         entry["annotations"] = annotations
     if tool.output_schema is not None:
         entry["outputSchema"] = tool.output_schema

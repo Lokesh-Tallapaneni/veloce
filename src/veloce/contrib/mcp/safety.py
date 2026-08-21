@@ -14,6 +14,8 @@ before the server ever starts.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 def require_mcp_description(tool_name: str, description: str | None) -> str:
     """Return a validated non-empty `mcp_description`, or raise.
@@ -29,3 +31,26 @@ def require_mcp_description(tool_name: str, description: str | None) -> str:
             "and is required, separate from the handler docstring."
         )
     return description
+
+
+# The behaviour hints the spec defines on a tool. Declaring one is how a tool with
+# no HTTP verb to derive from says what it does; a name outside this set would be
+# silently ignored by every client, so it is refused at registration rather than
+# travelling as wire data nothing reads.
+TOOL_ANNOTATION_HINTS = frozenset(
+    {"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint", "title"}
+)
+
+
+def validate_tool_annotations(annotations: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return the declared tool annotations, refusing a hint no client would read."""
+    if not annotations:
+        return None
+    unknown = sorted(set(annotations) - TOOL_ANNOTATION_HINTS)
+    if unknown:
+        raise ValueError(
+            f"Unknown MCP tool annotation(s) {unknown}; the spec defines "
+            f"{sorted(TOOL_ANNOTATION_HINTS)}. A hint outside that set is ignored by "
+            "clients, so it is refused here rather than silently dropped."
+        )
+    return dict(annotations)
