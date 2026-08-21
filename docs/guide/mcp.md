@@ -1306,6 +1306,42 @@ An anonymous caller now lists only `service_status`; a caller holding `ops` list
     the invalidation rules live — and prefer an `async def` filter so the lookup is
     not offloaded to a worker thread.
 
+## Paging a large catalogue
+
+Every entry a list method returns lands in the agent's context window, so a
+server with a large catalogue can spend a sizeable part of it before the agent
+does any work. `page_size` opts the list methods into the spec's cursor: each
+answers with at most that many entries, plus a `nextCursor` while more remain.
+
+```python
+app.mount_mcp(transport="http", page_size=50)
+```
+
+```json
+// tools/list -> {"tools": [ ...50 entries... ], "nextCursor": "NDk6b3BfNDk="}
+// tools/list {"cursor": "NDk6b3BfNDk="} -> the next 50
+```
+
+A client walks the catalogue by passing the `nextCursor` it received back as
+`cursor`, until a response arrives without one. All four list methods paginate:
+`tools/list`, `resources/list`, `resources/templates/list` and `prompts/list`.
+Filtering runs first, so a tool hidden by a
+[visibility policy](#deciding-which-tools-a-caller-sees) never occupies a slot on
+a page.
+
+Cursors are opaque — a client must not parse or construct one, and a cursor this
+server did not issue is rejected with `-32602` (invalid params).
+
+!!! note "Pagination is opt-in"
+    `nextCursor` is optional for clients as well as servers, so a client is free
+    to read the first page and stop. A server that paginated uninvited would
+    silently hide the rest of its catalogue from every such client. Left unset,
+    every list is answered in full, exactly as before.
+
+A cursor names the entry it stopped at, not just a position, so registering or
+removing a tool part-way through a client's walk does not make it skip an
+unrelated one.
+
 ## Protocol versions
 
 MCP has two eras, and Veloce serves both from the same endpoint:

@@ -78,6 +78,7 @@ from veloce.contrib.mcp.errors import (
     _InvalidArgumentsError,
 )
 from veloce.contrib.mcp.icons import render_icons
+from veloce.contrib.mcp.pagination import paginate
 from veloce.contrib.mcp.prompts import PromptRegistry, build_prompt_registry
 from veloce.contrib.mcp.registry import ToolFilter, ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import ResourceRegistry, build_resource_registry
@@ -91,7 +92,9 @@ from veloce.http.response import Response
 from veloce.principal import current_principal
 
 if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.mcp.prompts import MCPPrompt
     from veloce.contrib.mcp.registry import MCPTool
+    from veloce.contrib.mcp.resources import MCPResource
     from veloce.contrib.mcp.session import MCPSession
 
 _logger = logging.getLogger(__name__)
@@ -182,6 +185,20 @@ _CACHE_SCOPE_PRIVATE = "private"
 _SERVED_VERSION_SET = frozenset(SERVED_PROTOCOL_VERSIONS)
 
 
+# A catalogue is paged by the same key its registry indexes it under, so a
+# cursor names the item the way the registry itself does.
+def _tool_key(tool: MCPTool) -> str:
+    return tool.name
+
+
+def _resource_key(resource: MCPResource) -> str:
+    return resource.uri
+
+
+def _prompt_key(prompt: MCPPrompt) -> str:
+    return prompt.name
+
+
 def _apply_sync_tool_filter(
     tool_filter: Any, tools: list[MCPTool], principal: Any
 ) -> list[MCPTool]:
@@ -254,6 +271,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         "_enforce_lifecycle",
         "_tool_filter",
         "_cache_ttl_ms",
+        "_page_size",
         "_any_scoped_tools",
         "_any_scoped_prompts",
         "_subscriptions_enabled",
@@ -272,6 +290,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         prompts: PromptRegistry | None = None,
         tool_filter: ToolFilter | None = None,
         cache_ttl_ms: int = DEFAULT_CACHE_TTL_MS,
+        page_size: int | None = None,
     ) -> None:
         self.app = app
         # Optional per-caller `tools/list` visibility policy. `None` - the default -
@@ -281,6 +300,13 @@ class MCPServer(TasksMixin, InvocationMixin):
         # Freshness hint sent with cacheable results. The spec requires `>= 0`;
         # zero tells the client to treat every result as immediately stale.
         self._cache_ttl_ms = max(0, cache_ttl_ms)
+        # Optional page size for the list methods. `None` - the default - answers
+        # every list in full, exactly as before: a client may ignore `nextCursor`,
+        # so a server that paginated on its own would hide the rest of its
+        # catalogue from every client that does.
+        if page_size is not None and page_size < 1:
+            raise ValueError(f"page_size must be a positive integer or None, got {page_size!r}")
+        self._page_size = page_size
         self.registry = registry if registry is not None else build_registry(app)
         self.resources = resources if resources is not None else build_resource_registry(app)
         self.prompts = prompts if prompts is not None else build_prompt_registry(app)
@@ -777,18 +803,51 @@ class MCPServer(TasksMixin, InvocationMixin):
     async def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
         # Unfiltered is the default and stays a plain synchronous build - no awaits,
         # no per-tool predicate - so opting out costs nothing.
-        if self._tool_filter is None:
-            return self._tools_list()
-        return self._describe_tools(await self._visible_tools())
+        tools: Iterable[MCPTool] = (
+            self.registry.tools.values()
+            if self._tool_filter is None
+            else await self._visible_tools()
+        )
+        return self._listing("tools", tools, _tool_key, self._describe_tool, params)
 
     async def _handle_resources_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._resources_list()
+        return self._listing(
+            "resources", self.resources.statics(), _resource_key, _describe_resource, params
+        )
 
     async def _handle_resource_templates_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._resource_templates_list()
+        return self._listing(
+            "resourceTemplates",
+            self.resources.templates(),
+            _resource_key,
+            _describe_resource_template,
+            params,
+        )
 
     async def _handle_prompts_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._prompts_list()
+        return self._listing(
+            "prompts", self.prompts.prompts.values(), _prompt_key, _describe_prompt, params
+        )
+
+    def _listing(
+        self,
+        key: str,
+        items: Iterable[Any],
+        key_of: Callable[[Any], str],
+        describe: Callable[[Any], dict[str, Any]],
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Shape one page of a catalogue into its list result.
+
+        Paging happens before shaping, so a page costs the entries it emits
+        rather than the whole catalogue. `nextCursor` is present only while more
+        remain, which is what tells a client to ask again.
+        """
+        page, cursor = paginate(items, key_of, params.get("cursor"), self._page_size)
+        result: dict[str, Any] = {key: [describe(item) for item in page]}
+        if cursor is not None:
+            result["nextCursor"] = cursor
+        return result
 
     async def _handle_set_log_level(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._set_log_level(params)
@@ -882,9 +941,6 @@ class MCPServer(TasksMixin, InvocationMixin):
                 advertised.update(entry)
         return advertised
 
-    def _tools_list(self) -> dict[str, Any]:
-        return self._describe_tools(self.registry.tools.values())
-
     def _add_cache_hints(self, method: str, result: dict[str, Any]) -> None:
         """Attach `ttlMs` / `cacheScope` to a cacheable `complete` result.
 
@@ -912,10 +968,6 @@ class MCPServer(TasksMixin, InvocationMixin):
         if method == "prompts/list":
             return self._any_scoped_prompts
         return False
-
-    def _describe_tools(self, tools: Iterable[MCPTool]) -> dict[str, Any]:
-        """Shape an already-selected sequence of tools into a `tools/list` result."""
-        return {"tools": [self._describe_tool(tool) for tool in tools]}
 
     async def _visible_tools(self) -> list[MCPTool]:
         """The tools the calling principal may see, in registration order.
@@ -1110,13 +1162,6 @@ class MCPServer(TasksMixin, InvocationMixin):
 
     def _resources_list(self) -> dict[str, Any]:
         return {"resources": [_describe_resource(r) for r in self.resources.statics()]}
-
-    def _resource_templates_list(self) -> dict[str, Any]:
-        return {
-            "resourceTemplates": [
-                _describe_resource_template(r) for r in self.resources.templates()
-            ]
-        }
 
     async def _resources_read(self, params: dict[str, Any]) -> dict[str, Any]:
         """Read one resource by URI, replaying its route through `_invoke`.

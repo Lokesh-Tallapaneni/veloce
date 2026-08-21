@@ -74,7 +74,7 @@ def test_tasks_capability_advertised_when_a_tool_opts_in():
     assert server._initialize({})["capabilities"]["tasks"] == advert["tasks"]
 
 
-def test_execution_task_support_on_tools_list():
+async def test_execution_task_support_on_tools_list():
     """tools/list advertises execution.taskSupport only for an opted-in tool."""
     app = Veloce(openapi_url=None)
 
@@ -87,7 +87,8 @@ def test_execution_task_support_on_tools_list():
         return 2
 
     server = _server(app)
-    by_name = {t["name"]: t for t in server._tools_list()["tools"]}
+    listed = await server._handle_tools_list({})
+    by_name = {t["name"]: t for t in listed["tools"]}
     assert by_name["slow"]["execution"] == {"taskSupport": "optional"}
     assert "execution" not in by_name["fast"]
 

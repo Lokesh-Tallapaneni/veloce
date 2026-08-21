@@ -1874,6 +1874,7 @@ class Veloce(
         resumable: bool = False,
         tool_filter: Any = None,
         cache_ttl_ms: int | None = None,
+        page_size: int | None = None,
     ) -> Any:
         """Build the MCP server and serve the registered tools.
 
@@ -1917,6 +1918,12 @@ class Veloce(
         `server/discover`) on the modern protocol revision; `0` marks them
         immediately stale. A list that can differ between callers is additionally
         marked private so a shared proxy cannot serve one caller's answer to another.
+        `page_size` opts the list methods into cursor pagination: each answers with
+        at most that many entries plus a `nextCursor` while more remain, so a large
+        catalogue reaches the agent a page at a time instead of filling its context
+        in one response. Left unset, every list is answered in full - a client may
+        ignore `nextCursor`, so paginating uninvited would hide the rest of the
+        catalogue from one that does.
         Call this after the tool / resource / prompt routes are registered.
         """
         from veloce.contrib.mcp.server import DEFAULT_CACHE_TTL_MS, MCPServer
@@ -1928,7 +1935,9 @@ class Veloce(
             from veloce.contrib.mcp.transports.stdio import serve_stdio
             from veloce.principal import set_principal
 
-            server = MCPServer(self, tool_filter=tool_filter, cache_ttl_ms=cache_ttl)
+            server = MCPServer(
+                self, tool_filter=tool_filter, cache_ttl_ms=cache_ttl, page_size=page_size
+            )
 
             async def _serve() -> None:
                 if principal is not None:
@@ -1941,7 +1950,9 @@ class Veloce(
         if transport == "http":
             from veloce.contrib.mcp.transports.http import register_http_transport
 
-            server = MCPServer(self, tool_filter=tool_filter, cache_ttl_ms=cache_ttl)
+            server = MCPServer(
+                self, tool_filter=tool_filter, cache_ttl_ms=cache_ttl, page_size=page_size
+            )
             # A task-augmented call records the creating connection's identity and
             # the follow-up tasks/get|result|list|cancel must run under that same
             # connection. The stateless default mints a throwaway session (a fresh,
