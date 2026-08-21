@@ -211,6 +211,47 @@ async def chart() -> Response:
 Any other media type is shaped as before (a JSON or text body becomes a text
 block).
 
+### More than one content block
+
+A tool result carries a *list* of content blocks, so a handler with more than one
+thing to say - a caption beside a figure, a chart beside the rows behind it -
+returns the blocks it wants and they reach the client in order:
+
+```python
+from veloce import Veloce
+from veloce.contrib.mcp import ImageContent, ResourceLink, TextContent
+
+app = Veloce()
+
+
+@app.mcp_tool(description="Chart the quarter with the figures behind it")
+async def revenue_chart(quarter: str):
+    png_bytes_base64 = "iVBORw0KGgo="  # ... your rendered PNG, base64-encoded
+    return [
+        TextContent(f"Revenue for {quarter}"),
+        ImageContent(png_bytes_base64, "image/png"),
+        ResourceLink(f"file://revenue-{quarter}.csv", "figures"),
+    ]
+# tools/call -> content: [{"type": "text", ...}, {"type": "image", ...},
+#                         {"type": "resource_link", ...}]
+```
+
+`TextContent`, `ImageContent`, `AudioContent`, `ResourceLink` and
+`EmbeddedResource` are importable from `veloce.contrib.mcp`; each takes an
+optional `annotations=` mapping (`audience`, `priority`, `lastModified`). A
+single block may be returned on its own, without a list.
+
+Every item must be a content block. A list mixing blocks with plain data is
+reported as an error naming the offending position, rather than serialising an
+object into text. Any return that is not a block is data and shapes exactly as it
+did - a `dict`, a scalar, or a plain list is unaffected.
+
+!!! note
+    Blocks are for a handler reached through the MCP door. A route-backed tool
+    builds an HTTP response, so it points at non-text content with the
+    `X-MCP-Resource-Link` / `X-MCP-Embedded-Resource` headers below, or by
+    returning an image/audio `Response` as above.
+
 !!! note "Added in version 0.5"
     Image/audio tool content blocks and the resources primitive below.
 

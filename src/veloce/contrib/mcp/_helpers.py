@@ -39,6 +39,7 @@ from veloce.contrib.mcp.content import (
     TextContent,
 )
 from veloce.contrib.mcp.context import MCPContext
+from veloce.contrib.mcp.errors import _InBandError
 from veloce.contrib.mcp.icons import render_icons
 from veloce.http.response import Response
 from veloce.principal import current_principal
@@ -221,6 +222,37 @@ def _text_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
     if is_error:
         result["isError"] = True
     return result
+
+
+def _content_blocks(value: Any) -> list[dict[str, Any]] | None:
+    """Render a handler's content-block return as a result's content array.
+
+    A tool result carries a *list* of content blocks, so a handler that has more
+    than one thing to say - a caption beside an image, a chart beside the figures
+    behind it - returns the blocks it wants and they are emitted in order. A
+    single block is accepted as itself, since wrapping one block in a list to say
+    "just this" is noise.
+
+    Any other return is data and shapes as before, so this costs one `isinstance`
+    on the common path. A list is probed by its first element only: a
+    `list[int]` return must not pay a scan of every item to learn it is not
+    blocks.
+    """
+    if isinstance(value, ContentBlock):
+        return [value.to_payload()]
+    if isinstance(value, (list, tuple)) and value and isinstance(value[0], ContentBlock):
+        blocks = []
+        for index, item in enumerate(value):
+            if not isinstance(item, ContentBlock):
+                # Silently serialising the rest would emit an object repr as if it
+                # were the answer; name the offending position instead.
+                raise _InBandError(
+                    "a tool returning content blocks must return only content "
+                    f"blocks; item {index} is {type(item).__name__}"
+                )
+            blocks.append(item.to_payload())
+        return blocks
+    return None
 
 
 def _binary_result(response: Response) -> dict[str, Any] | None:

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from veloce._model_backend import shape_through_model
 from veloce.contrib.mcp._helpers import (
     _binary_result,
+    _content_blocks,
     _notifier_var,
     _progress_token,
     _resource_result_from_response,
@@ -29,6 +30,7 @@ from veloce.contrib.mcp._helpers import (
 from veloce.contrib.mcp.context import _in_task_var
 from veloce.contrib.mcp.errors import (
     InvalidParamsError,
+    _InBandError,
     _StreamTimeoutError,
     _StreamTooLargeError,
 )
@@ -385,14 +387,22 @@ class TasksMixin:
     def _success_result(self, tool: MCPTool, shaped: Any) -> dict[str, Any]:
         """Build a successful tool-call result from a shaped return value.
 
-        The text content block is always present (back-compatible with clients
-        that read only `content`). `structuredContent` is added when the tool
+        A handler that returned content blocks has already said what the result
+        is; the blocks are emitted in order and nothing is added. Otherwise the
+        text content block is always present (back-compatible with clients that
+        read only `content`), and `structuredContent` is added when the tool
         declares an `outputSchema` and the value carries an object form. A body
         that bypassed the route `response_model` has already been re-filtered by
         the caller, so any value reaching here is trusted to conform to the
         advertised schema - honouring the MCP requirement that a declared
         `outputSchema` is matched by conforming structured output.
         """
+        try:
+            blocks = _content_blocks(shaped)
+        except _InBandError as exc:
+            return _text_result(str(exc), is_error=True)
+        if blocks is not None:
+            return {"content": blocks}
         result = _text_result(_stringify(shaped))
         if tool.output_schema is not None:
             structured = _to_structured(shaped)
