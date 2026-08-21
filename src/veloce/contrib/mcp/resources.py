@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
 
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_HEAD, ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp._registry_base import Registry
@@ -32,9 +33,13 @@ if TYPE_CHECKING:  # pragma: no cover
 # A route carrying a mutating verb is a tool, never a resource.
 _RESOURCE_METHODS = frozenset({HTTP_METHOD_GET, HTTP_METHOD_HEAD})
 
-# RFC 6570 simple variable (`{name}`) inside a URI template. Each variable maps
-# to one route path parameter and matches a single non-slash URI segment.
-_URI_TEMPLATE_VAR = re.compile(r"\{([^}]+)\}")
+# An RFC 6570 variable inside a URI template, in either of the two forms the
+# spec's templates use. `{name}` is simple expansion: the value is one URI
+# segment, and a reserved character in it arrives percent-encoded. `{+name}` is
+# reserved expansion: the value may carry reserved characters - `/` above all -
+# literally, so it spans segments. A template variable names one route path
+# parameter, so the name is a Python identifier.
+_URI_TEMPLATE_VAR = re.compile(r"\{(\+?)([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 @dataclass(slots=True)
@@ -54,6 +59,12 @@ class MCPResource(MCPDescriptor):
     # The template variable names, in declaration order (empty for a static
     # resource). Each names a route path parameter.
     uri_param_names: tuple[str, ...]
+    # How much of the template is literal text rather than variables. Two
+    # templates can match the same URI - a catch-all `docs://{+path}` also matches
+    # what `docs://{+path}/meta` was registered for - and the one spelling out
+    # more of the URI is the one that meant it. Computed at build time so a read
+    # ranks candidates without re-reading their templates.
+    specificity: int = 0
 
 
 @dataclass(slots=True)
@@ -62,6 +73,12 @@ class ResourceRegistry(Registry[MCPResource]):
 
     resources: dict[str, MCPResource] = field(default_factory=dict)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # The template resources, most specific first. More than one template can
+    # match a URI - a catch-all matches everything a longer one was registered
+    # for - and the one spelling out more of the URI is the one that meant it.
+    # Ranking here, at registration, lets a read stop at its first match instead
+    # of scanning for a better one, and keeps statics out of that scan entirely.
+    _ranked_templates: list[MCPResource] = field(default_factory=list)
 
     @property
     def _store(self) -> dict[str, MCPResource]:
@@ -81,6 +98,9 @@ class ResourceRegistry(Registry[MCPResource]):
     def add(self, resource: MCPResource) -> None:
         """Register `resource`, rejecting a URI already taken."""
         self.register(resource)
+        if resource.pattern is not None:
+            self._ranked_templates.append(resource)
+            self._ranked_templates.sort(key=lambda entry: -entry.specificity)
 
     def statics(self) -> list[MCPResource]:
         """Return the concrete-URI resources (for ``resources/list``)."""
@@ -101,33 +121,53 @@ class ResourceRegistry(Registry[MCPResource]):
         static = self.resources.get(uri)
         if static is not None and not static.is_template:
             return static, {}
-        for resource in self.resources.values():
-            if resource.pattern is not None:
-                matched = resource.pattern.fullmatch(uri)
-                if matched is not None:
-                    return resource, matched.groupdict()
+        # Ranked most-specific-first at registration, so the first template that
+        # matches is the one that meant it and the scan stops there.
+        for resource in self._ranked_templates:
+            matched = resource.pattern.fullmatch(uri)  # type: ignore[union-attr]
+            if matched is not None:
+                return resource, _decode_values(matched.groupdict())
         return None
 
 
 def _uri_template_vars(uri: str) -> list[str]:
     """Return the RFC 6570 variable names declared in a URI template."""
-    return _URI_TEMPLATE_VAR.findall(uri)
+    return [name for _operator, name in _URI_TEMPLATE_VAR.findall(uri)]
 
 
 def _compile_uri_template(uri: str) -> Pattern[str]:
     """Compile a URI template into a matcher capturing each variable's value.
 
-    Literal spans are escaped; each ``{name}`` becomes a named group matching a
-    single non-slash segment, the granularity a route path parameter occupies.
+    Literal spans are escaped; a ``{name}`` becomes a named group matching a
+    single non-slash segment, the granularity a route path parameter occupies,
+    and a ``{+name}`` one matching across segments so a whole path binds to one
+    variable.
     """
     parts: list[str] = []
     last = 0
     for match in _URI_TEMPLATE_VAR.finditer(uri):
         parts.append(re.escape(uri[last : match.start()]))
-        parts.append(f"(?P<{match.group(1)}>[^/]+)")
+        span = ".+" if match.group(1) else "[^/]+"
+        parts.append(f"(?P<{match.group(2)}>{span})")
         last = match.end()
     parts.append(re.escape(uri[last:]))
     return re.compile("".join(parts))
+
+
+def _template_specificity(uri: str) -> int:
+    """Return how many characters of a template are literal rather than variable."""
+    return len(uri) - sum(len(match.group(0)) for match in _URI_TEMPLATE_VAR.finditer(uri))
+
+
+def _decode_values(values: dict[str, str]) -> dict[str, str]:
+    """Percent-decode a matched template's values.
+
+    A client percent-encodes a value to carry a character the URI syntax reserves,
+    so the handler must receive what was meant - `a%2Fb.py`, not the escape. The
+    `%` test keeps a value that was never encoded off `unquote` entirely, which is
+    the usual case.
+    """
+    return {name: unquote(value) if "%" in value else value for name, value in values.items()}
 
 
 def _resource_from_route(
@@ -171,6 +211,7 @@ def _resource_from_route(
         is_template=is_template,
         pattern=_compile_uri_template(uri) if is_template else None,
         uri_param_names=tuple(template_vars),
+        specificity=_template_specificity(uri),
         title=info.summary or None,
         icons=coerce_icons(getattr(info, "mcp_icons", None)),
     )

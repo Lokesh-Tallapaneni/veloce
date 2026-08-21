@@ -336,6 +336,33 @@ that rejects the call fails the read. The response body becomes the resource
 contents: a JSON or `text/*` body is returned as `text`, and any other media type
 (an image, a binary file) as a base64 `blob`.
 
+### Binding a whole path to one variable
+
+`{user_id}` is RFC 6570 *simple expansion*: it matches one URI segment, the
+granularity a route path parameter occupies. A value carrying a character the URI
+syntax reserves arrives percent-encoded and is decoded before the handler sees it
+(`file://a%2Fb.py` binds `a/b.py`).
+
+A file tree needs the other form. `{+name}` is *reserved expansion*: the value
+carries `/` literally, so a whole path binds to one variable:
+
+```python
+@app.get(
+    "/docs/{path}",
+    expose_as_mcp_resource=True,
+    mcp_resource_uri="docs://{+path}",
+    mcp_description="Any document in the tree",
+)
+async def document(path: str) -> dict:
+    return {"path": path}
+# resources/read {"uri": "docs://guide/deep/note.md"} -> path="guide/deep/note.md"
+```
+
+When more than one template matches a URI, the most specific one wins — the one
+spelling out more of the URI in literal text. So `docs://{+path}/meta` serves a
+metadata read while `docs://{+path}` serves everything else, whichever order they
+were registered in. A static URI is matched before any template.
+
 ### Advertising a media type
 
 `resources/list` carries a `mimeType` when the route declares one, so an agent can

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A resource template accepts `{+name}`, binding a whole path - separators included - to one variable. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - `mount_mcp(page_size=...)` paginates the MCP list methods with the spec's opaque cursor. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A tool may return a list of content blocks, emitted in order as the result's `content`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - `MCPContext.state` reaches the call's request state, so a handler holding the context can stash a value. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
@@ -48,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A percent-encoded resource template value reaches the handler decoded. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- The most specific resource template serves a URI, not whichever was registered first. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - An MCP call no longer leaves its request bound, which corrupted the HTTP transport's own request. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - An abandoned MCP request releases its cancellation-registry entry instead of stranding it. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A tool returning a `@dataclass` or `TypedDict` publishes an `outputSchema` and `structuredContent`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
