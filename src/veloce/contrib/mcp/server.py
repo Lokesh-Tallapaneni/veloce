@@ -610,6 +610,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         # stateless path leaves the subscribe handler to reject the call.
         session_token = _session_var.set(session)
         request_id_token = _request_id_var.set(msg_id)
+        release_tokens = True
         try:
             result = await handler(params)
         except MCPError as exc:
@@ -622,12 +623,22 @@ class MCPServer(TasksMixin, InvocationMixin):
         except Exception as exc:  # pragma: no cover - defensive
             _logger.exception("MCP method %s raised", method)
             return _error(msg_id, _JSONRPC_INTERNAL_ERROR, self._error_text(exc, "internal error"))
+        except GeneratorExit:
+            # Closed mid-await: an abandoned request being finalized, which the
+            # collector may run in any context. These tokens belong to the context
+            # that made the call, so resetting them here raises and would abandon
+            # the rest of this block - including the registry release below.
+            release_tokens = False
+            raise
         finally:
-            _inflight_var.reset(token)
-            _session_var.reset(session_token)
-            _request_id_var.reset(request_id_token)
-            if log_level_token is not None:
-                _log_level_var.reset(log_level_token)
+            if release_tokens:
+                _inflight_var.reset(token)
+                _session_var.reset(session_token)
+                _request_id_var.reset(request_id_token)
+                if log_level_token is not None:
+                    _log_level_var.reset(log_level_token)
+            # Context-free, so it is released on every path: an entry left behind
+            # keeps the request cancellable forever and grows the registry.
             if inflight is not None:
                 self._inflight.pop(inflight_key, None)
 

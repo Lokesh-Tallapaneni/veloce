@@ -92,12 +92,37 @@ class InvocationMixin:
         common case, zero overhead); otherwise it is cancelled past the budget and
         the `asyncio.TimeoutError` is surfaced by the caller (in-band for a tool
         call, a JSON-RPC error for a resource read or prompt render).
+
+        The call's binding of `request` / `g` / `current_app` is undone once it
+        ends. The Streamable HTTP transport awaits `handle_message` from inside a
+        live HTTP request, so a binding that outlived the call would leave the rest
+        of that handler, and every hook after it, reading the call's synthetic
+        request instead of the real one.
         """
-        if self._call_timeout is None:
-            return await self._invoke(tool, arguments, progress_token)
-        return await asyncio.wait_for(
-            self._invoke(tool, arguments, progress_token), self._call_timeout
+        # Built here so the restore wraps one await, not a duplicated pair.
+        call = (
+            self._invoke(tool, arguments, progress_token)
+            if self._call_timeout is None
+            else asyncio.wait_for(self._invoke(tool, arguments, progress_token), self._call_timeout)
         )
+        outer_app = _current_app_var.get()
+        outer_request = _current_request_var.get()
+        outer_globals = g._snapshot()
+        unbind = True
+        try:
+            return await call
+        except GeneratorExit:
+            # Closed mid-await: an abandoned call being finalized, which the
+            # collector may run in any context. There is no awaiter to hand a
+            # context back to, and restoring here would write the outer binding
+            # into whichever context happens to be current.
+            unbind = False
+            raise
+        finally:
+            if unbind:
+                _current_app_var.set(outer_app)
+                _current_request_var.set(outer_request)
+                g._restore(outer_globals)
 
     async def _invoke(
         self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None = None
@@ -171,9 +196,9 @@ class InvocationMixin:
         request._state["_mcp"] = True
 
         # Bind the request context exactly as `handle_request` does: the
-        # `current_app` / `request` contextvars plus a fresh `g`. Letting the
-        # contextvars fall through when the call ends is intentional - stdio
-        # calls run sequentially, each rebinding before it reads.
+        # `current_app` / `request` contextvars plus a fresh `g`. `_run_invoke`
+        # unbinds them once the call ends, so a caller that awaited this from
+        # inside its own request keeps reading its own.
         _current_app_var.set(self.app)
         _current_request_var.set(request)
         g._reset()

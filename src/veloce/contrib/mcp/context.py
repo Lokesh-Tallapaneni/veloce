@@ -27,6 +27,7 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import Any
 
+from veloce._internal import _current_request_var
 from veloce.contrib.mcp.errors import MCPCapabilityError
 
 # Whether the current call is running as a background task rather than inline.
@@ -134,6 +135,31 @@ class MCPContext:
     def _mark_cancelled(self) -> None:
         """Record that the client cancelled this call (set by the server)."""
         self._cancelled = True
+
+    @property
+    def state(self) -> Any:
+        """Scratch space shared by everything resolving this one call.
+
+        The same object a handler declaring `request: Request` reaches through
+        `request.state`, so a dependency and the handler holding this context
+        read and write one store rather than two that could disagree. Scoped to
+        the call: a later `tools/call` starts clean.
+
+        Usage::
+
+            @app.mcp_tool(description="Look something up")
+            async def lookup(ctx: MCPContext) -> dict:
+                ctx.state.started = time.monotonic()
+                return {"ok": True}
+        """
+        request = _current_request_var.get()
+        if request is None:
+            raise RuntimeError(
+                "MCPContext.state needs the request being handled, which a bare "
+                "MCPContext has no reference to. It is wired for a real tool "
+                "invocation."
+            )
+        return request.state
 
     # ── Call metadata ─────────────────────────────────────────
 

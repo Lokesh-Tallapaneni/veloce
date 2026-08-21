@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MCPContext.state` reaches the call's request state, so a handler holding the context can stash a value. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - `mcp_tool(tags=...)` labels a tool, and every tool exposes `tags` for a visibility policy. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A `pathlib.Path` parameter declares `format: path` in the tool schema. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - `mcp_resource_mime_type=` declares the media type a resource listing advertises. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
@@ -45,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An MCP call no longer leaves its request bound, which corrupted the HTTP transport's own request. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- An abandoned MCP request releases its cancellation-registry entry instead of stranding it. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A tool returning a `@dataclass` or `TypedDict` publishes an `outputSchema` and `structuredContent`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - An optional tool parameter advertises its null branch, and a parameter's default is published. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A sub-dependency's body model advertises its fields, so a call built from the schema is accepted. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))

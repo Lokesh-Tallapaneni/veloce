@@ -221,6 +221,14 @@ class _RequestGlobals:
         """
         self._ctx_var.set(None)
 
+    def _snapshot(self) -> dict[str, Any] | None:
+        """Return the bound store so a nested binding can hand it back."""
+        return self._ctx_var.get()
+
+    def _restore(self, store: dict[str, Any] | None) -> None:
+        """Rebind a store captured by `_snapshot`."""
+        self._ctx_var.set(store)
+
 
 # ── Aborter ───────────────────────────────────────────────
 

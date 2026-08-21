@@ -525,6 +525,37 @@ async def whoami(ctx: MCPContext) -> str:
 The context parameter is not part of the tool's input schema - the agent never
 supplies it.
 
+### Per-call scratch space
+
+`ctx.state` is the state of the request being handled, so a handler holding the
+context can stash a value without also declaring a `Request` parameter. A
+dependency writing through `request.state` and a handler reading through
+`ctx.state` see the same store:
+
+```python
+from veloce import Depends, MCPContext, Request, Veloce
+
+app = Veloce()
+
+
+def audit(request: Request) -> str:
+    request.state.trail = ["dependency"]
+    return "audited"
+
+
+@app.mcp_tool(description="Run a job with an audit trail")
+async def run_job(steps: int, ctx: MCPContext, _a: str = Depends(audit)) -> dict:
+    ctx.state.trail.append("handler")
+    return {"steps": steps, "trail": ctx.state.trail}
+```
+
+!!! note
+    State lives for one call. A later call starts with an empty store, so use a
+    database, cache, or session for anything that must outlive the call.
+
+Reading `ctx.state` outside a call - on a context you constructed yourself -
+raises `RuntimeError`, because there is no request to read.
+
 ### Progress and logging
 
 `ctx.debug(...)`, `ctx.info(...)`, `ctx.warning(...)` and `ctx.error(...)` are
