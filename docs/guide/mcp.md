@@ -611,6 +611,24 @@ async def whoami(ctx: MCPContext) -> str:
 The context parameter is not part of the tool's input schema - the agent never
 supplies it.
 
+### Sending metadata back with a result
+
+`ctx.result_meta` is the `_meta` this call's result carries. The protocol reserves
+that field for metadata it does not define itself, so it is where a handler puts
+what its client has agreed to read — a cost, a trace id, an extension's own block:
+
+```python
+@app.mcp_tool(description="Summarise a document")
+async def summarise(text: str, ctx: MCPContext) -> dict:
+    ctx.result_meta["io.example/cost"] = 0.02
+    return {"summary": text[:80]}
+# tools/call -> {"content": [...], "_meta": {"io.example/cost": 0.02}}
+```
+
+It belongs to one call: the next starts empty, and a handler that never touches it
+sends no `_meta` at all. To describe the *tool* rather than a call of it, declare
+`meta=` at registration instead — see [Tool metadata](#tool-metadata).
+
 ### Per-call scratch space
 
 `ctx.state` is the state of the request being handled, so a handler holding the

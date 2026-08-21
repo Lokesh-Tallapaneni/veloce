@@ -28,6 +28,7 @@ from veloce._internal import _is_async_callable, offload
 from veloce._model_backend import shape_through_model
 from veloce.contrib.mcp._helpers import (
     _DEFERRED_RESPONSE,
+    _attach_result_meta,
     _binary_result,
     _declared_mime_type,
     _describe_prompt,
@@ -61,7 +62,7 @@ from veloce.contrib.mcp.capabilities import (
     ToolsCapability,
 )
 from veloce.contrib.mcp.completion import CompletionsCapability, attach_completers
-from veloce.contrib.mcp.context import _LOG_RANKS, LOG_LEVEL_OFF
+from veloce.contrib.mcp.context import _LOG_RANKS, LOG_LEVEL_OFF, _result_meta_var
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
     _JSONRPC_INVALID_REQUEST,
@@ -661,9 +662,16 @@ class MCPServer(TasksMixin, InvocationMixin):
         # stateless path leaves the subscribe handler to reject the call.
         session_token = _session_var.set(session)
         request_id_token = _request_id_var.set(msg_id)
+        # A fresh slot per message, so `_meta` a handler attaches belongs to this
+        # call's result and cannot reach the next one.
+        result_meta_token = _result_meta_var.set(None)
         release_tokens = True
+        # Read while the slot is still bound: the `finally` below releases it, and
+        # the result is not assembled until after that.
+        attached_meta: dict[str, Any] | None = None
         try:
             result = await handler(params)
+            attached_meta = _result_meta_var.get()
         except MCPError as exc:
             # Polymorphic: the JSON-RPC code and any `data` come from the subclass.
             return exc.to_error(msg_id)
@@ -686,6 +694,7 @@ class MCPServer(TasksMixin, InvocationMixin):
                 _inflight_var.reset(token)
                 _session_var.reset(session_token)
                 _request_id_var.reset(request_id_token)
+                _result_meta_var.reset(result_meta_token)
                 if log_level_token is not None:
                     _log_level_var.reset(log_level_token)
             # Context-free, so it is released on every path: an entry left behind
@@ -711,6 +720,8 @@ class MCPServer(TasksMixin, InvocationMixin):
             result = {"resultType": RESULT_TYPE_COMPLETE, **result}
             if method in _CACHEABLE_METHODS:
                 self._add_cache_hints(method, result)
+        if attached_meta and isinstance(result, dict):
+            result = _attach_result_meta(result, attached_meta)
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
     def _gate_session(

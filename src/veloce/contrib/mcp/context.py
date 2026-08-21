@@ -47,6 +47,12 @@ _ELICITATION_ID_ENTROPY_BYTES = 16
 # module, so the dependency has to run in this direction.
 _in_task_var: ContextVar[bool] = ContextVar("_mcp_in_task", default=False)
 
+# `_meta` the handler asked to send back on this call's result. It lives here for
+# the same reason as `_in_task_var`: `_helpers` imports this module, so the
+# dependency has to run in this direction. `None` means the handler asked for
+# nothing, which is the common case and costs one lookup.
+_result_meta_var: ContextVar[dict[str, Any] | None] = ContextVar("_mcp_result_meta", default=None)
+
 # Suppresses every `notifications/message`, whatever its level. The modern revision
 # sets the log level per request and requires a server to send no log notifications
 # for a request that named none, which no RFC 5424 level can express.
@@ -429,6 +435,25 @@ class MCPContext:
         result = await self._request("roots/list", "roots", {})
         roots = result.get("roots")
         return roots if isinstance(roots, list) else []
+
+    @property
+    def result_meta(self) -> dict[str, Any]:
+        """Scratch `_meta` sent back on this call's result.
+
+        The protocol reserves `_meta` for metadata it does not define, so this is
+        where a handler puts what its client agreed to read - a cost, a trace id,
+        an extension's own block. Mutated in place::
+
+            ctx.result_meta["io.example/trace"] = trace_id
+
+        It belongs to one call: the next one starts empty. A handler that never
+        touches it sends no `_meta` at all.
+        """
+        meta = _result_meta_var.get()
+        if meta is None:
+            meta = {}
+            _result_meta_var.set(meta)
+        return meta
 
     async def _request(
         self, method: str, capability: str, params: dict[str, Any]

@@ -60,6 +60,18 @@ _notifier_var: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = 
     "_mcp_notifier", default=None
 )
 
+
+def _attach_result_meta(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """Attach what the handler asked to send back on this call's result.
+
+    An existing `_meta` the result already carries wins: the protocol machinery
+    that put it there (a task marker, a subscription id) is answering the client's
+    own request, and a handler must not be able to displace it.
+    """
+    result["_meta"] = {**meta, **result.get("_meta", {})}
+    return result
+
+
 # The current call's `logging/setLevel` minimum, scoped per request like the
 # notifier so one HTTP client's level change cannot raise the floor for another.
 # `None` until set (emit all). The serial stdio loop sets it once in its serve
