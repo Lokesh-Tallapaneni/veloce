@@ -196,8 +196,10 @@ def test_input_schema_from_signature():
     assert schema["type"] == "object"
     props = schema["properties"]
     assert props["text"] == {"type": "string"}
-    assert props["times"] == {"type": "integer"}
-    assert props["loud"] == {"type": "boolean"}
+    # A parameter's default is part of its published contract, so a client can
+    # populate the field itself rather than relying on the server's fallback.
+    assert props["times"] == {"type": "integer", "default": 1}
+    assert props["loud"] == {"type": "boolean", "default": False}
     # `text` is required (no default); `times` / `loud` are not.
     assert schema["required"] == ["text"]
 

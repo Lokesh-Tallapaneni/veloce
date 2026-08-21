@@ -55,6 +55,10 @@ if TYPE_CHECKING:  # pragma: no cover
 # that is absent from `arguments` is a binding error, not a handler error.
 _INPUT_KINDS = frozenset({K_BODY_MODEL, K_QUERY_LIST, K_PARAM_MARKER, K_QUERY})
 
+# Schema keywords that annotate a property rather than constrain its type, so
+# they stay outside the `anyOf` when a null branch is added.
+_ANNOTATION_KEYWORDS = frozenset({"description", "title", "default"})
+
 
 def _is_context_slot(slot: _Slot) -> bool:
     """Whether `slot` binds the MCPContext rather than an agent input.
@@ -335,8 +339,32 @@ def _slot_schema(
         marker_default = getattr(d.marker, "default", ...)
         if marker_default is not ... and getattr(d.marker, "default_factory", None) is None:
             prop = {**prop, "default": marker_default}
+    elif d.has_default and d.default is not None:
+        # A bare Python default is as much a part of the contract as a marker's,
+        # and a client that can read it can populate the field itself instead of
+        # omitting it. `None` is skipped: it is carried by the null branch below,
+        # where it describes an optional field rather than a value worth sending.
+        prop = {**prop, "default": d.default}
+
+    # An optional parameter accepts an explicit null as well as omission. Without
+    # the null branch the published type rejects a value the call path takes.
+    if d.is_optional and d.model is None:
+        prop = _with_null_branch(prop)
 
     return prop, not (d.has_default or d.is_optional)
+
+
+def _with_null_branch(prop: dict[str, Any]) -> dict[str, Any]:
+    """Widen a property schema to also accept an explicit null."""
+    if "anyOf" in prop:
+        if {"type": "null"} in prop["anyOf"]:
+            return prop
+        return {**prop, "anyOf": [*prop["anyOf"], {"type": "null"}]}
+    keywords = {k: v for k, v in prop.items() if k not in _ANNOTATION_KEYWORDS}
+    carried = {k: v for k, v in prop.items() if k in _ANNOTATION_KEYWORDS}
+    if not keywords:
+        return prop
+    return {**carried, "anyOf": [keywords, {"type": "null"}]}
 
 
 def _coerce_argument(slot: _Slot, value: Any) -> Any:
