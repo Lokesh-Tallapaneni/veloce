@@ -233,7 +233,7 @@ def _tool_from_route(
     tool_name = _tool_name_from_route_name(info.name)
     desc = require_mcp_description(tool_name, info.mcp_description)
     plan = info.handler_plan if info.handler_plan is not None else build_plan(info.handler)
-    schema = build_input_schema(plan, schemas_registry)
+    schema = build_input_schema(plan, schemas_registry, info.path_template)
     output_schema, output_model = _output_schema_for(info.handler, info, schemas_registry)
     return MCPTool(
         name=tool_name,

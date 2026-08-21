@@ -49,6 +49,7 @@ from veloce.dependency import SecurityScopes, _coerce_scalar, _coerce_value
 from veloce.http.datastructures import FormData, QueryParams
 from veloce.http.request import Request
 from veloce.http.response import Response
+from veloce.routing.converters import path_param_schemas
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan, _Slot
@@ -91,7 +92,9 @@ JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
 def build_input_schema(
-    plan: HandlerPlan, schemas_registry: dict[str, dict[str, Any]]
+    plan: HandlerPlan,
+    schemas_registry: dict[str, dict[str, Any]],
+    path_template: str | None = None,
 ) -> dict[str, Any]:
     """Build the MCP tool input JSON Schema from a handler plan.
 
@@ -110,11 +113,23 @@ def build_input_schema(
     rejects the call. The `Depends` graph is walked recursively and every such
     input is merged in by name; the `Depends` slots themselves (and other
     inject-only slots) are never inputs.
+
+    `path_template` is the backing route's path, for a tool exposed from one. Its
+    parameters are part of the call's contract whether or not a signature names
+    them - a dependency reading `request.path_params` consumes the same value -
+    so a placeholder no slot declares is advertised from the route itself. Left
+    out, an agent reading the schema would see no way to supply a value the route
+    requires, and would call the tool with that value missing.
     """
     properties: dict[str, Any] = {}
     required: list[str] = []
 
     _collect_input_slots(plan.slots, properties, required, schemas_registry, set())
+    if path_template:
+        for name, param_schema in path_param_schemas(path_template).items():
+            if name not in properties:
+                properties[name] = param_schema
+                required.append(name)
 
     schema: dict[str, Any] = {
         "$schema": JSON_SCHEMA_DIALECT,

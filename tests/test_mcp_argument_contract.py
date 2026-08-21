@@ -131,9 +131,13 @@ async def test_an_undeclared_argument_is_ignored_not_refused():
     assert orjson.loads(text) == {"query": "cats", "limit": 10}
 
 
-async def test_a_route_backed_tool_accepts_a_path_variable_no_slot_declares():
-    """The case that makes strict rejection unsafe: `item_id` is consumed through
-    the synthetic request, so no slot exists to advertise it."""
+async def test_a_path_variable_no_slot_declares_is_advertised_from_the_route():
+    """`item_id` is consumed through the synthetic request, and no slot names it.
+
+    The route's template does, so the schema is built from that. Before, the tool
+    published no parameters at all: an agent reading it called `loc` with nothing
+    and got whatever the dependency does when the value is missing.
+    """
     app = Veloce(title="PathVar", openapi_url=None)
 
     def read_param(request) -> int:
@@ -144,8 +148,60 @@ async def test_a_route_backed_tool_accepts_a_path_variable_no_slot_declares():
         return {"item_id": value}
 
     schema = build_registry(app).tools["loc"].input_schema
-    assert schema["properties"] == {}
+    assert schema["properties"] == {"item_id": {"type": "string"}}
+    assert schema["required"] == ["item_id"]
 
     is_error, text = await _call(MCPServer(app), "loc", {"item_id": 7})
     assert is_error is False
     assert orjson.loads(text) == {"item_id": 7}
+
+
+async def test_a_typed_path_variable_is_advertised_with_its_converter_type():
+    app = Veloce(title="TypedPathVar", openapi_url=None)
+
+    def read_param(request) -> int:
+        return request.path_params["item_id"]
+
+    @app.get("/loc/{item_id:int}", expose_as_mcp_tool=True, mcp_description="Localised")
+    async def loc(value: int = Depends(read_param)) -> dict:
+        return {"item_id": value}
+
+    schema = build_registry(app).tools["loc"].input_schema
+    assert schema["properties"] == {"item_id": {"type": "integer"}}
+
+
+async def test_a_slot_declared_path_parameter_is_not_advertised_twice():
+    app = Veloce(title="DeclaredPathVar", openapi_url=None)
+
+    @app.get("/item/{item_id}", expose_as_mcp_tool=True, mcp_description="Declared")
+    async def item(item_id: int) -> dict:
+        return {"item_id": item_id}
+
+    schema = build_registry(app).tools["item"].input_schema
+    # The slot's own annotation wins - it is the more precise of the two.
+    assert schema["properties"] == {"item_id": {"type": "integer"}}
+    assert schema["required"] == ["item_id"]
+
+
+async def test_a_raw_query_read_inside_a_dependency_is_still_undeclarable():
+    """What still blocks rejecting undeclared arguments.
+
+    A dependency calling `request.query_params.get("q")` consumes an argument
+    that no signature and no route template mentions - it is arbitrary code, so
+    nothing static can see it. `{"q": ...}` is a legitimate, working call whose
+    name the schema cannot carry, and rejecting unknown names would break it.
+    """
+    app = Veloce(title="RawQuery", openapi_url=None)
+
+    def from_query(request) -> str:
+        return request.query_params.get("q", "<absent>")
+
+    @app.mcp_tool(description="Reads a raw query parameter")
+    async def pure(value: str = Depends(from_query)) -> dict:
+        return {"value": value}
+
+    assert build_registry(app).tools["pure"].input_schema["properties"] == {}
+
+    is_error, text = await _call(MCPServer(app), "pure", {"q": "hello"})
+    assert is_error is False
+    assert orjson.loads(text) == {"value": "hello"}

@@ -31,6 +31,7 @@ from veloce._protocol_constants import HTTP_METHOD_QUERY, OAUTH2_GRANT_TYPE_PASS
 from veloce._route_contract import RouteContract, iter_param_descriptors
 from veloce.dependency import Depends
 from veloce.http.response import HTMLResponse, JSONResponse
+from veloce.routing.converters import path_param_schemas
 from veloce.routing.params import ParamBase
 from veloce.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery
 from veloce.security.http import HTTPBasic, HTTPBearer, HTTPDigest
@@ -1016,7 +1017,27 @@ def _extract_parameters(
 
         parameters.append(param_info)
 
+    _declare_undocumented_path_params(info, parameters)
     return parameters, request_body_schema, form_fields, body_fields, scalar_body
+
+
+def _declare_undocumented_path_params(info: Any, parameters: list[dict]) -> None:
+    """Document a path parameter no handler parameter declares.
+
+    A route's path parameters are part of its contract whether or not the
+    signature names one: a dependency reading `request.path_params` consumes the
+    same segment. Leaving it out also makes the document invalid - OpenAPI 3.1
+    requires every template expression in the path to have a `path` parameter -
+    so a caller reading the schema could not know to supply it at all.
+    """
+    template = getattr(info, "path_template", None)
+    if not template:
+        return
+    declared = {p["name"] for p in parameters if p["in"] == "path"}
+    for name, schema in path_param_schemas(template).items():
+        if name in declared:
+            continue
+        parameters.append({"name": name, "in": "path", "required": True, "schema": schema})
 
 
 def _extract_request_body(
