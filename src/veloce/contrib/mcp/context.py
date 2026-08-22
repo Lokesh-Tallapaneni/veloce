@@ -42,13 +42,15 @@ from veloce.contrib.mcp.sampling import (
 # client would silently drop, so it is refused here.
 _SAMPLING_CONTEXT_MODES = frozenset({"none", "thisServer", "allServers"})
 
-# Told to a connection whose visibility changed. All three are sent because one
-# hidden name may be a tool, a prompt or a resource, and the client is cheap to
-# tell but expensive to leave with a stale list.
-_LIST_CHANGED_NOTIFICATIONS = (
-    "notifications/tools/list_changed",
-    "notifications/prompts/list_changed",
-    "notifications/resources/list_changed",
+# Told to a connection whose visibility changed, one per kind of primitive whose
+# listing actually changed. Sending all three would announce a change to lists
+# that did not change - and, on a server exposing no prompts or resources, would
+# use capabilities `initialize` never negotiated, which the lifecycle rules
+# forbid. Ordered so a client sees them in a stable order.
+_LIST_CHANGED_BY_KIND = (
+    ("tools", "notifications/tools/list_changed"),
+    ("prompts", "notifications/prompts/list_changed"),
+    ("resources", "notifications/resources/list_changed"),
 )
 
 # Bytes of entropy in a minted `elicitationId`. The id names one interaction so a
@@ -625,11 +627,36 @@ class MCPContext:
             )
         before = set(session.hidden)
         mutate(session.hidden)
-        if session.hidden == before:
+        changed = before.symmetric_difference(session.hidden)
+        if not changed:
             return
-        # Only this connection is told: the change was made for it alone.
-        for method in _LIST_CHANGED_NOTIFICATIONS:
-            await self.send_notification(method, {})
+        # Only this connection is told: the change was made for it alone, and
+        # only about the lists the changed names actually belong to.
+        kinds = self._changed_kinds(changed)
+        for kind, method in _LIST_CHANGED_BY_KIND:
+            if kind in kinds:
+                await self.send_notification(method, {})
+
+    def _changed_kinds(self, names: set[str]) -> frozenset[str]:
+        """Return which listings the given names appear in.
+
+        A hidden name is a tool or prompt name, or a resource URI; which one it
+        is decides who needs telling. Off a server - a bare context - nothing can
+        be resolved, so every listing is treated as affected rather than
+        silently telling no one.
+        """
+        server = self._server
+        if server is None:
+            return frozenset(kind for kind, _method in _LIST_CHANGED_BY_KIND)
+        kinds = set()
+        for name in names:
+            if server.registry.get(name) is not None:
+                kinds.add("tools")
+            if server.prompts.get(name) is not None:
+                kinds.add("prompts")
+            if name in server.resources.resources:
+                kinds.add("resources")
+        return frozenset(kinds)
 
     @property
     def result_meta(self) -> dict[str, Any]:

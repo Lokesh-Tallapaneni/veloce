@@ -2853,7 +2853,11 @@ def test_initialize_advertises_resources_when_present():
         return {}
 
     caps = _initialize(app, {})["result"]["capabilities"]
-    assert caps["resources"] == {"subscribe": False, "listChanged": False}
+    # `listChanged` is true on a stateful connection whether or not subscriptions
+    # are on: a handler can narrow this connection's resource listing with
+    # `MCPContext.hide`, and the client is told so it fetches the list again.
+    # `subscribe` additionally needs the subscription machinery.
+    assert caps["resources"] == {"subscribe": False, "listChanged": True}
 
 
 def test_initialize_omits_resources_capability_when_none():
@@ -3498,7 +3502,9 @@ def test_initialize_advertises_prompts_when_present():
         return "hi"
 
     caps = _initialize(app, {})["result"]["capabilities"]
-    assert caps["prompts"] == {"listChanged": False}
+    # True over the stdio pipe: a stateful connection can be told its prompt
+    # listing changed, which `MCPContext.hide` can do.
+    assert caps["prompts"] == {"listChanged": True}
 
 
 def test_initialize_omits_prompts_capability_when_none():

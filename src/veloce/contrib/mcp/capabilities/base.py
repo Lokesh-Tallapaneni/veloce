@@ -55,3 +55,14 @@ class _ServerCapability(Capability):
 
     def __init__(self, server: MCPServer) -> None:
         self._server = server
+
+    def _connection_can_be_told(self) -> bool:
+        """Whether the connection being answered can receive a notification.
+
+        `listChanged` promises the client will be told when a list changes, and
+        the only channel for that is a stateful connection's outbound stream. A
+        stateless request has none, and its list cannot change anyway: nothing
+        survives the response.
+        """
+        session = self._server.current_session()
+        return session is not None and session.persistent
