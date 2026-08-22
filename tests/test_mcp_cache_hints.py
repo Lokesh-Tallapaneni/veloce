@@ -22,7 +22,9 @@ CACHEABLE = [
 ]
 
 
-def _app(*, scoped_tool: bool = False, scoped_prompt: bool = False) -> Veloce:
+def _app(
+    *, scoped_tool: bool = False, scoped_prompt: bool = False, scoped_resource: bool = False
+) -> Veloce:
     app = Veloce(title="CacheProbe", version="1.0.0", openapi_url=None)
 
     @app.mcp_tool(description="Open tool")
@@ -53,6 +55,18 @@ def _app(*, scoped_tool: bool = False, scoped_prompt: bool = False) -> Veloce:
     )
     async def config() -> dict:
         return {"theme": "dark"}
+
+    if scoped_resource:
+
+        @app.get(
+            "/secrets",
+            expose_as_mcp_resource=True,
+            mcp_resource_uri="config://secrets",
+            mcp_description="Secrets",
+            mcp_scopes=["admin"],
+        )
+        async def secrets() -> dict:
+            return {}
 
     return app
 
@@ -128,6 +142,17 @@ async def test_a_prompt_list_containing_a_scoped_prompt_is_private():
 
 async def test_an_unscoped_prompt_list_is_public():
     response = await _call(MCPServer(_app()), "prompts/list")
+    assert response["result"]["cacheScope"] == "public"
+
+
+async def test_a_resource_list_containing_a_scoped_resource_is_private():
+    """It omits what this caller may not read, so it is this caller's answer."""
+    response = await _call(MCPServer(_app(scoped_resource=True)), "resources/list")
+    assert response["result"]["cacheScope"] == "private"
+
+
+async def test_an_unscoped_resource_list_is_public():
+    response = await _call(MCPServer(_app()), "resources/list")
     assert response["result"]["cacheScope"] == "public"
 
 

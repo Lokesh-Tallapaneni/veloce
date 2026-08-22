@@ -2007,12 +2007,13 @@ class Veloce(
         `resumable` opts into SSE resumability: each streamed event gets an id
         encoding its stream, and a `GET` carrying `Last-Event-ID` replays only that
         stream's missed events so a client can reconnect after a dropped connection.
-        `tool_filter` narrows what `tools/list` reports per caller: a callable
-        `(tool, principal) -> bool` (sync or async) that hides tools an agent has no
-        business seeing, so its context is not spent on tools it cannot invoke. The
-        caller's declared `mcp_scopes` are applied first regardless, so a filter can
-        only hide further, never reveal; hiding a tool does not change what happens
-        if it is called anyway. Left unset, listing is unfiltered.
+        `tool_filter` narrows what `tools/list` reports per caller beyond the
+        declared scopes: a callable `(tool, principal) -> bool` (sync or async) that
+        hides tools an agent has no business seeing, so its context is not spent on
+        tools it cannot invoke. Declared scopes are applied first, whether or not a
+        filter is set - every list omits what this caller would be refused - so a
+        filter can only hide further, never reveal; hiding a primitive does not
+        change what happens if it is called anyway.
         `cache_ttl_ms` sets the freshness hint sent with cacheable results
         (`tools/list`, `prompts/list`, `resources/list`, `resources/read` and
         `server/discover`) on the modern protocol revision; `0` marks them

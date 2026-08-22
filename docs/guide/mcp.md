@@ -1770,9 +1770,13 @@ app.mount_mcp(transport="http", allowed_origins=["https://app.example.com"])
 
 ## Deciding which tools a caller sees
 
-Scopes decide what a caller may *invoke*. By default every registered tool is still
-*listed*, so an agent spends context on tool descriptions it can never use. Pass a
-`tool_filter` to narrow the listing per caller:
+A tool, prompt or resource whose declared `scopes` the caller does not hold is not
+listed to that caller. Listing it would spend the agent's context on a call that
+could only be refused, and the refusal is unchanged either way — an unlisted
+primitive called anyway still fails with an authorization error.
+
+That much needs no configuration. Pass a `tool_filter` to narrow the tool listing
+further, by whatever policy the application has:
 
 ```python
 from veloce import Veloce, Principal

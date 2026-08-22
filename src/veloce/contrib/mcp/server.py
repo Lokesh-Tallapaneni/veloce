@@ -21,7 +21,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from veloce import status
 from veloce._internal import _is_async_callable, offload
@@ -185,6 +185,10 @@ _CACHE_SCOPE_PRIVATE = "private"
 # ordered form clients are shown.
 _SERVED_VERSION_SET = frozenset(SERVED_PROTOCOL_VERSIONS)
 
+# A prompt or a resource: both are gated by the scopes of the `MCPTool` they
+# carry, so one narrowing walk serves either listing.
+_ScopedT = TypeVar("_ScopedT", bound="MCPPrompt | MCPResource")
+
 
 # A catalogue is paged by the same key its registry indexes it under, so a
 # cursor names the item the way the registry itself does.
@@ -312,6 +316,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         "_page_size",
         "_any_scoped_tools",
         "_any_scoped_prompts",
+        "_any_scoped_resources",
         "_subscriptions_enabled",
         "_connections",
         "_capabilities",
@@ -353,17 +358,21 @@ class MCPServer(TasksMixin, InvocationMixin):
         # descriptor now the registries exist, so a misconfigured target surfaces
         # at build time and `CompletionsCapability` finds the completers in place.
         attach_completers(app, self.prompts, self.resources)
-        # Whether either list can differ between two authorized callers, decided
-        # once here: the registries are fixed after build, so the cache-scope
-        # decision must not walk them per request.
         # Optional search-first catalogue. When on, three tools are registered and
         # they are the only ones listed; every other tool is found through them.
         # Built after the registry so it can index what is registered, and before
-        # the scoped/prompt scans so its own tools are counted like any other.
+        # the scope scans so its own tools are counted like any other.
         self._tool_search = ToolSearch(self) if tool_search else None
+        # Whether each list can differ between two callers, decided once here: the
+        # registries are fixed after build, so neither the narrowing decision nor
+        # the cache-scope decision may walk them per request. A server declaring
+        # no scopes anywhere leaves every list on its plain synchronous build.
         self._any_scoped_tools = any(tool.required_scopes for tool in self.registry.tools.values())
         self._any_scoped_prompts = any(
             prompt.tool.required_scopes for prompt in self.prompts.prompts.values()
+        )
+        self._any_scoped_resources = any(
+            resource.tool.required_scopes for resource in self.resources.resources.values()
         )
         self.server_name = getattr(app, "title", None) or "Veloce"
         self.server_version = getattr(app, "version", None) or "0.1.0"
@@ -878,26 +887,32 @@ class MCPServer(TasksMixin, InvocationMixin):
         return {}
 
     async def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        # Unfiltered is the default and stays a plain synchronous build - no awaits,
-        # no per-tool predicate - so opting out costs nothing. A search-first
-        # catalogue narrows the listing to the search tools, so it takes the same
-        # path a configured filter does.
+        # A server with no scopes, no filter and no search catalogue has nothing to
+        # narrow, so its listing stays a plain synchronous build - no awaits, no
+        # per-tool predicate - and costs exactly what it did before any of the
+        # three existed.
         tools: Iterable[MCPTool] = (
             self.registry.tools.values()
-            if self._tool_filter is None and self._tool_search is None
+            if self._tool_filter is None
+            and self._tool_search is None
+            and not self._any_scoped_tools
             else await self._visible_tools()
         )
         return self._listing("tools", tools, _tool_key, self._describe_tool, params)
 
     async def _handle_resources_list(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._listing(
-            "resources", self.resources.statics(), _resource_key, _describe_resource, params
+            "resources",
+            self._readable(self.resources.statics(), self._any_scoped_resources),
+            _resource_key,
+            _describe_resource,
+            params,
         )
 
     async def _handle_resource_templates_list(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._listing(
             "resourceTemplates",
-            self.resources.templates(),
+            self._readable(self.resources.templates(), self._any_scoped_resources),
             _resource_key,
             _describe_resource_template,
             params,
@@ -905,8 +920,25 @@ class MCPServer(TasksMixin, InvocationMixin):
 
     async def _handle_prompts_list(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._listing(
-            "prompts", self.prompts.prompts.values(), _prompt_key, _describe_prompt, params
+            "prompts",
+            self._readable(self.prompts.prompts.values(), self._any_scoped_prompts),
+            _prompt_key,
+            _describe_prompt,
+            params,
         )
+
+    @staticmethod
+    def _readable(items: Iterable[_ScopedT], any_scoped: bool) -> Iterable[_ScopedT]:
+        """Drop the resources / prompts whose scopes the calling principal lacks.
+
+        The same check `resources/read` and `prompts/get` perform, so a primitive
+        is never listed to a caller that would be refused it. `any_scoped` is
+        decided once at construction: a server declaring no scopes hands the
+        registry's own view straight back, walking nothing.
+        """
+        if not any_scoped:
+            return items
+        return [item for item in items if not _principal_lacks_scopes(item.tool.required_scopes)]
 
     def _listing(
         self,
@@ -1057,6 +1089,8 @@ class MCPServer(TasksMixin, InvocationMixin):
             return self._tool_filter is not None or self._any_scoped_tools
         if method == "prompts/list":
             return self._any_scoped_prompts
+        if method in ("resources/list", "resources/templates/list"):
+            return self._any_scoped_resources
         return False
 
     async def _visible_tools(self) -> list[MCPTool]:
@@ -1271,7 +1305,8 @@ class MCPServer(TasksMixin, InvocationMixin):
     # ── Resources ─────────────────────────────────────────
 
     def _resources_list(self) -> dict[str, Any]:
-        return {"resources": [_describe_resource(r) for r in self.resources.statics()]}
+        readable = self._readable(self.resources.statics(), self._any_scoped_resources)
+        return {"resources": [_describe_resource(r) for r in readable]}
 
     async def _resources_read(self, params: dict[str, Any]) -> dict[str, Any]:
         """Read one resource by URI, replaying its route through `_invoke`.
@@ -1326,7 +1361,8 @@ class MCPServer(TasksMixin, InvocationMixin):
     # ── Prompts ───────────────────────────────────────────
 
     def _prompts_list(self) -> dict[str, Any]:
-        return {"prompts": [_describe_prompt(p) for p in self.prompts.prompts.values()]}
+        readable = self._readable(self.prompts.prompts.values(), self._any_scoped_prompts)
+        return {"prompts": [_describe_prompt(p) for p in readable]}
 
     async def _prompts_get(self, params: dict[str, Any]) -> dict[str, Any]:
         """Render one prompt by name, replaying its callable through `_invoke`.

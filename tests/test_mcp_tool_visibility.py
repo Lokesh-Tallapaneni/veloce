@@ -1,8 +1,13 @@
-"""Caller-scoped `tools/list` visibility.
+"""Caller-scoped listing visibility.
 
 The tool set a caller is shown may narrow by the authorization presented on the
 request; it must never narrow by connection state, and hiding a tool must never
 change what happens when it is called. These tests pin both halves.
+
+Narrowing has two sources. Declared scopes always apply, to every listing: a
+caller that would be refused a tool, prompt or resource is not shown it. A
+`tool_filter` narrows what is left of the tool list, by whatever policy the
+application has.
 """
 
 from __future__ import annotations
@@ -44,20 +49,45 @@ async def _list(server: MCPServer) -> dict[str, Any]:
     return await server._handle_tools_list({})
 
 
-# ── Default: unfiltered ──────────────────────────────────────────────
+# ── Declared scopes, with no filter configured ───────────────────────
 
 
-async def test_listing_is_unfiltered_without_a_filter():
-    """No filter configured leaves the pre-existing behaviour untouched."""
+async def test_a_caller_holding_every_scope_sees_every_tool():
     server = MCPServer(_app())
+    set_principal(Principal(subject="root", scopes=frozenset({"admin", "billing"})))
     assert _names(await _list(server)) == {"read_public", "delete_tenant", "read_invoice"}
 
 
-async def test_scoped_tools_are_listed_to_an_unscoped_caller_when_no_filter():
-    """Opting out is total: scopes gate invocation, not listing."""
+async def test_a_scoped_tool_is_not_listed_to_a_caller_that_cannot_invoke_it():
+    """Listing it spends the agent's context on a call that can only be refused."""
     server = MCPServer(_app())
     set_principal(Principal(subject="nobody", scopes=frozenset()))
-    assert "delete_tenant" in _names(await _list(server))
+    assert _names(await _list(server)) == {"read_public"}
+
+
+async def test_an_unauthenticated_caller_sees_only_what_needs_no_scope():
+    server = MCPServer(_app())
+    assert _names(await _list(server)) == {"read_public"}
+
+
+async def test_a_no_op_filter_shows_the_same_set_as_no_filter():
+    """A policy that hides nothing must not change what a caller is shown."""
+    set_principal(Principal(subject="nobody", scopes=frozenset()))
+    unfiltered = _names(await _list(MCPServer(_app())))
+    permissive = _names(await _list(MCPServer(_app(), tool_filter=lambda tool, principal: True)))
+    assert unfiltered == permissive
+
+
+async def test_a_server_declaring_no_scopes_lists_everything():
+    """Nothing to narrow, so the listing stays the plain build it always was."""
+    app = Veloce(title="Open", openapi_url=None)
+
+    @app.mcp_tool(description="Anyone")
+    async def anyone() -> dict:
+        return {}
+
+    set_principal(Principal(subject="nobody", scopes=frozenset()))
+    assert _names(await _list(MCPServer(app))) == {"anyone"}
 
 
 # ── Scope filtering, active once a filter is configured ──────────────
@@ -253,3 +283,96 @@ def test_mount_mcp_accepts_a_tool_filter():
     app = _app()
     coro = app.mount_mcp(tool_filter=lambda tool, principal: True)
     coro.close()
+
+
+# ── The same rule for prompts and resources ──────────────────────────
+
+
+def _primitives_app() -> Veloce:
+    app = Veloce(title="PrimitiveProbe", openapi_url=None)
+
+    @app.mcp_prompt(description="Open prompt")
+    async def open_prompt() -> str:
+        return "hi"
+
+    @app.mcp_prompt(description="Admin prompt", scopes=["admin"])
+    async def admin_prompt() -> str:
+        return "shh"
+
+    @app.get(
+        "/open",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://open",
+        mcp_description="Open document",
+    )
+    async def open_doc() -> dict:
+        return {}
+
+    @app.get(
+        "/admin",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://admin",
+        mcp_description="Admin document",
+        mcp_scopes=["admin"],
+    )
+    async def admin_doc() -> dict:
+        return {}
+
+    @app.get(
+        "/admin/{name}",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="doc://admin/{name}",
+        mcp_description="Admin template",
+        mcp_scopes=["admin"],
+    )
+    async def admin_template(name: str) -> dict:
+        return {}
+
+    return app
+
+
+async def test_a_scoped_prompt_is_not_listed_to_a_caller_that_cannot_render_it():
+    server = MCPServer(_primitives_app())
+    set_principal(Principal(subject="nobody", scopes=frozenset()))
+    result = await server._handle_prompts_list({})
+    assert [prompt["name"] for prompt in result["prompts"]] == ["open_prompt"]
+
+
+async def test_a_scoped_resource_is_not_listed_to_a_caller_that_cannot_read_it():
+    server = MCPServer(_primitives_app())
+    set_principal(Principal(subject="nobody", scopes=frozenset()))
+    result = await server._handle_resources_list({})
+    assert [resource["uri"] for resource in result["resources"]] == ["doc://open"]
+
+
+async def test_a_scoped_resource_template_is_not_listed_either():
+    server = MCPServer(_primitives_app())
+    set_principal(Principal(subject="nobody", scopes=frozenset()))
+    result = await server._handle_resource_templates_list({})
+    assert result["resourceTemplates"] == []
+
+
+async def test_a_caller_holding_the_grant_is_shown_all_three():
+    server = MCPServer(_primitives_app())
+    set_principal(Principal(subject="ops", scopes=frozenset({"admin"})))
+    prompts = await server._handle_prompts_list({})
+    resources = await server._handle_resources_list({})
+    templates = await server._handle_resource_templates_list({})
+    assert len(prompts["prompts"]) == 2
+    assert len(resources["resources"]) == 2
+    assert len(templates["resourceTemplates"]) == 1
+
+
+async def test_hiding_a_prompt_does_not_change_what_rendering_it_does():
+    """Same contract as a tool: the listing narrows, the refusal is unchanged."""
+    server = MCPServer(_primitives_app())
+    set_principal(Principal(subject="nobody", scopes=frozenset()))
+    with pytest.raises(AuthorizationError):
+        await server._prompts_get({"name": "admin_prompt"})
+
+
+async def test_hiding_a_resource_does_not_change_what_reading_it_does():
+    server = MCPServer(_primitives_app())
+    set_principal(Principal(subject="nobody", scopes=frozenset()))
+    with pytest.raises(AuthorizationError):
+        await server._resources_read({"uri": "doc://admin"})
