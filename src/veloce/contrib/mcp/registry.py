@@ -23,6 +23,7 @@ from veloce._handler_plan import build_plan
 from veloce._model_backend import is_pydantic_model, resolve_return_model
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp._registry_base import Registry
+from veloce.contrib.mcp.composition import mcp_mounts, renamed
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.icons import Icon, coerce_icons
 from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
@@ -102,6 +103,11 @@ class MCPTool(MCPDescriptor):
     # no verb to read from, so it either says what it does or says nothing. `None`
     # leaves the spec's own defaults in force, which assume the cautious reading.
     annotations: dict[str, Any] | None = None
+    # True for a tool that forwards to another MCP server. Its handler returns the
+    # upstream's own result object, which is relayed unchanged - re-shaping it
+    # would nest a complete result inside a text block and lose the `isError` and
+    # `structuredContent` the upstream reported.
+    passthrough_result: bool = False
 
 
 @dataclass(slots=True)
@@ -328,5 +334,17 @@ def build_registry(app: Any) -> ToolRegistry:
 
     for route_id, info in exposed.items():
         registry.add(_tool_from_route(info, methods_by_route[route_id], registry.schemas))
+
+    # Tools discovered from an upstream server: already built, so they are added
+    # rather than derived.
+    for proxied in getattr(app, "_mcp_proxied_tools", ()):
+        registry.add(proxied)
+
+    # Sub-apps mounted with `expose_mcp=True` contribute their tools under the
+    # mount's namespace. Building a sub-app's registry merges its own mounts
+    # first, so nesting composes.
+    for namespace, sub_app in mcp_mounts(app):
+        for tool in build_registry(sub_app).tools.values():
+            registry.add(renamed(tool, namespace))
 
     return registry

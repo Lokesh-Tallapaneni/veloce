@@ -22,6 +22,7 @@ from urllib.parse import unquote
 
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_HEAD, ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp._registry_base import Registry
+from veloce.contrib.mcp.composition import mcp_mounts
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.icons import coerce_icons
 from veloce.contrib.mcp.registry import MCPTool, _tool_from_route
@@ -247,5 +248,12 @@ def build_resource_registry(app: Any) -> ResourceRegistry:
 
     for route_id, info in exposed.items():
         registry.add(_resource_from_route(info, methods_by_route[route_id], registry.schemas))
+
+    # A resource keeps its URI: that is the client-facing address of the thing,
+    # not a name this server may rewrite. Two sub-apps publishing one URI is a
+    # collision `add` reports.
+    for _namespace, sub_app in mcp_mounts(app):
+        for resource in build_resource_registry(sub_app).resources.values():
+            registry.add(resource)
 
     return registry

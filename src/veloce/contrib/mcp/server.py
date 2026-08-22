@@ -1191,6 +1191,10 @@ class MCPServer(TasksMixin, InvocationMixin):
             return _text_result(str(exc), is_error=True)
         # A pure tool's raw return that completed without error is a genuine 200.
         await self._instrument(tool, started, status.HTTP_200_OK)
+        if tool.passthrough_result and isinstance(shaped, dict) and "content" in shaped:
+            # A forwarded call already answered in the result shape; relaying it
+            # keeps the upstream's `isError` and `structuredContent` intact.
+            return shaped
         # A pure tool's `output_schema` is advertised from its declared return
         # type, but nothing on the pure path guarantees the handler actually
         # returned that type. Validate / coerce the raw return through the

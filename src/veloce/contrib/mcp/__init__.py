@@ -82,6 +82,7 @@ from veloce.contrib.mcp.errors import (
 from veloce.contrib.mcp.icons import Icon
 from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
+from veloce.contrib.mcp.proxy import add_mcp_proxy
 from veloce.contrib.mcp.registry import MCPTool, ToolFilter, ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import (
     MCPResource,
@@ -132,6 +133,7 @@ __all__ = [
     "MCPAuthorizationServer",
     "OAuthClient",
     "register_authorization_server",
+    "add_mcp_proxy",
     "ResourceLink",
     "SessionBackend",
     "SessionRecord",

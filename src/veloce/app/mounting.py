@@ -21,10 +21,11 @@ class MountingMixin:
         # Attributes / methods the host application (Veloce) provides.
         _mounted_apps: Any
         _asgi_mounts: Any
+        _mcp_mounts: Any
         _static_handlers: Any
         _register_feature_state: Any
 
-    def mount(self, prefix: str, app: Any) -> None:
+    def mount(self, prefix: str, app: Any, expose_mcp: bool = False) -> None:
         """Mount a sub-application at a path prefix.
 
         A veloce sub-app is dispatched through the parent's request
@@ -49,6 +50,12 @@ class MountingMixin:
         under, or containing an existing mount raises `ValueError`, since
         overlapping mounts would shadow each other in a confusing,
         order-dependent way.
+
+        `expose_mcp=True` additionally publishes the sub-app's MCP tools,
+        resources and prompts through the parent's MCP server, with tool and
+        prompt names prefixed by the mount. It is opt-in because mounting an app
+        for its HTTP routes should not silently hand an agent everything it can
+        do.
         """
         # Imported here (not at module top) to break the app.core <-> app.mounting
         # import cycle; `mount` is a setup-time call, never on the request path.
@@ -76,6 +83,11 @@ class MountingMixin:
         entry = (prefix, prefix + "/", app)
         if isinstance(app, Veloce):
             self._register_feature_state(self._mounted_apps, entry)
+            if expose_mcp:
+                # Opt-in: mounting an app must not silently widen the parent's MCP
+                # surface, since that would publish tools the parent never chose to
+                # expose to an agent.
+                self._mcp_mounts.append((prefix, app))
             return
         # `StaticFiles` looks ASGI-shaped (it's an object you'd
         # naturally hand to `mount`), but it speaks Veloce's

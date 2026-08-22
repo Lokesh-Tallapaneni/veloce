@@ -663,6 +663,12 @@ class Veloce(
         self._mounted_apps: list[tuple[str, str, Any]] = []
         # Same shape for ASGI-layer mounts dispatched with the raw scope.
         self._asgi_mounts: list[tuple[str, str, Any]] = []
+        # Sub-apps mounted with `expose_mcp=True`, whose MCP primitives are
+        # published through this app's own MCP server under a name prefix.
+        self._mcp_mounts: list[tuple[str, Any]] = []
+        # Tools discovered from an upstream MCP server by `add_mcp_proxy`, already
+        # built (their schema is the upstream's, not one derived from a signature).
+        self._mcp_proxied_tools: list[Any] = []
         self._http_middleware_funcs: list[Callable] = []  # @app.middleware("http") funcs
         # Jinja2 helper registrations - applied to the env on each render.
         self._template_filters: list[tuple[str, Callable]] = []

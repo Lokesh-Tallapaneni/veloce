@@ -17,6 +17,7 @@ from typing import Any
 
 from veloce._handler_plan import build_plan
 from veloce.contrib.mcp._registry_base import Registry
+from veloce.contrib.mcp.composition import mcp_mounts, renamed
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.icons import Icon, coerce_icons
 from veloce.contrib.mcp.plan_bridge import build_input_schema
@@ -136,4 +137,8 @@ def build_prompt_registry(app: Any) -> PromptRegistry:
             icons=icons,
             meta=meta,
         )
+    for namespace, sub_app in mcp_mounts(app):
+        for prompt in build_prompt_registry(sub_app).prompts.values():
+            registry.add(renamed(prompt, namespace))
+
     return registry
