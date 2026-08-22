@@ -47,8 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `render_template`, `render_template_string` and `stream_template` are exported from `veloce.contrib`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 - `MCPRequestError` is exported from `veloce.contrib.mcp.transports`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 - `mount_mcp(tool_filter=...)` narrows which tools `tools/list` reports per caller.
-- A tool, prompt or resource whose declared `scopes` the caller lacks is no longer listed. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- A resource list narrowed by declared scopes is marked private, so a shared proxy cannot reuse it. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - `MCPContext` reports `session_id`, `client_info`, `client_capabilities` and `is_background_task`.
 - `MCPContext.client_supports(name)` tests an advertised client capability, nested with dots.
 - `MCPContext.debug`/`info`/`warning`/`error` are shorthands for the matching `log` level.
@@ -64,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A tool, prompt or resource whose declared `scopes` the caller lacks is no longer listed. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A resource list narrowed by declared scopes is marked private, so a shared proxy cannot reuse it. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - `resources/read` and `prompts/get` refuse a task-augmented request instead of answering synchronously. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A modern client must declare the tasks extension before a task handle is returned.
 - `tasks/list` and `tasks/result` are not served to a modern client; `tasks/get` carries the result.
