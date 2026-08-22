@@ -17,8 +17,12 @@ import orjson
 import pytest
 
 from veloce import MCPContext, Principal, Veloce
+from veloce.contrib.mcp import add_mcp_proxy
+from veloce.contrib.mcp._helpers import _text_result
+from veloce.contrib.mcp.context import _error_content
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.toolsearch import _pointer, _referenceable
 from veloce.principal import set_principal
 
 META = {"search_tools", "describe_tools", "run_tools"}
@@ -475,3 +479,267 @@ async def test_hiding_a_search_tool_removes_it_from_the_listing():
     session = MCPSession()
     await _hide(server, session, "describe_tools")
     assert set(await _list(server, session)) == {"search_tools", "run_tools"}
+
+
+# ── The pointer a `$from` walks (RFC 6901) ───────────────────────────
+
+# RFC 6901 section 5, verbatim: the document the specification gives its own
+# example table against.
+RFC_6901_DOCUMENT = {
+    "foo": ["bar", "baz"],
+    "": 0,
+    "a/b": 1,
+    "c%d": 2,
+    "e^f": 3,
+    "g|h": 4,
+    "i\\j": 5,
+    'k"l': 6,
+    " ": 7,
+    "m~n": 8,
+}
+
+
+@pytest.mark.parametrize(
+    ("pointer", "names"),
+    [
+        ("", RFC_6901_DOCUMENT),
+        ("/foo", ["bar", "baz"]),
+        ("/foo/0", "bar"),
+        ("/", 0),
+        ("/a~1b", 1),
+        ("/c%d", 2),
+        ("/e^f", 3),
+        ("/g|h", 4),
+        ("/i\\j", 5),
+        ('/k"l', 6),
+        ("/ ", 7),
+        ("/m~0n", 8),
+    ],
+)
+def test_the_rfc_6901_example_table_resolves_exactly(pointer, names):
+    """RFC 6901 section 5. `"/"` names the member keyed `""`, not the document."""
+    assert _pointer(RFC_6901_DOCUMENT, pointer) == names
+
+
+def test_the_empty_pointer_is_the_one_that_names_the_whole_document():
+    """RFC 6901 section 3: the whole document is the zero-token pointer."""
+    assert _pointer(RFC_6901_DOCUMENT, "") is RFC_6901_DOCUMENT
+
+
+@pytest.mark.parametrize("token", ["01", "007", "-1", "-2", "-", "--1", "x", "1.0", "", "\u0663"])
+def test_an_array_index_outside_the_rfc_grammar_is_refused(token):
+    """RFC 6901 section 4: array-index = %x30 / ( %x31-39 *(%x30-39) )."""
+    with pytest.raises(ValueError, match="not an array index"):
+        _pointer({"items": [10, 20, 30]}, f"/items/{token}")
+
+
+def test_a_refused_index_does_not_leak_a_python_message():
+    """`int('--1')` names CPython internals; the model can act on neither."""
+    with pytest.raises(ValueError) as caught:
+        _pointer({"items": [1]}, "/items/--1")
+    assert "invalid literal" not in str(caught.value)
+
+
+def test_a_zero_index_is_an_index():
+    assert _pointer({"items": [10, 20]}, "/items/0") == 10
+
+
+def test_an_index_past_the_end_of_an_array_says_so():
+    with pytest.raises(ValueError, match="past the end"):
+        _pointer({"items": [10, 20]}, "/items/2")
+
+
+def test_a_pointer_must_start_with_a_slash():
+    with pytest.raises(ValueError, match="must start with"):
+        _pointer({"a": 1}, "a")
+
+
+def test_a_pointer_that_walks_into_a_scalar_says_so():
+    with pytest.raises(ValueError, match="reaches past the end"):
+        _pointer({"a": 1}, "/a/b")
+
+
+def test_the_escapes_are_unescaped_in_the_order_the_rfc_gives():
+    """RFC 6901 section 4: `~1` before `~0`, so `~01` is the key `~1`."""
+    assert _pointer({"~1": "correct"}, "/~01") == "correct"
+
+
+async def test_a_plan_may_reference_the_member_keyed_by_the_empty_string():
+    app = _app()
+
+    @app.mcp_tool(description="Answer under an empty key")
+    async def odd_shape() -> dict:
+        return {"": "found"}
+
+    server = MCPServer(app, tool_search=True)
+    _is_error, run = await _run(
+        server,
+        [
+            {"id": "odd", "tool": "odd_shape", "arguments": {}},
+            {"tool": "refund_order", "arguments": {"order_id": {"$from": "odd", "path": "/"}}},
+        ],
+    )
+    assert orjson.loads(run["steps"][1]["result"]["content"][0]["text"]) == {"refunded": "found"}
+
+
+async def test_a_negative_index_in_a_plan_is_reported_against_its_step():
+    is_error, text = await _run(
+        _server(),
+        [
+            {"id": "orders", "tool": "list_orders", "arguments": {"customer_id": 1}},
+            {
+                "tool": "refund_order",
+                "arguments": {"order_id": {"$from": "orders", "path": "/orders/-1/id"}},
+            },
+        ],
+    )
+    assert is_error is True
+    assert "not an array index" in text
+
+
+# ── A plan's step ids have to tell its steps apart ───────────────────
+
+
+async def test_an_explicit_id_colliding_with_an_auto_id_is_refused():
+    """`step2` is a name the model has seen in every earlier response."""
+    is_error, text = await _run(
+        _server(),
+        [
+            {"id": "step2", "tool": "find_customer", "arguments": {"email": "a@b.c"}},
+            {"tool": "find_customer", "arguments": {"email": "c@d.e"}},
+        ],
+    )
+    assert is_error is True
+    assert "step2" in text
+
+
+async def test_an_explicit_id_colliding_with_another_explicit_id_is_refused():
+    is_error, text = await _run(
+        _server(),
+        [
+            {"id": "cust", "tool": "find_customer", "arguments": {"email": "a@b.c"}},
+            {"id": "cust", "tool": "find_customer", "arguments": {"email": "c@d.e"}},
+        ],
+    )
+    assert is_error is True
+    assert "cust" in text
+
+
+async def test_a_colliding_plan_runs_none_of_its_steps():
+    """`run_tools` is not read-only, so the refusal has to precede the effects."""
+    app = _app()
+    called: list[str] = []
+
+    @app.mcp_tool(description="Record that it ran")
+    async def mark(tag: str) -> str:
+        called.append(tag)
+        return tag
+
+    server = MCPServer(app, tool_search=True)
+    is_error, _text = await _run(
+        server,
+        [
+            {"id": "step2", "tool": "mark", "arguments": {"tag": "first"}},
+            {"tool": "mark", "arguments": {"tag": "second"}},
+        ],
+    )
+    assert is_error is True
+    assert called == []
+
+
+async def test_distinct_ids_are_reported_as_given():
+    _is_error, run = await _run(
+        _server(),
+        [
+            {"id": "cust", "tool": "find_customer", "arguments": {"email": "a@b.c"}},
+            {"tool": "refund_order", "arguments": {"order_id": "A-1"}},
+        ],
+    )
+    assert [step["id"] for step in run["steps"]] == ["cust", "step2"]
+
+
+async def test_a_reference_to_a_quiet_step_resolves_to_its_result():
+    """The quiet step is absent from the response and still readable by pointer."""
+    _is_error, run = await _run(
+        _server(),
+        [
+            {"id": "cust", "tool": "find_customer", "arguments": {"email": "a@b.c"}, "quiet": True},
+            {
+                "tool": "refund_order",
+                "arguments": {"order_id": {"$from": "cust", "path": "/email"}},
+            },
+        ],
+    )
+    assert [step["id"] for step in run["steps"]] == ["step2"]
+    assert orjson.loads(run["steps"][0]["result"]["content"][0]["text"]) == {"refunded": "a@b.c"}
+
+
+# ── Failures that must stay attributed to one step ───────────────────
+
+
+async def test_an_argument_tree_too_deep_to_resolve_is_a_bad_argument():
+    """`orjson` decodes deeper than this walk descends; the plan must not vanish."""
+    deep: dict = {"leaf": 1}
+    for _ in range(1000):
+        deep = {"k": deep}
+    is_error, text = await _run(
+        _server(), [{"tool": "refund_order", "arguments": {"order_id": deep}}]
+    )
+    assert is_error is True
+    assert "nest too deeply" in text
+    assert "step1" in text
+
+
+def test_a_result_whose_content_is_not_a_list_of_objects_is_handed_back_whole():
+    """A proxied result is upstream JSON this server never shaped."""
+    assert _referenceable({"content": ["hello"]}) == ["hello"]
+    assert _referenceable({"content": [None]}) == [None]
+    assert _referenceable({"content": [{"type": "text", "text": '{"a":1}'}]}) == {"a": 1}
+
+
+async def test_a_proxied_result_with_a_bare_content_block_does_not_collapse_the_plan():
+    async def upstream(method: str, params: dict) -> dict:
+        if method == "tools/list":
+            return {
+                "tools": [
+                    {
+                        "name": "odd",
+                        "description": "Answers in a shape this server never made",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    }
+                ]
+            }
+        if method == "tools/call":
+            return {"content": ["hello"]}
+        return {}
+
+    app = _app()
+    await add_mcp_proxy(app, "up", upstream)
+    server = MCPServer(app, tool_search=True)
+    _is_error, run = await _run(
+        server,
+        [
+            {"id": "relayed", "tool": "up_odd", "arguments": {}},
+            {"tool": "refund_order", "arguments": {"order_id": {"$from": "relayed", "path": "/0"}}},
+        ],
+    )
+    assert [step["id"] for step in run["steps"]] == ["relayed", "step2"]
+    assert orjson.loads(run["steps"][1]["result"]["content"][0]["text"]) == {"refunded": "hello"}
+
+
+async def test_a_failing_step_is_shaped_by_the_shared_text_result_helper():
+    """One wire form for an in-band text error, decided in one place."""
+    _is_error, run = await _run(
+        _server(),
+        [
+            {"tool": "find_customer", "arguments": {}},
+        ],
+    )
+    assert run["steps"][0]["result"] == _text_result(
+        run["steps"][0]["result"]["content"][0]["text"], is_error=True
+    )
+
+
+def test_the_context_error_shape_is_the_shared_one_too():
+    """`context.py` and `toolsearch.py` must not drift from `_text_result`."""
+    assert _error_content("boom") == _text_result("boom", is_error=True)

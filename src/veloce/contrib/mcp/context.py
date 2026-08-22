@@ -488,7 +488,7 @@ class MCPContext:
             for block in requested:
                 call = await self._run_sampled_tool(server, block, allowed)
                 calls.append(call)
-                block: dict[str, Any] = {
+                answer: dict[str, Any] = {
                     "type": "tool_result",
                     "toolUseId": call.id,
                     "content": call.result.get("content") or [],
@@ -500,8 +500,8 @@ class MCPContext:
                 # caller gets for the same tool.
                 structured = call.result.get("structuredContent")
                 if structured is not None:
-                    block["structuredContent"] = structured
-                results.append(block)
+                    answer["structuredContent"] = structured
+                results.append(answer)
             transcript.append({"role": "user", "content": results})
         raise AssertionError("unreachable: the final round always returns")
 

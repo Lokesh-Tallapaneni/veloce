@@ -37,6 +37,7 @@ import orjson
 from pydantic import BaseModel, Field
 
 from veloce._handler_plan import build_plan
+from veloce.contrib.mcp._helpers import _text_result
 from veloce.contrib.mcp.errors import MCPError, _InvalidArgumentsError
 from veloce.contrib.mcp.plan_bridge import build_input_schema
 from veloce.contrib.mcp.registry import MCPTool
@@ -126,7 +127,11 @@ class ToolStep(BaseModel):
     )
     id: str | None = Field(
         default=None,
-        description="Name for this step, so a later step can reference its result.",
+        description=(
+            "Name for this step, so a later step can reference its result. It must "
+            "differ from every other step's, including the step<position> name an "
+            "unnamed step is given."
+        ),
     )
     quiet: bool = Field(
         default=False,
@@ -140,21 +145,34 @@ class ToolStep(BaseModel):
 
 def _pointer(value: Any, path: str) -> Any:
     """Return the part of `value` an RFC 6901 JSON pointer names."""
-    if not path or path == "/":
+    # RFC 6901 section 3: a pointer is a sequence of zero or more tokens, each
+    # prefixed by "/". The empty pointer is the zero-token one and names the whole
+    # document; "/" is one token - the empty string - and names the member keyed
+    # by "".
+    if not path:
         return value
     if not path.startswith("/"):
         raise ValueError(f"a JSON pointer must start with '/': {path!r}")
     for raw in path[1:].split("/"):
+        # RFC 6901 section 4 unescapes "~1" before "~0", so an escaped tilde
+        # cannot be read as the start of an escaped slash.
         token = raw.replace("~1", "/").replace("~0", "~")
         if isinstance(value, dict):
             if token not in value:
                 raise ValueError(f"{path!r} does not name anything in the referenced result")
             value = value[token]
         elif isinstance(value, list):
-            if not token.lstrip("-").isdigit():
-                raise ValueError(f"{path!r} indexes an array with {token!r}, which is not a number")
+            # RFC 6901 section 4: array-index = %x30 / ( %x31-39 *(%x30-39) ) -
+            # an unsigned base-10 integer with no leading zero. `isdigit` alone
+            # admits non-ASCII digits and `int()` admits a sign, so the ABNF is
+            # checked term by term. "-" names the element after the last, which
+            # never exists, and falls out here with every other non-index.
+            if not token.isdigit() or not token.isascii() or (token[0] == "0" and token != "0"):
+                raise ValueError(
+                    f"{path!r} indexes an array with {token!r}, which is not an array index"
+                )
             index = int(token)
-            if not -len(value) <= index < len(value):
+            if index >= len(value):
                 raise ValueError(f"{path!r} indexes past the end of the referenced array")
             value = value[index]
         else:
@@ -178,6 +196,31 @@ def _resolve_references(node: Any, results: dict[str, Any]) -> Any:
     return node
 
 
+def _step_ids(steps: list[ToolStep]) -> list[str]:
+    """Name every step, refusing a plan that would give one name to two steps.
+
+    A duplicate is refused before the first step runs rather than after: results
+    are kept by name, so the second write would silently redirect a reference the
+    plan meant for the first, and the response would carry two entries the model
+    cannot tell apart. An unnamed step is named for its position and those names
+    appear in every response, so they are exactly the names a model reuses.
+    """
+    named = [step.id or f"{_STEP_ID_PREFIX}{n}" for n, step in enumerate(steps, start=1)]
+    # A plan almost never collides, so the common case pays one set build and one
+    # length compare; the walk that finds which name repeats runs only when one does.
+    if len(set(named)) != len(named):
+        seen: set[str] = set()
+        for step_id in named:
+            if step_id in seen:
+                raise _InvalidArgumentsError(
+                    f"two steps are named {step_id!r}, so a reference to it would be "
+                    "ambiguous; give each step a distinct id, remembering that an "
+                    f"unnamed step is named {_STEP_ID_PREFIX}<position>"
+                )
+            seen.add(step_id)
+    return named
+
+
 def _referenceable(result: dict[str, Any]) -> Any:
     """Return the part of a tool result a later step can point into.
 
@@ -189,7 +232,14 @@ def _referenceable(result: dict[str, Any]) -> Any:
     if "structuredContent" in result:
         return result["structuredContent"]
     content = result.get("content")
-    if isinstance(content, list) and len(content) == 1 and content[0].get("type") == "text":
+    # A proxied tool relays its upstream's result object verbatim, so the block
+    # is upstream JSON this server never shaped and is not known to be an object.
+    if (
+        isinstance(content, list)
+        and len(content) == 1
+        and isinstance(content[0], dict)
+        and content[0].get("type") == "text"
+    ):
         text = content[0].get("text")
         if isinstance(text, str):
             try:
@@ -269,8 +319,7 @@ class ToolSearch:
         """Run each step in order, passing results along."""
         results: dict[str, Any] = {}
         reported: list[dict[str, Any]] = []
-        for position, step in enumerate(steps, start=1):
-            step_id = step.id or f"{_STEP_ID_PREFIX}{position}"
+        for step, step_id in zip(steps, _step_ids(steps), strict=True):
             if step.tool in self.names:
                 raise _InvalidArgumentsError(f"{step.tool!r} cannot be run as a step of a plan")
             try:
@@ -279,13 +328,20 @@ class ToolSearch:
                 # Surfaced verbatim rather than as a handler failure: the model
                 # wrote the reference and the message names what it got wrong.
                 raise _InvalidArgumentsError(f"step {step_id!r}: {exc}") from exc
+            except RecursionError as exc:
+                # An argument tree deeper than the interpreter's stack: `orjson`
+                # decodes further than this walk can descend, and the model can act
+                # on the depth but not on a message about a Python stack.
+                raise _InvalidArgumentsError(
+                    f"step {step_id!r}: its arguments nest too deeply to resolve"
+                ) from exc
             try:
                 result = await self._server._tools_call({"name": step.tool, "arguments": arguments})
             except MCPError as exc:
                 # Reported as this step's failure rather than as the whole call's:
                 # the steps before it have already run, and a plan that hides the
                 # side effects it caused is worse than one that names them.
-                result = {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+                result = _text_result(str(exc), is_error=True)
             results[step_id] = _referenceable(result)
             failed = bool(result.get("isError"))
             if not step.quiet or failed:

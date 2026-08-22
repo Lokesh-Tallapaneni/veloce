@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `run_tools` refuses a plan whose step ids repeat instead of mis-resolving a `$from` reference. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A `$from` pointer of `/` names the member keyed `""`, as RFC 6901 defines it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- An array index in a `$from` pointer is refused unless it is unsigned and unpadded. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A too-deeply-nested step argument fails that step rather than the whole plan. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A proxied result whose content block is not an object no longer ends the plan. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `SamplingRun.messages` ends with the answer, so extending it for another run keeps it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A sampled tool's `structuredContent` reaches the model instead of only its text. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A fractional number is refused where a tool declares an integer, instead of losing its fraction. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
