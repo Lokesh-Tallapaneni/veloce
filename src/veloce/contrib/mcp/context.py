@@ -36,6 +36,15 @@ from veloce.contrib.mcp.errors import MCPCapabilityError
 # client would silently drop, so it is refused here.
 _SAMPLING_CONTEXT_MODES = frozenset({"none", "thisServer", "allServers"})
 
+# Told to a connection whose visibility changed. All three are sent because one
+# hidden name may be a tool, a prompt or a resource, and the client is cheap to
+# tell but expensive to leave with a stale list.
+_LIST_CHANGED_NOTIFICATIONS = (
+    "notifications/tools/list_changed",
+    "notifications/prompts/list_changed",
+    "notifications/resources/list_changed",
+)
+
 # Bytes of entropy in a minted `elicitationId`. The id names one interaction so a
 # later `notifications/elicitation/complete` can be matched to it; it travels to
 # the client, so it is unguessable rather than sequential.
@@ -52,6 +61,12 @@ _in_task_var: ContextVar[bool] = ContextVar("_mcp_in_task", default=False)
 # dependency has to run in this direction. `None` means the handler asked for
 # nothing, which is the common case and costs one lookup.
 _result_meta_var: ContextVar[dict[str, Any] | None] = ContextVar("_mcp_result_meta", default=None)
+
+# The session of the connection being served, when the transport keeps one. It
+# lives here for the same reason as the vars above: `_helpers` imports this
+# module, so the dependency has to run in this direction. `None` off a stateful
+# transport, where there is no connection to carry state.
+_session_var: ContextVar[Any] = ContextVar("_mcp_session", default=None)
 
 # Suppresses every `notifications/message`, whatever its level. The modern revision
 # sets the log level per request and requires a server to send no log notifications
@@ -435,6 +450,45 @@ class MCPContext:
         result = await self._request("roots/list", "roots", {})
         roots = result.get("roots")
         return roots if isinstance(roots, list) else []
+
+    async def hide(self, *names: str) -> None:
+        """Hide tools, prompts or resources from this connection's listings.
+
+        Names a tool or prompt by name and a resource by URI. The change belongs
+        to the connection that made the call - another client's listings are
+        untouched - and this connection is told its lists changed so it fetches
+        them again.
+
+        Hiding is not enforcement. A hidden primitive is still callable, exactly
+        as with a `mount_mcp(tool_filter=...)` policy: what a caller may invoke is
+        decided by its declared scopes, so a hidden name cannot be mistaken for a
+        permission boundary.
+        """
+        await self._change_visibility(lambda hidden: hidden.update(names))
+
+    async def unhide(self, *names: str) -> None:
+        """Show primitives hidden earlier on this connection."""
+        await self._change_visibility(lambda hidden: hidden.difference_update(names))
+
+    async def reset_visibility(self) -> None:
+        """Show everything this connection had hidden."""
+        await self._change_visibility(lambda hidden: hidden.clear())
+
+    async def _change_visibility(self, mutate: Callable[[set[str]], Any]) -> None:
+        """Apply a change to this connection's hidden set and announce it."""
+        session = _session_var.get()
+        if session is None:
+            raise RuntimeError(
+                "visibility is a property of a connection, which a call outside a "
+                "stateful transport does not have"
+            )
+        before = set(session.hidden)
+        mutate(session.hidden)
+        if session.hidden == before:
+            return
+        # Only this connection is told: the change was made for it alone.
+        for method in _LIST_CHANGED_NOTIFICATIONS:
+            await self.send_notification(method, {})
 
     @property
     def result_meta(self) -> dict[str, Any]:

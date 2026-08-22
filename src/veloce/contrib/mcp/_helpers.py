@@ -48,7 +48,6 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.prompts import MCPPrompt
     from veloce.contrib.mcp.registry import MCPTool
     from veloce.contrib.mcp.resources import MCPResource
-    from veloce.contrib.mcp.session import MCPSession
 
 
 # The current call's outbound notification sink, scoped per request so a handler's
@@ -84,11 +83,6 @@ _log_level_var: ContextVar[str | None] = ContextVar("_mcp_log_level", default=No
 # concurrent HTTP calls isolated, exactly like the notifier / log-level vars.
 _inflight_var: ContextVar[_InFlight | None] = ContextVar("_mcp_inflight", default=None)
 
-# The dispatching connection's session, set by `handle_message` when a stateful
-# transport passes one, so a per-connection method (`resources/subscribe`) reads
-# the session it should mutate without the handler signature gaining a parameter.
-# `None` on the stateless path. A ContextVar isolates concurrent connections.
-_session_var: ContextVar[MCPSession | None] = ContextVar("_mcp_session", default=None)
 
 # The JSON-RPC id of the request being dispatched. A `subscriptions/listen` needs
 # it because the spec defines the stream's subscription id as that id, and the

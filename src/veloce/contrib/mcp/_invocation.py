@@ -23,10 +23,9 @@ from veloce.contrib.mcp._helpers import (
     _requester_var,
     _route_path_params,
     _RouteResponse,
-    _session_var,
     _ShortCircuit,
 )
-from veloce.contrib.mcp.context import MCPContext
+from veloce.contrib.mcp.context import MCPContext, _session_var
 from veloce.contrib.mcp.errors import InvalidParamsError, _InvalidArgumentsError
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.dependency import DependencyResolver

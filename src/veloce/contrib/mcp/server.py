@@ -46,7 +46,6 @@ from veloce.contrib.mcp._helpers import (
     _resource_contents,
     _response_body_value,
     _RouteResponse,
-    _session_var,
     _ShortCircuit,
     _stringify,
     _text_result,
@@ -62,7 +61,7 @@ from veloce.contrib.mcp.capabilities import (
     ToolsCapability,
 )
 from veloce.contrib.mcp.completion import CompletionsCapability, attach_completers
-from veloce.contrib.mcp.context import _LOG_RANKS, LOG_LEVEL_OFF, _result_meta_var
+from veloce.contrib.mcp.context import _LOG_RANKS, LOG_LEVEL_OFF, _result_meta_var, _session_var
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
     _JSONRPC_INVALID_REQUEST,
@@ -471,7 +470,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         Set per dispatch by `handle_message` when a stateful transport supplies a
         session; `None` on the stateless HTTP path or off-dispatch.
         """
-        return _session_var.get()
+        return cast("MCPSession | None", _session_var.get())
 
     # ── Resource subscriptions ────────────────────────────
 
@@ -886,6 +885,12 @@ class MCPServer(TasksMixin, InvocationMixin):
         rather than the whole catalogue. `nextCursor` is present only while more
         remain, which is what tells a client to ask again.
         """
+        # A connection that hid something sees the catalogue without it. Applied
+        # before paging, so a hidden entry never occupies a slot on a page.
+        session = _session_var.get()
+        hidden = session.hidden if session is not None else None
+        if hidden:
+            items = [item for item in items if key_of(item) not in hidden]
         page, cursor = paginate(items, key_of, params.get("cursor"), self._page_size)
         result: dict[str, Any] = {key: [describe(item) for item in page]}
         if cursor is not None:

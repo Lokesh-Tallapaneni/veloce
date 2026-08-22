@@ -22,12 +22,11 @@ from veloce.contrib.mcp._helpers import (
     _progress_token,
     _resource_result_from_response,
     _response_body_value,
-    _session_var,
     _stringify,
     _text_result,
     _to_structured,
 )
-from veloce.contrib.mcp.context import _in_task_var
+from veloce.contrib.mcp.context import _in_task_var, _session_var
 from veloce.contrib.mcp.errors import (
     InvalidParamsError,
     _InBandError,

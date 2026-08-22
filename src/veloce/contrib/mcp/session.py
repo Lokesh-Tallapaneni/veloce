@@ -48,6 +48,7 @@ class MCPSession:
         "client_info",
         "subscriptions",
         "listen_streams",
+        "hidden",
         "persistent",
     )
 
@@ -80,6 +81,11 @@ class MCPSession:
         # asked for. A connection that never listens keeps an empty dict, so the
         # fan-out skips it without allocating.
         self.listen_streams: dict[Any, dict[str, Any]] = {}
+        # Primitives this connection has asked not to see, by tool/prompt name or
+        # resource URI. A running call narrows its own client's view without
+        # touching what anyone else is served. Empty until something hides, so a
+        # connection that never does pays one falsy check per listing.
+        self.hidden: set[str] = set()
 
     def record_initialize(self, params: dict[str, Any]) -> None:
         """Record the client's advertised capabilities and info from `initialize`."""
