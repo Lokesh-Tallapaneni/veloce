@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import time
 
 import orjson
@@ -27,7 +28,6 @@ from veloce import (
 from veloce.contrib.mcp import Icon, MCPAuth, MCPSession, plan_bridge
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
-from veloce.contrib.mcp.tasks import STATUS_FAILED
 from veloce.contrib.mcp.transports.stdio import StdioTransport
 from veloce.dependency import DependencyResolver
 
@@ -433,7 +433,7 @@ def test_parse_error_on_bad_json():
     app = Veloce(openapi_url=None)
     server = _server(app)
     transport = StdioTransport(server, None, None)  # type: ignore[arg-type]
-    out = asyncio.run(transport._process_line(b"{not json", MCPSession()))
+    out = transport._decode(b"{not json")[1]
     assert out["error"]["code"] == -32700
 
 
@@ -4426,20 +4426,24 @@ async def test_task_ownership_survives_session_id_recycle():
     assert listed["result"]["tasks"] == []
 
 
-async def test_stdio_task_runner_rejects_server_request():
-    """A task-augmented stdio tool calling ctx.sample settles failed, not deadlocked.
+async def test_stdio_task_augmented_tool_can_sample():
+    """A task-augmented stdio tool may issue a server->client request.
 
-    The serve loop resumes reading stdin after returning the CreateTaskResult, so a
-    second reader inside request() would race it; the guard refuses the call and the
-    task settles as a failed result carrying an actionable message.
+    It could not while the serve loop and the calling handler were two readers
+    of one stream: `request` pumped stdin itself, so a task - which runs after
+    the CreateTaskResult has already been returned - would have raced the loop.
+    The loop is now the sole reader and settles the future, so there is nothing
+    left to refuse.
     """
+    from veloce.contrib.mcp.tasks import STATUS_COMPLETED
+
     app = Veloce(openapi_url=None)
     app.debug = True
 
     @app.mcp_tool(description="Samples from a task", task_support=True)
     async def sampler(ctx: MCPContext) -> str:
-        await ctx.sample([{"role": "user", "content": "hi"}], max_tokens=8)
-        return "unreachable"
+        reply = await ctx.sample([{"role": "user", "content": "hi"}], max_tokens=8)
+        return reply.get("content", {}).get("text", "")
 
     pipe = _Pipe(_server(app))
     pipe.feed(
@@ -4458,17 +4462,49 @@ async def test_stdio_task_runner_rejects_server_request():
             "params": {"name": "sampler", "arguments": {}, "task": {}},
         }
     )
+
+    # Answer the server's sampling request as a real client would: watch for it
+    # on the outbound side and feed the correlated reply back in.
+    server = pipe.transport.server
+    captured: list = []
+    read_line = pipe.transport._read_line
+    answered = [False]
+
+    async def _answer_then_eof():
+        line = await read_line()
+        if line is not None:
+            return line
+        if not answered[0]:
+            for message in pipe.outbox:
+                if message.get("method") == "sampling/createMessage":
+                    answered[0] = True
+                    return orjson.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message["id"],
+                            "result": {"content": {"type": "text", "text": "sampled"}},
+                        }
+                    )
+            await asyncio.sleep(0)
+            return b""
+        for pending in list(server._tasks.tasks.values()):
+            if pending.runner is not None:
+                with contextlib.suppress(Exception):
+                    await pending.runner
+        captured.extend(server._tasks.tasks.values())
+        return None
+
+    pipe.transport._read_line = _answer_then_eof
     out = await pipe.run()
 
-    task_id = out[-1]["result"]["task"]["taskId"]
-    runner = pipe.transport.server._tasks.get(task_id).runner
-    await runner
-
-    task = pipe.transport.server._tasks.get(task_id)
-    assert task.status == STATUS_FAILED
-    assert task.result["isError"] is True
-    text = task.result["content"][0]["text"]
-    assert "not supported from a task-augmented tool call on the stdio transport" in text
+    task_id = next(
+        message["result"]["task"]["taskId"]
+        for message in out
+        if isinstance(message.get("result"), dict) and "task" in message["result"]
+    )
+    task = next(t for t in captured if t.name == task_id)
+    assert task.status == STATUS_COMPLETED, task.status_message
+    assert task.result["content"][0]["text"] == "sampled"
 
 
 # -- Principal + per-tool scopes --------------------------------------

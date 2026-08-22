@@ -41,6 +41,7 @@ class _Client:
         self.requests: list[dict] = []
         self.transport = StdioTransport(server, self._read_line, self._write_line)
         self._capabilities = capabilities
+        self._call_id: object = None
 
     def _enqueue(self, message: dict) -> None:
         self._to_server.put_nowait(orjson.dumps(message))
@@ -68,15 +69,23 @@ class _Client:
             }
         )
         self._enqueue(call)
+        self._call_id = call.get("id")
         # Close the input once the call has been answered so the serve loop ends.
         asyncio.get_running_loop().call_soon(self._close_when_done)
         await self.transport.serve()
         return self.sent
 
     def _close_when_done(self) -> None:
-        # End-of-input sentinel: a `None` line stops the serve loop after the
-        # queued messages drain.
-        if self._to_server.empty():
+        # End-of-input sentinel: a `None` line stops the serve loop. The trigger
+        # is the call's own response, not an empty queue: the loop reads each
+        # line and dispatches it, so the queue drains while the handler is still
+        # running - and closing then would cut off the reply to a server->client
+        # request the handler is waiting for.
+        answered = any(
+            message.get("id") == self._call_id and ("result" in message or "error" in message)
+            for message in self.sent
+        )
+        if answered:
             self._to_server.put_nowait(None)
         else:
             asyncio.get_running_loop().call_soon(self._close_when_done)

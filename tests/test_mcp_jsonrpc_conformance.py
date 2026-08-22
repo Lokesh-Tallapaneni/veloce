@@ -136,7 +136,14 @@ async def _stdio_reply(raw: str) -> dict:
         return None
 
     transport = StdioTransport(MCPServer(app), read_line, write_line)
-    return await transport._process_line(raw, MCPSession())
+    # The loop decodes first and routes on the result: a shape failure is
+    # answered without ever reaching dispatch, so that is what this reproduces.
+    message, error = transport._decode(raw)
+    if error is not None:
+        return error
+    if message is None or "method" not in message:
+        return None
+    return await transport.server.handle_message(message, MCPSession())
 
 
 async def test_stdio_reports_a_shape_failure_the_same_way():
