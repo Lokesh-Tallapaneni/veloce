@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Replaying an MCP refresh token revokes the whole token family, per OAuth 2.1 Sec. 4.14.2. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- A trusted `Forwarded` header is the sole authority for `for`, `proto` and `host`; a hop refused by trust depth can no longer set them through `X-Forwarded-*`. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
 - `RateLimitMiddleware` keys on the caller's address under ASGI; a changing `User-Agent` no longer bypasses it. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 
 ### Added
@@ -70,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The built-in server buffers a route's body before dispatch unless it declares `stream=True`; declare the flag to keep incremental delivery. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
 - `app.mount(..., expose_mcp=True)` takes its flag as a keyword; passing it positionally is refused. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A stateful connection advertises `listChanged: true` for tools, prompts and resources. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A tool, prompt or resource whose declared `scopes` the caller lacks is no longer listed. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
@@ -85,6 +88,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The gunicorn worker warns when its TLS certificate is expired or not yet valid. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- A dropped SSE client no longer leaves the in-flight call buffering notifications nobody reads. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- Closing a stdio MCP connection reclaims the tasks it created, including one that never settles. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- The gunicorn worker honours `--ssl-version` as a minimum TLS version; a floor below the interpreter default is refused and logged. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- `request.scheme` reports `https` on a TLS connection served by the built-in server or the gunicorn worker. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- `X-Forwarded-Proto` no longer sets the scheme from a hop `ProxyFix` refused. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- A task-augmented `tools/call` is refused on a connection with no session, which previously pinned an unreachable task. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- `MCPContext.session_id` is unique across worker processes, so per-client state is no longer shared between unrelated clients. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- Graceful shutdown closes idle keep-alive connections before awaiting the server, so shutdown hooks run instead of being killed. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- `request.get_json()` and `request.data` read the body under the built-in server and the gunicorn worker. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
 - A response's ETag, `Last-Modified`, `Expires` and `Vary` are read whatever casing wrote them. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - An `If-Match` a response satisfies is no longer refused when its ETag was written as `Etag`. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `FileResponse` names its media type through the same memoized lookup the static server uses. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))

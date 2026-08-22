@@ -295,6 +295,8 @@ middleware behave identically. The differences are at the transport edge.
 | --- | --- | --- |
 | Process model | Single process, no pre-fork | `--workers N` pre-forks |
 | Request path | Not percent-decoded | Decoded per the ASGI spec |
+| Long request targets | Over 8 KiB refused with `414` | Accepted (uvicorn's own limit applies) |
+| Request body | Buffered unless `stream=True` | Buffered unless `stream=True` |
 | WebSocket subprotocol | `accept(subprotocol=...)` raises | Negotiated normally |
 | TLS | `ssl_context=` for local testing | Terminate at uvicorn or a proxy |
 | Hardening knobs | `REQUEST_TIMEOUT`, `KEEP_ALIVE_TIMEOUT`, `MAX_CONCURRENT_CONNECTIONS` | uvicorn's own limits |
