@@ -89,6 +89,7 @@ from veloce.contrib.mcp.resources import (
     ResourceRegistry,
     build_resource_registry,
 )
+from veloce.contrib.mcp.sampling import SampledToolCall, SamplingRun
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.subscriptions import SubscriptionsCapability
@@ -135,6 +136,8 @@ __all__ = [
     "OAuthClient",
     "register_authorization_server",
     "ArgTransform",
+    "SampledToolCall",
+    "SamplingRun",
     "add_mcp_proxy",
     "derive_tool",
     "ResourceLink",

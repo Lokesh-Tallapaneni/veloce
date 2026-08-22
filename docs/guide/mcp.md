@@ -811,6 +811,59 @@ async def summarise(text: str, ctx: MCPContext) -> str:
     return result["content"]["text"]
 ```
 
+#### Sampling with tools
+
+A model given tools rarely answers in one round trip: it answers with a request
+to call one, and the handler has to execute it, append the result and ask again
+before it has an answer. `ctx.sample_with_tools(...)` runs that loop over tools
+this server already has:
+
+```python
+from veloce import MCPContext, Veloce
+
+app = Veloce(title="Support")
+
+
+@app.mcp_tool(description="Look up an order")
+async def order(order_id: str) -> dict:
+    return await db.order(order_id)
+
+
+@app.mcp_tool(description="Answer a customer question")
+async def answer(question: str, ctx: MCPContext) -> str:
+    run = await ctx.sample_with_tools(
+        [{"role": "user", "content": {"type": "text", "text": question}}],
+        tools=["order"],
+        max_tokens=512,
+    )
+    return run.text
+```
+
+Every tool the model asks for runs through the same path `tools/call` serves —
+declared scopes, call hooks, timeout and error shaping included — and its result
+is fed back as the next message. The returned `SamplingRun` carries `text`, the
+raw `content` blocks, `model`, `stop_reason`, the full `messages` transcript
+(ready to extend for another run), `tool_calls` (each a `SampledToolCall` with
+the arguments the model chose and whether the call failed), and `rounds`.
+
+`tools=` is a restriction, not a hint: a tool outside that list — or one that
+does not exist — comes back to the model as an error result instead of being
+executed. Naming a tool this server does not register is refused outright, since
+it would otherwise silently offer nothing.
+
+A failing tool call is reported to the model rather than raised: it asked for the
+call and can correct itself given the reason, whereas raising would end the
+handler on an argument the model generated.
+
+`max_tool_rounds` (5 by default) caps how many times tools are executed. On the
+round after the cap the model is asked to answer without tools, so a run ends
+with an answer rather than an unanswered request.
+
+!!! warning "Requires the `sampling.tools` sub-capability"
+    Tool-using sampling is a modern-revision feature. A client advertising
+    `sampling: {}` cannot receive tools, so the call raises `MCPCapabilityError`
+    rather than putting a request on the wire it cannot act on.
+
 `ctx.elicit(...)` asks the client to gather input from its user
 (`elicitation/create`). Form mode passes a `requested_schema` (the JSON Schema of
 the fields to collect); URL mode passes a `url` the client opens instead:

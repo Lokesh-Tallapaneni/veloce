@@ -29,7 +29,13 @@ from contextvars import ContextVar
 from typing import Any
 
 from veloce._internal import _current_request_var
-from veloce.contrib.mcp.errors import MCPCapabilityError
+from veloce.contrib.mcp.errors import MCPCapabilityError, MCPError
+from veloce.contrib.mcp.sampling import (
+    _NO_MORE_TOOLS,
+    SampledToolCall,
+    SamplingRun,
+    content_blocks,
+)
 
 # What a sampling request may ask the client to attach to the prompt. The client
 # MAY ignore the request, so this is a hint; a value outside the set is a typo the
@@ -86,6 +92,11 @@ _LOG_RANKS = {
     "alert": 6,
     "emergency": 7,
 }
+
+
+def _error_content(message: str) -> dict[str, Any]:
+    """Shape a failed sampled tool call the way a tool's own error result is shaped."""
+    return {"content": [{"type": "text", "text": message}], "isError": True}
 
 
 class MCPContext:
@@ -401,6 +412,136 @@ class MCPContext:
         if include_context is not None:
             params["includeContext"] = include_context
         return await self._request("sampling/createMessage", "sampling", params)
+
+    async def sample_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[str],
+        max_tokens: int,
+        max_tool_rounds: int = 5,
+        model_preferences: dict[str, Any] | None = None,
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        stop_sequences: list[str] | None = None,
+        tool_choice: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SamplingRun:
+        """Sample with tools, executing the ones the model asks for, until it answers.
+
+        `tools` names tools of this server the model may drive. Each request the
+        model makes runs through the same path `tools/call` serves - declared
+        scopes, call hooks, timeout and error shaping included - and its result
+        is fed back as the next message. Returns a `SamplingRun` carrying the
+        answer, the transcript, and every tool call made.
+
+        `max_tool_rounds` caps how many times tools are executed. On the round
+        after the cap the model is asked to answer without tools, so a run ends
+        with an answer rather than an unanswered request; a client that ignores
+        that instruction ends the run where it stands.
+
+        Requires a client that advertised ``sampling.tools``.
+        """
+        server = self._require_server("sample_with_tools")
+        declared = self._declare_tools(server, tools)
+        allowed = frozenset(tools)
+
+        transcript = list(messages)
+        calls: list[SampledToolCall] = []
+        for round_index in range(max_tool_rounds + 1):
+            final_round = round_index == max_tool_rounds
+            # A copy per round: the request holds this list until it is written,
+            # and the loop appends to the transcript as soon as it returns.
+            result = await self.sample(
+                list(transcript),
+                max_tokens=max_tokens,
+                model_preferences=model_preferences,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                stop_sequences=stop_sequences,
+                tools=declared,
+                tool_choice=_NO_MORE_TOOLS if final_round else tool_choice,
+                metadata=metadata,
+            )
+            blocks = content_blocks(result)
+            requested = [block for block in blocks if block.get("type") == "tool_use"]
+            if not requested or final_round:
+                return SamplingRun(
+                    content=tuple(blocks),
+                    model=result.get("model"),
+                    stop_reason=result.get("stopReason"),
+                    messages=tuple(transcript),
+                    tool_calls=tuple(calls),
+                    rounds=round_index + 1,
+                )
+            transcript.append({"role": "assistant", "content": blocks})
+            results = []
+            for block in requested:
+                call = await self._run_sampled_tool(server, block, allowed)
+                calls.append(call)
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "toolUseId": call.id,
+                        "content": call.result.get("content") or [],
+                        "isError": call.is_error,
+                    }
+                )
+            transcript.append({"role": "user", "content": results})
+        raise AssertionError("unreachable: the final round always returns")
+
+    def _declare_tools(self, server: Any, names: list[str]) -> list[dict[str, Any]]:
+        """Return the `tools/list` entries for the named tools of this server."""
+        declared: list[dict[str, Any]] = []
+        for name in names:
+            tool = server.registry.get(name)
+            if tool is None:
+                raise ValueError(
+                    f"sample_with_tools names {name!r}, which this server does not "
+                    f"register; it has {sorted(server.registry.tools) or 'no tools'}"
+                )
+            declared.append(server._describe_tool(tool))
+        return declared
+
+    async def _run_sampled_tool(
+        self, server: Any, block: dict[str, Any], allowed: frozenset[str]
+    ) -> SampledToolCall:
+        """Execute one tool the model asked for, as `tools/call` would.
+
+        A failure comes back as an error result rather than propagating: the
+        model asked for this call and can correct itself given the reason,
+        whereas raising would end the handler on a bad argument it generated.
+        """
+        name = block.get("name")
+        arguments = block.get("input")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        use_id = str(block.get("id") or "")
+        if not isinstance(name, str) or name not in allowed:
+            return SampledToolCall(
+                name=str(name),
+                id=use_id,
+                arguments=arguments,
+                result=_error_content(f"{name!r} is not one of the tools offered for this run"),
+                is_error=True,
+            )
+        try:
+            result = await server._tools_call({"name": name, "arguments": arguments})
+        except MCPError as exc:
+            return SampledToolCall(
+                name=name,
+                id=use_id,
+                arguments=arguments,
+                result=_error_content(str(exc)),
+                is_error=True,
+            )
+        return SampledToolCall(
+            name=name,
+            id=use_id,
+            arguments=arguments,
+            result=result,
+            is_error=bool(result.get("isError")),
+        )
 
     async def elicit(
         self,
