@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 from veloce._handler_plan import build_plan
 from veloce.contrib.mcp.context import MCPContext
-from veloce.contrib.mcp.registry import MCPTool
+from veloce.contrib.mcp.registry import VERSION_META_KEY, MCPTool
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Awaitable, Callable
@@ -123,6 +123,20 @@ def _proxy_tool(
         input_schema=entry.get("inputSchema") or {"type": "object", "properties": {}},
         output_schema=entry.get("outputSchema"),
         annotations=entry.get("annotations"),
-        meta=entry.get("_meta"),
+        meta=_relayed_meta(entry.get("_meta")),
         passthrough_result=True,
     )
+
+
+def _relayed_meta(meta: Any) -> dict[str, Any] | None:
+    """Return the upstream's `_meta` minus what this server cannot honour.
+
+    An upstream that versions a tool publishes the versions it can serve. This
+    server forwards a call by name and has no way to name a version upstream, so
+    republishing that list would advertise versions only the upstream can answer
+    and this gateway would refuse.
+    """
+    if not isinstance(meta, dict) or VERSION_META_KEY not in meta:
+        return meta if isinstance(meta, dict) else None
+    relayed = {key: value for key, value in meta.items() if key != VERSION_META_KEY}
+    return relayed or None

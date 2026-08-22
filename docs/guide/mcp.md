@@ -1142,6 +1142,11 @@ annotations — so reaching one never borrows another's. A version this server
 does not have is refused by name and version rather than silently answered by
 the latest.
 
+What a tool advertises is what this server can dispatch. A tool copied from a
+versioned one — by `derive_tool`, by a namespaced `mount(expose_mcp=True)`, or
+by `add_mcp_proxy` — carries its own version but not the set, because the copy
+is one implementation and the registry it lands in holds no siblings for it.
+
 Versions are ordered as dotted integers when every component is one, so `10.0`
 follows `2.0` rather than preceding it as a string sort would. A label that is
 not all-numeric sorts after every numeric label, so an ordering exists whatever

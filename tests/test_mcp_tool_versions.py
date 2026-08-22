@@ -18,6 +18,7 @@ import pytest
 
 from veloce import Veloce
 from veloce.contrib.mcp.registry import build_registry
+from veloce.contrib.mcp.transform import derive_tool
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 
@@ -269,3 +270,123 @@ async def test_an_older_version_keeps_its_own_scopes():
 
     assert "error" in await _call(app, {"q": "x"}, version="1")
     assert _payload(await _call(app, {"q": "x"}))["v"] == 2
+
+
+# ── A copy must not advertise what it cannot serve ───────────────────
+
+
+def _versioned_app() -> Veloce:
+    app = Veloce(title="Versioned", version="1.0.0", openapi_url=None)
+
+    @app.mcp_tool(name="calc", description="Add two numbers", version="1.0")
+    async def calc_v1(a: int, b: int) -> int:
+        return a + b
+
+    @app.mcp_tool(name="calc", description="Add two numbers", version="2.0")
+    async def calc_v2(a: int, b: int, precision: int = 0) -> int:
+        return a + b
+
+    return app
+
+
+def _published_versions(app: Veloce, name: str) -> tuple[str | None, list[str]]:
+    entry = MCPServer(app)._describe_tool(build_registry(app).tools[name])
+    published = (entry.get("_meta") or {}).get("veloce") or {}
+    return published.get("version"), published.get("versions", [])
+
+
+def _every_published_version_resolves(app: Veloce) -> bool:
+    """The invariant: what a tool advertises is what the server can dispatch."""
+    registry = build_registry(app)
+    server = MCPServer(app)
+    for name, tool in registry.tools.items():
+        entry = server._describe_tool(tool)
+        for version in ((entry.get("_meta") or {}).get("veloce") or {}).get("versions", []):
+            if registry.resolve(name, version) is None:
+                return False
+    return True
+
+
+def test_the_original_still_advertises_every_version_it_serves():
+    assert _published_versions(_versioned_app(), "calc") == ("2.0", ["1.0", "2.0"])
+
+
+def test_a_derived_tool_does_not_inherit_the_version_set():
+    """It wraps one version's surface, so it can answer for one version."""
+    app = _versioned_app()
+    app.add_mcp_tool(derive_tool(build_registry(app).tools["calc"], name="calculate"))
+    assert _published_versions(app, "calculate") == ("2.0", [])
+
+
+async def test_a_derived_tool_serves_its_own_version():
+    app = _versioned_app()
+    app.add_mcp_tool(derive_tool(build_registry(app).tools["calc"], name="calculate"))
+    params: dict = {
+        "name": "calculate",
+        "arguments": {"a": 4, "b": 6},
+        "_meta": {"veloce": {"version": "2.0"}},
+    }
+    response = await MCPServer(app).handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}, MCPSession()
+    )
+    assert response["result"]["content"][0]["text"] == "10"
+
+
+async def test_a_derived_tool_refuses_a_version_it_never_had():
+    app = _versioned_app()
+    app.add_mcp_tool(derive_tool(build_registry(app).tools["calc"], name="calculate"))
+    assert "error" in await _call(app, {"a": 1, "b": 1}, version="1.0")
+
+
+def test_a_namespaced_mount_does_not_inherit_the_version_set():
+    parent = Veloce(title="Parent", openapi_url=None)
+    parent.mount("/billing", _versioned_app(), expose_mcp=True)
+    assert _published_versions(parent, "billing_calc") == ("2.0", [])
+
+
+def test_what_a_tool_advertises_is_what_the_server_can_dispatch():
+    """The invariant, over every shape that copies a tool."""
+    parent = Veloce(title="Parent", openapi_url=None)
+    parent.mount("/billing", _versioned_app(), expose_mcp=True)
+    app = _versioned_app()
+    app.add_mcp_tool(derive_tool(build_registry(app).tools["calc"], name="calculate"))
+    assert _every_published_version_resolves(parent)
+    assert _every_published_version_resolves(app)
+
+
+async def test_a_proxied_tool_publishes_no_version_the_gateway_cannot_serve():
+    """The upstream can answer `calc@1.0`; a gateway forwarding by name cannot."""
+    from veloce.contrib.mcp.proxy import add_mcp_proxy
+
+    upstream = MCPServer(_versioned_app())
+
+    async def request(method: str, params: dict) -> dict:
+        response = await upstream.handle_message(
+            {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, MCPSession()
+        )
+        return response["result"]
+
+    gateway = Veloce(title="Gateway", openapi_url=None)
+    await add_mcp_proxy(gateway, "up", request)
+    assert _published_versions(gateway, "up_calc") == (None, [])
+    assert _every_published_version_resolves(gateway)
+
+
+async def test_other_upstream_metadata_still_travels():
+    """Only the block this server cannot honour is dropped."""
+    from veloce.contrib.mcp.proxy import add_mcp_proxy
+
+    async def request(method: str, params: dict) -> dict:
+        return {
+            "tools": [
+                {
+                    "name": "add",
+                    "inputSchema": {},
+                    "_meta": {"io.example/team": "math", "veloce": {"version": "9"}},
+                }
+            ]
+        }
+
+    gateway = Veloce(title="Gateway", openapi_url=None)
+    await add_mcp_proxy(gateway, "up", request)
+    assert build_registry(gateway).tools["up_add"].meta == {"io.example/team": "math"}

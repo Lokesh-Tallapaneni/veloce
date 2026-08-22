@@ -82,7 +82,12 @@ from veloce.contrib.mcp.errors import (
 from veloce.contrib.mcp.icons import coerce_icons, render_icons
 from veloce.contrib.mcp.pagination import paginate
 from veloce.contrib.mcp.prompts import PromptRegistry, build_prompt_registry
-from veloce.contrib.mcp.registry import ToolFilter, ToolRegistry, build_registry
+from veloce.contrib.mcp.registry import (
+    VERSION_META_KEY,
+    ToolFilter,
+    ToolRegistry,
+    build_registry,
+)
 from veloce.contrib.mcp.resources import ResourceRegistry, build_resource_registry
 from veloce.contrib.mcp.subscriptions import (
     ConnectionRegistry,
@@ -213,19 +218,12 @@ def _apply_sync_tool_filter(
     return [tool for tool in tools if tool_filter(tool, principal)]
 
 
-# Where a tool's version is published in its `_meta`, and where a call names the
-# version it wants. The spec defines no version field, so both live under one
-# framework-namespaced key rather than inventing wire fields a client would not
-# recognise.
-_VERSION_META_KEY = "veloce"
-
-
 def _requested_version(params: dict[str, Any]) -> str | None:
     """Return the tool version this call asked for, if it named one."""
     meta = params.get("_meta")
     if not isinstance(meta, dict):
         return None
-    namespaced = meta.get(_VERSION_META_KEY)
+    namespaced = meta.get(VERSION_META_KEY)
     if not isinstance(namespaced, dict):
         return None
     version = namespaced.get("version")
@@ -270,12 +268,18 @@ def _build_tool_listing_entry(tool: MCPTool) -> dict[str, Any]:
         published: dict[str, Any] = {"version": tool.version}
         if tool.version_history:
             published["versions"] = list(tool.version_history)
-        declared = meta.get(_VERSION_META_KEY) if meta else None
+        declared = meta.get(VERSION_META_KEY) if meta else None
         namespaced = {**declared, **published} if isinstance(declared, dict) else published
-        meta = {**meta, _VERSION_META_KEY: namespaced} if meta else {_VERSION_META_KEY: namespaced}
+        meta = {**meta, VERSION_META_KEY: namespaced} if meta else {VERSION_META_KEY: namespaced}
     if meta:
         entry["_meta"] = meta
     return entry
+
+
+# The methods whose answer is a listing, and so can be narrowed per connection.
+_LIST_METHODS = frozenset(
+    {"tools/list", "prompts/list", "resources/list", "resources/templates/list"}
+)
 
 
 def _in_band_status_for(error: _InBandError) -> int:
@@ -799,7 +803,7 @@ class MCPServer(TasksMixin, InvocationMixin):
             # the modern shape only.
             result = {"resultType": RESULT_TYPE_COMPLETE, **result}
             if method in _CACHEABLE_METHODS:
-                self._add_cache_hints(method, result)
+                self._add_cache_hints(method, result, session)
         if attached_meta and isinstance(result, dict):
             result = _attach_result_meta(result, attached_meta)
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
@@ -1093,7 +1097,9 @@ class MCPServer(TasksMixin, InvocationMixin):
                 advertised.update(entry)
         return advertised
 
-    def _add_cache_hints(self, method: str, result: dict[str, Any]) -> None:
+    def _add_cache_hints(
+        self, method: str, result: dict[str, Any], session: MCPSession | None
+    ) -> None:
         """Attach `ttlMs` / `cacheScope` to a cacheable `complete` result.
 
         The scope is the load-bearing half. A result that can differ between
@@ -1106,22 +1112,45 @@ class MCPServer(TasksMixin, InvocationMixin):
         """
         result["ttlMs"] = self._cache_ttl_ms
         result["cacheScope"] = (
-            _CACHE_SCOPE_PRIVATE if self._varies_by_caller(method) else _CACHE_SCOPE_PUBLIC
+            _CACHE_SCOPE_PRIVATE if self._varies_by_caller(method, session) else _CACHE_SCOPE_PUBLIC
         )
 
-    def _varies_by_caller(self, method: str) -> bool:
-        """Whether this method's result can differ between two authorized callers."""
+    def connection_is_stateful(self) -> bool:
+        """Whether the connection being answered persists beyond this request.
+
+        A stateful connection has an outbound channel and can carry per-connection
+        state; a stateless request has neither, and nothing it is told survives
+        the response.
+        """
+        session = self.current_session()
+        return session is not None and session.persistent
+
+    def _varies_by_caller(self, method: str, session: MCPSession | None = None) -> bool:
+        """Whether this method's result can differ between two authorized callers.
+
+        `session` is the connection being answered, passed in rather than read
+        from the dispatch context: the hints are stamped after that context has
+        been released.
+        """
         if method == "resources/read":
             # Its route runs the full request lifecycle under the caller's
             # principal, so the body it returns is caller-dependent by construction.
+            return True
+        if method not in _LIST_METHODS:
+            return False
+        # A handler on a stateful connection may narrow that connection's view
+        # with `MCPContext.hide` at any point, so two connections to this server
+        # can be shown different lists. Which of them hid something is not the
+        # question a cache key can ask: an answer produced for one connection
+        # must not be replayed to another, whether or not either has hidden
+        # anything yet.
+        if session is not None and session.persistent:
             return True
         if method == "tools/list":
             return self._tool_filter is not None or self._any_scoped_tools
         if method == "prompts/list":
             return self._any_scoped_prompts
-        if method in ("resources/list", "resources/templates/list"):
-            return self._any_scoped_resources
-        return False
+        return self._any_scoped_resources
 
     def _unnarrowed_tools(self) -> dict[str, MCPTool] | None:
         """The registry's own name -> tool map when nothing can narrow it here.

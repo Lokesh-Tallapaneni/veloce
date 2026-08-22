@@ -11,6 +11,7 @@ import pytest
 
 from veloce import Veloce
 from veloce.contrib.mcp.server import DEFAULT_CACHE_TTL_MS, MCPServer
+from veloce.contrib.mcp.session import MCPSession
 
 MODERN = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
 CACHEABLE = [
@@ -204,3 +205,51 @@ async def test_a_handshake_era_client_sees_no_hints():
     assert "ttlMs" not in response["result"]
     assert "cacheScope" not in response["result"]
     assert "resultType" not in response["result"]
+
+
+# ── A listing a connection can narrow is that connection's answer ────
+
+
+def _stateful_session() -> MCPSession:
+    session = MCPSession()
+    session.persistent = True
+    return session
+
+
+async def _list_scope(app: Veloce, method: str, session: MCPSession | None) -> str:
+    response = await MCPServer(app).handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": {"_meta": MODERN},
+        },
+        session or MCPSession(),
+    )
+    scope: str = response["result"]["cacheScope"]
+    return scope
+
+
+async def test_a_listing_on_a_stateful_connection_is_private():
+    """`MCPContext.hide` can narrow it at any point, for this connection only."""
+    assert await _list_scope(_app(), "tools/list", _stateful_session()) == "private"
+
+
+async def test_every_listing_on_a_stateful_connection_is_private():
+    app = _app(scoped_prompt=False)
+    for method in ("tools/list", "prompts/list", "resources/list"):
+        assert await _list_scope(app, method, _stateful_session()) == "private", method
+
+
+async def test_a_listing_on_a_stateless_request_stays_public():
+    """Nothing it is told survives the response, so nothing can narrow it."""
+    stateless = MCPSession()
+    stateless.persistent = False
+    assert await _list_scope(_app(), "tools/list", stateless) == "public"
+
+
+async def test_a_stateful_connection_is_private_even_before_anything_is_hidden():
+    """Which connection hid something is not a question a cache key can ask."""
+    session = _stateful_session()
+    assert not session.hidden
+    assert await _list_scope(_app(), "tools/list", session) == "private"

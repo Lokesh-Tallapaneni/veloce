@@ -118,7 +118,22 @@ class MCPTool(MCPDescriptor):
     version: str | None = None
     # Every version registered under this tool's name, ascending. Set on the
     # listed tool as its siblings arrive; empty for an unversioned tool.
-    version_history: tuple[str, ...] = ()
+    #
+    # Excluded from `__init__` for the same reason `listing_entry` is, and with a
+    # sharper consequence: it is only meaningful alongside the registry's own
+    # sibling map, which a copy does not inherit. `dataclasses.replace` skips an
+    # `init=False` field, so a tool copied by `derive_tool`, by a namespaced
+    # mount or by anything else starts with an empty history rather than
+    # advertising versions the copy's registry cannot serve.
+    version_history: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
+
+
+# Where a tool's version is published in its `_meta`, and where a call names the
+# version it wants. The spec defines no version field, so both live under one
+# framework-namespaced key rather than inventing wire fields a client would not
+# recognise. It lives here, beside the versioning it names, because every site
+# that copies or relays a tool has to know not to carry it across.
+VERSION_META_KEY = "veloce"
 
 
 def _version_key(version: str | None) -> tuple[int, Any]:

@@ -64,5 +64,4 @@ class _ServerCapability(Capability):
         stateless request has none, and its list cannot change anyway: nothing
         survives the response.
         """
-        session = self._server.current_session()
-        return session is not None and session.persistent
+        return bool(self._server.connection_is_stateful())
