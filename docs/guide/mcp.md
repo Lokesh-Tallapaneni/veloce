@@ -1289,6 +1289,14 @@ argument. Hiding without a default is refused: the caller cannot supply it, so
 the handler would be called without it. Naming an argument the tool does not
 have is refused too, since it would silently do nothing.
 
+`schema=` reshapes what the agent is told, not what the handler takes — the
+binder still enforces the parameter's declared type. Narrowing within that type
+is the point (an `enum`, a `maximum`, a `pattern`); offering a *different* type
+is refused, because it would publish a contract every call following it would be
+refused for. Deriving from an already-derived tool is refused for a related
+reason: one translation maps a published surface to the handler's own
+parameters, so a second would map onto the first rather than onto the handler.
+
 ## Serving over stdio
 
 ### Server identity and instructions

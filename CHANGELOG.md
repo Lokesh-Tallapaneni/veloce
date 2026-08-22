@@ -76,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `derive_tool` refuses to derive from a derived tool, which published a surface no call could satisfy. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `ArgTransform(schema=...)` refuses a type the handler behind it would reject. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A copied tool no longer advertises versions only the tool it was copied from can serve. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A proxied tool drops the upstream's version metadata, which the gateway cannot honour. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A listing a connection can narrow is marked `private`, so a shared cache cannot replay it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))

@@ -83,6 +83,26 @@ class _Binding:
         return self.default is not _UNSET
 
 
+def _declared_types(schema: dict[str, Any]) -> frozenset[str]:
+    """Return the JSON type names a property schema accepts.
+
+    Reads both shapes the schema builder produces: a plain `type`, and the
+    `anyOf` an optional parameter carries. An empty set means the schema names
+    no type at all - a `$ref`, or a bare constraint - which no reshape check can
+    speak about.
+    """
+    names: set[str] = set()
+    declared = schema.get("type")
+    if isinstance(declared, str):
+        names.add(declared)
+    elif isinstance(declared, list):
+        names.update(name for name in declared if isinstance(name, str))
+    for branch in schema.get("anyOf") or ():
+        if isinstance(branch, dict):
+            names |= _declared_types(branch)
+    return frozenset(names)
+
+
 def derive_tool(
     tool: MCPTool,
     *,
@@ -96,6 +116,14 @@ def derive_tool(
     argument not mentioned is published unchanged. Naming one the original does
     not have is refused, since it would silently do nothing.
     """
+
+    if tool.derived_from is not None:
+        raise ValueError(
+            f"{tool.name!r} is already a derived tool. One translation maps a published "
+            "surface to the handler's own parameters, so deriving again would map the "
+            "second surface onto the first rather than onto the handler; derive from "
+            "the original instead."
+        )
 
     transforms = arguments or {}
     schema = tool.input_schema or {}
@@ -124,6 +152,8 @@ def derive_tool(
             bindings.append(_Binding(original=original, published=None, default=transform.default))
             continue
 
+        if transform.schema is not None:
+            _reject_incompatible_schema(tool.name, original, definition, transform.schema)
         entry = dict(transform.schema) if transform.schema is not None else dict(definition)
         if transform.description is not None:
             entry["description"] = transform.description
@@ -178,3 +208,31 @@ class _Derivation:
             elif binding.has_default:
                 translated[binding.original] = binding.default
         return translated
+
+
+def _reject_incompatible_schema(
+    tool_name: str,
+    argument: str,
+    original: dict[str, Any],
+    replacement: dict[str, Any],
+) -> None:
+    """Refuse a replacement schema the handler behind it would not accept.
+
+    `schema=` reshapes what the agent is told; it does not reshape the handler,
+    whose parameter type the binder still enforces. A replacement naming a type
+    the original does not accept publishes a contract every call following it
+    would be refused for - and the refusal would read as the model's mistake.
+    Narrowing within the same type (an `enum`, a `maximum`, a `pattern`) is what
+    the argument is for and is left alone.
+    """
+    accepted = _declared_types(original)
+    offered = _declared_types(replacement)
+    if not accepted or not offered:
+        return
+    unsupported = offered - accepted
+    if unsupported:
+        raise ValueError(
+            f"{tool_name!r} declares {argument!r} as {'/'.join(sorted(accepted))}, so a "
+            f"schema offering {'/'.join(sorted(unsupported))} publishes a shape the tool "
+            "would refuse; reshape within the declared type, or change the handler."
+        )

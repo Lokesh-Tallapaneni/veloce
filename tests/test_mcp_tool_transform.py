@@ -262,3 +262,126 @@ def test_a_derived_tool_may_restate_its_description():
     derived = derive_tool(internal, name="public", description="Search the catalogue")
     assert derived.description == "Search the catalogue"
     assert internal.description == "Search the index (internal)"
+
+
+# ── Deriving from a derived tool ─────────────────────────────────────
+
+
+def test_deriving_from_a_derived_tool_is_refused():
+    """It published a plausible schema, registered cleanly, and failed every call."""
+    _app_obj, internal = _app()
+    once = derive_tool(internal, name="public", arguments={"query": ArgTransform(name="q")})
+    with pytest.raises(ValueError, match="already a derived tool"):
+        derive_tool(once, name="find", arguments={"q": ArgTransform(name="text")})
+
+
+def test_the_refusal_says_what_to_derive_from_instead():
+    _app_obj, internal = _app()
+    once = derive_tool(internal, name="public")
+    with pytest.raises(ValueError, match="derive from the original"):
+        derive_tool(once, name="find")
+
+
+def test_deriving_twice_from_the_same_original_is_fine():
+    """Two façades over one handler is the supported shape."""
+    app, internal = _app()
+    app.add_mcp_tool(derive_tool(internal, name="one", arguments={"query": ArgTransform(name="q")}))
+    app.add_mcp_tool(derive_tool(internal, name="two", arguments={"query": ArgTransform(name="s")}))
+    assert "q" in _published(app, "one")["properties"]
+    assert "s" in _published(app, "two")["properties"]
+
+
+# ── A replacement schema the handler would refuse ────────────────────
+
+
+def test_offering_a_type_the_handler_does_not_take_is_refused():
+    """It advertised `integer`, rejected an integer, and accepted a string."""
+    _app_obj, internal = _app()
+    with pytest.raises(ValueError, match="publishes a shape the tool would refuse"):
+        derive_tool(
+            internal,
+            name="public",
+            arguments={"query": ArgTransform(schema={"type": "integer"})},
+        )
+
+
+def test_the_refusal_names_the_argument_and_both_types():
+    _app_obj, internal = _app()
+    with pytest.raises(ValueError, match="'query'.*string.*integer"):
+        derive_tool(
+            internal,
+            name="public",
+            arguments={"query": ArgTransform(schema={"type": "integer"})},
+        )
+
+
+def test_narrowing_within_the_declared_type_is_allowed():
+    """An enum or a bound is what the argument is for."""
+    app, internal = _app()
+    app.add_mcp_tool(
+        derive_tool(
+            internal,
+            name="public",
+            arguments={"query": ArgTransform(schema={"type": "string", "enum": ["cats", "dogs"]})},
+        )
+    )
+    assert _published(app, "public")["properties"]["query"]["enum"] == ["cats", "dogs"]
+
+
+def test_a_bound_on_a_number_is_allowed():
+    app, internal = _app()
+    app.add_mcp_tool(
+        derive_tool(
+            internal,
+            name="public",
+            arguments={"limit": ArgTransform(schema={"type": "integer", "maximum": 20})},
+        )
+    )
+    assert _published(app, "public")["properties"]["limit"]["maximum"] == 20
+
+
+def test_a_schema_naming_no_type_is_left_alone():
+    """A `$ref` or a bare constraint says nothing a compatibility check can read."""
+    app, internal = _app()
+    app.add_mcp_tool(
+        derive_tool(
+            internal,
+            name="public",
+            arguments={"query": ArgTransform(schema={"description": "anything"})},
+        )
+    )
+    assert _published(app, "public")["properties"]["query"] == {"description": "anything"}
+
+
+def test_an_optional_parameters_null_branch_is_understood():
+    """Its published shape is an `anyOf`, not a plain `type`."""
+    app = Veloce(title="Optional", openapi_url=None)
+
+    @app.mcp_tool(description="Takes an optional note")
+    async def note(text: str | None = None) -> dict:
+        return {"text": text}
+
+    internal = build_registry(app).tools["note"]
+    app.add_mcp_tool(
+        derive_tool(
+            internal,
+            name="public",
+            arguments={"text": ArgTransform(schema={"type": "string", "maxLength": 10})},
+        )
+    )
+    assert _published(app, "public")["properties"]["text"]["maxLength"] == 10
+
+
+def test_offering_a_type_outside_an_optional_parameters_branches_is_refused():
+    app = Veloce(title="Optional", openapi_url=None)
+
+    @app.mcp_tool(description="Takes an optional note")
+    async def note(text: str | None = None) -> dict:
+        return {"text": text}
+
+    with pytest.raises(ValueError, match="publishes a shape the tool would refuse"):
+        derive_tool(
+            build_registry(app).tools["note"],
+            name="public",
+            arguments={"text": ArgTransform(schema={"type": "array"})},
+        )
