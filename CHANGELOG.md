@@ -8,95 +8,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- `RateLimitMiddleware` keys on the caller's address under ASGI; a changing `User-Agent` no longer bypasses it. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- `RateLimitMiddleware` keys on the caller's address under ASGI; a changing `User-Agent` no longer bypasses it. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 
 ### Added
 
-- A resource template accepts `{+name}`, binding a whole path - separators included - to one variable. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `veloce mcp run` serves an app's MCP tools, which is what a client config file launches. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `veloce mcp list` prints the tools, resources and prompts a client would see. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `MCPAuthorizationServer` issues MCP tokens: OAuth 2.1 with PKCE, refresh rotation, and RFC 7591 registration. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `register_authorization_server` mounts its metadata, `/authorize`, `/token` and `/register`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `AuthorizationStore` and `InMemoryAuthorizationStore` back the issued clients, codes and tokens. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `mount_mcp(transport="sse")` serves the deprecated split-endpoint SSE wire. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `mount_mcp(session_backend=...)` shares HTTP MCP sessions between workers. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `SessionBackend` and `SessionRecord` are exported for implementing that store. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `mount_mcp(page_size=...)` paginates the MCP list methods with the spec's opaque cursor. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- A tool may return a list of content blocks, emitted in order as the result's `content`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `MCPContext.state` reaches the call's request state, so a handler holding the context can stash a value. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `mcp_tool(tags=...)` labels a tool, and every tool exposes `tags` for a visibility policy. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- A `pathlib.Path` parameter declares `format: path` in the tool schema. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `mcp_resource_mime_type=` declares the media type a resource listing advertises. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `mount_mcp(tool_search=...)` publishes `search_tools`, `describe_tools` and `run_tools` in place of the catalogue. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `run_tools` runs several declared calls in one request, passing results between steps. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `mcp_tool(version=...)` registers several versions of a tool under one published name. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `MCPContext.sample_with_tools` runs the sampling loop, executing the tools the model asks for. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `SamplingRun` and `SampledToolCall` report a run's answer, transcript and tool calls. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `derive_tool` and `ArgTransform` publish a narrower façade over a registered tool. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `app.add_mcp_tool` registers an already-built tool. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `MCPContext.hide` / `unhide` / `reset_visibility` narrow one connection's view of the catalogue. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `app.mount(..., expose_mcp=True)` publishes a sub-application's MCP primitives through its parent. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `add_mcp_proxy` serves another MCP server's tools from this app, forwarding each call. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `@app.before_mcp_call` and `@app.after_mcp_call` run around every MCP call, route-backed or not. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `MCPContext.result_meta` attaches `_meta` to the result of the call being handled. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `meta=` on `mcp_tool` / `mcp_prompt` and `mcp_meta=` on a route publish `_meta` on the definition. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `mcp_resource_size=` and `mcp_resource_annotations=` declare what a resource listing advertises. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `Veloce(website_url=..., mcp_icons=...)` publishes them in the MCP `serverInfo`. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `MCPContext.sample(include_context=...)` asks the client to attach server context to the prompt. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `mcp_tool(annotations=...)` declares the behaviour hints a tool with no HTTP verb cannot derive. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `render_template`, `render_template_string` and `stream_template` are exported from `veloce.contrib`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
-- `MCPRequestError` is exported from `veloce.contrib.mcp.transports`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
-- `mount_mcp(tool_filter=...)` narrows which tools `tools/list` reports per caller.
-- `MCPContext` reports `session_id`, `client_info`, `client_capabilities` and `is_background_task`.
-- `MCPContext.client_supports(name)` tests an advertised client capability, nested with dots.
-- `MCPContext.debug`/`info`/`warning`/`error` are shorthands for the matching `log` level.
-- `MCPContext.read_resource` and `get_prompt` reach the server's own components, scope checks included.
-- `MCPContext.list_resources` and `list_prompts` enumerate what the list methods report.
-- `MCPContext.send_notification` sends an arbitrary JSON-RPC notification to the client.
-- Cacheable MCP results carry `ttlMs` and `cacheScope` on the modern revision.
-- `mount_mcp(cache_ttl_ms=...)` sets the freshness hint sent with those results.
-- `subscriptions/listen` opens a filtered notification stream, replacing `resources/subscribe`.
-- `notify_tools_list_changed()` and `notify_prompts_list_changed()` signal those lists changed.
-- MCP tasks are served as the `io.modelcontextprotocol/tasks` extension on the modern revision.
-- `tasks/update` delivers responses to a task's outstanding input requests.
+- A resource template accepts `{+name}`, binding a whole path - separators included - to one variable. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `veloce mcp run` serves an app's MCP tools, which is what a client config file launches. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `veloce mcp list` prints the tools, resources and prompts a client would see. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `MCPAuthorizationServer` issues MCP tokens: OAuth 2.1 with PKCE, refresh rotation, and RFC 7591 registration. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `register_authorization_server` mounts its metadata, `/authorize`, `/token` and `/register`. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `AuthorizationStore` and `InMemoryAuthorizationStore` back the issued clients, codes and tokens. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `mount_mcp(transport="sse")` serves the deprecated split-endpoint SSE wire. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `mount_mcp(session_backend=...)` shares HTTP MCP sessions between workers. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `SessionBackend` and `SessionRecord` are exported for implementing that store. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `mount_mcp(page_size=...)` paginates the MCP list methods with the spec's opaque cursor. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A tool may return a list of content blocks, emitted in order as the result's `content`. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `MCPContext.state` reaches the call's request state, so a handler holding the context can stash a value. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `mcp_tool(tags=...)` labels a tool, and every tool exposes `tags` for a visibility policy. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A `pathlib.Path` parameter declares `format: path` in the tool schema. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `mcp_resource_mime_type=` declares the media type a resource listing advertises. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `mount_mcp(tool_search=...)` publishes `search_tools`, `describe_tools` and `run_tools` in place of the catalogue. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `run_tools` runs several declared calls in one request, passing results between steps. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `mcp_tool(version=...)` registers several versions of a tool under one published name. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `MCPContext.sample_with_tools` runs the sampling loop, executing the tools the model asks for. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `SamplingRun` and `SampledToolCall` report a run's answer, transcript and tool calls. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `derive_tool` and `ArgTransform` publish a narrower façade over a registered tool. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `app.add_mcp_tool` registers an already-built tool. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `MCPContext.hide` / `unhide` / `reset_visibility` narrow one connection's view of the catalogue. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `app.mount(..., expose_mcp=True)` publishes a sub-application's MCP primitives through its parent. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `add_mcp_proxy` serves another MCP server's tools from this app, forwarding each call. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `@app.before_mcp_call` and `@app.after_mcp_call` run around every MCP call, route-backed or not. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `MCPContext.result_meta` attaches `_meta` to the result of the call being handled. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `meta=` on `mcp_tool` / `mcp_prompt` and `mcp_meta=` on a route publish `_meta` on the definition. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `mcp_resource_size=` and `mcp_resource_annotations=` declare what a resource listing advertises. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `Veloce(website_url=..., mcp_icons=...)` publishes them in the MCP `serverInfo`. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `MCPContext.sample(include_context=...)` asks the client to attach server context to the prompt. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `mcp_tool(annotations=...)` declares the behaviour hints a tool with no HTTP verb cannot derive. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `render_template`, `render_template_string` and `stream_template` are exported from `veloce.contrib`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- `MCPRequestError` is exported from `veloce.contrib.mcp.transports`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- `mount_mcp(tool_filter=...)` narrows which tools `tools/list` reports per caller. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `MCPContext` reports `session_id`, `client_info`, `client_capabilities` and `is_background_task`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `MCPContext.client_supports(name)` tests an advertised client capability, nested with dots. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `MCPContext.debug`/`info`/`warning`/`error` are shorthands for the matching `log` level. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `MCPContext.read_resource` and `get_prompt` reach the server's own components, scope checks included. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `MCPContext.list_resources` and `list_prompts` enumerate what the list methods report. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `MCPContext.send_notification` sends an arbitrary JSON-RPC notification to the client. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- Cacheable MCP results carry `ttlMs` and `cacheScope` on the modern revision. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `mount_mcp(cache_ttl_ms=...)` sets the freshness hint sent with those results. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `subscriptions/listen` opens a filtered notification stream, replacing `resources/subscribe`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `notify_tools_list_changed()` and `notify_prompts_list_changed()` signal those lists changed. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- MCP tasks are served as the `io.modelcontextprotocol/tasks` extension on the modern revision. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `tasks/update` delivers responses to a task's outstanding input requests. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 
 ### Changed
 
-- A tool, prompt or resource whose declared `scopes` the caller lacks is no longer listed. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- A resource list narrowed by declared scopes is marked private, so a shared proxy cannot reuse it. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- `resources/read` and `prompts/get` refuse a task-augmented request instead of answering synchronously. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- A modern client must declare the tasks extension before a task handle is returned.
-- `tasks/list` and `tasks/result` are not served to a modern client; `tasks/get` carries the result.
-- `ping` and `logging/setLevel` are not served to a modern client; both revisions keep their own surface.
-- A modern client sets its log level per request via `_meta`; a request naming none receives no log notifications.
-- `tools/list`, `prompts/list` and `resources/list` build each entry once and reuse it. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
-- `veloce.app` exports `Veloce`, `URLRule` and `Plugin`; `import *` no longer pulls in stdlib names. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
-- A test-client websocket read raises `RuntimeError`, not bare `Exception`, when the peer closes. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- A tool, prompt or resource whose declared `scopes` the caller lacks is no longer listed. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A resource list narrowed by declared scopes is marked private, so a shared proxy cannot reuse it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `resources/read` and `prompts/get` refuse a task-augmented request instead of answering synchronously. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A modern client must declare the tasks extension before a task handle is returned. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `tasks/list` and `tasks/result` are not served to a modern client; `tasks/get` carries the result. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `ping` and `logging/setLevel` are not served to a modern client; both revisions keep their own surface. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- A modern client sets its log level per request via `_meta`; a request naming none receives no log notifications. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `tools/list`, `prompts/list` and `resources/list` build each entry once and reuse it. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- `veloce.app` exports `Veloce`, `URLRule` and `Plugin`; `import *` no longer pulls in stdlib names. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- A test-client websocket read raises `RuntimeError`, not bare `Exception`, when the peer closes. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 
 ### Fixed
 
-- The MCP protected-resource metadata advertises `bearer_methods_supported`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- A `list[Model]` tool parameter publishes the model as its item schema, not a string. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- An MCP argument whose JSON type contradicts the published schema is refused, not passed to the handler. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- A JSON-RPC response POSTed to the HTTP transport is accepted with `202`, not refused. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- URL-mode elicitation sends the required `elicitationId`, so a conforming client accepts it. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- URL-mode elicitation is refused unless the client declared `elicitation.url`. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- A percent-encoded resource template value reaches the handler decoded. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- The most specific resource template serves a URI, not whichever was registered first. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- A path parameter no handler parameter declares is documented in OpenAPI and in the tool schema. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- JSON that is not a Request object is `-32600`, not the `-32700` reserved for unreadable input. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- A request carrying a null id is refused; MCP requires a string or integer id. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
-- An MCP call no longer leaves its request bound, which corrupted the HTTP transport's own request. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- An abandoned MCP request releases its cancellation-registry entry instead of stranding it. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- A tool returning a `@dataclass` or `TypedDict` publishes an `outputSchema` and `structuredContent`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- An optional tool parameter advertises its null branch, and a parameter's default is published. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- A sub-dependency's body model advertises its fields, so a call built from the schema is accepted. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- A tool returning `bytes` reports the decoded text, or base64 when the bytes are not text. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- A `@dataclass` parameter is validated and passed as the dataclass instead of failing on every call. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- A `TypedDict` parameter declares an object schema, matching what the handler accepts. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- `client_host`, `client_port` and `remote_addr` report the peer on the ASGI path. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
-- An authorization failure inside a tool is reported as forbidden, not as an internal error.
-- A modern-revision client's identity and capabilities are read from each request's `_meta`.
+- The MCP protected-resource metadata advertises `bearer_methods_supported`. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A `list[Model]` tool parameter publishes the model as its item schema, not a string. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- An MCP argument whose JSON type contradicts the published schema is refused, not passed to the handler. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A JSON-RPC response POSTed to the HTTP transport is accepted with `202`, not refused. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- URL-mode elicitation sends the required `elicitationId`, so a conforming client accepts it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- URL-mode elicitation is refused unless the client declared `elicitation.url`. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A percent-encoded resource template value reaches the handler decoded. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- The most specific resource template serves a URI, not whichever was registered first. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A path parameter no handler parameter declares is documented in OpenAPI and in the tool schema. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- JSON that is not a Request object is `-32600`, not the `-32700` reserved for unreadable input. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A request carrying a null id is refused; MCP requires a string or integer id. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- An MCP call no longer leaves its request bound, which corrupted the HTTP transport's own request. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- An abandoned MCP request releases its cancellation-registry entry instead of stranding it. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A tool returning a `@dataclass` or `TypedDict` publishes an `outputSchema` and `structuredContent`. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- An optional tool parameter advertises its null branch, and a parameter's default is published. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A sub-dependency's body model advertises its fields, so a call built from the schema is accepted. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A tool returning `bytes` reports the decoded text, or base64 when the bytes are not text. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A `@dataclass` parameter is validated and passed as the dataclass instead of failing on every call. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- A `TypedDict` parameter declares an object schema, matching what the handler accepts. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `client_host`, `client_port` and `remote_addr` report the peer on the ASGI path. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- An authorization failure inside a tool is reported as forbidden, not as an internal error. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- A modern-revision client's identity and capabilities are read from each request's `_meta`. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 
 ## [0.15.0] - 2026-08-20
 
