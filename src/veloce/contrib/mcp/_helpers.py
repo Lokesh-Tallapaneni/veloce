@@ -41,6 +41,7 @@ from veloce.contrib.mcp.content import (
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.errors import _InBandError
 from veloce.contrib.mcp.icons import render_icons
+from veloce.encoders import orjson_default
 from veloce.http.response import Response
 from veloce.principal import current_principal
 
@@ -563,19 +564,26 @@ def _stringify(result: Any) -> str:
     # fallback below and are quoted like any other member.
     if isinstance(result, (bytes, bytearray, memoryview)):
         return _bytes_to_text(result)
-    try:
-        return orjson.dumps(result, default=_orjson_default).decode()
-    except (TypeError, orjson.JSONEncodeError):
-        return str(result)
+    # No fallback to `str(result)`: the hook's own last resort already handles
+    # an unknown object, so what still fails here is a value the framework
+    # refuses outright (a `Secret`) or a structure it cannot represent (a cycle).
+    # Emitting a Python repr for either would put the shape this encoder exists
+    # to prevent into the model's context; failing the call reports it instead.
+    return orjson.dumps(result, default=_orjson_default).decode()
 
 
 def _orjson_default(value: Any) -> Any:
-    """Fallback serialiser for values orjson cannot encode natively."""
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
+    """Fallback serialiser for values orjson cannot encode natively.
+
+    Delegates to the framework's own encoder, so one handler answering both
+    doors produces the same JSON either way: a `set` is a list rather than a
+    Python repr, a `Decimal` keeps its numeric form, a registered encoder is
+    honoured, and a `Secret` is refused here exactly as it is refused on the
+    HTTP path. Bytes are the one deliberate difference - see `_bytes_to_text`.
+    """
     if isinstance(value, (bytes, bytearray, memoryview)):
         return _bytes_to_text(value)
-    return str(value)
+    return orjson_default(value)
 
 
 def _bytes_to_text(value: bytes | bytearray | memoryview) -> str:

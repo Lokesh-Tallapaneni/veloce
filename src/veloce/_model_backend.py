@@ -126,6 +126,16 @@ def is_msgspec_struct(tp: Any) -> bool:
     return _HAS_MSGSPEC and isinstance(tp, type) and issubclass(tp, _MSGSPEC_STRUCT)
 
 
+def struct_to_dict(obj: Any) -> dict[str, Any]:
+    """Return a `msgspec.Struct` instance's fields as a dict.
+
+    Shallow by design: the caller is a JSON encoder that recurses into what it
+    is handed, so nested values stay as they are and are converted by whatever
+    rule already covers them.
+    """
+    return dict(_msgspec.structs.asdict(obj))
+
+
 def is_adaptable_model(tp: Any) -> bool:
     """Return True for a dataclass or `TypedDict` Pydantic can validate.
 

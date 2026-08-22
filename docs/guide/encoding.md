@@ -157,6 +157,14 @@ jsonable_encoder(
     `TypeError`. Call `.reveal()` explicitly at the point you intend to expose
     the value, so a secret never leaks into a response by accident.
 
+!!! note "The same encoder serves both doors"
+    A route exposed as an MCP tool is the same handler either way, so its return
+    value encodes identically for an agent and for a browser — a `set` is a list,
+    a `Decimal` keeps its numeric form, a registered encoder applies, and a
+    `Secret` is refused. The one deliberate difference is `bytes`: a tool result
+    carries text, so a tool returning bytes reports the decoded text (or base64
+    when the bytes are not text), where an HTTP response reports base64 always.
+
 ## Registering an encoder for a custom type
 
 [`register_encoder`](../reference/openapi.md#veloce.register_encoder) installs a

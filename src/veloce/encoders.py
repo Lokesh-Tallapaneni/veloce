@@ -19,6 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from veloce._model_backend import is_msgspec_struct, struct_to_dict
 from veloce.secret import Secret
 
 # orjson serializes a Python int only within the signed/unsigned 64-bit
@@ -516,7 +517,8 @@ def orjson_default(obj: Any) -> Any:
     Containers (set/frozenset) become a list of their raw items; orjson then
     re-enters this hook for any non-native members. Path/Decimal/timedelta map
     to their scalar form. bytes/bytearray encode as lossless base64 to stay
-    consistent with `jsonable_encoder`. Anything else falls back to `vars(obj)`,
+    consistent with `jsonable_encoder`. A model is dumped through `model_dump`,
+    so its computed fields survive. Anything else falls back to `vars(obj)`,
     then `str(obj)` - matching `jsonable_encoder`'s last-resort behaviour so the
     two paths agree on the same conversions.
     """
@@ -544,6 +546,19 @@ def orjson_default(obj: Any) -> Any:
         return list(obj)
     if isinstance(obj, GeneratorType):
         return list(obj)
+    # Before the `vars()` fallback, which sees only stored fields: a model's
+    # computed fields are part of its serialisation contract, and dropping them
+    # here made the same model encode differently depending on whether it
+    # reached `jsonable_encoder` or this hook. `model_dump()` in python mode
+    # rather than json mode, so orjson still encodes the leaves it handles
+    # natively and only re-enters this hook for the ones it cannot.
+    if isinstance(obj, BaseModel):
+        return obj.model_dump()
+    # The other supported model backend, for the same reason: `vars()` on a
+    # slotted `Struct` raises, so one would otherwise reach `str(obj)` and
+    # arrive as a Python repr. Dead when msgspec is not installed.
+    if is_msgspec_struct(type(obj)):
+        return struct_to_dict(obj)
     try:
         return _public_vars(obj)
     except TypeError:

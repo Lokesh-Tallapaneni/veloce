@@ -75,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An MCP tool result encodes through the framework's own encoder, so both doors answer the same JSON. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A `Secret` in a tool result is refused, as it already was on the HTTP path, instead of being emitted. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A model's computed fields survive the `orjson` fallback, matching `jsonable_encoder`. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A `msgspec.Struct` publishes its fields instead of its Python repr. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - The MCP protected-resource metadata advertises `bearer_methods_supported`. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - A `list[Model]` tool parameter publishes the model as its item schema, not a string. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - An MCP argument whose JSON type contradicts the published schema is refused, not passed to the handler. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
