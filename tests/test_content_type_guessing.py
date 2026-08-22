@@ -36,9 +36,35 @@ def test_an_unknown_extension_falls_back_to_octet_stream(path: str):
     assert guess_content_type(path) == MIME_OCTET_STREAM
 
 
-def test_it_agrees_with_the_standard_library():
-    for path in ("a.css", "b.js", "c.png", "d.unknownext", "e"):
+def test_it_defers_to_the_standard_library_for_everything_unpinned():
+    """The pinned web types are the only place this diverges from `mimetypes`."""
+    for path in ("c.png", "d.unknownext", "e", "f.txt", "g.pdf"):
         assert guess_content_type(path) == (mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM)
+
+
+def test_a_pinned_web_type_does_not_vary_by_host():
+    """`mimetypes` reads the platform registry, which is not a stable source.
+
+    On Windows `.js` resolves to the obsolete `application/javascript`; RFC 9239
+    made `text/javascript` the standard spelling, and serving a script as the
+    wrong type is a real failure because a strict client refuses it. These
+    answers therefore come from Veloce's own table rather than from the host.
+    """
+    assert guess_content_type("bundle.js") == "text/javascript"
+    assert guess_content_type("module.mjs") == "text/javascript"
+    assert guess_content_type("data.json") == "application/json"
+    assert guess_content_type("icon.svg") == "image/svg+xml"
+    assert guess_content_type("app.wasm") == "application/wasm"
+
+
+def test_a_pinned_type_beats_a_conflicting_registry_entry(monkeypatch):
+    """The whole point: the host does not get to decide these."""
+    monkeypatch.setattr(mimetypes, "guess_type", lambda _p: ("application/javascript", None))
+    guess_content_type.cache_clear()
+    try:
+        assert guess_content_type("late-probe.js") == "text/javascript"
+    finally:
+        guess_content_type.cache_clear()
 
 
 def test_the_answer_is_memoized():
