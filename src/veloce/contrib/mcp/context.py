@@ -26,7 +26,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from veloce._internal import _current_request_var
 from veloce.contrib.mcp.errors import MCPCapabilityError, MCPError
@@ -36,6 +36,9 @@ from veloce.contrib.mcp.sampling import (
     SamplingRun,
     content_blocks,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.mcp.session import MCPSession
 
 # What a sampling request may ask the client to attach to the prompt. The client
 # MAY ignore the request, so this is a hint; a value outside the set is a typo the
@@ -74,7 +77,7 @@ _result_meta_var: ContextVar[dict[str, Any] | None] = ContextVar("_mcp_result_me
 # lives here for the same reason as the vars above: `_helpers` imports this
 # module, so the dependency has to run in this direction. `None` off a stateful
 # transport, where there is no connection to carry state.
-_session_var: ContextVar[Any] = ContextVar("_mcp_session", default=None)
+_session_var: ContextVar[MCPSession | None] = ContextVar("_mcp_session", default=None)
 
 # Suppresses every `notifications/message`, whatever its level. The modern revision
 # sets the log level per request and requires a server to send no log notifications

@@ -667,9 +667,11 @@ class Veloce(
         # Sub-apps mounted with `expose_mcp=True`, whose MCP primitives are
         # published through this app's own MCP server under a name prefix.
         self._mcp_mounts: list[tuple[str, Any]] = []
-        # Tools discovered from an upstream MCP server by `add_mcp_proxy`, already
-        # built (their schema is the upstream's, not one derived from a signature).
-        self._mcp_proxied_tools: list[Any] = []
+        # Tools handed over already built rather than derived from a signature:
+        # an upstream's, discovered by `add_mcp_proxy`, or one narrowed by
+        # `derive_tool` and registered with `add_mcp_tool`. Their schema is
+        # whatever built them, so the registry adds them as they are.
+        self._mcp_prebuilt_tools: list[Any] = []
         self._http_middleware_funcs: list[Callable] = []  # @app.middleware("http") funcs
         # Jinja2 helper registrations - applied to the env on each render.
         self._template_filters: list[tuple[str, Callable]] = []
@@ -1890,7 +1892,7 @@ class Veloce(
 
             app.add_mcp_tool(derive_tool(internal, name="search", arguments={...}))
         """
-        self._mcp_proxied_tools.append(tool)
+        self._mcp_prebuilt_tools.append(tool)
 
     def before_mcp_call(self, func: Callable) -> Callable:
         """Register a hook that runs before every MCP call (contrib.mcp).

@@ -411,7 +411,7 @@ def build_registry(app: Any) -> ToolRegistry:
 
     # Tools discovered from an upstream server: already built, so they are added
     # rather than derived.
-    for proxied in getattr(app, "_mcp_proxied_tools", ()):
+    for proxied in getattr(app, "_mcp_prebuilt_tools", ()):
         registry.add(proxied)
 
     # Sub-apps mounted with `expose_mcp=True` contribute their tools under the

@@ -75,7 +75,7 @@ async def add_mcp_proxy(
         if not isinstance(upstream_name, str) or not upstream_name:
             continue
         local_name = f"{namespace}_{upstream_name}" if namespace else upstream_name
-        app._mcp_proxied_tools.append(
+        app._mcp_prebuilt_tools.append(
             _proxy_tool(local_name, upstream_name, entry, request, required, labels)
         )
         names.append(local_name)

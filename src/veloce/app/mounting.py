@@ -25,7 +25,7 @@ class MountingMixin:
         _static_handlers: Any
         _register_feature_state: Any
 
-    def mount(self, prefix: str, app: Any, expose_mcp: bool = False) -> None:
+    def mount(self, prefix: str, app: Any, *, expose_mcp: bool = False) -> None:
         """Mount a sub-application at a path prefix.
 
         A veloce sub-app is dispatched through the parent's request

@@ -70,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `app.mount(..., expose_mcp=True)` takes its flag as a keyword; passing it positionally is refused. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A stateful connection advertises `listChanged: true` for tools, prompts and resources. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A tool, prompt or resource whose declared `scopes` the caller lacks is no longer listed. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A resource list narrowed by declared scopes is marked private, so a shared proxy cannot reuse it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))

@@ -392,11 +392,9 @@ class MCPServer(TasksMixin, InvocationMixin):
         # descriptor now the registries exist, so a misconfigured target surfaces
         # at build time and `CompletionsCapability` finds the completers in place.
         attach_completers(app, self.prompts, self.resources)
-        # Optional search-first catalogue. When on, three tools are registered and
-        # they are the only ones listed; every other tool is found through them.
-        # Built after the registry so it can index what is registered, and before
-        # the scope scans so its own tools are counted like any other.
-        self._tool_search = ToolSearch(self) if tool_search else None
+        # Set before anything reads it; built at the end of this constructor, once
+        # there is a whole server for it to hold.
+        self._tool_search: ToolSearch | None = None
         # Whether each list can differ between two callers, decided once here: the
         # registries are fixed after build, so neither the narrowing decision nor
         # the cache-scope decision may walk them per request. A server declaring
@@ -487,6 +485,15 @@ class MCPServer(TasksMixin, InvocationMixin):
         # for an id-bearing request and popped when it settles.
         self._inflight: dict[tuple[int | None, Any], _InFlight] = {}
 
+        # Optional search-first catalogue, built last: it holds this server and
+        # calls back into it, so it is handed a constructed one rather than a
+        # half-filled `self`. It registers its three tools into the registry,
+        # which is why the scope scan above counts what the registry held before
+        # them - the search tools declare no scopes, so the answer is the same
+        # either way, and the ordering is stated rather than relied upon.
+        if tool_search:
+            self._tool_search = ToolSearch(self)
+
     def _build_method_map(self) -> dict[str, MethodHandler]:
         """Map each supported JSON-RPC method to its async handler.
 
@@ -548,7 +555,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         Set per dispatch by `handle_message` when a stateful transport supplies a
         session; `None` on the stateless HTTP path or off-dispatch.
         """
-        return cast("MCPSession | None", _session_var.get())
+        return _session_var.get()
 
     # ── Resource subscriptions ────────────────────────────
 
