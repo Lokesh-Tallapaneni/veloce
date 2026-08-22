@@ -76,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `MCPContext.hide` narrows what `search_tools` and `describe_tools` report, not only the listing. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A server that can narrow nothing no longer rebuilds its catalogue on every discovery call. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - Every `MCPError` a tool handler raises reaches the caller with its code, message and `data`. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A route-backed tool's `MCPError` is delivered instead of being rendered as an HTTP error body. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `MCPContext.hide` announces only the listing the hidden name belongs to. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))

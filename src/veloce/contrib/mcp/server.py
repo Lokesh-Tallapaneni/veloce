@@ -1123,6 +1123,25 @@ class MCPServer(TasksMixin, InvocationMixin):
             return self._any_scoped_resources
         return False
 
+    def _unnarrowed_tools(self) -> dict[str, MCPTool] | None:
+        """The registry's own name -> tool map when nothing can narrow it here.
+
+        Three things can narrow what a caller is shown: a declared scope, a
+        configured `tool_filter`, and what this connection hid. When none of them
+        is in play the candidate set *is* the registry, which is fixed once the
+        server is built - so rebuilding it per call buys nothing. `None` when
+        anything could narrow it, and the full walk has to run.
+
+        The first two are decided once at construction. The third is a set on the
+        session, so it costs one lookup rather than a walk.
+        """
+        if self._tool_filter is not None or self._any_scoped_tools:
+            return None
+        session = _session_var.get()
+        if session is not None and session.hidden:
+            return None
+        return self.registry.tools
+
     async def _visible_tools(self) -> list[MCPTool]:
         """The tools `tools/list` reports to the calling principal.
 
@@ -1130,21 +1149,30 @@ class MCPServer(TasksMixin, InvocationMixin):
         search - in which case the listing is the three search tools and every
         other tool is found through them.
         """
-        candidates = await self._candidate_tools()
         search = self._tool_search
         if search is None:
-            return candidates
-        return [tool for tool in candidates if tool.name in search.names]
+            return await self._candidate_tools()
+        # The listing is the search tools and nothing else, so narrowing the whole
+        # catalogue only to discard it is work with no reader. Only when something
+        # could hide one of the three does the full pass have to run.
+        if self._unnarrowed_tools() is not None:
+            return list(search.tools)
+        return [tool for tool in await self._candidate_tools() if tool.name in search.names]
 
     async def _candidate_tools(self) -> list[MCPTool]:
         """The tools the calling principal may see, in registration order.
 
         Visibility is scoped by the *same* check `tools/call` performs, so a tool is
-        never listed for a caller that cannot invoke it. A configured filter narrows
-        that set further; it can hide a tool, never reveal one the scope check
-        rejected. Hiding a tool does not change what happens if it is called anyway -
-        an unlisted tool still raises `AuthorizationError` - so a visibility policy
-        can never be mistaken for the authorization decision.
+        never listed for a caller that cannot invoke it. What this connection hid
+        narrows it further, and so does a configured filter; either can hide a tool,
+        neither can reveal one the scope check rejected. Hiding a tool does not
+        change what happens if it is called anyway - an unlisted tool still raises
+        `AuthorizationError` - so a visibility policy can never be mistaken for the
+        authorization decision.
+
+        Every reader of "what may this caller see" goes through here - the listing,
+        and the search tools that stand in for it - so a tool hidden from one is
+        hidden from the other.
 
         The spec permits exactly this axis: the tool set "MAY vary by the
         authorization presented on the request [...] since credentials are
@@ -1152,12 +1180,29 @@ class MCPServer(TasksMixin, InvocationMixin):
         never memoized - the framework cannot know when a principal's grants change,
         and `tools/list` is a session-start call rather than a hot path.
         """
+        unnarrowed = self._unnarrowed_tools()
+        if unnarrowed is not None:
+            return list(unnarrowed.values())
         principal = current_principal()
-        scoped = [
-            tool
-            for tool in self.registry.tools.values()
-            if not _principal_lacks_scopes(tool.required_scopes)
-        ]
+        session = _session_var.get()
+        hidden = session.hidden if session is not None else None
+        # The principal is read once rather than once per tool: it cannot change
+        # inside this pass. Mirrors `_principal_lacks_scopes`, which is the same
+        # check for a caller that is not already in hand.
+        if principal is None:
+            scoped = [
+                tool
+                for tool in self.registry.tools.values()
+                if not tool.required_scopes and not (hidden and tool.name in hidden)
+            ]
+        else:
+            holds = principal.has_scopes
+            scoped = [
+                tool
+                for tool in self.registry.tools.values()
+                if (not tool.required_scopes or holds(tool.required_scopes))
+                and not (hidden and tool.name in hidden)
+            ]
         tool_filter = self._tool_filter
         if tool_filter is None:
             return scoped

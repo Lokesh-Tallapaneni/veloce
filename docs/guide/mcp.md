@@ -1979,9 +1979,10 @@ step is always reported, quiet or not, and stops the run unless
     may not invoke is no more reachable inside a plan than it is directly, and a
     plan that is stopped by one still reports the steps that already ran.
 
-Discovery honours the same visibility the listing does: a `tool_filter` and a
-tool's declared scopes decide what `search_tools` finds and what
-`describe_tools` will describe. The three names must be free — a server already
+Discovery honours the same visibility the listing does: a `tool_filter`, a
+tool's declared scopes, and anything this connection hid with `ctx.hide` all
+decide what `search_tools` finds and what `describe_tools` will describe. Search
+stands in for the listing, so it answers alike. The three names must be free — a server already
 registering one of them is told which, at mount time.
 
 ## Paging a large catalogue

@@ -225,9 +225,23 @@ class ToolSearch:
         for tool in self.tools:
             server.registry.add(tool)
 
+    async def _reachable(self) -> dict[str, MCPTool]:
+        """The tools this caller may see, by name.
+
+        The same set `tools/list` reports, so a scope, a visibility policy or a
+        name this connection hid narrows discovery exactly as it narrows the
+        listing - search stands in for the listing, so it has to answer alike.
+        The registry's own map is handed back untouched when nothing can narrow
+        it, which is the case `tool_search` exists to serve.
+        """
+        unnarrowed: dict[str, MCPTool] | None = self._server._unnarrowed_tools()
+        if unnarrowed is not None:
+            return unnarrowed
+        return {tool.name: tool for tool in await self._server._candidate_tools()}
+
     async def _search_tools(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """Rank the catalogue against `query`."""
-        reachable = {tool.name: tool for tool in await self._server._candidate_tools()}
+        reachable = await self._reachable()
         found: list[dict[str, Any]] = []
         for name, score in self._index.search(query):
             tool = reachable.get(name)
@@ -240,7 +254,7 @@ class ToolSearch:
 
     async def _describe_tools(self, names: list[str]) -> list[dict[str, Any]]:
         """Return the full definition of each named tool."""
-        reachable = {tool.name: tool for tool in await self._server._candidate_tools()}
+        reachable = await self._reachable()
         described: list[dict[str, Any]] = []
         for name in names:
             tool = reachable.get(name)

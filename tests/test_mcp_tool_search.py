@@ -16,7 +16,7 @@ from __future__ import annotations
 import orjson
 import pytest
 
-from veloce import Principal, Veloce
+from veloce import MCPContext, Principal, Veloce
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 from veloce.principal import set_principal
@@ -50,9 +50,9 @@ def _server(**kwargs) -> MCPServer:
     return MCPServer(_app(), tool_search=True, **kwargs)
 
 
-async def _list(server: MCPServer) -> list[str]:
+async def _list(server: MCPServer, session: MCPSession | None = None) -> list[str]:
     response = await server.handle_message(
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}, MCPSession()
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}, session or MCPSession()
     )
     return [tool["name"] for tool in response["result"]["tools"]]
 
@@ -371,3 +371,107 @@ async def test_a_server_with_no_tools_at_all_still_answers():
     server = MCPServer(empty, tool_search=True)
     _is_error, found = await _call(server, "search_tools", {"query": "anything"})
     assert found == []
+
+
+# ── What a connection hid is hidden from search too ──────────────────
+
+
+async def _hide(server: MCPServer, session: MCPSession, name: str) -> None:
+    await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {"name": "conceal", "arguments": {"name": name}},
+        },
+        session,
+    )
+
+
+def _hiding_app() -> Veloce:
+    app = _app()
+
+    @app.mcp_tool(description="Conceal a tool from this connection")
+    async def conceal(name: str, ctx: MCPContext) -> str:
+        await ctx.hide(name)
+        return "hidden"
+
+    return app
+
+
+async def _search(server: MCPServer, session: MCPSession, query: str) -> list[str]:
+    response = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "search_tools", "arguments": {"query": query}},
+        },
+        session,
+    )
+    return [match["name"] for match in orjson.loads(response["result"]["content"][0]["text"])]
+
+
+async def test_a_hidden_tool_is_not_found_by_search():
+    """Search stands in for the listing, so it has to honour what hid a tool."""
+    server = MCPServer(_hiding_app(), tool_search=True)
+    session = MCPSession()
+    assert "refund_order" in await _search(server, session, "refund an order")
+    await _hide(server, session, "refund_order")
+    assert await _search(server, session, "refund an order") == []
+
+
+async def test_a_hidden_tool_is_not_described():
+    server = MCPServer(_hiding_app(), tool_search=True)
+    session = MCPSession()
+    await _hide(server, session, "refund_order")
+    response = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "describe_tools", "arguments": {"names": ["refund_order"]}},
+        },
+        session,
+    )
+    assert response["result"]["isError"] is True
+
+
+async def test_another_connection_still_finds_it():
+    """Hiding belongs to one connection, through search as through the listing."""
+    server = MCPServer(_hiding_app(), tool_search=True)
+    mine, theirs = MCPSession(), MCPSession()
+    await _hide(server, mine, "refund_order")
+    assert await _search(server, mine, "refund an order") == []
+    assert "refund_order" in await _search(server, theirs, "refund an order")
+
+
+async def test_unhiding_makes_it_findable_again():
+    app = _hiding_app()
+
+    @app.mcp_tool(description="Reveal a tool again")
+    async def reveal(name: str, ctx: MCPContext) -> str:
+        await ctx.unhide(name)
+        return "shown"
+
+    server = MCPServer(app, tool_search=True)
+    session = MCPSession()
+    await _hide(server, session, "refund_order")
+    await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "reveal", "arguments": {"name": "refund_order"}},
+        },
+        session,
+    )
+    assert "refund_order" in await _search(server, session, "refund an order")
+
+
+async def test_hiding_a_search_tool_removes_it_from_the_listing():
+    """The fast path must not serve the three unconditionally."""
+    server = MCPServer(_hiding_app(), tool_search=True)
+    session = MCPSession()
+    await _hide(server, session, "describe_tools")
+    assert set(await _list(server, session)) == {"search_tools", "run_tools"}
