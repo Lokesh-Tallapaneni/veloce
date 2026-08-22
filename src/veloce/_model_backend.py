@@ -136,6 +136,18 @@ def struct_to_dict(obj: Any) -> dict[str, Any]:
     return dict(_msgspec.structs.asdict(obj))
 
 
+# `typing.is_typeddict` answers False for a class built from
+# `typing_extensions.TypedDict` - which is the form Pydantic *requires* below
+# Python 3.12 - so using it alone made those types invisible here and they fell
+# to the scalar path. The typing_extensions predicate recognises both spellings.
+# It ships with Pydantic, so it is always present in practice; the fallback
+# keeps this importable if that ever stops being true.
+try:
+    from typing_extensions import is_typeddict as _is_typeddict
+except ImportError:  # pragma: no cover - typing_extensions comes with pydantic
+    from typing import is_typeddict as _is_typeddict
+
+
 def is_adaptable_model(tp: Any) -> bool:
     """Return True for a dataclass or `TypedDict` Pydantic can validate.
 
@@ -143,12 +155,40 @@ def is_adaptable_model(tp: Any) -> bool:
     they fall to the scalar path and are advertised as a string while the
     handler is handed the raw mapping.
     """
-    if typing.is_typeddict(tp):
-        return True
+    if _is_typeddict(tp):
+        return _typeddict_is_adaptable(tp)
     # `is_dataclass` answers True for an instance too; a slot annotation is a
     # type. A Pydantic dataclass is still a dataclass, and the adapter handles
     # it, so it needs no separate branch.
     return isinstance(tp, type) and dataclasses.is_dataclass(tp)
+
+
+# Whether a given `TypedDict` can actually be adapted, answered once per type.
+# Weak keys so a type defined inside a test or a factory is collected with it.
+_typeddict_support: weakref.WeakKeyDictionary[Any, bool] = weakref.WeakKeyDictionary()
+
+
+def _typeddict_is_adaptable(tp: Any) -> bool:
+    """Whether Pydantic will build an adapter for this `TypedDict`.
+
+    Below Python 3.12 Pydantic refuses a `typing.TypedDict` outright and asks
+    for `typing_extensions.TypedDict` instead, because only the latter records
+    the required/optional keys it needs. Claiming such a type as adaptable made
+    every use of it fail at request time - a 500 on the HTTP door, an internal
+    error on the MCP one - so it is probed once and, when unsupported, treated
+    as the plain mapping it is rather than promised as a validated object.
+    """
+    cached = _typeddict_support.get(tp)
+    if cached is not None:
+        return cached
+    try:
+        TypeAdapter(tp)
+        supported = True
+    except Exception:
+        supported = False
+    with contextlib.suppress(TypeError):
+        _typeddict_support[tp] = supported
+    return supported
 
 
 # One adapter per type, built on first use at registration. Construction runs a

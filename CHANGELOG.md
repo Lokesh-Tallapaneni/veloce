@@ -88,6 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `typing_extensions.TypedDict` is recognised as an object shape; it was previously advertised as a string. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- A `TypedDict` Pydantic cannot adapt on this interpreter falls back to a plain mapping instead of failing the request. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
+- `.js`, `.json`, `.css`, `.svg` and `.wasm` are served with their standard media type regardless of the host registry. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 - The gunicorn worker warns when its TLS certificate is expired or not yet valid. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 - A dropped SSE client no longer leaves the in-flight call buffering notifications nobody reads. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
 - Closing a stdio MCP connection reclaims the tasks it created, including one that never settles. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))

@@ -11,10 +11,11 @@ runtime agree and match what a `BaseModel` parameter already did.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, TypedDict
+from typing import Annotated
 
 import pytest
 from pydantic import BaseModel
+from typing_extensions import TypedDict
 
 from veloce import Veloce
 from veloce._model_backend import ModelBackend, adapter_for, backend_of

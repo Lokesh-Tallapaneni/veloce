@@ -14,10 +14,10 @@ define.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypedDict
 
 import pytest
 from pydantic import BaseModel
+from typing_extensions import TypedDict
 
 from veloce import Veloce
 from veloce._model_backend import resolve_return_model, shape_through_model

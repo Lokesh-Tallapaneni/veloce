@@ -32,6 +32,7 @@ import functools
 import hashlib
 import inspect
 import mimetypes
+import os
 import sys
 import weakref
 from collections.abc import Callable, Iterable
@@ -55,6 +56,22 @@ MIME_PLAIN = MIME_TEXT_PLAIN_UTF8
 MIME_OCTET = MIME_OCTET_STREAM
 
 
+# Media types pinned to their standard spelling rather than whatever the host
+# registry says. RFC 9239 obsoleted `application/javascript` in favour of
+# `text/javascript`; the rest are here because a Windows registry entry can
+# shadow or omit them entirely.
+_WEB_MEDIA_TYPES: dict[str, str] = {
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".json": "application/json",
+    ".css": "text/css",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".svg": "image/svg+xml",
+    ".wasm": "application/wasm",
+}
+
+
 @functools.lru_cache(maxsize=512)
 def guess_content_type(path: str) -> str:
     """Return the media type a path's extension names, or the octet-stream default.
@@ -67,7 +84,18 @@ def guess_content_type(path: str) -> str:
     The cache does not observe a `mimetypes.add_type` made after an extension
     has already been guessed once. Registering media types at import time, as
     the stdlib intends, is unaffected.
+
+    A handful of web types are answered from `_WEB_MEDIA_TYPES` before the
+    stdlib is consulted, because `mimetypes` reads the platform registry: on
+    Windows `.js` resolves to the obsolete `application/javascript`, and `.json`
+    or `.svg` can be absent or remapped by whatever software last claimed the
+    extension. Serving a script as the wrong type is a real failure - a strict
+    client refuses it - so these do not get to vary by host.
     """
+    extension = os.path.splitext(path)[1].lower()
+    fixed = _WEB_MEDIA_TYPES.get(extension)
+    if fixed is not None:
+        return fixed
     return mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM
 
 
