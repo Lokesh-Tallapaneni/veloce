@@ -1972,6 +1972,7 @@ class Veloce(
         tool_filter: Any = None,
         cache_ttl_ms: int | None = None,
         page_size: int | None = None,
+        tool_search: bool = False,
         session_backend: Any = None,
         message_path: str = "/messages",
     ) -> Any:
@@ -2033,6 +2034,12 @@ class Veloce(
         in one response. Left unset, every list is answered in full - a client may
         ignore `nextCursor`, so paginating uninvited would hide the rest of the
         catalogue from one that does.
+        `tool_search` publishes three tools in place of the catalogue -
+        `search_tools`, `describe_tools` and `run_tools` - so a server with a large
+        catalogue spends the agent's context on the tools it turns out to need
+        rather than on every tool it has. `run_tools` executes declared calls, not
+        code: each step names a registered tool and its arguments, and a step's
+        argument may reference an earlier step's result.
         Call this after the tool / resource / prompt routes are registered.
         """
         from veloce.contrib.mcp.server import DEFAULT_CACHE_TTL_MS, MCPServer
@@ -2045,7 +2052,11 @@ class Veloce(
             from veloce.principal import set_principal
 
             server = MCPServer(
-                self, tool_filter=tool_filter, cache_ttl_ms=cache_ttl, page_size=page_size
+                self,
+                tool_filter=tool_filter,
+                cache_ttl_ms=cache_ttl,
+                page_size=page_size,
+                tool_search=tool_search,
             )
 
             async def _serve() -> None:
@@ -2060,7 +2071,11 @@ class Veloce(
             from veloce.contrib.mcp.transports.http import register_http_transport
 
             server = MCPServer(
-                self, tool_filter=tool_filter, cache_ttl_ms=cache_ttl, page_size=page_size
+                self,
+                tool_filter=tool_filter,
+                cache_ttl_ms=cache_ttl,
+                page_size=page_size,
+                tool_search=tool_search,
             )
             # A task-augmented call records the creating connection's identity and
             # the follow-up tasks/get|result|list|cancel must run under that same
@@ -2094,7 +2109,11 @@ class Veloce(
             from veloce.contrib.mcp.transports.sse import register_sse_transport
 
             server = MCPServer(
-                self, tool_filter=tool_filter, cache_ttl_ms=cache_ttl, page_size=page_size
+                self,
+                tool_filter=tool_filter,
+                cache_ttl_ms=cache_ttl,
+                page_size=page_size,
+                tool_search=tool_search,
             )
             register_sse_transport(
                 self,

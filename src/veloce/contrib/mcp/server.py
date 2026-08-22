@@ -88,6 +88,7 @@ from veloce.contrib.mcp.subscriptions import (
     subscription_closed_response,
 )
 from veloce.contrib.mcp.tasks import TaskRegistry, TasksCapability
+from veloce.contrib.mcp.toolsearch import ToolSearch
 from veloce.http.response import Response
 from veloce.principal import current_principal
 
@@ -306,6 +307,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         "_call_timeout",
         "_enforce_lifecycle",
         "_tool_filter",
+        "_tool_search",
         "_cache_ttl_ms",
         "_page_size",
         "_any_scoped_tools",
@@ -327,6 +329,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         tool_filter: ToolFilter | None = None,
         cache_ttl_ms: int = DEFAULT_CACHE_TTL_MS,
         page_size: int | None = None,
+        tool_search: bool = False,
     ) -> None:
         self.app = app
         # Optional per-caller `tools/list` visibility policy. `None` - the default -
@@ -353,6 +356,11 @@ class MCPServer(TasksMixin, InvocationMixin):
         # Whether either list can differ between two authorized callers, decided
         # once here: the registries are fixed after build, so the cache-scope
         # decision must not walk them per request.
+        # Optional search-first catalogue. When on, three tools are registered and
+        # they are the only ones listed; every other tool is found through them.
+        # Built after the registry so it can index what is registered, and before
+        # the scoped/prompt scans so its own tools are counted like any other.
+        self._tool_search = ToolSearch(self) if tool_search else None
         self._any_scoped_tools = any(tool.required_scopes for tool in self.registry.tools.values())
         self._any_scoped_prompts = any(
             prompt.tool.required_scopes for prompt in self.prompts.prompts.values()
@@ -871,10 +879,12 @@ class MCPServer(TasksMixin, InvocationMixin):
 
     async def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
         # Unfiltered is the default and stays a plain synchronous build - no awaits,
-        # no per-tool predicate - so opting out costs nothing.
+        # no per-tool predicate - so opting out costs nothing. A search-first
+        # catalogue narrows the listing to the search tools, so it takes the same
+        # path a configured filter does.
         tools: Iterable[MCPTool] = (
             self.registry.tools.values()
-            if self._tool_filter is None
+            if self._tool_filter is None and self._tool_search is None
             else await self._visible_tools()
         )
         return self._listing("tools", tools, _tool_key, self._describe_tool, params)
@@ -1050,6 +1060,19 @@ class MCPServer(TasksMixin, InvocationMixin):
         return False
 
     async def _visible_tools(self) -> list[MCPTool]:
+        """The tools `tools/list` reports to the calling principal.
+
+        The narrowed catalogue, unless the server publishes its catalogue through
+        search - in which case the listing is the three search tools and every
+        other tool is found through them.
+        """
+        candidates = await self._candidate_tools()
+        search = self._tool_search
+        if search is None:
+            return candidates
+        return [tool for tool in candidates if tool.name in search.names]
+
+    async def _candidate_tools(self) -> list[MCPTool]:
         """The tools the calling principal may see, in registration order.
 
         Visibility is scoped by the *same* check `tools/call` performs, so a tool is

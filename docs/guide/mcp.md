@@ -1906,6 +1906,70 @@ something actually changed. Resources are named by their URI.
 Visibility belongs to a connection, so this needs a stateful session: on the
 stateless HTTP path, where each request stands alone, `hide` raises.
 
+## Serving a catalogue through search
+
+Every entry `tools/list` returns lands in the agent's context window. A server
+with three hundred tools spends most of that window before the agent has done
+anything, and [paging](#paging-a-large-catalogue) only spreads the same cost over
+more round trips.
+
+`tool_search=True` publishes three tools in place of the catalogue:
+
+```python
+app.mount_mcp(transport="http", tool_search=True)
+```
+
+`tools/list` now answers with `search_tools`, `describe_tools` and `run_tools`,
+and every other tool is reached through them. Nothing else changes: an unlisted
+tool is still callable by name, with the same scopes, hooks and error shaping.
+
+**`search_tools(query, limit=10)`** ranks the catalogue against a query — BM25
+over each tool's name, title, description and tags — and returns the matches by
+name with a one-line description each:
+
+```json
+[{"name": "refund_order", "description": "Refund an order in full", "score": 4.9}]
+```
+
+**`describe_tools(names)`** returns the full definition of each named tool —
+description, input schema, annotations — which is what the agent needs before it
+can call one.
+
+**`run_tools(steps, stop_on_error=True)`** runs several calls in one request. A
+step's argument may reference an earlier step's result, so a chain costs one
+round trip instead of one per call:
+
+```json
+{
+  "steps": [
+    {"id": "cust", "tool": "find_customer",
+     "arguments": {"email": "ada@example.com"}, "quiet": true},
+    {"tool": "list_orders",
+     "arguments": {"customer_id": {"$from": "cust", "path": "/id"}}}
+  ]
+}
+```
+
+`{"$from": "<step id>", "path": "<JSON pointer>"}` is replaced by that part of
+the named step's result (RFC 6901; omit `path` for the whole result). A step
+marked `quiet` is left out of the response — later steps still reference it,
+which is how a chain avoids spending context on an intermediate value. A failing
+step is always reported, quiet or not, and stops the run unless
+`stop_on_error=false`.
+
+!!! warning "`run_tools` executes declared calls, never code"
+    Each step names a registered tool and its arguments. Nothing is compiled and
+    no expression is evaluated, so no sandbox is involved and none is relied on.
+    Every call goes through the same path `tools/call` serves — declared scopes,
+    call hooks, the timeout and the error shaping all apply — so a tool a caller
+    may not invoke is no more reachable inside a plan than it is directly, and a
+    plan that is stopped by one still reports the steps that already ran.
+
+Discovery honours the same visibility the listing does: a `tool_filter` and a
+tool's declared scopes decide what `search_tools` finds and what
+`describe_tools` will describe. The three names must be free — a server already
+registering one of them is told which, at mount time.
+
 ## Paging a large catalogue
 
 Every entry a list method returns lands in the agent's context window, so a
