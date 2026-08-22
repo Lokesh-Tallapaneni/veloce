@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import orjson
 import pytest
+from pydantic import BaseModel
 
 from veloce import Query, Veloce
 from veloce.contrib.mcp.registry import build_registry
@@ -141,3 +142,60 @@ async def test_a_supplied_value_still_overrides_the_default():
     payload = await _call({"required": 1, "with_default": 9, "legacy_optional": "set"})
     assert payload["with_default"] == 9
     assert payload["legacy_optional"] == "set"
+
+
+# ── What a list of models publishes ──────────────────────────────────
+
+
+class _Step(BaseModel):
+    tool: str
+    quiet: bool = False
+
+
+def _list_app() -> Veloce:
+    app = Veloce(title="Listed", openapi_url=None)
+
+    @app.mcp_tool(description="Run several steps")
+    async def run(steps: list[_Step], labels: list[str] | None = None) -> dict:
+        return {
+            "types": [type(step).__name__ for step in steps],
+            "tools": [step.tool for step in steps],
+            "labels": labels,
+        }
+
+    return app
+
+
+def test_a_list_of_models_publishes_the_model_as_its_item():
+    """Over HTTP such a value arrives as text; an MCP argument is JSON."""
+    schema = build_registry(_list_app()).tools["run"].input_schema
+    assert schema["properties"]["steps"]["items"] == {"$ref": "#/$defs/_Step"}
+
+
+def test_the_referenced_model_is_defined_in_the_schema():
+    schema = build_registry(_list_app()).tools["run"].input_schema
+    assert set(schema["$defs"]["_Step"]["properties"]) == {"tool", "quiet"}
+
+
+def test_a_list_of_scalars_is_unchanged():
+    schema = build_registry(_list_app()).tools["run"].input_schema
+    listed = schema["properties"]["labels"]["anyOf"][0]
+    assert listed == {"type": "array", "items": {"type": "string"}}
+
+
+async def test_the_published_shape_is_the_one_the_handler_takes():
+    response = await MCPServer(_list_app()).handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "run",
+                "arguments": {"steps": [{"tool": "a"}, {"tool": "b", "quiet": True}]},
+            },
+        },
+        MCPSession(),
+    )
+    payload = orjson.loads(response["result"]["content"][0]["text"])
+    assert payload["types"] == ["_Step", "_Step"]
+    assert payload["tools"] == ["a", "b"]

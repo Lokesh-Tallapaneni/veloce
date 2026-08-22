@@ -323,6 +323,22 @@ def _deepcopy_schema(node: Any) -> Any:
     return node
 
 
+def _item_schema(inner: Any, schemas_registry: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Return the schema for one element of a list parameter.
+
+    `_python_type_to_schema` describes a value that arrived as text, so it calls
+    a model `{"type": "string"}` - right for `?tag={"name":"x"}` over HTTP, wrong
+    here: an MCP argument is JSON, and the binder builds the model from a real
+    object. Publishing the string form would have a client send the one shape the
+    schema describes and the handler least expects.
+    """
+    if is_pydantic_model(inner):
+        return _pydantic_to_schema(inner, schemas_registry)
+    if inner is not None and is_adaptable_model(inner):
+        return _adapted_to_schema(inner, schemas_registry)
+    return _python_type_to_schema(inner)
+
+
 def _slot_schema(
     slot: _Slot, schemas_registry: dict[str, dict[str, Any]]
 ) -> tuple[dict[str, Any] | None, bool]:
@@ -347,7 +363,7 @@ def _slot_schema(
         else:
             prop = {"type": "object"}
     elif d.is_list:
-        prop = {"type": "array", "items": _python_type_to_schema(d.target_type)}
+        prop = {"type": "array", "items": _item_schema(d.target_type, schemas_registry)}
     else:
         prop = _python_type_to_schema(d.target_type)
 

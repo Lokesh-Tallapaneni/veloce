@@ -73,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The MCP protected-resource metadata advertises `bearer_methods_supported`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- A `list[Model]` tool parameter publishes the model as its item schema, not a string. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - An MCP argument whose JSON type contradicts the published schema is refused, not passed to the handler. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - A JSON-RPC response POSTed to the HTTP transport is accepted with `202`, not refused. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - URL-mode elicitation sends the required `elicitationId`, so a conforming client accepts it. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
