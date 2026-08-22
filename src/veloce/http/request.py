@@ -743,16 +743,32 @@ class Request:
         if self._url is None:
             scope = getattr(self, "scope", None)
             scope_scheme = scope.get("scheme") if isinstance(scope, dict) else None
+            # The raw transport carries no ASGI scope, so nothing else can
+            # tell this request it arrived over TLS: `app.run(ssl_context=)`
+            # and the gunicorn worker both terminate TLS on the connection
+            # itself. Without this the scheme fell through to plain "http" on a
+            # genuinely encrypted connection, so `url_for(_external=True)`
+            # emitted http:// and any `scheme == "https"` check failed. The live
+            # connection outranks `X-Forwarded-Proto` below: a header cannot be
+            # more authoritative than the socket it arrived on.
+            if (
+                scope_scheme is None
+                and self.transport is not None
+                and self.transport.get_extra_info("ssl_object") is not None
+            ):
+                scope_scheme = URL_SCHEME_HTTPS
             # A trusted ProxyFix hop stashes the public port here when the
             # forwarded Host carries none (e.g. proxy sends X-Forwarded-Host
             # without a port plus a separate X-Forwarded-Port: 8443).
-            forwarded_port = self._state.get("proxy_fix_port") if self._state else None
+            state = self._state
+            forwarded_port = state.get("proxy_fix_port") if state else None
             self._url = URL.from_request(
                 self.headers,
                 self.path,
                 self.query_string,
                 scope_scheme=scope_scheme,
                 forwarded_port=forwarded_port,
+                trust_forwarded_proto=not (state and "proxy_fix_applied" in state),
             )
         return self._url
 
@@ -1169,6 +1185,19 @@ class Request:
         raise exc from error
 
     # ── Async body, form, and streaming ────────────────────
+
+    def _mark_body_buffered(self) -> None:
+        """Publish an already-complete body without awaiting the source.
+
+        The raw transport builds a `Request` at headers-complete and only then
+        feeds the body, so a non-streaming route has to buffer before dispatch
+        for the sync `.data` / `.get_json()` / `.form` accessors to see it. When
+        the whole request arrived in one segment - the common case - the source
+        is already at EOF with nothing queued, and awaiting it would cost a
+        coroutine per request to learn there is nothing to wait for. The caller
+        checks `source.at_eof` and calls this instead.
+        """
+        self._body_drained = True
 
     async def _drain_body(self) -> bytes:
         """Pull the body source to EOF once and cache the assembled bytes.

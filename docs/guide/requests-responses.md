@@ -180,12 +180,22 @@ async def upload(request: Request):
 ```
 
 By default a route's body is buffered before the handler runs, so the
-synchronous accessors (`request.get_json()`, `request.form`, `request.data`)
-find it ready. A `stream=True` route trades those away: the body is delivered
-incrementally and must be consumed through `request.stream()` (or `await
-request.body()` to drain it). `MAX_CONTENT_LENGTH` is still enforced — an
-over-large streamed body is refused mid-read. The native `Veloce.run()` server
-streams every route's body off the socket regardless of the flag.
+synchronous accessors (`request.get_json()`, `request.data`) find it ready. A
+`stream=True` route trades those away: the body is delivered incrementally and
+must be consumed through `request.stream()` (or `await request.body()` to drain
+it). `MAX_CONTENT_LENGTH` is still enforced — an over-large streamed body is
+refused mid-read. This is the same on every transport: the built-in
+`Veloce.run()` server and the gunicorn `VeloceWorker` honour `stream=True`
+exactly as an ASGI server does, so a handler behaves the same however it is
+deployed.
+
+!!! note "Changed in version 0.16"
+    The built-in server previously streamed *every* route's body off the socket
+    regardless of `stream=True`, so `request.get_json()` and `request.data`
+    raised `RuntimeError` there while working under uvicorn. Routes without the
+    flag are now buffered before dispatch on that path too. A handler that
+    relied on incremental delivery without declaring `stream=True` must declare
+    it.
 
 !!! note "Added in version 0.9"
     The `stream=True` route option enables incremental request-body reading on

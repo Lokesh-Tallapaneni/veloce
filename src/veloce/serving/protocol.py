@@ -30,7 +30,7 @@ from veloce._protocol_constants import (
     RAW_HEADER_CONTENT_LENGTH,
     ROUTE_METHOD_WEBSOCKET,
 )
-from veloce.exceptions import WebSocketDisconnect
+from veloce.exceptions import RequestEntityTooLarge, WebSocketDisconnect
 from veloce.http._body import RequestBodySource
 from veloce.http.request import Request
 from veloce.http.response import Response, StreamingResponse
@@ -38,6 +38,7 @@ from veloce.websocket import WebSocket, compute_accept
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
+    from veloce.routing.router import RouteMatch
 
 _logger = logging.getLogger(__name__)
 
@@ -239,7 +240,9 @@ class HttpProtocol(asyncio.Protocol):
         # response written first. The tuple carries the Request, its body
         # source (the protocol feeds body chunks into it), and the keep-alive
         # flag snapshotted at headers-complete.
-        self._request_queue: deque[tuple[Request, RequestBodySource, bool]] = deque()
+        self._request_queue: deque[tuple[Request, RequestBodySource, bool, RouteMatch | None]] = (
+            deque()
+        )
         self._server_loop: asyncio.Task | None = None
         # Set on teardown so an in-flight server loop stops pulling more work
         # and a client that closes mid-pipeline does not wedge the loop.
@@ -413,7 +416,12 @@ class HttpProtocol(asyncio.Protocol):
         self._headers_done = True
         self._raw_content_length = None
         self._has_expect_continue = False
-        self._request_queue.append((request, source, keep_alive))
+        # Match ONCE here and thread the result into `handle_request`, exactly
+        # as `_asgi_app` does, so the radix tree is not walked twice. `_dispatch`
+        # also needs the match before the handler starts, to know whether this
+        # route streams its body or wants it buffered.
+        match = self.app.match(request.method, request.path)
+        self._request_queue.append((request, source, keep_alive, match))
         # Start the per-connection server loop on the first queued request; it
         # runs until the queue drains, guaranteeing FIFO response ordering.
         if self._server_loop is None or self._server_loop.done():
@@ -1022,8 +1030,8 @@ class HttpProtocol(asyncio.Protocol):
         the connection is being torn down.
         """
         while self._request_queue and not self._closing:
-            request, source, keep_alive = self._request_queue.popleft()
-            should_continue = await self._dispatch(request, source, keep_alive)
+            request, source, keep_alive, match = self._request_queue.popleft()
+            should_continue = await self._dispatch(request, source, keep_alive, match)
             # Notify the optional per-request hook (gunicorn max_requests
             # recycling) once the request has been fully dispatched, regardless
             # of whether the connection is kept alive or closed. Cheap None
@@ -1084,6 +1092,7 @@ class HttpProtocol(asyncio.Protocol):
         request: Request,
         source: RequestBodySource,
         keep_alive: bool,
+        match: RouteMatch | None = None,
     ) -> bool:
         """Dispatch one request and write its response.
 
@@ -1105,7 +1114,36 @@ class HttpProtocol(asyncio.Protocol):
         # that same source inline would create a SECOND waiter racing the live
         # handler on the source's single-waiter event - truncating its read and
         # thrashing the buffer. So we only ever drain when no consumer is alive.
-        inner = self.loop.create_task(self.app.handle_request(request))
+        # A non-streaming route wants its body already buffered, so the sync
+        # `.data` / `.get_json()` / `.form` accessors find it - the same
+        # guarantee `_asgi_app` gives by draining inline before dispatch. Only a
+        # `stream=True` route keeps the lazy source it consumes itself.
+        #
+        # The whole request usually arrives in one segment, so the parser has
+        # already fed EOF by the time this runs: `at_eof` settles it with an
+        # attribute read and no coroutine, leaving the bodyless-GET path exactly
+        # as cheap as before. Only a body still in flight costs an await.
+        if match is None or not match.route_info.stream:
+            # `at_eof` plus a zero running total means the parser signalled EOF
+            # without ever feeding a byte, so the body is empty and already
+            # correct on the Request. Testing the total as well keeps this true
+            # even if something upstream ever consumes from the source before
+            # dispatch: it would fall to the await, which is merely slower.
+            if source.at_eof and not source.total_bytes:
+                request._mark_body_buffered()
+            else:
+                # Buffering is best-effort: an over-limit body latches
+                # `overflowed` on the source, and re-raising here would render
+                # the refusal as a bare 500, because the app's exception
+                # handlers (which turn this into 413) live inside
+                # `handle_request`. Swallow it and dispatch anyway - the
+                # handler's own body access raises the same error where those
+                # handlers can see it, and a handler that never reads the body
+                # is refused by the same check it always was.
+                with contextlib.suppress(RequestEntityTooLarge):
+                    await request._drain_body()
+
+        inner = self.loop.create_task(self.app.handle_request(request, match=match))
         detached = False
         try:
             # `asyncio.shield` lets the handler's finally-block teardowns run to

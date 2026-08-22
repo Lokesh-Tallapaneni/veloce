@@ -171,8 +171,9 @@ def test_normal_small_request_is_not_rejected():
         assert b"414" not in emitted
         assert b"431" not in emitted
         # The request was accepted and queued for the server loop at
-        # headers-complete; the queue holds (Request, body_source, keep_alive).
-        assert any(req.path == "/hello" for req, _src, _ka in proto._request_queue)
+        # headers-complete; the queue holds
+        # (Request, body_source, keep_alive, route_match).
+        assert any(req.path == "/hello" for req, _src, _ka, _m in proto._request_queue)
     finally:
         loop.close()
 
@@ -587,16 +588,19 @@ def test_connection_lost_mid_pipeline_cancels_server_loop():
 
 
 def test_streaming_handler_receives_chunks_as_fed():
-    """Dispatch happens at headers-complete; a handler consuming
-    request.stream() observes each body chunk at the cadence the protocol
-    feeds it, not as one buffered blob after the body fully arrives."""
+    """A `stream=True` route dispatches at headers-complete; a handler
+    consuming request.stream() observes each body chunk at the cadence the
+    protocol feeds it, not as one buffered blob after the body fully arrives.
+
+    A route without the flag is buffered before dispatch instead, so the sync
+    accessors see a body - the same contract the ASGI path has always had."""
     loop = asyncio.new_event_loop()
     try:
         app = Veloce(openapi_url=None)
         seen: list[bytes] = []
         first_chunk = asyncio.Event()
 
-        @app.post("/stream")
+        @app.post("/stream", stream=True)
         async def stream(request):  # noqa: ANN001, ANN202
             async for chunk in request.stream():
                 seen.append(chunk)
@@ -894,7 +898,7 @@ def test_slow_consumer_triggers_pause_then_resume_across_reads():
 
         release = asyncio.Event()
 
-        @app.post("/stream")
+        @app.post("/stream", stream=True)
         async def stream(request):  # noqa: ANN001, ANN202
             # Hold off consuming until the producer has fed past the bound, so
             # the buffer fills and pause_reading is forced to fire.
@@ -964,7 +968,7 @@ def test_single_segment_burst_exceeds_chunk_bound_but_byte_cap_holds():
 
         release = asyncio.Event()
 
-        @app.post("/stream")
+        @app.post("/stream", stream=True)
         async def stream(request):  # noqa: ANN001, ANN202
             await release.wait()
             async for _chunk in request.stream():
@@ -1022,7 +1026,7 @@ def test_drain_resumes_then_second_burst_repauses_still_reaches_eof():
         # to schedule the handler to completion.
         gate = asyncio.Event()
 
-        @app.post("/ignore")
+        @app.post("/ignore", stream=True)
         async def ignore(request):  # noqa: ANN001, ANN202
             await gate.wait()
             return {"r": "A"}
@@ -1230,7 +1234,7 @@ def test_streaming_handler_timeout_does_not_race_drain_with_live_consumer():
         seen: list[bytes] = []
         handler_finished = asyncio.Event()
 
-        @app.post("/stream")
+        @app.post("/stream", stream=True)
         async def stream(request):  # noqa: ANN001, ANN202
             try:
                 async for chunk in request.stream():
