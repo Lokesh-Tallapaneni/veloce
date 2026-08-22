@@ -85,6 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A response's ETag, `Last-Modified`, `Expires` and `Vary` are read whatever casing wrote them. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- An `If-Match` a response satisfies is no longer refused when its ETag was written as `Etag`. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `FileResponse` names its media type through the same memoized lookup the static server uses. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `StaticFiles` honours an `If-Range` ETag a subclass emitted with surrounding whitespace. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A proxied call forwards the caller's `_meta`, so an upstream sees the progress token. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `run_tools` refuses a plan whose step ids repeat instead of mis-resolving a `$from` reference. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))

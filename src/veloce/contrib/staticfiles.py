@@ -17,13 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import html
-import mimetypes
 import os
 import stat
 import warnings
 from collections import OrderedDict
 from collections.abc import AsyncIterator
-from functools import lru_cache
 from typing import Any
 
 from veloce._constants import (
@@ -38,10 +36,14 @@ from veloce._constants import (
     HEADER_LAST_MODIFIED,
     HEADER_VALUE_BYTES,
     HEADER_VARY,
-    MIME_OCTET_STREAM,
     MIME_TEXT_HTML_UTF8,
 )
-from veloce._internal import _etag_matches_strong, _etag_matches_weak, _file_etag
+from veloce._internal import (
+    _etag_matches_strong,
+    _etag_matches_weak,
+    _file_etag,
+    guess_content_type,
+)
 from veloce.http.dates import http_date, parse_date
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, StreamingResponse
@@ -103,18 +105,6 @@ def _not_modified(etag: str, last_modified: str) -> Response:
         body=b"",
         headers={HEADER_ETAG: etag, HEADER_LAST_MODIFIED: last_modified},
     )
-
-
-@lru_cache(maxsize=512)
-def _guess_content_type(path: str) -> str:
-    """Cache `mimetypes.guess_type` by full path.
-
-    `guess_type` walks the registered MIME table on every call and a
-    static-file server hits the same extensions over and over. Caching
-    the result keeps the lookup off the hot path. Bounded so a hostile
-    client probing arbitrary paths can't grow the cache without bound.
-    """
-    return mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM
 
 
 class StaticFiles:
@@ -433,7 +423,7 @@ class StaticFiles:
         # Derive the media type from the ORIGINAL path before any
         # precompressed swap, so `app.css.br` keeps `text/css` rather than
         # mislabelling as `application/gzip`.
-        content_type = _guess_content_type(file_path)
+        content_type = guess_content_type(file_path)
 
         # Precompressed sibling serving (opt-in). On a hit, switch all
         # downstream bookkeeping (ETag, 304/412, Range, body) to the

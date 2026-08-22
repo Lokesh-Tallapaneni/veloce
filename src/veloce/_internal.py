@@ -31,6 +31,7 @@ import contextvars
 import functools
 import hashlib
 import inspect
+import mimetypes
 import sys
 import weakref
 from collections.abc import Callable, Iterable
@@ -52,6 +53,23 @@ from veloce.secret import Secret
 MIME_HTML = MIME_TEXT_HTML_UTF8
 MIME_PLAIN = MIME_TEXT_PLAIN_UTF8
 MIME_OCTET = MIME_OCTET_STREAM
+
+
+@functools.lru_cache(maxsize=512)
+def guess_content_type(path: str) -> str:
+    """Return the media type a path's extension names, or the octet-stream default.
+
+    `mimetypes.guess_type` walks the registered table on every call, and both
+    callers - the static server and every `FileResponse` - hit the same handful
+    of extensions repeatedly, so the answer is memoized. Bounded, so a client
+    probing arbitrary paths cannot grow it without limit.
+
+    The cache does not observe a `mimetypes.add_type` made after an extension
+    has already been guessed once. Registering media types at import time, as
+    the stdlib intends, is unaffected.
+    """
+    return mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM
+
 
 # `BaseExceptionGroup` is a builtin only from Python 3.11 (PEP 654); on 3.10 the
 # name is absent. Resolved once here so the lifespan-unwind, debug, and

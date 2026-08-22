@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import mimetypes
 import os
 import stat
 import warnings
@@ -61,6 +60,7 @@ from veloce._internal import (
     _file_etag,
     _header_value_has_crlf,
     _reject_header_crlf,
+    guess_content_type,
     is_json_mimetype,
 )
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
@@ -520,7 +520,7 @@ class Response:
         Accepts the three RFC 9110 Sec. 5.6.7 HTTP-date
         forms. Returns `None` on missing/unparseable.
         """
-        raw = self.headers.get(HEADER_LAST_MODIFIED) or self.headers.get("last-modified")
+        raw = header_get(self.headers, HEADER_LAST_MODIFIED)
         if not raw:
             return None
         return parse_date(raw)
@@ -533,7 +533,7 @@ class Response:
     @property
     def expires(self) -> Any:
         """Parsed `Expires` header -> UTC `datetime` or None (RFC 9111 Sec. 5.3)."""
-        raw = self.headers.get(HEADER_EXPIRES) or self.headers.get("expires")
+        raw = header_get(self.headers, HEADER_EXPIRES)
         if not raw:
             return None
         return parse_date(raw)
@@ -575,7 +575,7 @@ class Response:
         through `set_cookie()`.
         """
         out: dict[str, str] = {}
-        existing = self.headers.get(HEADER_SET_COOKIE, "") or self.headers.get("set-cookie", "")
+        existing = header_get(self.headers, HEADER_SET_COOKIE) or ""
         if not existing:
             return out
         # Q44 emits multi-cookies as `cookie1\r\nSet-Cookie: cookie2...`. Only
@@ -721,7 +721,7 @@ class Response:
             headers[HEADER_VARY] = value
             self._encoded = None
             return value
-        existing = headers.get(HEADER_VARY, "") or headers.get("vary", "")
+        existing = header_get(headers, HEADER_VARY) or ""
         # Delegate dedup + ordering to `HeaderSet` so the same
         # case-insensitive merge logic doesn't drift between this method
         # and the `vary` property's own datastructure.
@@ -992,7 +992,7 @@ class Response:
         `(None, False)` when unset. Returned tag keeps its quotes so
         it compares directly with `If-None-Match` values.
         """
-        raw = self.headers.get(HEADER_ETAG) or self.headers.get("etag")
+        raw = header_get(self.headers, HEADER_ETAG)
         if not raw:
             return (None, False)
         if raw.startswith("W/"):
@@ -1176,7 +1176,7 @@ class Response:
         if if_match == ("*",):
             return self
         # `headers` is a plain dict; accept either spelling, as other helpers do.
-        ours_etag = self.headers.get(HEADER_ETAG) or self.headers.get("etag") or ""
+        ours_etag = header_get(self.headers, HEADER_ETAG) or ""
         for tag in if_match:
             if _etag_matches_strong(ours_etag, tag):
                 return self
@@ -1589,7 +1589,7 @@ def _build_file_headers(
     both paths.
     """
     if content_type is None:
-        content_type = mimetypes.guess_type(path)[0] or MIME_OCTET
+        content_type = guess_content_type(path)
 
     hdrs = headers or {}
     if filename:
