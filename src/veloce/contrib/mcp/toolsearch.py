@@ -74,27 +74,35 @@ class _Bm25Index:
     query is a walk over the query's own terms rather than over the catalogue.
     """
 
-    __slots__ = ("_names", "_postings", "_lengths", "_average_length")
+    __slots__ = ("_names", "_postings", "_norms", "_documents")
 
     def __init__(self, documents: dict[str, str]) -> None:
         self._names = list(documents)
         self._postings: dict[str, dict[int, int]] = {}
-        self._lengths: list[int] = []
+        lengths: list[int] = []
         for index, text in enumerate(documents.values()):
             terms = _tokenize(text)
-            self._lengths.append(len(terms))
+            lengths.append(len(terms))
             for term in terms:
-                self._postings.setdefault(term, {}).setdefault(index, 0)
-                self._postings[term][index] += 1
-        total = sum(self._lengths)
-        self._average_length = total / len(self._lengths) if self._lengths else 0.0
+                postings = self._postings.get(term)
+                if postings is None:
+                    self._postings[term] = postings = {}
+                postings[index] = postings.get(index, 0) + 1
+        # BM25's length normalisation is fixed once the corpus is - a document's
+        # length and the corpus average cannot change after the registry is
+        # built - so it is computed here rather than per posting visited. Ranking
+        # a query is then arithmetic over the query's own terms.
+        average = (sum(lengths) / len(lengths) if lengths else 0.0) or 1.0
+        self._norms = [_K1 * (1 - _B + _B * (length or 1) / average) for length in lengths]
+        self._documents = len(self._names)
 
     def search(self, query: str) -> list[tuple[str, float]]:
         """Return `(name, score)` for every tool the query touches, best first."""
         terms = _tokenize(query)
         if not terms or not self._names:
             return []
-        documents = len(self._names)
+        documents = self._documents
+        norms = self._norms
         scores: dict[int, float] = {}
         for term in terms:
             postings = self._postings.get(term)
@@ -104,13 +112,12 @@ class _Bm25Index:
             # ranking almost nothing, one in a handful tells it a great deal.
             idf = math.log(1 + (documents - len(postings) + 0.5) / (len(postings) + 0.5))
             for index, frequency in postings.items():
-                length = self._lengths[index] or 1
-                normalised = _K1 * (1 - _B + _B * length / (self._average_length or 1))
                 scores[index] = scores.get(index, 0.0) + idf * frequency * (_K1 + 1) / (
-                    frequency + normalised
+                    frequency + norms[index]
                 )
-        ranked = sorted(scores.items(), key=lambda item: (-item[1], self._names[item[0]]))
-        return [(self._names[index], score) for index, score in ranked]
+        names = self._names
+        ranked = sorted(scores.items(), key=lambda item: (-item[1], names[item[0]]))
+        return [(names[index], score) for index, score in ranked]
 
 
 class ToolStep(BaseModel):

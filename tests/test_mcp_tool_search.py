@@ -743,3 +743,50 @@ async def test_a_failing_step_is_shaped_by_the_shared_text_result_helper():
 def test_the_context_error_shape_is_the_shared_one_too():
     """`context.py` and `toolsearch.py` must not drift from `_text_result`."""
     assert _error_content("boom") == _text_result("boom", is_error=True)
+
+
+# ── Ranking is arithmetic over the query, not over the corpus ────────
+
+
+def test_the_corpus_shape_is_computed_once_not_per_posting():
+    """A document's length and the corpus average cannot change after build."""
+    from veloce.contrib.mcp.toolsearch import _Bm25Index
+
+    assert _Bm25Index.__slots__ == ("_names", "_postings", "_norms", "_documents")
+
+
+def test_an_empty_document_still_ranks_without_dividing_by_zero():
+    from veloce.contrib.mcp.toolsearch import _Bm25Index
+
+    index = _Bm25Index({"empty": "", "full": "refund an order"})
+    assert [name for name, _score in index.search("refund")] == ["full"]
+
+
+def test_an_empty_corpus_answers_nothing():
+    from veloce.contrib.mcp.toolsearch import _Bm25Index
+
+    assert _Bm25Index({}).search("anything") == []
+
+
+def test_a_query_of_only_unknown_terms_answers_nothing():
+    from veloce.contrib.mcp.toolsearch import _Bm25Index
+
+    index = _Bm25Index({"one": "refund an order"})
+    assert index.search("photosynthesis") == []
+
+
+def test_a_repeated_term_scores_above_a_single_mention():
+    from veloce.contrib.mcp.toolsearch import _Bm25Index
+
+    index = _Bm25Index({"often": "refund refund refund", "once": "refund an order today"})
+    assert [name for name, _score in index.search("refund")][0] == "often"
+
+
+def test_a_longer_document_is_penalised_for_the_same_term_count():
+    """That penalty is what the precomputed normalisation carries."""
+    from veloce.contrib.mcp.toolsearch import _Bm25Index
+
+    padding = " ".join(f"w{i}" for i in range(40))
+    index = _Bm25Index({"short": "refund", "long": f"refund {padding}"})
+    ranked = dict(index.search("refund"))
+    assert ranked["short"] > ranked["long"]
