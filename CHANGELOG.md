@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-23
+
 ### Security
 
 - Replaying an MCP refresh token revokes the whole token family, per OAuth 2.1 Sec. 4.14.2. ([#282](https://github.com/Lokesh-Tallapaneni/veloce/pull/282))
