@@ -957,6 +957,49 @@ other `MCPError` subclasses) is routed through the app's exception handlers and
 surfaces as an internal error (`-32603`) unless a matching
 `@app.exception_handler` is registered for it.
 
+## Hooks around every call
+
+A tool exposed from a route replays the HTTP request lifecycle, so `before_request`
+and `after_request` already see it. A tool registered with `@app.mcp_tool` has no
+route, so nothing ran around it — there was nowhere to put an audit log, a rate
+limit, or an authorization check covering every tool a server exposes.
+
+`@app.before_mcp_call` and `@app.after_mcp_call` run around every MCP call —
+tool, resource read, or prompt render — whichever way the primitive was
+registered:
+
+```python
+from veloce.contrib.mcp import AuthorizationError
+
+@app.before_mcp_call
+async def audit(name, arguments):
+    logger.info("mcp call", extra={"primitive": name})
+    if name.startswith("admin_") and not caller_is_admin():
+        raise AuthorizationError("mcp:admin")   # refuses the call
+
+@app.after_mcp_call
+async def redact(name, result):
+    return scrub(result)
+```
+
+A `before` hook returning anything other than `None` answers the call with that
+value and the handler never runs — the same short-circuit shape `before_request`
+has, which is what makes a cache or a feature flag expressible. An `after` hook
+receives the handler's return value and returns what to send on; several chain in
+registration order, and none runs if the call raised.
+
+Raising `AuthorizationError` refuses the call as a protocol-level error. Any other
+exception is reported in band like a failing handler, so a bug in a hook does not
+look like a transport fault.
+
+!!! note
+    These are the *server-wide* seam. Per-tool concerns are still better expressed
+    with `Depends()` and declared `mcp_scopes`, which say what one tool needs
+    rather than what every tool pays.
+
+!!! note "Added in version 0.16"
+    `before_mcp_call` and `after_mcp_call`.
+
 ## Dependency injection
 
 `Depends()` works in a tool exactly as it does in a route. Injected parameters

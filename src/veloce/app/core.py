@@ -570,6 +570,14 @@ class Veloce(
                 dict[str, Any] | None,
             ]
         ] = []
+        # Hooks that run around every MCP call - tool, resource read or prompt
+        # render - whichever way the primitive was registered. A route-backed tool
+        # replays the HTTP request lifecycle and so already sees `before_request`;
+        # a tool registered with `@app.mcp_tool` has no route, so these are the
+        # only place a cross-cutting concern can sit for it. Empty lists cost one
+        # falsy check per call.
+        self._mcp_before_call: list[Callable] = []
+        self._mcp_after_call: list[Callable] = []
         # MCP argument-completer registrations (contrib.mcp). Each entry is
         # `(kind, key, argument, completer)` where `kind` is "prompt" or
         # "resource", `key` is the prompt name or resource URI, recorded by
@@ -1860,6 +1868,36 @@ class Veloce(
             return func
 
         return decorator
+
+    def before_mcp_call(self, func: Callable) -> Callable:
+        """Register a hook that runs before every MCP call (contrib.mcp).
+
+        Called with the primitive's name and the arguments it was given. Return
+        `None` to let the call proceed, or any other value to answer with that
+        instead of invoking the handler - the same short-circuit shape
+        `before_request` has. Raising an `MCPError` reports the failure to the
+        client, which is how an authorization check refuses a call.
+
+        Unlike `before_request`, this reaches a tool registered with
+        `@app.mcp_tool`, which has no route and so no request lifecycle::
+
+            @app.before_mcp_call
+            async def audit(name, arguments):
+                log.info("mcp call", extra={"tool": name})
+        """
+        self._mcp_before_call.append(func)
+        return func
+
+    def after_mcp_call(self, func: Callable) -> Callable:
+        """Register a hook that runs after every MCP call (contrib.mcp).
+
+        Called with the primitive's name and the handler's return value, and
+        returns the value to send on - so a hook may rewrite a result, or return
+        it unchanged. Hooks run in registration order, each seeing what the last
+        returned. It does not run when the call raised.
+        """
+        self._mcp_after_call.append(func)
+        return func
 
     def mcp_completer(
         self,

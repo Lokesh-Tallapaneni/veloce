@@ -99,6 +99,14 @@ class InvocationMixin:
         of that handler, and every hook after it, reading the call's synthetic
         request instead of the real one.
         """
+        # Run before building the call: a hook that answers instead of the handler
+        # must not leave an un-awaited coroutine behind.
+        before = self.app._mcp_before_call
+        if before:
+            short_circuit = await self._run_before_call(tool.name, arguments, before)
+            if short_circuit is not None:
+                return short_circuit
+
         # Built here so the restore wraps one await, not a duplicated pair.
         call = (
             self._invoke(tool, arguments, progress_token)
@@ -110,7 +118,11 @@ class InvocationMixin:
         outer_globals = g._snapshot()
         unbind = True
         try:
-            return await call
+            result = await call
+            after = self.app._mcp_after_call
+            if after:
+                result = await self._run_after_call(tool.name, result, after)
+            return result
         except GeneratorExit:
             # Closed mid-await: an abandoned call being finalized, which the
             # collector may run in any context. There is no awaiter to hand a
@@ -123,6 +135,29 @@ class InvocationMixin:
                 _current_app_var.set(outer_app)
                 _current_request_var.set(outer_request)
                 g._restore(outer_globals)
+
+    @staticmethod
+    async def _run_before_call(
+        name: str, arguments: dict[str, Any], hooks: list[Any]
+    ) -> Any | None:
+        """Run the pre-call hooks, returning the first short-circuit value."""
+        for hook in hooks:
+            outcome = hook(name, arguments)
+            if _is_async_callable(hook):
+                outcome = await outcome
+            if outcome is not None:
+                return outcome
+        return None
+
+    @staticmethod
+    async def _run_after_call(name: str, result: Any, hooks: list[Any]) -> Any:
+        """Run the post-call hooks in order, each seeing what the last returned."""
+        for hook in hooks:
+            outcome = hook(name, result)
+            if _is_async_callable(hook):
+                outcome = await outcome
+            result = outcome
+        return result
 
     async def _invoke(
         self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None = None

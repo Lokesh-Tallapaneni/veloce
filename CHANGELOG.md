@@ -59,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The MCP protected-resource metadata advertises `bearer_methods_supported`. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A JSON-RPC response POSTed to the HTTP transport is accepted with `202`, not refused. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
+- `@app.before_mcp_call` and `@app.after_mcp_call` run around every MCP call, route-backed or not. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - `MCPContext.result_meta` attaches `_meta` to the result of the call being handled. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - `meta=` on `mcp_tool` / `mcp_prompt` and `mcp_meta=` on a route publish `_meta` on the definition. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - `mcp_resource_size=` and `mcp_resource_annotations=` declare what a resource listing advertises. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
