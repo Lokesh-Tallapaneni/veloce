@@ -108,6 +108,10 @@ class MCPTool(MCPDescriptor):
     # would nest a complete result inside a text block and lose the `isError` and
     # `structuredContent` the upstream reported.
     passthrough_result: bool = False
+    # Set on a tool built by `derive_tool`: the argument translation that maps the
+    # published surface back to what the original handler takes. `None` for a tool
+    # whose arguments are its handler's own.
+    derived_from: Any = None
 
 
 @dataclass(slots=True)

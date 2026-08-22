@@ -93,6 +93,7 @@ from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.subscriptions import SubscriptionsCapability
 from veloce.contrib.mcp.tasks import MCPTask, TaskRegistry, TasksCapability
+from veloce.contrib.mcp.transform import ArgTransform, derive_tool
 from veloce.contrib.mcp.transports.http import register_http_transport
 from veloce.contrib.mcp.transports.session_store import SessionBackend, SessionRecord
 from veloce.contrib.mcp.transports.stdio import MCPRequestError, StdioTransport, serve_stdio
@@ -133,7 +134,9 @@ __all__ = [
     "MCPAuthorizationServer",
     "OAuthClient",
     "register_authorization_server",
+    "ArgTransform",
     "add_mcp_proxy",
+    "derive_tool",
     "ResourceLink",
     "SessionBackend",
     "SessionRecord",

@@ -1036,6 +1036,122 @@ async def add(a: int, b: int) -> int:
 # Tool name: "math_add"
 ```
 
+## Composing a surface from several sources
+
+A server's catalogue does not have to come from one app. Three pieces compose:
+mounted sub-apps contribute their own tools, `add_mcp_proxy` serves another MCP
+server's tools as if they were local, and `derive_tool` republishes a tool that
+already exists through a narrower surface.
+
+### Tools from a mounted sub-app
+
+`app.mount(prefix, sub_app)` mounts an app's routes. Pass `expose_mcp=True` and
+the sub-app's MCP tools, resources and prompts join the parent's catalogue,
+namespaced so two sub-apps offering the same name stay distinct:
+
+```python
+from veloce import Veloce
+
+billing = Veloce(title="Billing")
+
+
+@billing.mcp_tool(description="Look up an invoice")
+async def invoice(invoice_id: str) -> dict:
+    return {"id": invoice_id}
+
+
+app = Veloce(title="Platform")
+app.mount("/billing", billing, expose_mcp=True)
+app.mount_mcp(transport="http")
+# Listed as: "billing_invoice"
+```
+
+The namespace defaults to the mount prefix. Pass `mcp_namespace=` to choose
+another, or `mcp_namespace=""` to merge the sub-app's names in unprefixed.
+
+### Tools from another MCP server
+
+A gateway fronting several MCP servers needs their catalogues in its own
+`tools/list` and its calls forwarded. `add_mcp_proxy` discovers an upstream's
+tools once and registers each as a local tool that forwards when called.
+
+The connection stays with the application: you pass a callable that performs one
+JSON-RPC request, so retries, credentials, pooling and timeouts belong to
+whoever knows the deployment.
+
+```python
+from veloce import Veloce
+from veloce.contrib.mcp import add_mcp_proxy
+
+app = Veloce(title="Gateway")
+
+
+async def call_upstream(method: str, params: dict) -> dict:
+    response = await client.post(UPSTREAM_URL, json={
+        "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
+    })
+    return response.json()["result"]
+
+
+await add_mcp_proxy(app, "search", call_upstream)
+app.mount_mcp(transport="http")
+```
+
+Discovery is I/O, so it is awaited at setup rather than hidden behind a
+decorator, and it must run before `mount_mcp` builds the registry. Every
+discovered tool is registered as `"{namespace}_{upstream_name}"`, and the
+upstream's own `inputSchema` is published unchanged — it is the contract the
+upstream will validate against, so a schema rebuilt from a Python signature
+could only disagree with it. The upstream's answer is relayed as-is, so its
+`isError` and its content blocks reach the caller unwrapped.
+
+### A narrower view of a tool you already have
+
+An internal tool is often nearly the tool worth publishing, differing only in
+what an agent should see: a friendlier argument name, a credential the caller
+must not supply, a limit it must not raise. `derive_tool` changes the published
+surface and translates back before the original handler runs, so both tools
+share one implementation:
+
+```python
+from veloce import Veloce
+from veloce.contrib.mcp import ArgTransform, derive_tool
+from veloce.contrib.mcp.registry import build_registry
+
+app = Veloce(title="Search")
+
+
+@app.mcp_tool(description="Search the index (internal)")
+async def search(query: str, api_key: str, limit: int = 5) -> dict:
+    return await backend.search(query, api_key, limit)
+
+
+app.add_mcp_tool(
+    derive_tool(
+        build_registry(app).tools["search"],
+        name="public_search",
+        description="Search the public catalogue",
+        arguments={
+            "query": ArgTransform(name="q", description="What to search for"),
+            "api_key": ArgTransform(hide=True, default=SERVER_KEY),
+            "limit": ArgTransform(default=10),
+        },
+    )
+)
+app.mount_mcp(transport="http")
+```
+
+`public_search` publishes `q` and `limit`; `api_key` is gone from the schema and
+supplied on every call, which is how a server-held credential stays server-held
+while the tool that needs it is still exposed. The original `search` keeps its
+own registration and keeps working unchanged.
+
+An `ArgTransform` can rename (`name=`), re-document (`description=`), replace the
+JSON Schema (`schema=`), supply a `default`, state `required=`, or `hide` the
+argument. Hiding without a default is refused: the caller cannot supply it, so
+the handler would be called without it. Naming an argument the tool does not
+have is refused too, since it would silently do nothing.
+
 ## Serving over stdio
 
 ### Server identity and instructions
@@ -1628,6 +1744,39 @@ An anonymous caller now lists only `service_status`; a caller holding `ops` list
     performs a database or identity-provider lookup, cache inside the callback where
     the invalidation rules live — and prefer an `async def` filter so the lookup is
     not offloaded to a worker thread.
+
+### Narrowing one connection's view
+
+`tool_filter` is a policy fixed when the server is mounted. A running call can
+also change what *its own* client sees — unlocking a tool once a licence is
+verified, hiding a step once it is done — without touching what any other client
+is served:
+
+```python
+from veloce import MCPContext, Veloce
+
+app = Veloce(title="Onboarding")
+
+
+@app.mcp_tool(description="Verify the licence key")
+async def verify(key: str, ctx: MCPContext) -> str:
+    await ctx.unhide("provision_tenant")
+    return "verified"
+```
+
+`ctx.hide(name)` removes a tool, prompt or resource from this connection's
+listings; `ctx.unhide(name)` puts it back; `ctx.reset_visibility()` restores
+everything. Each sends the matching `list_changed` notification, and only when
+something actually changed. Resources are named by their URI.
+
+!!! warning "Hiding is not enforcement"
+
+    A hidden primitive is still callable, exactly as with `tool_filter`. What a
+    caller may invoke is decided by its declared scopes, so a hidden name must
+    never be mistaken for a permission boundary.
+
+Visibility belongs to a connection, so this needs a stateful session: on the
+stateless HTTP path, where each request stands alone, `hide` raises.
 
 ## Paging a large catalogue
 

@@ -1875,6 +1875,17 @@ class Veloce(
 
         return decorator
 
+    def add_mcp_tool(self, tool: Any) -> None:
+        """Register an already-built `MCPTool` (contrib.mcp).
+
+        The decorator builds a tool from a handler; this takes one that already
+        exists - most often from `derive_tool`, which narrows a registered tool
+        into the façade an agent should see::
+
+            app.add_mcp_tool(derive_tool(internal, name="search", arguments={...}))
+        """
+        self._mcp_proxied_tools.append(tool)
+
     def before_mcp_call(self, func: Callable) -> Callable:
         """Register a hook that runs before every MCP call (contrib.mcp).
 

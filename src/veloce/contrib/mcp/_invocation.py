@@ -98,6 +98,12 @@ class InvocationMixin:
         of that handler, and every hook after it, reading the call's synthetic
         request instead of the real one.
         """
+        # A derived tool publishes a different argument surface from the one its
+        # handler takes; translate before anything reads the arguments, so hooks,
+        # binding and the handler all see one consistent mapping.
+        if tool.derived_from is not None:
+            arguments = tool.derived_from.translate(arguments)
+
         # Run before building the call: a hook that answers instead of the handler
         # must not leave an un-awaited coroutine behind.
         before = self.app._mcp_before_call
