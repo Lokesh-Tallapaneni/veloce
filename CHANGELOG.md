@@ -84,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `StaticFiles` honours an `If-Range` ETag a subclass emitted with surrounding whitespace. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A proxied call forwards the caller's `_meta`, so an upstream sees the progress token. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `run_tools` refuses a plan whose step ids repeat instead of mis-resolving a `$from` reference. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A `$from` pointer of `/` names the member keyed `""`, as RFC 6901 defines it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))

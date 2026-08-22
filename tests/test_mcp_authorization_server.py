@@ -26,7 +26,12 @@ from veloce.contrib.mcp import (
     OAuthClient,
     register_authorization_server,
 )
-from veloce.contrib.mcp.authorization import AuthorizationCode, _digest, _now
+from veloce.contrib.mcp.authorization import (
+    AuthorizationCode,
+    _digest,
+    _now,
+    _verify_pkce,
+)
 
 ISSUER = "https://api.example.com"
 REDIRECT = "http://127.0.0.1:9876/callback"
@@ -641,3 +646,64 @@ def test_a_client_without_a_secret_reports_itself_public():
         OAuthClient(client_id="c", redirect_uris=(REDIRECT,), client_secret_digest="d").is_public
         is False
     )
+
+
+# ── PKCE S256 verification (RFC 7636 Sec. 4.2) ───────────────────────
+#
+# The challenge is BASE64URL-ENCODE(SHA256(verifier)): the RFC 4648 Sec. 5
+# alphabet with padding stripped. These pin the encoding itself, so the
+# comparison cannot start accepting a differently-spelled challenge.
+
+
+def test_the_rfc_7636_appendix_b_vector_verifies():
+    """The worked example from the specification, end to end."""
+    assert _verify_pkce(
+        "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+    )
+
+
+def test_a_challenge_carrying_base64_padding_is_refused():
+    """RFC 7636 Sec. 4.2 strips `=`; a padded spelling is a different string
+    and `hmac.compare_digest` must not treat it as equal."""
+    verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+    assert not _verify_pkce(verifier, challenge + "=")
+    assert not _verify_pkce(verifier, challenge + "==")
+
+
+def test_a_standard_base64_challenge_is_refused():
+    """The `+` / `/` alphabet is not the URL-safe one RFC 4648 Sec. 5 names."""
+    verifier = "v" * 43
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    standard = base64.b64encode(digest).rstrip(b"=").decode("ascii")
+    urlsafe = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    assert standard != urlsafe  # the vector actually exercises the difference
+    assert _verify_pkce(verifier, urlsafe)
+    assert not _verify_pkce(verifier, standard)
+
+
+def test_the_challenge_is_43_unpadded_characters_for_every_verifier():
+    """SHA-256 is 32 bytes, which is 42.67 base64 characters - always one
+    padding character stripped, so the challenge is always 43 long."""
+    for length in (43, 64, 96, 128):
+        verifier = secrets.token_urlsafe(length)[:length]
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+            .rstrip(b"=")
+            .decode()
+        )
+        assert len(challenge) == 43
+        assert "=" not in challenge
+        assert _verify_pkce(verifier, challenge)
+
+
+def test_a_verifier_one_character_off_is_refused():
+    verifier, challenge = _pkce()
+    assert _verify_pkce(verifier, challenge)
+    assert not _verify_pkce(verifier[:-1] + ("A" if verifier[-1] != "A" else "B"), challenge)
+
+
+def test_an_empty_challenge_is_refused():
+    verifier, _challenge = _pkce()
+    assert not _verify_pkce(verifier, "")

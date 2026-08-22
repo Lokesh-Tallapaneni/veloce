@@ -519,10 +519,12 @@ class SessionMiddleware(Middleware):
         """Serialise one Set-Cookie line from this middleware's attributes.
 
         `dump_cookie` has no `partitioned` arg, so the CHIPS attribute is
-        appended here - the constructor guard guarantees `secure=True` when set,
-        so it is always valid. `prefix` is True only for the base cookie passed
-        by its bare `cookie_name`; chunk cookies pass their already-prefixed wire
-        name with `prefix=False`.
+        appended here rather than by `Response.set_cookie`, which this method
+        cannot use because `_rendered_size` needs the serialised line before it
+        is attached to a response. The `partitioned and secure` condition below
+        is therefore `set_cookie`'s, restated. `prefix` is True only for the
+        base cookie passed by its bare `cookie_name`; chunk cookies pass their
+        already-prefixed wire name with `prefix=False`.
         """
         rendered = dump_cookie(
             name,
@@ -535,7 +537,12 @@ class SessionMiddleware(Middleware):
             samesite=self._samesite_cap,
             prefix=self.cookie_prefix if prefix else None,
         )
-        if self.partitioned:
+        # Mirrors `Response.set_cookie`: CHIPS keys a partitioned cookie to the
+        # top-level site and browsers reject the attribute without `Secure`, so
+        # emitting it alone would cost the whole cookie. The constructor guard
+        # already rejects that combination; this keeps the two renderers
+        # answering alike if either guard moves.
+        if self.partitioned and self.secure:
             rendered += "; Partitioned"
         return rendered
 

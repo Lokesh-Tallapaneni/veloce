@@ -21,7 +21,7 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 from typing_extensions import Doc
 
-from veloce._constants import MSG_FIELD_REQUIRED
+from veloce._constants import MSG_FIELD_REQUIRED, STATE_INJECTED_RESPONSE
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
@@ -841,13 +841,14 @@ class DependencyResolver:
 
         One `Response` per request, shared between the handler and any dependency
         that also declares the parameter. `status_code = 0` is the "not set by the
-        handler" sentinel the dispatcher checks before merging.
+        handler" sentinel the dispatcher checks before merging. This is the
+        authority the MCP bridge delegates to and `_resolver_codegen` emits inline.
         """
-        injected = request._state.get("_injected_response")
+        injected = request._state.get(STATE_INJECTED_RESPONSE)
         if injected is None:
             injected = Response()
             injected.status_code = 0
-            request._state["_injected_response"] = injected
+            request._state[STATE_INJECTED_RESPONSE] = injected
         return injected
 
     async def _resolve_upload_file(

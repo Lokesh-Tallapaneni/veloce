@@ -40,6 +40,10 @@ _CURSOR_SEPARATOR = ":"
 def encode_cursor(index: int, key: str) -> str:
     """Return the opaque cursor naming the last item emitted."""
     raw = f"{index}{_CURSOR_SEPARATOR}{key}".encode()
+    # Padded on purpose - NOT `_internal._b64encode`, which strips `=` for the
+    # RFC 7515 / RFC 7636 unpadded form. A cursor is an opaque round-trip token
+    # whose only contract is with `decode_cursor` below, and cursors already
+    # issued by a running process must keep decoding across a restart.
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 

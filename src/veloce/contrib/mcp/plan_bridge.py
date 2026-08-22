@@ -38,23 +38,20 @@ from veloce._model_backend import (
     is_pydantic_model,
 )
 from veloce._route_contract import describe_slot
-from veloce.background import BackgroundTasks
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.openapi import (
     _adapted_to_schema,
     _pydantic_to_schema,
     _python_type_to_schema,
 )
-from veloce.dependency import SecurityScopes, _coerce_value
+from veloce.dependency import DependencyResolver, SecurityScopes, _coerce_value
 from veloce.exceptions import RequestValidationError
 from veloce.http.datastructures import FormData, QueryParams
 from veloce.http.request import Request
-from veloce.http.response import Response
 from veloce.routing.converters import path_param_schemas
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan, _Slot
-    from veloce.dependency import DependencyResolver
 
 
 # Slot kinds an agent supplies as a JSON argument (the kinds `_slot_schema`
@@ -662,35 +659,14 @@ def _build_request(
     return request
 
 
-def _injected_response(request: Request) -> Response:
-    """Return the request-scoped injected `Response`, creating it on first use.
-
-    Mirrors the HTTP resolver's `K_RESPONSE` slot: one `Response` per request,
-    stored on `request._state["_injected_response"]` and shared by the handler
-    and any dependency that also injects `Response`. `status_code = 0` is the
-    "handler never set it" sentinel `_build_response` checks before merging the
-    injected status onto the final response.
-    """
-    injected = request._state.get("_injected_response")
-    if injected is None:
-        injected = Response()
-        injected.status_code = 0
-        request._state["_injected_response"] = injected
-    return injected
-
-
-def _background_tasks(request: Request) -> BackgroundTasks:
-    """Return the request-scoped `BackgroundTasks` queue, creating it once.
-
-    Mirrors the HTTP resolver's `K_BG_TASKS` slot: a single queue per request,
-    reused for every `BackgroundTasks` injection point so work scheduled by a
-    dependency is not discarded when the handler's own `tasks` parameter binds.
-    """
-    tasks = request._background_tasks
-    if tasks is None:
-        tasks = BackgroundTasks()
-        request._background_tasks = tasks
-    return tasks
+# The `K_RESPONSE` / `K_BG_TASKS` slots bind exactly as they do on the HTTP
+# path, so they delegate to the resolver rather than restating it: one
+# `Response` and one `BackgroundTasks` queue per request, shared by the handler
+# and every dependency that injects them, with `status_code = 0` as the "handler
+# never set it" sentinel `_build_response` checks. Aliased here so the call sites
+# below read the same as the slots they fill.
+_injected_response = DependencyResolver._bind_injected_response
+_background_tasks = DependencyResolver._bind_background_tasks
 
 
 async def bind_arguments(
@@ -782,12 +758,10 @@ async def bind_arguments(
             kwargs[name] = context
             continue
 
-        # A handler may declare `response: Response`; supply the one
-        # request-scoped injected Response the HTTP resolver stores on
-        # `request._state["_injected_response"]`, creating it on first use.
-        # Reusing it (rather than handing out a fresh Response) means a
-        # dependency and the handler that both inject `Response` mutate the
-        # same object, and the route path's `_build_response` merges its
+        # A handler may declare `response: Response`; supply the one the HTTP
+        # resolver would. Reusing it (rather than handing out a fresh Response)
+        # means a dependency and the handler that both inject `Response` mutate
+        # the same object, and the route path's `_build_response` merges its
         # status / headers onto the tool result - exactly as on the HTTP path.
         if kind == K_RESPONSE:
             kwargs[name] = _injected_response(request)

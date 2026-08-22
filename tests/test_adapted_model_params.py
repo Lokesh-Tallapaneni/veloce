@@ -11,7 +11,7 @@ runtime agree and match what a `BaseModel` parameter already did.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
 import pytest
 from pydantic import BaseModel
@@ -73,6 +73,38 @@ def test_a_dataclass_instance_is_not_a_model_annotation():
 def test_the_adapter_is_built_once_per_type():
     """Adapter construction runs a schema build, so it must never repeat per call."""
     assert adapter_for(Point) is adapter_for(Point)
+
+
+def test_an_unhashable_annotation_still_gets_a_working_adapter():
+    """`Annotated[..., <unhashable marker>]` cannot key the `WeakKeyDictionary`,
+    so `.get()` raises. The lookup falls through to an uncached adapter rather
+    than propagating - the same weak-key/unhashable contract
+    `_internal._is_async_callable` keeps over its own cache."""
+    annotation = Annotated[int, []]
+    with pytest.raises(TypeError):
+        hash(annotation)
+    assert adapter_for(annotation).validate_python(3) == 3
+
+
+def test_an_unhashable_annotation_is_rebuilt_rather_than_cached():
+    """It cannot be stored, so each call builds afresh; the contract is only
+    that the result is correct, not that it is the same object."""
+    annotation = Annotated[int, []]
+    first, second = adapter_for(annotation), adapter_for(annotation)
+    assert first is not second
+    assert first.validate_python(7) == second.validate_python(7) == 7
+
+
+def test_the_adapter_cache_survives_a_type_defined_in_a_function():
+    """Weak keys let a locally defined type be collected with its scope; while
+    it is alive the adapter must still be reused."""
+
+    @dataclass
+    class Local:
+        v: int
+
+    assert adapter_for(Local) is adapter_for(Local)
+    assert adapter_for(Local).validate_python({"v": 2}) == Local(v=2)
 
 
 # ── The MCP tool surface ─────────────────────────────────────────────

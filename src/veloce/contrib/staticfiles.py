@@ -526,15 +526,16 @@ class StaticFiles:
             if_etag, if_date = request.if_range
             if if_etag:
                 # RFC 9110 Sec. 13.1.5 mandates the STRONG comparison function
-                # for an If-Range ETag: both tags must be strong (no `W/`
-                # prefix) and byte-identical. A weak validator only guarantees
-                # semantic equivalence, not the byte-for-byte identity a range
-                # resume needs. Veloce emits weak file ETags, so an ETag
-                # If-Range never satisfies strong comparison and we serve a
-                # full 200 - clients should resume via the Last-Modified date.
-                honor_range = (
-                    not if_etag.startswith("W/") and not etag.startswith("W/") and if_etag == etag
-                )
+                # (Sec. 8.8.3.1) for an If-Range ETag: both tags must be strong
+                # (no `W/` prefix) and byte-identical. A weak validator only
+                # guarantees semantic equivalence, not the byte-for-byte identity
+                # a range resume needs. `_etag_matches_strong` is the comparison
+                # `_precondition_failed` already applies to `If-Match`, so one
+                # implementation answers both. The stock `_compute_etag` emits
+                # weak file ETags and so never resumes here - clients should use
+                # the Last-Modified date; a subclass emitting a strong tag makes
+                # this branch live.
+                honor_range = _etag_matches_strong(etag, if_etag)
             elif if_date is not None:
                 # RFC 9110 Sec. 13.1.5 requires an EXACT date match here (unlike
                 # the "earlier than or equal" test used for If-Unmodified-Since).

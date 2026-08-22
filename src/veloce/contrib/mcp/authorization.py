@@ -32,7 +32,6 @@ application's to supply.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import secrets
@@ -42,6 +41,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import urlencode, urlparse
 
+from veloce._internal import _b64encode
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
 from veloce.http.response import JSONResponse, RedirectResponse, Response
 from veloce.principal import Principal
@@ -410,7 +410,10 @@ def _redirect_uri_is_allowed(uri: str) -> bool:
 def _verify_pkce(verifier: str, challenge: str) -> bool:
     """Whether `verifier` hashes to `challenge` under S256."""
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
-    computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    # RFC 7636 Sec. 4.2 specifies BASE64URL-ENCODE(SHA256(verifier)) - the
+    # RFC 4648 Sec. 5 alphabet with padding stripped, which is exactly what
+    # `_b64encode` produces for JWS (RFC 7515 Sec. 2) elsewhere in the tree.
+    computed = _b64encode(digest)
     return hmac.compare_digest(computed, challenge)
 
 
