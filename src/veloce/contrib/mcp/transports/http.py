@@ -62,6 +62,7 @@ from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
 from veloce.contrib.mcp.errors import (
     _JSONRPC_FORBIDDEN,
     _JSONRPC_INTERNAL_ERROR,
+    _JSONRPC_INVALID_REQUEST,
     MCPError,
     OriginNotAllowedError,
     ProtocolVersionError,
@@ -228,9 +229,19 @@ async def _handle_http(
             _error(None, _JSONRPC_PARSE_ERROR, "Parse error"),
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    if not isinstance(message, dict):
+    if not request.data:
+        # No body at all is no JSON document to read, which is the parse failure
+        # rather than a well-formed document of the wrong shape.
         return JSONResponse(
             _error(None, _JSONRPC_PARSE_ERROR, "Parse error"),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not isinstance(message, dict):
+        # It parsed, so the failure is the shape rather than the JSON. JSON-RPC
+        # keeps these apart: -32700 says the text could not be read, -32600 says
+        # what was read is not a Request object.
+        return JSONResponse(
+            _error(None, _JSONRPC_INVALID_REQUEST, "Invalid Request"),
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 

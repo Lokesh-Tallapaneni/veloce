@@ -587,6 +587,13 @@ class MCPServer(TasksMixin, InvocationMixin):
                 return None
             return _error(msg_id, _JSONRPC_INVALID_REQUEST, "Invalid JSON-RPC 2.0 request")
 
+        # Unlike base JSON-RPC, MCP forbids a null request id: a request either
+        # carries a string or integer id, or omits the key entirely to be a
+        # notification. A present-but-null id is neither, so answering it would
+        # invent a correlation the client cannot use.
+        if "id" in message and msg_id is None:
+            return _error(None, _JSONRPC_INVALID_REQUEST, "Request id must not be null")
+
         params = message.get("params") or {}
         is_notification = "id" not in message
 

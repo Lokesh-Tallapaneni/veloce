@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import orjson
 
 from veloce.contrib.mcp.context import _in_task_var
+from veloce.contrib.mcp.errors import _JSONRPC_INVALID_REQUEST
 from veloce.contrib.mcp.session import MCPSession
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -171,7 +172,11 @@ class StdioTransport:
         except orjson.JSONDecodeError:
             return self._parse_error()
         if not isinstance(message, dict):
-            return self._parse_error()
+            # It parsed, so the failure is the shape, not the JSON. JSON-RPC keeps
+            # these apart: -32700 says the text could not be read, -32600 says what
+            # was read is not a Request object. A batch array lands here too, since
+            # the revisions this server speaks do not carry batches.
+            return self._invalid_request()
         # A reply to a server->client request (an id we issued, no method) resolves
         # the waiting future rather than entering dispatch.
         if "method" not in message:
@@ -198,6 +203,14 @@ class StdioTransport:
             "jsonrpc": "2.0",
             "id": None,
             "error": {"code": _JSONRPC_PARSE_ERROR, "message": "Parse error"},
+        }
+
+    @staticmethod
+    def _invalid_request() -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": _JSONRPC_INVALID_REQUEST, "message": "Invalid Request"},
         }
 
 
