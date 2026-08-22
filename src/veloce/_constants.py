@@ -1,8 +1,9 @@
 """Shared string-literal constants — one canonical spelling per duplicated value.
 
-Centralises the MIME types, Title-Case HTTP header names, and verbatim
-error/log message strings that appear in two or more places across the
-framework so that casing and spelling cannot drift between call sites.
+Centralises the MIME types, Title-Case HTTP header names, verbatim
+error/log message strings, and ``request._state`` keys that appear in two or
+more places across the framework so that casing and spelling cannot drift
+between call sites.
 
 These names are internal (leading-underscore module): they are not part
 of the public API, are not exported from ``veloce/__init__.py``'s
@@ -141,3 +142,11 @@ MSG_LABEL_COOKIE_SAMESITE = "cookie samesite"
 MSG_LABEL_COOKIE_VALUE = "cookie value"
 MSG_LABEL_HEADER_NAME = "header name"
 MSG_LABEL_SET_COOKIE_VALUE = "Set-Cookie value"
+
+# ── `request._state` keys the framework owns ──────────────
+# Reserved names an application must not reuse (see the request-state rules in
+# `.claude/rules/style-guide.md`). Four sites agree on this one: the HTTP
+# resolver and the MCP bridge create the entry, the compiled resolver emits an
+# equivalent read/store inline, and the dispatcher reads it back to decide
+# whether to merge a handler-injected status onto the final response.
+STATE_INJECTED_RESPONSE = "_injected_response"

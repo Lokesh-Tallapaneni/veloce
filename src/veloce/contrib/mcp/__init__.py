@@ -46,6 +46,15 @@ and the Streamable HTTP transport (``mount_mcp(transport="http")``) are supporte
 from __future__ import annotations
 
 from veloce.contrib.mcp.auth import MCPAuth
+from veloce.contrib.mcp.authorization import (
+    AccessToken,
+    AuthorizationCode,
+    AuthorizationStore,
+    InMemoryAuthorizationStore,
+    MCPAuthorizationServer,
+    OAuthClient,
+    register_authorization_server,
+)
 from veloce.contrib.mcp.completion import CompletionResult, CompletionsCapability
 from veloce.contrib.mcp.content import (
     AudioContent,
@@ -73,17 +82,21 @@ from veloce.contrib.mcp.errors import (
 from veloce.contrib.mcp.icons import Icon
 from veloce.contrib.mcp.plan_bridge import JSON_SCHEMA_DIALECT
 from veloce.contrib.mcp.prompts import MCPPrompt, PromptRegistry, build_prompt_registry
-from veloce.contrib.mcp.registry import MCPTool, ToolRegistry, build_registry
+from veloce.contrib.mcp.proxy import add_mcp_proxy
+from veloce.contrib.mcp.registry import MCPTool, ToolFilter, ToolRegistry, build_registry
 from veloce.contrib.mcp.resources import (
     MCPResource,
     ResourceRegistry,
     build_resource_registry,
 )
+from veloce.contrib.mcp.sampling import SampledToolCall, SamplingRun
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.subscriptions import SubscriptionsCapability
 from veloce.contrib.mcp.tasks import MCPTask, TaskRegistry, TasksCapability
+from veloce.contrib.mcp.transform import ArgTransform, derive_tool
 from veloce.contrib.mcp.transports.http import register_http_transport
+from veloce.contrib.mcp.transports.session_store import SessionBackend, SessionRecord
 from veloce.contrib.mcp.transports.stdio import MCPRequestError, StdioTransport, serve_stdio
 
 __all__ = [
@@ -110,11 +123,26 @@ __all__ = [
     "MCPSession",
     "MCPTask",
     "MCPTool",
+    "ToolFilter",
     "MethodNotFoundError",
     "OriginNotAllowedError",
     "PromptRegistry",
     "ProtocolVersionError",
+    "AccessToken",
+    "AuthorizationCode",
+    "AuthorizationStore",
+    "InMemoryAuthorizationStore",
+    "MCPAuthorizationServer",
+    "OAuthClient",
+    "register_authorization_server",
+    "ArgTransform",
+    "SampledToolCall",
+    "SamplingRun",
+    "add_mcp_proxy",
+    "derive_tool",
     "ResourceLink",
+    "SessionBackend",
+    "SessionRecord",
     "ResourceNotFoundError",
     "ResourceRegistry",
     "SessionNotFoundError",

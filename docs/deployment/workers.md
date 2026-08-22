@@ -163,6 +163,8 @@ worker on the next.
 | [`InMemoryRateLimitBackend`](../guide/middleware.md) | Per-worker | Counters are per-process, so the effective limit is roughly `workers ×` the configured rate. |
 | [`InMemorySessionStore`](../guide/sessions.md) | Per-worker | Server-side sessions are not shared; a session created on one worker is absent on another. |
 | Background tasks via `app.spawn` | Per-worker | Supervised tasks run on the worker that scheduled them. |
+| MCP HTTP sessions (`Mcp-Session-Id`) | Per-worker | A session lives in the worker that minted it; another worker answers `404`. Pass `mount_mcp(session_backend=...)` to share them. |
+| MCP subscriptions, listen streams, tasks, hidden tools | Per-worker | Bound to the connection, so they stay worker-local **even with a shared `session_backend`**. |
 | `RedisCache`, `RedisRateLimitBackend`, `RedisSessionStore` | Shared | Backed by Redis (in `veloce.contrib.redis`), so all workers see one consistent store. |
 | Client cookies, signed sessions | Shared | State travels on the request, so every worker reads the same value. |
 
@@ -179,6 +181,39 @@ worker on the next.
     equivalents in `veloce.contrib.redis` (`RedisCache`,
     `RedisRateLimitBackend`, `RedisSessionStore`) so every worker reads and
     writes one store. See [Caching](../guide/caching.md).
+
+!!! danger "Server-side sessions across workers misdeliver, not just miss"
+    With `ServerSessionMiddleware` on an in-memory store and several workers,
+    the failure is not only that a session read on another worker is absent.
+    Data written under a session — flash messages especially — accumulates in
+    whichever worker holds it and is then delivered to a *later, unrelated*
+    request that happens to land there. Use a shared store, or the default
+    signed-cookie `SessionMiddleware`, which travels with the client and is
+    unaffected.
+
+### Stateful MCP across workers
+
+The MCP HTTP transport is stateless by default and scales across workers
+without ceremony. Stateful features do not, and the failure is loud:
+
+- Without `session_backend=`, a request carrying an `Mcp-Session-Id` minted by
+  another worker is answered `404` and the client must start over. With N
+  workers, roughly `(N-1)/N` of requests hit this.
+- `mount_mcp(session_backend=...)` shares the session record itself, which
+  clears the `404`. It shares the initialization state — `initialized`, the
+  client's capabilities and info — and **nothing else**: subscriptions, open
+  listen streams, tasks and per-connection tool visibility are bound to the
+  connection and remain in the worker that created them.
+
+So for `resources/subscribe`, `tasks/*` or `MCPContext.hide`, run a single
+worker, or route clients to a stable worker with a sticky policy keyed on
+`Mcp-Session-Id`.
+
+!!! note "`ctx.session_id` identifies a connection, not a client"
+    It is unique across processes, so it is safe to key per-client state on
+    within a worker. It is not stable across a reconnect, and — without a
+    shared `session_backend` — not stable across workers either. For an
+    identity that outlives the connection, use something the client sends.
 
 ## Choosing a worker count
 

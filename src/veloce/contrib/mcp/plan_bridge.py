@@ -14,7 +14,7 @@ resolves a plan without an HTTP `Request`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_origin
 
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
@@ -31,25 +31,37 @@ from veloce._handler_plan import (
     K_SECURITY_SCOPES,
     MK_BODY,
 )
-from veloce._model_backend import is_pydantic_model
+from veloce._model_backend import (
+    ModelBackend,
+    adapter_for,
+    is_adaptable_model,
+    is_pydantic_model,
+)
 from veloce._route_contract import describe_slot
-from veloce.background import BackgroundTasks
 from veloce.contrib.mcp.context import MCPContext
-from veloce.contrib.openapi import _pydantic_to_schema, _python_type_to_schema
-from veloce.dependency import SecurityScopes, _coerce_scalar, _coerce_value
+from veloce.contrib.openapi import (
+    _adapted_to_schema,
+    _pydantic_to_schema,
+    _python_type_to_schema,
+)
+from veloce.dependency import DependencyResolver, SecurityScopes, _coerce_value
+from veloce.exceptions import RequestValidationError
 from veloce.http.datastructures import FormData, QueryParams
 from veloce.http.request import Request
-from veloce.http.response import Response
+from veloce.routing.converters import path_param_schemas
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan, _Slot
-    from veloce.dependency import DependencyResolver
 
 
 # Slot kinds an agent supplies as a JSON argument (the kinds `_slot_schema`
 # turns into a declared input property). A required slot of one of these kinds
 # that is absent from `arguments` is a binding error, not a handler error.
 _INPUT_KINDS = frozenset({K_BODY_MODEL, K_QUERY_LIST, K_PARAM_MARKER, K_QUERY})
+
+# Schema keywords that annotate a property rather than constrain its type, so
+# they stay outside the `anyOf` when a null branch is added.
+_ANNOTATION_KEYWORDS = frozenset({"description", "title", "default"})
 
 
 def _is_context_slot(slot: _Slot) -> bool:
@@ -78,7 +90,9 @@ JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
 def build_input_schema(
-    plan: HandlerPlan, schemas_registry: dict[str, dict[str, Any]]
+    plan: HandlerPlan,
+    schemas_registry: dict[str, dict[str, Any]],
+    path_template: str | None = None,
 ) -> dict[str, Any]:
     """Build the MCP tool input JSON Schema from a handler plan.
 
@@ -97,11 +111,23 @@ def build_input_schema(
     rejects the call. The `Depends` graph is walked recursively and every such
     input is merged in by name; the `Depends` slots themselves (and other
     inject-only slots) are never inputs.
+
+    `path_template` is the backing route's path, for a tool exposed from one. Its
+    parameters are part of the call's contract whether or not a signature names
+    them - a dependency reading `request.path_params` consumes the same value -
+    so a placeholder no slot declares is advertised from the route itself. Left
+    out, an agent reading the schema would see no way to supply a value the route
+    requires, and would call the tool with that value missing.
     """
     properties: dict[str, Any] = {}
     required: list[str] = []
 
     _collect_input_slots(plan.slots, properties, required, schemas_registry, set())
+    if path_template:
+        for name, param_schema in path_param_schemas(path_template).items():
+            if name not in properties:
+                properties[name] = param_schema
+                required.append(name)
 
     schema: dict[str, Any] = {
         "$schema": JSON_SCHEMA_DIALECT,
@@ -118,7 +144,7 @@ def build_input_schema(
 
 
 def build_output_schema(
-    model: type[BaseModel],
+    model: Any,
     schemas_registry: dict[str, dict[str, Any]],
     by_alias: bool = True,
 ) -> dict[str, Any] | None:
@@ -137,7 +163,10 @@ def build_output_schema(
     matches the schema's property keys to how the structured value will be
     dumped, so the emitted `structuredContent` conforms to the advertised schema.
     """
-    ref = _pydantic_to_schema(model, schemas_registry, mode="serialization", by_alias=by_alias)
+    if is_adaptable_model(model):
+        ref = _adapted_to_schema(model, schemas_registry)
+    else:
+        ref = _pydantic_to_schema(model, schemas_registry, mode="serialization", by_alias=by_alias)
     name = ref["$ref"][len(_OPENAPI_REF_PREFIX) :]
     base = schemas_registry.get(name)
     if base is None:
@@ -152,12 +181,32 @@ def build_output_schema(
     return schema
 
 
+def _spread_model_fields(
+    model: Any,
+    properties: dict[str, Any],
+    required: list[str],
+    schemas_registry: dict[str, dict[str, Any]],
+) -> None:
+    """Declare a model's fields as top-level inputs, by alias where one is set."""
+    ref = _pydantic_to_schema(model, schemas_registry)
+    resolved = _collect_defs({"__probe__": ref}, schemas_registry)
+    body = resolved.get(model.__name__, {})
+    field_required = set(body.get("required", ()))
+    for name, field_schema in (body.get("properties") or {}).items():
+        if name in properties:
+            continue
+        properties[name] = field_schema
+        if name in field_required and name not in required:
+            required.append(name)
+
+
 def _collect_input_slots(
     slots: list[_Slot],
     properties: dict[str, Any],
     required: list[str],
     schemas_registry: dict[str, dict[str, Any]],
     seen_plans: set[int],
+    in_depends: bool = False,
 ) -> None:
     """Accumulate client-supplied input properties from a slot list.
 
@@ -180,10 +229,20 @@ def _collect_input_slots(
             if plan_id in seen_plans:
                 continue
             seen_plans.add(plan_id)
-            _collect_input_slots(sub_plan.slots, properties, required, schemas_registry, seen_plans)
+            _collect_input_slots(
+                sub_plan.slots, properties, required, schemas_registry, seen_plans, True
+            )
             continue
 
         if slot.kind == K_REQUEST or _is_context_slot(slot):
+            continue
+
+        # A body model on a sub-dependency validates against the whole argument
+        # mapping, not against `arguments[name]` the way a top-level one does, so
+        # its fields are the tool's inputs. Declaring the parameter name instead
+        # would publish a shape the call path rejects.
+        if in_depends and slot.kind == K_BODY_MODEL and is_pydantic_model(slot.model):
+            _spread_model_fields(slot.model, properties, required, schemas_registry)
             continue
 
         # A name already declared (by an earlier sibling or sub-dependency)
@@ -261,6 +320,22 @@ def _deepcopy_schema(node: Any) -> Any:
     return node
 
 
+def _item_schema(inner: Any, schemas_registry: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Return the schema for one element of a list parameter.
+
+    `_python_type_to_schema` describes a value that arrived as text, so it calls
+    a model `{"type": "string"}` - right for `?tag={"name":"x"}` over HTTP, wrong
+    here: an MCP argument is JSON, and the binder builds the model from a real
+    object. Publishing the string form would have a client send the one shape the
+    schema describes and the handler least expects.
+    """
+    if is_pydantic_model(inner):
+        return _pydantic_to_schema(inner, schemas_registry)
+    if inner is not None and is_adaptable_model(inner):
+        return _adapted_to_schema(inner, schemas_registry)
+    return _python_type_to_schema(inner)
+
+
 def _slot_schema(
     slot: _Slot, schemas_registry: dict[str, dict[str, Any]]
 ) -> tuple[dict[str, Any] | None, bool]:
@@ -280,10 +355,12 @@ def _slot_schema(
     if d.model is not None:
         if is_pydantic_model(d.model):
             prop = _pydantic_to_schema(d.model, schemas_registry)
+        elif slot.backend == ModelBackend.ADAPTED:
+            prop = _adapted_to_schema(d.model, schemas_registry)
         else:
             prop = {"type": "object"}
     elif d.is_list:
-        prop = {"type": "array", "items": _python_type_to_schema(d.target_type)}
+        prop = {"type": "array", "items": _item_schema(d.target_type, schemas_registry)}
     else:
         prop = _python_type_to_schema(d.target_type)
 
@@ -299,8 +376,140 @@ def _slot_schema(
         marker_default = getattr(d.marker, "default", ...)
         if marker_default is not ... and getattr(d.marker, "default_factory", None) is None:
             prop = {**prop, "default": marker_default}
+    elif d.has_default and d.default is not None:
+        # A bare Python default is as much a part of the contract as a marker's,
+        # and a client that can read it can populate the field itself instead of
+        # omitting it. `None` is skipped: it is carried by the null branch below,
+        # where it describes an optional field rather than a value worth sending.
+        prop = {**prop, "default": d.default}
+
+    # An optional parameter accepts an explicit null as well as omission. Without
+    # the null branch the published type rejects a value the call path takes.
+    if d.is_optional and d.model is None:
+        prop = _with_null_branch(prop)
 
     return prop, not (d.has_default or d.is_optional)
+
+
+def _with_null_branch(prop: dict[str, Any]) -> dict[str, Any]:
+    """Widen a property schema to also accept an explicit null."""
+    if "anyOf" in prop:
+        if {"type": "null"} in prop["anyOf"]:
+            return prop
+        return {**prop, "anyOf": [*prop["anyOf"], {"type": "null"}]}
+    keywords = {k: v for k, v in prop.items() if k not in _ANNOTATION_KEYWORDS}
+    carried = {k: v for k, v in prop.items() if k in _ANNOTATION_KEYWORDS}
+    if not keywords:
+        return prop
+    return {**carried, "anyOf": [keywords, {"type": "null"}]}
+
+
+# What a JSON value of each Python type is called in an error a model reads. The
+# names are JSON's, not Python's: the model wrote JSON and has to fix JSON.
+_JSON_TYPE_NAMES = {
+    bool: "a boolean",
+    int: "a number",
+    float: "a number",
+    str: "a string",
+    list: "an array",
+    dict: "an object",
+    type(None): "null",
+}
+
+# Scalar targets a JSON object or array can never fill. The HTTP binder hands an
+# already-structured value straight back, which is right there - a scalar
+# parameter's value arrives as text - but an MCP argument is raw JSON from the
+# client, so an array reaching an `int` parameter has to be refused here or it
+# lands in the handler as one.
+_SCALAR_TARGETS = frozenset({str, int, float, bool})
+
+
+def _json_type_name(value: Any) -> str:
+    """Name `value`'s JSON type the way the client that sent it would."""
+    return _JSON_TYPE_NAMES.get(type(value), "a value")
+
+
+def _wrong_type(name: str, expected: str, value: Any) -> RequestValidationError:
+    """Build the binding error for an argument whose JSON type is not the declared one."""
+    return RequestValidationError(
+        [
+            {
+                "loc": ["body", name],
+                "msg": f"Invalid value for {name}: expected {expected}, got {_json_type_name(value)}",
+                "type": "type_error",
+            }
+        ]
+    )
+
+
+def _coerce_json_scalar(slot: _Slot, value: Any, target: Any) -> Any:
+    """Coerce one JSON argument onto a scalar parameter, refusing a wrong type.
+
+    The tool published a schema; an argument contradicting it is the model's
+    mistake to correct, and it can only correct what it is told. Passing the
+    value through instead leaves the handler holding a type it never declared.
+    """
+    if not target:
+        return value
+    if value is None:
+        if slot.is_optional:
+            return None
+        raise _wrong_type(slot.name, _declared_type_name(target), value)
+    if target is str:
+        # The HTTP binder hands a `str` target's value back untouched, since over
+        # HTTP it is already text. A JSON argument need not be.
+        if isinstance(value, str):
+            return value
+        raise _wrong_type(slot.name, "a string", value)
+    if target is bool:
+        # JSON has a boolean; a number or a string is not it. The HTTP coercer
+        # reads "yes" / "1" as true because a query string has nothing else to
+        # offer, which would silently make "maybe" false here.
+        if value is True or value is False:
+            return value
+        raise _wrong_type(slot.name, "a boolean", value)
+    if value is True or value is False:
+        # `bool` is a subclass of `int`, so an unguarded number target would take
+        # `true` and hand the handler 1.
+        if target is int or target is float:
+            raise _wrong_type(slot.name, "a number", value)
+    elif target is int and isinstance(value, float) and not value.is_integer():
+        # JSON Schema's `integer` accepts a number whose fractional part is zero,
+        # and nothing else. Coercing would hand the handler a different value than
+        # the one that was sent, which is the failure that does not surface.
+        raise RequestValidationError(
+            [
+                {
+                    "loc": ["body", slot.name],
+                    "msg": (
+                        f"Invalid value for {slot.name}: expected an integer, "
+                        f"got {value!r}, which would lose its fractional part"
+                    ),
+                    "type": "type_error",
+                }
+            ]
+        )
+    if isinstance(value, (dict, list)):
+        if (
+            target in _SCALAR_TARGETS
+            or hasattr(target, "__members__")
+            or get_origin(target) is Literal
+        ):
+            raise _wrong_type(slot.name, _declared_type_name(target), value)
+        # A parameter declared to take an object or an array takes this one.
+        return value
+    return _coerce_value(value, target, slot.name, "body")
+
+
+def _declared_type_name(target: Any) -> str:
+    """Name the JSON type a declared parameter type accepts."""
+    if target is bool:
+        return "a boolean"
+    if target in (int, float):
+        return "a number"
+    if target is str:
+        return "a string"
+    return f"a {getattr(target, '__name__', target)}"
 
 
 def _coerce_argument(slot: _Slot, value: Any) -> Any:
@@ -311,6 +520,8 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         model = slot.model
         if is_pydantic_model(model):
             return _validate_model(value, model)
+        if slot.backend == ModelBackend.ADAPTED:
+            return _validate_adapted(value, model)
         return value
 
     if kind == K_PARAM_MARKER:
@@ -318,7 +529,7 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         if slot.marker_kind == MK_BODY and is_pydantic_model(target):
             return _validate_model(value, target)
         marker = slot.marker
-        value = _coerce_scalar(value, target, slot.name, "body")
+        value = _coerce_json_scalar(slot, value, target)
         if marker is not None:
             return marker.validate(value, slot.name)
         return value
@@ -330,9 +541,21 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         return [_coerce_value(v, inner, slot.name, "body") for v in value]
 
     if kind == K_QUERY:
-        return _coerce_scalar(value, slot.target_type, slot.name, "body")
+        return _coerce_json_scalar(slot, value, slot.target_type)
 
     return value
+
+
+def _validate_adapted(value: Any, model: Any) -> Any:
+    """Validate `value` onto a dataclass / `TypedDict`, re-raising as a clear error.
+
+    Mirrors `_validate_model` so an adapted type reports failures the same way a
+    `BaseModel` parameter does.
+    """
+    try:
+        return adapter_for(model).validate_python(value)
+    except PydanticValidationError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _validate_model(value: Any, model: type[BaseModel]) -> Any:
@@ -436,35 +659,14 @@ def _build_request(
     return request
 
 
-def _injected_response(request: Request) -> Response:
-    """Return the request-scoped injected `Response`, creating it on first use.
-
-    Mirrors the HTTP resolver's `K_RESPONSE` slot: one `Response` per request,
-    stored on `request._state["_injected_response"]` and shared by the handler
-    and any dependency that also injects `Response`. `status_code = 0` is the
-    "handler never set it" sentinel `_build_response` checks before merging the
-    injected status onto the final response.
-    """
-    injected = request._state.get("_injected_response")
-    if injected is None:
-        injected = Response()
-        injected.status_code = 0
-        request._state["_injected_response"] = injected
-    return injected
-
-
-def _background_tasks(request: Request) -> BackgroundTasks:
-    """Return the request-scoped `BackgroundTasks` queue, creating it once.
-
-    Mirrors the HTTP resolver's `K_BG_TASKS` slot: a single queue per request,
-    reused for every `BackgroundTasks` injection point so work scheduled by a
-    dependency is not discarded when the handler's own `tasks` parameter binds.
-    """
-    tasks = request._background_tasks
-    if tasks is None:
-        tasks = BackgroundTasks()
-        request._background_tasks = tasks
-    return tasks
+# The `K_RESPONSE` / `K_BG_TASKS` slots bind exactly as they do on the HTTP
+# path, so they delegate to the resolver rather than restating it: one
+# `Response` and one `BackgroundTasks` queue per request, shared by the handler
+# and every dependency that injects them, with `status_code = 0` as the "handler
+# never set it" sentinel `_build_response` checks. Aliased here so the call sites
+# below read the same as the slots they fill.
+_injected_response = DependencyResolver._bind_injected_response
+_background_tasks = DependencyResolver._bind_background_tasks
 
 
 async def bind_arguments(
@@ -556,12 +758,10 @@ async def bind_arguments(
             kwargs[name] = context
             continue
 
-        # A handler may declare `response: Response`; supply the one
-        # request-scoped injected Response the HTTP resolver stores on
-        # `request._state["_injected_response"]`, creating it on first use.
-        # Reusing it (rather than handing out a fresh Response) means a
-        # dependency and the handler that both inject `Response` mutate the
-        # same object, and the route path's `_build_response` merges its
+        # A handler may declare `response: Response`; supply the one the HTTP
+        # resolver would. Reusing it (rather than handing out a fresh Response)
+        # means a dependency and the handler that both inject `Response` mutate
+        # the same object, and the route path's `_build_response` merges its
         # status / headers onto the tool result - exactly as on the HTTP path.
         if kind == K_RESPONSE:
             kwargs[name] = _injected_response(request)

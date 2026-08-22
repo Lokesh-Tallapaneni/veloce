@@ -84,14 +84,12 @@ async def teapot():
     raise HTTPException(418, "I refuse to brew coffee")
 ```
 
-Veloce also ships named subclasses for each standard status code under
-`veloce.exceptions`. Each carries a fixed `code` and `description`, so you
-can raise one without repeating the number. These names are not part of the
-top-level `veloce` namespace — import them from the submodule:
+Veloce also ships a named subclass for each standard status code. Each carries
+a fixed `code` and `description`, so you can raise one without repeating the
+number:
 
 ```python
-from veloce import Veloce
-from veloce.exceptions import NotFound
+from veloce import NotFound, Veloce
 
 app = Veloce()
 
@@ -107,28 +105,100 @@ The first positional argument to a subclass is the detail message, so
 `NotFound("no item")` reads naturally while still defaulting the status
 code to the subclass's `code`.
 
-Subclasses available under `veloce.exceptions` include, among others:
+Every name in the table below is importable from the top level:
 
-| Status code | Subclass                |
-| ----------- | ----------------------- |
-| 400         | `BadRequest`            |
-| 401         | `Unauthorized`          |
-| 403         | `Forbidden`             |
-| 404         | `NotFound`              |
-| 405         | `MethodNotAllowed`      |
-| 409         | `Conflict`              |
-| 410         | `Gone`                  |
-| 413         | `RequestEntityTooLarge` |
-| 415         | `UnsupportedMediaType`  |
-| 422         | `UnprocessableEntity`   |
-| 429         | `TooManyRequests`       |
-| 500         | `InternalServerError`   |
-| 502         | `BadGateway`            |
-| 503         | `ServiceUnavailable`    |
+| Status code | Subclass                       |
+| ----------- | ------------------------------ |
+| 400         | `BadRequest`                   |
+| 401         | `Unauthorized`                 |
+| 402         | `PaymentRequired`              |
+| 403         | `Forbidden`                    |
+| 404         | `NotFound`                     |
+| 405         | `MethodNotAllowed`             |
+| 406         | `NotAcceptable`                |
+| 407         | `ProxyAuthenticationRequired`  |
+| 408         | `RequestTimeout`               |
+| 409         | `Conflict`                     |
+| 410         | `Gone`                         |
+| 411         | `LengthRequired`               |
+| 412         | `PreconditionFailed`           |
+| 413         | `RequestEntityTooLarge`        |
+| 414         | `RequestURITooLong`            |
+| 415         | `UnsupportedMediaType`         |
+| 416         | `RangeNotSatisfiable`          |
+| 417         | `ExpectationFailed`            |
+| 418         | `ImATeapot`                    |
+| 422         | `UnprocessableEntity`          |
+| 429         | `TooManyRequests`              |
+| 500         | `InternalServerError`          |
+| 501         | `ServerNotImplemented`         |
+| 502         | `BadGateway`                   |
+| 503         | `ServiceUnavailable`           |
+| 504         | `GatewayTimeout`               |
 
-!!! note
-    The [API reference](../reference/index.md) documents `HTTPException` itself; the
-    named subclasses live in `veloce.exceptions`.
+!!! note "Why `ServerNotImplemented`"
+    `NotImplemented` is a Python builtin, so the 501 class cannot use the
+    obvious name. `ServerNotImplemented` is the exported spelling; it reads
+    alongside `InternalServerError` in the 5xx block.
+
+!!! note "Added in version 0.12"
+    These names became top-level imports in 0.12. `from veloce.exceptions
+    import NotFound` still works and returns the same class.
+
+## Catching anything Veloce raised
+
+Every exception the framework defines — HTTP errors, validation failures,
+WebSocket closes, routing and setup errors, JWT and signature failures —
+inherits [`VeloceError`](../reference/exceptions.md#veloce.VeloceError). One
+`except` clause therefore answers "did this come from Veloce?":
+
+```python
+from veloce import BuildError, NotFound, VeloceError
+
+for error in (NotFound("gone"), BuildError("profile", {})):
+    try:
+        raise error
+    except VeloceError as exc:
+        print(type(exc).__name__, "came from Veloce")
+```
+
+The root was mixed in beside the bases those classes already had, so nothing
+that matched before stops matching. `DuplicateRouteError` is still a
+`ValueError` and `FilesKeyError` is still a `KeyError` — but they are now
+*also* `VeloceError`, which is what lets you tell a route-registration bug
+apart from an ordinary bad value:
+
+```python
+from veloce import DuplicateRouteError, VeloceError
+
+exc = DuplicateRouteError("/items", "GET", "list_items", "list_all")
+assert isinstance(exc, ValueError)     # unchanged
+assert isinstance(exc, VeloceError)    # new
+```
+
+`VeloceError` also makes a catch-all handler expressible:
+
+```python
+from veloce import JSONResponse, Request, Veloce, VeloceError
+
+app = Veloce()
+
+
+@app.exception_handler(VeloceError)
+async def on_framework_error(request: Request, exc: VeloceError):
+    return JSONResponse(
+        {"error": type(exc).__name__, "detail": str(exc)},
+        status_code=getattr(exc, "status_code", 500),
+    )
+```
+
+`VeloceError` is listed first among the bases of the classes that also carry a
+stdlib type, so a handler registered against it wins the method-resolution
+walk over a broader handler registered against `ValueError` or `KeyError`.
+
+!!! note "Added in version 0.12"
+    `VeloceError` is new in 0.12. Existing `except` clauses are unaffected —
+    the root was added to the base list, never substituted for one.
 
 ## The default error response
 
@@ -148,8 +218,7 @@ receives the request and the exception, and returns any value Veloce can
 coerce to a response (a dict, a tuple, or a response object).
 
 ```python
-from veloce import JSONResponse, Request, Veloce
-from veloce.exceptions import NotFound
+from veloce import JSONResponse, NotFound, Request, Veloce
 
 app = Veloce()
 
@@ -210,8 +279,7 @@ handlers without a decorator — useful when wiring handlers in a factory
 function. Both accept either an exception class or an integer status code.
 
 ```python
-from veloce import JSONResponse, Request, Veloce
-from veloce.exceptions import Forbidden
+from veloce import Forbidden, JSONResponse, Request, Veloce
 
 
 async def on_forbidden(request: Request, exc: Forbidden):
@@ -256,8 +324,7 @@ For a content-negotiated handler, inspect the request's `Accept` header and
 return HTML or JSON accordingly:
 
 ```python
-from veloce import HTMLResponse, JSONResponse, Request, Veloce
-from veloce.exceptions import NotFound
+from veloce import HTMLResponse, JSONResponse, NotFound, Request, Veloce
 
 app = Veloce()
 

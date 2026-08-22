@@ -34,11 +34,14 @@ from veloce._constants import (
     MSG_METHOD_NOT_ALLOWED,
     MSG_NOT_FOUND,
     MSG_REQUEST_BODY_EXCEEDS_MAX,
+    STATE_INJECTED_RESPONSE,
 )
 from veloce._internal import (
     MIME_HTML,
     MIME_JSON,
     _coerce_bool,
+    _current_app_var,
+    _current_request_var,
     _extract_host,
     _is_async_callable,
     offload,
@@ -62,7 +65,7 @@ from veloce.dependency import DependencyResolver, Depends
 from veloce.exceptions import (
     HTTPException,
 )
-from veloce.helpers import _current_app_var, _current_request_var, g
+from veloce.helpers import g
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
@@ -1074,7 +1077,7 @@ class DispatchMixin:
         # Skipped when the handler returned a Response itself (its own
         # status/headers already win). `status_code == 0` means the
         # handler never touched it, so it is not applied.
-        injected = request._state.get("_injected_response") if request._state else None
+        injected = request._state.get(STATE_INJECTED_RESPONSE) if request._state else None
         if injected is not None and not isinstance(result, Response):
             if injected.status_code:
                 response.status_code = injected.status_code

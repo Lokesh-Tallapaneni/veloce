@@ -17,6 +17,7 @@ from typing import Any
 
 from veloce._handler_plan import build_plan
 from veloce.contrib.mcp._registry_base import Registry
+from veloce.contrib.mcp.composition import mcp_mounts, renamed
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.icons import Icon, coerce_icons
 from veloce.contrib.mcp.plan_bridge import build_input_schema
@@ -92,6 +93,7 @@ def _register_prompt(
     namespace: str | None,
     scopes: frozenset[str] | None = None,
     icons: Sequence[Icon] | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> None:
     """Add an `@app.mcp_prompt`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -114,6 +116,7 @@ def _register_prompt(
             tool=tool,
             arguments=_prompt_arguments(input_schema),
             icons=coerce_icons(icons),
+            meta=meta,
         )
     )
 
@@ -121,7 +124,9 @@ def _register_prompt(
 def build_prompt_registry(app: Any) -> PromptRegistry:
     """Assemble the prompt registry from `@app.mcp_prompt` registrations."""
     registry = PromptRegistry()
-    for handler, name, description, namespace, scopes, icons in getattr(app, "_mcp_prompts", ()):
+    for handler, name, description, namespace, scopes, icons, meta in getattr(
+        app, "_mcp_prompts", ()
+    ):
         _register_prompt(
             registry,
             handler,
@@ -130,5 +135,10 @@ def build_prompt_registry(app: Any) -> PromptRegistry:
             namespace=namespace,
             scopes=scopes,
             icons=icons,
+            meta=meta,
         )
+    for namespace, sub_app in mcp_mounts(app):
+        for prompt in build_prompt_registry(sub_app).prompts.values():
+            registry.add(renamed(prompt, namespace))
+
     return registry

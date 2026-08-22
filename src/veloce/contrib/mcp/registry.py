@@ -15,23 +15,29 @@ handler must carry a non-empty description.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-
-from pydantic import BaseModel
 
 from veloce._handler_plan import build_plan
 from veloce._model_backend import is_pydantic_model, resolve_return_model
 from veloce._protocol_constants import ROUTE_METHOD_WEBSOCKET
 from veloce.contrib.mcp._registry_base import Registry
+from veloce.contrib.mcp.composition import mcp_mounts, renamed
 from veloce.contrib.mcp.descriptors import MCPDescriptor
 from veloce.contrib.mcp.icons import Icon, coerce_icons
 from veloce.contrib.mcp.plan_bridge import build_input_schema, build_output_schema
-from veloce.contrib.mcp.safety import require_mcp_description
+from veloce.contrib.mcp.safety import require_mcp_description, validate_tool_annotations
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan
+
+
+# A `tools/list` visibility policy: given a registered tool and the request
+# principal, return whether that caller may see it. Sync or async; a sync policy is
+# offloaded so a blocking permission lookup cannot stall the event loop. It narrows
+# the scope-checked set and can never widen it.
+ToolFilter = Callable[["MCPTool", Any], "bool | Awaitable[bool]"]
 
 
 @dataclass(slots=True)
@@ -76,17 +82,80 @@ class MCPTool(MCPDescriptor):
     # can validate / coerce its raw return into a value that conforms to the
     # advertised schema before it is emitted as `structuredContent`. `None`
     # whenever `output_schema` is `None`.
-    output_model: type[BaseModel] | None = None
+    output_model: Any = None
     # MCP authorization scopes the request principal must hold to invoke this
     # tool / read this resource. Empty means no per-tool requirement; a non-empty
     # set is checked before invocation and a miss yields an authorization error.
     required_scopes: frozenset[str] = frozenset()
+    # Server-side labels for grouping tools, read by a `mount_mcp(tool_filter=)`
+    # policy. A route-backed tool inherits its route's `tags`. Not advertised in
+    # `tools/list`: the spec defines no tag field on a tool, so publishing one
+    # would invent wire data a client cannot interpret.
+    tags: frozenset[str] = frozenset()
     # Whether this tool may be invoked as a background task (task-augmented
     # `tools/call`). `False` (the default) advertises no task support and rejects
     # a task-augmented call; `True` lets a client run the call detached and poll
     # it via `tasks/get` / `tasks/result`. Opt-in per tool so the synchronous
     # path stays unchanged for every tool that does not ask for it.
     task_support: bool = False
+    # Behaviour hints the author declared (`readOnlyHint` and friends). A
+    # route-backed tool derives these from its HTTP verb; a tool with no route has
+    # no verb to read from, so it either says what it does or says nothing. `None`
+    # leaves the spec's own defaults in force, which assume the cautious reading.
+    annotations: dict[str, Any] | None = None
+    # True for a tool that forwards to another MCP server. Its handler returns the
+    # upstream's own result object, which is relayed unchanged - re-shaping it
+    # would nest a complete result inside a text block and lose the `isError` and
+    # `structuredContent` the upstream reported.
+    passthrough_result: bool = False
+    # Set on a tool built by `derive_tool`: the argument translation that maps the
+    # published surface back to what the original handler takes. `None` for a tool
+    # whose arguments are its handler's own.
+    derived_from: Any = None
+    # The label this registration was published under, when the author declared
+    # one. Tools sharing a name and differing in version are all registered; the
+    # highest is the one listed and the one a call without a version reaches.
+    version: str | None = None
+    # Every version registered under this tool's name, ascending. Set on the
+    # listed tool as its siblings arrive; empty for an unversioned tool.
+    #
+    # Excluded from `__init__` for the same reason `listing_entry` is, and with a
+    # sharper consequence: it is only meaningful alongside the registry's own
+    # sibling map, which a copy does not inherit. `dataclasses.replace` skips an
+    # `init=False` field, so a tool copied by `derive_tool`, by a namespaced
+    # mount or by anything else starts with an empty history rather than
+    # advertising versions the copy's registry cannot serve.
+    version_history: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
+
+
+# Where a tool's version is published in its `_meta`, and where a call names the
+# version it wants. The spec defines no version field, so both live under one
+# framework-namespaced key rather than inventing wire fields a client would not
+# recognise. It lives here, beside the versioning it names, because every site
+# that copies or relays a tool has to know not to carry it across.
+VERSION_META_KEY = "veloce"
+
+
+def _version_key(version: str | None) -> tuple[int, tuple[int, ...], int, str]:
+    """Order two version labels, comparing dotted integers numerically.
+
+    ``"10.0"`` follows ``"2.0"``, which a plain string sort gets backwards. A
+    label carrying a suffix precedes the release it is a suffix of, so
+    ``"1.0.0-beta"`` sits below ``"1.0.0"`` rather than above every number - a
+    prerelease is not what a call naming no version should reach. Among suffixes
+    the comparison is textual, which happens to order ``alpha`` before ``beta``
+    before ``rc`` but is not semantic-versioning precedence and does not claim to
+    be. A label with no numeric stem at all is ordered as text, below every
+    numeric one, so an ordering exists whatever the author chose to write.
+    """
+    if version is None:
+        return (0, (), 0, "")
+    stem, _, suffix = version.partition("-")
+    parts = stem.split(".")
+    if parts and all(part.isdigit() for part in parts):
+        # A bare release outranks its own suffixed forms; `1` marks "no suffix".
+        return (2, tuple(int(part) for part in parts), 0 if suffix else 1, suffix)
+    return (1, (), 0, version)
 
 
 @dataclass(slots=True)
@@ -100,6 +169,9 @@ class ToolRegistry(Registry[MCPTool]):
 
     tools: dict[str, MCPTool] = field(default_factory=dict)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # name -> version -> tool, for names registered under more than one version.
+    # Only such a name has an entry, so an unversioned server carries none.
+    versions: dict[str, dict[str, MCPTool]] = field(default_factory=dict)
 
     @property
     def _store(self) -> dict[str, MCPTool]:
@@ -111,17 +183,43 @@ class ToolRegistry(Registry[MCPTool]):
     def _duplicate_message(self, key: str) -> str:
         return (
             f"Duplicate MCP tool name {key!r}. Tool names must be unique; "
-            "rename the handler, pass name=, or adjust the blueprint namespace."
+            "rename the handler, pass name=, adjust the blueprint namespace, or "
+            "give each registration its own version=."
         )
 
     def add(self, tool: MCPTool) -> None:
-        """Register `tool`, rejecting a name already taken."""
-        self.register(tool)
+        """Register `tool`, rejecting a name already taken by the same version.
+
+        Two registrations sharing a name and declaring different versions are
+        both kept: the higher one is listed and answers a call naming no
+        version, and either answers a call naming its own.
+        """
+        existing = self.tools.get(tool.name)
+        if existing is None or existing.version is None or tool.version is None:
+            self.register(tool)
+            return
+        if tool.version == existing.version:
+            raise ValueError(self._duplicate_message(tool.name))
+        siblings = self.versions.setdefault(tool.name, {existing.version: existing})
+        siblings[tool.version] = tool
+        listed = max(siblings.values(), key=lambda candidate: _version_key(candidate.version))
+        listed.version_history = tuple(sorted(siblings, key=_version_key))
+        self.tools[tool.name] = listed
+
+    def resolve(self, name: str, version: str | None) -> MCPTool | None:
+        """Return the tool `name` registered under `version`, or the listed one."""
+        if version is None:
+            return self.get(name)
+        siblings = self.versions.get(name)
+        if siblings is None:
+            listed = self.get(name)
+            return listed if listed is not None and listed.version == version else None
+        return siblings.get(version)
 
 
 def _output_schema_for(
     handler: Callable, route_info: Any, schemas_registry: dict[str, dict[str, Any]]
-) -> tuple[dict[str, Any] | None, type[BaseModel] | None]:
+) -> tuple[dict[str, Any] | None, Any]:
     """Build the tool's MCP output schema and the model it was derived from.
 
     A route `response_model` is the authoritative output contract and wins; a
@@ -130,7 +228,7 @@ def _output_schema_for(
     has no object schema and yields `(None, None)`. The model is returned
     alongside the schema so a pure tool can validate its raw return against it.
     """
-    model: type[BaseModel] | None = None
+    model: Any = None
     # The schema's alias usage must match how the structured value is dumped: a
     # route `response_model` is dumped with the route's `response_model_by_alias`
     # (default False), while a return-type model and a pure tool dump with field
@@ -179,8 +277,12 @@ def _register_explicit_tool(
     description: str | None,
     namespace: str | None,
     scopes: frozenset[str] | None = None,
+    tags: frozenset[str] | None = None,
     icons: Sequence[Icon] | None = None,
     task_support: bool = False,
+    annotations: dict[str, Any] | None = None,
+    meta: dict[str, Any] | None = None,
+    version: str | None = None,
 ) -> None:
     """Add an `@app.mcp_tool`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -199,8 +301,12 @@ def _register_explicit_tool(
             output_schema=output_schema,
             output_model=output_model,
             required_scopes=scopes or frozenset(),
+            tags=tags or frozenset(),
             icons=coerce_icons(icons),
             task_support=task_support,
+            annotations=validate_tool_annotations(annotations),
+            meta=meta,
+            version=version,
         )
     )
 
@@ -221,7 +327,7 @@ def _tool_from_route(
     tool_name = _tool_name_from_route_name(info.name)
     desc = require_mcp_description(tool_name, info.mcp_description)
     plan = info.handler_plan if info.handler_plan is not None else build_plan(info.handler)
-    schema = build_input_schema(plan, schemas_registry)
+    schema = build_input_schema(plan, schemas_registry, info.path_template)
     output_schema, output_model = _output_schema_for(info.handler, info, schemas_registry)
     return MCPTool(
         name=tool_name,
@@ -230,6 +336,7 @@ def _tool_from_route(
         handler=info.handler,
         plan=plan,
         input_schema=schema,
+        meta=getattr(info, "mcp_meta", None),
         output_schema=output_schema,
         output_model=output_model,
         route_dep_plans=info.route_dep_plans,
@@ -237,6 +344,7 @@ def _tool_from_route(
         route_method=methods[0],
         route_methods=methods,
         required_scopes=info.mcp_scopes or frozenset(),
+        tags=frozenset(getattr(info, "tags", None) or ()),
         icons=coerce_icons(getattr(info, "mcp_icons", None)),
         task_support=bool(getattr(info, "mcp_task_support", False)),
     )
@@ -247,16 +355,20 @@ def build_registry(app: Any) -> ToolRegistry:
     registry = ToolRegistry()
 
     # Explicit @app.mcp_tool registrations, recorded on the app at decoration
-    # time as `(handler, name, description, namespace, scopes, icons,
-    # task_support)` tuples.
+    # time as `(handler, name, description, namespace, scopes, tags, icons,
+    # task_support, annotations, meta, version)` tuples.
     for (
         handler,
         name,
         description,
         namespace,
         scopes,
+        tags,
         icons,
         task_support,
+        declared_annotations,
+        declared_meta,
+        version,
     ) in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
             registry,
@@ -265,8 +377,12 @@ def build_registry(app: Any) -> ToolRegistry:
             description=description,
             namespace=namespace,
             scopes=scopes,
+            tags=tags,
             icons=icons,
             task_support=task_support,
+            annotations=declared_annotations,
+            meta=declared_meta,
+            version=version,
         )
 
     # Routes flagged for exposure. Walk every route (including those hidden
@@ -299,5 +415,17 @@ def build_registry(app: Any) -> ToolRegistry:
 
     for route_id, info in exposed.items():
         registry.add(_tool_from_route(info, methods_by_route[route_id], registry.schemas))
+
+    # Tools discovered from an upstream server: already built, so they are added
+    # rather than derived.
+    for proxied in getattr(app, "_mcp_prebuilt_tools", ()):
+        registry.add(proxied)
+
+    # Sub-apps mounted with `expose_mcp=True` contribute their tools under the
+    # mount's namespace. Building a sub-app's registry merges its own mounts
+    # first, so nesting composes.
+    for namespace, sub_app in mcp_mounts(app):
+        for tool in build_registry(sub_app).tools.values():
+            registry.add(renamed(tool, namespace))
 
     return registry

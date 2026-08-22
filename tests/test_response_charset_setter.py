@@ -1,8 +1,10 @@
-"""Response.charset setter."""
+"""Response.charset accessor and setter."""
 
 from __future__ import annotations
 
-from veloce import Response
+import pytest
+
+from veloce import Request, Response
 
 
 def test_charset_default_utf8():
@@ -35,3 +37,77 @@ def test_charset_setter_on_default_content_type():
     resp = Response()
     resp.charset = "utf-16"
     assert "charset=utf-16" in resp.content_type
+
+
+# ── charset accessor: RFC 9110 Sec. 8.3.1 parameter-name case-insensitivity ──
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "text/html; charset=iso-8859-1",
+        "text/html; Charset=iso-8859-1",
+        "text/html; CHARSET=iso-8859-1",
+        "text/html; charset = iso-8859-1",
+        'text/html; charset="iso-8859-1"',
+        "text/html;charset=iso-8859-1",
+        "text/html; boundary=x; charset=iso-8859-1",
+    ],
+)
+def test_charset_reads_every_spelling(content_type):
+    assert Response(content_type=content_type).charset == "iso-8859-1"
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "text/plain",
+        "text/html; charset=iso-8859-1",
+        "text/html; Charset=iso-8859-1",
+        "text/html; CHARSET=iso-8859-1",
+        "text/html; charset = iso-8859-1",
+        'text/html; charset="iso-8859-1"',
+        "text/html; boundary=x; charset=iso-8859-1",
+        "text/plain; charset=utf-8; flag",
+    ],
+)
+def test_charset_agrees_with_mimetype_params(content_type):
+    resp = Response(content_type=content_type)
+    assert resp.charset == resp.mimetype_params.get("charset", "utf-8")
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "text/plain",
+        "text/html; charset=iso-8859-1",
+        "text/html; Charset=iso-8859-1",
+        "text/html; CHARSET=iso-8859-1",
+        "text/html; charset = iso-8859-1",
+        'text/html; charset="iso-8859-1"',
+        "text/html; boundary=x; charset=iso-8859-1",
+    ],
+)
+def test_charset_agrees_with_request_charset(content_type):
+    """The two doors read one header the same way."""
+    req = Request(
+        method="GET", path="/x", query_string="", headers={"content-type": content_type}, body=b""
+    )
+    assert Response(content_type=content_type).charset == req.charset
+
+
+def test_charset_value_case_preserved():
+    """Only the parameter NAME is case-insensitive; the value is verbatim."""
+    assert Response(content_type="text/plain; Charset=UTF-8").charset == "UTF-8"
+
+
+def test_charset_ignores_other_parameters():
+    resp = Response(content_type="multipart/form-data; boundary=abc")
+    assert resp.charset == "utf-8"
+
+
+def test_mimetype_setter_preserves_mixed_case_charset():
+    resp = Response(content_type="text/plain; Charset=iso-8859-1")
+    resp.mimetype = "text/html"
+    assert resp.mimetype == "text/html"
+    assert resp.charset == "iso-8859-1"

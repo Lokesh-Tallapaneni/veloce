@@ -22,7 +22,7 @@ from collections.abc import Callable
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from veloce._internal import _is_async_callable
-from veloce._model_backend import ModelBackend, backend_of
+from veloce._model_backend import ModelBackend, _msgspec, backend_of
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
 from veloce.http.request import Request
@@ -118,10 +118,12 @@ def _group_field_specs(
             (name, getattr(f, "alias", None), getattr(f, "annotation", None))
             for name, f in model.model_fields.items()
         ]
+    elif backend is ModelBackend.ADAPTED:
+        # A dataclass or TypedDict declares no aliases, so the wire name is the
+        # field name and the annotation comes from the type's own hints.
+        items = [(name, None, tp) for name, tp in get_type_hints(model).items()]
     else:
-        import msgspec.structs
-
-        items = [(f.name, f.encode_name, f.type) for f in msgspec.structs.fields(model)]
+        items = [(f.name, f.encode_name, f.type) for f in _msgspec.structs.fields(model)]
     for name, alias, annotation in items:
         validate_key = alias or name
         key = validate_key
@@ -890,7 +892,7 @@ def build_plan(
     return HandlerPlan(handler, slots, [])
 
 
-def build_route_dep_plans(route_dependencies: list, *, websocket: bool = False) -> list[_Slot]:
+def build_route_dep_plans(route_dependencies: list[Any], *, websocket: bool = False) -> list[_Slot]:
     """Pre-plan a route's `dependencies=[Depends(...), ...]` list."""
     from veloce.dependency import Depends  # local import breaks the cycle
 

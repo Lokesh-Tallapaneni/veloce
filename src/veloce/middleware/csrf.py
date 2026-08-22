@@ -91,7 +91,28 @@ from veloce.signing import BadSignature, Signer
 
 
 class CSRFMiddleware(Middleware):
-    """Double-submit-cookie CSRF middleware."""
+    """Double-submit-cookie CSRF middleware.
+
+    Issues a token cookie and requires an unsafe request to echo it back in a
+    header or form field; a request whose two copies disagree is refused.
+
+    `cookie_name` / `header_name` / `form_field` rename the slots the token
+    travels in, and `safe_methods` overrides which verbs bypass the check.
+    `cookie_secure` / `cookie_httponly` / `cookie_samesite` set the cookie
+    attributes - `httponly` must stay `False` because client-side JavaScript
+    has to read the cookie to echo it, while `secure` defaults to `True`, so
+    local HTTP development needs `cookie_secure=False`. Setting `secret`
+    additionally HMAC-signs the token, which proves the value was minted by
+    this server; the module docstring covers what that does and does not stop.
+
+    Usage::
+
+        from veloce import Veloce
+        from veloce.middleware.csrf import CSRFMiddleware
+
+        app = Veloce()
+        app.add_middleware(CSRFMiddleware(secret="a-long-random-string"))
+    """
 
     def __init__(
         self,

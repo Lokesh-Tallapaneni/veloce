@@ -238,13 +238,16 @@ class TestPerformanceAfterFixes:
         assert avg_us < 100, f"Avg {avg_us:.1f}us exceeds 100us budget"
 
     @pytest.mark.asyncio
-    async def test_sync_handler_reasonable_overhead(self):
-        """Sync handlers via the executor should be in the same order of
-        magnitude as async handlers — a catastrophe detector, not a tight
-        wall-clock budget. A hard-coded ceiling fails on busy machines /
-        CI even when the dispatch path is fine; we time both handler
-        kinds in the same run and assert sync is within a (generous)
-        multiple of async. That cancels machine-speed and load variance.
+    async def test_sync_handler_adds_little_over_its_executor_hop(self):
+        """Dispatching a sync handler costs its thread hop plus this framework's
+        dispatch, and dispatch is the only part of that this framework controls.
+
+        Comparing sync against async wall-clock directly measures the operating
+        system's thread-pool latency far more than anything here: the bare hop is
+        ~130 us on a Windows dev machine while async dispatch is ~6 us, so such a
+        ratio drifts upward every time async dispatch gets *faster* - it fails on
+        an improvement. The bare hop is timed in the same run and subtracted, so
+        what is asserted is what dispatch adds on top of it.
         """
         import time
 
@@ -268,12 +271,32 @@ class TestPerformanceAfterFixes:
                 times.append(time.perf_counter_ns() - start)
             return sum(times) / len(times) / 1000
 
+        async def time_executor_hop(iters: int) -> float:
+            """Time an empty round trip through the same thread pool."""
+            loop = asyncio.get_running_loop()
+
+            def noop() -> None:
+                return None
+
+            for _ in range(50):  # warmup, and start the pool's threads
+                await loop.run_in_executor(None, noop)
+            start = time.perf_counter_ns()
+            for _ in range(iters):
+                await loop.run_in_executor(None, noop)
+            return (time.perf_counter_ns() - start) / iters / 1000
+
         async_us = await time_handler("/async-bench", 200)
         sync_us = await time_handler("/sync-bench", 200)
-        # 20x is a deliberately loose catastrophe detector — the
-        # executor hop is normally <2x. Anything past this is a real
-        # regression, not noise.
-        assert sync_us < async_us * 20, (
-            f"sync handler avg {sync_us:.1f} us / async avg {async_us:.1f} us "
-            f"= {sync_us / async_us:.1f}x (budget: <20x)"
+        hop_us = await time_executor_hop(200)
+        # What dispatch adds beyond the hop. Floored: on a noisy machine the two
+        # measurements can cross, which means the addition is too small to see.
+        added_us = max(0.0, sync_us - hop_us)
+
+        # 20x an async dispatch is a deliberately loose catastrophe detector - the
+        # addition is normally about one async dispatch. Anything past this is a
+        # real regression rather than noise.
+        assert added_us < async_us * 20, (
+            f"sync dispatch adds {added_us:.1f} us over a {hop_us:.1f} us executor "
+            f"hop (sync avg {sync_us:.1f} us), against an async dispatch of "
+            f"{async_us:.1f} us = {added_us / async_us:.1f}x (budget: <20x)"
         )

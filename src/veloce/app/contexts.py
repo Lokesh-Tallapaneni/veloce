@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from veloce._internal import _current_app_var, _current_request_var
 from veloce._protocol_constants import LIFECYCLE_SHUTDOWN, LIFECYCLE_STARTUP
-from veloce.helpers import _current_app_var, _current_request_var, _RequestGlobals
+from veloce.helpers import g
 from veloce.http.request import Request
 from veloce.sessions import Session
 from veloce.signals import appcontext_popped, appcontext_pushed, appcontext_tearing_down
@@ -54,17 +55,19 @@ class _AppContext:
     don't bleed into each other.
     """
 
-    __slots__ = ("_app", "_app_token", "_g_token")
+    __slots__ = ("_app", "_app_token", "_outer_globals")
 
     def __init__(self, app: Veloce) -> None:
         self._app = app
         self._app_token: Any = None
-        self._g_token: Any = None
+        self._outer_globals: Any = None
 
     def __enter__(self) -> Veloce:
         self._app_token = _current_app_var.set(self._app)
-        # Fresh `g` store - each app_context block gets its own.
-        self._g_token = _RequestGlobals._ctx_var.set({})
+        # Fresh `g` store - each app_context block gets its own, and the enclosing
+        # one is handed back on exit.
+        self._outer_globals = g._snapshot()
+        g._restore({})
         appcontext_pushed.send(self._app)
         return self._app
 
@@ -72,8 +75,7 @@ class _AppContext:
         appcontext_tearing_down.send(self._app, exc=exc)
         if self._app_token is not None:
             _current_app_var.reset(self._app_token)
-        if self._g_token is not None:
-            _RequestGlobals._ctx_var.reset(self._g_token)
+        g._restore(self._outer_globals)
         appcontext_popped.send(self._app)
 
 

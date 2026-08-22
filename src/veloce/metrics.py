@@ -42,6 +42,11 @@ timeseries" error a shared global collector would.
 hook cannot do the increment-before / decrement-after a live gauge needs. That
 belongs to a paired request-lifecycle hook and is intentionally out of scope
 here.
+``instrument_with_prometheus`` is deliberately not re-exported from the
+top-level ``veloce`` package. Importing this module costs ~72 ms on top of
+``import veloce`` (measured with ``python -X importtime``), which every
+application would otherwise pay whether or not it exports metrics. Import it
+from ``veloce.metrics`` when you want it.
 """
 
 from __future__ import annotations

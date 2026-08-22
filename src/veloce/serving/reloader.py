@@ -28,6 +28,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable, Iterator
 
+# The logger name is the one users filter reload output on, so it stays a
+# literal rather than `__name__` (which would resolve to
+# "veloce.serving.reloader").
 _logger = logging.getLogger("veloce.reloader")
 
 # Set by the supervisor in the child's environment so the child serves directly

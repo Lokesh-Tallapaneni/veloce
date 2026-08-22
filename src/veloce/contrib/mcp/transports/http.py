@@ -57,10 +57,12 @@ from collections.abc import Sequence
 from itertools import count
 from typing import TYPE_CHECKING, Any, cast
 
+from veloce import status
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
 from veloce.contrib.mcp.errors import (
     _JSONRPC_FORBIDDEN,
     _JSONRPC_INTERNAL_ERROR,
+    _JSONRPC_INVALID_REQUEST,
     MCPError,
     OriginNotAllowedError,
     ProtocolVersionError,
@@ -71,7 +73,7 @@ from veloce.contrib.mcp.errors import (
 from veloce.contrib.mcp.server import _SERVED_VERSION_SET, MCPServer, _notifier_var
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.event_store import SSEEventStore
-from veloce.contrib.mcp.transports.session_store import HttpSessionStore
+from veloce.contrib.mcp.transports.session_store import HttpSessionStore, SessionBackend
 from veloce.http.response import JSONResponse, Response
 from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
@@ -123,6 +125,7 @@ def register_http_transport(
     exclude_middleware: Sequence[str] | None = None,
     sessions: bool = False,
     resumable: bool = False,
+    session_backend: SessionBackend | None = None,
 ) -> None:
     """Mount the Streamable HTTP transport for `server` at `path` on `app`.
 
@@ -137,6 +140,9 @@ def register_http_transport(
     id on the `initialize` result, requires it on every later request (HTTP 400 if
     missing, 404 once terminated), and accepts a `DELETE` to terminate it. The
     default keeps the stateless behavior with no per-request session bookkeeping.
+    `session_backend` shares those sessions between workers: without one a session
+    lives in the process that minted it, so a request reaching another worker is
+    answered 404 and the client starts over.
 
     `resumable` opts into SSE resumability: each streamed event carrying a payload
     gets an id encoding its originating stream, the events are kept in a bounded
@@ -148,7 +154,11 @@ def register_http_transport(
     # session owns: its subscription connection (so a closed connection receives
     # nothing further) and its tasks (so a never-settling task does not leak past
     # its owner).
-    store = HttpSessionStore(on_evict=server.evict_session) if sessions else None
+    store = (
+        HttpSessionStore(on_evict=server.evict_session, backend=session_backend)
+        if sessions
+        else None
+    )
     event_store = SSEEventStore() if resumable else None
 
     async def mcp_endpoint(request: Request) -> Response:
@@ -158,7 +168,7 @@ def register_http_transport(
         # is on (it carries Last-Event-ID), else there is no standalone
         # server-to-client stream this server keeps, so a GET is answered 405.
         if request.method == "DELETE":
-            return _handle_delete(store, request)
+            return await _handle_delete(store, request)
         if request.method == "GET":
             return _handle_get(event_store, request, allowed_origins)
         return await _handle_http(server, request, auth, allowed_origins, store, event_store)
@@ -215,9 +225,25 @@ async def _handle_http(
     try:
         message = await request.json()
     except Exception:
-        return JSONResponse(_error(None, _JSONRPC_PARSE_ERROR, "Parse error"), status_code=400)
+        return JSONResponse(
+            _error(None, _JSONRPC_PARSE_ERROR, "Parse error"),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not request.data:
+        # No body at all is no JSON document to read, which is the parse failure
+        # rather than a well-formed document of the wrong shape.
+        return JSONResponse(
+            _error(None, _JSONRPC_PARSE_ERROR, "Parse error"),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
     if not isinstance(message, dict):
-        return JSONResponse(_error(None, _JSONRPC_PARSE_ERROR, "Parse error"), status_code=400)
+        # It parsed, so the failure is the shape rather than the JSON. JSON-RPC
+        # keeps these apart: -32700 says the text could not be read, -32600 says
+        # what was read is not a Request object.
+        return JSONResponse(
+            _error(None, _JSONRPC_INVALID_REQUEST, "Invalid Request"),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
 
     # When session management is on, every request except `initialize` must echo a
     # live session id (HTTP 400 if missing, 404 once terminated); `initialize`
@@ -232,7 +258,7 @@ async def _handle_http(
     session: MCPSession
     if store is not None:
         try:
-            session_id, session = _bind_session(store, request, is_initialize)
+            session_id, session = await _bind_session(store, request, is_initialize)
         except MCPError as exc:
             return JSONResponse(exc.to_error(message.get("id")), status_code=exc.http_status)
     else:
@@ -250,9 +276,13 @@ async def _handle_http(
         )
 
     response = await server.handle_message(message, session)
+    # Publish what this message changed - the handshake above all - so a later
+    # request that lands on another worker sees it. A no-op without a backend.
+    if store is not None and session_id is not None:
+        await store.persist(session_id, session)
     if response is None:
         # A notification or a response carries no reply (JSON-RPC 2.0 Sec. 4.1).
-        return _with_session(Response(status_code=202), session_id)
+        return _with_session(Response(status_code=status.HTTP_202_ACCEPTED), session_id)
     # An authorization failure (insufficient scope) is surfaced as an HTTP 403 with
     # an RFC 6750 scope challenge, not a 200 carrying a JSON-RPC error, so a client
     # can drive a step-up authorization flow. This applies to the JSON path only;
@@ -265,7 +295,7 @@ async def _handle_http(
     return _with_session(JSONResponse(response), session_id)
 
 
-def _bind_session(
+async def _bind_session(
     store: HttpSessionStore, request: Request, is_initialize: bool
 ) -> tuple[str, MCPSession]:
     """Resolve the `(id, MCPSession)` for a request under session management.
@@ -276,11 +306,11 @@ def _bind_session(
     raises `SessionNotFoundError` (HTTP 404).
     """
     if is_initialize:
-        return store.create()
+        return await store.create()
     session_id = request.headers.get("mcp-session-id")
     if not session_id:
         raise SessionRequiredError("missing Mcp-Session-Id header")
-    session = store.resolve(session_id)
+    session = await store.resolve(session_id)
     if session is None:
         raise SessionNotFoundError("unknown or terminated session")
     return session_id, session
@@ -293,7 +323,7 @@ def _with_session(response: Response, session_id: str | None) -> Response:
     return response
 
 
-def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response:
+async def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response:
     """Terminate the session named by `Mcp-Session-Id` (HTTP 204), or 404/405.
 
     A `DELETE` is meaningful only under session management: without it the verb is
@@ -301,14 +331,14 @@ def _handle_delete(store: HttpSessionStore | None, request: Request) -> Response
     missing / already-terminated id is HTTP 404.
     """
     if store is None:
-        return Response(status_code=405, headers={"Allow": "POST"})
+        return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
     session_id = request.headers.get("mcp-session-id")
-    if not session_id or not store.terminate(session_id):
+    if not session_id or not await store.terminate(session_id):
         return JSONResponse(
             SessionNotFoundError("unknown or terminated session").to_error(None),
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
         )
-    return Response(status_code=204)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _handle_get(
@@ -335,7 +365,7 @@ def _handle_get(
 
     if event_store is None:
         return _method_not_allowed()
-    last_event_id = request.headers.get("last-event-id")
+    last_event_id = request.headers.get(_LAST_EVENT_ID_HEADER)
     if not last_event_id:
         return _method_not_allowed()
     missed = event_store.replay_after(last_event_id)
@@ -379,7 +409,7 @@ def _validate_protocol_version(request: Request) -> None:
 
 def _method_not_allowed() -> Response:
     """Answer a GET on the MCP endpoint with HTTP 405 (no server-push stream)."""
-    return Response(status_code=405, headers={"Allow": "POST"})
+    return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
 
 
 def _forbidden(response: dict[str, Any], scopes: list[str]) -> Response:
@@ -387,7 +417,11 @@ def _forbidden(response: dict[str, Any], scopes: list[str]) -> Response:
     parts = ['Bearer error="insufficient_scope"']
     if scopes:
         parts.append(f'scope="{" ".join(scopes)}"')
-    return JSONResponse(response, status_code=403, headers={"WWW-Authenticate": ", ".join(parts)})
+    return JSONResponse(
+        response,
+        status_code=status.HTTP_403_FORBIDDEN,
+        headers={"WWW-Authenticate": ", ".join(parts)},
+    )
 
 
 async def _authenticate(
@@ -466,6 +500,14 @@ def _stream_response(
     disconnect are still available to replay.
     """
     queue: asyncio.Queue[Any] = asyncio.Queue()
+    # Cleared once the SSE generator is gone. A disconnect deliberately does NOT
+    # cancel the in-flight call (see `events` below), so the runner keeps
+    # producing - and with nobody left to drain the queue, every notification a
+    # chatty tool emits would be buffered for the rest of the call for nothing.
+    # A resumable stream has already recorded each payload in the event store, so
+    # dropping the queue hand-off after teardown costs a reconnecting client
+    # nothing: the replay comes from the store, not from here.
+    draining = [True]
     # A resumable stream gets a unique id so its event ids encode their origin and
     # a resume replays only this stream's events. `seq` advances per recorded
     # payload; 0 is reserved for the priming event so the replay base is addressable.
@@ -483,7 +525,9 @@ def _stream_response(
     # JSON-RPC message (when resumable) then queues it for the SSE generator. The
     # recording is what survives a dropped connection for later replay.
     async def send(message: dict[str, Any]) -> None:
-        await queue.put((emit_id(message), message))
+        event_id = emit_id(message)
+        if draining[0]:
+            await queue.put((event_id, message))
 
     async def runner() -> None:
         token = _notifier_var.set(send)
@@ -498,7 +542,9 @@ def _stream_response(
         try:
             response = await server.handle_message(message, session)
             if response is not None:
-                await queue.put((emit_id(response), response))
+                response_id = emit_id(response)
+                if draining[0]:
+                    await queue.put((response_id, response))
         except asyncio.CancelledError:
             # The client cancelled this request (notifications/cancelled): the
             # call's task was cancelled deliberately. Close the stream cleanly
@@ -507,11 +553,14 @@ def _stream_response(
         except Exception:
             _logger.exception("MCP HTTP request handling failed")
             err = _error(message.get("id"), _JSONRPC_INTERNAL_ERROR, "internal error")
-            await queue.put((emit_id(err), err))
+            err_id = emit_id(err)
+            if draining[0]:
+                await queue.put((err_id, err))
         finally:
             server.unregister_connection(conn_token)
             _notifier_var.reset(token)
-            await queue.put(_STREAM_END)
+            if draining[0]:
+                await queue.put(_STREAM_END)
 
     async def events() -> Any:
         # Disconnection is not cancellation (MCP transport): a client that closes
@@ -526,17 +575,25 @@ def _stream_response(
         # resumable stream's priming id encodes the stream (sequence 0) so a resume
         # from it replays the whole tail.
         prime_id = f"{stream_id}.0" if stream_id is not None else str(next(_event_id))
-        yield ServerSentEvent(data="", id=prime_id)
-        while True:
-            item = await queue.get()
-            if item is _STREAM_END:
-                break
-            event_id, payload = item
-            yield ServerSentEvent.json(payload, id=event_id)
-        # A closing frame carrying the reconnect hint, so a client that drops
-        # mid-stream knows how long to wait before reconnecting.
-        yield ServerSentEvent(retry=_SSE_RETRY_MS)
-        await runner_task
+        try:
+            yield ServerSentEvent(data="", id=prime_id)
+            while True:
+                item = await queue.get()
+                if item is _STREAM_END:
+                    break
+                event_id, payload = item
+                yield ServerSentEvent.json(payload, id=event_id)
+            # A closing frame carrying the reconnect hint, so a client that drops
+            # mid-stream knows how long to wait before reconnecting.
+            yield ServerSentEvent(retry=_SSE_RETRY_MS)
+            await runner_task
+        finally:
+            # Whether the stream ended normally or the client vanished, nothing
+            # will read this queue again. Tell the runner to stop filling it and
+            # release whatever is already buffered.
+            draining[0] = False
+            while not queue.empty():
+                queue.get_nowait()
 
     headers = {_SESSION_ID_HEADER: session_id} if session_id is not None else None
     return EventSourceResponse(events(), headers=headers)

@@ -9,6 +9,7 @@ import enum
 import html
 import inspect
 import logging
+import pathlib
 import types
 import uuid
 import weakref
@@ -19,11 +20,18 @@ import orjson
 from pydantic import BaseModel
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
-from veloce._model_backend import is_msgspec_struct, is_pydantic_model
+from veloce._model_backend import (
+    _msgspec,
+    adapter_for,
+    is_adaptable_model,
+    is_msgspec_struct,
+    is_pydantic_model,
+)
 from veloce._protocol_constants import HTTP_METHOD_QUERY, OAUTH2_GRANT_TYPE_PASSWORD
 from veloce._route_contract import RouteContract, iter_param_descriptors
 from veloce.dependency import Depends
 from veloce.http.response import HTMLResponse, JSONResponse
+from veloce.routing.converters import path_param_schemas
 from veloce.routing.params import ParamBase
 from veloce.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery
 from veloce.security.http import HTTPBasic, HTTPBearer, HTTPDigest
@@ -161,6 +169,12 @@ _SCALAR_TYPE_SCHEMAS: dict[Any, dict[str, Any]] = {
     datetime.timedelta: {"type": "string", "format": "duration"},
     uuid.UUID: {"type": "string", "format": "uuid"},
     Decimal: {"type": "number"},
+    # A filesystem path arrives as a string. `path` is not a registered JSON
+    # Schema format, but the keyword is an open annotation, so naming it tells a
+    # client what the string means rather than leaving it indistinguishable from
+    # free text. `PurePath` covers the platform-specific subclasses too.
+    pathlib.PurePath: {"type": "string", "format": "path"},
+    pathlib.Path: {"type": "string", "format": "path"},
 }
 
 
@@ -547,7 +561,13 @@ class _SchemaEntry:
             self._build_msgspec()
             return
         try:
-            schema = self.model.model_json_schema(mode=self.mode)  # type: ignore[arg-type]
+            if is_adaptable_model(self.model):
+                # A dataclass / TypedDict has no `model_json_schema`; its shape
+                # comes from the same adapter that validates it, so the document
+                # and the validator cannot describe different fields.
+                schema = adapter_for(self.model).json_schema()
+            else:
+                schema = self.model.model_json_schema(mode=self.mode)  # type: ignore[arg-type]
         except Exception as exc:
             # Degrading silently to `{type: object}` hides real model bugs.
             # Log at WARNING so the failure surfaces, then fall back so /docs
@@ -581,10 +601,8 @@ class _SchemaEntry:
         prefix the document rewriter already repoints into `components.schemas`,
         so nested structs resolve with no extra translation.
         """
-        import msgspec
-
         try:
-            schemas, components = msgspec.json.schema_components(
+            schemas, components = _msgspec.json.schema_components(
                 [self.model], ref_template="#/$defs/{name}"
             )
         except Exception as exc:
@@ -684,6 +702,44 @@ def _rewrite_refs(node: Any, token_to_name: dict[str, str]) -> None:
             _rewrite_refs(item, token_to_name)
 
 
+def _register_schema(name: str, schema: dict, registry: dict[str, dict]) -> None:
+    """Hoist a generated schema's `$defs` into `registry` and record it by name."""
+    _rewrite_byte_format(schema)
+    if "$defs" in schema:
+        for def_name, def_schema in schema["$defs"].items():
+            registry[def_name] = def_schema
+        del schema["$defs"]
+    # A recursive model renders as `{"$defs": {Name: <real object>},
+    # "$ref": ".../Name"}`: after extracting `$defs` the leftover top-level
+    # schema is a bare self-`$ref`. Overwriting the registry entry with it
+    # would clobber the real definition pulled from `$defs`, leaving an
+    # unresolvable cycle. Keep the extracted def.
+    if not (list(schema.keys()) == ["$ref"] and name in registry):
+        registry[name] = schema
+
+
+def _adapted_to_schema(model: Any, registry: dict[str, dict]) -> dict:
+    """Convert a dataclass / `TypedDict` to a name-keyed `$ref`, extending `registry`.
+
+    The adapted counterpart to `_pydantic_to_schema`: both hoist their `$defs`
+    through `_register_schema`, so a nested or recursive shape resolves the same
+    way whichever backend declared it.
+    """
+    name = getattr(model, "__name__", "Model")
+    if name not in registry:
+        try:
+            _register_schema(name, adapter_for(model).json_schema(), registry)
+        except Exception as exc:
+            _logger.warning(
+                "JSON Schema generation failed for %s: %s. Falling back to {type: object}.",
+                name,
+                exc,
+                exc_info=_logger.isEnabledFor(logging.DEBUG),
+            )
+            registry[name] = {"type": "object"}
+    return {"$ref": f"#/components/schemas/{name}"}
+
+
 def _pydantic_to_schema(
     model: type[BaseModel],
     registry: dict[str, dict],
@@ -707,18 +763,7 @@ def _pydantic_to_schema(
     if name not in registry:
         try:
             schema = model.model_json_schema(mode=mode, by_alias=by_alias)  # type: ignore[arg-type]
-            _rewrite_byte_format(schema)
-            if "$defs" in schema:
-                for def_name, def_schema in schema["$defs"].items():
-                    registry[def_name] = def_schema
-                del schema["$defs"]
-            # A recursive model renders as `{"$defs": {Name: <real object>},
-            # "$ref": ".../Name"}`: after extracting `$defs` the leftover
-            # top-level schema is a bare self-`$ref`. Overwriting the registry
-            # entry with it would clobber the real definition pulled from
-            # `$defs`, leaving an unresolvable cycle. Keep the extracted def.
-            if not (list(schema.keys()) == ["$ref"] and name in registry):
-                registry[name] = schema
+            _register_schema(name, schema, registry)
         except Exception as exc:
             _logger.warning(
                 "OpenAPI schema generation failed for %s: %s. "
@@ -972,7 +1017,27 @@ def _extract_parameters(
 
         parameters.append(param_info)
 
+    _declare_undocumented_path_params(info, parameters)
     return parameters, request_body_schema, form_fields, body_fields, scalar_body
+
+
+def _declare_undocumented_path_params(info: Any, parameters: list[dict]) -> None:
+    """Document a path parameter no handler parameter declares.
+
+    A route's path parameters are part of its contract whether or not the
+    signature names one: a dependency reading `request.path_params` consumes the
+    same segment. Leaving it out also makes the document invalid - OpenAPI 3.1
+    requires every template expression in the path to have a `path` parameter -
+    so a caller reading the schema could not know to supply it at all.
+    """
+    template = getattr(info, "path_template", None)
+    if not template:
+        return
+    declared = {p["name"] for p in parameters if p["in"] == "path"}
+    for name, schema in path_param_schemas(template).items():
+        if name in declared:
+            continue
+        parameters.append({"name": name, "in": "path", "required": True, "schema": schema})
 
 
 def _extract_request_body(
@@ -1649,7 +1714,7 @@ def _validate_document(schema: dict[str, Any]) -> None:
 # ── Public API ─────────────────────────────────────────────
 
 
-def get_openapi_schema(app: Any) -> dict:
+def get_openapi_schema(app: Any) -> dict[str, Any]:
     """Generate OpenAPI 3.1 schema from the app's registered routes."""
     schema: dict[str, Any] = {
         "openapi": "3.1.0",

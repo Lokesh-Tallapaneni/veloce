@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import mimetypes
 import os
 import stat
 import warnings
@@ -45,8 +44,10 @@ from veloce._constants import (
     HEADER_VARY,
     HEADER_WWW_AUTHENTICATE,
     MIME_TEXT_PLAIN,
+    MSG_LABEL_HEADER_NAME,
+    MSG_LABEL_SET_COOKIE_VALUE,
 )
-from veloce._header_parsing import parse_media_type_params, unquote_value
+from veloce._header_parsing import parse_media_type_params
 from veloce._internal import (
     _STATUS_PHRASES,
     MIME_HTML,
@@ -57,13 +58,15 @@ from veloce._internal import (
     _etag_matches_strong,
     _etag_matches_weak,
     _file_etag,
+    _header_value_has_crlf,
     _reject_header_crlf,
+    guess_content_type,
     is_json_mimetype,
 )
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
 from veloce.encoders import orjson_default
 from veloce.http.cache_control import CacheControl
-from veloce.http.cookies import dump_cookie
+from veloce.http.cookies import dump_cookie, iter_cookies
 from veloce.http.dates import http_date, parse_date
 from veloce.http.header_set import HeaderSet
 from veloce.status import (
@@ -273,16 +276,11 @@ class Response:
         self._mimetype = media.strip().lower()
         params = dict(parse_media_type_params(rest))
         self._ct_params = params
-        # `charset` matches a case-sensitive `charset=` part (RFC 9110 §5.6.6
-        # parameter names are case-insensitive, but this accessor preserves the
-        # historical case-sensitive lookup), falling back to "utf-8".
-        charset = "utf-8"
-        for part in ct.split(";"):
-            part = part.strip()
-            if part.startswith("charset="):
-                charset = unquote_value(part[8:])
-                break
-        self._charset = charset
+        # RFC 9110 Sec. 8.3.1 makes media-type parameter names case-insensitive
+        # and RFC 9110 Sec. 5.6.6 allows whitespace around `=`, so the charset
+        # is read off the shared parser's output rather than re-scanned here -
+        # one parse, and `charset` can never disagree with `mimetype_params`.
+        self._charset = params.get("charset", "utf-8")
         self._ct_cache_key = ct
 
     @property
@@ -298,10 +296,11 @@ class Response:
     @mimetype.setter
     def mimetype(self, value: str) -> None:
         """Set the mimetype."""
-        # Preserve the current charset parameter, if any.
+        # Preserve the current charset parameter, if any. The presence test
+        # reads the parsed parameter map rather than the raw header so a
+        # `Charset=` spelling is carried over too (RFC 9110 Sec. 8.3.1).
         cs = self.charset
-        ct = self.content_type or ""
-        had_charset = "charset=" in ct
+        had_charset = "charset" in self.mimetype_params
         self.content_type = f"{value}; charset={cs}" if had_charset else value
         self._encoded = None
 
@@ -521,7 +520,7 @@ class Response:
         Accepts the three RFC 9110 Sec. 5.6.7 HTTP-date
         forms. Returns `None` on missing/unparseable.
         """
-        raw = self.headers.get(HEADER_LAST_MODIFIED) or self.headers.get("last-modified")
+        raw = header_get(self.headers, HEADER_LAST_MODIFIED)
         if not raw:
             return None
         return parse_date(raw)
@@ -534,7 +533,7 @@ class Response:
     @property
     def expires(self) -> Any:
         """Parsed `Expires` header -> UTC `datetime` or None (RFC 9111 Sec. 5.3)."""
-        raw = self.headers.get(HEADER_EXPIRES) or self.headers.get("expires")
+        raw = header_get(self.headers, HEADER_EXPIRES)
         if not raw:
             return None
         return parse_date(raw)
@@ -568,38 +567,58 @@ class Response:
         """Parsed cookie jar from this response's `Set-Cookie` header(s).
 
         Walks every `Set-Cookie` entry (Q44 separator `\\r\\nSet-Cookie: `
-        respected) and returns `{name: value}`. Multiple cookies with
-        the same name resolve to the last set - matches the wire
-        behaviour where the client also keeps the most-recent value.
-        Caller introspection only; mutation goes through `set_cookie()`.
+        respected) and returns `{name: value}`. Values are percent-decoded,
+        so a cookie reads back as the string `set_cookie()` was given rather
+        than its wire form. Multiple cookies with the same name resolve to
+        the last set - matches the wire behaviour where the client also keeps
+        the most-recent value. Caller introspection only; mutation goes
+        through `set_cookie()`.
         """
         out: dict[str, str] = {}
-        existing = self.headers.get(HEADER_SET_COOKIE, "") or self.headers.get("set-cookie", "")
+        existing = header_get(self.headers, HEADER_SET_COOKIE) or ""
         if not existing:
             return out
-        # Q44 emits multi-cookies as `cookie1\r\nSet-Cookie: cookie2...`.
+        # Q44 emits multi-cookies as `cookie1\r\nSet-Cookie: cookie2...`. Only
+        # the leading `name=value` segment of each entry is the cookie; the
+        # rest are attributes. `iter_cookies` is the inverse of `dump_cookie`'s
+        # percent-quoting, and the same parser `Request.cookies` reads with.
         for line in existing.split(SET_COOKIE_JOINER):
-            first = line.split(";", 1)[0].strip()
-            if "=" in first:
-                name, _, value = first.partition("=")
-                out[name.strip()] = value.strip()
+            out.update(iter_cookies(line.split(";", 1)[0]))
         return out
 
     @property
     def headerlist(self) -> list[tuple[str, str]]:
-        """Headers flattened to a `(name, value)` tuple list.
+        """Headers flattened to the `(name, value)` tuple list the wire emit sends.
 
-        Each `Set-Cookie` (Q44 multi-cookie join) expands to its own
-        tuple, so downstream wire-emit / inspection code gets the
-        per-cookie view ASGI requires.
+        Each `Set-Cookie` (Q44 multi-cookie join) expands to its own tuple, so
+        the caller gets the per-cookie view ASGI requires. Two spellings of one
+        field name collapse to a single entry carrying the last name and value
+        seen, at the position of the first (RFC 9110 Sec. 5.1 makes field names
+        case-insensitive), and a CR/LF/NUL anywhere in a name or value raises
+        `ValueError` rather than being handed back - both matching the emit
+        paths. `Response.headers` remains the raw, unfolded view.
         """
         result: list[tuple[str, str]] = []
+        slot_by_name: dict[str, int] = {}
         for k, v in self.headers.items():
-            if k.lower() == "set-cookie":
+            k_lower = k.lower()
+            if k_lower == "set-cookie":
                 for piece in v.split(SET_COOKIE_JOINER):
-                    result.append((k, piece.strip()))
+                    cookie = piece.strip()
+                    _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
+                    result.append((k, cookie))
             else:
-                result.append((k, v))
+                # The per-header failure label is an f-string, so build it only
+                # on the path that actually raises.
+                if _header_value_has_crlf(k) or _header_value_has_crlf(v):
+                    _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
+                    _reject_header_crlf(v, f"{k} header value")
+                slot = slot_by_name.get(k_lower)
+                if slot is None:
+                    slot_by_name[k_lower] = len(result)
+                    result.append((k, v))
+                else:
+                    result[slot] = (k, v)
         return result
 
     @property
@@ -702,7 +721,7 @@ class Response:
             headers[HEADER_VARY] = value
             self._encoded = None
             return value
-        existing = headers.get(HEADER_VARY, "") or headers.get("vary", "")
+        existing = header_get(headers, HEADER_VARY) or ""
         # Delegate dedup + ordering to `HeaderSet` so the same
         # case-insensitive merge logic doesn't drift between this method
         # and the `vary` property's own datastructure.
@@ -973,7 +992,7 @@ class Response:
         `(None, False)` when unset. Returned tag keeps its quotes so
         it compares directly with `If-None-Match` values.
         """
-        raw = self.headers.get(HEADER_ETAG) or self.headers.get("etag")
+        raw = header_get(self.headers, HEADER_ETAG)
         if not raw:
             return (None, False)
         if raw.startswith("W/"):
@@ -1157,7 +1176,7 @@ class Response:
         if if_match == ("*",):
             return self
         # `headers` is a plain dict; accept either spelling, as other helpers do.
-        ours_etag = self.headers.get(HEADER_ETAG) or self.headers.get("etag") or ""
+        ours_etag = header_get(self.headers, HEADER_ETAG) or ""
         for tag in if_match:
             if _etag_matches_strong(ours_etag, tag):
                 return self
@@ -1570,7 +1589,7 @@ def _build_file_headers(
     both paths.
     """
     if content_type is None:
-        content_type = mimetypes.guess_type(path)[0] or MIME_OCTET
+        content_type = guess_content_type(path)
 
     hdrs = headers or {}
     if filename:

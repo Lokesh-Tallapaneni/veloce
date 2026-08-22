@@ -15,7 +15,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from veloce._internal import _is_async_callable, offload
+from veloce._internal import _current_app_var, _current_request_var, _is_async_callable, offload
 from veloce.contrib.mcp._helpers import (
     _inflight_var,
     _log_level_var,
@@ -23,15 +23,14 @@ from veloce.contrib.mcp._helpers import (
     _requester_var,
     _route_path_params,
     _RouteResponse,
-    _session_var,
     _ShortCircuit,
 )
-from veloce.contrib.mcp.context import MCPContext
-from veloce.contrib.mcp.errors import InvalidParamsError, _InvalidArgumentsError
+from veloce.contrib.mcp.context import MCPContext, _session_var
+from veloce.contrib.mcp.errors import MCPError, _InvalidArgumentsError
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import RequestValidationError
-from veloce.helpers import _current_app_var, _current_request_var, g
+from veloce.helpers import g
 from veloce.http.response import Response
 from veloce.instrumentation import RequestMetrics
 from veloce.routing.router import RouteMatch
@@ -69,6 +68,21 @@ def _argument_error_text(errors: Any) -> str:
     return f"Invalid arguments - {joined}"
 
 
+def _resolve_log_level(session: Any) -> str | None:
+    """The level this call's notifications are filtered against.
+
+    Precedence is per-request first, then per-connection. A modern request names
+    its level in `_meta` and the dispatcher puts that in the ContextVar, so it
+    wins for the request that carried it. `logging/setLevel` records the
+    connection's choice on the session, which is what carries between requests -
+    the ContextVar could not, because it dies with the context that set it.
+    """
+    level = _log_level_var.get()
+    if level is not None:
+        return level
+    return getattr(session, "log_level", None)
+
+
 class InvocationMixin:
     """Handler dispatch, lifecycle replay, and instrumentation for `MCPServer`."""
 
@@ -84,7 +98,11 @@ class InvocationMixin:
     # ── Invocation ────────────────────────────────────────
 
     async def _run_invoke(
-        self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None
+        self,
+        tool: MCPTool,
+        arguments: dict[str, Any],
+        progress_token: str | int | None,
+        request_meta: dict[str, Any] | None = None,
     ) -> Any:
         """Invoke a tool, applying the optional per-call timeout.
 
@@ -92,15 +110,87 @@ class InvocationMixin:
         common case, zero overhead); otherwise it is cancelled past the budget and
         the `asyncio.TimeoutError` is surfaced by the caller (in-band for a tool
         call, a JSON-RPC error for a resource read or prompt render).
+
+        The call's binding of `request` / `g` / `current_app` is undone once it
+        ends. The Streamable HTTP transport awaits `handle_message` from inside a
+        live HTTP request, so a binding that outlived the call would leave the rest
+        of that handler, and every hook after it, reading the call's synthetic
+        request instead of the real one.
         """
-        if self._call_timeout is None:
-            return await self._invoke(tool, arguments, progress_token)
-        return await asyncio.wait_for(
-            self._invoke(tool, arguments, progress_token), self._call_timeout
+        # A derived tool publishes a different argument surface from the one its
+        # handler takes; translate before anything reads the arguments, so hooks,
+        # binding and the handler all see one consistent mapping.
+        if tool.derived_from is not None:
+            arguments = tool.derived_from.translate(arguments)
+
+        # Run before building the call: a hook that answers instead of the handler
+        # must not leave an un-awaited coroutine behind.
+        before = self.app._mcp_before_call
+        if before:
+            short_circuit = await self._run_before_call(tool.name, arguments, before)
+            if short_circuit is not None:
+                return short_circuit
+
+        # Built here so the restore wraps one await, not a duplicated pair.
+        call = (
+            self._invoke(tool, arguments, progress_token, request_meta)
+            if self._call_timeout is None
+            else asyncio.wait_for(
+                self._invoke(tool, arguments, progress_token, request_meta), self._call_timeout
+            )
         )
+        outer_app = _current_app_var.get()
+        outer_request = _current_request_var.get()
+        outer_globals = g._snapshot()
+        unbind = True
+        try:
+            result = await call
+            after = self.app._mcp_after_call
+            if after:
+                result = await self._run_after_call(tool.name, result, after)
+            return result
+        except GeneratorExit:
+            # Closed mid-await: an abandoned call being finalized, which the
+            # collector may run in any context. There is no awaiter to hand a
+            # context back to, and restoring here would write the outer binding
+            # into whichever context happens to be current.
+            unbind = False
+            raise
+        finally:
+            if unbind:
+                _current_app_var.set(outer_app)
+                _current_request_var.set(outer_request)
+                g._restore(outer_globals)
+
+    @staticmethod
+    async def _run_before_call(
+        name: str, arguments: dict[str, Any], hooks: list[Any]
+    ) -> Any | None:
+        """Run the pre-call hooks, returning the first short-circuit value."""
+        for hook in hooks:
+            outcome = hook(name, arguments)
+            if _is_async_callable(hook):
+                outcome = await outcome
+            if outcome is not None:
+                return outcome
+        return None
+
+    @staticmethod
+    async def _run_after_call(name: str, result: Any, hooks: list[Any]) -> Any:
+        """Run the post-call hooks in order, each seeing what the last returned."""
+        for hook in hooks:
+            outcome = hook(name, result)
+            if _is_async_callable(hook):
+                outcome = await outcome
+            result = outcome
+        return result
 
     async def _invoke(
-        self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None = None
+        self,
+        tool: MCPTool,
+        arguments: dict[str, Any],
+        progress_token: str | int | None = None,
+        request_meta: dict[str, Any] | None = None,
     ) -> Any:
         """Resolve DI and call the handler, draining teardowns afterwards.
 
@@ -125,15 +215,19 @@ class InvocationMixin:
         # from the dispatching connection's session (recorded at `initialize`);
         # empty off a stateful transport, which leaves those methods to reject.
         session = _session_var.get()
-        client_capabilities = session.client_capabilities if session is not None else None
+        # The session and the server are passed as references, not unpacked: the
+        # context exposes what they hold through properties, so a call that never
+        # asks for them pays only these two assignments.
         context = MCPContext(
             tool.name,
             arguments,
             notifier=_notifier_var.get(),
             progress_token=progress_token,
-            log_level=_log_level_var.get(),
+            log_level=_resolve_log_level(session),
             requester=_requester_var.get(),
-            client_capabilities=client_capabilities,
+            session=session,
+            server=self,
+            request_meta=request_meta,
         )
         # Expose this context on its in-flight registration so a
         # `notifications/cancelled` flips `ctx.cancelled` (cooperative stop) as
@@ -168,9 +262,9 @@ class InvocationMixin:
         request._state["_mcp"] = True
 
         # Bind the request context exactly as `handle_request` does: the
-        # `current_app` / `request` contextvars plus a fresh `g`. Letting the
-        # contextvars fall through when the call ends is intentional - stdio
-        # calls run sequentially, each rebinding before it reads.
+        # `current_app` / `request` contextvars plus a fresh `g`. `_run_invoke`
+        # unbinds them once the call ends, so a caller that awaited this from
+        # inside its own request keeps reading its own.
         _current_app_var.set(self.app)
         _current_request_var.set(request)
         g._reset()
@@ -278,11 +372,14 @@ class InvocationMixin:
                     _logger.exception("MCP background task failed")
             await self._run_response_background(response)
             return _RouteResponse(response, model_filtered)
-        except (InvalidParamsError, _InvalidArgumentsError):
-            # Not a handled application failure: a malformed argument is shaped
-            # by `_tools_call` (in-band, so the model can retry) and an explicit
-            # `InvalidParamsError` goes on the JSON-RPC error channel. Both still
-            # flow through the `finally` so teardowns run.
+        except MCPError:
+            # Not a handled application failure: an error the author raised to
+            # say something about the protocol, so it goes to the caller as the
+            # code and message they wrote rather than through the app's exception
+            # handlers, which would render it as an HTTP body. A malformed
+            # argument (the `_InBandError` subtree) is shaped in-band by
+            # `_tools_call` instead, so the model can retry. Both still flow
+            # through the `finally` so teardowns run.
             raise
         except BaseException as err:  # noqa: BLE001 - re-raised / routed after teardown
             exc = err

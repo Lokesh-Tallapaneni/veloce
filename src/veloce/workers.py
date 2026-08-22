@@ -27,7 +27,25 @@ or unloadable it fails fast with `RuntimeError` rather than silently
 serving cleartext over an HTTPS deployment. The default context is passed
 through gunicorn's `ssl_context(config, default_ssl_context_factory)` hook,
 so a deployment that customises TLS there (minimum TLS version, mTLS tweaks)
-has those customisations honoured.
+has those customisations honoured. `--ssl-version` is applied as a minimum
+TLS version; a value that would lower the floor below the interpreter default
+is refused and logged rather than applied, since RFC 8996 deprecates TLS 1.0
+and 1.1.
+
+That fail-fast covers a chain that cannot be *loaded* - absent, unreadable,
+malformed, or a key that does not match the certificate. Validity is a separate
+question: an expired but well-formed chain loads without complaint, so the
+worker logs a warning naming the certificate and its date rather than letting
+every handshake fail with no stated cause. It is a warning and not a refusal
+because a certificate may legitimately be renewed under a running server, and
+refusing to start would turn a renewal reminder into an outage.
+
+**Worker recycling:** `--max-requests` counts HTTP requests, so a worker
+serving only long-lived WebSocket connections never reaches the limit and never
+recycles. That is deliberate - the counter is consulted at request boundaries,
+and a WebSocket has none until it closes, so recycling one would mean dropping
+a live connection - but it does mean `--max-requests` is not a wall-clock
+lifetime bound for a WebSocket-heavy deployment.
 
 **EXPERIMENTAL:** this worker is new and the gunicorn integration cannot be
 exercised on Windows (gunicorn is POSIX-only). Validate it on a POSIX host
@@ -39,11 +57,15 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import os
 import ssl
+import time
 from typing import TYPE_CHECKING, Any
 
 from veloce._protocol_constants import LIFECYCLE_SHUTDOWN, LIFECYCLE_STARTUP
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app import Veloce
@@ -85,6 +107,92 @@ def build_protocol_factory(app: Veloce, loop: asyncio.AbstractEventLoop) -> func
     from veloce.serving.protocol import HttpProtocol
 
     return functools.partial(HttpProtocol, app, loop)
+
+
+# gunicorn's `--ssl-version` is one of the legacy `ssl.PROTOCOL_*` constants.
+# The modern equivalent is a `minimum_version` floor, so map across rather than
+# rebuild the context with a deprecated protocol method. Resolved via `getattr`
+# because the TLS 1.0 / 1.1 names are deprecated and may be absent.
+_SSL_VERSION_FLOORS: dict[int, ssl.TLSVersion] = {
+    value: floor
+    for value, floor in (
+        (getattr(ssl, "PROTOCOL_TLSv1", None), ssl.TLSVersion.TLSv1),
+        (getattr(ssl, "PROTOCOL_TLSv1_1", None), ssl.TLSVersion.TLSv1_1),
+        (getattr(ssl, "PROTOCOL_TLSv1_2", None), ssl.TLSVersion.TLSv1_2),
+    )
+    if value is not None
+}
+
+
+def _apply_ssl_version(context: ssl.SSLContext, ssl_version: Any) -> None:
+    """Honour gunicorn's `ssl_version` as a minimum-version floor.
+
+    It was previously read and dropped, so a deployment pinning a TLS floor got
+    Python's default instead - configuration that looked honoured and was not.
+
+    A floor *below* the interpreter default is refused rather than applied:
+    RFC 8996 deprecates TLS 1.0 and 1.1, and silently weakening a server's
+    handshake is worse than ignoring the setting was. The refusal is logged so
+    it is visible rather than mysterious.
+    """
+    if ssl_version is None:
+        return
+    floor = _SSL_VERSION_FLOORS.get(ssl_version)
+    if floor is None:
+        # `PROTOCOL_TLS` / `PROTOCOL_TLS_SERVER` mean "negotiate the best
+        # available", which is what the default context already does.
+        return
+    if floor < context.minimum_version:
+        _logger.warning(
+            "VeloceWorker: ignoring --ssl-version %s; it would lower the TLS "
+            "floor below this interpreter's default of %s (RFC 8996 deprecates "
+            "TLS 1.0 and 1.1). Remove the option to silence this.",
+            floor.name,
+            context.minimum_version.name,
+        )
+        return
+    context.minimum_version = floor
+
+
+def _warn_if_chain_expired(certfile: str) -> None:
+    """Log when the certificate is outside its validity window.
+
+    `load_cert_chain` checks that a chain parses, not that it is currently
+    valid: an expired but well-formed certificate loads without complaint, the
+    worker starts, and every client then fails the handshake instead - which
+    looks like a network fault rather than a certificate that needed renewing.
+    This does not refuse to start, because a certificate can legitimately be
+    renewed under a running server and refusing would turn a warning into an
+    outage. It just makes the real cause visible in the log.
+
+    Best-effort: the dates are read with the stdlib, and anything unreadable is
+    passed over rather than blocking a start-up that OpenSSL already accepted.
+    """
+    try:
+        decoded = ssl._ssl._test_decode_cert(certfile)  # type: ignore[attr-defined]
+        not_after = decoded.get("notAfter")
+        not_before = decoded.get("notBefore")
+    except Exception:
+        return
+    now = time.time()
+    for label, value, expired in (
+        ("expires", not_after, True),
+        ("is not valid until", not_before, False),
+    ):
+        if not value:
+            continue
+        try:
+            stamp = ssl.cert_time_to_seconds(value)
+        except ValueError:
+            continue
+        if (expired and stamp < now) or (not expired and stamp > now):
+            _logger.warning(
+                "VeloceWorker: the TLS certificate at %s %s %s; clients will fail "
+                "the handshake until it is renewed.",
+                certfile,
+                label,
+                value,
+            )
 
 
 def build_ssl_context(ssl_options: dict[str, Any]) -> ssl.SSLContext:
@@ -129,6 +237,9 @@ def build_ssl_context(ssl_options: dict[str, Any]) -> ssl.SSLContext:
             f"VeloceWorker: failed to load TLS cert chain "
             f"(certfile={certfile!r}, keyfile={keyfile!r}): {exc}"
         ) from exc
+
+    _warn_if_chain_expired(certfile)
+    _apply_ssl_version(context, ssl_options.get("ssl_version"))
 
     ciphers = ssl_options.get("ciphers")
     if ciphers:
@@ -390,6 +501,18 @@ class VeloceWorker(_GunicornWorker):
                     continue
                 break
         finally:
+            # Quiesce live connections BEFORE awaiting the servers. Since
+            # Python 3.12 `Server.wait_closed()` really does wait for every
+            # accepted connection to finish, so one idle keep-alive client
+            # holds it for the whole KEEP_ALIVE_TIMEOUT (75s by default). That
+            # outlasts gunicorn's `graceful_timeout` (30s), and the master then
+            # SIGKILLs the worker mid-wait - so `_shutdown` never runs, the
+            # app's shutdown hooks never fire, and in-flight work is cut.
+            # Draining first closes those idle connections at once, which is
+            # exactly what makes the wait below return promptly.
+            from veloce.serving.protocol import HttpProtocol
+
+            HttpProtocol.start_graceful_drain()
             self._server.close()
             for server in extra_servers:
                 server.close()

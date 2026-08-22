@@ -21,7 +21,7 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 from typing_extensions import Doc
 
-from veloce._constants import MSG_FIELD_REQUIRED
+from veloce._constants import MSG_FIELD_REQUIRED, STATE_INJECTED_RESPONSE
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
@@ -44,7 +44,7 @@ from veloce._handler_plan import (
     parallel_group_end,
 )
 from veloce._internal import _BaseExceptionGroup, _is_async_callable, offload
-from veloce._model_backend import ModelBackend, is_pydantic_model
+from veloce._model_backend import ModelBackend, _msgspec, adapter_for, is_pydantic_model
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
 from veloce.exceptions import RequestValidationError, ValidationError
@@ -841,13 +841,14 @@ class DependencyResolver:
 
         One `Response` per request, shared between the handler and any dependency
         that also declares the parameter. `status_code = 0` is the "not set by the
-        handler" sentinel the dispatcher checks before merging.
+        handler" sentinel the dispatcher checks before merging. This is the
+        authority the MCP bridge delegates to and `_resolver_codegen` emits inline.
         """
-        injected = request._state.get("_injected_response")
+        injected = request._state.get(STATE_INJECTED_RESPONSE)
         if injected is None:
             injected = Response()
             injected.status_code = 0
-            request._state["_injected_response"] = injected
+            request._state[STATE_INJECTED_RESPONSE] = injected
         return injected
 
     async def _resolve_upload_file(
@@ -914,9 +915,9 @@ class DependencyResolver:
             return slot.marker.resolve_default() if slot.marker.has_default else None
         try:
             if slot.backend == ModelBackend.MSGSPEC:
-                import msgspec
-
-                return msgspec.convert(raw, type=slot.model, strict=False)
+                return _msgspec.convert(raw, type=slot.model, strict=False)
+            if slot.backend == ModelBackend.ADAPTED:
+                return adapter_for(slot.model).validate_python(raw)
             return slot.model.model_validate(raw)
         except PydanticValidationError as e:
             raise RequestValidationError(
@@ -937,7 +938,32 @@ class DependencyResolver:
     async def _resolve_body_model(self, slot: Any, request: Request) -> Any:
         if slot.backend == ModelBackend.MSGSPEC:
             return await self._resolve_msgspec_body(slot, request)
+        if slot.backend == ModelBackend.ADAPTED:
+            return await self._resolve_adapted_body(slot, request)
         return await self._resolve_pydantic_body(slot, request)
+
+    async def _resolve_adapted_body(self, slot: Any, request: Request) -> Any:
+        """Validate a dataclass / `TypedDict` body through its cached adapter."""
+        raw = await request.body()
+        if not raw.strip():
+            if slot.is_optional:
+                return None
+            raise RequestValidationError(
+                [{"loc": ["body"], "msg": "field required", "type": "missing"}]
+            )
+        try:
+            return adapter_for(slot.model).validate_json(raw)
+        except PydanticValidationError as e:
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": ["body", *(str(part) for part in err["loc"])],
+                        "msg": err["msg"],
+                        "type": err["type"],
+                    }
+                    for err in e.errors()
+                ]
+            ) from e
 
     async def _resolve_pydantic_body(self, slot: Any, request: Request) -> Any:
         try:
@@ -974,8 +1000,6 @@ class DependencyResolver:
     async def _resolve_msgspec_body(self, slot: Any, request: Request) -> Any:
         # Reached only for a msgspec.Struct body slot, which the registration
         # tagging in `_handler_plan` produces only when msgspec is installed.
-        import msgspec
-
         raw = await request.body()
         # An empty or whitespace-only body is "missing", not a decode error -
         # `msgspec.json.decode(b"")` would raise an opaque truncation error.
@@ -988,8 +1012,8 @@ class DependencyResolver:
         try:
             # `strict=True` (the default) enforces types on decode: a `str` for an
             # `int` field is rejected rather than coerced.
-            return msgspec.json.decode(raw, type=slot.model)
-        except msgspec.ValidationError as e:
+            return _msgspec.json.decode(raw, type=slot.model)
+        except _msgspec.ValidationError as e:
             # `ValidationError` SUBCLASSES `DecodeError`, so it must be caught
             # first - reversing the order would let the `DecodeError` arm swallow
             # it. msgspec embeds the offending field path inside the message
@@ -999,7 +1023,7 @@ class DependencyResolver:
             raise RequestValidationError(
                 [{"loc": ["body"], "msg": str(e), "type": "value_error"}]
             ) from e
-        except msgspec.DecodeError as e:
+        except _msgspec.DecodeError as e:
             raise RequestValidationError(
                 [{"loc": ["body"], "msg": "Invalid JSON body", "type": "value_error"}]
             ) from e

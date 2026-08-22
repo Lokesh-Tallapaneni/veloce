@@ -157,3 +157,119 @@ async def test_if_range_stale_date_serves_full_200(static):
     )
     assert resp.status_code == 200
     assert len(resp.body) == 100
+
+
+# ── If-Range strong comparison (RFC 9110 Sec. 8.8.3.1) ────────────────
+#
+# The stock `_compute_etag` emits weak tags, so the strong-comparison branch is
+# only reachable through a subclass that overrides it. These exercise that
+# branch directly - it shares `_etag_matches_strong` with the `If-Match` gate,
+# so the two validators cannot drift apart.
+
+
+class _StrongEtagStatic(StaticFiles):
+    """A StaticFiles whose ETags are strong, so If-Range can succeed."""
+
+    def _compute_etag(self, path: str, size: int, mtime: float) -> str:
+        return '"strong-v1"'
+
+
+class _PaddedEtagStatic(StaticFiles):
+    """A StaticFiles emitting a tag wrapped in OWS - RFC 9110 Sec. 5.5 excludes
+    leading/trailing whitespace from a field value, so it must not defeat the
+    comparison."""
+
+    def _compute_etag(self, path: str, size: int, mtime: float) -> str:
+        return ' "strong-v1" '
+
+
+@pytest.fixture()
+def strong_static(tmp_path):
+    f = tmp_path / "blob.bin"
+    f.write_bytes(b"0123456789" * 10)
+    return _StrongEtagStatic(directory=str(tmp_path), prefix="/static")
+
+
+@pytest.mark.asyncio
+async def test_if_range_strong_etag_match_serves_206(strong_static):
+    """Both validators strong and byte-identical - the resume is authorized."""
+    resp = await strong_static.handle(
+        _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": '"strong-v1"'})
+    )
+    assert resp.status_code == 206
+    assert resp.body == b"0123456789"
+
+
+@pytest.mark.asyncio
+async def test_if_range_strong_etag_mismatch_serves_full_200(strong_static):
+    """A different opaque tag means the representation changed - full 200."""
+    resp = await strong_static.handle(
+        _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": '"strong-v2"'})
+    )
+    assert resp.status_code == 200
+    assert len(resp.body) == 100
+
+
+@pytest.mark.asyncio
+async def test_if_range_weak_client_token_against_strong_server_serves_200(strong_static):
+    """A `W/` marker on the client side alone defeats the strong comparison."""
+    resp = await strong_static.handle(
+        _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": 'W/"strong-v1"'})
+    )
+    assert resp.status_code == 200
+    assert len(resp.body) == 100
+
+
+@pytest.mark.asyncio
+async def test_if_range_lowercase_w_prefix_is_not_an_entity_tag(strong_static):
+    """RFC 9110 Sec. 8.8.3 spells the weak marker `W/`, case-sensitively, so
+    `w/"x"` parses as neither an entity-tag nor an HTTP-date. The unparseable
+    If-Range is ignored and the Range stands - it must never be mistaken for a
+    weak spelling of the server's own tag."""
+    resp = await strong_static.handle(
+        _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": 'w/"strong-v1"'})
+    )
+    assert resp.status_code == 206
+    assert resp.body == b"0123456789"
+
+
+@pytest.mark.asyncio
+async def test_if_range_ows_padded_server_etag_still_matches(tmp_path):
+    """OWS around a field value is not part of it (RFC 9110 Sec. 5.5), so a
+    padded server tag still satisfies the client's echo of it."""
+    f = tmp_path / "blob.bin"
+    f.write_bytes(b"0123456789" * 10)
+    sf = _PaddedEtagStatic(directory=str(tmp_path), prefix="/static")
+    echoed = (await sf.handle(_req("/static/blob.bin"))).headers["ETag"]
+    resp = await sf.handle(_req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": echoed}))
+    assert resp.status_code == 206
+    assert resp.body == b"0123456789"
+
+
+@pytest.mark.asyncio
+async def test_if_range_star_is_ignored_and_range_is_honored(static):
+    """`*` is neither an entity-tag nor an HTTP-date; RFC 9110 Sec. 13.1.5 says
+    an unparseable If-Range is ignored, leaving the Range in force."""
+    sf, _ = static
+    resp = await sf.handle(_req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": "*"}))
+    assert resp.status_code == 206
+    assert resp.body == b"0123456789"
+
+
+@pytest.mark.asyncio
+async def test_if_range_agrees_with_if_match_on_the_same_validators(strong_static):
+    """The two preconditions run one comparison function, so a token that
+    satisfies If-Match also authorizes an If-Range resume."""
+    ok = await strong_static.handle(_req("/static/blob.bin", {"If-Match": '"strong-v1"'}))
+    assert ok.status_code == 200
+    resumed = await strong_static.handle(
+        _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": '"strong-v1"'})
+    )
+    assert resumed.status_code == 206
+
+    denied = await strong_static.handle(_req("/static/blob.bin", {"If-Match": 'W/"strong-v1"'}))
+    assert denied.status_code == 412
+    not_resumed = await strong_static.handle(
+        _req("/static/blob.bin", {"Range": "bytes=0-9", "If-Range": 'W/"strong-v1"'})
+    )
+    assert not_resumed.status_code == 200

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import time
 
 import orjson
@@ -24,11 +25,11 @@ from veloce import (
     current_principal,
     set_principal,
 )
-from veloce.contrib.mcp import Icon, MCPAuth, MCPSession
+from veloce.contrib.mcp import Icon, MCPAuth, MCPSession, plan_bridge
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
-from veloce.contrib.mcp.tasks import STATUS_FAILED
 from veloce.contrib.mcp.transports.stdio import StdioTransport
+from veloce.dependency import DependencyResolver
 
 # -- In-process stdio driver ------------------------------------------
 
@@ -196,8 +197,10 @@ def test_input_schema_from_signature():
     assert schema["type"] == "object"
     props = schema["properties"]
     assert props["text"] == {"type": "string"}
-    assert props["times"] == {"type": "integer"}
-    assert props["loud"] == {"type": "boolean"}
+    # A parameter's default is part of its published contract, so a client can
+    # populate the field itself rather than relying on the server's fallback.
+    assert props["times"] == {"type": "integer", "default": 1}
+    assert props["loud"] == {"type": "boolean", "default": False}
     # `text` is required (no default); `times` / `loud` are not.
     assert schema["required"] == ["text"]
 
@@ -430,7 +433,7 @@ def test_parse_error_on_bad_json():
     app = Veloce(openapi_url=None)
     server = _server(app)
     transport = StdioTransport(server, None, None)  # type: ignore[arg-type]
-    out = asyncio.run(transport._process_line(b"{not json", MCPSession()))
+    out = transport._decode(b"{not json")[1]
     assert out["error"]["code"] == -32700
 
 
@@ -858,7 +861,12 @@ def test_duplicate_tool_name_raises():
         return 1
 
     # A second tool resolving to the same name collides at registry build.
-    app._mcp_tools.append((dup, "dup", "Two", None, None, None, False))
+    # Registered through the decorator so the test does not depend on the shape
+    # of the private registration tuple.
+    @app.mcp_tool(description="Two", name="dup")
+    async def other():
+        return 2
+
     with pytest.raises(ValueError, match="Duplicate"):
         build_registry(app)
 
@@ -1585,6 +1593,52 @@ def test_dependency_injected_response_mutation_reflected_in_result():
     assert payload == {"ok": True}
 
 
+def test_the_mcp_bridge_delegates_the_injected_slots_to_the_resolver():
+    """`K_RESPONSE` / `K_BG_TASKS` bind through `DependencyResolver`, not through
+    a second copy of its body. A local re-implementation here would drift the
+    moment the HTTP side changed its sentinel or its state key, and the HTTP
+    test suite would not see it."""
+    assert plan_bridge._injected_response is DependencyResolver._bind_injected_response
+    assert plan_bridge._background_tasks is DependencyResolver._bind_background_tasks
+
+
+def test_the_mcp_injected_response_starts_at_the_never_set_sentinel():
+    """`status_code = 0` is the "handler never set it" marker `_build_response`
+    tests before merging. It must reach an MCP handler that way, and must never
+    itself be merged onto the result."""
+    app = Veloce(openapi_url=None)
+    seen: list[int] = []
+
+    @app.get("/probe", expose_as_mcp_tool=True, mcp_description="Probe")
+    async def probe(response: Response) -> dict:
+        seen.append(response.status_code)
+        return {"ok": True}
+
+    out = _call(app, "probe", {})
+    assert "error" not in out
+    assert seen == [0]
+    assert out["result"].get("isError") is not True
+
+
+def test_an_mcp_dependency_and_handler_share_one_injected_response():
+    """Same contract as the HTTP path: one Response per call, not one per slot."""
+    app = Veloce(openapi_url=None)
+    seen: list[Response] = []
+
+    def stamp(response: Response) -> None:
+        seen.append(response)
+
+    @app.get("/shared", expose_as_mcp_tool=True, mcp_description="Shared")
+    async def shared(response: Response, _: None = Depends(stamp)) -> dict:
+        seen.append(response)
+        return {"ok": True}
+
+    out = _call(app, "shared", {})
+    assert "error" not in out
+    assert len(seen) == 2
+    assert seen[0] is seen[1]
+
+
 def test_shared_background_tasks_queue_runs_dependency_and_handler_tasks():
     """A dependency that injects `BackgroundTasks` and a handler that also takes
     `BackgroundTasks` share one request-scoped queue, so BOTH scheduled tasks
@@ -1687,12 +1741,15 @@ def test_dependency_body_model_fields_advertised_in_input_schema():
         return {"label": label}
 
     schema = build_registry(app).tools["mk2"].input_schema
-    # The dependency's body model surfaces as an input property referencing the
-    # inlined `Item` def, whose fields (name, qty) are resolvable in-schema.
-    assert "item" in schema["properties"]
-    assert "Item" in schema.get("$defs", {})
-    item_def = schema["$defs"]["Item"]
-    assert set(item_def["properties"]) == {"name", "qty"}
+    # The model validates against the whole argument mapping, so its fields are
+    # the tool's inputs. Declaring the parameter name instead would publish a
+    # shape the call path rejects.
+    assert set(schema["properties"]) == {"name", "qty"}
+    assert "item" not in schema["properties"]
+    # The published contract has to be the one a caller can actually satisfy.
+    out = _call(app, "mk2", {"name": "widget", "qty": 3})
+    assert "error" not in out
+    assert not out["result"].get("isError"), out["result"]["content"][0]["text"]
 
 
 def test_route_backed_tool_sees_route_method_and_path():
@@ -2843,7 +2900,11 @@ def test_initialize_advertises_resources_when_present():
         return {}
 
     caps = _initialize(app, {})["result"]["capabilities"]
-    assert caps["resources"] == {"subscribe": False, "listChanged": False}
+    # `listChanged` is true on a stateful connection whether or not subscriptions
+    # are on: a handler can narrow this connection's resource listing with
+    # `MCPContext.hide`, and the client is told so it fetches the list again.
+    # `subscribe` additionally needs the subscription machinery.
+    assert caps["resources"] == {"subscribe": False, "listChanged": True}
 
 
 def test_initialize_omits_resources_capability_when_none():
@@ -3465,7 +3526,7 @@ def test_prompt_duplicate_name_raises():
     async def greet() -> str:
         return "one"
 
-    app._mcp_prompts.append((greet, "greet", "Two", None, None, None))
+    app._mcp_prompts.append((greet, "greet", "Two", None, None, None, None))
     with pytest.raises(ValueError, match="Duplicate MCP prompt"):
         _server(app)
 
@@ -3488,7 +3549,9 @@ def test_initialize_advertises_prompts_when_present():
         return "hi"
 
     caps = _initialize(app, {})["result"]["capabilities"]
-    assert caps["prompts"] == {"listChanged": False}
+    # True over the stdio pipe: a stateful connection can be told its prompt
+    # listing changed, which `MCPContext.hide` can do.
+    assert caps["prompts"] == {"listChanged": True}
 
 
 def test_initialize_omits_prompts_capability_when_none():
@@ -4254,14 +4317,14 @@ def test_http_lifecycle_gating_enforced_with_sessions():
     assert orjson.loads(ok.body)["result"]["content"][0]["text"] == "3"
 
 
-def test_http_session_store_evicts_idle_sessions():
+async def test_http_session_store_evicts_idle_sessions():
     """An idle, never-DELETEd session is reclaimed by the store's idle TTL."""
     from veloce.contrib.mcp.transports.session_store import HttpSessionStore
 
     store = HttpSessionStore(idle_ttl=0.0)
-    sid, _session = store.create()
+    sid, _session = await store.create()
     # With a zero idle window any subsequent resolution evicts the stale id.
-    assert store.resolve(sid) is None
+    assert await store.resolve(sid) is None
 
 
 def test_event_store_caps_stream_count():
@@ -4363,20 +4426,24 @@ async def test_task_ownership_survives_session_id_recycle():
     assert listed["result"]["tasks"] == []
 
 
-async def test_stdio_task_runner_rejects_server_request():
-    """A task-augmented stdio tool calling ctx.sample settles failed, not deadlocked.
+async def test_stdio_task_augmented_tool_can_sample():
+    """A task-augmented stdio tool may issue a server->client request.
 
-    The serve loop resumes reading stdin after returning the CreateTaskResult, so a
-    second reader inside request() would race it; the guard refuses the call and the
-    task settles as a failed result carrying an actionable message.
+    It could not while the serve loop and the calling handler were two readers
+    of one stream: `request` pumped stdin itself, so a task - which runs after
+    the CreateTaskResult has already been returned - would have raced the loop.
+    The loop is now the sole reader and settles the future, so there is nothing
+    left to refuse.
     """
+    from veloce.contrib.mcp.tasks import STATUS_COMPLETED
+
     app = Veloce(openapi_url=None)
     app.debug = True
 
     @app.mcp_tool(description="Samples from a task", task_support=True)
     async def sampler(ctx: MCPContext) -> str:
-        await ctx.sample([{"role": "user", "content": "hi"}], max_tokens=8)
-        return "unreachable"
+        reply = await ctx.sample([{"role": "user", "content": "hi"}], max_tokens=8)
+        return reply.get("content", {}).get("text", "")
 
     pipe = _Pipe(_server(app))
     pipe.feed(
@@ -4395,17 +4462,49 @@ async def test_stdio_task_runner_rejects_server_request():
             "params": {"name": "sampler", "arguments": {}, "task": {}},
         }
     )
+
+    # Answer the server's sampling request as a real client would: watch for it
+    # on the outbound side and feed the correlated reply back in.
+    server = pipe.transport.server
+    captured: list = []
+    read_line = pipe.transport._read_line
+    answered = [False]
+
+    async def _answer_then_eof():
+        line = await read_line()
+        if line is not None:
+            return line
+        if not answered[0]:
+            for message in pipe.outbox:
+                if message.get("method") == "sampling/createMessage":
+                    answered[0] = True
+                    return orjson.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message["id"],
+                            "result": {"content": {"type": "text", "text": "sampled"}},
+                        }
+                    )
+            await asyncio.sleep(0)
+            return b""
+        for pending in list(server._tasks.tasks.values()):
+            if pending.runner is not None:
+                with contextlib.suppress(Exception):
+                    await pending.runner
+        captured.extend(server._tasks.tasks.values())
+        return None
+
+    pipe.transport._read_line = _answer_then_eof
     out = await pipe.run()
 
-    task_id = out[-1]["result"]["task"]["taskId"]
-    runner = pipe.transport.server._tasks.get(task_id).runner
-    await runner
-
-    task = pipe.transport.server._tasks.get(task_id)
-    assert task.status == STATUS_FAILED
-    assert task.result["isError"] is True
-    text = task.result["content"][0]["text"]
-    assert "not supported from a task-augmented tool call on the stdio transport" in text
+    task_id = next(
+        message["result"]["task"]["taskId"]
+        for message in out
+        if isinstance(message.get("result"), dict) and "task" in message["result"]
+    )
+    task = next(t for t in captured if t.name == task_id)
+    assert task.status == STATUS_COMPLETED, task.status_message
+    assert task.result["content"][0]["text"] == "sampled"
 
 
 # -- Principal + per-tool scopes --------------------------------------
@@ -4674,6 +4773,26 @@ def test_http_protected_resource_metadata_served():
     assert doc["resource"] == "https://api.example.com/mcp"
     assert doc["authorization_servers"] == ["https://auth.example.com"]
     assert doc["scopes_supported"] == ["mcp:tools"]
+    # RFC 9728 section 2: the client is told how to present the token. Only the
+    # header form is read, and the MCP spec forbids the query-string form.
+    assert doc["bearer_methods_supported"] == ["header"]
+
+
+def test_http_query_string_token_is_not_accepted():
+    """The advertised bearer method is the only one honoured."""
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Echo subject")
+    async def whoami() -> str:
+        principal = current_principal()
+        return principal.subject if principal else "anon"
+
+    app.mount_mcp(transport="http", auth=_auth())
+    response = app.test_client().post(
+        "/mcp?access_token=ok",
+        json=_mcp_call_body("whoami", {}),
+    )
+    assert response.status_code == 401
 
 
 def test_http_auth_async_verifier():

@@ -44,6 +44,11 @@ if TYPE_CHECKING:  # pragma: no cover
 # The task status values the spec defines. `working` is the only non-terminal
 # state the framework drives a task into on its own; `input_required` is modelled
 # for a tool that needs client follow-up but is never entered automatically.
+# The extension the modern revision moves tasks into. A client declares it in the
+# `extensions` block of its per-request capabilities; a server advertises the same
+# key in `server/discover`. A task is never returned to a client that did not.
+TASKS_EXTENSION = "io.modelcontextprotocol/tasks"
+
 STATUS_WORKING = "working"
 STATUS_INPUT_REQUIRED = "input_required"
 STATUS_COMPLETED = "completed"
@@ -119,23 +124,40 @@ class MCPTask(MCPDescriptor):
     # The running asyncio task, kept so `tasks/cancel` can unwind it; cleared once
     # the task settles. Typed loosely to avoid importing asyncio at module load.
     runner: Any = None
+    # Responses a client supplied for this task's outstanding input requests, keyed
+    # as the requests were. Written by `tasks/update`; read by a handler resuming
+    # work that asked for input.
+    input_responses: dict[str, Any] = field(default_factory=dict)
 
-    def describe(self) -> dict[str, Any]:
-        """Shape this task into the MCP Task object the task methods return."""
+    def describe(self, *, modern: bool = False) -> dict[str, Any]:
+        """Shape this task into the MCP Task object the task methods return.
+
+        The extension renamed the two duration fields, so a modern client is sent
+        `ttlMs` / `pollIntervalMs` and a handshake client the names its revision
+        defined. Everything else is common to both.
+        """
         task: dict[str, Any] = {
             "taskId": self.name,
             "status": self.status,
             "createdAt": self.created_at,
             "lastUpdatedAt": self.last_updated_at,
-            "ttl": self.ttl_ms,
+            "ttlMs" if modern else "ttl": self.ttl_ms,
         }
         if self.status_message is not None:
             task["statusMessage"] = self.status_message
         # A working task suggests a poll cadence so the client does not busy-loop;
         # a settled task needs no further polling, so the hint is omitted.
         if self.status == STATUS_WORKING:
-            task["pollInterval"] = _POLL_INTERVAL_MS
+            task["pollIntervalMs" if modern else "pollInterval"] = _POLL_INTERVAL_MS
+        # On the modern revision a completed task carries its result here, since
+        # `tasks/result` no longer exists to fetch it separately.
+        if modern and self.status == STATUS_COMPLETED and self.result is not None:
+            task["result"] = self.result
         return task
+
+    def touch(self) -> None:
+        """Record that the task changed without altering its status."""
+        self.last_updated_at = _now_iso()
 
     def is_terminal(self) -> bool:
         """Return whether the task has settled (no further transition happens)."""
@@ -233,14 +255,22 @@ def new_task(tool_name: str, ttl_ms: int, owner_key: int | None = None) -> MCPTa
     return task
 
 
-def create_task_result(task: MCPTask) -> dict[str, Any]:
+def _modern_params(params: dict[str, Any]) -> bool:
+    """Whether the request carrying these params declared a modern revision."""
+    meta = params.get("_meta")
+    return isinstance(meta, dict) and isinstance(
+        meta.get("io.modelcontextprotocol/protocolVersion"), str
+    )
+
+
+def create_task_result(task: MCPTask, *, modern: bool = False) -> dict[str, Any]:
     """Build the `CreateTaskResult` returned immediately for a task-augmented call.
 
     Carries the new task object plus the non-binding model-immediate-response
     hint so the client knows no immediate model turn is expected.
     """
     return {
-        "task": task.describe(),
+        "task": task.describe(modern=modern),
         "_meta": {_META_MODEL_IMMEDIATE_RESPONSE: True},
     }
 
@@ -278,18 +308,43 @@ class TasksCapability(_ServerCapability):
         # `requests.tools/call` declares that a `tools/call` may be task-augmented.
         return {"tasks": {"list": {}, "cancel": {}, "requests": {"tools/call": {}}}}
 
+    def extensions(self) -> dict[str, Any] | None:
+        """Advertise the tasks extension when any tool opts into task execution."""
+        if not any(tool.task_support for tool in self._server.registry.tools.values()):
+            return None
+        return {TASKS_EXTENSION: {}}
+
     def handlers(self) -> dict[str, MethodHandler]:
         return {
             "tasks/get": self._get,
             "tasks/result": self._result,
             "tasks/list": self._list,
             "tasks/cancel": self._cancel,
+            "tasks/update": self._update,
         }
 
-    async def _get(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Return a task's current status object (``tasks/get`` polling)."""
+    async def _update(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Deliver responses to a task's outstanding input requests (`tasks/update`).
+
+        Acknowledged with an empty result. A response keyed to a request the task
+        is not waiting on is ignored rather than rejected, since the spec expects a
+        client to be able to answer late or twice without failing the call.
+        """
         task = self._lookup(params)
-        return task.describe()
+        responses = params.get("inputResponses")
+        if isinstance(responses, dict) and responses:
+            task.input_responses.update(responses)
+            task.touch()
+        return {}
+
+    async def _get(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Return a task's current status object (``tasks/get`` polling).
+
+        For a modern client this is the whole interface: the extension retired
+        `tasks/result`, so a completed task carries its result here.
+        """
+        task = self._lookup(params)
+        return task.describe(modern=_modern_params(params))
 
     async def _result(self, params: dict[str, Any]) -> dict[str, Any]:
         """Return a settled task's `tools/call` result (``tasks/result``).

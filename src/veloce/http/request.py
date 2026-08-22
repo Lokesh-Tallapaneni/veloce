@@ -268,6 +268,7 @@ class Request:
 
     @property
     def path_params(self) -> dict[str, str]:
+        """Path parameters captured by the matched route pattern."""
         return self._path_params
 
     @path_params.setter
@@ -742,16 +743,32 @@ class Request:
         if self._url is None:
             scope = getattr(self, "scope", None)
             scope_scheme = scope.get("scheme") if isinstance(scope, dict) else None
+            # The raw transport carries no ASGI scope, so nothing else can
+            # tell this request it arrived over TLS: `app.run(ssl_context=)`
+            # and the gunicorn worker both terminate TLS on the connection
+            # itself. Without this the scheme fell through to plain "http" on a
+            # genuinely encrypted connection, so `url_for(_external=True)`
+            # emitted http:// and any `scheme == "https"` check failed. The live
+            # connection outranks `X-Forwarded-Proto` below: a header cannot be
+            # more authoritative than the socket it arrived on.
+            if (
+                scope_scheme is None
+                and self.transport is not None
+                and self.transport.get_extra_info("ssl_object") is not None
+            ):
+                scope_scheme = URL_SCHEME_HTTPS
             # A trusted ProxyFix hop stashes the public port here when the
             # forwarded Host carries none (e.g. proxy sends X-Forwarded-Host
             # without a port plus a separate X-Forwarded-Port: 8443).
-            forwarded_port = self._state.get("proxy_fix_port") if self._state else None
+            state = self._state
+            forwarded_port = state.get("proxy_fix_port") if state else None
             self._url = URL.from_request(
                 self.headers,
                 self.path,
                 self.query_string,
                 scope_scheme=scope_scheme,
                 forwarded_port=forwarded_port,
+                trust_forwarded_proto=not (state and "proxy_fix_applied" in state),
             )
         return self._url
 
@@ -861,7 +878,7 @@ class Request:
         return host.split(".", 1)[0]
 
     @property
-    def environ(self) -> dict:
+    def environ(self) -> dict[str, Any]:
         """Alias for the ASGI `scope` dict.
 
         Third-party code paths reach for `request.environ` (WSGI); ASGI
@@ -940,7 +957,7 @@ class Request:
     # ── Client and connection ─────────────────────────────
     @property
     def client_host(self) -> str | None:
-        """Return the client's IP address from the ASGI scope."""
+        """Return the client's IP address, or `None` when the peer is unknown."""
         # If a ProxyFix-style middleware ran upstream, it stashed the
         # trusted client IP on `_state`. Prefer that over the raw TCP peer.
         proxied = self._state.get("proxy_fix_client")
@@ -950,16 +967,22 @@ class Request:
             peername = self.transport.get_extra_info("peername")
             if peername:
                 return peername[0]
-        return None
+        # ASGI path - the peer lives on the scope, not a transport. Reading it
+        # here (rather than in each caller) is what keeps `remote_addr` and the
+        # rate limiter's client bucket from silently degrading under an ASGI
+        # server, where `transport` is always None.
+        client = self.scope.get("client") if self.scope else None
+        return client[0] if client else None
 
     @property
     def client_port(self) -> int | None:
-        """Return the client's port number from the ASGI scope."""
+        """Return the client's port number, or `None` when the peer is unknown."""
         if self.transport:
             peername = self.transport.get_extra_info("peername")
             if peername and len(peername) >= 2:
                 return peername[1]
-        return None
+        client = self.scope.get("client") if self.scope else None
+        return client[1] if client and len(client) >= 2 else None
 
     @property
     def client(self) -> Address | None:
@@ -972,13 +995,8 @@ class Request:
         """
         host = self.client_host
         if host is None:
-            # ASGI scope path - `scope["client"]` is `(host, port)`.
-            scope_client = self.scope.get("client") if self.scope else None
-            if scope_client:
-                return Address(scope_client[0], scope_client[1])
             return None
-        port = self.client_port or 0
-        return Address(host, port)
+        return Address(host, self.client_port or 0)
 
     @property
     def remote_addr(self) -> str | None:
@@ -1007,11 +1025,6 @@ class Request:
         forwarded = self.headers.get(HEADER_X_FORWARDED_FOR, "")
         chain: list[str] = [v.strip() for v in forwarded.split(",") if v.strip()]
         peer = self.client_host
-        if not peer:
-            # ASGI scope path - `scope["client"]` is `(host, port)` per spec.
-            client = self.scope.get("client") if self.scope else None
-            if client:
-                peer = client[0]
         if peer:
             chain.append(peer)
         return chain
@@ -1172,6 +1185,19 @@ class Request:
         raise exc from error
 
     # ── Async body, form, and streaming ────────────────────
+
+    def _mark_body_buffered(self) -> None:
+        """Publish an already-complete body without awaiting the source.
+
+        The raw transport builds a `Request` at headers-complete and only then
+        feeds the body, so a non-streaming route has to buffer before dispatch
+        for the sync `.data` / `.get_json()` / `.form` accessors to see it. When
+        the whole request arrived in one segment - the common case - the source
+        is already at EOF with nothing queued, and awaiting it would cost a
+        coroutine per request to learn there is nothing to wait for. The caller
+        checks `source.at_eof` and calls this instead.
+        """
+        self._body_drained = True
 
     async def _drain_body(self) -> bytes:
         """Pull the body source to EOF once and cache the assembled bytes.

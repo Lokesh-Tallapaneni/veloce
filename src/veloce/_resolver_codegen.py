@@ -37,7 +37,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, get_args, get_origin
 
-from veloce._constants import MSG_FIELD_REQUIRED
+from veloce._constants import MSG_FIELD_REQUIRED, STATE_INJECTED_RESPONSE
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_DEPENDS,
@@ -245,12 +245,23 @@ def _emit_graph_slot(
     if kind == K_RESPONSE:
         # One Response per request, shared with any dependency that also
         # declares the parameter; `status_code = 0` is the dispatcher's
-        # "not set by the handler" sentinel. Mirrors `_resolve_slots`.
-        lines.append("    _inj = request._state.get('_injected_response')")
+        # "not set by the handler" sentinel. Mirrors
+        # `DependencyResolver._bind_injected_response`, which is the spec this
+        # emitter tracks - deliberately re-emitted rather than called.
+        #
+        # Emitting `k[name] = _bind(request)` instead was measured against this
+        # straight-line form: 19.7% slower when the slot is already present
+        # (373 -> 447 ns/call) and 10.6% slower when the Response is constructed
+        # (1183 -> 1308 ns/call), with the identical-work control inside the
+        # noise floor both times (-1.3% and +4.2%). A helper call per request is
+        # exactly what `compile_graph_resolver` exists to remove, so the copy
+        # stays. The shared key constant costs nothing (it is inlined into the
+        # generated source below), so only the body is duplicated.
+        lines.append(f"    _inj = request._state.get({STATE_INJECTED_RESPONSE!r})")
         lines.append("    if _inj is None:")
         lines.append("        _inj = _Resp()")
         lines.append("        _inj.status_code = 0")
-        lines.append("        request._state['_injected_response'] = _inj")
+        lines.append(f"        request._state[{STATE_INJECTED_RESPONSE!r}] = _inj")
         lines.append(f"    {target}[{name!r}] = _inj")
         return
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from veloce import BackgroundTasks, Depends, Query, Response, Security, Veloce
+from veloce._constants import STATE_INJECTED_RESPONSE
 from veloce._handler_plan import build_plan
 from veloce._internal import offload
 from veloce._resolver_codegen import compile_graph_resolver
@@ -259,3 +260,103 @@ def test_compiled_resolver_cached_on_plan():
     asyncio.new_event_loop().run_until_complete(DependencyResolver().resolve_plan(plan, _req(), {}))
     assert plan.compiled_graph_resolver is not None
     assert plan.compiled_graph_resolver is not _NOT_COMPILABLE
+
+
+# ── The injected `Response` slot: emitted inline, read back by the dispatcher ──
+#
+# `K_RESPONSE` is the one slot the emitter restates rather than delegates: a
+# helper call per request is what this compiler exists to remove (measured 19.7%
+# slower warm, 10.6% cold). The emitted body and
+# `DependencyResolver._bind_injected_response` therefore have to be pinned
+# against each other, and both against the key `_build_response` reads.
+
+
+def test_response_slot_with_a_dependency_compiles():
+    async def handler(response: Response, v=Depends(lambda: 1)):
+        return v
+
+    assert _compiles(handler) is True
+
+
+@pytest.mark.asyncio
+async def test_compiled_and_interpreted_paths_store_under_the_same_key():
+    """Both bind the injected Response into `request._state` under
+    `STATE_INJECTED_RESPONSE` - the constant `app/dispatch.py` reads."""
+
+    def dep():
+        return 1
+
+    async def compiled(response: Response, v=Depends(dep)):
+        return response
+
+    async def interpreted(response: Response):
+        return response
+
+    resolver = DependencyResolver()
+    for handler in (compiled, interpreted):
+        request = _req()
+        kwargs = await resolver.resolve_plan(build_plan(handler), request, {})
+        assert request._state[STATE_INJECTED_RESPONSE] is kwargs["response"]
+        assert kwargs["response"].status_code == 0  # the "handler never set it" sentinel
+
+    # ...and the compiled path really was the compiled path.
+    assert build_plan(compiled).compiled_graph_resolver is None  # a fresh plan
+    plan = build_plan(compiled)
+    await resolver.resolve_plan(plan, _req(), {})
+    assert plan.compiled_graph_resolver is not None
+    assert plan.compiled_graph_resolver is not _NOT_COMPILABLE
+
+
+@pytest.mark.asyncio
+async def test_compiled_path_hands_one_response_to_dependency_and_handler():
+    """The emitted body reuses an existing entry rather than overwriting it, so
+    a dependency that already injected `Response` shares the handler's object."""
+    seen: list[Response] = []
+
+    def stamp(response: Response):
+        seen.append(response)
+        response.headers["X-From-Dep"] = "yes"
+
+    async def handler(response: Response, _=Depends(stamp)):
+        return response
+
+    request = _req()
+    kwargs = await DependencyResolver().resolve_plan(build_plan(handler), request, {})
+    assert len(seen) == 1
+    assert seen[0] is kwargs["response"]
+    assert kwargs["response"].headers["X-From-Dep"] == "yes"
+
+
+@pytest.mark.asyncio
+async def test_compiled_response_injection_merges_end_to_end():
+    """Through the full dispatch: the status the handler set on the compiled
+    path's injected Response reaches the wire."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    def dep():
+        return "d"
+
+    @app.get("/teapot")
+    async def teapot(response: Response, v=Depends(dep)):
+        response.status_code = 418
+        response.headers["X-Injected"] = v
+        return {"ok": True}
+
+    resp = await app.handle_request(_req(path="/teapot"))
+    assert resp.status_code == 418
+    assert resp.headers["X-Injected"] == "d"
+    assert _compiles(teapot) is True
+
+
+@pytest.mark.asyncio
+async def test_compiled_path_untouched_response_leaves_the_sentinel_unmerged():
+    """`status_code = 0` must never surface; the dispatcher treats it as
+    "handler never set it"."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/plain")
+    async def plain(response: Response, v=Depends(lambda: 1)):
+        return {"ok": True}
+
+    resp = await app.handle_request(_req(path="/plain"))
+    assert resp.status_code == 200

@@ -119,7 +119,8 @@ class InMemoryCache(Cache):
             return None
         value, expires_at = entry
         if expires_at <= time.monotonic():
-            del self._entries[key]  # lazily evict on access
+            # Evict lazily, on the access that observes the expiry.
+            del self._entries[key]
             return None
         return value
 

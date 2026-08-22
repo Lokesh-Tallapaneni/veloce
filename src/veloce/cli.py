@@ -29,6 +29,7 @@ executed only when its command is the one selected on the command line, so
 from __future__ import annotations
 
 import argparse
+import asyncio
 import contextlib
 import functools
 import importlib
@@ -315,6 +316,82 @@ def _cmd_check(args: argparse.Namespace) -> int:
     else:
         print("Response contracts: every route publishes a response schema.")
     return 1 if issues else 0
+
+
+def _cmd_mcp_run(args: argparse.Namespace) -> int:
+    """`veloce mcp run` - serve the app's MCP tools over stdio or HTTP.
+
+    An MCP client launches its servers from a config file naming a command and
+    its arguments, so this is what goes there - no wrapper script whose only job
+    is to call `mount_mcp`.
+
+    On stdio the process speaks JSON-RPC over stdout, so nothing else may be
+    written there: every message this command emits goes to stderr.
+    """
+    _apply_env_file(args)
+    app = _load_app(args.app)
+    _require_app_attr(app, "mount_mcp", "`.mount_mcp()`")
+
+    if args.transport == "stdio":
+        asyncio.run(app.mount_mcp(transport="stdio"))
+        return 0
+
+    app.mount_mcp(transport="http", path=args.path, sessions=args.sessions)
+    try:
+        import uvicorn
+    except ImportError:
+        uvicorn = None  # type: ignore[assignment]
+
+    if uvicorn is not None:
+        # The app object is passed rather than its import string: the mount above
+        # happened on *this* instance, and re-importing would serve one without it.
+        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+        return 0
+
+    if args.host in ("0.0.0.0", "::"):
+        app.run(port=args.port, bind_all=True)
+    else:
+        app.run(host=args.host, port=args.port)
+    return 0
+
+
+def _cmd_mcp_list(args: argparse.Namespace) -> int:
+    """`veloce mcp list` - print the tools, resources and prompts a client sees.
+
+    The MCP counterpart to `veloce routes`: it answers "did my tool register,
+    and under what name" without launching a client to ask.
+    """
+    _apply_env_file(args)
+    app = _load_app(args.app)
+    _require_app_attr(app, "mount_mcp", "`.mount_mcp()`")
+
+    from veloce.contrib.mcp.server import MCPServer
+
+    server = MCPServer(app)
+    sections = (
+        ("TOOLS", [(name, tool.description or "") for name, tool in server.registry.tools.items()]),
+        (
+            "RESOURCES",
+            [(res.uri, res.description or "") for res in server.resources.resources.values()],
+        ),
+        (
+            "PROMPTS",
+            [(name, prompt.description or "") for name, prompt in server.prompts.prompts.items()],
+        ),
+    )
+    empty = True
+    for title, rows in sections:
+        if not rows:
+            continue
+        empty = False
+        print(title)
+        width = max(len(name) for name, _ in rows)
+        for name, description in rows:
+            print(f"  {name:<{width}}  {description}")
+        print()
+    if empty:
+        print("No MCP tools, resources, or prompts registered.")
+    return 0
 
 
 def _cmd_new(args: argparse.Namespace) -> int:
@@ -671,6 +748,38 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
     p_run.add_argument("--log-level", default="info")
     _add_env_file_args(p_run)
     p_run.set_defaults(func=_cmd_run)
+
+    p_mcp = sub.add_parser("mcp", help="Serve or inspect the app's MCP surface.")
+    mcp_sub = p_mcp.add_subparsers(dest="mcp_command", required=True)
+
+    p_mcp_run = mcp_sub.add_parser("run", help="Serve the app's MCP tools.")
+    p_mcp_run.add_argument("app", help=MSG_APP_REFERENCE_FORM)
+    p_mcp_run.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Wire to serve on (default: stdio, what an MCP client launches).",
+    )
+    p_mcp_run.add_argument(
+        "--path", default="/mcp", metavar="PATH", help="HTTP endpoint path (default: /mcp)."
+    )
+    p_mcp_run.add_argument(
+        "--sessions",
+        action="store_true",
+        help="Opt into the Mcp-Session-Id lifecycle on the HTTP transport.",
+    )
+    p_mcp_run.add_argument("--host", default="127.0.0.1")
+    p_mcp_run.add_argument("--port", type=int, default=8000)
+    p_mcp_run.add_argument("--log-level", default="info")
+    _add_env_file_args(p_mcp_run)
+    p_mcp_run.set_defaults(func=_cmd_mcp_run)
+
+    p_mcp_list = mcp_sub.add_parser(
+        "list", help="Print the tools, resources and prompts a client would see."
+    )
+    p_mcp_list.add_argument("app", help=MSG_APP_REFERENCE_FORM)
+    _add_env_file_args(p_mcp_list)
+    p_mcp_list.set_defaults(func=_cmd_mcp_list)
 
     p_routes = sub.add_parser("routes", help="Print the route table.")
     p_routes.add_argument("app", help=MSG_APP_REFERENCE_FORM)

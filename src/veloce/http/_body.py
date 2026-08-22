@@ -230,7 +230,8 @@ class RequestBodySource:
                 self._resume()
         while not self._eof:
             self._chunks.clear()
-            self._size = 0  # reset so the discarded bytes don't trip the cap
+            # Reset so the discarded bytes do not count toward the cap.
+            self._size = 0
             self._event.clear()
             await self._event.wait()
         self._chunks.clear()
@@ -317,7 +318,8 @@ class ASGIBodySource:
                     raise RequestEntityTooLarge(f"Request body exceeds the {self._max}-byte limit")
                 if parts is None:
                     if last:
-                        return chunk  # whole body in one message: no list/join
+                        # Whole body arrived in one message: skip the list/join.
+                        return chunk
                     parts = [chunk]
                 else:
                     parts.append(chunk)

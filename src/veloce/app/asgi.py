@@ -27,6 +27,7 @@ from veloce._internal import (
     MIME_HTML,
     MIME_JSON,
     MIME_OCTET,
+    _current_app_var,
     _encode_header_value,
     _extract_host,
     _reject_header_crlf,
@@ -64,7 +65,7 @@ from veloce.exceptions import (
     WebSocketException,
     WebSocketRequestValidationError,
 )
-from veloce.helpers import _current_app_var, g
+from veloce.helpers import g
 from veloce.http._body import ASGIBodySource
 from veloce.http.request import Request
 from veloce.http.response import (
@@ -316,7 +317,7 @@ class AsgiMixin:
             ws_exc = exc
             if ws._needs_close:
                 with contextlib.suppress(Exception):
-                    await ws.close(code=status.WS_1011_INTERNAL_ERROR)  # internal error
+                    await ws.close(code=status.WS_1011_INTERNAL_ERROR)
             raise
         else:
             # Clean exit. On the raw path a peer-initiated close has set
@@ -337,7 +338,7 @@ class AsgiMixin:
             except Exception:
                 self.logger.exception("yield-dependency teardown raised")
 
-    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+    async def __call__(self, scope: dict[str, Any], receive: Callable, send: Callable) -> None:
         """ASGI interface - allows running under uvicorn/hypercorn if desired.
 
         Any third-party ASGI middleware registered via `add_middleware` (and the

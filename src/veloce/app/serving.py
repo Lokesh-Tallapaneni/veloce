@@ -250,6 +250,13 @@ class ServingMixin:
                     while not shutdown_event.is_set():
                         with contextlib.suppress(TimeoutError):
                             await asyncio.wait_for(shutdown_event.wait(), 0.25)
+                # Quiesce live connections while still INSIDE the context
+                # manager: leaving it runs `close()` + `await wait_closed()`,
+                # and since Python 3.12 that really waits for every accepted
+                # connection. An idle keep-alive client would otherwise hold
+                # shutdown for the full KEEP_ALIVE_TIMEOUT before
+                # `_graceful_shutdown` ever got the chance to drain it.
+                HttpProtocol.start_graceful_drain()
         finally:
             for sig_num, previous in restore_signals:
                 with contextlib.suppress(ValueError, OSError):

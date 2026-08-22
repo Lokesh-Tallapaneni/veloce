@@ -24,8 +24,10 @@ class ToolsCapability(_ServerCapability):
     __slots__ = ()
 
     def advertise(self) -> dict[str, Any]:
-        # `listChanged` is off: the tool set is fixed once the server is built.
-        return {"tools": {"listChanged": False}}
+        # The registry is fixed once the server is built, but what a connection is
+        # *listed* is not: a handler may narrow this connection's view with
+        # `MCPContext.hide`, and the client is told so it fetches the list again.
+        return {"tools": {"listChanged": self._connection_can_be_told()}}
 
     def handlers(self) -> dict[str, MethodHandler]:
         return {
@@ -49,10 +51,16 @@ class ResourcesCapability(_ServerCapability):
         # `Mcp-Session-Id` session) advertises and serves them.
         if not self._server.resources.resources:
             return None
-        session = self._server.current_session()
-        stateful = session is not None and session.persistent
-        enabled = self._server._subscriptions_enabled and stateful
-        return {"resources": {"subscribe": enabled, "listChanged": enabled}}
+        stateful = self._connection_can_be_told()
+        # `subscribe` additionally needs the subscription machinery; `listChanged`
+        # needs only the channel, because `MCPContext.hide` can narrow a
+        # connection's resource listing whether or not subscriptions are on.
+        return {
+            "resources": {
+                "subscribe": self._server._subscriptions_enabled and stateful,
+                "listChanged": stateful,
+            }
+        }
 
     def handlers(self) -> dict[str, MethodHandler]:
         return {
@@ -70,7 +78,7 @@ class PromptsCapability(_ServerCapability):
     def advertise(self) -> dict[str, Any] | None:
         if not self._server.prompts.prompts:
             return None
-        return {"prompts": {"listChanged": False}}
+        return {"prompts": {"listChanged": self._connection_can_be_told()}}
 
     def handlers(self) -> dict[str, MethodHandler]:
         return {

@@ -31,6 +31,8 @@ import contextvars
 import functools
 import hashlib
 import inspect
+import mimetypes
+import os
 import sys
 import weakref
 from collections.abc import Callable, Iterable
@@ -52,6 +54,50 @@ from veloce.secret import Secret
 MIME_HTML = MIME_TEXT_HTML_UTF8
 MIME_PLAIN = MIME_TEXT_PLAIN_UTF8
 MIME_OCTET = MIME_OCTET_STREAM
+
+
+# Media types pinned to their standard spelling rather than whatever the host
+# registry says. RFC 9239 obsoleted `application/javascript` in favour of
+# `text/javascript`; the rest are here because a Windows registry entry can
+# shadow or omit them entirely.
+_WEB_MEDIA_TYPES: dict[str, str] = {
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".json": "application/json",
+    ".css": "text/css",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".svg": "image/svg+xml",
+    ".wasm": "application/wasm",
+}
+
+
+@functools.lru_cache(maxsize=512)
+def guess_content_type(path: str) -> str:
+    """Return the media type a path's extension names, or the octet-stream default.
+
+    `mimetypes.guess_type` walks the registered table on every call, and both
+    callers - the static server and every `FileResponse` - hit the same handful
+    of extensions repeatedly, so the answer is memoized. Bounded, so a client
+    probing arbitrary paths cannot grow it without limit.
+
+    The cache does not observe a `mimetypes.add_type` made after an extension
+    has already been guessed once. Registering media types at import time, as
+    the stdlib intends, is unaffected.
+
+    A handful of web types are answered from `_WEB_MEDIA_TYPES` before the
+    stdlib is consulted, because `mimetypes` reads the platform registry: on
+    Windows `.js` resolves to the obsolete `application/javascript`, and `.json`
+    or `.svg` can be absent or remapped by whatever software last claimed the
+    extension. Serving a script as the wrong type is a real failure - a strict
+    client refuses it - so these do not get to vary by host.
+    """
+    extension = os.path.splitext(path)[1].lower()
+    fixed = _WEB_MEDIA_TYPES.get(extension)
+    if fixed is not None:
+        return fixed
+    return mimetypes.guess_type(path)[0] or MIME_OCTET_STREAM
+
 
 # `BaseExceptionGroup` is a builtin only from Python 3.11 (PEP 654); on 3.10 the
 # name is absent. Resolved once here so the lifespan-unwind, debug, and
@@ -413,3 +459,15 @@ def _ws_handshake_rejection(middlewares: Iterable[object], host: str, origin: st
         if origin_check is not None and not origin_check(origin):
             return True
     return False
+
+
+# The active app and request for the current task. They live here rather than in
+# `helpers` because four subpackages (`app`, `contrib`, `middleware`) read them
+# directly, and a public module is the wrong place to reach into for a private
+# name. `helpers` re-exports them for the `current_app` / `request` proxies.
+_current_app_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "veloce_current_app", default=None
+)
+_current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "veloce_current_request", default=None
+)

@@ -20,12 +20,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable, Iterable
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from veloce import status
+from veloce._internal import _is_async_callable, offload
+from veloce._model_backend import shape_through_model
 from veloce.contrib.mcp._helpers import (
+    _DEFERRED_RESPONSE,
+    _attach_result_meta,
     _binary_result,
+    _declared_mime_type,
     _describe_prompt,
     _describe_resource,
     _describe_resource_template,
@@ -36,11 +41,11 @@ from veloce.contrib.mcp._helpers import (
     _notifier_var,
     _principal_lacks_scopes,
     _progress_token,
+    _request_id_var,
     _requester_var,
     _resource_contents,
     _response_body_value,
     _RouteResponse,
-    _session_var,
     _ShortCircuit,
     _stringify,
     _text_result,
@@ -56,7 +61,7 @@ from veloce.contrib.mcp.capabilities import (
     ToolsCapability,
 )
 from veloce.contrib.mcp.completion import CompletionsCapability, attach_completers
-from veloce.contrib.mcp.context import _LOG_RANKS
+from veloce.contrib.mcp.context import _LOG_RANKS, LOG_LEVEL_OFF, _result_meta_var, _session_var
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
     _JSONRPC_INVALID_REQUEST,
@@ -64,6 +69,8 @@ from veloce.contrib.mcp.errors import (
     AuthorizationError,
     InternalError,
     InvalidParamsError,
+    InvalidRequestError,
+    MCPCapabilityError,
     MCPError,
     ResourceNotFoundError,
     UnsupportedProtocolVersionError,
@@ -72,16 +79,30 @@ from veloce.contrib.mcp.errors import (
     _InBandError,
     _InvalidArgumentsError,
 )
-from veloce.contrib.mcp.icons import render_icons
+from veloce.contrib.mcp.icons import coerce_icons, render_icons
+from veloce.contrib.mcp.pagination import paginate
 from veloce.contrib.mcp.prompts import PromptRegistry, build_prompt_registry
-from veloce.contrib.mcp.registry import ToolRegistry, build_registry
+from veloce.contrib.mcp.registry import (
+    VERSION_META_KEY,
+    ToolFilter,
+    ToolRegistry,
+    build_registry,
+)
 from veloce.contrib.mcp.resources import ResourceRegistry, build_resource_registry
-from veloce.contrib.mcp.subscriptions import ConnectionRegistry, SubscriptionsCapability
+from veloce.contrib.mcp.subscriptions import (
+    ConnectionRegistry,
+    SubscriptionsCapability,
+    subscription_closed_response,
+)
 from veloce.contrib.mcp.tasks import TaskRegistry, TasksCapability
+from veloce.contrib.mcp.toolsearch import ToolSearch
 from veloce.http.response import Response
+from veloce.principal import current_principal
 
 if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.mcp.prompts import MCPPrompt
     from veloce.contrib.mcp.registry import MCPTool
+    from veloce.contrib.mcp.resources import MCPResource
     from veloce.contrib.mcp.session import MCPSession
 
 _logger = logging.getLogger(__name__)
@@ -124,16 +145,182 @@ SERVED_PROTOCOL_VERSIONS: tuple[str, ...] = (
 META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
 META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+# The modern revision sets the log level per request rather than per connection. A
+# request that omits it gets no `notifications/message` at all.
+META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
 META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 
 # Every modern result carries this discriminator. `"complete"` is an ordinary
 # result; `"input_required"` marks a multi-round-trip interim result, which this
 # server does not yet produce.
 RESULT_TYPE_COMPLETE = "complete"
+RESULT_TYPE_TASK = "task"
+# The methods the spec requires caching hints on, for a `complete` result.
+# Methods a handshake-era client has and a modern one does not. Still served to the
+# revision that defined them, reported as not found to the revision that removed
+# them, so a client discovers the surface it actually has.
+_HANDSHAKE_ONLY_METHODS = frozenset(
+    {
+        # Retired by the tasks extension.
+        "tasks/list",
+        "tasks/result",
+        # Removed by the modern revision. A modern client sets its log level per
+        # request in `_meta` instead of once per connection, and has no `ping`.
+        "ping",
+        "logging/setLevel",
+    }
+)
+_CACHEABLE_METHODS = frozenset(
+    {
+        "server/discover",
+        "tools/list",
+        "prompts/list",
+        "resources/list",
+        "resources/templates/list",
+        "resources/read",
+    }
+)
+# How long a client may consider a list result fresh. The registries are built once
+# at startup and never change shape afterwards, so a generous default costs nothing
+# in staleness and saves an agent re-listing on every reconnect.
+DEFAULT_CACHE_TTL_MS = 300_000
+# A result that can differ between callers must not be cached by a shared proxy.
+_CACHE_SCOPE_PUBLIC = "public"
+_CACHE_SCOPE_PRIVATE = "private"
 
 # Membership set for the per-request version check; the tuple above is the
 # ordered form clients are shown.
 _SERVED_VERSION_SET = frozenset(SERVED_PROTOCOL_VERSIONS)
+
+# A prompt or a resource: both are gated by the scopes of the `MCPTool` they
+# carry, so one narrowing walk serves either listing.
+_ScopedT = TypeVar("_ScopedT", bound="MCPPrompt | MCPResource")
+
+
+# A catalogue is paged by the same key its registry indexes it under, so a
+# cursor names the item the way the registry itself does.
+def _tool_key(tool: MCPTool) -> str:
+    return tool.name
+
+
+def _resource_key(resource: MCPResource) -> str:
+    return resource.uri
+
+
+def _prompt_key(prompt: MCPPrompt) -> str:
+    return prompt.name
+
+
+def _apply_sync_tool_filter(
+    tool_filter: Any, tools: list[MCPTool], principal: Any
+) -> list[MCPTool]:
+    """Run a synchronous visibility policy over the whole candidate set."""
+    return [tool for tool in tools if tool_filter(tool, principal)]
+
+
+def _requested_version(params: dict[str, Any]) -> str | None:
+    """Return the tool version this call asked for, if it named one."""
+    meta = params.get("_meta")
+    if not isinstance(meta, dict):
+        return None
+    namespaced = meta.get(VERSION_META_KEY)
+    if not isinstance(namespaced, dict):
+        return None
+    version = namespaced.get("version")
+    return version if isinstance(version, str) else None
+
+
+def _build_tool_listing_entry(tool: MCPTool) -> dict[str, Any]:
+    """Shape one registered tool into its `tools/list` entry.
+
+    Beyond the required `name` / `description` / `inputSchema`, a route-backed
+    tool carries a human-readable `title` (its route summary), HTTP-derived
+    `annotations` (read-only / idempotent / destructive hints), and an
+    `outputSchema` when its result has a declared object shape.
+    """
+    entry: dict[str, Any] = {
+        "name": tool.name,
+        "description": tool.description,
+        "inputSchema": tool.input_schema,
+    }
+    if tool.title:
+        entry["title"] = tool.title
+    icons = render_icons(tool.icons)
+    if icons is not None:
+        entry["icons"] = icons
+    # Derived from the route's verb, then overlaid with whatever the author
+    # declared - so a tool can correct a hint the verb implies, and a tool with no
+    # verb can state hints of its own.
+    annotations = _tool_annotations(tool.route_methods, tool.title)
+    if tool.annotations:
+        annotations = {**(annotations or {}), **tool.annotations}
+    if annotations:
+        entry["annotations"] = annotations
+    if tool.output_schema is not None:
+        entry["outputSchema"] = tool.output_schema
+    # A tool that opts into background execution advertises it so a client
+    # knows it may send a task-augmented `tools/call`. The spec's default is
+    # `"forbidden"`, so a non-opting tool omits the field entirely.
+    if tool.task_support:
+        entry["execution"] = {"taskSupport": "optional"}
+    meta = tool.meta
+    if tool.version is not None:
+        published: dict[str, Any] = {"version": tool.version}
+        if tool.version_history:
+            published["versions"] = list(tool.version_history)
+        declared = meta.get(VERSION_META_KEY) if meta else None
+        namespaced = {**declared, **published} if isinstance(declared, dict) else published
+        meta = {**meta, VERSION_META_KEY: namespaced} if meta else {VERSION_META_KEY: namespaced}
+    if meta:
+        entry["_meta"] = meta
+    return entry
+
+
+# The methods whose answer is a listing, and so can be narrowed per connection.
+_LIST_METHODS = frozenset(
+    {"tools/list", "prompts/list", "resources/list", "resources/templates/list"}
+)
+
+
+def _in_band_status_for(error: _InBandError) -> int:
+    """Map an in-band failure to the status instrumentation should record."""
+    if isinstance(error, _InvalidArgumentsError):
+        return status.HTTP_422_UNPROCESSABLE_ENTITY
+    if isinstance(error, MCPCapabilityError):
+        # The call could not be completed because something it depended on - a
+        # capability of the connected client - was not there to depend on.
+        return status.HTTP_424_FAILED_DEPENDENCY
+    return status.HTTP_500_INTERNAL_SERVER_ERROR
+
+
+def _http_status_for(error: MCPError) -> int:
+    """Map a raised MCP error to the status instrumentation should record.
+
+    Instrumentation reports what happened in HTTP terms so one dashboard covers
+    both doors; the JSON-RPC code the client receives is the error's own.
+    """
+    if isinstance(error, AuthorizationError):
+        return status.HTTP_403_FORBIDDEN
+    if isinstance(error, ResourceNotFoundError):
+        return status.HTTP_404_NOT_FOUND
+    if isinstance(error, InvalidParamsError):
+        return status.HTTP_422_UNPROCESSABLE_ENTITY
+    if isinstance(error, InvalidRequestError):
+        return status.HTTP_400_BAD_REQUEST
+    return status.HTTP_500_INTERNAL_SERVER_ERROR
+
+
+def _reject_task_augmentation(method: str, params: dict[str, Any]) -> None:
+    """Refuse a task-augmented request for a method that runs synchronously.
+
+    Only `tools/call` opts primitives into background execution. Ignoring the
+    field on the others would answer synchronously while the caller waits for a
+    handle to poll, so the request is refused instead of silently reinterpreted.
+    """
+    if "task" in params:
+        raise InvalidParamsError(
+            f"{method} does not support task execution; call it without a 'task' field."
+        )
 
 
 class MCPServer(TasksMixin, InvocationMixin):
@@ -153,8 +340,17 @@ class MCPServer(TasksMixin, InvocationMixin):
         "server_name",
         "server_title",
         "server_version",
+        "server_icons",
+        "server_website_url",
         "_call_timeout",
         "_enforce_lifecycle",
+        "_tool_filter",
+        "_tool_search",
+        "_cache_ttl_ms",
+        "_page_size",
+        "_any_scoped_tools",
+        "_any_scoped_prompts",
+        "_any_scoped_resources",
         "_subscriptions_enabled",
         "_connections",
         "_capabilities",
@@ -169,8 +365,26 @@ class MCPServer(TasksMixin, InvocationMixin):
         registry: ToolRegistry | None = None,
         resources: ResourceRegistry | None = None,
         prompts: PromptRegistry | None = None,
+        tool_filter: ToolFilter | None = None,
+        cache_ttl_ms: int = DEFAULT_CACHE_TTL_MS,
+        page_size: int | None = None,
+        tool_search: bool = False,
     ) -> None:
         self.app = app
+        # Optional per-caller `tools/list` visibility policy. `None` - the default -
+        # leaves listing unfiltered, so an application that does not opt in pays
+        # nothing and sees exactly the pre-existing behaviour.
+        self._tool_filter = tool_filter
+        # Freshness hint sent with cacheable results. The spec requires `>= 0`;
+        # zero tells the client to treat every result as immediately stale.
+        self._cache_ttl_ms = max(0, cache_ttl_ms)
+        # Optional page size for the list methods. `None` - the default - answers
+        # every list in full, exactly as before: a client may ignore `nextCursor`,
+        # so a server that paginated on its own would hide the rest of its
+        # catalogue from every client that does.
+        if page_size is not None and page_size < 1:
+            raise ValueError(f"page_size must be a positive integer or None, got {page_size!r}")
+        self._page_size = page_size
         self.registry = registry if registry is not None else build_registry(app)
         self.resources = resources if resources is not None else build_resource_registry(app)
         self.prompts = prompts if prompts is not None else build_prompt_registry(app)
@@ -178,6 +392,20 @@ class MCPServer(TasksMixin, InvocationMixin):
         # descriptor now the registries exist, so a misconfigured target surfaces
         # at build time and `CompletionsCapability` finds the completers in place.
         attach_completers(app, self.prompts, self.resources)
+        # Set before anything reads it; built at the end of this constructor, once
+        # there is a whole server for it to hold.
+        self._tool_search: ToolSearch | None = None
+        # Whether each list can differ between two callers, decided once here: the
+        # registries are fixed after build, so neither the narrowing decision nor
+        # the cache-scope decision may walk them per request. A server declaring
+        # no scopes anywhere leaves every list on its plain synchronous build.
+        self._any_scoped_tools = any(tool.required_scopes for tool in self.registry.tools.values())
+        self._any_scoped_prompts = any(
+            prompt.tool.required_scopes for prompt in self.prompts.prompts.values()
+        )
+        self._any_scoped_resources = any(
+            resource.tool.required_scopes for resource in self.resources.resources.values()
+        )
         self.server_name = getattr(app, "title", None) or "Veloce"
         self.server_version = getattr(app, "version", None) or "0.1.0"
         # Human-facing display name and client-facing usage guidance for the
@@ -186,6 +414,11 @@ class MCPServer(TasksMixin, InvocationMixin):
         # title falls back to the identifier name; instructions prefer the longer
         # `description`, then the one-line `summary`. Empty when neither is set.
         self.server_title = getattr(app, "title", None) or None
+        # Identity the spec lets a server publish about itself beyond its name:
+        # icons a client can render beside it, and a page describing it. Both come
+        # from the app, so one server identity is declared in one place.
+        self.server_icons = coerce_icons(getattr(app, "mcp_icons", None))
+        self.server_website_url = getattr(app, "website_url", None) or None
         self.server_instructions = (
             getattr(app, "description", None) or getattr(app, "summary", None) or None
         )
@@ -252,6 +485,15 @@ class MCPServer(TasksMixin, InvocationMixin):
         # for an id-bearing request and popped when it settles.
         self._inflight: dict[tuple[int | None, Any], _InFlight] = {}
 
+        # Optional search-first catalogue, built last: it holds this server and
+        # calls back into it, so it is handed a constructed one rather than a
+        # half-filled `self`. It registers its three tools into the registry,
+        # which is why the scope scan above counts what the registry held before
+        # them - the search tools declare no scopes, so the answer is the same
+        # either way, and the ordering is stated rather than relied upon.
+        if tool_search:
+            self._tool_search = ToolSearch(self)
+
     def _build_method_map(self) -> dict[str, MethodHandler]:
         """Map each supported JSON-RPC method to its async handler.
 
@@ -295,6 +537,18 @@ class MCPServer(TasksMixin, InvocationMixin):
         _requester_var.set(requester)
 
     @staticmethod
+    def current_request_id() -> Any:
+        """The JSON-RPC id of the request being dispatched, or None for a notification."""
+        return _request_id_var.get()
+
+    @staticmethod
+    async def send_to_current_connection(message: dict[str, Any]) -> None:
+        """Send one server-initiated message down the dispatching connection."""
+        notifier = _notifier_var.get()
+        if notifier is not None:
+            await notifier(message)
+
+    @staticmethod
     def current_session() -> MCPSession | None:
         """Return the session of the connection currently dispatching, or `None`.
 
@@ -320,8 +574,14 @@ class MCPServer(TasksMixin, InvocationMixin):
         return None
 
     def unregister_connection(self, token: object | None) -> None:
-        """Drop the connection named by its token (a no-op when token is `None`)."""
+        """Drop the connection named by its token (a no-op when token is `None`).
+
+        Any `subscriptions/listen` streams the connection held go with it: the
+        transport is gone, so there is nowhere to send a graceful close, and a
+        stream left registered would keep a dead session reachable by fan-out.
+        """
         if self._connections is not None and token is not None:
+            self._connections.forget_streams(token)
             self._connections.remove(token)
 
     def evict_session(self, session: MCPSession) -> None:
@@ -360,6 +620,24 @@ class MCPServer(TasksMixin, InvocationMixin):
         if self._connections is not None:
             await self._connections.notify_list_changed()
 
+    async def notify_tools_list_changed(self) -> None:
+        """Tell listening clients the tool list changed.
+
+        Reaches only the `subscriptions/listen` streams that asked for
+        `toolsListChanged`; the spec forbids sending a type a client did not
+        request. A no-op when nothing is listening.
+        """
+        if self._connections is not None:
+            await self._connections.notify_topic("toolsListChanged")
+
+    async def notify_prompts_list_changed(self) -> None:
+        """Tell listening clients the prompt list changed.
+
+        Reaches only the streams that asked for `promptsListChanged`.
+        """
+        if self._connections is not None:
+            await self._connections.notify_topic("promptsListChanged")
+
     # ── JSON-RPC dispatch ─────────────────────────────────
 
     async def handle_message(
@@ -379,11 +657,33 @@ class MCPServer(TasksMixin, InvocationMixin):
         msg_id = message.get("id")
         method = message.get("method")
 
-        if message.get("jsonrpc") != "2.0" or not isinstance(method, str):
+        if message.get("jsonrpc") != "2.0":
             return _error(msg_id, _JSONRPC_INVALID_REQUEST, "Invalid JSON-RPC 2.0 request")
+        if not isinstance(method, str):
+            # A reply to a server->client request carries an id and a result or an
+            # error instead of a method. It is an answer, not a request: it needs
+            # no response of its own, so it is accepted and dispatch stops here.
+            # The stdio transport resolves the waiting future before reaching this
+            # point; a transport that issues no requests has nothing to resolve and
+            # simply accepts it, which is what the spec's `202` means. Anything else
+            # carrying no method is malformed.
+            if "id" in message and ("result" in message or "error" in message):
+                return None
+            return _error(msg_id, _JSONRPC_INVALID_REQUEST, "Invalid JSON-RPC 2.0 request")
+
+        # Unlike base JSON-RPC, MCP forbids a null request id: a request either
+        # carries a string or integer id, or omits the key entirely to be a
+        # notification. A present-but-null id is neither, so answering it would
+        # invent a correlation the client cannot use.
+        if "id" in message and msg_id is None:
+            return _error(None, _JSONRPC_INVALID_REQUEST, "Request id must not be null")
 
         params = message.get("params") or {}
         is_notification = "id" not in message
+
+        # Set by the era block below when a modern request names a log level, and
+        # reset with the other per-message context in the `finally`.
+        log_level_token = None
 
         # Era selection. A modern client states its version in `_meta` on every
         # request; a legacy one opens with `initialize` and negotiates once. The
@@ -392,6 +692,22 @@ class MCPServer(TasksMixin, InvocationMixin):
         raw_version = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
         requested_version: str | None = raw_version if isinstance(raw_version, str) else None
         is_modern = requested_version is not None
+        if is_modern and session is not None:
+            # A modern client never sends `initialize`, so its identity and
+            # capabilities arrive in `_meta` on every request instead. Recording
+            # them on the session is what makes `MCPContext.client_info` /
+            # `client_capabilities` answer, and what lets the server-initiated
+            # requests (`sample` / `elicit` / `roots`) see the capabilities the
+            # client actually advertised rather than an empty set. Both shipped
+            # transports pass a session; a bare `handle_message` has none, and
+            # then there is nowhere to record it.
+            session.record_request_meta(meta)
+        if is_modern:
+            # Per request, not per connection: a modern request that names no level
+            # receives no log notifications, which the spec requires.
+            raw_level = meta.get(META_LOG_LEVEL) if isinstance(meta, dict) else None
+            level = raw_level if isinstance(raw_level, str) and raw_level in _LOG_RANKS else None
+            log_level_token = _log_level_var.set(level if level is not None else LOG_LEVEL_OFF)
         if requested_version is not None and requested_version not in _SERVED_VERSION_SET:
             # Recoverable by design: the client picks from `supported` and
             # retries. Returning this code is also what identifies the server as
@@ -411,6 +727,11 @@ class MCPServer(TasksMixin, InvocationMixin):
                 return rejection
 
         handler = self._methods.get(method)
+        if handler is not None and is_modern and method in _HANDSHAKE_ONLY_METHODS:
+            # The tasks extension retired these; a modern client polls `tasks/get`,
+            # whose result carries the completed answer. Reported as not found so a
+            # client discovers the surface it actually has.
+            handler = None
         if handler is None:
             # An unknown notification carries no response; an unknown request is a
             # method-not-found error.
@@ -431,8 +752,17 @@ class MCPServer(TasksMixin, InvocationMixin):
         # (`resources/subscribe`) reaches the session it mutates; `None` on the
         # stateless path leaves the subscribe handler to reject the call.
         session_token = _session_var.set(session)
+        request_id_token = _request_id_var.set(msg_id)
+        # A fresh slot per message, so `_meta` a handler attaches belongs to this
+        # call's result and cannot reach the next one.
+        result_meta_token = _result_meta_var.set(None)
+        release_tokens = True
+        # Read while the slot is still bound: the `finally` below releases it, and
+        # the result is not assembled until after that.
+        attached_meta: dict[str, Any] | None = None
         try:
             result = await handler(params)
+            attached_meta = _result_meta_var.get()
         except MCPError as exc:
             # Polymorphic: the JSON-RPC code and any `data` come from the subclass.
             return exc.to_error(msg_id)
@@ -443,19 +773,46 @@ class MCPServer(TasksMixin, InvocationMixin):
         except Exception as exc:  # pragma: no cover - defensive
             _logger.exception("MCP method %s raised", method)
             return _error(msg_id, _JSONRPC_INTERNAL_ERROR, self._error_text(exc, "internal error"))
+        except GeneratorExit:
+            # Closed mid-await: an abandoned request being finalized, which the
+            # collector may run in any context. These tokens belong to the context
+            # that made the call, so resetting them here raises and would abandon
+            # the rest of this block - including the registry release below.
+            release_tokens = False
+            raise
         finally:
-            _inflight_var.reset(token)
-            _session_var.reset(session_token)
+            if release_tokens:
+                _inflight_var.reset(token)
+                _session_var.reset(session_token)
+                _request_id_var.reset(request_id_token)
+                _result_meta_var.reset(result_meta_token)
+                if log_level_token is not None:
+                    _log_level_var.reset(log_level_token)
+            # Context-free, so it is released on every path: an entry left behind
+            # keeps the request cancellable forever and grows the registry.
             if inflight is not None:
                 self._inflight.pop(inflight_key, None)
 
         if is_notification:
             return None
-        if is_modern and isinstance(result, dict) and "resultType" not in result:
+        if result is _DEFERRED_RESPONSE:
+            # A long-lived request answered by its own closure, not here.
+            return None
+        if is_modern and isinstance(result, dict) and "resultType" in result:
+            pass
+        elif is_modern and isinstance(result, dict) and "task" in result:
+            # A task handle is its own result type; the client polls rather than
+            # reading a completed answer here.
+            result = {"resultType": RESULT_TYPE_TASK, **result}
+        elif is_modern and isinstance(result, dict):
             # Required on every modern result. A legacy client must never see it:
             # its revision has no such field and the server info below belongs to
             # the modern shape only.
             result = {"resultType": RESULT_TYPE_COMPLETE, **result}
+            if method in _CACHEABLE_METHODS:
+                self._add_cache_hints(method, result, session)
+        if attached_meta and isinstance(result, dict):
+            result = _attach_result_meta(result, attached_meta)
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
     def _gate_session(
@@ -512,6 +869,16 @@ class MCPServer(TasksMixin, InvocationMixin):
         self._inflight[key] = holder
         return holder
 
+    async def close_listen_stream(self, session: MCPSession, subscription_id: Any) -> None:
+        """End one open stream, answering its long-lived request as it closes.
+
+        The response is what tells the client the subscription ended cleanly, as
+        opposed to a transport that simply dropped.
+        """
+        if session.listen_streams.pop(subscription_id, None) is None:
+            return
+        await self.send_to_current_connection(subscription_closed_response(subscription_id))
+
     async def _handle_cancelled(self, params: dict[str, Any]) -> None:
         """Cancel the request named by ``notifications/cancelled`` (a notification).
 
@@ -529,6 +896,12 @@ class MCPServer(TasksMixin, InvocationMixin):
         if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
             return None
         session = _session_var.get()
+        # A `subscriptions/listen` is never in-flight - it returned as soon as it
+        # opened the stream - so cancelling one means ending its stream. On stdio
+        # this notification is the only way a client closes a subscription.
+        if session is not None and request_id in session.listen_streams:
+            await self.close_listen_stream(session, request_id)
+            return None
         connection_key = session.connection_id if session is not None else None
         holder = self._inflight.get((connection_key, request_id))
         if holder is not None:
@@ -555,16 +928,84 @@ class MCPServer(TasksMixin, InvocationMixin):
         return {}
 
     async def _handle_tools_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._tools_list()
+        # A server with no scopes, no filter and no search catalogue has nothing to
+        # narrow, so its listing stays a plain synchronous build - no awaits, no
+        # per-tool predicate - and costs exactly what it did before any of the
+        # three existed.
+        tools: Iterable[MCPTool] = (
+            self.registry.tools.values()
+            if self._tool_filter is None
+            and self._tool_search is None
+            and not self._any_scoped_tools
+            else await self._visible_tools()
+        )
+        return self._listing("tools", tools, _tool_key, self._describe_tool, params)
 
     async def _handle_resources_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._resources_list()
+        return self._listing(
+            "resources",
+            self._readable(self.resources.statics(), self._any_scoped_resources),
+            _resource_key,
+            _describe_resource,
+            params,
+        )
 
     async def _handle_resource_templates_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._resource_templates_list()
+        return self._listing(
+            "resourceTemplates",
+            self._readable(self.resources.templates(), self._any_scoped_resources),
+            _resource_key,
+            _describe_resource_template,
+            params,
+        )
 
     async def _handle_prompts_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._prompts_list()
+        return self._listing(
+            "prompts",
+            self._readable(self.prompts.prompts.values(), self._any_scoped_prompts),
+            _prompt_key,
+            _describe_prompt,
+            params,
+        )
+
+    @staticmethod
+    def _readable(items: Iterable[_ScopedT], any_scoped: bool) -> Iterable[_ScopedT]:
+        """Drop the resources / prompts whose scopes the calling principal lacks.
+
+        The same check `resources/read` and `prompts/get` perform, so a primitive
+        is never listed to a caller that would be refused it. `any_scoped` is
+        decided once at construction: a server declaring no scopes hands the
+        registry's own view straight back, walking nothing.
+        """
+        if not any_scoped:
+            return items
+        return [item for item in items if not _principal_lacks_scopes(item.tool.required_scopes)]
+
+    def _listing(
+        self,
+        key: str,
+        items: Iterable[Any],
+        key_of: Callable[[Any], str],
+        describe: Callable[[Any], dict[str, Any]],
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Shape one page of a catalogue into its list result.
+
+        Paging happens before shaping, so a page costs the entries it emits
+        rather than the whole catalogue. `nextCursor` is present only while more
+        remain, which is what tells a client to ask again.
+        """
+        # A connection that hid something sees the catalogue without it. Applied
+        # before paging, so a hidden entry never occupies a slot on a page.
+        session = _session_var.get()
+        hidden = session.hidden if session is not None else None
+        if hidden:
+            items = [item for item in items if key_of(item) not in hidden]
+        page, cursor = paginate(items, key_of, params.get("cursor"), self._page_size)
+        result: dict[str, Any] = {key: [describe(item) for item in page]}
+        if cursor is not None:
+            result["nextCursor"] = cursor
+        return result
 
     async def _handle_set_log_level(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._set_log_level(params)
@@ -616,6 +1057,11 @@ class MCPServer(TasksMixin, InvocationMixin):
         info: dict[str, Any] = {"name": self.server_name, "version": self.server_version}
         if self.server_title:
             info["title"] = self.server_title
+        icons = render_icons(self.server_icons)
+        if icons is not None:
+            info["icons"] = icons
+        if self.server_website_url:
+            info["websiteUrl"] = self.server_website_url
         return info
 
     async def _handle_discover(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -630,53 +1076,212 @@ class MCPServer(TasksMixin, InvocationMixin):
         `serverInfo` travels in `_meta` here rather than as a top-level field,
         which is where the modern revision moved it.
         """
+        capabilities = self._advertised_capabilities()
+        extensions = self._advertised_extensions()
+        if extensions:
+            capabilities = {**capabilities, "extensions": extensions}
         return {
             "supportedVersions": list(SERVED_PROTOCOL_VERSIONS),
-            "capabilities": self._advertised_capabilities(),
+            "capabilities": capabilities,
             "_meta": {META_SERVER_INFO: self._server_info()},
             **({"instructions": self.server_instructions} if self.server_instructions else {}),
         }
 
-    def _tools_list(self) -> dict[str, Any]:
-        return {"tools": [self._describe_tool(tool) for tool in self.registry.tools.values()]}
+    def _advertised_extensions(self) -> dict[str, Any]:
+        """The protocol extensions this server implements, for `server/discover`.
+
+        A capability contributes an entry only when the feature it names is
+        actually available, so a server with no task-capable tool advertises no
+        tasks extension and a client will never offer one.
+        """
+        advertised: dict[str, Any] = {}
+        for capability in self._capabilities:
+            contributed = getattr(capability, "extensions", None)
+            if contributed is None:
+                continue
+            entry = contributed()
+            if entry:
+                advertised.update(entry)
+        return advertised
+
+    def _add_cache_hints(
+        self, method: str, result: dict[str, Any], session: MCPSession | None
+    ) -> None:
+        """Attach `ttlMs` / `cacheScope` to a cacheable `complete` result.
+
+        The scope is the load-bearing half. A result that can differ between
+        callers - a `tools/list` narrowed by a visibility policy or by declared
+        scopes, or a `resources/read` whose route authorizes per principal - is
+        `private`, so a shared gateway cannot serve one caller's answer to another.
+        Everything else is `public`. The spec is explicit that `cacheScope` is a
+        hint and never a substitute for the per-primitive access control that
+        already runs on each of these paths.
+        """
+        result["ttlMs"] = self._cache_ttl_ms
+        result["cacheScope"] = (
+            _CACHE_SCOPE_PRIVATE if self._varies_by_caller(method, session) else _CACHE_SCOPE_PUBLIC
+        )
+
+    def connection_is_stateful(self) -> bool:
+        """Whether the connection being answered persists beyond this request.
+
+        A stateful connection has an outbound channel and can carry per-connection
+        state; a stateless request has neither, and nothing it is told survives
+        the response.
+        """
+        session = self.current_session()
+        return session is not None and session.persistent
+
+    def _varies_by_caller(self, method: str, session: MCPSession | None = None) -> bool:
+        """Whether this method's result can differ between two authorized callers.
+
+        `session` is the connection being answered, passed in rather than read
+        from the dispatch context: the hints are stamped after that context has
+        been released.
+        """
+        if method == "resources/read":
+            # Its route runs the full request lifecycle under the caller's
+            # principal, so the body it returns is caller-dependent by construction.
+            return True
+        if method not in _LIST_METHODS:
+            return False
+        # A handler on a stateful connection may narrow that connection's view
+        # with `MCPContext.hide` at any point, so two connections to this server
+        # can be shown different lists. Which of them hid something is not the
+        # question a cache key can ask: an answer produced for one connection
+        # must not be replayed to another, whether or not either has hidden
+        # anything yet.
+        if session is not None and session.persistent:
+            return True
+        if method == "tools/list":
+            return self._tool_filter is not None or self._any_scoped_tools
+        if method == "prompts/list":
+            return self._any_scoped_prompts
+        return self._any_scoped_resources
+
+    def _unnarrowed_tools(self) -> dict[str, MCPTool] | None:
+        """The registry's own name -> tool map when nothing can narrow it here.
+
+        Three things can narrow what a caller is shown: a declared scope, a
+        configured `tool_filter`, and what this connection hid. When none of them
+        is in play the candidate set *is* the registry, which is fixed once the
+        server is built - so rebuilding it per call buys nothing. `None` when
+        anything could narrow it, and the full walk has to run.
+
+        The first two are decided once at construction. The third is a set on the
+        session, so it costs one lookup rather than a walk.
+        """
+        if self._tool_filter is not None or self._any_scoped_tools:
+            return None
+        session = _session_var.get()
+        if session is not None and session.hidden:
+            return None
+        return self.registry.tools
+
+    async def _visible_tools(self) -> list[MCPTool]:
+        """The tools `tools/list` reports to the calling principal.
+
+        The narrowed catalogue, unless the server publishes its catalogue through
+        search - in which case the listing is the three search tools and every
+        other tool is found through them.
+        """
+        search = self._tool_search
+        if search is None:
+            return await self._candidate_tools()
+        # The listing is the search tools and nothing else, so narrowing the whole
+        # catalogue only to discard it is work with no reader. Only when something
+        # could hide one of the three does the full pass have to run.
+        if self._unnarrowed_tools() is not None:
+            return list(search.tools)
+        return [tool for tool in await self._candidate_tools() if tool.name in search.names]
+
+    async def _candidate_tools(self) -> list[MCPTool]:
+        """The tools the calling principal may see, in registration order.
+
+        Visibility is scoped by the *same* check `tools/call` performs, so a tool is
+        never listed for a caller that cannot invoke it. What this connection hid
+        narrows it further, and so does a configured filter; either can hide a tool,
+        neither can reveal one the scope check rejected. Hiding a tool does not
+        change what happens if it is called anyway - an unlisted tool still raises
+        `AuthorizationError` - so a visibility policy can never be mistaken for the
+        authorization decision.
+
+        Every reader of "what may this caller see" goes through here - the listing,
+        and the search tools that stand in for it - so a tool hidden from one is
+        hidden from the other.
+
+        The spec permits exactly this axis: the tool set "MAY vary by the
+        authorization presented on the request [...] since credentials are
+        per-request input, not connection state". It is evaluated per request and
+        never memoized - the framework cannot know when a principal's grants change,
+        and `tools/list` is a session-start call rather than a hot path.
+        """
+        unnarrowed = self._unnarrowed_tools()
+        if unnarrowed is not None:
+            return list(unnarrowed.values())
+        principal = current_principal()
+        session = _session_var.get()
+        hidden = session.hidden if session is not None else None
+        # The principal is read once rather than once per tool: it cannot change
+        # inside this pass. Mirrors `_principal_lacks_scopes`, which is the same
+        # check for a caller that is not already in hand.
+        if principal is None:
+            scoped = [
+                tool
+                for tool in self.registry.tools.values()
+                if not tool.required_scopes and not (hidden and tool.name in hidden)
+            ]
+        else:
+            holds = principal.has_scopes
+            scoped = [
+                tool
+                for tool in self.registry.tools.values()
+                if (not tool.required_scopes or holds(tool.required_scopes))
+                and not (hidden and tool.name in hidden)
+            ]
+        tool_filter = self._tool_filter
+        if tool_filter is None:
+            return scoped
+        if _is_async_callable(tool_filter):
+            visible = []
+            for tool in scoped:
+                # `_is_async_callable` establishes the awaitable branch; the alias
+                # is a union of both call shapes, which the checker cannot narrow.
+                if await cast("Awaitable[bool]", tool_filter(tool, principal)):
+                    visible.append(tool)
+            return visible
+        # A sync policy may consult a database, so it is kept off the event loop -
+        # but as one handoff for the whole pass, not one per tool. Offloading each
+        # predicate individually turns a microsecond scan into milliseconds.
+        return cast(
+            "list[MCPTool]",
+            await offload(_apply_sync_tool_filter, tool_filter, scoped, principal),
+        )
 
     @staticmethod
     def _describe_tool(tool: MCPTool) -> dict[str, Any]:
-        """Shape one registered tool into its `tools/list` entry.
+        """Return this tool's `tools/list` entry, building it once per tool.
 
-        Beyond the required `name` / `description` / `inputSchema`, a
-        route-backed tool carries a human-readable `title` (its route summary),
-        HTTP-derived `annotations` (read-only / idempotent / destructive hints),
-        and an `outputSchema` when its result has a declared object shape.
+        The entry is memoized on the tool because it is a pure function of
+        registration data: nothing it reads can change once the registry is
+        built, and it holds nothing caller- or revision-specific. Callers treat
+        the returned mapping as read-only - the dispatcher stamps `ttlMs` /
+        `cacheScope` onto the enclosing result, never onto an entry.
         """
-        entry: dict[str, Any] = {
-            "name": tool.name,
-            "description": tool.description,
-            "inputSchema": tool.input_schema,
-        }
-        if tool.title:
-            entry["title"] = tool.title
-        icons = render_icons(tool.icons)
-        if icons is not None:
-            entry["icons"] = icons
-        annotations = _tool_annotations(tool.route_methods, tool.title)
-        if annotations is not None:
-            entry["annotations"] = annotations
-        if tool.output_schema is not None:
-            entry["outputSchema"] = tool.output_schema
-        # A tool that opts into background execution advertises it so a client
-        # knows it may send a task-augmented `tools/call`. The spec's default is
-        # `"forbidden"`, so a non-opting tool omits the field entirely.
-        if tool.task_support:
-            entry["execution"] = {"taskSupport": "optional"}
+        entry = tool.listing_entry
+        if entry is None:
+            entry = tool.listing_entry = _build_tool_listing_entry(tool)
         return entry
 
     async def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")
         if not isinstance(name, str):
             raise InvalidParamsError("tools/call requires a string 'name'")
-        tool = self.registry.get(name)
+        version = _requested_version(params)
+        tool = self.registry.resolve(name, version)
         if tool is None:
+            if version is not None:
+                raise InvalidParamsError(f"Unknown tool: {name} (version {version})")
             raise InvalidParamsError(f"Unknown tool: {name}")
 
         arguments = params.get("arguments") or {}
@@ -697,7 +1302,9 @@ class MCPServer(TasksMixin, InvocationMixin):
         if "task" in params:
             return self._create_task(tool, arguments, params)
 
-        return await self._produce_tool_result(tool, arguments, started, _progress_token(params))
+        return await self._produce_tool_result(
+            tool, arguments, started, _progress_token(params), params.get("_meta")
+        )
 
     async def _produce_tool_result(
         self,
@@ -705,6 +1312,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         arguments: dict[str, Any],
         started: float,
         progress_token: str | int | None,
+        request_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Invoke a tool and shape its return into the `tools/call` result object.
 
@@ -715,23 +1323,33 @@ class MCPServer(TasksMixin, InvocationMixin):
         callers report a call's real outcome identically.
         """
         try:
-            result = await self._run_invoke(tool, arguments, progress_token)
-        except InvalidParamsError:
-            raise
-        except _InvalidArgumentsError as exc:
-            # Surfaced verbatim, unlike a handler exception: the message names
-            # the offending argument and what was expected, both derived from
-            # the tool's own declared schema and the caller's own input, so
-            # there is nothing to redact. Redacting it would leave the model
-            # with "internal error" and nothing to correct - the opposite of
+            result = await self._run_invoke(tool, arguments, progress_token, request_meta)
+        except _InBandError as exc:
+            # Surfaced verbatim, unlike a handler exception: an invalid argument
+            # names the offending field and what was expected, and an unavailable
+            # client capability names the capability - both derived from the
+            # tool's own declaration and the connection's own handshake, so there
+            # is nothing to redact. Redacting would leave the model with
+            # "internal error" and nothing to correct, which is the opposite of
             # what an execution error is for.
-            await self._instrument(tool, started, status.HTTP_422_UNPROCESSABLE_ENTITY)
+            await self._instrument(tool, started, _in_band_status_for(exc))
             return _text_result(str(exc), is_error=True)
         except asyncio.TimeoutError:
             await self._instrument(tool, started, status.HTTP_504_GATEWAY_TIMEOUT)
             return _text_result(
                 f"tool call exceeded the {self._call_timeout}s timeout", is_error=True
             )
+        except MCPError as exc:
+            # An error the author raised deliberately, naming a JSON-RPC code and
+            # writing its message: a tool reading a scoped resource hits the same
+            # forbidden check a direct `resources/read` would, and a handler that
+            # cannot answer until an elicitation completes has to say so with the
+            # code the spec assigns. Flattening either into an in-band "internal
+            # error" would discard both the code and the message the author wrote,
+            # leaving the model nothing to act on. The `_InBandError` subtree is
+            # caught above: those are execution failures, which belong in-band.
+            await self._instrument(tool, started, _http_status_for(exc))
+            raise
         except Exception as exc:
             # A pure `@app.mcp_tool` (no route) has no exception-handler
             # machinery to run through, so its handler error is surfaced
@@ -781,6 +1399,10 @@ class MCPServer(TasksMixin, InvocationMixin):
             return _text_result(str(exc), is_error=True)
         # A pure tool's raw return that completed without error is a genuine 200.
         await self._instrument(tool, started, status.HTTP_200_OK)
+        if tool.passthrough_result and isinstance(shaped, dict) and "content" in shaped:
+            # A forwarded call already answered in the result shape; relaying it
+            # keeps the upstream's `isError` and `structuredContent` intact.
+            return shaped
         # A pure tool's `output_schema` is advertised from its declared return
         # type, but nothing on the pure path guarantees the handler actually
         # returned that type. Validate / coerce the raw return through the
@@ -789,7 +1411,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         # schema's object shape is an in-band error, not a non-conforming result.
         if tool.output_model is not None:
             try:
-                shaped = tool.output_model.model_validate(shaped).model_dump(mode="json")
+                shaped = shape_through_model(shaped, tool.output_model)
             except Exception:
                 return _text_result(
                     "tool result does not conform to the declared output schema", is_error=True
@@ -799,14 +1421,8 @@ class MCPServer(TasksMixin, InvocationMixin):
     # ── Resources ─────────────────────────────────────────
 
     def _resources_list(self) -> dict[str, Any]:
-        return {"resources": [_describe_resource(r) for r in self.resources.statics()]}
-
-    def _resource_templates_list(self) -> dict[str, Any]:
-        return {
-            "resourceTemplates": [
-                _describe_resource_template(r) for r in self.resources.templates()
-            ]
-        }
+        readable = self._readable(self.resources.statics(), self._any_scoped_resources)
+        return {"resources": [_describe_resource(r) for r in readable]}
 
     async def _resources_read(self, params: dict[str, Any]) -> dict[str, Any]:
         """Read one resource by URI, replaying its route through `_invoke`.
@@ -820,6 +1436,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         handler 4xx/5xx surfaces as a JSON-RPC error, since a resource read has no
         in-band error channel.
         """
+        _reject_task_augmentation("resources/read", params)
         uri = params.get("uri")
         if not isinstance(uri, str):
             raise InvalidParamsError("resources/read requires a string 'uri'")
@@ -855,12 +1472,13 @@ class MCPServer(TasksMixin, InvocationMixin):
             ):
                 raise _ForbiddenError(body)
             raise InternalError(body)
-        return {"contents": [_resource_contents(uri, response)]}
+        return {"contents": [_resource_contents(uri, response, _declared_mime_type(resource))]}
 
     # ── Prompts ───────────────────────────────────────────
 
     def _prompts_list(self) -> dict[str, Any]:
-        return {"prompts": [_describe_prompt(p) for p in self.prompts.prompts.values()]}
+        readable = self._readable(self.prompts.prompts.values(), self._any_scoped_prompts)
+        return {"prompts": [_describe_prompt(p) for p in readable]}
 
     async def _prompts_get(self, params: dict[str, Any]) -> dict[str, Any]:
         """Render one prompt by name, replaying its callable through `_invoke`.
@@ -871,6 +1489,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         ``prompts/get`` returns. An unknown name or a malformed argument is an
         invalid-params error.
         """
+        _reject_task_augmentation("prompts/get", params)
         name = params.get("name")
         if not isinstance(name, str):
             raise InvalidParamsError("prompts/get requires a string 'name'")
@@ -892,10 +1511,22 @@ class MCPServer(TasksMixin, InvocationMixin):
     # ── Logging ───────────────────────────────────────────
 
     def _set_log_level(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Set the minimum level for ``notifications/message`` (logging/setLevel)."""
+        """Set the minimum level for ``notifications/message`` (logging/setLevel).
+
+        Recorded on the session, because the spec scopes the level to the
+        connection. The ContextVar is set too so the request that carried the
+        call sees its own change immediately; the session is what carries it to
+        the next request.
+        """
         level = params.get("level")
         if not isinstance(level, str) or level not in _LOG_RANKS:
             raise InvalidParamsError("logging/setLevel requires a valid RFC 5424 'level'")
+        # The dispatcher exposes the connection's session here, which is where
+        # the level belongs: the ContextVar alone died with the request that set
+        # it on every transport but the serial stdio loop.
+        session = _session_var.get()
+        if session is not None:
+            session.log_level = level
         _log_level_var.set(level)
         return {}
 

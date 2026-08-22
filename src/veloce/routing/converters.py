@@ -547,11 +547,6 @@ def parse_converter(spec: str | None) -> _Converter:
 # set (a raw regex like `[0-9]+`) forces the route onto the regex fallback.
 _TREE_EXPRESSIBLE = frozenset(_BUILTIN)
 
-# A whole-segment placeholder: the brace spans the entire segment, e.g.
-# `{id}` or `{id:int}`. `{n}/x` partial segments and multi-brace segments
-# like `{name}.{ext}` are deliberately rejected by `is_regex_path`.
-_WHOLE_SEGMENT_PARAM_RE = re.compile(r"^\{([^{}]*)\}$")
-
 
 class _Placeholder:
     """One `{...}` placeholder located in a path: its span, name, and spec.
@@ -780,3 +775,37 @@ def build_route_regex(path: str) -> re.Pattern[str]:
     out.append(re.escape(path[pos:]))
     out.append("$")
     return re.compile("".join(out))
+
+
+# JSON Schema type for each built-in converter, so a path parameter can be
+# documented even when no handler parameter declares one. Only the converters
+# that coerce to a non-string value need an entry; everything else - including
+# a raw-regex spec and any user-registered converter - is carried as a string,
+# which is what the segment is before coercion.
+_CONVERTER_JSON_TYPES: dict[str, dict[str, Any]] = {
+    "int": {"type": "integer"},
+    "float": {"type": "number"},
+    "decimal": {"type": "number"},
+    "uuid": {"type": "string", "format": "uuid"},
+    "date": {"type": "string", "format": "date"},
+    "datetime": {"type": "string", "format": "date-time"},
+    "time": {"type": "string", "format": "time"},
+    "path": {"type": "string", "format": "path"},
+}
+
+
+def path_param_schemas(template: str) -> dict[str, dict[str, Any]]:
+    """Map each placeholder in `template` to the JSON Schema of its value.
+
+    A route's path parameters are part of its contract whether or not a handler
+    parameter declares one: a dependency reading `request.path_params` consumes
+    the same segment. Both documentation paths (OpenAPI and the MCP tool schema)
+    use this to describe a parameter no signature mentions, rather than
+    publishing a contract that omits a value the route requires.
+    """
+    schemas: dict[str, dict[str, Any]] = {}
+    for placeholder in _iter_placeholders(template):
+        spec = placeholder.spec
+        name = spec.split("(", 1)[0].strip() if spec else ""
+        schemas[placeholder.name] = dict(_CONVERTER_JSON_TYPES.get(name, {"type": "string"}))
+    return schemas

@@ -13,6 +13,7 @@ import pytest
 from veloce import (
     InMemorySessionStore,
     Request,
+    Response,
     ServerSessionMiddleware,
     SessionMiddleware,
     Veloce,
@@ -123,3 +124,94 @@ def test_cookie_session_partitioned_requires_samesite_none():
 def test_server_session_partitioned_requires_secure():
     with pytest.raises(ValueError):
         ServerSessionMiddleware(partitioned=True)
+
+
+# ── `Partitioned` is emitted on the same terms as `Response.set_cookie` ───
+#
+# `SessionMiddleware._render_cookie` cannot call `set_cookie` (it needs the
+# serialised line to size-check it before attaching), so it restates
+# `set_cookie`'s `partitioned and secure` condition. These pin the two
+# renderers to the same answer, including on the chunked path, which is the
+# only place the hand-rolled renderer produces more than one line.
+
+
+def _set_cookie_lines(resp) -> list[str]:
+    return [v for k, v in resp.headers.items() if k.lower() == "set-cookie"][0].split(
+        "\r\nSet-Cookie: "
+    )
+
+
+def test_cookie_session_partitioned_requires_samesite_none_not_omitted():
+    """An omitted SameSite is not `None`; CHIPS needs the explicit value."""
+    with pytest.raises(ValueError):
+        SessionMiddleware(secret_key="k" * 32, secure=True, samesite=None, partitioned=True)
+
+
+def test_cookie_session_partitioned_line_carries_secure_and_samesite_none():
+    """The wire line must carry all three attributes together - `Partitioned`
+    without `Secure` is rejected by browsers and costs the whole cookie."""
+    client = _cookie_app(secure=True, samesite="none", partitioned=True).test_client()
+    line = _set_cookie_line(client.get("/write"))
+    assert "; Secure" in line
+    assert "; SameSite=None" in line
+    assert "; Partitioned" in line
+
+
+def test_cookie_session_without_partitioned_omits_the_attribute():
+    client = _cookie_app(secure=True, samesite="none").test_client()
+    assert "Partitioned" not in _set_cookie_line(client.get("/write"))
+
+
+def test_render_cookie_matches_set_cookie_for_every_partitioned_combination():
+    """`_render_cookie` and `Response.set_cookie` agree on whether `Partitioned`
+    is emitted, for every (secure, partitioned) pairing - including the invalid
+    ones the constructor guard currently makes unreachable."""
+    mw = SessionMiddleware(secret_key="k" * 32, secure=True, samesite="none", partitioned=True)
+    for secure in (True, False):
+        for partitioned in (True, False):
+            mw.secure = secure
+            mw.partitioned = partitioned
+            rendered = mw._render_cookie("s", "v", 60, prefix=False)
+            probe = Response()
+            probe.set_cookie(
+                "s",
+                "v",
+                max_age=60,
+                path=mw.path,
+                secure=secure,
+                httponly=mw.httponly,
+                samesite="None",
+                partitioned=partitioned,
+            )
+            assert ("; Partitioned" in rendered) == (
+                "; Partitioned" in probe.headers["Set-Cookie"]
+            ), (secure, partitioned)
+
+
+def test_partitioned_without_secure_emits_no_partitioned_attribute():
+    """Defence in depth behind the constructor guard: if `secure` is ever
+    cleared after construction, the attribute must drop rather than ship a line
+    every browser discards."""
+    mw = SessionMiddleware(secret_key="k" * 32, secure=True, samesite="none", partitioned=True)
+    mw.secure = False
+    assert "; Partitioned" not in mw._render_cookie("s", "v", 60, prefix=False)
+
+
+def test_every_session_chunk_carries_partitioned():
+    """The chunked path renders one line per chunk through the same helper, so
+    a partitioned session must not lose the attribute on the overflow cookies."""
+    client = _cookie_app(
+        secure=True, samesite="none", partitioned=True, chunked=True, max_cookie_size=256
+    ).test_client()
+
+    app = client.app
+
+    @app.get("/big")
+    async def big(request: Request):
+        request.session["blob"] = "x" * 900
+        return {"ok": True}
+
+    lines = _set_cookie_lines(client.get("/big"))
+    assert len(lines) > 1, lines
+    assert all("; Partitioned" in line for line in lines), lines
+    assert all("; Secure" in line for line in lines), lines

@@ -93,21 +93,32 @@ class ProxyFix(Middleware):
             else {}
         )
 
-        # `Forwarded:` wins; else fall back to `X-Forwarded-*`.
-        client = fwd.get("for") or self._pick_hop(
-            request.headers.get(HEADER_X_FORWARDED_FOR), self.x_for
-        )
-        proto = fwd.get("proto") or self._pick_hop(
-            request.headers.get(HEADER_X_FORWARDED_PROTO), self.x_proto
-        )
-        host = fwd.get("host") or self._pick_hop(
-            request.headers.get(HEADER_X_FORWARDED_HOST), self.x_host
-        )
-        # RFC 7239 has no dedicated port directive: a `Forwarded` hop carries
-        # the public port inside `host="example.com:8443"`, so when that host
-        # is spliced into the Host header below the port survives via
-        # URL.from_request's own parse. `X-Forwarded-Port` is the separate
-        # legacy header that needs explicit resolution here.
+        # RFC 7239 Sec. 4 supersedes the `X-Forwarded-*` set, so a trusted
+        # `Forwarded` is the SOLE authority - a directive it does not carry
+        # stays unset rather than falling through to the legacy header.
+        # Mixing the two per directive was exploitable: a `Forwarded` chain
+        # shorter than the configured trust depth correctly yields nothing, and
+        # the fallback then handed that directive to whatever the client wrote
+        # in `X-Forwarded-For`, which is precisely the value trust depth had
+        # just refused. Failing closed here costs a deployment nothing, because
+        # a proxy emitting `Forwarded` carries every directive in it.
+        if forwarded:
+            client = fwd.get("for")
+            proto = fwd.get("proto")
+            host = fwd.get("host")
+        else:
+            client = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_FOR), self.x_for)
+            proto = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PROTO), self.x_proto)
+            host = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_HOST), self.x_host)
+        # Port and prefix keep their fallback, because RFC 7239 Sec. 4 defines
+        # no directive for either: a `Forwarded` hop carries the public port
+        # inside `host="example.com:8443"` (so it survives the Host splice
+        # below via URL.from_request's own parse), and a path prefix has no
+        # RFC spelling at all. `X-Forwarded-Port` / `X-Forwarded-Prefix` are
+        # therefore the only channel a proxy has for them, and refusing those
+        # would break real deployments to close nothing - unlike `for`,
+        # `proto` and `host` above, where the RFC does define a directive and
+        # the fallback let a refused hop through.
         port = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PORT), self.x_port)
         prefix = fwd.get("prefix") or self._pick_hop(
             request.headers.get(HEADER_X_FORWARDED_PREFIX), self.x_prefix
@@ -162,6 +173,13 @@ class ProxyFix(Middleware):
                 request.scope["scheme"] = proto
         if prefix:
             request._state["proxy_fix_prefix"] = prefix
+        # Mark that trust depth has been applied to this request. `URL.from_request`
+        # consults `X-Forwarded-Proto` directly when nothing else supplies a
+        # scheme, which is a reasonable default with no ProxyFix installed - but
+        # once ProxyFix HAS run, that fallback would hand the scheme to a hop
+        # ProxyFix just refused. Setting this stands the fallback down, so only
+        # the value written into the scope above counts.
+        request._state["proxy_fix_applied"] = True
 
         # Invalidate the URL cache so subsequent accesses re-derive from
         # the now-corrected headers.

@@ -62,3 +62,6 @@ result_*.b64
 examples/
 # Local-only benchmark harnesses (kept out of the published repo)
 bench/
+
+# Local MCP client config for the gitignored examples/ demo server.
+.mcp.json

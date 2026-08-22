@@ -7,8 +7,9 @@ import inspect
 from collections.abc import Sequence
 from typing import Any
 
+from veloce._internal import _current_app_var
 from veloce.background import BackgroundTask
-from veloce.helpers import _current_app_var, current_app, g, get_flashed_messages, request
+from veloce.helpers import current_app, g, get_flashed_messages, request
 from veloce.http.response import HTMLResponse, Response
 from veloce.middleware.security import csp_nonce
 from veloce.status import HTTP_200_OK

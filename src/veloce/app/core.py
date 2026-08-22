@@ -54,9 +54,10 @@ from veloce.app.urls import _URLMap
 from veloce.blueprints import _endpoint_blueprint
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.exceptions import (
+    BuildError,
     SetupError,
 )
-from veloce.helpers import g
+from veloce.helpers import Aborter, g, jsonify, send_from_directory, send_from_directory_async
 from veloce.http.datastructures import State
 from veloce.http.request import Request
 from veloce.http.response import (
@@ -67,12 +68,6 @@ from veloce.routing.router import Router, _readd_route
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon
-
-
-# Sentinel for cache misses where `None` is itself a valid cache hit
-# (e.g. "no exception handler matched this type"). Plain `cache.get(k)`
-# would re-walk the MRO every time for an unhandled exception type.
-_MISSING: Any = object()
 
 
 class Veloce(
@@ -126,6 +121,20 @@ class Veloce(
         summary: Annotated[
             str | None,
             Doc("Short one-line API summary emitted into the OpenAPI document."),
+        ] = None,
+        website_url: Annotated[
+            str | None,
+            Doc(
+                "Page describing this server, published in the MCP `serverInfo` so a "
+                "client can link to it."
+            ),
+        ] = None,
+        mcp_icons: Annotated[
+            Sequence[Icon] | None,
+            Doc(
+                "Icons published in the MCP `serverInfo`, for a client rendering this "
+                "server beside others."
+            ),
         ] = None,
         debug: Annotated[
             bool,
@@ -279,6 +288,10 @@ class Veloce(
         self.import_name = import_name
         self.title = title
         self.version = version
+        # Identity the MCP `serverInfo` publishes beyond name and version. Held on
+        # the app so one server describes itself in one place, whichever door.
+        self.website_url = website_url
+        self.mcp_icons = mcp_icons
         self.description = description
         # OpenAPI 3.1 Sec. 4.8.2 `info.summary` - a short one-line summary
         # of the API, distinct from the longer `description`.
@@ -323,7 +336,7 @@ class Veloce(
         # config key from the constructor arg - this is the single source of
         # truth, keeping `app.debug` and `config["DEBUG"]` from drifting apart.
         self.config["DEBUG"] = debug
-        self.extensions: dict[str, Any] = {}  # Extensions registry
+        self.extensions: dict[str, Any] = {}
         self._lifespan = lifespan
         # Additional lifespan context managers contributed by plugins and
         # extensions. Entered on the same exit stack as `lifespan=`, so they
@@ -529,15 +542,43 @@ class Veloce(
         # recorded by `@app.mcp_tool(...)` and consumed once at `mount_mcp` time
         # when the tool registry is assembled.
         self._mcp_tools: list[
-            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None, Any, bool]
+            tuple[
+                Callable,
+                str | None,
+                str | None,
+                str | None,
+                frozenset[str] | None,
+                frozenset[str] | None,
+                Any,
+                bool,
+                dict[str, Any] | None,
+                dict[str, Any] | None,
+                str | None,
+            ]
         ] = []
         # MCP prompt registrations (contrib.mcp). Each entry is
         # `(handler, name, description, namespace, scopes, icons)`, recorded by
         # `@app.mcp_prompt(...)` and consumed once at `mount_mcp` time when the
         # prompt registry is assembled.
         self._mcp_prompts: list[
-            tuple[Callable, str | None, str | None, str | None, frozenset[str] | None, Any]
+            tuple[
+                Callable,
+                str | None,
+                str | None,
+                str | None,
+                frozenset[str] | None,
+                Any,
+                dict[str, Any] | None,
+            ]
         ] = []
+        # Hooks that run around every MCP call - tool, resource read or prompt
+        # render - whichever way the primitive was registered. A route-backed tool
+        # replays the HTTP request lifecycle and so already sees `before_request`;
+        # a tool registered with `@app.mcp_tool` has no route, so these are the
+        # only place a cross-cutting concern can sit for it. Empty lists cost one
+        # falsy check per call.
+        self._mcp_before_call: list[Callable] = []
+        self._mcp_after_call: list[Callable] = []
         # MCP argument-completer registrations (contrib.mcp). Each entry is
         # `(kind, key, argument, completer)` where `kind` is "prompt" or
         # "resource", `key` is the prompt name or resource URI, recorded by
@@ -623,6 +664,14 @@ class Veloce(
         self._mounted_apps: list[tuple[str, str, Any]] = []
         # Same shape for ASGI-layer mounts dispatched with the raw scope.
         self._asgi_mounts: list[tuple[str, str, Any]] = []
+        # Sub-apps mounted with `expose_mcp=True`, whose MCP primitives are
+        # published through this app's own MCP server under a name prefix.
+        self._mcp_mounts: list[tuple[str, Any]] = []
+        # Tools handed over already built rather than derived from a signature:
+        # an upstream's, discovered by `add_mcp_proxy`, or one narrowed by
+        # `derive_tool` and registered with `add_mcp_tool`. Their schema is
+        # whatever built them, so the registry adds them as they are.
+        self._mcp_prebuilt_tools: list[Any] = []
         self._http_middleware_funcs: list[Callable] = []  # @app.middleware("http") funcs
         # Jinja2 helper registrations - applied to the env on each render.
         self._template_filters: list[tuple[str, Callable]] = []
@@ -1018,8 +1067,6 @@ class Veloce(
         `DeprecationWarning` when called on a running loop. From async
         handlers, prefer `send_static_file_async`.
         """
-        from veloce.helpers import send_from_directory
-
         directory = self.static_folder
         if not os.path.isabs(directory):
             directory = os.path.join(self.package_root, directory)
@@ -1032,8 +1079,6 @@ class Veloce(
         it never blocks the event loop. Prefer this from async handlers
         over the sync `send_static_file`.
         """
-        from veloce.helpers import send_from_directory_async
-
         directory = self.static_folder
         if not os.path.isabs(directory):
             directory = os.path.join(self.package_root, directory)
@@ -1123,8 +1168,6 @@ class Veloce(
         mappings; veloce returns a fresh `Aborter` instance per access
         so users can mutate `_mapping` per-app without affecting others.
         """
-        from veloce.helpers import Aborter  # breaks app -> exceptions -> helpers cycle
-
         if self._aborter is None:
             self._aborter = Aborter()
         return self._aborter
@@ -1280,8 +1323,6 @@ class Veloce(
         - `tuple` of `(body,)`, `(body, status)`, `(body, status, headers)`,
           or `(body, headers)` -> unpacked and re-coerced
         """
-        from veloce.helpers import jsonify
-
         if isinstance(value, Response):
             return value
         if isinstance(value, tuple):
@@ -1509,8 +1550,6 @@ class Veloce(
         non-None return is used. If none recovers, a `BuildError` is
         raised.
         """
-        from veloce.exceptions import BuildError
-
         if self._url_default_funcs:
             # Copy so the callbacks can mutate without changing the caller's
             # kwargs dict.
@@ -1750,8 +1789,12 @@ class Veloce(
         name: str | None = None,
         namespace: str | None = None,
         scopes: Sequence[str] | None = None,
+        tags: Sequence[str] | None = None,
         icons: Sequence[Icon] | None = None,
         task_support: bool = False,
+        annotations: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
+        version: str | None = None,
     ) -> Callable:
         """Register an MCP-only tool callable by an AI agent (contrib.mcp).
 
@@ -1764,7 +1807,10 @@ class Veloce(
         blueprint namespaces an exposed route. `icons` is an optional list of
         `Icon` objects a client may render next to the tool. `task_support=True`
         lets a client run the tool as a background task (task-augmented
-        `tools/call`, polled via `tasks/get` / `tasks/result`).
+        `tools/call`, polled via `tasks/get` / `tasks/result`). `version` labels
+        this registration: two tools sharing a name and declaring different
+        versions are both registered, the higher one is listed, and a call
+        naming no version reaches it.
 
         Usage::
 
@@ -1772,14 +1818,29 @@ class Veloce(
             async def add(a: int, b: int) -> int:
                 return a + b
         """
-        from veloce.contrib.mcp.safety import require_mcp_description
+        from veloce.contrib.mcp.safety import require_mcp_description, validate_tool_annotations
 
         scope_set = frozenset(scopes) if scopes else None
 
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
+            # Validated here rather than at mount time, so a misspelled hint is
+            # reported against the decorator that wrote it.
+            declared = validate_tool_annotations(annotations)
             self._mcp_tools.append(
-                (func, name, description, namespace, scope_set, icons, task_support)
+                (
+                    func,
+                    name,
+                    description,
+                    namespace,
+                    scope_set,
+                    frozenset(tags) if tags else None,
+                    icons,
+                    task_support,
+                    declared,
+                    meta,
+                    version,
+                )
             )
             return func
 
@@ -1793,6 +1854,7 @@ class Veloce(
         namespace: str | None = None,
         scopes: Sequence[str] | None = None,
         icons: Sequence[Icon] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> Callable:
         """Register an MCP prompt template fetchable by an AI agent (contrib.mcp).
 
@@ -1816,10 +1878,51 @@ class Veloce(
 
         def decorator(func: Callable) -> Callable:
             require_mcp_description(name or func.__name__, description)
-            self._mcp_prompts.append((func, name, description, namespace, scope_set, icons))
+            self._mcp_prompts.append((func, name, description, namespace, scope_set, icons, meta))
             return func
 
         return decorator
+
+    def add_mcp_tool(self, tool: Any) -> None:
+        """Register an already-built `MCPTool` (contrib.mcp).
+
+        The decorator builds a tool from a handler; this takes one that already
+        exists - most often from `derive_tool`, which narrows a registered tool
+        into the façade an agent should see::
+
+            app.add_mcp_tool(derive_tool(internal, name="search", arguments={...}))
+        """
+        self._mcp_prebuilt_tools.append(tool)
+
+    def before_mcp_call(self, func: Callable) -> Callable:
+        """Register a hook that runs before every MCP call (contrib.mcp).
+
+        Called with the primitive's name and the arguments it was given. Return
+        `None` to let the call proceed, or any other value to answer with that
+        instead of invoking the handler - the same short-circuit shape
+        `before_request` has. Raising an `MCPError` reports the failure to the
+        client, which is how an authorization check refuses a call.
+
+        Unlike `before_request`, this reaches a tool registered with
+        `@app.mcp_tool`, which has no route and so no request lifecycle::
+
+            @app.before_mcp_call
+            async def audit(name, arguments):
+                log.info("mcp call", extra={"tool": name})
+        """
+        self._mcp_before_call.append(func)
+        return func
+
+    def after_mcp_call(self, func: Callable) -> Callable:
+        """Register a hook that runs after every MCP call (contrib.mcp).
+
+        Called with the primitive's name and the handler's return value, and
+        returns the value to send on - so a hook may rewrite a result, or return
+        it unchanged. Hooks run in registration order, each seeing what the last
+        returned. It does not run when the call raised.
+        """
+        self._mcp_after_call.append(func)
+        return func
 
     def mcp_completer(
         self,
@@ -1868,6 +1971,12 @@ class Veloce(
         exclude_middleware: Sequence[str] | None = None,
         sessions: bool = False,
         resumable: bool = False,
+        tool_filter: Any = None,
+        cache_ttl_ms: int | None = None,
+        page_size: int | None = None,
+        tool_search: bool = False,
+        session_backend: Any = None,
+        message_path: str = "/messages",
     ) -> Any:
         """Build the MCP server and serve the registered tools.
 
@@ -1900,15 +2009,58 @@ class Veloce(
         `resumable` opts into SSE resumability: each streamed event gets an id
         encoding its stream, and a `GET` carrying `Last-Event-ID` replays only that
         stream's missed events so a client can reconnect after a dropped connection.
+        `tool_filter` narrows what `tools/list` reports per caller beyond the
+        declared scopes: a callable `(tool, principal) -> bool` (sync or async) that
+        hides tools an agent has no business seeing, so its context is not spent on
+        tools it cannot invoke. Declared scopes are applied first, whether or not a
+        filter is set - every list omits what this caller would be refused - so a
+        filter can only hide further, never reveal; hiding a primitive does not
+        change what happens if it is called anyway.
+        `cache_ttl_ms` sets the freshness hint sent with cacheable results
+        (`tools/list`, `prompts/list`, `resources/list`, `resources/read` and
+        `server/discover`) on the modern protocol revision; `0` marks them
+        immediately stale. A list that can differ between callers is additionally
+        marked private so a shared proxy cannot serve one caller's answer to another.
+        `transport="sse"` mounts the deprecated split-endpoint wire of MCP revision
+        2024-11-05, for a client that speaks only that: a `GET` at `path`
+        (defaulting to `/sse`) opens a stream that names `message_path` as the URL
+        to POST to, each POST is acknowledged `202` and its JSON-RPC response
+        arrives on the stream. Prefer `transport="http"` for anything new - one
+        endpoint, and a dropped connection can be resumed.
+        `session_backend` shares HTTP sessions between workers - any object with
+        async `read` / `write` / `delete` methods over a `SessionRecord`. Without
+        one a session lives in the worker that minted it, so a request reaching a
+        different worker is answered 404 and the client starts a new session.
+        `page_size` opts the list methods into cursor pagination: each answers with
+        at most that many entries plus a `nextCursor` while more remain, so a large
+        catalogue reaches the agent a page at a time instead of filling its context
+        in one response. Left unset, every list is answered in full - a client may
+        ignore `nextCursor`, so paginating uninvited would hide the rest of the
+        catalogue from one that does.
+        `tool_search` publishes three tools in place of the catalogue -
+        `search_tools`, `describe_tools` and `run_tools` - so a server with a large
+        catalogue spends the agent's context on the tools it turns out to need
+        rather than on every tool it has. `run_tools` executes declared calls, not
+        code: each step names a registered tool and its arguments, and a step's
+        argument may reference an earlier step's result.
         Call this after the tool / resource / prompt routes are registered.
         """
-        from veloce.contrib.mcp.server import MCPServer
+        from veloce.contrib.mcp.server import DEFAULT_CACHE_TTL_MS, MCPServer
+
+        # Omitted means the server's own default freshness hint.
+        cache_ttl = DEFAULT_CACHE_TTL_MS if cache_ttl_ms is None else cache_ttl_ms
 
         if transport == "stdio":
             from veloce.contrib.mcp.transports.stdio import serve_stdio
             from veloce.principal import set_principal
 
-            server = MCPServer(self)
+            server = MCPServer(
+                self,
+                tool_filter=tool_filter,
+                cache_ttl_ms=cache_ttl,
+                page_size=page_size,
+                tool_search=tool_search,
+            )
 
             async def _serve() -> None:
                 if principal is not None:
@@ -1921,7 +2073,13 @@ class Veloce(
         if transport == "http":
             from veloce.contrib.mcp.transports.http import register_http_transport
 
-            server = MCPServer(self)
+            server = MCPServer(
+                self,
+                tool_filter=tool_filter,
+                cache_ttl_ms=cache_ttl,
+                page_size=page_size,
+                tool_search=tool_search,
+            )
             # A task-augmented call records the creating connection's identity and
             # the follow-up tasks/get|result|list|cancel must run under that same
             # connection. The stateless default mints a throwaway session (a fresh,
@@ -1946,11 +2104,36 @@ class Veloce(
                 exclude_middleware=exclude_middleware,
                 sessions=sessions,
                 resumable=resumable,
+                session_backend=session_backend,
+            )
+            return None
+
+        if transport == "sse":
+            from veloce.contrib.mcp.transports.sse import register_sse_transport
+
+            server = MCPServer(
+                self,
+                tool_filter=tool_filter,
+                cache_ttl_ms=cache_ttl,
+                page_size=page_size,
+                tool_search=tool_search,
+            )
+            register_sse_transport(
+                self,
+                server,
+                path=path if path != "/mcp" else "/sse",
+                message_path=message_path,
+                auth=auth,
+                allowed_origins=(
+                    frozenset(allowed_origins) if allowed_origins is not None else None
+                ),
+                exclude_middleware=exclude_middleware,
             )
             return None
 
         raise ValueError(
-            f"Unsupported MCP transport {transport!r}; supported transports are 'stdio' and 'http'."
+            f"Unsupported MCP transport {transport!r}; supported transports are "
+            "'stdio', 'http', and 'sse' (the deprecated split-endpoint wire)."
         )
 
     # ── ASGI compatibility layer ──────────────────────────

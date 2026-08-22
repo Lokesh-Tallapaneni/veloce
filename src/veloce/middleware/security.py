@@ -40,9 +40,8 @@ from veloce._constants import (
     HEADER_X_RATELIMIT_REMAINING,
     HEADER_X_RATELIMIT_RESET,
 )
-from veloce._internal import _extract_host
+from veloce._internal import _current_request_var, _extract_host
 from veloce._protocol_constants import URL_SCHEME_HTTPS, URL_SCHEME_WSS
-from veloce.helpers import _current_request_var
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, header_present
 from veloce.middleware.base import Middleware

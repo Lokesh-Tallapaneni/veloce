@@ -9,9 +9,17 @@ the dispatch + write happen on the loop.
 The duplex pipe also makes this the bidirectional transport: it satisfies
 `BidirectionalTransport` via `request`, which sends a server->client request
 (`sampling` / `elicitation` / `roots`) and awaits the client's correlated
-reply. While a handler awaits such a request the serve loop keeps reading: an
-inbound message that is the awaited reply resolves it, any other inbound message
-is dispatched normally, so the client may interleave its own calls.
+reply. The serve loop reads that reply and settles the waiting future, so a
+handler never reads the stream itself and a task-augmented call may sample,
+elicit and list roots like any other.
+
+**The loop is the sole reader and dispatches off itself**, so it keeps consuming
+input while handlers run: `notifications/cancelled` reaches a call that is still
+running, and `ping` is answered without queueing behind a slow tool. Ordinary
+requests are chained so they still execute in the order they arrived - a client
+that sends `logging/setLevel` before a call expects the level to be in force -
+while those two control methods deliberately bypass the chain, since their whole
+purpose is to reach a request that is already running.
 
 `StdioTransport` is decoupled from the real streams - it takes an async
 `read_line` source and an async `write_line` sink - so a test can drive a
@@ -22,6 +30,7 @@ descriptors.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from collections.abc import Awaitable, Callable
 from itertools import count
@@ -29,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 import orjson
 
-from veloce.contrib.mcp._helpers import _in_task_var
+from veloce.contrib.mcp.errors import _JSONRPC_INVALID_REQUEST
 from veloce.contrib.mcp.session import MCPSession
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -44,6 +53,12 @@ _JSONRPC_PARSE_ERROR = -32700
 # with a client-issued id (the client owns its own id space; the server owns this).
 _SERVER_ID_PREFIX = "srv-"
 
+# Answered off the ordering chain. Everything else keeps strict request order -
+# a client that sends `logging/setLevel` then a call expects the level to be in
+# force - but these two exist to reach a request that is ALREADY running, so
+# queueing them behind it defeats them entirely.
+_CONTROL_METHODS = frozenset({"ping", "notifications/cancelled"})
+
 
 class StdioTransport:
     """Drive an `MCPServer` over a line-delimited JSON byte stream.
@@ -54,7 +69,16 @@ class StdioTransport:
     serve loop.
     """
 
-    __slots__ = ("server", "_read_line", "_write_line", "_pending", "_server_ids", "_session")
+    __slots__ = (
+        "server",
+        "_read_line",
+        "_write_line",
+        "_pending",
+        "_server_ids",
+        "_session",
+        "_write_lock",
+        "_serial_tail",
+    )
 
     def __init__(
         self,
@@ -73,6 +97,13 @@ class StdioTransport:
         # The live connection's session, exposed so `request` reads the client's
         # advertised capabilities; bound for the serve loop's lifetime.
         self._session: MCPSession | None = None
+        # Dispatches run concurrently, so two could otherwise interleave halves
+        # of a line. The framing is one JSON message per line, so a torn write is
+        # an unparseable message for the client.
+        self._write_lock = asyncio.Lock()
+        # Tail of the ordered dispatch chain: each ordinary request awaits the
+        # one ahead of it, so order survives without the read loop blocking.
+        self._serial_tail: asyncio.Task[None] | None = None
 
     async def serve(self) -> None:
         """Read, dispatch, and reply line-by-line until the input closes.
@@ -104,80 +135,155 @@ class StdioTransport:
         # be delivered to it (a no-op when resource subscriptions are disabled);
         # unregistered on EOF so a closed connection receives nothing further.
         token = self.server.register_connection(session, self.send)
+        # Requests are dispatched as tasks so this loop stays the SOLE reader and
+        # keeps consuming input while a handler runs. Awaiting each dispatch made
+        # `notifications/cancelled` unreachable - it could only be read once the
+        # request it cancels had already finished - and queued `ping` behind a
+        # slow tool.
+        inflight: set[asyncio.Task[None]] = set()
         try:
             while True:
                 line = await self._read_line()
                 if line is None:
+                    # The client closed its write side. Nothing more can be
+                    # read, so a handler parked on a server->client reply would
+                    # wait for a message that can never arrive - fail those
+                    # first, or the drain below deadlocks on it.
+                    self._fail_pending()
+                    # Then let the dispatches already running finish and write
+                    # their replies rather than dropping answers to requests the
+                    # client did send.
+                    if inflight:
+                        await asyncio.gather(*inflight, return_exceptions=True)
                     return
-                response = await self._process_line(line, session)
-                if response is not None:
-                    await self._write_line(orjson.dumps(response))
+                message, error = self._decode(line)
+                if error is not None:
+                    await self._emit(error)
+                    continue
+                if message is None:
+                    continue
+                # A reply to a server->client request settles the waiting future
+                # rather than entering dispatch. Synchronous and cheap, so it is
+                # never worth a task.
+                if "method" not in message:
+                    self._resolve_reply(message)
+                    continue
+                loop = asyncio.get_running_loop()
+                if message.get("method") in _CONTROL_METHODS:
+                    task = loop.create_task(self._dispatch(message, session))
+                else:
+                    task = loop.create_task(
+                        self._dispatch_in_order(self._serial_tail, message, session)
+                    )
+                    self._serial_tail = task
+                inflight.add(task)
+                task.add_done_callback(inflight.discard)
         finally:
+            # Only reached with work outstanding when the serve loop itself was
+            # cancelled; a clean EOF has already drained above.
+            for task in inflight:
+                task.cancel()
             self.server.unregister_connection(token)
+            # Reclaim what the connection owned, the same way the HTTP session
+            # store does on idle eviction. Unregistering alone drops the
+            # notification sink and the listen streams but leaves the session's
+            # tasks registered, and `TaskRegistry.evict_expired` deliberately
+            # never reaps a task that has not settled - so a never-settling task
+            # created here outlived the connection, together with its running
+            # asyncio runner, for the lifetime of the process.
+            self.server.evict_session(session)
             self._session = None
 
     async def send(self, message: dict[str, Any]) -> None:
         """Write one server-initiated JSON-RPC message line to the client."""
-        await self._write_line(orjson.dumps(message))
+        await self._emit(message)
+
+    def _fail_pending(self) -> None:
+        """Settle every waiting server->client request as failed.
+
+        Called at EOF: the loop is the only reader, so once input is closed no
+        correlated reply can arrive and a handler awaiting one would hang for
+        the process lifetime.
+        """
+        for future in list(self._pending.values()):
+            if not future.done():
+                future.set_exception(MCPRequestError("connection closed before reply"))
+        self._pending.clear()
+
+    async def _emit(self, payload: dict[str, Any]) -> None:
+        """Write one JSON line, serialised against every other writer."""
+        async with self._write_lock:
+            await self._write_line(orjson.dumps(payload))
+
+    async def _dispatch(self, message: dict[str, Any], session: MCPSession) -> None:
+        """Answer one request off the read loop, so the loop keeps reading."""
+        response = await self.server.handle_message(message, session)
+        if response is not None:
+            await self._emit(response)
+
+    async def _dispatch_in_order(
+        self,
+        previous: asyncio.Task[None] | None,
+        message: dict[str, Any],
+        session: MCPSession,
+    ) -> None:
+        """Dispatch after `previous`, preserving the order requests arrived in.
+
+        The read loop hands each request to a task so it can carry on reading,
+        which is what lets a cancellation reach a running call. Left unordered
+        that would also let a call overtake the `logging/setLevel` or
+        `initialize` sent before it. A failure in the predecessor is its own
+        business and must not stop this one.
+        """
+        if previous is not None and not previous.done():
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(previous)
+        await self._dispatch(message, session)
 
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Issue a server->client request and await the client's correlated reply.
 
-        Sends the JSON-RPC request, then reads inbound lines until the matching
-        reply arrives: any other inbound message is dispatched and answered inline,
-        so the client may interleave its own calls while the request is in flight.
-        Returns the reply's `result`; an error reply raises `MCPRequestError`.
+        Sends the JSON-RPC request and awaits the future the serve loop settles
+        when the correlated reply arrives. Returns the reply's `result`; an error
+        reply raises `MCPRequestError`.
 
-        Refused from a detached task runner: the stdio reader is serial, so this
-        method reads the reply itself, which works only while the serve loop is
-        parked in the calling handler. A task-augmented call has already returned
-        its `CreateTaskResult`, so the serve loop is reading stdin too; two readers
-        on one blocking stream would split inbound lines arbitrarily.
+        This does not read the stream itself. It used to, which made the serve
+        loop and the calling handler two readers of one blocking stream - so it
+        had to be refused from a task-augmented call, where both are live at
+        once. The loop is now the sole reader, so there is nothing to refuse and
+        a task-augmented tool may sample, elicit and list roots like any other.
         """
-        if _in_task_var.get():
-            raise MCPRequestError(
-                "server->client requests (sample/elicit/roots) are not supported from a "
-                "task-augmented tool call on the stdio transport; call the tool without a "
-                "'task' field, or run it over a transport that does not share one reader."
-            )
         request_id = f"{_SERVER_ID_PREFIX}{next(self._server_ids)}"
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
-        await self._write_line(
-            orjson.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        )
-        # Pump the input until this request's reply resolves the future. The serve
-        # loop is blocked in the handler that called us, so reading here keeps the
-        # connection live and lets the client interleave its own requests.
+        await self._emit({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
         try:
-            while not future.done():
-                line = await self._read_line()
-                if line is None:
-                    raise MCPRequestError("connection closed before reply")
-                response = await self._process_line(line, self._session)
-                if response is not None:
-                    await self._write_line(orjson.dumps(response))
+            return await future
+        except asyncio.CancelledError:
+            raise MCPRequestError("connection closed before reply") from None
         finally:
             self._pending.pop(request_id, None)
-        return future.result()
 
-    async def _process_line(self, line: bytes, session: MCPSession | None) -> dict[str, Any] | None:
-        """Route one input line: resolve a pending reply, or dispatch a request."""
+    def _decode(self, line: bytes) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """Parse one input line into `(message, error_response)`.
+
+        Both are `None` for a blank line, which is skipped; otherwise exactly one
+        is set, so the caller routes on whichever it got.
+        """
         stripped = line.strip()
         if not stripped:
-            return None
+            return None, None
         try:
             message = orjson.loads(stripped)
         except orjson.JSONDecodeError:
-            return self._parse_error()
+            return None, self._parse_error()
         if not isinstance(message, dict):
-            return self._parse_error()
-        # A reply to a server->client request (an id we issued, no method) resolves
-        # the waiting future rather than entering dispatch.
-        if "method" not in message:
-            self._resolve_reply(message)
-            return None
-        return await self.server.handle_message(message, session)
+            # It parsed, so the failure is the shape, not the JSON. JSON-RPC keeps
+            # these apart: -32700 says the text could not be read, -32600 says what
+            # was read is not a Request object. A batch array lands here too, since
+            # the revisions this server speaks do not carry batches.
+            return None, self._invalid_request()
+        return message, None
 
     def _resolve_reply(self, message: dict[str, Any]) -> None:
         """Settle the pending server->client request named by a reply's id."""
@@ -198,6 +304,14 @@ class StdioTransport:
             "jsonrpc": "2.0",
             "id": None,
             "error": {"code": _JSONRPC_PARSE_ERROR, "message": "Parse error"},
+        }
+
+    @staticmethod
+    def _invalid_request() -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": _JSONRPC_INVALID_REQUEST, "message": "Invalid Request"},
         }
 
 

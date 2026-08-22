@@ -480,6 +480,53 @@ def _encode_multipart(
     return body, f"{MIME_MULTIPART_FORM_DATA}; boundary={boundary}"
 
 
+async def _send_one_request(
+    app: Any,
+    method: str,
+    path: str,
+    query_string: str,
+    headers: dict[str, str],
+    body: bytes,
+    stream: Any | None = None,
+) -> TestResponse:
+    """Drive one ASGI request through `app` and collect its response.
+
+    Shared by both clients so a change to the scope or receive channel cannot
+    reach one and miss the other.
+    """
+    scope = _build_scope(method, path, query_string, headers)
+    receive = _build_receive(body, stream)
+    return await _collect_response(app, scope, receive)
+
+
+def _assemble_body(
+    json: Any,
+    data: dict[str, str] | None,
+    content: bytes | None,
+    files: dict[str, Any] | None,
+    headers: dict[str, str] | None,
+) -> tuple[bytes, dict[str, str]]:
+    """Encode one buffered request body and the content type it implies.
+
+    Shared by both clients so the sync and async paths cannot drift on which
+    argument wins or on the media type each form sets.
+    """
+    hdrs = dict(headers or {})
+    body = b""
+    if files is not None:
+        body, ct = _encode_multipart(files, data or {})
+        hdrs[HEADER_CONTENT_TYPE] = ct
+    elif json is not None:
+        body = orjson.dumps(json)
+        hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_JSON)
+    elif data is not None:
+        body = urlencode(data).encode()
+        hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_FORM_URLENCODED)
+    elif content is not None:
+        body = content
+    return body, hdrs
+
+
 def _build_scope(
     method: str,
     path: str,
@@ -681,9 +728,7 @@ class TestClient:
         body: bytes,
         stream: Any | None = None,
     ) -> TestResponse:
-        scope = _build_scope(method, path, query_string, headers)
-        receive = _build_receive(body, stream)
-        return await _collect_response(self.app, scope, receive)
+        return await _send_one_request(self.app, method, path, query_string, headers, body, stream)
 
     def _make_request(
         self,
@@ -764,17 +809,7 @@ class TestClient:
             return self._make_request(
                 method, path, headers=hdrs, follow_redirects=follow_redirects, stream=stream
             )
-        if files is not None:
-            body, ct = _encode_multipart(files, data or {})
-            hdrs[HEADER_CONTENT_TYPE] = ct
-        elif json is not None:
-            body = orjson.dumps(json)
-            hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_JSON)
-        elif data is not None:
-            body = urlencode(data).encode()
-            hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_FORM_URLENCODED)
-        elif content is not None:
-            body = content
+        body, hdrs = _assemble_body(json, data, content, files, hdrs)
         return self._make_request(
             method, path, headers=hdrs, body=body, follow_redirects=follow_redirects
         )
@@ -1038,10 +1073,10 @@ class _WebSocketSession:
                 "subprotocols": list(self._subprotocols),
             }
 
-            async def receive() -> dict:
+            async def receive() -> dict[str, Any]:
                 return await self._to_handler.get()
 
-            async def send(msg: dict) -> None:
+            async def send(msg: dict[str, Any]) -> None:
                 await self._from_handler.put(msg)
 
             # Kick the handshake.
@@ -1091,7 +1126,7 @@ class _WebSocketSession:
         async def _r() -> Any:
             msg = await self._from_handler.get()
             if msg.get("type") == ASGI_EVENT_WS_CLOSE:
-                raise Exception(f"WebSocket closed: {msg.get('code', WS_1000_NORMAL_CLOSURE)}")
+                raise RuntimeError(f"WebSocket closed: {msg.get('code', WS_1000_NORMAL_CLOSURE)}")
             return msg[key]
 
         return self._client._loop.run_until_complete(_r())
@@ -1266,9 +1301,7 @@ class AsyncTestClient:
         body: bytes,
         stream: Any | None = None,
     ) -> TestResponse:
-        scope = _build_scope(method, path, query_string, headers)
-        receive = _build_receive(body, stream)
-        return await _collect_response(self.app, scope, receive)
+        return await _send_one_request(self.app, method, path, query_string, headers, body, stream)
 
     async def _make_request(
         self,
@@ -1319,20 +1352,7 @@ class AsyncTestClient:
         files: dict[str, Any] | None,
         headers: dict[str, str] | None,
     ) -> tuple[bytes, dict[str, str]]:
-        hdrs = dict(headers or {})
-        body = b""
-        if files is not None:
-            body, ct = _encode_multipart(files, data or {})
-            hdrs[HEADER_CONTENT_TYPE] = ct
-        elif json is not None:
-            body = orjson.dumps(json)
-            hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_JSON)
-        elif data is not None:
-            body = urlencode(data).encode()
-            hdrs.setdefault(HEADER_CONTENT_TYPE, MIME_FORM_URLENCODED)
-        elif content is not None:
-            body = content
-        return body, hdrs
+        return _assemble_body(json, data, content, files, headers)
 
     # ── Method shortcuts ──────────────────────────────────
 

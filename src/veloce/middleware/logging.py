@@ -36,6 +36,9 @@ class LoggingMiddleware(Middleware):
     def __init__(self, logger: logging.Logger | None = None, *, name: str | None = None) -> None:
         super().__init__(name=name)
         if logger is None:
+            # "veloce.access" is part of the public contract: applications and
+            # the test suite attach handlers to that exact name, so it stays a
+            # literal rather than `__name__`.
             self.logger = logging.getLogger("veloce.access")
             # Handlers and level are bootstrapped independently. We check
             # `self.logger.handlers` (direct list) rather than

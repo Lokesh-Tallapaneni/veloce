@@ -43,6 +43,10 @@ def _endpoint_blueprint(endpoint: str | None) -> str | None:
     Blueprint routes have endpoints of the form `"{bp}.{routename}"`;
     app-level routes have a bare `"routename"` (no dot). This is the
     same convention `register_blueprint` and `url_for` already use.
+
+    Read per request by the app's dispatch and hook paths (`app/dispatch.py`,
+    `app/core.py`) to find the blueprint whose hooks apply, so it lives with the
+    convention it decodes rather than being restated there.
     """
     if not endpoint:
         return None

@@ -404,7 +404,7 @@ class WebSocket:
         # ASGI receive/send callables instead. Set by `from_asgi`.
         self._asgi_receive: Any = None
         self._asgi_send: Any = None
-        self.scope: dict | None = None
+        self.scope: dict[str, Any] | None = None
         self.path: str = ""
         self.path_params: dict[str, Any] = {}
         self._query_params: Any = None
@@ -421,7 +421,7 @@ class WebSocket:
     @classmethod
     def from_asgi(
         cls,
-        scope: dict,
+        scope: dict[str, Any],
         receive: Any,
         send: Any,
         idle_timeout: float | None = None,
@@ -469,7 +469,7 @@ class WebSocket:
         cls,
         transport: asyncio.Transport,
         headers: dict[str, str],
-        scope: dict,
+        scope: dict[str, Any],
         *,
         path_params: dict[str, Any] | None = None,
         idle_timeout: float | None = None,
@@ -850,7 +850,7 @@ class WebSocket:
             raise WebSocketDisconnect(code)
         return msg
 
-    async def receive(self) -> dict:
+    async def receive(self) -> dict[str, Any]:
         """Receive a raw ASGI WebSocket message.
 
         Returns the message dict as the ASGI server delivered it
@@ -880,7 +880,7 @@ class WebSocket:
             # 1001 close handshake, so control never returns here.
             await self._idle_close()
 
-    async def send(self, message: dict) -> None:
+    async def send(self, message: dict[str, Any]) -> None:
         """Send a raw ASGI WebSocket message.
 
         `message` is forwarded straight to the ASGI `send` callable,

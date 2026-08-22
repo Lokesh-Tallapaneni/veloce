@@ -14,20 +14,22 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from veloce._model_backend import shape_through_model
 from veloce.contrib.mcp._helpers import (
     _binary_result,
-    _in_task_var,
+    _content_blocks,
     _notifier_var,
     _progress_token,
     _resource_result_from_response,
     _response_body_value,
-    _session_var,
     _stringify,
     _text_result,
     _to_structured,
 )
+from veloce.contrib.mcp.context import _in_task_var, _session_var
 from veloce.contrib.mcp.errors import (
     InvalidParamsError,
+    _InBandError,
     _StreamTimeoutError,
     _StreamTooLargeError,
 )
@@ -35,6 +37,7 @@ from veloce.contrib.mcp.tasks import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
     STATUS_FAILED,
+    TASKS_EXTENSION,
     create_task_result,
     new_task,
     status_notification,
@@ -62,6 +65,26 @@ _STREAM_BUFFER_LIMIT = 5 * 1024 * 1024
 # stream wedges the serial stdio serve loop, blocking every later request.
 # Crossing it closes the stream and yields an in-band tool error.
 _STREAM_DRAIN_TIMEOUT = 30.0
+
+
+# The `_meta` key a modern request states its revision in. Duplicated here rather
+# than imported from `server`, which imports this module.
+_META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+
+
+def _modern_request(params: dict[str, Any]) -> bool:
+    """Whether this request declared a modern protocol version in its `_meta`."""
+    meta = params.get("_meta")
+    return isinstance(meta, dict) and isinstance(meta.get(_META_PROTOCOL_VERSION), str)
+
+
+def _client_declared_tasks() -> bool:
+    """Whether the calling client advertised the tasks extension."""
+    session = _session_var.get()
+    if session is None:
+        return False
+    extensions = session.client_capabilities.get("extensions")
+    return isinstance(extensions, dict) and TASKS_EXTENSION in extensions
 
 
 class TasksMixin:
@@ -95,10 +118,33 @@ class TasksMixin:
             raise InvalidParamsError(
                 f"Tool {tool.name!r} does not support task execution; call it without a 'task' field."
             )
+        # A task is never handed to a client that did not declare the extension:
+        # it would be given a handle it has no `tasks/*` methods to resolve.
+        modern = _modern_request(params)
+        if modern and not _client_declared_tasks():
+            raise InvalidParamsError(
+                "This client did not declare the "
+                f"{TASKS_EXTENSION!r} extension, so a task cannot be returned; "
+                "call the tool without a 'task' field."
+            )
         self._tasks.evict_expired()
         # The creating connection owns the task: a task method from a different
         # connection cannot see or act on it (multi-client isolation on HTTP).
         session = _session_var.get()
+        # A throwaway session is minted per stateless POST, so a task owned by
+        # one can never be polled back by another - and `evict_expired` only
+        # drops a task that has settled, so a never-settling one would be pinned
+        # for the process lifetime with nobody able to reach or cancel it.
+        # `mount_mcp` refuses this pairing up front, but only over the tools
+        # registered by then: declaring a `task_support` tool after the mount
+        # walks straight past it. Refusing here closes that, because the check
+        # is on the call rather than on registration order.
+        if session is not None and not session.persistent:
+            raise InvalidParamsError(
+                "This connection has no session, so a task created here could "
+                "never be retrieved; mount with sessions=True to use tasks over "
+                "HTTP, or call the tool without a 'task' field."
+            )
         owner_key = session.connection_id if session is not None else None
         task = new_task(tool.name, task_ttl_ms(params), owner_key)
         self._tasks.register(task)
@@ -106,7 +152,7 @@ class TasksMixin:
         # the same notifier / log level / principal the request established here.
         progress_token = _progress_token(params)
         task.runner = asyncio.ensure_future(self._run_task(task, tool, arguments, progress_token))
-        return create_task_result(task)
+        return create_task_result(task, modern=modern)
 
     async def _run_task(
         self,
@@ -346,7 +392,7 @@ class TasksMixin:
                 # validate every return (raw value or handler-built body) through
                 # the model so a field outside it cannot leak.
                 try:
-                    shaped = tool.output_model.model_validate(shaped).model_dump(mode="json")
+                    shaped = shape_through_model(shaped, tool.output_model)
                 except Exception:
                     return _text_result(_stringify(shaped))
         return self._success_result(tool, shaped)
@@ -354,14 +400,22 @@ class TasksMixin:
     def _success_result(self, tool: MCPTool, shaped: Any) -> dict[str, Any]:
         """Build a successful tool-call result from a shaped return value.
 
-        The text content block is always present (back-compatible with clients
-        that read only `content`). `structuredContent` is added when the tool
+        A handler that returned content blocks has already said what the result
+        is; the blocks are emitted in order and nothing is added. Otherwise the
+        text content block is always present (back-compatible with clients that
+        read only `content`), and `structuredContent` is added when the tool
         declares an `outputSchema` and the value carries an object form. A body
         that bypassed the route `response_model` has already been re-filtered by
         the caller, so any value reaching here is trusted to conform to the
         advertised schema - honouring the MCP requirement that a declared
         `outputSchema` is matched by conforming structured output.
         """
+        try:
+            blocks = _content_blocks(shaped)
+        except _InBandError as exc:
+            return _text_result(str(exc), is_error=True)
+        if blocks is not None:
+            return {"content": blocks}
         result = _text_result(_stringify(shaped))
         if tool.output_schema is not None:
             structured = _to_structured(shaped)
