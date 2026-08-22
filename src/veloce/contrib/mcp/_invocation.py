@@ -83,7 +83,11 @@ class InvocationMixin:
     # ── Invocation ────────────────────────────────────────
 
     async def _run_invoke(
-        self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None
+        self,
+        tool: MCPTool,
+        arguments: dict[str, Any],
+        progress_token: str | int | None,
+        request_meta: dict[str, Any] | None = None,
     ) -> Any:
         """Invoke a tool, applying the optional per-call timeout.
 
@@ -114,9 +118,11 @@ class InvocationMixin:
 
         # Built here so the restore wraps one await, not a duplicated pair.
         call = (
-            self._invoke(tool, arguments, progress_token)
+            self._invoke(tool, arguments, progress_token, request_meta)
             if self._call_timeout is None
-            else asyncio.wait_for(self._invoke(tool, arguments, progress_token), self._call_timeout)
+            else asyncio.wait_for(
+                self._invoke(tool, arguments, progress_token, request_meta), self._call_timeout
+            )
         )
         outer_app = _current_app_var.get()
         outer_request = _current_request_var.get()
@@ -165,7 +171,11 @@ class InvocationMixin:
         return result
 
     async def _invoke(
-        self, tool: MCPTool, arguments: dict[str, Any], progress_token: str | int | None = None
+        self,
+        tool: MCPTool,
+        arguments: dict[str, Any],
+        progress_token: str | int | None = None,
+        request_meta: dict[str, Any] | None = None,
     ) -> Any:
         """Resolve DI and call the handler, draining teardowns afterwards.
 
@@ -202,6 +212,7 @@ class InvocationMixin:
             requester=_requester_var.get(),
             session=session,
             server=self,
+            request_meta=request_meta,
         )
         # Expose this context on its in-flight registration so a
         # `notifications/cancelled` flips `ctx.cancelled` (cooperative stop) as

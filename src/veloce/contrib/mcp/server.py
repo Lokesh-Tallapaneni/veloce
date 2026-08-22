@@ -1295,7 +1295,9 @@ class MCPServer(TasksMixin, InvocationMixin):
         if "task" in params:
             return self._create_task(tool, arguments, params)
 
-        return await self._produce_tool_result(tool, arguments, started, _progress_token(params))
+        return await self._produce_tool_result(
+            tool, arguments, started, _progress_token(params), params.get("_meta")
+        )
 
     async def _produce_tool_result(
         self,
@@ -1303,6 +1305,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         arguments: dict[str, Any],
         started: float,
         progress_token: str | int | None,
+        request_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Invoke a tool and shape its return into the `tools/call` result object.
 
@@ -1313,7 +1316,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         callers report a call's real outcome identically.
         """
         try:
-            result = await self._run_invoke(tool, arguments, progress_token)
+            result = await self._run_invoke(tool, arguments, progress_token, request_meta)
         except _InBandError as exc:
             # Surfaced verbatim, unlike a handler exception: an invalid argument
             # names the offending field and what was expected, and an unavailable

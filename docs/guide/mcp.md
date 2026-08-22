@@ -1243,6 +1243,13 @@ await add_mcp_proxy(app, "search", call_upstream)
 app.mount_mcp(transport="http")
 ```
 
+`scopes=` requires them of a caller before any proxied tool is invoked or listed,
+the same check a local tool's `scopes=` performs — a gateway is where that
+matters most, since the upstream cannot see who is asking. `tags=` labels them
+for a `tool_filter` policy. The caller's own `_meta` travels with each forwarded
+call, so an upstream sees the progress token and any extension block; relaying
+what the upstream sends back is the application's part, since it owns the client.
+
 Discovery is I/O, so it is awaited at setup rather than hidden behind a
 decorator, and it must run before `mount_mcp` builds the registry. Every
 discovered tool is registered as `"{namespace}_{upstream_name}"`, and the

@@ -126,6 +126,7 @@ class MCPContext:
         "_client_capabilities",
         "_session",
         "_server",
+        "_request_meta",
     )
 
     def __init__(
@@ -140,6 +141,7 @@ class MCPContext:
         client_capabilities: dict[str, Any] | None = None,
         session: Any = None,
         server: Any = None,
+        request_meta: dict[str, Any] | None = None,
     ) -> None:
         self.tool_name = tool_name
         # The raw, un-coerced argument mapping the client sent in ``tools/call``.
@@ -152,6 +154,10 @@ class MCPContext:
         # minimum log level - together they make `log` / `report_progress` live.
         self._notifier = notifier
         self._progress_token = progress_token
+        # The `_meta` the client sent with this request, verbatim. The protocol
+        # reserves it for what the spec does not define, so what it holds is
+        # between the client and whatever reads it here.
+        self._request_meta = request_meta
         self._log_level = log_level
         # Server->client request issuer (wired only by a bidirectional transport;
         # `None` for a one-way or off-transport construction) and the capabilities
@@ -231,6 +237,16 @@ class MCPContext:
     def is_background_task(self) -> bool:
         """Whether this call is running as a task rather than inline."""
         return _in_task_var.get()
+
+    @property
+    def request_meta(self) -> dict[str, Any]:
+        """The `_meta` the client sent with this request, or an empty mapping.
+
+        The protocol reserves `_meta` for metadata it does not define - a
+        progress token, a trace id, an extension's own block - so a handler that
+        needs to read or relay what the client attached finds it here.
+        """
+        return self._request_meta or {}
 
     def client_supports(self, capability: str) -> bool:
         """Return whether the client advertised `capability` (dotted for nested).

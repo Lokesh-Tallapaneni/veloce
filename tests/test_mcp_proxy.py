@@ -224,3 +224,79 @@ async def test_a_local_tool_result_is_still_shaped_normally():
     result = await _call(gateway, "looks_like_a_result")
     # Shaped, not relayed: the dict is serialised into the text block.
     assert result["content"][0]["text"].startswith("{")
+
+
+# ── What the gateway forwards, and what it can require ───────────────
+
+
+async def test_the_callers_meta_travels_upstream():
+    """A progress token or a trace id the caller attached is the upstream's too."""
+    seen: list = []
+    gateway = await _gateway(seen=seen)
+    seen.clear()
+    await MCPServer(gateway).handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "up_add",
+                "arguments": {"a": 1, "b": 1},
+                "_meta": {"progressToken": "tok-1", "io.example/trace": "abc"},
+            },
+        },
+        MCPSession(),
+    )
+    _method, params = seen[0]
+    assert params["_meta"] == {"progressToken": "tok-1", "io.example/trace": "abc"}
+
+
+async def test_a_call_without_meta_forwards_none():
+    """Nothing invented: an absent `_meta` stays absent upstream."""
+    seen: list = []
+    gateway = await _gateway(seen=seen)
+    seen.clear()
+    await _call(gateway, "up_add", {"a": 1, "b": 1})
+    _method, params = seen[0]
+    assert "_meta" not in params
+
+
+async def test_a_proxied_tool_can_require_a_scope():
+    """A gateway is where authorization matters; the upstream cannot see the caller."""
+    _app, server = _upstream()
+    gateway = Veloce(title="Gateway", openapi_url=None)
+    await add_mcp_proxy(gateway, "up", _requester(server), scopes=["ops"])
+    assert build_registry(gateway).tools["up_add"].required_scopes == frozenset({"ops"})
+
+
+async def test_a_caller_without_the_scope_is_refused():
+    from veloce import Principal
+    from veloce.principal import set_principal
+
+    _app, server = _upstream()
+    gateway = Veloce(title="Gateway", openapi_url=None)
+    await add_mcp_proxy(gateway, "up", _requester(server), scopes=["ops"])
+    set_principal(Principal(subject="nobody", scopes=frozenset()))
+    response = await MCPServer(gateway).handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "up_add", "arguments": {"a": 1, "b": 1}},
+        },
+        MCPSession(),
+    )
+    assert response["error"]["code"] == -32003
+
+
+async def test_a_proxied_tool_can_be_tagged_for_a_visibility_policy():
+    _app, server = _upstream()
+    gateway = Veloce(title="Gateway", openapi_url=None)
+    await add_mcp_proxy(gateway, "up", _requester(server), tags=["upstream", "beta"])
+    assert build_registry(gateway).tools["up_add"].tags == frozenset({"upstream", "beta"})
+
+
+async def test_scopes_and_tags_default_to_nothing():
+    tool = build_registry(await _gateway()).tools["up_add"]
+    assert tool.required_scopes == frozenset()
+    assert tool.tags == frozenset()

@@ -38,7 +38,7 @@ from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.registry import VERSION_META_KEY, MCPTool
 
 if TYPE_CHECKING:  # pragma: no cover
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
 
 # How many `tools/list` pages to walk before giving up. An upstream that keeps
 # handing out a cursor would otherwise spin here forever.
@@ -49,6 +49,9 @@ async def add_mcp_proxy(
     app: Any,
     namespace: str,
     request: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+    *,
+    scopes: Sequence[str] | None = None,
+    tags: Sequence[str] | None = None,
 ) -> list[str]:
     """Discover an upstream MCP server's tools and serve them from `app`.
 
@@ -56,8 +59,15 @@ async def add_mcp_proxy(
     tool of the same name stay distinct and a local tool is never shadowed.
     Returns the local names registered, in the order the upstream listed them.
 
+    `scopes` requires them of a caller before any of these tools is invoked or
+    listed, the same check a locally registered tool's `scopes=` performs - a
+    gateway is where that matters most, since the upstream cannot see who is
+    asking. `tags` labels them for a `mount_mcp(tool_filter=...)` policy.
+
     Call this before `mount_mcp`, which builds the registry.
     """
+    required = frozenset(scopes) if scopes else frozenset()
+    labels = frozenset(tags) if tags else frozenset()
     discovered = await _discover_tools(request)
     names: list[str] = []
     for entry in discovered:
@@ -65,7 +75,9 @@ async def add_mcp_proxy(
         if not isinstance(upstream_name, str) or not upstream_name:
             continue
         local_name = f"{namespace}_{upstream_name}" if namespace else upstream_name
-        app._mcp_proxied_tools.append(_proxy_tool(local_name, upstream_name, entry, request))
+        app._mcp_proxied_tools.append(
+            _proxy_tool(local_name, upstream_name, entry, request, required, labels)
+        )
         names.append(local_name)
     return names
 
@@ -96,6 +108,8 @@ def _proxy_tool(
     upstream_name: str,
     entry: dict[str, Any],
     request: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+    required_scopes: frozenset[str],
+    tags: frozenset[str],
 ) -> MCPTool:
     """Build the local tool that forwards a call to `upstream_name`."""
 
@@ -106,9 +120,19 @@ def _proxy_tool(
         the upstream's schema is published verbatim, so there is no Python
         signature here for the binder to map them onto.
         """
-        return await request(
-            "tools/call", {"name": upstream_name, "arguments": dict(ctx.arguments)}
-        )
+        params: dict[str, Any] = {
+            "name": upstream_name,
+            "arguments": dict(ctx.arguments),
+        }
+        # The caller's own `_meta` travels with the call: it is where a progress
+        # token and any extension block live, and an upstream that never sees it
+        # cannot report progress or carry a trace through. Relaying what the
+        # upstream then sends back is the application's part, since it owns the
+        # client this forwards through.
+        meta = ctx.request_meta
+        if meta:
+            params["_meta"] = dict(meta)
+        return await request("tools/call", params)
 
     forward.__name__ = local_name
     return MCPTool(
@@ -124,6 +148,8 @@ def _proxy_tool(
         output_schema=entry.get("outputSchema"),
         annotations=entry.get("annotations"),
         meta=_relayed_meta(entry.get("_meta")),
+        required_scopes=required_scopes,
+        tags=tags,
         passthrough_result=True,
     )
 

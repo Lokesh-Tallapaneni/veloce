@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MCPContext.request_meta` reads the `_meta` the client sent with this request. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `add_mcp_proxy(scopes=..., tags=...)` puts an upstream's tools behind a scope or a label. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - The 26 named HTTP exception classes are exported from the top level. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `VeloceError` roots every exception Veloce raises; every existing base is kept. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `QueryParams`, `Cookies`, `State` and `Address` are exported from the top level. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
@@ -82,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A proxied call forwards the caller's `_meta`, so an upstream sees the progress token. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `run_tools` refuses a plan whose step ids repeat instead of mis-resolving a `$from` reference. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A `$from` pointer of `/` names the member keyed `""`, as RFC 6901 defines it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - An array index in a `$from` pointer is refused unless it is unsigned and unpadded. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
