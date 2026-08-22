@@ -844,7 +844,10 @@ declared scopes, call hooks, timeout and error shaping included — and its resu
 is fed back as the next message. The returned `SamplingRun` carries `text`, the
 raw `content` blocks, `model`, `stop_reason`, the full `messages` transcript
 (ready to extend for another run), `tool_calls` (each a `SampledToolCall` with
-the arguments the model chose and whether the call failed), and `rounds`.
+the arguments the model chose and whether the call failed), and `rounds`. The
+transcript closes with the answer, so extending it for a follow-up run carries
+the reply along. A tool that declares an output shape sends it back on the
+`structuredContent` channel, the same one a direct `tools/call` caller reads.
 
 `tools=` is a restriction, not a hint: a tool outside that list — or one that
 does not exist — comes back to the model as an error result instead of being

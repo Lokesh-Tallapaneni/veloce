@@ -82,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `SamplingRun.messages` ends with the answer, so extending it for another run keeps it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A sampled tool's `structuredContent` reaches the model instead of only its text. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A fractional number is refused where a tool declares an integer, instead of losing its fraction. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A number or a string is refused where a tool declares a boolean. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `derive_tool` refuses to derive from a derived tool, which published a surface no call could satisfy. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))

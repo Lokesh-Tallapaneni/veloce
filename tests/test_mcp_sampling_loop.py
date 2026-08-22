@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import orjson
 import pytest
+from pydantic import BaseModel
 
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp._helpers import _requester_var
@@ -21,6 +22,13 @@ from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 
 CAPABLE = {"sampling": {"tools": {}}}
+
+
+class Weather(BaseModel):
+    """A tool return with a declared shape, so its result carries one."""
+
+    city: str
+    celsius: int
 
 
 def _text(text: str, stop: str = "endTurn") -> dict:
@@ -68,6 +76,10 @@ def _app(**loop_kwargs) -> Veloce:
     @app.mcp_tool(description="Always fails")
     async def boom() -> str:
         raise ValueError("no")
+
+    @app.mcp_tool(description="Answers with a declared shape")
+    async def shaped() -> Weather:
+        return Weather(city="Paris", celsius=21)
 
     @app.mcp_tool(description="Needs a grant", scopes=["admin"])
     async def privileged() -> str:
@@ -204,9 +216,37 @@ async def test_two_requests_in_one_turn_both_run():
 
 
 async def test_the_transcript_is_returned_for_a_later_run():
+    """It closes with the answer, so extending it does not drop the reply."""
     client = Client(_uses(("weather", "t1", {"city": "A"})), _text("ok"))
     messages = (await _ask(_app(), client))["messages"]
-    assert [message["role"] for message in messages] == ["user", "assistant", "user"]
+    assert [message["role"] for message in messages] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+
+
+async def test_the_transcript_ends_with_the_answer():
+    client = Client(_text("It is 21C."))
+    messages = (await _ask(_app(), client))["messages"]
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"][0]["text"] == "It is 21C."
+
+
+async def test_a_structured_result_reaches_the_model_on_its_own_channel():
+    """A direct `tools/call` caller gets `structuredContent`; so should the model."""
+    client = Client(_uses(("shaped", "t1", {})), _text("ok"))
+    await _ask(_app(tools=["shaped"]), client)
+    fed = client.requests[1]["messages"][-1]["content"][0]
+    assert fed["structuredContent"] == {"city": "Paris", "celsius": 21}
+
+
+async def test_a_result_without_a_declared_shape_carries_no_structured_field():
+    client = Client(_uses(("weather", "t1", {"city": "A"})), _text("ok"))
+    await _ask(_app(), client)
+    fed = client.requests[1]["messages"][-1]["content"][0]
+    assert "structuredContent" not in fed
 
 
 async def test_each_request_carries_the_transcript_as_it_stood():

@@ -98,7 +98,9 @@ _LOG_RANKS = {
 
 def _error_content(message: str) -> dict[str, Any]:
     """Shape a failed sampled tool call the way a tool's own error result is shaped."""
-    return {"content": [{"type": "text", "text": message}], "isError": True}
+    from veloce.contrib.mcp._helpers import _text_result  # breaks _helpers->context cycle
+
+    return _text_result(message, is_error=True)
 
 
 class MCPContext:
@@ -468,6 +470,11 @@ class MCPContext:
             blocks = content_blocks(result)
             requested = [block for block in blocks if block.get("type") == "tool_use"]
             if not requested or final_round:
+                # The answer closes the transcript. Returning it without the final
+                # turn would make `messages` unusable for the thing it is offered
+                # for - extending into another run - by dropping the reply from
+                # the history the next run is built on.
+                transcript.append({"role": "assistant", "content": blocks})
                 return SamplingRun(
                     content=tuple(blocks),
                     model=result.get("model"),
@@ -481,14 +488,20 @@ class MCPContext:
             for block in requested:
                 call = await self._run_sampled_tool(server, block, allowed)
                 calls.append(call)
-                results.append(
-                    {
-                        "type": "tool_result",
-                        "toolUseId": call.id,
-                        "content": call.result.get("content") or [],
-                        "isError": call.is_error,
-                    }
-                )
+                block: dict[str, Any] = {
+                    "type": "tool_result",
+                    "toolUseId": call.id,
+                    "content": call.result.get("content") or [],
+                    "isError": call.is_error,
+                }
+                # A tool declaring an output schema answers with the value itself,
+                # and the block has a field for it. Sending only the text would
+                # hand the model a different shape than a direct `tools/call`
+                # caller gets for the same tool.
+                structured = call.result.get("structuredContent")
+                if structured is not None:
+                    block["structuredContent"] = structured
+                results.append(block)
             transcript.append({"role": "user", "content": results})
         raise AssertionError("unreachable: the final round always returns")
 

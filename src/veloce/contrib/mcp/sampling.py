@@ -44,8 +44,9 @@ class SamplingRun:
     """The outcome of a `sample_with_tools` loop.
 
     `content` is the final assistant content, `messages` the whole transcript
-    that produced it (ready to extend for another run), and `tool_calls` every
-    tool the model drove, in the order it drove them.
+    including that answer as its closing turn - so extending it for another run
+    carries the reply along - and `tool_calls` every tool the model drove, in the
+    order it drove them.
     """
 
     content: tuple[dict[str, Any], ...]
