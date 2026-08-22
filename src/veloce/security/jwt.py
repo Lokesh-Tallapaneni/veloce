@@ -31,6 +31,7 @@ from typing import Any
 import orjson
 
 from veloce._internal import _b64decode, _b64encode, _coerce_secret_bytes
+from veloce.exceptions import VeloceError
 
 # RFC 7518 Sec. 3.2 - the HMAC family. Not user-extensible: a requested
 # algorithm outside this map raises UnsupportedAlgorithmError.
@@ -49,7 +50,7 @@ _HEADER_TYP = "JWT"
 # ── Errors ──────────────────────────────────────────────────────
 
 
-class JWTError(Exception):
+class JWTError(VeloceError):
     """Base class for all JWT decode/encode failures."""
 
 

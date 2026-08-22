@@ -79,6 +79,11 @@ is named with a stable method-based fallback (``"HTTP GET"``) and carries no
 ``http.route`` attribute. The concrete request path (``metrics.path``) is
 high-cardinality and attacker-controlled for unmatched requests, so it is never
 used as a span name or exported as an attribute by default.
+``instrument_with_otel`` is deliberately not re-exported from the top-level
+``veloce`` package. Importing this module costs ~32 ms on top of
+``import veloce`` (measured with ``python -X importtime``), which every
+application would otherwise pay whether or not it emits traces. Import it from
+``veloce.otel`` when you want it.
 """
 
 from __future__ import annotations

@@ -56,20 +56,52 @@ from veloce.encoders import jsonable_encoder, register_encoder, unregister_encod
 
 # Exceptions
 from veloce.exceptions import (
+    BadGateway,
+    BadRequest,
     BuildError,
     ConfigurationError,
+    Conflict,
     DuplicateRouteError,
+    ExpectationFailed,
     FilesKeyError,
+    Forbidden,
+    GatewayTimeout,
+    Gone,
     HTTPException,
+    ImATeapot,
+    InternalServerError,
+    LengthRequired,
+    MethodNotAllowed,
+    NotAcceptable,
+    NotFound,
+    PaymentRequired,
+    PreconditionFailed,
+    ProxyAuthenticationRequired,
+    RangeNotSatisfiable,
+    RequestEntityTooLarge,
+    RequestTimeout,
+    RequestURITooLong,
     RequestValidationError,
+    ServerNotImplemented,
+    ServiceUnavailable,
     SetupError,
+    TooManyRequests,
+    Unauthorized,
+    UnprocessableEntity,
+    UnsupportedMediaType,
     ValidationError,
+    VeloceError,
     WebSocketDisconnect,
     WebSocketException,
     WebSocketRequestValidationError,
     http_exception_handler,
     request_validation_exception_handler,
 )
+
+# Liveness / readiness endpoints. The Prometheus and OpenTelemetry
+# instrumentors stay under veloce.metrics / veloce.otel - importing them costs
+# ~72 ms and ~32 ms, which every user would otherwise pay at `import veloce`.
+from veloce.health import HealthPlugin
 
 # Helpers
 from veloce.helpers import (
@@ -98,10 +130,14 @@ from veloce.helpers import (
 from veloce.http.datastructures import (
     URL,
     AcceptHeader,
+    Address,
     Authorization,
+    Cookies,
     FormData,
     Headers,
+    QueryParams,
     RangeSpec,
+    State,
     UploadFile,
 )
 
@@ -233,6 +269,20 @@ from veloce.security import (
 # Sessions
 from veloce.sessions import InMemorySessionStore, Session, SessionStore
 
+# Signals
+from veloce.signals import (
+    Namespace,
+    Signal,
+    appcontext_popped,
+    appcontext_pushed,
+    appcontext_tearing_down,
+    got_request_exception,
+    message_flashed,
+    request_finished,
+    request_started,
+    request_tearing_down,
+)
+
 # HMAC-signed value serialiser
 from veloce.signing import BadData, BadSignature, BadTimeSignature, Signer
 
@@ -334,6 +384,7 @@ __all__ = [
     "Security",
     "SecurityScopes",
     # Exceptions
+    "VeloceError",
     "HTTPException",
     "FilesKeyError",
     "ValidationError",
@@ -344,6 +395,34 @@ __all__ = [
     "SetupError",
     "http_exception_handler",
     "request_validation_exception_handler",
+    # Named HTTP errors - 4xx
+    "BadRequest",
+    "Unauthorized",
+    "PaymentRequired",
+    "Forbidden",
+    "NotFound",
+    "MethodNotAllowed",
+    "NotAcceptable",
+    "ProxyAuthenticationRequired",
+    "RequestTimeout",
+    "Conflict",
+    "Gone",
+    "LengthRequired",
+    "PreconditionFailed",
+    "RequestEntityTooLarge",
+    "RequestURITooLong",
+    "UnsupportedMediaType",
+    "RangeNotSatisfiable",
+    "ExpectationFailed",
+    "ImATeapot",
+    "UnprocessableEntity",
+    "TooManyRequests",
+    # Named HTTP errors - 5xx
+    "InternalServerError",
+    "ServerNotImplemented",
+    "BadGateway",
+    "ServiceUnavailable",
+    "GatewayTimeout",
     # Background
     "BackgroundTask",
     "BackgroundTasks",
@@ -360,6 +439,10 @@ __all__ = [
     "URL",
     "FormData",
     "Headers",
+    "QueryParams",
+    "Cookies",
+    "State",
+    "Address",
     "Authorization",
     "AcceptHeader",
     "RangeSpec",
@@ -451,6 +534,18 @@ __all__ = [
     "instrument_access_log",
     "log_requests_as_json",
     "EventLoopWatchdog",
+    "HealthPlugin",
+    # Signals
+    "Signal",
+    "Namespace",
+    "request_started",
+    "request_finished",
+    "request_tearing_down",
+    "got_request_exception",
+    "message_flashed",
+    "appcontext_pushed",
+    "appcontext_popped",
+    "appcontext_tearing_down",
     # Filesystem-safety
     "secure_filename",
     "safe_join",

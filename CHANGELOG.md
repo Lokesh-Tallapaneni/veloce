@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The 26 named HTTP exception classes are exported from the top level. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `VeloceError` roots every exception Veloce raises; every existing base is kept. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `QueryParams`, `Cookies`, `State` and `Address` are exported from the top level. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- The ten signals are exported from the top level. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `HealthPlugin` is exported from the top level. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `ServerNotImplemented` names the 501 exception class; `NotImplemented_` still resolves to it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A resource template accepts `{+name}`, binding a whole path - separators included - to one variable. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - `veloce mcp run` serves an app's MCP tools, which is what a client config file launches. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - `veloce mcp list` prints the tools, resources and prompts a client would see. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))

@@ -18,9 +18,9 @@ import pytest
 
 from veloce import Veloce
 from veloce.contrib.mcp.registry import build_registry
-from veloce.contrib.mcp.transform import derive_tool
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
+from veloce.contrib.mcp.transform import derive_tool
 
 
 def _app() -> Veloce:

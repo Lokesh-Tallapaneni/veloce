@@ -50,11 +50,12 @@ from typing import Any
 import orjson
 
 from veloce._internal import _b64decode, _b64encode, _coerce_secret_bytes
+from veloce.exceptions import VeloceError
 
 # ── Exceptions ──────────────────────────────────────────────
 
 
-class BadSignature(Exception):
+class BadSignature(VeloceError):
     """The token's signature did not verify against the configured secret."""
 
 

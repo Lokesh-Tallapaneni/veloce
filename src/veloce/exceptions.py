@@ -49,7 +49,22 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.response import Response
 
 
-class HTTPException(Exception):
+class VeloceError(Exception):
+    """Root of every exception Veloce raises.
+
+    Mixed into each exception family the framework defines - HTTP errors,
+    validation failures, WebSocket closes, routing and setup errors, JWT and
+    signature failures - so `except VeloceError` answers "did this come from
+    Veloce?" in one clause. Families that already subclassed a stdlib type
+    keep it: `DuplicateRouteError` is still a `ValueError` and
+    `FilesKeyError` is still a `KeyError`, so every handler that matched
+    before still matches. `VeloceError` is listed first in those bases, so a
+    handler registered against it wins the MRO walk over a broader stdlib
+    handler.
+    """
+
+
+class HTTPException(VeloceError):
     """HTTP error with status code and detail.
 
     Either subclass with a fixed `code` (and optional `description`),
@@ -103,7 +118,7 @@ class BadRequest(HTTPException):
     description = "Bad Request"
 
 
-class FilesKeyError(KeyError):
+class FilesKeyError(VeloceError, KeyError):
     """Descriptive miss on ``request.files`` raised in debug mode.
 
     Subclasses ``KeyError`` so handlers that already catch the bare lookup
@@ -233,10 +248,19 @@ class InternalServerError(HTTPException):
     description = "Internal Server Error"
 
 
-class NotImplemented_(HTTPException):
-    # Trailing underscore - `NotImplemented` is a builtin singleton.
+class ServerNotImplemented(HTTPException):
+    # `NotImplemented` is a builtin singleton, so the 501 class cannot carry the
+    # status phrase as its name. `ServerNotImplemented` reads alongside
+    # `InternalServerError` and `ServiceUnavailable` in the 5xx block, and is the
+    # name a traceback shows.
     code = HTTP_501_NOT_IMPLEMENTED
     description = "Not Implemented"
+
+
+# The spelling this class carried before it was exported. Kept bound to the same
+# object so an existing `from veloce.exceptions import NotImplemented_` and every
+# `except` clause written against it go on working.
+NotImplemented_ = ServerNotImplemented
 
 
 class BadGateway(HTTPException):
@@ -292,14 +316,14 @@ class RequestValidationError(ValidationError):
 # ── WebSocket exceptions ──────────────────────────────────
 
 
-class WebSocketDisconnect(Exception):
+class WebSocketDisconnect(VeloceError):
     """WebSocket connection closed."""
 
     def __init__(self, code: int = WS_1000_NORMAL_CLOSURE) -> None:
         self.code = code
 
 
-class WebSocketException(Exception):
+class WebSocketException(VeloceError):
     """Raised inside a WebSocket handler to close the connection cleanly.
 
     ASGI shape. The dispatch layer catches it and sends a
@@ -328,7 +352,7 @@ class WebSocketRequestValidationError(RequestValidationError):
 # ── Other exception families ──────────────────────────────
 
 
-class BuildError(LookupError):
+class BuildError(VeloceError, LookupError):
     """`url_for` could not build a URL for the given endpoint.
 
     Carries the endpoint name and the values that were being substituted
@@ -344,7 +368,7 @@ class BuildError(LookupError):
         super().__init__(f"Could not build URL for endpoint {endpoint!r}")
 
 
-class DuplicateRouteError(ValueError):
+class DuplicateRouteError(VeloceError, ValueError):
     """Two handlers were registered for the same path and HTTP method.
 
     Raised at registration time when a route would silently overwrite an
@@ -371,7 +395,7 @@ class DuplicateRouteError(ValueError):
         )
 
 
-class SetupError(RuntimeError):
+class SetupError(VeloceError, RuntimeError):
     """A registration ran after the application started serving.
 
     Routes, hooks, blueprints, middleware, and similar setup must be wired
@@ -383,7 +407,7 @@ class SetupError(RuntimeError):
     """
 
 
-class ConfigurationError(RuntimeError):
+class ConfigurationError(VeloceError, RuntimeError):
     """A handler or route was declared in a way that cannot be resolved.
 
     Raised at registration time, never per request, so a genuinely ambiguous
@@ -418,7 +442,7 @@ _BY_CODE: dict[int, type[HTTPException]] = {
     HTTP_422_UNPROCESSABLE_ENTITY: UnprocessableEntity,
     HTTP_429_TOO_MANY_REQUESTS: TooManyRequests,
     HTTP_500_INTERNAL_SERVER_ERROR: InternalServerError,
-    HTTP_501_NOT_IMPLEMENTED: NotImplemented_,
+    HTTP_501_NOT_IMPLEMENTED: ServerNotImplemented,
     HTTP_502_BAD_GATEWAY: BadGateway,
     HTTP_503_SERVICE_UNAVAILABLE: ServiceUnavailable,
     HTTP_504_GATEWAY_TIMEOUT: GatewayTimeout,

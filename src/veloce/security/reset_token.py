@@ -23,13 +23,14 @@ import hashlib
 import hmac
 from collections.abc import Sequence
 
+from veloce.exceptions import VeloceError
 from veloce.signing import BadSignature, Signer
 
 RESET_TOKEN_SALT = "veloce.security.reset_token"
 _RESET_TOKEN_VERSION = 1
 
 
-class BadResetToken(Exception):
+class BadResetToken(VeloceError):
     """Raised on programmer misuse; invalid tokens return False instead."""
 
 
