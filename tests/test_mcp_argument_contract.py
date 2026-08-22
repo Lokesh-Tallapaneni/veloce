@@ -296,3 +296,81 @@ async def test_a_route_backed_tool_enforces_it_the_same_way():
     is_error, text = await _call(MCPServer(app), "echo", {"word": {"not": "a word"}})
     assert is_error is True
     assert "word" in text
+
+
+# ── Numbers and booleans ─────────────────────────────────────────────
+
+
+def _numeric_app() -> Veloce:
+    app = Veloce(title="Numeric", openapi_url=None)
+
+    @app.mcp_tool(description="Takes a count, a ratio and a flag")
+    async def measure(count: int, ratio: float = 0.0, flag: bool = False) -> dict:
+        return {
+            "count": count,
+            "ratio": ratio,
+            "flag": flag,
+            "types": [type(v).__name__ for v in (count, ratio, flag)],
+        }
+
+    return app
+
+
+async def _measure(arguments: dict) -> tuple[bool, str]:
+    return await _call(MCPServer(_numeric_app()), "measure", arguments)
+
+
+async def test_a_fractional_number_is_refused_where_an_integer_is_declared():
+    """It used to arrive as 5, a different value from the one that was sent."""
+    is_error, text = await _measure({"count": 5.7})
+    assert is_error is True
+    assert "fractional" in text
+
+
+async def test_a_whole_number_written_as_a_float_is_accepted():
+    """JSON Schema's `integer` is any number with a zero fractional part."""
+    is_error, text = await _measure({"count": 5.0})
+    assert is_error is False
+    assert orjson.loads(text)["count"] == 5
+
+
+async def test_a_boolean_is_refused_where_a_number_is_declared():
+    """`bool` subclasses `int`, so an unguarded target took `true` as 1."""
+    is_error, _text = await _measure({"count": True})
+    assert is_error is True
+
+
+async def test_a_boolean_is_refused_where_a_float_is_declared():
+    is_error, _text = await _measure({"count": 1, "ratio": True})
+    assert is_error is True
+
+
+async def test_a_number_is_refused_where_a_boolean_is_declared():
+    is_error, _text = await _measure({"count": 1, "flag": 1})
+    assert is_error is True
+
+
+async def test_a_string_is_refused_where_a_boolean_is_declared():
+    """`"maybe"` used to arrive as `False`, which is an answer nobody sent."""
+    is_error, _text = await _measure({"count": 1, "flag": "maybe"})
+    assert is_error is True
+
+
+async def test_a_numeric_string_still_reaches_a_number():
+    """Long-standing leniency, and a common model output; kept deliberately."""
+    is_error, text = await _measure({"count": "12"})
+    assert is_error is False
+    assert orjson.loads(text)["types"] == ["int", "float", "bool"]
+
+
+async def test_an_integer_still_reaches_a_float_parameter():
+    is_error, text = await _measure({"count": 1, "ratio": 2})
+    assert is_error is False
+    assert orjson.loads(text)["ratio"] == 2.0
+
+
+async def test_the_refusal_names_the_argument_and_what_was_expected():
+    _is_error, text = await _measure({"count": 1, "flag": 1})
+    assert "flag" in text
+    assert "expected a boolean" in text
+    assert "got a number" in text

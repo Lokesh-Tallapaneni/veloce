@@ -464,6 +464,34 @@ def _coerce_json_scalar(slot: _Slot, value: Any, target: Any) -> Any:
         if isinstance(value, str):
             return value
         raise _wrong_type(slot.name, "a string", value)
+    if target is bool:
+        # JSON has a boolean; a number or a string is not it. The HTTP coercer
+        # reads "yes" / "1" as true because a query string has nothing else to
+        # offer, which would silently make "maybe" false here.
+        if value is True or value is False:
+            return value
+        raise _wrong_type(slot.name, "a boolean", value)
+    if value is True or value is False:
+        # `bool` is a subclass of `int`, so an unguarded number target would take
+        # `true` and hand the handler 1.
+        if target is int or target is float:
+            raise _wrong_type(slot.name, "a number", value)
+    elif target is int and isinstance(value, float) and not value.is_integer():
+        # JSON Schema's `integer` accepts a number whose fractional part is zero,
+        # and nothing else. Coercing would hand the handler a different value than
+        # the one that was sent, which is the failure that does not surface.
+        raise RequestValidationError(
+            [
+                {
+                    "loc": ["body", slot.name],
+                    "msg": (
+                        f"Invalid value for {slot.name}: expected an integer, "
+                        f"got {value!r}, which would lose its fractional part"
+                    ),
+                    "type": "type_error",
+                }
+            ]
+        )
     if isinstance(value, (dict, list)):
         if (
             target in _SCALAR_TARGETS

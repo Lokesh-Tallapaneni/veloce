@@ -1017,8 +1017,14 @@ act on.
 An argument whose JSON type contradicts the tool's published schema is refused
 before the handler runs, with a message naming the argument and both types
 (`Invalid value for city: expected a string, got a number`) — the model wrote the
-JSON, so it is the one that can fix it. A string that a declared number accepts
-(`"12"`) still coerces, as it does over HTTP.
+JSON, so it is the one that can fix it.
+
+The types follow JSON Schema: a declared `integer` accepts a number whose
+fractional part is zero (`3` and `3.0`) and refuses one that would lose it
+(`2.5`); a declared `boolean` accepts only `true` and `false`, since a number or
+a string would otherwise become an answer nobody sent. A string that a declared
+number accepts (`"12"`) still coerces, as it does over HTTP — a common and
+harmless model slip.
 
 ## Hooks around every call
 
