@@ -73,6 +73,15 @@ class MCPError(Exception):
         return _error(msg_id, self.code, str(self), self.data)
 
 
+class _InBandError(MCPError):
+    """A failure surfaced in-band as an `isError` tool result, not a JSON-RPC error.
+
+    Shares `MCPError` so the type relationship is explicit, but the stream-drain
+    paths report these as a tool result rather than routing them through
+    `to_error`, so the subtree stays private.
+    """
+
+
 class InvalidRequestError(MCPError):
     """A malformed JSON-RPC request object."""
 
@@ -185,12 +194,18 @@ class AuthorizationError(MCPError):
         self.scopes = scopes
 
 
-class MCPCapabilityError(InvalidRequestError):
+class MCPCapabilityError(InvalidRequestError, _InBandError):
     """A server->client request needs a client capability the client did not advertise.
 
     Raised by `MCPContext.sample` / `elicit` / `roots` (and their sub-capabilities)
     when the connected client did not advertise the matching capability in
     ``initialize``, so the request cannot be issued.
+
+    In-band on the tool path: the caller's own request was well formed, and what
+    failed is something the tool tried to do while running it. The model can act
+    on that - carry on without the sampled text, ask its user directly - which it
+    cannot do with a JSON-RPC error. Resources and prompts have no in-band
+    channel, so the same failure travels there as the `-32600` its base carries.
     """
 
     def __init__(self, capability: str) -> None:
@@ -209,15 +224,6 @@ class _ForbiddenError(MCPError):
     """
 
     code = _JSONRPC_FORBIDDEN
-
-
-class _InBandError(MCPError):
-    """A failure surfaced in-band as an `isError` tool result, not a JSON-RPC error.
-
-    Shares `MCPError` so the type relationship is explicit, but the stream-drain
-    paths report these as a tool result rather than routing them through
-    `to_error`, so the subtree stays private.
-    """
 
 
 class _InvalidArgumentsError(_InBandError):

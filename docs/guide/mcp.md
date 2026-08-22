@@ -789,8 +789,8 @@ prompt). It is unset (no timeout) by default.
 Over the stdio transport the connection is bidirectional, so a tool may call back
 into the client mid-handler. `MCPContext` exposes three server-initiated requests,
 each gated on the client having advertised the matching capability in `initialize`
-— a call against a client that did not advertise it raises `MCPCapabilityError`
-(surfaced as an `isError` tool result).
+— a call against a client that did not advertise it raises `MCPCapabilityError`, surfaced as an `isError` tool result so the
+agent can carry on without it.
 
 `ctx.sample(...)` asks the client's LLM to produce a completion
 (`sampling/createMessage`). It takes the message list and `max_tokens`, plus
@@ -1000,15 +1000,19 @@ async def divide(a: int, b: int) -> float:
     return a / b
 ```
 
-From a **tool** handler, raising `InvalidParamsError` surfaces as a JSON-RPC error
-object with code `-32602`; any other exception is reported in-band as an
-`isError` tool result so the agent can read the message. From a **prompt**
-handler, any raised `MCPError` subclass surfaces as a JSON-RPC error object with
-its code. A **resource read** handler is route-backed, so only
-`InvalidParamsError` keeps its own code; any other raised exception (including
-other `MCPError` subclasses) is routed through the app's exception handlers and
-surfaces as an internal error (`-32603`) unless a matching
-`@app.exception_handler` is registered for it.
+Any `MCPError` subclass a handler raises — from a tool, a prompt or a resource
+read, and whether or not the tool is route-backed — surfaces as a JSON-RPC error
+object carrying the code, message and `data` the author gave it. That is what
+lets a handler answer with a code the spec assigns, such as the `-32042` that
+asks the client to complete a URL elicitation and retry.
+
+Any *other* exception is an execution failure: it is reported in-band as an
+`isError` tool result so the agent can read it, with the message redacted unless
+the app is in debug mode. Two failures are execution failures despite being
+`MCPError` subclasses, and are reported in-band too: an argument that fails
+validation, and `MCPCapabilityError` — the caller's request was well formed, and
+what failed is something the tool tried while running it, which the agent can
+act on.
 
 An argument whose JSON type contradicts the tool's published schema is refused
 before the handler runs, with a message naming the argument and both types
@@ -1898,8 +1902,14 @@ async def verify(key: str, ctx: MCPContext) -> str:
 
 `ctx.hide(name)` removes a tool, prompt or resource from this connection's
 listings; `ctx.unhide(name)` puts it back; `ctx.reset_visibility()` restores
-everything. Each sends the matching `list_changed` notification, and only when
-something actually changed. Resources are named by their URI.
+everything. Resources are named by their URI.
+
+Each sends the `list_changed` notification for the listing the name belongs to,
+and only when something actually changed — a name that names nothing sends
+nothing. Because a connection's listings can change this way, a stateful
+connection is advertised `listChanged: true` for tools, prompts and resources at
+`initialize`; a stateless request, which has no connection to narrow and no
+channel to be told on, is advertised `false`.
 
 !!! warning "Hiding is not enforcement"
 

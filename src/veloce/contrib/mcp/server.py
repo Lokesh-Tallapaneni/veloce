@@ -69,6 +69,8 @@ from veloce.contrib.mcp.errors import (
     AuthorizationError,
     InternalError,
     InvalidParamsError,
+    InvalidRequestError,
+    MCPCapabilityError,
     MCPError,
     ResourceNotFoundError,
     UnsupportedProtocolVersionError,
@@ -274,6 +276,34 @@ def _build_tool_listing_entry(tool: MCPTool) -> dict[str, Any]:
     if meta:
         entry["_meta"] = meta
     return entry
+
+
+def _in_band_status_for(error: _InBandError) -> int:
+    """Map an in-band failure to the status instrumentation should record."""
+    if isinstance(error, _InvalidArgumentsError):
+        return status.HTTP_422_UNPROCESSABLE_ENTITY
+    if isinstance(error, MCPCapabilityError):
+        # The call could not be completed because something it depended on - a
+        # capability of the connected client - was not there to depend on.
+        return status.HTTP_424_FAILED_DEPENDENCY
+    return status.HTTP_500_INTERNAL_SERVER_ERROR
+
+
+def _http_status_for(error: MCPError) -> int:
+    """Map a raised MCP error to the status instrumentation should record.
+
+    Instrumentation reports what happened in HTTP terms so one dashboard covers
+    both doors; the JSON-RPC code the client receives is the error's own.
+    """
+    if isinstance(error, AuthorizationError):
+        return status.HTTP_403_FORBIDDEN
+    if isinstance(error, ResourceNotFoundError):
+        return status.HTTP_404_NOT_FOUND
+    if isinstance(error, InvalidParamsError):
+        return status.HTTP_422_UNPROCESSABLE_ENTITY
+    if isinstance(error, InvalidRequestError):
+        return status.HTTP_400_BAD_REQUEST
+    return status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
 def _reject_task_augmentation(method: str, params: dict[str, Any]) -> None:
@@ -1210,29 +1240,31 @@ class MCPServer(TasksMixin, InvocationMixin):
         """
         try:
             result = await self._run_invoke(tool, arguments, progress_token)
-        except InvalidParamsError:
-            raise
-        except _InvalidArgumentsError as exc:
-            # Surfaced verbatim, unlike a handler exception: the message names
-            # the offending argument and what was expected, both derived from
-            # the tool's own declared schema and the caller's own input, so
-            # there is nothing to redact. Redacting it would leave the model
-            # with "internal error" and nothing to correct - the opposite of
+        except _InBandError as exc:
+            # Surfaced verbatim, unlike a handler exception: an invalid argument
+            # names the offending field and what was expected, and an unavailable
+            # client capability names the capability - both derived from the
+            # tool's own declaration and the connection's own handshake, so there
+            # is nothing to redact. Redacting would leave the model with
+            # "internal error" and nothing to correct, which is the opposite of
             # what an execution error is for.
-            await self._instrument(tool, started, status.HTTP_422_UNPROCESSABLE_ENTITY)
+            await self._instrument(tool, started, _in_band_status_for(exc))
             return _text_result(str(exc), is_error=True)
         except asyncio.TimeoutError:
             await self._instrument(tool, started, status.HTTP_504_GATEWAY_TIMEOUT)
             return _text_result(
                 f"tool call exceeded the {self._call_timeout}s timeout", is_error=True
             )
-        except AuthorizationError:
-            # A tool reading a scoped resource or prompt through its `MCPContext`
-            # hits the same check a direct `resources/read` would. That failure is a
-            # protocol-level forbidden error wherever it arises - the same treatment
-            # a tool lacking its own scopes gets above - so it must not be flattened
-            # into an in-band "internal error" that tells the model nothing.
-            await self._instrument(tool, started, status.HTTP_403_FORBIDDEN)
+        except MCPError as exc:
+            # An error the author raised deliberately, naming a JSON-RPC code and
+            # writing its message: a tool reading a scoped resource hits the same
+            # forbidden check a direct `resources/read` would, and a handler that
+            # cannot answer until an elicitation completes has to say so with the
+            # code the spec assigns. Flattening either into an in-band "internal
+            # error" would discard both the code and the message the author wrote,
+            # leaving the model nothing to act on. The `_InBandError` subtree is
+            # caught above: those are execution failures, which belong in-band.
+            await self._instrument(tool, started, _http_status_for(exc))
             raise
         except Exception as exc:
             # A pure `@app.mcp_tool` (no route) has no exception-handler

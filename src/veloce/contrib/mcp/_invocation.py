@@ -26,7 +26,7 @@ from veloce.contrib.mcp._helpers import (
     _ShortCircuit,
 )
 from veloce.contrib.mcp.context import MCPContext, _session_var
-from veloce.contrib.mcp.errors import InvalidParamsError, _InvalidArgumentsError
+from veloce.contrib.mcp.errors import MCPError, _InvalidArgumentsError
 from veloce.contrib.mcp.plan_bridge import _build_request, bind_arguments
 from veloce.dependency import DependencyResolver
 from veloce.exceptions import RequestValidationError
@@ -346,11 +346,14 @@ class InvocationMixin:
                     _logger.exception("MCP background task failed")
             await self._run_response_background(response)
             return _RouteResponse(response, model_filtered)
-        except (InvalidParamsError, _InvalidArgumentsError):
-            # Not a handled application failure: a malformed argument is shaped
-            # by `_tools_call` (in-band, so the model can retry) and an explicit
-            # `InvalidParamsError` goes on the JSON-RPC error channel. Both still
-            # flow through the `finally` so teardowns run.
+        except MCPError:
+            # Not a handled application failure: an error the author raised to
+            # say something about the protocol, so it goes to the caller as the
+            # code and message they wrote rather than through the app's exception
+            # handlers, which would render it as an HTTP body. A malformed
+            # argument (the `_InBandError` subtree) is shaped in-band by
+            # `_tools_call` instead, so the model can retry. Both still flow
+            # through the `finally` so teardowns run.
             raise
         except BaseException as err:  # noqa: BLE001 - re-raised / routed after teardown
             exc = err

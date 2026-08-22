@@ -62,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A stateful connection advertises `listChanged: true` for tools, prompts and resources. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A tool, prompt or resource whose declared `scopes` the caller lacks is no longer listed. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A resource list narrowed by declared scopes is marked private, so a shared proxy cannot reuse it. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - `resources/read` and `prompts/get` refuse a task-augmented request instead of answering synchronously. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
@@ -75,6 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every `MCPError` a tool handler raises reaches the caller with its code, message and `data`. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A route-backed tool's `MCPError` is delivered instead of being rendered as an HTTP error body. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- `MCPContext.hide` announces only the listing the hidden name belongs to. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
+- A `list_changed` notification is no longer sent for a capability `initialize` did not advertise. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - An MCP tool result encodes through the framework's own encoder, so both doors answer the same JSON. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A `Secret` in a tool result is refused, as it already was on the HTTP path, instead of being emitted. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
 - A model's computed fields survive the `orjson` fallback, matching `jsonable_encoder`. ([#285](https://github.com/Lokesh-Tallapaneni/veloce/pull/285))
