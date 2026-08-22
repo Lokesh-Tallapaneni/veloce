@@ -136,19 +136,26 @@ class MCPTool(MCPDescriptor):
 VERSION_META_KEY = "veloce"
 
 
-def _version_key(version: str | None) -> tuple[int, Any]:
+def _version_key(version: str | None) -> tuple[int, tuple[int, ...], int, str]:
     """Order two version labels, comparing dotted integers numerically.
 
     ``"10.0"`` follows ``"2.0"``, which a plain string sort gets backwards. A
-    label that is not all-numeric is compared as text, after every numeric one,
-    so an ordering exists whatever the author chose to write.
+    label carrying a suffix precedes the release it is a suffix of, so
+    ``"1.0.0-beta"`` sits below ``"1.0.0"`` rather than above every number - a
+    prerelease is not what a call naming no version should reach. Among suffixes
+    the comparison is textual, which happens to order ``alpha`` before ``beta``
+    before ``rc`` but is not semantic-versioning precedence and does not claim to
+    be. A label with no numeric stem at all is ordered as text, below every
+    numeric one, so an ordering exists whatever the author chose to write.
     """
     if version is None:
-        return (0, ())
-    parts = version.split(".")
-    if all(part.isdigit() for part in parts):
-        return (1, tuple(int(part) for part in parts))
-    return (2, version)
+        return (0, (), 0, "")
+    stem, _, suffix = version.partition("-")
+    parts = stem.split(".")
+    if parts and all(part.isdigit() for part in parts):
+        # A bare release outranks its own suffixed forms; `1` marks "no suffix".
+        return (2, tuple(int(part) for part in parts), 0 if suffix else 1, suffix)
+    return (1, (), 0, version)
 
 
 @dataclass(slots=True)

@@ -237,8 +237,8 @@ async def test_the_registered_version_wins_over_one_written_by_hand():
 # ── Non-numeric labels ───────────────────────────────────────────────
 
 
-async def test_a_non_numeric_label_orders_after_every_numeric_one():
-    """There is still an answer, whatever the author chose to write."""
+async def test_a_non_numeric_label_orders_below_every_numeric_one():
+    """There is still an answer, and a number is the more considered one."""
     app = Veloce(title="Labelled", openapi_url=None)
 
     @app.mcp_tool(name="search", description="Numbered", version="2")
@@ -249,8 +249,8 @@ async def test_a_non_numeric_label_orders_after_every_numeric_one():
     async def beta(q: str) -> dict:
         return {"which": "beta"}
 
-    assert (await _list(app))[0]["description"] == "Beta"
-    assert _payload(await _call(app, {"q": "x"}, version="2"))["which"] == "numbered"
+    assert (await _list(app))[0]["description"] == "Numbered"
+    assert _payload(await _call(app, {"q": "x"}, version="beta"))["which"] == "beta"
 
 
 # ── Each version keeps its own registration ──────────────────────────
@@ -390,3 +390,80 @@ async def test_other_upstream_metadata_still_travels():
     gateway = Veloce(title="Gateway", openapi_url=None)
     await add_mcp_proxy(gateway, "up", request)
     assert build_registry(gateway).tools["up_add"].meta == {"io.example/team": "math"}
+
+
+# ── A prerelease is not the default ──────────────────────────────────
+
+
+def _labelled(*versions: str) -> Veloce:
+    app = Veloce(title="Labelled", version="1.0.0", openapi_url=None)
+    for label in versions:
+
+        def handler(_label: str = label) -> dict:
+            return {"served": _label}
+
+        handler.__name__ = f"build_{label.replace('.', '_').replace('-', '_')}"
+        app.mcp_tool(name="build", description=f"Build ({label})", version=label)(handler)
+    return app
+
+
+async def _served(app: Veloce) -> str:
+    response = await MCPServer(app).handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "build"}},
+        MCPSession(),
+    )
+    served: str = orjson.loads(response["result"]["content"][0]["text"])["served"]
+    return served
+
+
+async def test_a_release_outranks_its_own_prerelease():
+    """Publishing the beta as the default is what nobody asked for."""
+    assert await _served(_labelled("1.0.0", "1.0.0-beta")) == "1.0.0"
+
+
+async def test_a_prerelease_is_still_reachable_by_name():
+    app = _labelled("1.0.0", "1.0.0-beta")
+    response = await MCPServer(app).handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "build", "_meta": {"veloce": {"version": "1.0.0-beta"}}},
+        },
+        MCPSession(),
+    )
+    assert orjson.loads(response["result"]["content"][0]["text"])["served"] == "1.0.0-beta"
+
+
+async def test_a_later_release_outranks_an_earlier_prerelease():
+    assert await _served(_labelled("1.0.0-beta", "2.0.0")) == "2.0.0"
+
+
+async def test_a_later_prerelease_outranks_an_earlier_release():
+    """Semantic versioning compares the numbers first: 1.0.0 precedes 2.0.0-rc."""
+    assert await _served(_labelled("1.0.0", "2.0.0-rc")) == "2.0.0-rc"
+
+
+async def test_prereleases_of_one_release_order_as_text():
+    """alpha before beta before rc, which is textual and does not claim more."""
+    assert await _served(_labelled("1.0.0-alpha", "1.0.0-rc", "1.0.0-beta")) == "1.0.0-rc"
+
+
+async def test_a_label_with_no_numeric_stem_loses_to_a_numeric_one():
+    assert await _served(_labelled("nightly", "0.1")) == "0.1"
+
+
+async def test_two_non_numeric_labels_still_order():
+    assert await _served(_labelled("alpha", "beta")) == "beta"
+
+
+def test_ten_still_sorts_above_two():
+    from veloce.contrib.mcp.registry import _version_key
+
+    assert max(["2.0", "10.0"], key=_version_key) == "10.0"
+
+
+def test_the_published_history_is_ordered_the_same_way():
+    app = _labelled("1.0.0-beta", "1.0.0", "2.0")
+    entry = MCPServer(app)._describe_tool(build_registry(app).tools["build"])
+    assert entry["_meta"]["veloce"]["versions"] == ["1.0.0-beta", "1.0.0", "2.0"]

@@ -1156,10 +1156,14 @@ versioned one — by `derive_tool`, by a namespaced `mount(expose_mcp=True)`, or
 by `add_mcp_proxy` — carries its own version but not the set, because the copy
 is one implementation and the registry it lands in holds no siblings for it.
 
-Versions are ordered as dotted integers when every component is one, so `10.0`
-follows `2.0` rather than preceding it as a string sort would. A label that is
-not all-numeric sorts after every numeric label, so an ordering exists whatever
-you write.
+Versions are ordered the way semantic versioning orders them. Dotted integers
+compare numerically, so `10.0` follows `2.0` rather than preceding it as a string
+sort would, and a suffixed label sits below the release it is a suffix of — a
+call naming no version reaches `1.0.0`, not `1.0.0-beta`. The numbers decide
+first, so `2.0.0-rc` still outranks `1.0.0`. Among suffixes of one release the
+comparison is textual, which orders `alpha` before `beta` before `rc` without
+claiming to implement precedence rules beyond that. A label with no numeric stem
+sorts below every numeric one, so an ordering exists whatever you write.
 
 Two registrations sharing a name are still refused when they share a version, or
 when only one of them declares one — without a version on both there is nothing
