@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mcp_tool(tags=...)` labels a tool, and every tool exposes `tags` for a visibility policy. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - A `pathlib.Path` parameter declares `format: path` in the tool schema. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
 - `mcp_resource_mime_type=` declares the media type a resource listing advertises. ([#283](https://github.com/Lokesh-Tallapaneni/veloce/pull/283))
+- `mcp_tool(version=...)` registers several versions of a tool under one published name. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - `MCPContext.sample_with_tools` runs the sampling loop, executing the tools the model asks for. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - `SamplingRun` and `SampledToolCall` report a run's answer, transcript and tool calls. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
 - `derive_tool` and `ArgTransform` publish a narrower façade over a registered tool. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))

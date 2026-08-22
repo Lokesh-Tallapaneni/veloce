@@ -206,6 +206,25 @@ def _apply_sync_tool_filter(
     return [tool for tool in tools if tool_filter(tool, principal)]
 
 
+# Where a tool's version is published in its `_meta`, and where a call names the
+# version it wants. The spec defines no version field, so both live under one
+# framework-namespaced key rather than inventing wire fields a client would not
+# recognise.
+_VERSION_META_KEY = "veloce"
+
+
+def _requested_version(params: dict[str, Any]) -> str | None:
+    """Return the tool version this call asked for, if it named one."""
+    meta = params.get("_meta")
+    if not isinstance(meta, dict):
+        return None
+    namespaced = meta.get(_VERSION_META_KEY)
+    if not isinstance(namespaced, dict):
+        return None
+    version = namespaced.get("version")
+    return version if isinstance(version, str) else None
+
+
 def _build_tool_listing_entry(tool: MCPTool) -> dict[str, Any]:
     """Shape one registered tool into its `tools/list` entry.
 
@@ -239,8 +258,16 @@ def _build_tool_listing_entry(tool: MCPTool) -> dict[str, Any]:
     # `"forbidden"`, so a non-opting tool omits the field entirely.
     if tool.task_support:
         entry["execution"] = {"taskSupport": "optional"}
-    if tool.meta:
-        entry["_meta"] = tool.meta
+    meta = tool.meta
+    if tool.version is not None:
+        published: dict[str, Any] = {"version": tool.version}
+        if tool.version_history:
+            published["versions"] = list(tool.version_history)
+        declared = meta.get(_VERSION_META_KEY) if meta else None
+        namespaced = {**declared, **published} if isinstance(declared, dict) else published
+        meta = {**meta, _VERSION_META_KEY: namespaced} if meta else {_VERSION_META_KEY: namespaced}
+    if meta:
+        entry["_meta"] = meta
     return entry
 
 
@@ -1082,8 +1109,11 @@ class MCPServer(TasksMixin, InvocationMixin):
         name = params.get("name")
         if not isinstance(name, str):
             raise InvalidParamsError("tools/call requires a string 'name'")
-        tool = self.registry.get(name)
+        version = _requested_version(params)
+        tool = self.registry.resolve(name, version)
         if tool is None:
+            if version is not None:
+                raise InvalidParamsError(f"Unknown tool: {name} (version {version})")
             raise InvalidParamsError(f"Unknown tool: {name}")
 
         arguments = params.get("arguments") or {}

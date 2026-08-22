@@ -553,6 +553,7 @@ class Veloce(
                 bool,
                 dict[str, Any] | None,
                 dict[str, Any] | None,
+                str | None,
             ]
         ] = []
         # MCP prompt registrations (contrib.mcp). Each entry is
@@ -1791,6 +1792,7 @@ class Veloce(
         task_support: bool = False,
         annotations: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
+        version: str | None = None,
     ) -> Callable:
         """Register an MCP-only tool callable by an AI agent (contrib.mcp).
 
@@ -1803,7 +1805,10 @@ class Veloce(
         blueprint namespaces an exposed route. `icons` is an optional list of
         `Icon` objects a client may render next to the tool. `task_support=True`
         lets a client run the tool as a background task (task-augmented
-        `tools/call`, polled via `tasks/get` / `tasks/result`).
+        `tools/call`, polled via `tasks/get` / `tasks/result`). `version` labels
+        this registration: two tools sharing a name and declaring different
+        versions are both registered, the higher one is listed, and a call
+        naming no version reaches it.
 
         Usage::
 
@@ -1832,6 +1837,7 @@ class Veloce(
                     task_support,
                     declared,
                     meta,
+                    version,
                 )
             )
             return func

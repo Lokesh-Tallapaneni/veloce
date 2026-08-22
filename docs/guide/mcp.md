@@ -1082,6 +1082,75 @@ async def count(table: str, db=Depends(get_db)) -> int:
     return db.count(table)
 ```
 
+## Publishing more than one version of a tool
+
+A tool's contract changes and the old shape still has callers. Registering both
+means two names in the catalogue — two entries the agent reads and has to choose
+between — and Veloce refuses a duplicate name outright.
+
+Declare a `version` instead. Registrations sharing a name and differing in
+version are all kept; the highest is the one listed, and the one a call naming no
+version reaches:
+
+```python
+from veloce import Veloce
+
+app = Veloce(title="Search")
+
+
+@app.mcp_tool(name="search", description="Search the index", version="1.0")
+async def search_v1(q: str) -> dict:
+    return await backend.search(q)
+
+
+@app.mcp_tool(name="search", description="Search the index", version="2.0")
+async def search_v2(query: str, limit: int = 10) -> dict:
+    return await backend.search(query, limit)
+```
+
+`tools/list` reports one `search` — v2's description and schema — carrying what
+is available:
+
+```json
+{
+  "name": "search",
+  "description": "Search the index",
+  "_meta": {"veloce": {"version": "2.0", "versions": ["1.0", "2.0"]}}
+}
+```
+
+A caller reaches an earlier version by naming it in the request's `_meta`, the
+spec's own extension point (there is no version field on `tools/call`):
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "search",
+    "arguments": {"q": "cats"},
+    "_meta": {"veloce": {"version": "1.0"}}
+  }
+}
+```
+
+Each version keeps its own registration — its schema, its scopes, its
+annotations — so reaching one never borrows another's. A version this server
+does not have is refused by name and version rather than silently answered by
+the latest.
+
+Versions are ordered as dotted integers when every component is one, so `10.0`
+follows `2.0` rather than preceding it as a string sort would. A label that is
+not all-numeric sorts after every numeric label, so an ordering exists whatever
+you write.
+
+Two registrations sharing a name are still refused when they share a version, or
+when only one of them declares one — without a version on both there is nothing
+to order, so there is no answer to which is current.
+
+!!! note "Versioning covers `@app.mcp_tool`"
+    A route-backed tool's version is its HTTP API's version, which the route path
+    already carries (`/v2/search`) and which produces a distinct tool name.
+
 ## Blueprint namespacing
 
 A tool exposed from a blueprint route is namespaced by the blueprint name. A

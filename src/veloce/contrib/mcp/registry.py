@@ -112,6 +112,28 @@ class MCPTool(MCPDescriptor):
     # published surface back to what the original handler takes. `None` for a tool
     # whose arguments are its handler's own.
     derived_from: Any = None
+    # The label this registration was published under, when the author declared
+    # one. Tools sharing a name and differing in version are all registered; the
+    # highest is the one listed and the one a call without a version reaches.
+    version: str | None = None
+    # Every version registered under this tool's name, ascending. Set on the
+    # listed tool as its siblings arrive; empty for an unversioned tool.
+    version_history: tuple[str, ...] = ()
+
+
+def _version_key(version: str | None) -> tuple[int, Any]:
+    """Order two version labels, comparing dotted integers numerically.
+
+    ``"10.0"`` follows ``"2.0"``, which a plain string sort gets backwards. A
+    label that is not all-numeric is compared as text, after every numeric one,
+    so an ordering exists whatever the author chose to write.
+    """
+    if version is None:
+        return (0, ())
+    parts = version.split(".")
+    if all(part.isdigit() for part in parts):
+        return (1, tuple(int(part) for part in parts))
+    return (2, version)
 
 
 @dataclass(slots=True)
@@ -125,6 +147,9 @@ class ToolRegistry(Registry[MCPTool]):
 
     tools: dict[str, MCPTool] = field(default_factory=dict)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # name -> version -> tool, for names registered under more than one version.
+    # Only such a name has an entry, so an unversioned server carries none.
+    versions: dict[str, dict[str, MCPTool]] = field(default_factory=dict)
 
     @property
     def _store(self) -> dict[str, MCPTool]:
@@ -136,12 +161,38 @@ class ToolRegistry(Registry[MCPTool]):
     def _duplicate_message(self, key: str) -> str:
         return (
             f"Duplicate MCP tool name {key!r}. Tool names must be unique; "
-            "rename the handler, pass name=, or adjust the blueprint namespace."
+            "rename the handler, pass name=, adjust the blueprint namespace, or "
+            "give each registration its own version=."
         )
 
     def add(self, tool: MCPTool) -> None:
-        """Register `tool`, rejecting a name already taken."""
-        self.register(tool)
+        """Register `tool`, rejecting a name already taken by the same version.
+
+        Two registrations sharing a name and declaring different versions are
+        both kept: the higher one is listed and answers a call naming no
+        version, and either answers a call naming its own.
+        """
+        existing = self.tools.get(tool.name)
+        if existing is None or existing.version is None or tool.version is None:
+            self.register(tool)
+            return
+        if tool.version == existing.version:
+            raise ValueError(self._duplicate_message(tool.name))
+        siblings = self.versions.setdefault(tool.name, {existing.version: existing})
+        siblings[tool.version] = tool
+        listed = max(siblings.values(), key=lambda candidate: _version_key(candidate.version))
+        listed.version_history = tuple(sorted(siblings, key=_version_key))
+        self.tools[tool.name] = listed
+
+    def resolve(self, name: str, version: str | None) -> MCPTool | None:
+        """Return the tool `name` registered under `version`, or the listed one."""
+        if version is None:
+            return self.get(name)
+        siblings = self.versions.get(name)
+        if siblings is None:
+            listed = self.get(name)
+            return listed if listed is not None and listed.version == version else None
+        return siblings.get(version)
 
 
 def _output_schema_for(
@@ -209,6 +260,7 @@ def _register_explicit_tool(
     task_support: bool = False,
     annotations: dict[str, Any] | None = None,
     meta: dict[str, Any] | None = None,
+    version: str | None = None,
 ) -> None:
     """Add an `@app.mcp_tool`-registered handler to `registry`."""
     base = name or handler.__name__
@@ -232,6 +284,7 @@ def _register_explicit_tool(
             task_support=task_support,
             annotations=validate_tool_annotations(annotations),
             meta=meta,
+            version=version,
         )
     )
 
@@ -281,7 +334,7 @@ def build_registry(app: Any) -> ToolRegistry:
 
     # Explicit @app.mcp_tool registrations, recorded on the app at decoration
     # time as `(handler, name, description, namespace, scopes, tags, icons,
-    # task_support, annotations, meta)` tuples.
+    # task_support, annotations, meta, version)` tuples.
     for (
         handler,
         name,
@@ -293,6 +346,7 @@ def build_registry(app: Any) -> ToolRegistry:
         task_support,
         declared_annotations,
         declared_meta,
+        version,
     ) in getattr(app, "_mcp_tools", ()):
         _register_explicit_tool(
             registry,
@@ -306,6 +360,7 @@ def build_registry(app: Any) -> ToolRegistry:
             task_support=task_support,
             annotations=declared_annotations,
             meta=declared_meta,
+            version=version,
         )
 
     # Routes flagged for exposure. Walk every route (including those hidden
