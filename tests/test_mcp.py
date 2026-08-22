@@ -24,11 +24,12 @@ from veloce import (
     current_principal,
     set_principal,
 )
-from veloce.contrib.mcp import Icon, MCPAuth, MCPSession
+from veloce.contrib.mcp import Icon, MCPAuth, MCPSession, plan_bridge
 from veloce.contrib.mcp.registry import build_registry
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.tasks import STATUS_FAILED
 from veloce.contrib.mcp.transports.stdio import StdioTransport
+from veloce.dependency import DependencyResolver
 
 # -- In-process stdio driver ------------------------------------------
 
@@ -1590,6 +1591,52 @@ def test_dependency_injected_response_mutation_reflected_in_result():
     assert out["result"]["isError"] is True
     payload = orjson.loads(out["result"]["content"][0]["text"])
     assert payload == {"ok": True}
+
+
+def test_the_mcp_bridge_delegates_the_injected_slots_to_the_resolver():
+    """`K_RESPONSE` / `K_BG_TASKS` bind through `DependencyResolver`, not through
+    a second copy of its body. A local re-implementation here would drift the
+    moment the HTTP side changed its sentinel or its state key, and the HTTP
+    test suite would not see it."""
+    assert plan_bridge._injected_response is DependencyResolver._bind_injected_response
+    assert plan_bridge._background_tasks is DependencyResolver._bind_background_tasks
+
+
+def test_the_mcp_injected_response_starts_at_the_never_set_sentinel():
+    """`status_code = 0` is the "handler never set it" marker `_build_response`
+    tests before merging. It must reach an MCP handler that way, and must never
+    itself be merged onto the result."""
+    app = Veloce(openapi_url=None)
+    seen: list[int] = []
+
+    @app.get("/probe", expose_as_mcp_tool=True, mcp_description="Probe")
+    async def probe(response: Response) -> dict:
+        seen.append(response.status_code)
+        return {"ok": True}
+
+    out = _call(app, "probe", {})
+    assert "error" not in out
+    assert seen == [0]
+    assert out["result"].get("isError") is not True
+
+
+def test_an_mcp_dependency_and_handler_share_one_injected_response():
+    """Same contract as the HTTP path: one Response per call, not one per slot."""
+    app = Veloce(openapi_url=None)
+    seen: list[Response] = []
+
+    def stamp(response: Response) -> None:
+        seen.append(response)
+
+    @app.get("/shared", expose_as_mcp_tool=True, mcp_description="Shared")
+    async def shared(response: Response, _: None = Depends(stamp)) -> dict:
+        seen.append(response)
+        return {"ok": True}
+
+    out = _call(app, "shared", {})
+    assert "error" not in out
+    assert len(seen) == 2
+    assert seen[0] is seen[1]
 
 
 def test_shared_background_tasks_queue_runs_dependency_and_handler_tasks():
