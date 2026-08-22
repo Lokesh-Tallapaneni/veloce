@@ -500,6 +500,14 @@ def _stream_response(
     disconnect are still available to replay.
     """
     queue: asyncio.Queue[Any] = asyncio.Queue()
+    # Cleared once the SSE generator is gone. A disconnect deliberately does NOT
+    # cancel the in-flight call (see `events` below), so the runner keeps
+    # producing - and with nobody left to drain the queue, every notification a
+    # chatty tool emits would be buffered for the rest of the call for nothing.
+    # A resumable stream has already recorded each payload in the event store, so
+    # dropping the queue hand-off after teardown costs a reconnecting client
+    # nothing: the replay comes from the store, not from here.
+    draining = [True]
     # A resumable stream gets a unique id so its event ids encode their origin and
     # a resume replays only this stream's events. `seq` advances per recorded
     # payload; 0 is reserved for the priming event so the replay base is addressable.
@@ -517,7 +525,9 @@ def _stream_response(
     # JSON-RPC message (when resumable) then queues it for the SSE generator. The
     # recording is what survives a dropped connection for later replay.
     async def send(message: dict[str, Any]) -> None:
-        await queue.put((emit_id(message), message))
+        event_id = emit_id(message)
+        if draining[0]:
+            await queue.put((event_id, message))
 
     async def runner() -> None:
         token = _notifier_var.set(send)
@@ -532,7 +542,9 @@ def _stream_response(
         try:
             response = await server.handle_message(message, session)
             if response is not None:
-                await queue.put((emit_id(response), response))
+                response_id = emit_id(response)
+                if draining[0]:
+                    await queue.put((response_id, response))
         except asyncio.CancelledError:
             # The client cancelled this request (notifications/cancelled): the
             # call's task was cancelled deliberately. Close the stream cleanly
@@ -541,11 +553,14 @@ def _stream_response(
         except Exception:
             _logger.exception("MCP HTTP request handling failed")
             err = _error(message.get("id"), _JSONRPC_INTERNAL_ERROR, "internal error")
-            await queue.put((emit_id(err), err))
+            err_id = emit_id(err)
+            if draining[0]:
+                await queue.put((err_id, err))
         finally:
             server.unregister_connection(conn_token)
             _notifier_var.reset(token)
-            await queue.put(_STREAM_END)
+            if draining[0]:
+                await queue.put(_STREAM_END)
 
     async def events() -> Any:
         # Disconnection is not cancellation (MCP transport): a client that closes
@@ -560,17 +575,25 @@ def _stream_response(
         # resumable stream's priming id encodes the stream (sequence 0) so a resume
         # from it replays the whole tail.
         prime_id = f"{stream_id}.0" if stream_id is not None else str(next(_event_id))
-        yield ServerSentEvent(data="", id=prime_id)
-        while True:
-            item = await queue.get()
-            if item is _STREAM_END:
-                break
-            event_id, payload = item
-            yield ServerSentEvent.json(payload, id=event_id)
-        # A closing frame carrying the reconnect hint, so a client that drops
-        # mid-stream knows how long to wait before reconnecting.
-        yield ServerSentEvent(retry=_SSE_RETRY_MS)
-        await runner_task
+        try:
+            yield ServerSentEvent(data="", id=prime_id)
+            while True:
+                item = await queue.get()
+                if item is _STREAM_END:
+                    break
+                event_id, payload = item
+                yield ServerSentEvent.json(payload, id=event_id)
+            # A closing frame carrying the reconnect hint, so a client that drops
+            # mid-stream knows how long to wait before reconnecting.
+            yield ServerSentEvent(retry=_SSE_RETRY_MS)
+            await runner_task
+        finally:
+            # Whether the stream ended normally or the client vanished, nothing
+            # will read this queue again. Tell the runner to stop filling it and
+            # release whatever is already buffered.
+            draining[0] = False
+            while not queue.empty():
+                queue.get_nowait()
 
     headers = {_SESSION_ID_HEADER: session_id} if session_id is not None else None
     return EventSourceResponse(events(), headers=headers)

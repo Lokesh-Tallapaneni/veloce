@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -46,6 +47,8 @@ from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
 from veloce.http.response import JSONResponse, RedirectResponse, Response
 from veloce.principal import Principal
 from veloce.status import HTTP_302_FOUND
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable, Sequence
@@ -128,6 +131,13 @@ class AccessToken:
     # Digest of the refresh token that may replace this one, when refresh was
     # granted. Rotation issues a new pair and drops the old.
     refresh_digest: str | None = None
+    # Identifies the chain this token descends from: every rotation inherits it.
+    # A refresh token presented twice means the first holder's copy leaked, and
+    # OAuth 2.1 Sec. 4.14.2 wants the whole chain revoked rather than only the
+    # replay refused - otherwise the thief simply keeps using the pair they
+    # already rotated. Defaults to a fresh value so a token minted without one
+    # is still a family of its own.
+    family_id: str = field(default_factory=lambda: secrets.token_urlsafe(9))
 
 
 @runtime_checkable
@@ -179,13 +189,17 @@ class InMemoryAuthorizationStore:
     deployment that survives either needs its own `AuthorizationStore`.
     """
 
-    __slots__ = ("_clients", "_codes", "_tokens", "_refresh")
+    __slots__ = ("_clients", "_codes", "_tokens", "_refresh", "_spent")
 
     def __init__(self) -> None:
         self._clients: dict[str, OAuthClient] = {}
         self._codes: dict[str, AuthorizationCode] = {}
         self._tokens: dict[str, AccessToken] = {}
         self._refresh: dict[str, str] = {}
+        # Spent refresh-token digests mapped to the family they belonged to.
+        # Only what reuse detection needs is kept - the digest, never the token -
+        # and an entry is dropped when its family is revoked.
+        self._spent: dict[str, str] = {}
 
     async def save_client(self, client: OAuthClient) -> None:
         self._clients[client.client_id] = client
@@ -219,7 +233,27 @@ class InMemoryAuthorizationStore:
         token = self._tokens.pop(token_digest, None)
         if token is None:
             return None
+        # Remember that this refresh token was spent, and which chain it belonged
+        # to. A second presentation is then distinguishable from a token that was
+        # never issued here, which is what makes reuse detection possible.
+        self._spent[refresh_digest] = token.family_id
         return token_digest, token
+
+    async def family_of_spent_refresh(self, refresh_digest: str) -> str | None:
+        """Return the family a already-spent refresh token belonged to."""
+        return self._spent.get(refresh_digest)
+
+    async def revoke_family(self, family_id: str) -> int:
+        """Drop every token descended from one authorization. Returns the count."""
+        doomed = [digest for digest, token in self._tokens.items() if token.family_id == family_id]
+        for digest in doomed:
+            token = self._tokens.pop(digest, None)
+            if token is not None and token.refresh_digest is not None:
+                self._refresh.pop(token.refresh_digest, None)
+        self._spent = {
+            digest: family for digest, family in self._spent.items() if family != family_id
+        }
+        return len(doomed)
 
 
 # The `authenticate` callback: given the authorization request, return the
@@ -346,8 +380,14 @@ class MCPAuthorizationServer:
         scopes: frozenset[str],
         resource: str | None,
         claims: dict[str, Any],
+        family_id: str | None = None,
     ) -> dict[str, Any]:
-        """Mint an access/refresh pair and return the RFC 6749 token response."""
+        """Mint an access/refresh pair and return the RFC 6749 token response.
+
+        `family_id` carries the chain forward on a rotation, so a later replay of
+        any refresh token in it can revoke the whole chain. Omitted for a first
+        issuance, which starts a family of its own.
+        """
         access = secrets.token_urlsafe(_CREDENTIAL_ENTROPY_BYTES)
         refresh = secrets.token_urlsafe(_CREDENTIAL_ENTROPY_BYTES)
         record = AccessToken(
@@ -358,6 +398,7 @@ class MCPAuthorizationServer:
             expires_at=_now() + self.access_token_ttl,
             claims=claims,
             refresh_digest=_digest(refresh),
+            **({"family_id": family_id} if family_id is not None else {}),
         )
         await self.store.save_token(_digest(access), record)
         response: dict[str, Any] = {
@@ -617,6 +658,29 @@ async def _grant_authorization_code(server: MCPAuthorizationServer, form: Any) -
     return JSONResponse(issued, headers={"Cache-Control": "no-store"})
 
 
+async def _spent_family(store: Any, refresh_digest: str) -> str | None:
+    """Ask the store which family an already-spent refresh token belonged to.
+
+    Optional on the `AuthorizationStore` protocol: a store written before reuse
+    detection existed simply cannot answer, and a replay then falls back to the
+    plain `invalid_grant` it always produced. Adding it as a required method
+    would break every custom store on upgrade for a capability they can adopt
+    when ready.
+    """
+    query = getattr(store, "family_of_spent_refresh", None)
+    if query is None:
+        return None
+    family = await query(refresh_digest)
+    return family if isinstance(family, str) else None
+
+
+async def _revoke_family(store: Any, family_id: str) -> None:
+    """Drop every token descended from one authorization, where supported."""
+    revoke = getattr(store, "revoke_family", None)
+    if revoke is not None:
+        await revoke(family_id)
+
+
 async def _grant_refresh_token(server: MCPAuthorizationServer, form: Any) -> Response:
     """Exchange a refresh token, rotating it so the old one stops working."""
     client, failure = await _authenticate_client(server, form)
@@ -627,15 +691,41 @@ async def _grant_refresh_token(server: MCPAuthorizationServer, form: Any) -> Res
     refresh = form.get("refresh_token")
     if not refresh:
         return _error_response("invalid_request", "refresh_token is required")
-    taken = await server.store.take_refresh(_digest(refresh))
+    presented = _digest(refresh)
+    taken = await server.store.take_refresh(presented)
     if taken is None:
+        # A refresh token that was already spent is not merely stale: the holder
+        # who spent it kept a copy, or someone else did. OAuth 2.1 Sec. 4.14.2
+        # treats that as compromise of the whole chain, so revoke every token
+        # descended from the same authorization rather than refusing this one
+        # request and leaving the rotated pair usable.
+        family = await _spent_family(server.store, presented)
+        if family is not None:
+            await _revoke_family(server.store, family)
+            _logger.warning(
+                "MCP authorization: refresh token reuse detected for client %r; "
+                "revoked the token family it belonged to.",
+                client.client_id,
+            )
+            return _error_response(
+                "invalid_grant",
+                "this refresh token was already used; the session has been revoked",
+            )
         return _error_response("invalid_grant", "the refresh token is unknown or has been used")
     _old_digest, record = taken
     if record.client_id != client.client_id:
+        # Presented by someone other than the client it was issued to - the same
+        # compromise signal, and the chain goes with it.
+        await _revoke_family(server.store, record.family_id)
         return _error_response("invalid_grant", "the token was issued to another client")
 
     issued = await server._issue(
-        client.client_id, record.subject, record.scopes, record.resource, record.claims
+        client.client_id,
+        record.subject,
+        record.scopes,
+        record.resource,
+        record.claims,
+        family_id=record.family_id,
     )
     return JSONResponse(issued, headers={"Cache-Control": "no-store"})
 

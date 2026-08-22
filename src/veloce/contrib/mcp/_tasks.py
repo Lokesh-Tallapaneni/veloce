@@ -131,6 +131,20 @@ class TasksMixin:
         # The creating connection owns the task: a task method from a different
         # connection cannot see or act on it (multi-client isolation on HTTP).
         session = _session_var.get()
+        # A throwaway session is minted per stateless POST, so a task owned by
+        # one can never be polled back by another - and `evict_expired` only
+        # drops a task that has settled, so a never-settling one would be pinned
+        # for the process lifetime with nobody able to reach or cancel it.
+        # `mount_mcp` refuses this pairing up front, but only over the tools
+        # registered by then: declaring a `task_support` tool after the mount
+        # walks straight past it. Refusing here closes that, because the check
+        # is on the call rather than on registration order.
+        if session is not None and not session.persistent:
+            raise InvalidParamsError(
+                "This connection has no session, so a task created here could "
+                "never be retrieved; mount with sessions=True to use tasks over "
+                "HTTP, or call the tool without a 'task' field."
+            )
         owner_key = session.connection_id if session is not None else None
         task = new_task(tool.name, task_ttl_ms(params), owner_key)
         self._tasks.register(task)
