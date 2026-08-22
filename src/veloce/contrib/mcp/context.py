@@ -221,9 +221,15 @@ class MCPContext:
 
     @property
     def session_id(self) -> str | None:
-        """The dispatching connection's id, or None on the stateless path."""
+        """The dispatching connection's id, or None on the stateless path.
+
+        Unique across processes, so it stays a safe key for per-client state
+        under a multi-worker server. It identifies a *connection*, not a client:
+        a reconnecting client gets a new one, and under HTTP without a shared
+        `session_backend` a client that lands on another worker does too.
+        """
         session = self._session
-        return session.connection_id if session is not None else None
+        return session.public_id if session is not None else None
 
     @property
     def client_info(self) -> dict[str, Any]:

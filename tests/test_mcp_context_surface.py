@@ -33,7 +33,7 @@ def test_session_id_and_client_info_come_from_the_connection():
     session = MCPSession()
     session.client_info = {"name": "probe-client", "version": "2.1"}
     ctx = MCPContext("probe", session=session)
-    assert ctx.session_id == session.connection_id
+    assert ctx.session_id == session.public_id
     assert ctx.client_info == {"name": "probe-client", "version": "2.1"}
 
 

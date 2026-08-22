@@ -1511,10 +1511,22 @@ class MCPServer(TasksMixin, InvocationMixin):
     # ── Logging ───────────────────────────────────────────
 
     def _set_log_level(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Set the minimum level for ``notifications/message`` (logging/setLevel)."""
+        """Set the minimum level for ``notifications/message`` (logging/setLevel).
+
+        Recorded on the session, because the spec scopes the level to the
+        connection. The ContextVar is set too so the request that carried the
+        call sees its own change immediately; the session is what carries it to
+        the next request.
+        """
         level = params.get("level")
         if not isinstance(level, str) or level not in _LOG_RANKS:
             raise InvalidParamsError("logging/setLevel requires a valid RFC 5424 'level'")
+        # The dispatcher exposes the connection's session here, which is where
+        # the level belongs: the ContextVar alone died with the request that set
+        # it on every transport but the serial stdio loop.
+        session = _session_var.get()
+        if session is not None:
+            session.log_level = level
         _log_level_var.set(level)
         return {}
 

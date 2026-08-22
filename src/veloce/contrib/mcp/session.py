@@ -18,6 +18,7 @@ unaffected.
 from __future__ import annotations
 
 import itertools
+import secrets
 from typing import Any
 
 # Monotonic source of per-session connection ids. A connection id is a stable
@@ -26,6 +27,16 @@ from typing import Any
 # and the in-flight registry key off this so a task that outlives its evicted
 # session cannot be matched by a later session that lands on a recycled address.
 _connection_id_counter = itertools.count(1)
+
+# Randomised once per process. The counter above restarts at 1 in every worker,
+# so under a pre-forked server (`--workers 4`, the gunicorn worker) four
+# connections on four workers all call themselves 1. That is harmless for the
+# internal registries, which are themselves per-process, but `session_id` hands
+# the value to application code as a client identity - and a handler keying
+# per-client state on it would silently share one bucket between unrelated
+# clients. Prefixing with a per-process token makes the public identity unique
+# without putting a string on the per-session path.
+_PROCESS_TOKEN = secrets.token_hex(4)
 
 
 # The `_meta` keys a modern request carries its client identity in. Duplicated as
@@ -50,6 +61,7 @@ class MCPSession:
         "listen_streams",
         "hidden",
         "persistent",
+        "log_level",
     )
 
     def __init__(self, persistent: bool = True) -> None:
@@ -86,6 +98,26 @@ class MCPSession:
         # touching what anyone else is served. Empty until something hides, so a
         # connection that never does pays one falsy check per listing.
         self.hidden: set[str] = set()
+        # Minimum level for `notifications/message`, set by `logging/setLevel`.
+        # The spec scopes this to the connection, and holding it here is what
+        # makes it survive between messages: it previously lived only in a
+        # ContextVar the handler set and never reset, so it persisted by leaking
+        # into whatever context happened to call it - which worked on the serial
+        # stdio loop and silently did nothing over HTTP, where each request runs
+        # in its own context. `None` means the client has not chosen one.
+        self.log_level: str | None = None
+
+    @property
+    def public_id(self) -> str:
+        """A globally unique identity for this connection, safe to key state on.
+
+        `connection_id` alone restarts at 1 in every worker process, so it is an
+        ownership key for this process's registries and nothing more. This is
+        what application code is handed. Composed on access rather than stored:
+        a stateless HTTP POST builds a session per request, and a string it
+        never reads would be pure per-request cost.
+        """
+        return f"{_PROCESS_TOKEN}-{self.connection_id}"
 
     def record_initialize(self, params: dict[str, Any]) -> None:
         """Record the client's advertised capabilities and info from `initialize`."""

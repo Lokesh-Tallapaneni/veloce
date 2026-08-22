@@ -68,6 +68,21 @@ def _argument_error_text(errors: Any) -> str:
     return f"Invalid arguments - {joined}"
 
 
+def _resolve_log_level(session: Any) -> str | None:
+    """The level this call's notifications are filtered against.
+
+    Precedence is per-request first, then per-connection. A modern request names
+    its level in `_meta` and the dispatcher puts that in the ContextVar, so it
+    wins for the request that carried it. `logging/setLevel` records the
+    connection's choice on the session, which is what carries between requests -
+    the ContextVar could not, because it dies with the context that set it.
+    """
+    level = _log_level_var.get()
+    if level is not None:
+        return level
+    return getattr(session, "log_level", None)
+
+
 class InvocationMixin:
     """Handler dispatch, lifecycle replay, and instrumentation for `MCPServer`."""
 
@@ -208,7 +223,7 @@ class InvocationMixin:
             arguments,
             notifier=_notifier_var.get(),
             progress_token=progress_token,
-            log_level=_log_level_var.get(),
+            log_level=_resolve_log_level(session),
             requester=_requester_var.get(),
             session=session,
             server=self,
