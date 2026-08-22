@@ -347,8 +347,15 @@ class URL:
         query_string: str,
         scope_scheme: str | None = None,
         forwarded_port: int | None = None,
+        trust_forwarded_proto: bool = True,
     ) -> URL:
         """Construct a URL from request headers and path components.
+
+        `trust_forwarded_proto` is False once `ProxyFix` has run: it writes the
+        scheme it trusted into the scope, so reading the raw header afterwards
+        would let a hop it deliberately refused set the scheme anyway - which is
+        the trust depth being bypassed. With no `ProxyFix` installed the header
+        remains a convenience default.
 
         `forwarded_port` is the public port a trusted reverse proxy supplied
         (via `ProxyFix` reading `X-Forwarded-Port` / `Forwarded host=...:port`).
@@ -364,7 +371,7 @@ class URL:
         # has trusted it. Plain `http` is the final fallback.
         if scope_scheme:
             scheme = scope_scheme
-        elif headers.get(HEADER_X_FORWARDED_PROTO) == URL_SCHEME_HTTPS:
+        elif trust_forwarded_proto and headers.get(HEADER_X_FORWARDED_PROTO) == URL_SCHEME_HTTPS:
             scheme = URL_SCHEME_HTTPS
         else:
             scheme = URL_SCHEME_HTTP
