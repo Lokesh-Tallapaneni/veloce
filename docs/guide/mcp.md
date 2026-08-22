@@ -1010,6 +1010,12 @@ other `MCPError` subclasses) is routed through the app's exception handlers and
 surfaces as an internal error (`-32603`) unless a matching
 `@app.exception_handler` is registered for it.
 
+An argument whose JSON type contradicts the tool's published schema is refused
+before the handler runs, with a message naming the argument and both types
+(`Invalid value for city: expected a string, got a number`) — the model wrote the
+JSON, so it is the one that can fix it. A string that a declared number accepts
+(`"12"`) still coerces, as it does over HTTP.
+
 ## Hooks around every call
 
 A tool exposed from a route replays the HTTP request lifecycle, so `before_request`

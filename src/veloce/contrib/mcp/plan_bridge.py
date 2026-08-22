@@ -14,7 +14,7 @@ resolves a plan without an HTTP `Request`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_origin
 
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
@@ -45,7 +45,8 @@ from veloce.contrib.openapi import (
     _pydantic_to_schema,
     _python_type_to_schema,
 )
-from veloce.dependency import SecurityScopes, _coerce_scalar, _coerce_value
+from veloce.dependency import SecurityScopes, _coerce_value
+from veloce.exceptions import RequestValidationError
 from veloce.http.datastructures import FormData, QueryParams
 from veloce.http.request import Request
 from veloce.http.response import Response
@@ -390,6 +391,86 @@ def _with_null_branch(prop: dict[str, Any]) -> dict[str, Any]:
     return {**carried, "anyOf": [keywords, {"type": "null"}]}
 
 
+# What a JSON value of each Python type is called in an error a model reads. The
+# names are JSON's, not Python's: the model wrote JSON and has to fix JSON.
+_JSON_TYPE_NAMES = {
+    bool: "a boolean",
+    int: "a number",
+    float: "a number",
+    str: "a string",
+    list: "an array",
+    dict: "an object",
+    type(None): "null",
+}
+
+# Scalar targets a JSON object or array can never fill. The HTTP binder hands an
+# already-structured value straight back, which is right there - a scalar
+# parameter's value arrives as text - but an MCP argument is raw JSON from the
+# client, so an array reaching an `int` parameter has to be refused here or it
+# lands in the handler as one.
+_SCALAR_TARGETS = frozenset({str, int, float, bool})
+
+
+def _json_type_name(value: Any) -> str:
+    """Name `value`'s JSON type the way the client that sent it would."""
+    return _JSON_TYPE_NAMES.get(type(value), "a value")
+
+
+def _wrong_type(name: str, expected: str, value: Any) -> RequestValidationError:
+    """Build the binding error for an argument whose JSON type is not the declared one."""
+    return RequestValidationError(
+        [
+            {
+                "loc": ["body", name],
+                "msg": f"Invalid value for {name}: expected {expected}, got {_json_type_name(value)}",
+                "type": "type_error",
+            }
+        ]
+    )
+
+
+def _coerce_json_scalar(slot: _Slot, value: Any, target: Any) -> Any:
+    """Coerce one JSON argument onto a scalar parameter, refusing a wrong type.
+
+    The tool published a schema; an argument contradicting it is the model's
+    mistake to correct, and it can only correct what it is told. Passing the
+    value through instead leaves the handler holding a type it never declared.
+    """
+    if not target:
+        return value
+    if value is None:
+        if slot.is_optional:
+            return None
+        raise _wrong_type(slot.name, _declared_type_name(target), value)
+    if target is str:
+        # The HTTP binder hands a `str` target's value back untouched, since over
+        # HTTP it is already text. A JSON argument need not be.
+        if isinstance(value, str):
+            return value
+        raise _wrong_type(slot.name, "a string", value)
+    if isinstance(value, (dict, list)):
+        if (
+            target in _SCALAR_TARGETS
+            or hasattr(target, "__members__")
+            or get_origin(target) is Literal
+        ):
+            raise _wrong_type(slot.name, _declared_type_name(target), value)
+        # A parameter declared to take an object or an array takes this one.
+        return value
+    return _coerce_value(value, target, slot.name, "body")
+
+
+def _declared_type_name(target: Any) -> str:
+    """Name the JSON type a declared parameter type accepts."""
+    if target is bool:
+        return "a boolean"
+    if target in (int, float):
+        return "a number"
+    if target is str:
+        return "a string"
+    return f"a {getattr(target, '__name__', target)}"
+
+
 def _coerce_argument(slot: _Slot, value: Any) -> Any:
     """Coerce one JSON argument value onto its handler parameter type."""
     kind = slot.kind
@@ -407,7 +488,7 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         if slot.marker_kind == MK_BODY and is_pydantic_model(target):
             return _validate_model(value, target)
         marker = slot.marker
-        value = _coerce_scalar(value, target, slot.name, "body")
+        value = _coerce_json_scalar(slot, value, target)
         if marker is not None:
             return marker.validate(value, slot.name)
         return value
@@ -419,7 +500,7 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         return [_coerce_value(v, inner, slot.name, "body") for v in value]
 
     if kind == K_QUERY:
-        return _coerce_scalar(value, slot.target_type, slot.name, "body")
+        return _coerce_json_scalar(slot, value, slot.target_type)
 
     return value
 

@@ -205,3 +205,94 @@ async def test_a_raw_query_read_inside_a_dependency_is_still_undeclarable():
     is_error, text = await _call(MCPServer(app), "pure", {"q": "hello"})
     assert is_error is False
     assert orjson.loads(text) == {"value": "hello"}
+
+
+# ── The published type is enforced ───────────────────────────────────
+
+
+def _typed_app() -> Veloce:
+    app = Veloce(title="Typed", openapi_url=None)
+
+    @app.mcp_tool(description="Takes one of each")
+    async def probe(
+        city: str,
+        count: int,
+        ratio: float = 0.0,
+        flag: bool = False,
+        nickname: str | None = None,
+        payload: dict | None = None,
+    ) -> dict:
+        return {"types": [type(v).__name__ for v in (city, count, ratio, flag)]}
+
+    return app
+
+
+async def test_an_object_where_a_number_is_declared_is_refused():
+    """It would otherwise reach the handler as a `dict` typed `int`."""
+    is_error, text = await _call(MCPServer(_typed_app()), "probe", {"city": "A", "count": {}})
+    assert is_error is True
+    assert "count" in text
+
+
+async def test_an_array_where_a_string_is_declared_is_refused():
+    is_error, text = await _call(MCPServer(_typed_app()), "probe", {"city": [], "count": 1})
+    assert is_error is True
+    assert "city" in text
+
+
+async def test_a_number_where_a_string_is_declared_is_refused():
+    is_error, _text = await _call(MCPServer(_typed_app()), "probe", {"city": 5, "count": 1})
+    assert is_error is True
+
+
+async def test_the_refusal_names_the_argument_and_both_types():
+    """A model can only correct what it is told; the message is the retry."""
+    _is_error, text = await _call(MCPServer(_typed_app()), "probe", {"city": 5, "count": 1})
+    assert "city" in text
+    assert "expected a string" in text
+    assert "got a number" in text
+
+
+async def test_the_types_are_named_as_json_names_the_model_used():
+    _is_error, text = await _call(MCPServer(_typed_app()), "probe", {"city": "A", "count": []})
+    assert "expected a number" in text
+    assert "got an array" in text
+
+
+async def test_null_for_a_required_argument_is_refused():
+    is_error, _text = await _call(MCPServer(_typed_app()), "probe", {"city": None, "count": 1})
+    assert is_error is True
+
+
+async def test_null_for_an_optional_argument_is_accepted():
+    """Its schema carries a null branch, so null is a value the contract allows."""
+    is_error, _text = await _call(
+        MCPServer(_typed_app()), "probe", {"city": "A", "count": 1, "nickname": None}
+    )
+    assert is_error is False
+
+
+async def test_an_object_reaches_a_parameter_declared_to_take_one():
+    is_error, _text = await _call(
+        MCPServer(_typed_app()), "probe", {"city": "A", "count": 1, "payload": {"k": "v"}}
+    )
+    assert is_error is False
+
+
+async def test_a_numeric_string_still_reaches_a_number_parameter():
+    """Long-standing leniency: a coercible string is not the failure this closes."""
+    is_error, text = await _call(MCPServer(_typed_app()), "probe", {"city": "A", "count": "12"})
+    assert is_error is False
+    assert orjson.loads(text)["types"] == ["str", "int", "float", "bool"]
+
+
+async def test_a_route_backed_tool_enforces_it_the_same_way():
+    app = Veloce(title="Routed", openapi_url=None)
+
+    @app.get("/echo", expose_as_mcp_tool=True, mcp_description="Echo a word")
+    async def echo(word: str) -> dict:
+        return {"word": word}
+
+    is_error, text = await _call(MCPServer(app), "echo", {"word": {"not": "a word"}})
+    assert is_error is True
+    assert "word" in text
