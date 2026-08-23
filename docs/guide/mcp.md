@@ -1454,6 +1454,17 @@ and a client dropping the stream does not cancel the in-flight call.
     `MCP-Protocol-Version` header naming a revision the server does not support is
     rejected `400`; a request with no such header is unaffected.
 
+    On the `2026-07-28` revision the standard request headers become mandatory and
+    are checked against the body they label. Every `POST` carries
+    `MCP-Protocol-Version` and `Mcp-Method`, and a `tools/call`, `resources/read`
+    or `prompts/get` also carries `Mcp-Name`. A missing header, or one whose value
+    disagrees with the body, is rejected `400` with JSON-RPC `-32020`
+    (`HeaderMismatchError`) — an intermediary routes on the headers while the
+    server executes the body, so the two must not be allowed to diverge. A
+    `Mcp-Name` outside plain printable ASCII travels as
+    `=?base64?<standard-base64-of-the-utf-8-bytes>?=`. Earlier revisions defined
+    none of these headers and are unaffected.
+
 ### Session management
 
 The HTTP transport is stateless by default — each `POST` is an independent message.

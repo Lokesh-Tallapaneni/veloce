@@ -10,11 +10,13 @@ stream that carries the call's progress / log notifications followed by the
 JSON-RPC response; otherwise a single JSON response is returned. A message that
 needs no reply (a notification or a response) is answered with ``202 Accepted``.
 
-Before dispatch the transport enforces two spec MUSTs: a present ``Origin`` outside
+Before dispatch the transport enforces three spec MUSTs: a present ``Origin`` outside
 the configured allowlist is rejected ``403`` (DNS-rebinding defense; a missing
-``Origin`` is allowed), and a present ``MCP-Protocol-Version`` header naming an
+``Origin`` is allowed), a present ``MCP-Protocol-Version`` header naming an
 unsupported revision is rejected ``400`` (a missing header keeps the negotiated
-version). Each violation raises an `MCPError` subclass carrying its HTTP status.
+version), and on the modern revision the standard request headers are required and
+cross-checked against the body they label (``400``, JSON-RPC ``-32020``). Each
+violation raises an `MCPError` subclass carrying its HTTP status.
 
 Session management is opt-in (``sessions=True``): the server mints an
 ``Mcp-Session-Id`` on the ``initialize`` result, then requires it on every later
@@ -51,6 +53,7 @@ feeds, so one-way notifications reach the client while the call is in flight.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import secrets
 from collections.abc import Sequence
@@ -64,6 +67,7 @@ from veloce.contrib.mcp.errors import (
     _JSONRPC_FORBIDDEN,
     _JSONRPC_INTERNAL_ERROR,
     _JSONRPC_INVALID_REQUEST,
+    HeaderMismatchError,
     MCPError,
     OriginNotAllowedError,
     ProtocolVersionError,
@@ -71,7 +75,14 @@ from veloce.contrib.mcp.errors import (
     SessionRequiredError,
     _error,
 )
-from veloce.contrib.mcp.server import _SERVED_VERSION_SET, MCPServer, _notifier_var
+from veloce.contrib.mcp.server import (
+    _SERVED_VERSION_SET,
+    META_PROTOCOL_VERSION,
+    MODERN_PROTOCOL_VERSION,
+    MCPServer,
+    _notifier_var,
+    _requests_modern,
+)
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.event_store import SSEEventStore
 from veloce.contrib.mcp.transports.session_store import HttpSessionStore, SessionBackend
@@ -259,6 +270,13 @@ async def _handle_http(
     # per-request session instead: it carries no id and lives only for this POST,
     # which still isolates the in-flight registry so a colliding JSON-RPC id from a
     # concurrent POST cannot cancel this one.
+    # The standard headers label the body a proxy forwarded without parsing, so
+    # they are cross-checked before anything acts on either one.
+    try:
+        _validate_standard_headers(request, message)
+    except MCPError as exc:
+        return JSONResponse(exc.to_error(message.get("id")), status_code=exc.http_status)
+
     is_initialize = message.get("method") == "initialize"
     session_id: str | None = None
     session: MCPSession
@@ -411,6 +429,94 @@ def _validate_protocol_version(request: Request) -> None:
     version = request.headers.get("mcp-protocol-version")
     if version is not None and version not in _SERVED_VERSION_SET:
         raise ProtocolVersionError(f"unsupported MCP-Protocol-Version: {version}")
+
+
+# The methods whose `Mcp-Name` header labels a body value, and the param that
+# carries it. Every other method sends no `Mcp-Name` at all.
+_NAME_BEARING_METHODS = {
+    "tools/call": "name",
+    "prompts/get": "name",
+    "resources/read": "uri",
+}
+
+# A `Mcp-Name` value that is not plain printable ASCII - and any value that would
+# itself read as the sentinel - travels base64 between these two markers, which
+# the revision requires to be spelled exactly this way, in lowercase.
+_NAME_B64_PREFIX = "=?base64?"
+_NAME_B64_SUFFIX = "?="
+
+
+def _is_modern_version(version: str | None) -> bool:
+    """Whether `version` names a revision that carries the standard headers.
+
+    The revisions are ISO dates, so ordering them as strings orders them by date
+    and a revision later than the first modern one is modern too.
+    """
+    return version is not None and version >= MODERN_PROTOCOL_VERSION
+
+
+def _decode_standard_name(raw: str) -> str:
+    """Return the value `Mcp-Name` carries, decoding the base64 sentinel form."""
+    if raw.startswith(_NAME_B64_PREFIX) and raw.endswith(_NAME_B64_SUFFIX):
+        encoded = raw[len(_NAME_B64_PREFIX) : -len(_NAME_B64_SUFFIX)]
+        try:
+            return base64.b64decode(encoded, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HeaderMismatchError("Mcp-Name is not valid base64") from exc
+    if raw != raw.strip() or not raw.isascii() or not raw.isprintable():
+        raise HeaderMismatchError("Mcp-Name carries characters that must travel base64-encoded")
+    return raw
+
+
+def _require_header(request: Request, name: str) -> str:
+    """Return a required standard header, rejecting the request when it is absent."""
+    value: str | None = request.headers.get(name)
+    if value is None:
+        raise HeaderMismatchError(f"{name} is required on this protocol revision")
+    return value
+
+
+def _validate_standard_headers(request: Request, message: dict[str, Any]) -> None:
+    """Cross-check the standard request headers against the body they label.
+
+    A modern request states its method - and, for the three methods that act on
+    a named thing, that name - in headers as well as in the body, so a proxy can
+    route without parsing JSON. The server executes the body, so the two MUST
+    agree: a request whose header says one thing and whose body says another is
+    rejected rather than served (MCP 2026-07-28 Streamable HTTP, "Standard
+    Request Headers" and "Server Validation").
+
+    Earlier revisions defined none of these headers, so a handshake-era request
+    is left alone; the request is modern when either end says so, because a
+    header a proxy trusted is exactly what must not go unchecked.
+    """
+    method = message.get("method")
+    if not isinstance(method, str):
+        # Not a request object at all - the shape check downstream owns it.
+        return
+    header_version = request.headers.get("mcp-protocol-version")
+    if not _is_modern_version(header_version) and not _requests_modern(message.get("params")):
+        return
+
+    if not _is_modern_version(header_version):
+        raise HeaderMismatchError("MCP-Protocol-Version is required on this protocol revision")
+    params = message.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    body_version = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
+    if body_version is not None and body_version != header_version:
+        raise HeaderMismatchError(
+            "MCP-Protocol-Version does not match the version in the request body"
+        )
+
+    if _require_header(request, "mcp-method") != method:
+        raise HeaderMismatchError("Mcp-Method does not match the method in the request body")
+
+    field = _NAME_BEARING_METHODS.get(method)
+    if field is None:
+        return
+    body_name = params.get(field) if isinstance(params, dict) else None
+    if _decode_standard_name(_require_header(request, "mcp-name")) != body_name:
+        raise HeaderMismatchError(f"Mcp-Name does not match params.{field} in the request body")
 
 
 def _method_not_allowed() -> Response:

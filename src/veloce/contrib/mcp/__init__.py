@@ -71,6 +71,7 @@ from veloce.contrib.mcp.content import (
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.mcp.errors import (
     AuthorizationError,
+    HeaderMismatchError,
     InternalError,
     InvalidParamsError,
     InvalidRequestError,
@@ -135,6 +136,7 @@ __all__ = [
     "MethodNotFoundError",
     "OriginNotAllowedError",
     "PromptRegistry",
+    "HeaderMismatchError",
     "ProtocolVersionError",
     "AccessToken",
     "AuthorizationCode",

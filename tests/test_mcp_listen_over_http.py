@@ -25,7 +25,8 @@ from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.subscriptions import META_SUBSCRIPTION_ID
 from veloce.contrib.mcp.transports.http import register_http_transport
 
-MODERN = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+MODERN = "2026-07-28"
+_META = {"io.modelcontextprotocol/protocolVersion": MODERN}
 
 
 def _app() -> tuple[Veloce, MCPServer]:
@@ -61,17 +62,32 @@ def _listen(notifications: dict, request_id: int = 1) -> dict:
         "jsonrpc": "2.0",
         "id": request_id,
         "method": "subscriptions/listen",
-        "params": {"notifications": notifications, "_meta": MODERN},
+        "params": {"notifications": notifications, "_meta": _META},
     }
 
 
 class _Post:
     """An open streaming `POST`, with its SSE payloads readable one at a time."""
 
-    def __init__(self, app: Veloce, body: dict, accept: bytes = b"text/event-stream") -> None:
+    def __init__(
+        self,
+        app: Veloce,
+        body: dict,
+        accept: bytes = b"text/event-stream",
+        name: bytes | None = None,
+    ) -> None:
         self._app = app
         self._body = json.dumps(body).encode()
         self._accept = accept
+        # A modern client states its revision and its method in headers as well
+        # as in the body, and the two have to agree, so they are derived here
+        # rather than written out per call.
+        self._standard = [
+            (b"mcp-protocol-version", MODERN.encode()),
+            (b"mcp-method", body["method"].encode()),
+        ]
+        if name is not None:
+            self._standard.append((b"mcp-name", name))
         self._chunks: asyncio.Queue[bytes] = asyncio.Queue()
         self._buffer = ""
         self._disconnect = asyncio.Event()
@@ -115,6 +131,7 @@ class _Post:
                 (b"accept", self._accept),
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(self._body)).encode()),
+                *self._standard,
             ],
             "client": ("127.0.0.1", 5555),
             "server": ("127.0.0.1", 8000),
@@ -280,8 +297,13 @@ async def test_a_plain_json_post_cannot_open_a_stream():
 async def test_an_ordinary_call_still_ends_its_stream():
     """The hold applies to a listen only - a normal call must still complete."""
     app, server = _app()
-    body = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "a_tool"}}
-    async with _Post(app, body) as stream:
+    body = {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {"name": "a_tool", "_meta": _META},
+    }
+    async with _Post(app, body, name=b"a_tool") as stream:
         reply = await stream.message()
         assert reply["id"] == 3
         # The stream ends on its own rather than hanging: the task completes

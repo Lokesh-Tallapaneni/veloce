@@ -79,6 +79,7 @@ Errors. A handler raising one of these surfaces it to the client as the JSON-RPC
 ::: veloce.contrib.mcp.MCPCapabilityError
 ::: veloce.contrib.mcp.OriginNotAllowedError
 ::: veloce.contrib.mcp.ProtocolVersionError
+::: veloce.contrib.mcp.HeaderMismatchError
 ::: veloce.contrib.mcp.SessionRequiredError
 ::: veloce.contrib.mcp.SessionNotFoundError
 ::: veloce.contrib.mcp.MCPRequestError
