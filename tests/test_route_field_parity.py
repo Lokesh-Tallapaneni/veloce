@@ -16,6 +16,7 @@ from __future__ import annotations
 import inspect
 import pathlib
 import re
+import typing
 
 import pytest
 
@@ -182,3 +183,77 @@ def test_the_same_metadata_survives_an_included_router():
     info = app.match("GET", "/api/doc").route_info
     assert info.mcp_resource_mime_type == "application/json"
     assert info.mcp_resource_size == 99
+
+
+# ── The documentation both entry points publish ──────────────────────
+#
+# `add_route` and `route` declare the same 40 parameters, each with its own
+# `Annotated[..., Doc(...)]`. Those strings reach a user through IDE tooltips
+# and the generated reference, so whichever entry point their editor resolves
+# decides what they read - and four had already drifted, each losing a caveat
+# on one side only. The parity test below is the guard.
+
+#: Parameters whose documentation legitimately differs, with the reason. Only
+#: `methods` qualifies: `route` defaults it to `GET` and `add_route` does not,
+#: so the same sentence would be wrong on one of them.
+_DOC_MAY_DIFFER = {"methods"}
+
+
+def _documented_params(func) -> dict[str, str]:
+    """Map each parameter of `func` to the `Doc` text its annotation carries."""
+    documented = {}
+    for name, hint in typing.get_type_hints(func, include_extras=True).items():
+        for meta in getattr(hint, "__metadata__", ()):
+            text = getattr(meta, "documentation", None)
+            if text is not None:
+                documented[name] = text
+    return documented
+
+
+def test_the_two_entry_points_document_a_shared_parameter_identically():
+    add_route = _documented_params(Router.add_route)
+    route = _documented_params(Router.route)
+    drifted = sorted(
+        name
+        for name in set(add_route) & set(route)
+        if name not in _DOC_MAY_DIFFER and add_route[name] != route[name]
+    )
+    assert not drifted, f"add_route and route document these differently: {drifted}"
+
+
+def test_every_parameter_route_takes_is_documented_by_both():
+    """A parameter documented on one side only is the same loss by another route."""
+    add_route = _documented_params(Router.add_route)
+    route = _documented_params(Router.route)
+    # `handler` is `add_route`'s alone - `route` supplies it by decoration.
+    assert set(add_route) - set(route) == {"handler"}
+    assert set(route) - set(add_route) == set()
+
+
+@pytest.mark.parametrize(
+    "param",
+    [
+        "mcp_resource_uri",
+        "mcp_resource_mime_type",
+        "mcp_meta",
+        "mcp_task_support",
+        "stream",
+        "response_model",
+    ],
+)
+def test_the_longest_docs_are_one_shared_object_rather_than_two_copies(param: str):
+    """Identity, not equality: two copies can drift, one object cannot."""
+
+    def doc_object(func):
+        hint = typing.get_type_hints(func, include_extras=True)[param]
+        return next(m for m in hint.__metadata__ if getattr(m, "documentation", None))
+
+    assert doc_object(Router.add_route) is doc_object(Router.route)
+
+
+def test_a_shared_doc_still_reaches_the_signature_it_documents():
+    """Hoisting must not leave a parameter undocumented."""
+    add_route = _documented_params(Router.add_route)
+    assert "streaming" in add_route["stream"]
+    assert "extension defines" in add_route["mcp_meta"]
+    assert "never disagrees" in add_route["mcp_resource_mime_type"]

@@ -62,6 +62,39 @@ _INFER_RESPONSE_MODEL: Any = object()
 # and replaces, `"override"` replaces silently.
 _DUPLICATE_POLICIES = frozenset({"error", "warn", "override"})
 
+# Parameter documentation `add_route` and `route` both publish. These reach a
+# user through IDE tooltips and the generated reference, so whichever entry
+# point their editor resolves decides what they read - and four of these had
+# already drifted, losing a caveat on one side only. Shared objects instead of
+# parallel copies, so a change reaches both signatures at once.
+_DOC_MCP_RESOURCE_URI = Doc(
+    "Resource URI for the route's MCP resource: a static URI, or a URI "
+    "template (`users://{user_id}`) binding its path parameters."
+)
+_DOC_MCP_RESOURCE_MIME_TYPE = Doc(
+    "Media type advertised for the route's MCP resource. Declared rather "
+    "than inferred, so the listing never disagrees with what a read returns."
+)
+_DOC_MCP_META = Doc(
+    "`_meta` published on this route's MCP tool or resource, for metadata "
+    "an extension defines rather than the protocol itself."
+)
+_DOC_MCP_TASK_SUPPORT = Doc(
+    "Allow this route's MCP tool to run as a background task "
+    "(task-augmented `tools/call`, polled via `tasks/get` / `tasks/result`)."
+)
+_DOC_RESPONSE_MODEL = Doc(
+    "Type used to filter and serialize the handler's return value and the OpenAPI "
+    "response schema. Defaults to the handler's return annotation when it names a "
+    "model; pass `None` to declare no response contract."
+)
+_DOC_STREAM = Doc(
+    "Opt into request-body streaming: the body is not buffered before the "
+    "handler, so the handler may consume `request.stream()` incrementally. "
+    "The synchronous body accessors are unavailable on a streaming route "
+    "until the body is drained."
+)
+
 # Normalize an OpenAPI-style path to its parameter-name-agnostic shape:
 # `/items/{slug}` and `/items/{id}` both become `/items/{}`. Used to detect
 # when a tree route and a regex fallback route map to the same effective path.
@@ -1018,11 +1051,7 @@ class Router:
         ] = None,
         response_model: Annotated[
             Any,
-            Doc(
-                "Type used to filter and serialize the handler's return value and the OpenAPI "
-                "response schema. Defaults to the handler's return annotation when it names a "
-                "model; pass `None` to declare no response contract."
-            ),
+            _DOC_RESPONSE_MODEL,
         ] = _INFER_RESPONSE_MODEL,
         tags: Annotated[
             list[str] | None,
@@ -1140,24 +1169,15 @@ class Router:
         ] = False,
         mcp_resource_uri: Annotated[
             str | None,
-            Doc(
-                "Resource URI for the route's MCP resource: a static URI, or a URI "
-                "template (`users://{user_id}`) binding its path parameters."
-            ),
+            _DOC_MCP_RESOURCE_URI,
         ] = None,
         mcp_resource_mime_type: Annotated[
             str | None,
-            Doc(
-                "Media type advertised for the route's MCP resource. Declared rather "
-                "than inferred, so the listing never disagrees with what a read returns."
-            ),
+            _DOC_MCP_RESOURCE_MIME_TYPE,
         ] = None,
         mcp_meta: Annotated[
             dict[str, Any] | None,
-            Doc(
-                "`_meta` published on this route's MCP tool or resource, for metadata "
-                "an extension defines rather than the protocol itself."
-            ),
+            _DOC_MCP_META,
         ] = None,
         mcp_resource_size: Annotated[
             int | None,
@@ -1177,10 +1197,7 @@ class Router:
         ] = None,
         mcp_task_support: Annotated[
             bool,
-            Doc(
-                "Allow this route's MCP tool to run as a background task "
-                "(task-augmented `tools/call`, polled via `tasks/get` / `tasks/result`)."
-            ),
+            _DOC_MCP_TASK_SUPPORT,
         ] = False,
         exclude_middleware: Annotated[
             Sequence[str] | None,
@@ -1188,12 +1205,7 @@ class Router:
         ] = None,
         stream: Annotated[
             bool,
-            Doc(
-                "Opt into request-body streaming: the body is not buffered before "
-                "the handler, so the handler may consume `request.stream()` "
-                "incrementally. The synchronous body accessors are unavailable on a "
-                "streaming route until the body is drained."
-            ),
+            _DOC_STREAM,
         ] = False,
     ) -> None:
         """Register a route in the radix tree.
@@ -1699,11 +1711,7 @@ class Router:
         ] = None,
         response_model: Annotated[
             Any,
-            Doc(
-                "Type used to filter and serialize the handler's return value and the OpenAPI "
-                "response schema. Defaults to the handler's return annotation when it names a "
-                "model; pass `None` to declare no response contract."
-            ),
+            _DOC_RESPONSE_MODEL,
         ] = _INFER_RESPONSE_MODEL,
         tags: Annotated[
             list[str] | None,
@@ -1821,18 +1829,15 @@ class Router:
         ] = False,
         mcp_resource_uri: Annotated[
             str | None,
-            Doc(
-                "Resource URI for the route's MCP resource: a static URI, or a URI "
-                "template (`users://{user_id}`) binding its path parameters."
-            ),
+            _DOC_MCP_RESOURCE_URI,
         ] = None,
         mcp_resource_mime_type: Annotated[
             str | None,
-            Doc("Media type advertised for the route's MCP resource."),
+            _DOC_MCP_RESOURCE_MIME_TYPE,
         ] = None,
         mcp_meta: Annotated[
             dict[str, Any] | None,
-            Doc("`_meta` published on this route's MCP tool or resource."),
+            _DOC_MCP_META,
         ] = None,
         mcp_resource_size: Annotated[
             int | None,
@@ -1852,10 +1857,7 @@ class Router:
         ] = None,
         mcp_task_support: Annotated[
             bool,
-            Doc(
-                "Allow this route's MCP tool to run as a background task "
-                "(task-augmented `tools/call`, polled via `tasks/get` / `tasks/result`)."
-            ),
+            _DOC_MCP_TASK_SUPPORT,
         ] = False,
         exclude_middleware: Annotated[
             Sequence[str] | None,
@@ -1863,11 +1865,7 @@ class Router:
         ] = None,
         stream: Annotated[
             bool,
-            Doc(
-                "Opt into request-body streaming: the body is not buffered before "
-                "the handler, so the handler may consume `request.stream()` "
-                "incrementally."
-            ),
+            _DOC_STREAM,
         ] = False,
     ) -> Callable:
         """Generic route decorator.
