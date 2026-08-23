@@ -62,7 +62,7 @@ def test_render_template_without_templates_attr_raises():
     app = Veloce(openapi_url=None)
     token = _current_app_var.set(app)
     try:
-        with pytest.raises(RuntimeError, match="Jinja2Templates"):
+        with pytest.raises(RuntimeError, match="template_folder"):
             render_template("x.html")
     finally:
         _current_app_var.reset(token)
@@ -104,7 +104,7 @@ def test_stream_template_without_templates_attr_raises():
     app = Veloce(openapi_url=None)
     token = _current_app_var.set(app)
     try:
-        with pytest.raises(RuntimeError, match="Jinja2Templates"):
+        with pytest.raises(RuntimeError, match="template_folder"):
             stream_template("x.html")
     finally:
         _current_app_var.reset(token)

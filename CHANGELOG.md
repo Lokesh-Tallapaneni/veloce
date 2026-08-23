@@ -6,6 +6,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `url_for` is importable from the top level, building a URL against the active app.
+- `UploadFile.save_async` streams an upload to disk without blocking the event loop.
+- `WebSocket.accepted_subprotocol` reports the subprotocol the connection settled on.
+- `Capability`, `Transport`, `BidirectionalTransport` and `register_sse_transport` are exported from `veloce.contrib.mcp`.
+
+### Fixed
+
+- `TrustedHostMiddleware`, `HTTPSRedirectMiddleware` and `CSRFMiddleware` stand down for a replayed MCP call, which they previously refused.
+- `add_middleware(instance, name="x")` applies the name, so `exclude_middleware=["x"]` matches it.
+- A class-based view receives its path parameters; `MethodView.get(self, request, uid)` no longer raises.
+- `add_url_rule` registers the verbs a `View` declares instead of defaulting to `GET`.
+- `HTTPSRedirectMiddleware` ignores an `X-Forwarded-Proto` hop that `ProxyFix` refused.
+- `render_template_string` resolves filters, globals and tests registered on the app.
+- `TestClient.websocket_connect` sends a `Host` header, which RFC 6455 Sec. 4.1 requires.
+- A conditional 304 advertises the representation's length instead of `Content-Length: 0`, including when a handler and a middleware both downgrade it.
+- An `after_request` hook is called by its own signature, so one taking only `(response)` works.
+- Task augmentation is refused on every method that cannot run in the background, not just two.
+- `veloce check` and `veloce routes` load the dotenv file, and accept `--env-file` / `--no-env-file`.
+- `CORSMiddleware` merges `Access-Control-Expose-Headers` instead of discarding another middleware's entries.
+- `BadResetToken` is raised on misuse; it also subclasses `TypeError`, which was raised before.
+- `Request.is_disconnected()` reports a real disconnect on a `stream=True` route.
+- `MAX_CONCURRENT_CONNECTIONS` and `WRITE_BUFFER_HIGH_WATER` are seeded in `default_config()`.
+- `Request.url_for(..., _external=True)` builds from the request's recovered scheme, host, port and `script_root`.
+
+### Changed
+
+- `add_middleware` raises `TypeError` on a construction argument passed with an already-built instance, instead of dropping it.
+- The templating error names `Veloce(template_folder=...)` rather than a private attribute.
+- `url_for`, `url_path_for` and `Request.url_for` take the endpoint positionally, so a route may have a `{name}` segment.
+- `CORSMiddleware` sends `Allow-Credentials` and `Expose-Headers` only when an origin was allowed.
+- `SessionAuth` lets a missing `SessionMiddleware` surface instead of masking it as an anonymous request.
+- `TestClient` percent-decodes the request path, as an ASGI server does.
+- `ToolSearch` tools are counted by the MCP scoped-tool scan.
+- A class-based view is forwarded only the path parameters its target declares; reading `request.path_params` still works.
+
 ## [0.16.0] - 2026-08-23
 
 ### Security

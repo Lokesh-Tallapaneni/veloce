@@ -310,19 +310,6 @@ def _http_status_for(error: MCPError) -> int:
     return status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
-def _reject_task_augmentation(method: str, params: dict[str, Any]) -> None:
-    """Refuse a task-augmented request for a method that runs synchronously.
-
-    Only `tools/call` opts primitives into background execution. Ignoring the
-    field on the others would answer synchronously while the caller waits for a
-    handle to poll, so the request is refused instead of silently reinterpreted.
-    """
-    if "task" in params:
-        raise InvalidParamsError(
-            f"{method} does not support task execution; call it without a 'task' field."
-        )
-
-
 class MCPServer(TasksMixin, InvocationMixin):
     """Serve a Veloce app's MCP tools over JSON-RPC 2.0.
 
@@ -488,11 +475,15 @@ class MCPServer(TasksMixin, InvocationMixin):
         # Optional search-first catalogue, built last: it holds this server and
         # calls back into it, so it is handed a constructed one rather than a
         # half-filled `self`. It registers its three tools into the registry,
-        # which is why the scope scan above counts what the registry held before
-        # them - the search tools declare no scopes, so the answer is the same
-        # either way, and the ordering is stated rather than relied upon.
+        # after the scope scan above has already run - so the scan is redone
+        # over the registry it leaves behind. The search tools declare no scopes
+        # today and the answer is unchanged, but recomputing means a later
+        # scoped search tool cannot silently skip the narrowing decision.
         if tool_search:
             self._tool_search = ToolSearch(self)
+            self._any_scoped_tools = any(
+                tool.required_scopes for tool in self.registry.tools.values()
+            )
 
     def _build_method_map(self) -> dict[str, MethodHandler]:
         """Map each supported JSON-RPC method to its async handler.
@@ -725,6 +716,17 @@ class MCPServer(TasksMixin, InvocationMixin):
             rejection = self._gate_session(session, method, params, msg_id, is_notification)
             if rejection is not None:
                 return rejection
+
+        # Task augmentation is a property of `tools/call` alone. Enforced here
+        # rather than in each handler: guarding them one at a time left most of
+        # the surface answering a task-augmented request synchronously while the
+        # caller waited for a handle to poll, which is the failure the check
+        # exists to prevent. Notifications are exempt - a one-way message has no
+        # response to carry the refusal, and nothing to poll for.
+        if not is_notification and method != "tools/call" and "task" in params:
+            return InvalidParamsError(
+                f"{method} does not support task execution; call it without a 'task' field."
+            ).to_error(msg_id)
 
         handler = self._methods.get(method)
         if handler is not None and is_modern and method in _HANDSHAKE_ONLY_METHODS:
@@ -1436,7 +1438,6 @@ class MCPServer(TasksMixin, InvocationMixin):
         handler 4xx/5xx surfaces as a JSON-RPC error, since a resource read has no
         in-band error channel.
         """
-        _reject_task_augmentation("resources/read", params)
         uri = params.get("uri")
         if not isinstance(uri, str):
             raise InvalidParamsError("resources/read requires a string 'uri'")
@@ -1489,7 +1490,6 @@ class MCPServer(TasksMixin, InvocationMixin):
         ``prompts/get`` returns. An unknown name or a malformed argument is an
         invalid-params error.
         """
-        _reject_task_augmentation("prompts/get", params)
         name = params.get("name")
         if not isinstance(name, str):
             raise InvalidParamsError("prompts/get requires a string 'name'")

@@ -216,3 +216,85 @@ def test_check_preconditions_accepts_lowercase_etag_key():
     assert resp.check_preconditions(_req({"if-match": '"abc"'})) is resp
     with pytest.raises(PreconditionFailed):
         resp.check_preconditions(_req({"if-match": '"nope"'}))
+
+
+# ── A 304 advertises the representation length, not zero ────────────
+
+
+def test_a_downgraded_304_advertises_the_representation_length():
+    """The downgrade emptied the body before the length was computed.
+
+    A 304 deliberately carries the Content-Length a 200 would have carried
+    (RFC 9110 Sec. 8.6), which is what a directly-built 304 does. The downgrade
+    path dropped the body first, so the length came out as 0 - and RFC 9111
+    Sec. 4.3.4 has caches update their stored headers from the 304, writing
+    that zero over the stored length of a resource that is not empty.
+    """
+    response = Response(body=b"x" * 48)
+    response.headers["ETag"] = 'W/"abc"'
+    response._downgrade_to_304()
+    assert b"Content-Length: 48" in response.encode()
+
+
+def test_a_downgraded_304_sends_no_body():
+    response = Response(body=b"x" * 48)
+    response._downgrade_to_304()
+    assert response.encode().endswith(b"\r\n\r\n")
+
+
+def test_a_downgraded_304_still_carries_the_validator():
+    """Advertising the length must not disturb what the 304 exists to convey."""
+    response = Response(body=b"x" * 48)
+    response.headers["ETag"] = 'W/"abc"'
+    response._downgrade_to_304()
+    assert b'ETag: W/"abc"' in response.encode()
+
+
+def test_a_downgraded_empty_representation_advertises_zero():
+    """Zero is correct when the representation really is empty."""
+    response = Response(body=b"")
+    response._downgrade_to_304()
+    assert b"Content-Length: 0" in response.encode()
+
+
+def test_a_compressed_length_is_the_one_preserved():
+    """The recorded length is whatever the body holds at downgrade time."""
+    response = Response(body=b"compressed")
+    response.headers["Content-Encoding"] = "gzip"
+    response._downgrade_to_304()
+    assert b"Content-Length: 10" in response.encode()
+
+
+def test_a_200_still_advertises_its_length():
+    response = Response(body=b"x" * 48)
+    assert b"content-length: 48" in response.encode().lower()
+
+
+def test_a_204_still_advertises_zero():
+    """Only the downgrade path changed; a bodiless status keeps its zero."""
+    response = Response(status_code=204)
+    assert b"content-length: 0" in response.encode().lower()
+
+
+def test_the_downgrade_is_idempotent():
+    """A handler and a conditional-GET middleware may both call it.
+
+    The second pass sees the emptied body, so recomputing replaced the recorded
+    length with zero - which is how a fully-wired app still advertised
+    `Content-Length: 0` after the length was being recorded correctly.
+    """
+    response = Response(body=b"x" * 226)
+    response.headers["ETag"] = 'W/"a"'
+    response._downgrade_to_304()
+    response._downgrade_to_304()
+    assert b"Content-Length: 226" in response.encode()
+
+
+def test_a_second_make_conditional_keeps_the_length():
+    request = _req({"if-none-match": 'W/"a"'})
+    response = Response(body=b"x" * 226)
+    response.headers["ETag"] = 'W/"a"'
+    response.make_conditional(request)
+    response.make_conditional(request)
+    assert response.status_code == 304
+    assert b"Content-Length: 226" in response.encode()

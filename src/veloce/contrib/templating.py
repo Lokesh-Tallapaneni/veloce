@@ -6,6 +6,7 @@ import contextvars
 import inspect
 from collections.abc import Sequence
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from veloce._internal import _current_app_var
 from veloce.background import BackgroundTask
@@ -102,6 +103,9 @@ _HELPER_SYNC_TOKEN_ATTR = "_veloce_helper_sync_token"
 # no-app fallback path. Built once on first fallback render and reused
 # thereafter so repeated string renders skip per-call env construction.
 _fallback_env: Any = None
+# One transient environment per app, so an app's filters never resolve in
+# another app's render. Weak-keyed: an app that goes away takes its env with it.
+_app_fallback_envs: WeakKeyDictionary[Any, Any] = WeakKeyDictionary()
 
 
 def _sync_app_jinja_helpers(env: Any) -> None:
@@ -483,8 +487,8 @@ def render_template(template_name: str | Sequence[str], **context: Any) -> str:
     templates = getattr(app, "_templates", None)
     if templates is None:
         raise RuntimeError(
-            "render_template requires a Jinja2Templates instance on "
-            "`app._templates` - assign one after construction."
+            "render_template requires templates, which the app does not have. "
+            'Construct it with a template folder: Veloce(template_folder="templates").'
         )
     return templates.render(template_name, context)
 
@@ -514,8 +518,8 @@ def stream_template(template_name: str | Sequence[str], **context: Any) -> Any:
     templates = getattr(app, "_templates", None)
     if templates is None:
         raise RuntimeError(
-            "stream_template requires a Jinja2Templates instance on "
-            "`app._templates` - assign one after construction."
+            "stream_template requires templates, which the app does not have. "
+            'Construct it with a template folder: Veloce(template_folder="templates").'
         )
     return templates.stream(template_name, context)
 
@@ -534,13 +538,29 @@ def render_template_string(source: str, **context: Any) -> str:
     if templates is not None:
         return templates.render_string(source, context or {})
 
-    # Fallback path: no `Jinja2Templates` bound. Build a minimal env once
-    # and reuse it so the helper stays usable in scripts / tests without
-    # reconstructing the environment on every call.
-    global _fallback_env
-    if _fallback_env is None:
-        from jinja2 import Environment, select_autoescape
+    # Fallback path: no `Jinja2Templates` bound. Build a minimal env once and
+    # reuse it so the helper stays usable in scripts / tests without
+    # reconstructing the environment on every call. The app's registered
+    # filters / globals / tests are synced onto it - without that, a template
+    # using `@app.template_filter` raised `No filter named ...` and surfaced as
+    # a 500 with nothing pointing at the cause.
+    if app is None:
+        global _fallback_env
+        if _fallback_env is None:
+            _fallback_env = _new_fallback_env()
+        return _fallback_env.from_string(source).render(context)
 
-        _fallback_env = Environment(autoescape=select_autoescape(["html", "htm", "xml", "xhtml"]))
-        _fallback_env.context_class = _veloce_context_class()
-    return _fallback_env.from_string(source).render(context)
+    env = _app_fallback_envs.get(app)
+    if env is None:
+        env = _app_fallback_envs[app] = _new_fallback_env()
+    _sync_app_jinja_helpers(env)
+    return env.from_string(source).render(context)
+
+
+def _new_fallback_env() -> Any:
+    """Build the minimal environment the string helper falls back to."""
+    from jinja2 import Environment, select_autoescape
+
+    env = Environment(autoescape=select_autoescape(["html", "htm", "xml", "xhtml"]))
+    env.context_class = _veloce_context_class()
+    return env

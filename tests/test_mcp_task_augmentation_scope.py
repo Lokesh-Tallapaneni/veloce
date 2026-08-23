@@ -136,3 +136,66 @@ async def test_an_ordinary_tool_call_is_unaffected():
     response = await _send("tools/call", {"name": "quick", "arguments": {}})
     assert "error" not in response
     assert not response["result"].get("isError")
+
+
+# ── The rest of the surface refuses too ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("tools/list", {}),
+        ("resources/list", {}),
+        ("resources/templates/list", {}),
+        ("prompts/list", {}),
+        ("server/discover", {}),
+        ("completion/complete", {}),
+    ],
+)
+async def test_a_method_that_cannot_run_in_the_background_refuses(method, params):
+    """The guard was applied to two handlers; the rest answered synchronously.
+
+    A caller asking for background execution got an ordinary result and no
+    signal that its request had been reinterpreted, then had nothing to poll.
+    The check now sits at the dispatcher, so it covers the whole surface
+    including methods added later.
+    """
+    response = await _send(method, {**params, "task": {"ttl": 1000}})
+    assert "error" in response, response
+    assert "does not support task execution" in response["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("tools/list", {}),
+        ("resources/list", {}),
+        ("prompts/list", {}),
+        ("server/discover", {}),
+    ],
+)
+async def test_the_same_method_without_a_task_field_still_answers(method, params):
+    """The refusal must be keyed on the field, not on the method."""
+    response = await _send(method, params)
+    assert "result" in response, response
+
+
+async def test_ping_still_answers_a_task_augmented_call_is_refused():
+    assert "error" in await _send("ping", {"task": {"ttl": 1000}})
+
+
+async def test_ping_without_a_task_field_still_answers():
+    assert "result" in await _send("ping", {})
+
+
+async def test_a_notification_carrying_a_task_field_is_not_answered():
+    """A one-way message has no response to carry a refusal, and nothing to poll."""
+    response = await MCPServer(_app()).handle_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {"task": {"ttl": 1000}},
+        },
+        MCPSession(),
+    )
+    assert response is None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from veloce import Veloce
 from veloce.websocket import WebSocket
 
 
@@ -86,3 +87,70 @@ def test_negotiate_case_sensitive_comparison():
 def test_negotiate_when_supported_is_empty():
     ws = _ws("graphql-ws")
     assert ws.negotiate_subprotocol([]) is None
+
+
+# ── The connection records what it negotiated ────────────────────────
+
+
+def test_the_connection_records_the_accepted_subprotocol():
+    """The client session exposed it; the connection object did not.
+
+    A handler that wanted to know what it had settled on had to remember the
+    value itself, even though `accept` was given it.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.websocket("/ws")
+    async def chat(ws):
+        chosen = ws.negotiate_subprotocol(["v2.chat", "v1.chat"])
+        await ws.accept(subprotocol=chosen)
+        await ws.send_text(repr(ws.accepted_subprotocol))
+        await ws.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws", subprotocols=["v1.chat", "v2.chat"]) as ws:
+        assert ws.receive_text() == "'v1.chat'"
+
+
+def test_the_connection_and_the_client_agree():
+    app = Veloce(openapi_url=None)
+
+    @app.websocket("/ws")
+    async def chat(ws):
+        await ws.accept(subprotocol="v1.chat")
+        await ws.send_text(ws.accepted_subprotocol or "")
+        await ws.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws", subprotocols=["v1.chat"]) as ws:
+        assert ws.receive_text() == ws.accepted_subprotocol == "v1.chat"
+
+
+def test_it_is_none_when_no_subprotocol_was_chosen():
+    app = Veloce(openapi_url=None)
+
+    @app.websocket("/ws")
+    async def plain(ws):
+        await ws.accept()
+        await ws.send_text(repr(ws.accepted_subprotocol))
+        await ws.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_text() == "None"
+
+
+def test_it_is_none_before_the_handshake_completes():
+    app = Veloce(openapi_url=None)
+    seen = []
+
+    @app.websocket("/ws")
+    async def plain(ws):
+        seen.append(ws.accepted_subprotocol)
+        await ws.accept()
+        await ws.close()
+
+    client = app.test_client()
+    with client.websocket_connect("/ws"):
+        pass
+    assert seen == [None]

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Request, Veloce
+from veloce import Request, Router, TestClient, Veloce
+from veloce import url_for as top_level_url_for
 
 
 def _make_app() -> Veloce:
@@ -140,3 +141,117 @@ class TestUrlFor:
         app = Veloce(openapi_url=None)
         with pytest.raises(BuildError):
             app.url_for("nonexistent")
+
+
+# ── A path parameter may be called `name` ────────────────────────────
+
+
+def test_a_path_parameter_called_name_can_be_supplied():
+    """`url_for(self, name, **path_params)` swallowed a parameter of that name.
+
+    `url_for("download", name="x.pdf")` raised *got multiple values for
+    argument 'name'* — a route could not have a segment called `name` and be
+    reversed. The endpoint is positional-only, so the keyword is free.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get("/files/{name}")
+    async def download(name: str):
+        return {"name": name}
+
+    assert app.url_for("download", name="report.pdf") == "/files/report.pdf"
+
+
+def test_a_path_parameter_called_endpoint_can_be_supplied():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/hooks/{endpoint}")
+    async def hook(endpoint: str):
+        return {"endpoint": endpoint}
+
+    assert app.url_for("hook", endpoint="erp") == "/hooks/erp"
+
+
+def test_the_router_reverses_a_name_segment_too():
+    router = Router()
+
+    @router.get("/files/{name}")
+    async def download(name: str):
+        return {"name": name}
+
+    assert router.url_for("download", name="a.txt") == "/files/a.txt"
+
+
+def test_the_request_reverses_a_name_segment_too():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/files/{name}")
+    async def download(name: str):
+        return {"name": name}
+
+    @app.get("/link")
+    async def link(request: Request):
+        return {"url": request.url_for("download", name="b.txt")}
+
+    with TestClient(app) as client:
+        assert client.get("/link").json()["url"].endswith("/files/b.txt")
+
+
+# ── The top-level `url_for` helper ───────────────────────────────────
+
+
+def test_the_top_level_helper_builds_a_url_inside_a_request():
+    """`from veloce import url_for` did not exist.
+
+    Templates already receive `url_for`; handlers had to reach it through
+    `current_app.url_for` or hold a reference to the app.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get("/files/{name}")
+    async def download(name: str):
+        return {"name": name}
+
+    @app.get("/link")
+    async def link():
+        return {"url": top_level_url_for("download", name="a.pdf")}
+
+    with TestClient(app) as client:
+        assert client.get("/link").json() == {"url": "/files/a.pdf"}
+
+
+def test_the_top_level_helper_takes_the_endpoint_positionally():
+    """So a route may still have a `{name}` or `{endpoint}` segment."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/hooks/{endpoint}")
+    async def hook(endpoint: str):
+        return {"endpoint": endpoint}
+
+    @app.get("/link")
+    async def link():
+        return {"url": top_level_url_for("hook", endpoint="erp")}
+
+    with TestClient(app) as client:
+        assert client.get("/link").json() == {"url": "/hooks/erp"}
+
+
+def test_the_top_level_helper_refuses_outside_an_application_context():
+    """There is no app whose routing table could answer, so it says so."""
+    with pytest.raises(RuntimeError, match="application context"):
+        top_level_url_for("anything")
+
+
+def test_the_top_level_helper_agrees_with_the_app_method():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/files/{name}")
+    async def download(name: str):
+        return {"name": name}
+
+    @app.get("/link")
+    async def link():
+        return {"url": top_level_url_for("download", name="b.txt")}
+
+    with TestClient(app) as client:
+        assert client.get("/link").json()["url"] == app.url_for("download", name="b.txt")

@@ -2081,7 +2081,7 @@ class Router:
 
     # ── Reverse URL lookup ────────────────────────────────
 
-    def url_for(self, name: str, **path_params: Any) -> str:
+    def url_for(self, name: str, /, **path_params: Any) -> str:
         """Reverse URL lookup by route name (`url_for`).
 
         Substitutes each `{name}` placeholder in the registered template

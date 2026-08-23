@@ -269,6 +269,7 @@ def _cmd_custom(args: argparse.Namespace) -> int:
 
 def _cmd_routes(args: argparse.Namespace) -> int:
     """`veloce routes` - print the route table."""
+    _apply_env_file(args)
     app = _load_app(args.app)
     _require_app_attr(app, "routes", "`.routes` property")
 
@@ -294,6 +295,10 @@ def _cmd_routes(args: argparse.Namespace) -> int:
 
 def _cmd_check(args: argparse.Namespace) -> int:
     """`veloce check` - run a pre-deploy security audit of the app."""
+    # The audit predicts deployed configuration, so it has to import the app
+    # under the environment the deployment will use - otherwise it reports on a
+    # different app than `veloce run` builds.
+    _apply_env_file(args)
     app = _load_app(args.app)
     _require_app_attr(app, "security_audit", "`.security_audit()`")
 
@@ -783,10 +788,12 @@ def build_parser(plugin_command: str | None = None) -> argparse.ArgumentParser:
 
     p_routes = sub.add_parser("routes", help="Print the route table.")
     p_routes.add_argument("app", help=MSG_APP_REFERENCE_FORM)
+    _add_env_file_args(p_routes)
     p_routes.set_defaults(func=_cmd_routes)
 
     p_check = sub.add_parser("check", help="Run a pre-deploy security audit.")
     p_check.add_argument("app", help=MSG_APP_REFERENCE_FORM)
+    _add_env_file_args(p_check)
     p_check.set_defaults(func=_cmd_check)
 
     p_shell = sub.add_parser("shell", help="Interactive Python shell with the app loaded.")

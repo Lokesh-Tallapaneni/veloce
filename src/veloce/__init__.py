@@ -124,6 +124,7 @@ from veloce.helpers import (
     send_from_directory_async,
     session,
     stream_with_context,
+    url_for,
 )
 
 # Data structures
@@ -509,6 +510,7 @@ __all__ = [
     "has_app_context",
     "has_request_context",
     "stream_with_context",
+    "url_for",
     # Principal (authenticated identity)
     "Principal",
     "current_principal",

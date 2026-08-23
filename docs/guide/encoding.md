@@ -231,6 +231,13 @@ Subclass `JSONProvider` to plug in a different serialiser, then point the app at
 it. Set `app.json_provider_class` to a class (instantiated lazily) or assign
 `app.json` an instance directly.
 
+!!! warning "A bare `dict` return does not go through the provider"
+    A handler returning a bare `dict` or `list` is serialised on the direct
+    orjson path, which does not consult `app.json`. A custom dialect - key
+    sorting, a house encoder - therefore applies to `jsonify(...)`,
+    `app.json.response(...)` and explicit `JSONResponse`, but not to those
+    returns. Return `jsonify(...)` from any handler whose dialect must apply.
+
 ```python title="app.py"
 import json
 from typing import Any

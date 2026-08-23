@@ -16,8 +16,8 @@ Scope of this implementation:
   exceptions raised by blueprint handlers; falls through to the app's
   global handlers when no blueprint-level match.
 - `url_prefix` set at construction or override at registration.
-- Nested blueprints are *not* supported in this slice - that's R4,
-  separate work.
+- nested blueprints via `bp.register_blueprint(child)`, which scope the
+  child's hooks and error handlers and give it a dotted endpoint name.
 
 `Blueprint` extends `Router`, so blueprint-level routes inherit the
 radix-tree builder and `default_response_class` plumbing for free.

@@ -22,7 +22,7 @@ import mimetypes
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import unquote, urlencode, urlparse
 
 import orjson
 from multidict import CIMultiDict
@@ -553,11 +553,15 @@ def _build_scope(
         "http_version": "1.1",
         "method": method.upper(),
         "scheme": scheme,
-        "path": path,
+        # ASGI defines `path` as the target with percent-encoded sequences
+        # decoded, which is what a real server hands the app - so the client
+        # decodes too. Without it a decoding-dependent bug that appears under
+        # uvicorn is invisible to the in-process suite.
+        "path": unquote(path),
         # ASGI permits non-ASCII bytes in `raw_path` (UTF-8 is the only
         # universally-decodable encoding for percent-decoded paths). Plain
         # `path.encode("ascii")` would crash the moment a test reached a
-        # non-ASCII URL.
+        # non-ASCII URL. This one stays undecoded - it is the raw target.
         "raw_path": path.encode("utf-8"),
         "query_string": query_string.encode("ascii"),
         "root_path": root_path,
@@ -1050,8 +1054,16 @@ class _WebSocketSession:
                         ", ".join(self._subprotocols).encode("latin-1"),
                     )
                 )
+            seen_host = False
             for k, v in self._headers.items():
+                if k.lower() == "host":
+                    seen_host = True
                 scope_headers.append((k.lower().encode("latin-1"), v.encode("latin-1")))
+            # RFC 6455 Sec. 4.1 requires the opening handshake to carry `Host`, and
+            # the HTTP path already synthesises one. Without it any app running
+            # host validation refuses every in-memory socket before routing.
+            if not seen_host:
+                scope_headers.append((b"host", b"testserver"))
 
             # Split any `?query` off the connect path, mirroring
             # `_make_request` for HTTP. A real ASGI server does this; the
@@ -1063,7 +1075,7 @@ class _WebSocketSession:
                 "type": ASGI_SCOPE_WEBSOCKET,
                 "asgi": {"version": "3.0", "spec_version": "2.3"},
                 "scheme": URL_SCHEME_WS,
-                "path": ws_path,
+                "path": unquote(ws_path),
                 "raw_path": ws_path.encode("utf-8"),
                 "query_string": ws_query.encode("ascii"),
                 "root_path": "",

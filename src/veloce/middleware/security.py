@@ -225,6 +225,13 @@ class TrustedHostMiddleware(Middleware):
 
     async def process_request(self, request: Request) -> Response | None:
         """Reject requests whose Host header is not in the allow-list."""
+        # A replayed MCP call carries no Host: it was synthesised to run a route
+        # for an agent, not received from a client. The real HTTP request was
+        # the transport POST, which passed through this middleware already, so
+        # judging the replay rejects every route-backed tool in an application
+        # that validates Host at all - which is most of them.
+        if request.is_mcp:
+            return None
         # Strip port for matching; shared with the request-side host
         # parser so the IPv6-bracket / bare-IPv6 / IPv4-with-port shapes
         # stay consistent in both directions.
@@ -628,16 +635,28 @@ class HTTPSRedirectMiddleware(Middleware):
 
     async def process_request(self, request: Request) -> Response | None:
         """Redirect HTTP requests to HTTPS with a 308 status."""
+        # A replayed MCP call is not on the wire, so there is no cleartext
+        # connection to upgrade and nowhere to send a redirect; handing one to
+        # an agent turns a tool call into an unusable 308.
+        if request.is_mcp:
+            return None
         # Trust ASGI scope first - the server set it based on the actual
         # transport, not a header that anyone could spoof.
         scope_scheme = request.scope.get("scheme") if request.scope else None
         if scope_scheme in (URL_SCHEME_HTTPS, URL_SCHEME_WSS):
             return None
         # Fall back to X-Forwarded-Proto for environments behind a
-        # TLS-terminating proxy that doesn't set scope correctly.
-        fwd_proto = request.headers.get(HEADER_X_FORWARDED_PROTO, "").lower()
-        if fwd_proto == URL_SCHEME_HTTPS:
-            return None
+        # TLS-terminating proxy that doesn't set scope correctly - but only
+        # where nothing has already judged that header. Once `ProxyFix` has
+        # run it writes the scheme it trusted into the scope above, so reading
+        # the raw header here would accept a hop `ProxyFix` deliberately
+        # refused: a TLS-stripping attacker could then suppress this very
+        # redirect by adding one header. `URL.from_request` stands the same
+        # fallback down for the same reason.
+        if not (request._state and "proxy_fix_applied" in request._state):
+            fwd_proto = request.headers.get(HEADER_X_FORWARDED_PROTO, "").lower()
+            if fwd_proto == URL_SCHEME_HTTPS:
+                return None
 
         # Exempt configured prefixes (e.g. ACME HTTP-01) from the redirect,
         # after the scheme short-circuits so HTTPS traffic is never affected.

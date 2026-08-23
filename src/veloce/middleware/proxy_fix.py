@@ -244,9 +244,16 @@ class ProxyFix(Middleware):
     def _pick_hop(header_value: str | None, hops: int) -> str | None:
         """Pick the Nth-from-the-right value in a comma-separated header.
 
-        `X-Forwarded-For: client, proxy1, proxy2` with hops=2 returns
-        "client" (we trust two proxies); with hops=1 returns "proxy1".
-        Returns None if `hops <= 0` or the list is shorter than `hops`.
+        Counting from the right is what makes the choice safe: the rightmost
+        entry is the one the closest proxy appended, and everything to its left
+        may have been supplied by the client.
+
+        `X-Forwarded-For: client, proxy1, proxy2` returns "proxy2" with hops=1,
+        "proxy1" with hops=2 and "client" with hops=3 - so `hops` is the number
+        of proxies in front of the application, and the value returned is the
+        address the outermost trusted one saw. Returns None if `hops <= 0` or
+        the list is shorter than `hops`, because there is then no entry that
+        trust reaches.
         """
         if not header_value or hops <= 0:
             return None

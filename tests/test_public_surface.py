@@ -230,6 +230,7 @@ VELOCE_ALL = {
     "status",
     "stream_template",
     "stream_with_context",
+    "url_for",
     "unregister_encoder",
     "verify_and_needs_update",
     "verify_and_needs_update_async",

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce, WebSocketOriginMiddleware
+from veloce import TestClient, Veloce, WebSocketOriginMiddleware
+from veloce.middleware.security import TrustedHostMiddleware
 
 
 def _make_app() -> Veloce:
@@ -117,3 +118,70 @@ def test_websocket_origin_unit_check():
     assert mw.is_websocket_origin_allowed("https://good.example") is True
     assert mw.is_websocket_origin_allowed("https://evil.example") is False
     assert mw.is_websocket_origin_allowed("") is False
+
+
+# ── The handshake carries a Host header ──────────────────────────────
+
+
+def test_the_connect_scope_carries_a_host_header():
+    """RFC 6455 Sec. 4.1 requires it, and the HTTP path already synthesises one.
+
+    Without it, an app running host validation refused every in-memory socket
+    before routing - so a WebSocket could not be tested at all under ordinary
+    hardening, while the same app's HTTP routes tested fine.
+    """
+    app = _make_app()
+
+    @app.websocket("/ws")
+    async def handler(ws):
+        await ws.accept()
+        await ws.send_text(ws.headers.get("host", ""))
+        await ws.close()
+
+    with TestClient(app) as client, client.websocket_connect("/ws") as session:
+        assert session.receive_text() == "testserver"
+
+
+def test_an_explicit_host_still_wins():
+    app = _make_app()
+
+    @app.websocket("/ws")
+    async def handler(ws):
+        await ws.accept()
+        await ws.send_text(ws.headers.get("host", ""))
+        await ws.close()
+
+    with (
+        TestClient(app) as client,
+        client.websocket_connect("/ws", headers={"Host": "example.com"}) as session,
+    ):
+        assert session.receive_text() == "example.com"
+
+
+def test_host_validation_no_longer_refuses_every_socket():
+    app = _make_app()
+    app.add_middleware(TrustedHostMiddleware(allowed_hosts=["testserver"]))
+
+    @app.websocket("/ws")
+    async def handler(ws):
+        await ws.accept()
+        await ws.send_text("open")
+        await ws.close()
+
+    with TestClient(app) as client, client.websocket_connect("/ws") as session:
+        assert session.receive_text() == "open"
+
+
+def test_a_disallowed_host_is_still_refused():
+    """Supplying the header must not disarm the check it feeds."""
+    app = _make_app()
+    app.add_middleware(TrustedHostMiddleware(allowed_hosts=["testserver"]))
+
+    @app.websocket("/ws")
+    async def handler(ws):
+        await ws.accept()
+
+    with TestClient(app) as client:
+        connect = client.websocket_connect("/ws", headers={"Host": "evil.com"})
+        with pytest.raises(RuntimeError, match="close code"), connect:
+            pass

@@ -49,6 +49,7 @@ from veloce._protocol_constants import (
     HTTP_METHOD_POST,
     HTTP_METHOD_PUT,
 )
+from veloce.http.header_set import HeaderSet
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
@@ -311,8 +312,34 @@ class CORSMiddleware(Middleware):
             else:
                 response.headers[HEADER_ACCESS_CONTROL_ALLOW_HEADERS] = self._allow_headers_joined
 
+        # Both headers qualify an `Access-Control-Allow-Origin`, so they are
+        # written only when one was granted. Emitting them for a same-origin
+        # response, or for an origin that was refused, tells a reader of a
+        # traffic capture that credentials are accepted from an origin that is
+        # not in fact allowed - and spends two header writes on every
+        # same-origin response to say nothing.
+        if allow_origin is None:
+            return
+
         if self.allow_credentials:
             response.headers[HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS] = "true"
 
         if self.expose_headers:
-            response.headers[HEADER_ACCESS_CONTROL_EXPOSE_HEADERS] = self._expose_headers_joined
+            # Merge rather than assign: `Access-Control-Expose-Headers` is a list
+            # header other middleware legitimately contribute to (the same shape
+            # `Response.add_vary` exists for). Assigning discarded those entries
+            # silently, and whichever middleware ran last won - so a header a
+            # route meant to expose simply never reached the browser.
+            # `Response.headers` is a plain dict, so a contribution written
+            # under a different casing is invisible to a single lookup - the
+            # same reason `_downgrade_to_304` pops both spellings.
+            headers = response.headers
+            existing = headers.get(HEADER_ACCESS_CONTROL_EXPOSE_HEADERS)
+            if existing is None:
+                existing = headers.pop("access-control-expose-headers", None)
+            if existing:
+                merged = HeaderSet(existing)
+                merged.update(self.expose_headers)
+                response.headers[HEADER_ACCESS_CONTROL_EXPOSE_HEADERS] = merged.to_header()
+            else:
+                response.headers[HEADER_ACCESS_CONTROL_EXPOSE_HEADERS] = self._expose_headers_joined

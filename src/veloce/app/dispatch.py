@@ -95,6 +95,14 @@ _exc_handler_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool
     weakref.WeakKeyDictionary()
 )
 
+# Cache of `(wants_request, wants_response)` flags per after-request hook.
+# A hook may reasonably be written to take the response alone, both values, or
+# neither; passing both unconditionally turned the first shape into a 500.
+# WeakKey so hook GC reclaims the entry.
+_after_hook_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool, bool]] = (
+    weakref.WeakKeyDictionary()
+)
+
 # `request._state` key holding the per-route filtered response-phase
 # middleware chain, set by the request phase only when the matched route
 # declares `exclude_middleware`. Absent for routes with no exclusions, so
@@ -1101,14 +1109,12 @@ class DispatchMixin:
         """
         # Run after_request hooks - app-level then matched blueprint.
         for hook in reversed(self._after_request_hooks):
-            hook_result = await self._call_handler(hook, {"request": request, "response": response})
+            hook_result = await self._call_after_hook(hook, request, response)
             if hook_result is not None and isinstance(hook_result, Response):
                 response = hook_result
         if self._bp_after_hooks and bp_name is not None:
             for hook in reversed(self._bp_after_hooks.get(bp_name, ())):
-                hook_result = await self._call_handler(
-                    hook, {"request": request, "response": response}
-                )
+                hook_result = await self._call_after_hook(hook, request, response)
                 if hook_result is not None and isinstance(hook_result, Response):
                     response = hook_result
 
@@ -1118,7 +1124,7 @@ class DispatchMixin:
         one_shot = request._state.get("_after_this_request") if request._state else None
         if one_shot:
             for fn in one_shot:
-                fn_result = await self._call_handler(fn, {"request": request, "response": response})
+                fn_result = await self._call_after_hook(fn, request, response)
                 if fn_result is not None and isinstance(fn_result, Response):
                     response = fn_result
         return response
@@ -1212,6 +1218,26 @@ class DispatchMixin:
         # Run sync handlers in the thread pool so they cannot block the event
         # loop; `offload` preserves request-scoped ContextVars.
         return await offload(handler, **kwargs)
+
+    async def _call_after_hook(self, hook: Callable, request: Request, response: Response) -> Any:
+        """Call an after-request hook, adapting kwargs to match its signature."""
+        flags = _after_hook_sig_cache.get(hook)
+        if flags is None:
+            params = inspect.signature(hook).parameters
+            # A hook taking `**kwargs` accepts whatever is offered.
+            if any(p.kind is p.VAR_KEYWORD for p in params.values()):
+                flags = (True, True)
+            else:
+                flags = ("request" in params, "response" in params)
+            with contextlib.suppress(TypeError):
+                _after_hook_sig_cache[hook] = flags
+        wants_request, wants_response = flags
+        kwargs: dict[str, Any] = {}
+        if wants_request:
+            kwargs["request"] = request
+        if wants_response:
+            kwargs["response"] = response
+        return await self._call_handler(hook, kwargs)
 
     async def _call_exc_handler(
         self, handler: Callable, request: Request, exc: BaseException

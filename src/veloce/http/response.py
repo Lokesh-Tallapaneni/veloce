@@ -1186,12 +1186,24 @@ class Response:
 
     def _downgrade_to_304(self) -> None:
         """Strip body + flip status to 304. Used by `make_conditional`."""
+        # RFC 9110 Sec. 8.6: a 304 may carry the Content-Length a 200 would
+        # have carried, which is what the emit paths advertise for a 304 built
+        # directly. Record it before dropping the body - otherwise the length
+        # is computed from the emptied body and the 304 claims the
+        # representation is zero bytes, which RFC 9111 Sec. 4.3.4 then has
+        # caches write over their stored length for a resource that is not
+        # empty.
+        # Idempotent: a handler may call `make_conditional` and a
+        # conditional-GET middleware call it again on the way out. The second
+        # pass sees an emptied body, so recomputing would replace the recorded
+        # length with zero.
+        if self.status_code == HTTP_304_NOT_MODIFIED:
+            return
+        representation_length = str(len(self.body))
         self.status_code = HTTP_304_NOT_MODIFIED
         self.body = b""
-        # Content-Length removal so a 304 doesn't carry a length
-        # for a body it isn't sending (RFC 9110 Sec. 15.4.5).
-        self.headers.pop(HEADER_CONTENT_LENGTH, None)
         self.headers.pop("content-length", None)
+        self.headers[HEADER_CONTENT_LENGTH] = representation_length
         self._encoded = None
 
     def set_content_disposition(

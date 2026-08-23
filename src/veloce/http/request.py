@@ -940,19 +940,36 @@ class Request:
         parts = ep.rsplit(".", 1)[0].split(".")
         return [".".join(parts[: i + 1]) for i in range(len(parts) - 1, -1, -1)]
 
-    def url_for(self, name: str, **path_params: Any) -> str:
+    def url_for(self, name: str, /, **path_params: Any) -> str:
         """Reverse-resolve a route URL - ASGI shape.
 
-        `request.url_for("route_name", id=7)` delegates to the bound
-        app's `url_for`. Raises `RuntimeError` when the request has no
-        app bound (synthetic requests built outside dispatch).
+        `request.url_for("route_name", id=7)` delegates to the bound app's
+        `url_for`. Raises `RuntimeError` when the request has no app bound
+        (synthetic requests built outside dispatch).
+
+        With `_external=True` the absolute URL is built from *this request's*
+        origin - the scheme, host and port a trusted `ProxyFix` recovered - and
+        carries `script_root`, so a link generated behind a proxy that
+        terminates TLS on another port and mounts the app under a prefix points
+        at the public URL rather than the internal one. `app.url_for` has no
+        request to read and falls back to `SERVER_NAME`. An explicit `_scheme`
+        or `_host` still wins.
         """
         if self.app is None:
             raise RuntimeError(
                 "Request.url_for requires a bound app; this request was "
                 "constructed outside the dispatch pipeline"
             )
-        return self.app.url_for(name, **path_params)
+        if not path_params.pop("_external", False):
+            return self.app.url_for(name, **path_params)
+        scheme = path_params.pop("_scheme", None)
+        host = path_params.pop("_host", None)
+        # The app builds the path (with any query string and anchor); the
+        # origin and mount prefix come from the request.
+        path = self.app.url_for(name, **path_params)
+        url = self.url
+        root = self.script_root.rstrip("/")
+        return f"{scheme or url.scheme}://{host or url.netloc}{root}{path}"
 
     # ── Client and connection ─────────────────────────────
     @property
@@ -1254,14 +1271,15 @@ class Request:
           UTF-8). Falls back to `latin-1` when the declared charset is
           unrecognised - a defensive fallback, since
           latin-1 round-trips arbitrary bytes without raising.
-        - `cache=True` is a no-op today (veloce already buffers the
-          whole body on construction) but keeps the parameter so
-          callers that pass `cache=False` for streaming compatibility
-          don't break. Streaming-body support arrives separately.
+        - `cache` is accepted and ignored. A non-streaming route has its body
+          buffered before the handler runs, so there is nothing to decide; a
+          `stream=True` route is consumed through `request.stream()` rather
+          than here. The parameter is kept so callers passing `cache=False`
+          for cross-framework compatibility keep working.
 
         Returns `bytes` (default) or `str` (with `as_text=True`).
         """
-        _ = cache  # reserved for streaming-body work; no caching needed yet
+        _ = cache  # accepted for compatibility; see the note above
         body = await self._drain_body()
         if not as_text:
             return body
@@ -1397,13 +1415,14 @@ class Request:
     async def is_disconnected(self) -> bool:
         """Whether the client has disconnected.
 
-        Veloce fully buffers the request body before dispatch, so by
-        the time a handler runs the body is already received and the
-        connection cannot be "disconnected mid-handler" in the ASGI
-        sense. Always returns `False`; the method exists so handlers that
-        poll `await request.is_disconnected()` keep working unchanged.
+        A non-streaming route has its body drained before the handler runs, so
+        the body is already received and the answer is always `False`. On a
+        `stream=True` route the client can genuinely go away mid-handler, and
+        this reports it once the consumer has seen the disconnect - reading the
+        flag the body source records rather than probing the transport.
         """
-        return False
+        source = self._body_source
+        return bool(source is not None and getattr(source, "_disconnected", False))
 
     async def stream(self) -> Any:
         """Async-iterate the request body in chunks - ASGI shape.

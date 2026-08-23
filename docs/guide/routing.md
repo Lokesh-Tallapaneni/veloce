@@ -386,6 +386,30 @@ app.url_for("item", id="abc")   # raises - "abc" is not a valid int segment
 Parameters without a typed converter (a bare `{name}` or a raw-regex segment
 like `{id:[0-9]+}`) accept any stringifiable value.
 
+Inside a request, the module-level `url_for` builds the same URL without a
+reference to the app, and templates receive it automatically:
+
+```python
+from veloce import url_for
+
+@app.get("/profile")
+async def profile():
+    return {"link": url_for("user-detail", user_id=7)}
+```
+
+It raises `RuntimeError` outside an application context, where there is no app
+whose routing table could answer. The endpoint name is positional-only on every
+form, so a route may have a `{name}` or `{endpoint}` segment and still be
+reversed:
+
+```python
+@app.get("/files/{name}", name="download")
+async def download(name: str):
+    ...
+
+app.url_for("download", name="report.pdf")   # "/files/report.pdf"
+```
+
 ## See also
 
 - [Requests & responses](requests-responses.md)
