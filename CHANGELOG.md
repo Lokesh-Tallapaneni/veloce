@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `UploadFile.save_async` streams an upload to disk without blocking the event loop.
 - `WebSocket.accepted_subprotocol` reports the subprotocol the connection settled on.
 - `Capability`, `Transport`, `BidirectionalTransport` and `register_sse_transport` are exported from `veloce.contrib.mcp`.
+- `MCPContext` exposes `client_id`, `request_id`, `task_id`, `origin_request_id`, `transport` and `lifespan_context`.
 
 ### Fixed
 

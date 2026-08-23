@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from veloce import status
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
+from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import (
     _JSONRPC_FORBIDDEN,
     _JSONRPC_INTERNAL_ERROR,
@@ -212,6 +213,11 @@ async def _handle_http(
         _validate_protocol_version(request)
     except MCPError as exc:
         return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+
+    # Names the transport for `MCPContext.transport`. Set on the request's own
+    # context rather than inside the streaming runner: a plain JSON POST never
+    # enters that branch, and the runner inherits this context anyway.
+    _transport_var.set("http")
 
     if auth is not None:
         principal, challenge = await _authenticate(auth, request)

@@ -713,6 +713,21 @@ async def whois(ctx: MCPContext) -> dict:
 - `client_capabilities` — what the client advertised, and `client_supports("a.b")`
   to test one, nested with dots.
 - `is_background_task` — whether this call is running as a task rather than inline.
+- `client_id` — the authenticated caller's id, or `None` when the call is
+  unauthenticated. `client_info` is what the client *said* it was; this is what it
+  proved.
+- `request_id` — the JSON-RPC id of the call being served.
+- `task_id` — the handle the client polls with, when this call is running as a task;
+  `None` inline.
+- `origin_request_id` — the id of the `tools/call` that created the task. A task
+  outlives that call, so its own `request_id` is not what the client is correlating
+  against.
+- `transport` — `"stdio"`, `"http"` or `"sse"`; `None` off a transport. For logging
+  and diagnostics — to decide whether a server-initiated request can reach the
+  client, ask `client_supports(...)`.
+- `lifespan_context` — the application state established at startup, the same
+  `app.state` an HTTP handler reaches, so a connection pool opened in a lifespan hook
+  is reached the same way through either door.
 
 ### Reading the server's own resources and prompts
 

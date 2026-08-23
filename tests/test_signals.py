@@ -322,15 +322,22 @@ async def test_send_robust_async_mixed_sync_async_with_failure():
     assert results[2] == (async_ok, "async-value")
 
 
+#: How long each probe receiver sleeps. Concurrent dispatch starts them all at
+#: once; sequential dispatch spaces the starts a whole delay apart.
+_RECEIVER_DELAY = 0.05
+
+
 # ── asend: concurrent async dispatch ────────────────────────────────
 
 
 async def test_asend_runs_async_receivers_concurrently():
     sig = Signal("concurrent")
+    starts: list[float] = []
 
     async def make(marker: str):
         async def receiver(sender, **kwargs):
-            await asyncio.sleep(0.05)
+            starts.append(time.perf_counter())
+            await asyncio.sleep(_RECEIVER_DELAY)
             return marker
 
         return receiver
@@ -338,12 +345,16 @@ async def test_asend_runs_async_receivers_concurrently():
     for marker in ("a", "b", "c"):
         sig.connect(await make(marker), weak=False)
 
-    start = time.perf_counter()
     results = await sig.asend("s")
-    elapsed = time.perf_counter() - start
 
-    # Concurrent: ~0.05s, not ~0.15s sequential.
-    assert elapsed < 0.12
+    # The robust measure is when each receiver *began*, not how long the whole
+    # dispatch took: total elapsed jitters under a loaded scheduler, while the
+    # spread between concurrently-scheduled starts stays small. Sequential
+    # dispatch would space them a whole delay apart.
+    assert len(starts) == 3
+    assert max(starts) - min(starts) < _RECEIVER_DELAY / 2, (
+        f"receivers did not start concurrently: spread={max(starts) - min(starts):.4f}s"
+    )
     assert [value for _, value in results] == ["a", "b", "c"]
 
 
@@ -416,26 +427,28 @@ async def test_asend_runs_all_async_receivers_before_raising():
 
 async def test_send_robust_async_concurrent_and_robust():
     sig = Signal("robust-concurrent")
+    starts: list[float] = []
 
     async def ok_a(sender, **kwargs):
-        await asyncio.sleep(0.05)
+        starts.append(time.perf_counter())
+        await asyncio.sleep(_RECEIVER_DELAY)
         return "a"
 
     async def raiser(sender, **kwargs):
-        await asyncio.sleep(0.05)
+        starts.append(time.perf_counter())
+        await asyncio.sleep(_RECEIVER_DELAY)
         raise RuntimeError("boom")
 
     async def ok_b(sender, **kwargs):
-        await asyncio.sleep(0.05)
+        starts.append(time.perf_counter())
+        await asyncio.sleep(_RECEIVER_DELAY)
         return "b"
 
     sig.connect(ok_a, weak=False)
     sig.connect(raiser, weak=False)
     sig.connect(ok_b, weak=False)
 
-    start = time.perf_counter()
     results = await sig.send_robust_async("s")
-    elapsed = time.perf_counter() - start
 
     # All fired (no cancellation), order preserved.
     assert len(results) == 3
@@ -444,8 +457,12 @@ async def test_send_robust_async_concurrent_and_robust():
     assert isinstance(results[1][1], RuntimeError)
     assert str(results[1][1]) == "boom"
     assert results[2] == (ok_b, "b")
-    # Concurrency: well under the 0.15s sequential sum.
-    assert elapsed < 0.12
+    # Concurrency measured by start spread rather than total elapsed - see the
+    # note on `test_asend_runs_async_receivers_concurrently`.
+    assert len(starts) == 3
+    assert max(starts) - min(starts) < _RECEIVER_DELAY / 2, (
+        f"receivers did not start concurrently: spread={max(starts) - min(starts):.4f}s"
+    )
 
 
 async def test_asend_propagates_contextvars_snapshot():

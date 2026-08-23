@@ -18,6 +18,11 @@ from veloce._handler_plan import build_plan, compute_dep_waves
 from veloce.dependency import SecurityScopes
 from veloce.testclient import TestClient
 
+#: How long each probe dependency sleeps. A sequential resolver makes the
+#: second dependency start a whole delay behind the first; a concurrent one
+#: starts both at once.
+_DEP_DELAY = 0.05
+
 # ── Wave computation (registration-time) ──────────────────────────────
 
 
@@ -173,12 +178,12 @@ def test_interleaved_deps_run_concurrently():
 
     async def slow_a() -> str:
         starts.append(time.monotonic())
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_DEP_DELAY)
         return "a"
 
     async def slow_b() -> str:
         starts.append(time.monotonic())
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_DEP_DELAY)
         return "b"
 
     @app.get("/interleaved")
@@ -193,8 +198,10 @@ def test_interleaved_deps_run_concurrently():
     assert resp.status_code == 200
     assert resp.json() == {"a": "a", "b": "b", "q": "q"}
     assert len(starts) == 2
-    # Concurrent start: the second begins almost immediately, not ~50 ms later.
-    assert abs(starts[1] - starts[0]) < 0.010, (
+    # Concurrent start: the second begins promptly, not a whole `_DEP_DELAY`
+    # later. Half that delay still fails a sequential implementation by a wide
+    # margin while tolerating a loaded scheduler.
+    assert abs(starts[1] - starts[0]) < _DEP_DELAY / 2, (
         f"interleaved deps did not start concurrently: delta={starts[1] - starts[0]:.4f}s"
     )
 

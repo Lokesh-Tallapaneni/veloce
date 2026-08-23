@@ -39,6 +39,7 @@ from veloce.contrib.mcp.sampling import (
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.session import MCPSession
+from veloce.principal import current_principal
 
 # What a sampling request may ask the client to attach to the prompt. The client
 # MAY ignore the request, so this is a hint; a value outside the set is a typo the
@@ -66,6 +67,18 @@ _ELICITATION_ID_ENTROPY_BYTES = 16
 # transport. It lives here rather than in `_helpers` because `_helpers` imports this
 # module, so the dependency has to run in this direction.
 _in_task_var: ContextVar[bool] = ContextVar("_mcp_in_task", default=False)
+
+# The id of the task this call is running as, and the id of the `tools/call`
+# that created it. Both are set by the task runner alongside `_in_task_var`, and
+# both stay `None` for an inline call. They live here for the same reason as
+# `_in_task_var`: `_helpers` imports this module, so the dependency has to run
+# in this direction.
+_task_id_var: ContextVar[str | None] = ContextVar("_mcp_task_id", default=None)
+_origin_request_id_var: ContextVar[Any] = ContextVar("_mcp_origin_request_id", default=None)
+
+# The name of the transport serving this call, set once by each transport when
+# it starts serving. `None` for a bare off-transport construction.
+_transport_var: ContextVar[str | None] = ContextVar("_mcp_transport", default=None)
 
 # `_meta` the handler asked to send back on this call's result. It lives here for
 # the same reason as `_in_task_var`: `_helpers` imports this module, so the
@@ -130,6 +143,7 @@ class MCPContext:
         "_session",
         "_server",
         "_request_meta",
+        "_request_id",
     )
 
     def __init__(
@@ -145,6 +159,7 @@ class MCPContext:
         session: Any = None,
         server: Any = None,
         request_meta: dict[str, Any] | None = None,
+        request_id: Any = None,
     ) -> None:
         self.tool_name = tool_name
         # The raw, un-coerced argument mapping the client sent in ``tools/call``.
@@ -161,6 +176,10 @@ class MCPContext:
         # reserves it for what the spec does not define, so what it holds is
         # between the client and whatever reads it here.
         self._request_meta = request_meta
+        # The JSON-RPC id of the call being served, passed in rather than read
+        # from a var here: the var lives in `_helpers`, which imports this
+        # module, so the dependency has to run the other way.
+        self._request_id = request_id
         self._log_level = log_level
         # Server->client request issuer (wired only by a bidirectional transport;
         # `None` for a one-way or off-transport construction) and the capabilities
@@ -256,6 +275,61 @@ class MCPContext:
         needs to read or relay what the client attached finds it here.
         """
         return self._request_meta or {}
+
+    @property
+    def client_id(self) -> str | None:
+        """The authenticated caller's id, or None when the call is unauthenticated.
+
+        The subject of the principal the transport established - for a
+        client-credentials token that is the registered MCP client. `client_info`
+        is what the client *said* it was at `initialize`; this is what it proved.
+        """
+        principal = current_principal()
+        return getattr(principal, "subject", None) if principal is not None else None
+
+    @property
+    def request_id(self) -> Any:
+        """The JSON-RPC id of the call being served, or None for a notification."""
+        return self._request_id
+
+    @property
+    def origin_request_id(self) -> Any:
+        """The id of the `tools/call` that created this task, or None inline.
+
+        A background task outlives the request that started it, so its own
+        `request_id` is not the one the client is correlating against.
+        """
+        return _origin_request_id_var.get()
+
+    @property
+    def task_id(self) -> str | None:
+        """The id of the task this call is running as, or None when inline.
+
+        The same handle the client polls with `tasks/get`, so a handler can
+        record it against whatever it writes.
+        """
+        return _task_id_var.get()
+
+    @property
+    def transport(self) -> str | None:
+        """The transport serving this call - `"stdio"`, `"http"` or `"sse"`.
+
+        `None` off a transport. A handler that needs to know whether a
+        server-initiated request can reach the client should ask
+        `client_supports(...)` instead; this is for logging and diagnostics.
+        """
+        return _transport_var.get()
+
+    @property
+    def lifespan_context(self) -> Any:
+        """The application state established at startup.
+
+        The same `app.state` an HTTP handler reaches, so a connection pool or a
+        client opened in a lifespan hook is reached the same way through either
+        door. `None` off a server.
+        """
+        server = self._server
+        return getattr(server.app, "state", None) if server is not None else None
 
     def client_supports(self, capability: str) -> bool:
         """Return whether the client advertised `capability` (dotted for nested).
