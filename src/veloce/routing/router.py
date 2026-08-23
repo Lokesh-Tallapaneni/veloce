@@ -863,7 +863,7 @@ class Router:
         combined_deps = list(self.router_dependencies)
         if info.dependencies:
             combined_deps.extend(info.dependencies)
-        return RouteInfo(
+        merged = RouteInfo(
             handler=info.handler,
             param_names=param_names,
             dependencies=combined_deps if combined_deps else info.dependencies,
@@ -912,6 +912,11 @@ class Router:
             mcp_task_support=info.mcp_task_support,
             excluded_middleware=info.excluded_middleware,
         )
+        # `stream` is a slot assigned after construction rather than an
+        # `__init__` argument, so it has to be carried across explicitly - it
+        # was the one field this copy dropped.
+        merged.stream = info.stream
+        return merged
 
     def _commit_merged_method(
         self,
@@ -2362,6 +2367,11 @@ def _readd_route(
         mcp_description=info.mcp_description,
         expose_as_mcp_resource=info.expose_as_mcp_resource,
         mcp_resource_uri=info.mcp_resource_uri,
+        mcp_resource_mime_type=info.mcp_resource_mime_type,
+        mcp_resource_size=info.mcp_resource_size,
+        mcp_resource_annotations=info.mcp_resource_annotations,
+        mcp_meta=info.mcp_meta,
+        stream=info.stream,
         mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
         mcp_icons=info.mcp_icons,
         mcp_task_support=info.mcp_task_support,
