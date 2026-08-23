@@ -1,16 +1,41 @@
-"""Contrib sub-package — optional integrations (templating, OpenAPI, static files)."""
+"""Contrib sub-package — optional integrations (templating, OpenAPI, static files).
+
+Names are resolved on first attribute access rather than at import. These are
+optional integrations, and importing the gateway eagerly made every `import
+veloce` pay for all four - OpenAPI, Redis, static files and templating - whether
+or not the application touches any of them. `from veloce.contrib import X` is
+unchanged; only the moment the work happens moves.
+"""
 
 from __future__ import annotations
 
-from veloce.contrib.openapi import get_openapi_schema, setup_openapi_routes
-from veloce.contrib.redis import RedisCache, RedisRateLimitBackend, RedisSessionStore
-from veloce.contrib.staticfiles import StaticFiles
-from veloce.contrib.templating import (
-    Jinja2Templates,
-    render_template,
-    render_template_string,
-    stream_template,
-)
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.openapi import get_openapi_schema, setup_openapi_routes
+    from veloce.contrib.redis import RedisCache, RedisRateLimitBackend, RedisSessionStore
+    from veloce.contrib.staticfiles import StaticFiles
+    from veloce.contrib.templating import (
+        Jinja2Templates,
+        render_template,
+        render_template_string,
+        stream_template,
+    )
+
+# Each exported name and the module that defines it. Resolved once per name per
+# process by `__getattr__` below - never on a per-request path.
+_EXPORTS: dict[str, str] = {
+    "Jinja2Templates": "veloce.contrib.templating",
+    "RedisCache": "veloce.contrib.redis",
+    "RedisRateLimitBackend": "veloce.contrib.redis",
+    "RedisSessionStore": "veloce.contrib.redis",
+    "StaticFiles": "veloce.contrib.staticfiles",
+    "get_openapi_schema": "veloce.contrib.openapi",
+    "render_template": "veloce.contrib.templating",
+    "render_template_string": "veloce.contrib.templating",
+    "setup_openapi_routes": "veloce.contrib.openapi",
+    "stream_template": "veloce.contrib.templating",
+}
 
 __all__ = [
     "Jinja2Templates",
@@ -24,3 +49,19 @@ __all__ = [
     "setup_openapi_routes",
     "stream_template",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Import the module owning `name` on first access, then cache it here."""
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+
+    value = getattr(importlib.import_module(module_name), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(__all__)

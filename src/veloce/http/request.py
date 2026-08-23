@@ -132,6 +132,7 @@ class Request:
         "_headers_raw",
         "_body",
         "_body_drained",
+        "_length_enforced",
         "_body_source",
         "transport",
         "app",
@@ -212,6 +213,13 @@ class Request:
         else:
             self._body = body
             self._body_drained = False
+        # Set by a transport that has already applied this app's
+        # MAX_CONTENT_LENGTH to both the declared and the received length, so
+        # dispatch does not repeat the work on every request. It stays False for
+        # a request built anywhere else - including the fresh one a mounted
+        # sub-app is dispatched with, which must be checked against that app's
+        # own limit rather than its parent's.
+        self._length_enforced = False
         self.transport = transport
         self.app = app
         self.scope = scope or {}

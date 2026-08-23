@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from veloce import Request, Veloce
 from veloce.testclient import TestClient
 
@@ -146,3 +148,108 @@ async def test_incremental_limit_rejects_chunked_body_mid_stream():
     assert start["status"] == 413
     # Rejected mid-stream: the third chunk was never consumed.
     assert next(pending) is chunks[2]
+
+
+# ── The limit is enforced once, by whichever layer saw the bytes ──────
+
+
+def _limited_app(limit: int) -> Veloce:
+    app = Veloce(openapi_url=None)
+    app.config["MAX_CONTENT_LENGTH"] = limit
+
+    @app.post("/u")
+    async def upload(request: Request):
+        return {"n": len(await request.body())}
+
+    return app
+
+
+async def _drive_without_content_length(app: Veloce, total: int, chunks: int) -> int:
+    """POST `total` bytes in `chunks` messages, declaring no Content-Length."""
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/u",
+        "raw_path": b"/u",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver")],
+        "client": ("t", 1),
+        "server": ("t", 80),
+    }
+    per = total // chunks
+    messages = iter(
+        [
+            {"type": "http.request", "body": b"x" * per, "more_body": index < chunks - 1}
+            for index in range(chunks)
+        ]
+    )
+
+    async def receive():
+        return next(messages)
+
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    await app(scope, receive, send)
+    return sent[0]["status"]
+
+
+def test_a_declared_over_limit_body_is_refused():
+    with TestClient(_limited_app(100)) as client:
+        assert client.post("/u", content=b"x" * 500).status_code == 413
+
+
+def test_an_under_limit_body_is_accepted():
+    with TestClient(_limited_app(100)) as client:
+        assert client.post("/u", content=b"x" * 50).status_code == 200
+
+
+async def test_an_undeclared_over_limit_body_is_still_refused_in_one_chunk():
+    """Dispatch no longer re-checks, so the transport's own cap must hold."""
+    assert await _drive_without_content_length(_limited_app(100), 500, 1) == 413
+
+
+async def test_an_undeclared_over_limit_body_is_still_refused_across_chunks():
+    """The running total is what catches a body that declares no length."""
+    assert await _drive_without_content_length(_limited_app(100), 500, 5) == 413
+
+
+async def test_an_undeclared_under_limit_body_is_accepted():
+    assert await _drive_without_content_length(_limited_app(100), 50, 5) == 200
+
+
+def test_a_mounted_sub_app_enforces_its_own_smaller_limit():
+    """The sub-app is dispatched with a fresh request, so the parent's
+    enforcement must not stand in for a limit the sub-app set lower."""
+    parent = Veloce(openapi_url=None)
+    parent.config["MAX_CONTENT_LENGTH"] = 10_000
+    sub = _limited_app(50)
+    parent.mount("/sub", sub)
+
+    with TestClient(parent) as client:
+        assert client.post("/sub/u", content=b"x" * 20).status_code == 200
+        assert client.post("/sub/u", content=b"x" * 200).status_code == 413
+
+
+def test_a_request_built_outside_a_transport_is_still_checked():
+    """`handle_request` is public; a caller reaching it directly gets the check."""
+    app = _limited_app(50)
+
+    async def drive():
+        request = Request(
+            method="POST",
+            path="/u",
+            query_string="",
+            headers={"host": "testserver"},
+            body=b"x" * 200,
+            app=app,
+        )
+        return await app.handle_request(request)
+
+    assert asyncio.run(drive()).status_code == 413

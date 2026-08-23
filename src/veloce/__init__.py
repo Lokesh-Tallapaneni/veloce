@@ -19,6 +19,9 @@ Basic usage::
 
 from __future__ import annotations
 
+# Configuration
+from typing import TYPE_CHECKING, Any
+
 # Status codes
 from veloce import status
 from veloce.app import Plugin, URLRule, Veloce
@@ -27,13 +30,16 @@ from veloce.app import Plugin, URLRule, Veloce
 from veloce.background import BackgroundTask, BackgroundTasks
 from veloce.blueprints import Blueprint
 from veloce.cache import Cache, InMemoryCache, cached
-
-# Configuration
 from veloce.config import Config
 
 # MCP (Model Context Protocol) - the per-call context handle a tool handler
 # may declare. The server / transport classes stay under veloce.contrib.mcp.
-from veloce.contrib.mcp.context import MCPContext
+# Resolved on first access rather than at import: reaching it eagerly
+# initialises the whole MCP subpackage - server, registries, tasks, both
+# transports - for one re-exported name, which every `import veloce` paid for
+# whether or not the application exposes a single tool.
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.contrib.mcp.context import MCPContext
 
 # Static files
 from veloce.contrib.staticfiles import StaticFiles
@@ -582,3 +588,22 @@ __all__ = [
     "Header",
     "Cookie",
 ]
+
+
+# Names resolved on first access. Each maps to the module that defines it; the
+# lookup runs once per name per process, never on a per-request path.
+_LAZY_EXPORTS: dict[str, str] = {
+    "MCPContext": "veloce.contrib.mcp.context",
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Import the module owning a lazily-exported name, then cache it here."""
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+
+    value = getattr(importlib.import_module(module_name), name)
+    globals()[name] = value
+    return value

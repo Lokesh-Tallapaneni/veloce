@@ -312,7 +312,12 @@ class DispatchMixin:
         # Content-Length (cheap reject) and the actually-buffered body size
         # (defence-in-depth when no Content-Length was sent). Per
         # RFC 9110 Sec. 15.5.14, the status is 413 Content Too Large.
-        max_size = self.config.get("MAX_CONTENT_LENGTH")
+        # Skipped when the transport already applied this app's limit to both
+        # the declared and the received length - which both shipped transports
+        # do. It still runs for a request that reached dispatch another way: a
+        # mounted sub-app (a fresh `Request`, and possibly a smaller limit), or
+        # a caller invoking `handle_request` directly.
+        max_size = None if request._length_enforced else self.config.get("MAX_CONTENT_LENGTH")
         if max_size is not None:
             declared = request.content_length
             over = declared is not None and declared > max_size
