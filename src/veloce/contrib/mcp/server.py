@@ -1170,6 +1170,15 @@ class MCPServer(TasksMixin, InvocationMixin):
             # Its route runs the full request lifecycle under the caller's
             # principal, so the body it returns is caller-dependent by construction.
             return True
+        if method == "server/discover":
+            # Its capability block is built for the asking connection: it reflects
+            # what that connection can be told (a stateful one is offered
+            # per-connection features a stateless one is not) and the protocol
+            # revision the caller stated, so two callers get different answers.
+            # `public` would let a shared gateway serve one of those answers to
+            # the other, and the result also carries `instructions` - server
+            # prose a client feeds to its model, which must not be cross-served.
+            return True
         if method not in _LIST_METHODS:
             return False
         # A handler on a stateful connection may narrow that connection's view
