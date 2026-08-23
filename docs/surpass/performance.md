@@ -12,7 +12,9 @@ can be moved off it. Routing is a radix tree, the dependency graph compiles to a
 straight-line resolver, parameter reflection happens once at registration, and
 disabled features cost zero per request.
 
-This page explains each mechanism against the real source.
+This page explains each mechanism against the real source. For what they
+measure out to against other frameworks — and the method behind those figures —
+see [Benchmarks](benchmarks.md).
 
 !!! note
     The framework is rarely the bottleneck in a real application — the database

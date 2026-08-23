@@ -236,6 +236,31 @@ thread pool; latency-sensitive types (`text/event-stream` by default, via
 `latency_sensitive_types`) are passed through uncompressed so server-sent
 events are never merged or delayed.
 
+### When compression uses the thread pool
+
+The same threshold decides both halves of the middleware: a buffered body below
+it is compressed inline, and one at or above it is offloaded, exactly as a
+streamed chunk is.
+
+Offloading is not free. It costs a handoff per response, and under load every
+compressing request queues on the same pool. For a small body that handoff
+costs more than the compression, so compressing inline is faster even though it
+holds the event loop — the hold is brief, and the pool contention it avoids is
+not. Past roughly 48 KiB the balance inverts: zlib releases the GIL for long
+enough that the pool genuinely parallelises, and keeping the loop free wins.
+The default sits below that crossover so the offload engages before inline
+becomes the slower choice.
+
+Lower `min_stream_chunk_offload` to push more work to the pool, or raise it to
+keep more inline:
+
+```python
+from veloce import GZipMiddleware, Veloce
+
+app = Veloce()
+app.add_middleware(GZipMiddleware(min_stream_chunk_offload=8 * 1024))
+```
+
 ### Rate limiting
 
 `RateLimitMiddleware` limits requests per client. Used with no arguments it runs
