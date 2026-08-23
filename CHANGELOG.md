@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `stream=True` is honored on a blueprint route and on an included router's route. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A blueprint route keeps its MCP resource mime type, size, annotations and `_meta`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- Capabilities are advertised per protocol revision, so none is offered and then refused. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `tools/list` omits `execution` for a modern client, whose revision removed the field. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `server/discover` is marked private rather than publicly cacheable; its answer varies by caller. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `subscriptions/listen` works on the default HTTP deployment instead of requiring a persistent session. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 ## [0.17.1] - 2026-08-23
 
 ### Added

@@ -514,6 +514,11 @@ def _stream_response(
     # dropping the queue hand-off after teardown costs a reconnecting client
     # nothing: the replay comes from the store, not from here.
     draining = [True]
+    # Set when the SSE generator tears down, however it ended. A long-lived
+    # `subscriptions/listen` waits on this: its request is answered by its own
+    # close, so without something to hold the dispatch task the stream would end
+    # on the acknowledgement and the subscription would never deliver anything.
+    client_gone = asyncio.Event()
     # A resumable stream gets a unique id so its event ids encode their origin and
     # a resume replays only this stream's events. `seq` advances per recorded
     # payload; 0 is reserved for the priming event so the replay base is addressable.
@@ -551,6 +556,12 @@ def _stream_response(
                 response_id = emit_id(response)
                 if draining[0]:
                     await queue.put((response_id, response))
+            elif message.get("id") in session.listen_streams:
+                # This request opened a listen stream, so it is answered when the
+                # stream closes rather than now. Hold the task - and with it this
+                # connection's registration - until the client goes away, so the
+                # fan-out has somewhere to deliver in the meantime.
+                await client_gone.wait()
         except asyncio.CancelledError:
             # The client cancelled this request (notifications/cancelled): the
             # call's task was cancelled deliberately. Close the stream cleanly
@@ -596,8 +607,10 @@ def _stream_response(
         finally:
             # Whether the stream ended normally or the client vanished, nothing
             # will read this queue again. Tell the runner to stop filling it and
-            # release whatever is already buffered.
+            # release whatever is already buffered, and release a listen stream
+            # still waiting for the client so its connection is unregistered.
             draining[0] = False
+            client_gone.set()
             while not queue.empty():
                 queue.get_nowait()
 

@@ -1159,6 +1159,15 @@ class MCPServer(TasksMixin, InvocationMixin):
         session = self.current_session()
         return session is not None and session.persistent
 
+    def connection_can_stream(self, session: MCPSession) -> bool:
+        """Whether `session` holds an open outbound stream to push messages down.
+
+        Weaker than `connection_is_stateful` and deliberately so: a stream that
+        lives only for the request that opened it still delivers, which is the
+        whole shape of a modern `subscriptions/listen`.
+        """
+        return self._connections is not None and self._connections.holds(session)
+
     def _varies_by_caller(self, method: str, session: MCPSession | None = None) -> bool:
         """Whether this method's result can differ between two authorized callers.
 
