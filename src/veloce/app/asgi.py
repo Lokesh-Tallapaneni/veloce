@@ -500,6 +500,13 @@ class AsgiMixin:
                     scope=scope,
                 )
 
+            # Both the declared Content-Length and the received bytes were
+            # checked above, for the buffered and the streaming branch alike, so
+            # dispatch does not repeat either. The flag is per-request: a
+            # mounted sub-app is dispatched with a fresh `Request` and is still
+            # checked against its own limit.
+            request._length_enforced = True
+
             response = await self.handle_request(request, cp, match)
 
             # Streaming response - emit the body as a sequence of ASGI

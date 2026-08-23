@@ -1046,6 +1046,12 @@ class Veloce(
         Lazily instantiated from `app.json_provider_class` so swapping
         encoders is just: `app.json_provider_class = MyJSONProvider`.
         Setting `app.json = instance` replaces it explicitly.
+
+        The provider serialises `jsonify(...)` and anything else that asks it
+        for bytes. A handler returning a bare `dict` or `list` takes the direct
+        orjson path instead and does not consult it, so a custom dialect - key
+        sorting, a house encoder - does not reach those responses. Return
+        `jsonify(...)` from a handler whose dialect must apply.
         """
         if self._json_provider is None:
             self._json_provider = self.json_provider_class(self)
@@ -1539,7 +1545,7 @@ class Veloce(
         self._gen += 1
         return func
 
-    def url_for(self, name: str, **path_params: Any) -> str:
+    def url_for(self, name: str, /, **path_params: Any) -> str:
         """`Veloce.url_for` runs `@app.url_defaults` callbacks before
         delegating to `Router.url_for`, so injected defaults appear in the
         rendered URL.
@@ -1571,7 +1577,7 @@ class Veloce(
             raise err from exc
 
     # Keep `url_path_for` aligned with the override above.
-    def url_path_for(self, name: str, **path_params: Any) -> str:
+    def url_path_for(self, name: str, /, **path_params: Any) -> str:
         """Resolve a URL path by endpoint name and parameters."""
         return self.url_for(name, **path_params)
 
@@ -1747,7 +1753,12 @@ class Veloce(
         self.add_route(
             path=rule,
             handler=view_func,
-            methods=methods or [HTTP_METHOD_GET],
+            # A class-based view already knows its verbs: `View.as_view` sets
+            # `view.methods` from the methods the class actually defines. Reading
+            # it here is what makes that assignment mean something - without it a
+            # `MethodView` defining `get` and `post` was registered for GET alone
+            # and answered its own POST with 405.
+            methods=methods or getattr(view_func, "methods", None) or [HTTP_METHOD_GET],
             name=endpoint,
             **kwargs,
         )

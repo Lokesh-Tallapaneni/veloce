@@ -254,13 +254,17 @@ class ASGIBodySource:
     body truncated at the bytes received so far).
     """
 
-    __slots__ = ("_receive", "_max", "_size", "_done")
+    __slots__ = ("_receive", "_max", "_size", "_done", "_disconnected")
 
     def __init__(self, receive: Callable[[], Any], max_content_length: int | None = None) -> None:
         self._receive = receive
         self._max = max_content_length
         self._size = 0
         self._done = False
+        # `_done` covers both "body complete" and "peer vanished"; this keeps
+        # the second apart so `Request.is_disconnected()` can answer truthfully
+        # for a streaming route, where the client really can go away mid-handler.
+        self._disconnected = False
 
     def __aiter__(self) -> ASGIBodySource:
         return self
@@ -273,6 +277,7 @@ class ASGIBodySource:
             mtype = message.get("type")
             if mtype == _ASGI_HTTP_DISCONNECT:
                 self._done = True
+                self._disconnected = True
                 raise StopAsyncIteration
             if mtype != _ASGI_HTTP_REQUEST:
                 # Ignore any non-body control message and keep pulling.
@@ -305,6 +310,7 @@ class ASGIBodySource:
             mtype = message.get("type")
             if mtype == _ASGI_HTTP_DISCONNECT:
                 self._done = True
+                self._disconnected = True
                 break
             if mtype != _ASGI_HTTP_REQUEST:
                 continue

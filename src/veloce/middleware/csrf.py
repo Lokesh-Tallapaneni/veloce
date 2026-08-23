@@ -179,6 +179,13 @@ class CSRFMiddleware(Middleware):
 
     async def process_request(self, request: Request) -> Response | None:
         """Validate the CSRF token on state-changing requests."""
+        # CSRF defends a browser that would attach a cookie automatically. A
+        # replayed MCP call has no browser and no cookie - the agent was
+        # authenticated by the transport, which is a different credential
+        # entirely - so the token can never be present and every write tool
+        # would be refused.
+        if request.is_mcp:
+            return None
         # Stash existing cookie value (or None) on request._state for the
         # response phase. New tokens are minted in process_response when
         # the cookie is missing.

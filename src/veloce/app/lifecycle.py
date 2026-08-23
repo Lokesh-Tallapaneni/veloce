@@ -24,6 +24,7 @@ from veloce._protocol_constants import (
     LIFECYCLE_SHUTDOWN,
     LIFECYCLE_STARTUP,
 )
+from veloce._warnings import VeloceDeprecationWarning
 
 if TYPE_CHECKING:  # pragma: no cover
     from types import CodeType, FrameType
@@ -295,7 +296,7 @@ class LifecycleMixin:
         warnings.warn(
             "Veloce.on_event() is deprecated and will be removed in v1.0.0; "
             "use @app.on_startup / @app.on_shutdown instead.",
-            DeprecationWarning,
+            VeloceDeprecationWarning,
             stacklevel=2,
         )
 
@@ -360,7 +361,7 @@ class LifecycleMixin:
         warnings.warn(
             "Veloce.add_event_handler() is deprecated and will be removed "
             "in v1.0.0; use app.on_startup(fn) / app.on_shutdown(fn) instead.",
-            DeprecationWarning,
+            VeloceDeprecationWarning,
             stacklevel=2,
         )
         self._register_lifecycle_event(event, func)

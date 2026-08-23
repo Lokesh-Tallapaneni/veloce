@@ -30,8 +30,13 @@ RESET_TOKEN_SALT = "veloce.security.reset_token"
 _RESET_TOKEN_VERSION = 1
 
 
-class BadResetToken(VeloceError):
-    """Raised on programmer misuse; invalid tokens return False instead."""
+class BadResetToken(VeloceError, TypeError):
+    """Raised on programmer misuse; invalid tokens return False instead.
+
+    Also a `TypeError`, which is what the misuse used to raise - so the
+    documented `except BadResetToken` works without breaking a caller already
+    catching `TypeError`.
+    """
 
 
 def _fingerprint(state: bytes) -> str:
@@ -46,7 +51,7 @@ def make_reset_token(
 ) -> str:
     """Bind a caller-supplied state fingerprint into a signed reset token."""
     if not isinstance(state, (bytes, bytearray)):
-        raise TypeError("state must be bytes")
+        raise BadResetToken("state must be bytes")
     fp = _fingerprint(bytes(state))
     signer = Signer(secret, salt)
     return signer.dumps([_RESET_TOKEN_VERSION, fp])
@@ -63,7 +68,7 @@ def check_reset_token(
 ) -> bool:
     """Return True iff the token is authentic, unexpired, and still bound to `state`."""
     if not isinstance(state, (bytes, bytearray)):
-        raise TypeError("state must be bytes")
+        raise BadResetToken("state must be bytes")
     signer = Signer(secret, salt)
     for fb in fallback_secrets:
         signer.add_fallback_secret(fb, salt)

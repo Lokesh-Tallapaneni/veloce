@@ -30,6 +30,10 @@ from veloce._protocol_constants import (
     RAW_HEADER_CONTENT_LENGTH,
     ROUTE_METHOD_WEBSOCKET,
 )
+from veloce.config import (
+    DEFAULT_MAX_CONCURRENT_CONNECTIONS,
+    DEFAULT_WRITE_BUFFER_HIGH_WATER,
+)
 from veloce.exceptions import RequestEntityTooLarge, WebSocketDisconnect
 from veloce.http._body import RequestBodySource
 from veloce.http.request import Request
@@ -50,18 +54,10 @@ MAX_URL_SIZE = 8192
 MAX_HEADER_SIZE = 8192
 MAX_TOTAL_HEADERS_SIZE = 65536
 
-# Per-process cap on simultaneously-open connections. Without it, a DDoS
-# can exhaust RAM by opening sockets faster than dispatch can drain them.
-DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
-
-# Write-side flow-control watermarks (bytes). When a streaming/SSE producer
-# outruns a slow client the event loop's transport write buffer grows; left
-# unbounded that is a per-connection memory-exhaustion vector. Handing these
-# to `transport.set_write_buffer_limits()` makes asyncio invoke
-# `pause_writing`/`resume_writing` once the buffer crosses the high/low mark,
-# which the streaming path awaits on. The low mark is left to asyncio's
-# default (a quarter of high) when only the high mark is supplied.
-WRITE_BUFFER_HIGH_WATER = 256 * 1024
+# Both defaults live with the other config defaults so `default_config()` lists
+# every key this path reads; re-exported here under the names this module has
+# always used.
+WRITE_BUFFER_HIGH_WATER = DEFAULT_WRITE_BUFFER_HIGH_WATER
 
 # Process-wide graceful-shutdown latch. Phase one of `Veloce._graceful_shutdown`
 # sets this and flips every live connection's `_draining` flag; a connection

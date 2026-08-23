@@ -114,3 +114,73 @@ def test_client_extracts_multiple_set_cookies():
     # header value vs two; the current Response.set_cookie joins via
     # `\r\nSet-Cookie:` literal in one header, which is wrong on ASGI.
     # M1 will fix this. For now assert at least the first cookie is parsed.
+
+
+# ── The client decodes the path like a real ASGI server ──────────────
+
+
+def test_a_percent_encoded_path_segment_reaches_the_handler_decoded():
+    """The client handed the raw target, so decoding bugs were invisible.
+
+    ASGI defines `scope["path"]` as the target with percent-encoded sequences
+    decoded, which is what uvicorn hands the app. The in-process client passed
+    it through undecoded, so a decoding-dependent bug that appears in
+    production could not be reproduced by the suite.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get("/files/{name}")
+    async def download(name: str):
+        return {"name": name}
+
+    with TestClient(app) as client:
+        assert client.get("/files/a%20b.txt").json() == {"name": "a b.txt"}
+
+
+def test_a_plain_path_is_unchanged():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/files/{name}")
+    async def download(name: str):
+        return {"name": name}
+
+    with TestClient(app) as client:
+        assert client.get("/files/plain.txt").json() == {"name": "plain.txt"}
+
+
+def test_a_percent_encoded_non_ascii_segment_decodes_as_utf8():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/files/{name}")
+    async def download(name: str):
+        return {"name": name}
+
+    with TestClient(app) as client:
+        assert client.get("/files/caf%C3%A9").json() == {"name": "café"}
+
+
+def test_the_raw_path_stays_undecoded():
+    """`raw_path` is the original target; only `path` is decoded."""
+    seen = {}
+
+    async def app(scope, receive, send):
+        seen["path"] = scope["path"]
+        seen["raw_path"] = scope["raw_path"]
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    TestClient(app).get("/files/a%20b.txt")
+    assert seen["path"] == "/files/a b.txt"
+    assert seen["raw_path"] == b"/files/a%20b.txt"
+
+
+def test_the_query_string_is_not_touched():
+    """Only the path is decoded; the query string is parsed separately."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/search")
+    async def search(q: str):
+        return {"q": q}
+
+    with TestClient(app) as client:
+        assert client.get("/search?q=a%20b").json() == {"q": "a b"}

@@ -383,3 +383,56 @@ def test_user_middleware_without_name_defaults_to_class_name():
     with TestClient(app) as client:
         assert app._middlewares[0].middleware_name == "_UserMiddlewareNoName"
         assert "X-User-Y" not in client.get("/skips").headers
+
+
+# ── The name override on an already-built instance ───────────────────
+
+
+def test_an_already_built_instance_honours_the_name_override():
+    """The class form applied `name=`; the instance form dropped it.
+
+    An exclusion keyed on a name that was never applied silently matches
+    nothing, so the route keeps a middleware its author opted out of - a
+    failure that looks exactly like a working exclusion.
+    """
+    app = Veloce(openapi_url=None)
+    app.add_middleware(_Tagger("A"), name="tagger")
+    assert app._middlewares[0].middleware_name == "tagger"
+
+
+def test_an_instance_name_makes_the_route_exclusion_take_effect():
+    app = Veloce(openapi_url=None)
+    app.add_middleware(_Tagger("A"), name="tagger")
+
+    @app.get("/on")
+    async def on():
+        return {"ok": True}
+
+    @app.get("/off", exclude_middleware=["tagger"])
+    async def off():
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        assert "X-Saw-A" in client.get("/on").headers
+        assert "X-Saw-A" not in client.get("/off").headers
+
+
+def test_an_instance_without_a_name_still_uses_its_class_name():
+    app = Veloce(openapi_url=None)
+    app.add_middleware(_Tagger("A"))
+    assert app._middlewares[0].middleware_name == "_Tagger"
+
+
+def test_a_constructor_argument_passed_with_an_instance_is_refused():
+    """Dropping it silently left the caller believing it had been applied."""
+    app = Veloce(openapi_url=None)
+    with pytest.raises(TypeError, match="already-built middleware instance"):
+        app.add_middleware(_Tagger("A"), tag="B")
+
+
+def test_priority_is_still_accepted_alongside_an_instance():
+    """`priority` is a framework ordering concern, not a construction argument."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(_Tagger("low"), name="low", priority=1)
+    app.add_middleware(_Tagger("high"), name="high", priority=5)
+    assert [m.middleware_name for m in app._middlewares] == ["high", "low"]

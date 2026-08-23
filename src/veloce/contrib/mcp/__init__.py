@@ -6,7 +6,10 @@ with `@app.mcp_tool(...)`, opt an existing route in with
 `expose_as_mcp_tool=True` / `mcp_description=...`, then serve over stdio with
 `app.mount_mcp(transport="stdio")`.
 
-Scope: tools and resources over the stdio transport. The server negotiates the
+Scope: tools, resources and prompts over the stdio, Streamable HTTP and (legacy)
+SSE transports, with tasks, sessions, subscriptions, completions, sampling,
+elicitation, roots, tool search, versioning, proxying and an OAuth 2.1
+authorization server. The server negotiates the
 protocol version with the client, answers ``ping``, and the ``initialize`` result
 carries ``instructions`` (the app description / summary) plus a ``serverInfo.title``
 (the app title). A tool definition carries HTTP-derived annotation hints
@@ -55,6 +58,7 @@ from veloce.contrib.mcp.authorization import (
     OAuthClient,
     register_authorization_server,
 )
+from veloce.contrib.mcp.capabilities import Capability
 from veloce.contrib.mcp.completion import CompletionResult, CompletionsCapability
 from veloce.contrib.mcp.content import (
     AudioContent,
@@ -95,14 +99,18 @@ from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.subscriptions import SubscriptionsCapability
 from veloce.contrib.mcp.tasks import MCPTask, TaskRegistry, TasksCapability
 from veloce.contrib.mcp.transform import ArgTransform, derive_tool
+from veloce.contrib.mcp.transports.base import BidirectionalTransport, Transport
 from veloce.contrib.mcp.transports.http import register_http_transport
 from veloce.contrib.mcp.transports.session_store import SessionBackend, SessionRecord
+from veloce.contrib.mcp.transports.sse import register_sse_transport
 from veloce.contrib.mcp.transports.stdio import MCPRequestError, StdioTransport, serve_stdio
 
 __all__ = [
     "JSON_SCHEMA_DIALECT",
     "AudioContent",
     "AuthorizationError",
+    "BidirectionalTransport",
+    "Capability",
     "CompletionResult",
     "CompletionsCapability",
     "ContentBlock",
@@ -148,6 +156,7 @@ __all__ = [
     "SessionNotFoundError",
     "SessionRequiredError",
     "StdioTransport",
+    "Transport",
     "SubscriptionsCapability",
     "TaskRegistry",
     "TasksCapability",
@@ -157,5 +166,6 @@ __all__ = [
     "build_registry",
     "build_resource_registry",
     "register_http_transport",
+    "register_sse_transport",
     "serve_stdio",
 ]

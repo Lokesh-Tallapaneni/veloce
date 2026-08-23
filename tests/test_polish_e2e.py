@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
-from veloce import Veloce
+from veloce import Veloce, VeloceDeprecationWarning
 from veloce.http.response import Response, StreamingResponse
 from veloce.serving.protocol import HttpProtocol
 
@@ -121,7 +121,7 @@ def test_disconnect_releases_slot_for_new_connection():
 
 def test_on_event_decorator_emits_deprecation_warning():
     app = Veloce(openapi_url=None)
-    with pytest.warns(DeprecationWarning, match="on_startup"):
+    with pytest.warns(VeloceDeprecationWarning, match="on_startup"):
 
         @app.on_event("startup")
         async def boot() -> None:
@@ -137,7 +137,7 @@ def test_add_event_handler_emits_deprecation_warning():
     async def boot() -> None:
         return None
 
-    with pytest.warns(DeprecationWarning, match="on_startup"):
+    with pytest.warns(VeloceDeprecationWarning, match="on_startup"):
         app.add_event_handler("startup", boot)
 
     assert boot in app._on_startup

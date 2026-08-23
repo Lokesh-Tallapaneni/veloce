@@ -20,13 +20,19 @@ from veloce.contrib.mcp._helpers import (
     _content_blocks,
     _notifier_var,
     _progress_token,
+    _request_id_var,
     _resource_result_from_response,
     _response_body_value,
     _stringify,
     _text_result,
     _to_structured,
 )
-from veloce.contrib.mcp.context import _in_task_var, _session_var
+from veloce.contrib.mcp.context import (
+    _in_task_var,
+    _origin_request_id_var,
+    _session_var,
+    _task_id_var,
+)
 from veloce.contrib.mcp.errors import (
     InvalidParamsError,
     _InBandError,
@@ -151,7 +157,9 @@ class TasksMixin:
         # `create_task` copies the current context, so the background runner sees
         # the same notifier / log level / principal the request established here.
         progress_token = _progress_token(params)
-        task.runner = asyncio.ensure_future(self._run_task(task, tool, arguments, progress_token))
+        task.runner = asyncio.ensure_future(
+            self._run_task(task, tool, arguments, progress_token, _request_id_var.get())
+        )
         return create_task_result(task, modern=modern)
 
     async def _run_task(
@@ -160,6 +168,7 @@ class TasksMixin:
         tool: MCPTool,
         arguments: dict[str, Any],
         progress_token: str | int | None,
+        origin_request_id: Any = None,
     ) -> None:
         """Run a task's tool call to completion, settling and notifying the client.
 
@@ -173,6 +182,11 @@ class TasksMixin:
         # runner is refused on the serial stdio transport (its reply has no reader
         # while the serve loop has already resumed reading stdin).
         _in_task_var.set(True)
+        # The handle the client polls with, and the request it is correlating
+        # against - a task outlives the call that created it, so its own
+        # request id is not the one the client remembers.
+        _task_id_var.set(task.name)
+        _origin_request_id_var.set(origin_request_id)
         started = time.perf_counter()
         try:
             result = await self._produce_tool_result(tool, arguments, started, progress_token)

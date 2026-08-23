@@ -255,6 +255,7 @@ class WebSocket:
         "_recv_buffer",
         "_send_drain",
         "_state",
+        "accepted_subprotocol",
         "app",
         "close_code",
         "close_reason",
@@ -394,6 +395,10 @@ class WebSocket:
         # peer closes; `close_reason` is the decoded UTF-8 reason or "".
         self.close_code: int | None = None
         self.close_reason: str = ""
+        # The subprotocol this connection settled on, recorded by `accept` so a
+        # handler can read back what it negotiated instead of tracking it
+        # itself. `None` until accepted, and when no subprotocol was chosen.
+        self.accepted_subprotocol: str | None = None
         # Persistent receive buffer for incremental frame parsing. The
         # transport hands `feed_data` arbitrary byte runs that do not line up
         # with frame boundaries - bytes accumulate here until a whole frame
@@ -708,6 +713,8 @@ class WebSocket:
     ) -> None:
         """Complete the WebSocket handshake.
 
+        Records the chosen subprotocol on `accepted_subprotocol`.
+
         Raises:
             RuntimeError: if the connection is already accepted or already
                 closed, or if a ``subprotocol``/``headers`` argument is passed
@@ -743,6 +750,7 @@ class WebSocket:
                     (k.encode("latin-1"), v.encode("latin-1")) for k, v in headers.items()
                 ]
             await self._asgi_send(accept_msg)
+            self.accepted_subprotocol = subprotocol
             self._accepted = True
             return
 
@@ -781,6 +789,7 @@ class WebSocket:
                 lines.append(f"{k}: {v}")
         response = "\r\n".join(lines) + "\r\n\r\n"
         self.transport.write(response.encode())
+        self.accepted_subprotocol = subprotocol
         self._accepted = True
         # Arm the liveness probe now the connection is live (no-op unless a
         # heartbeat was configured for this raw-transport connection).

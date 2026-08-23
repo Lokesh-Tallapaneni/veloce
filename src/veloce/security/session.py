@@ -65,7 +65,9 @@ class SessionAuth(SecurityScheme):
     including a dependency shared with an MCP-exposed handler.
 
     With `auto_error=False` an anonymous request resolves to `None` instead of
-    raising, for routes that render differently when signed in.
+    raising, for routes that render differently when signed in. A missing
+    `SessionMiddleware` is a configuration error rather than an anonymous
+    request, and still raises under either setting.
 
     Pass `loader=` to build a richer principal from the stored subject (a
     database lookup, say); it receives `(request, subject)` and returns a
@@ -101,8 +103,14 @@ class SessionAuth(SecurityScheme):
 
     def __call__(self, request: Request) -> Principal | None:
         """Return the session's `Principal`, publishing it for the request."""
-        session: Any = getattr(request, "session", None)
-        subject = session.get(self.subject_key) if session is not None else None
+        # `Request.session` raises an actionable RuntimeError when
+        # SessionMiddleware is missing, and that is left to surface: a scheme
+        # that treated the absence as "anonymous" would report every caller as
+        # signed out forever, which is a silent authentication failure.
+        # `auto_error=False` covers an anonymous *request*, not an unconfigured
+        # application.
+        session: Any = request.session
+        subject = session.get(self.subject_key)
         if not subject:
             if self.auto_error:
                 raise Unauthorized("Not authenticated")

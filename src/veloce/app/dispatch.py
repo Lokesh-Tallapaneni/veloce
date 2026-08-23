@@ -95,6 +95,14 @@ _exc_handler_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool
     weakref.WeakKeyDictionary()
 )
 
+# Cache of `(wants_request, wants_response)` flags per after-request hook.
+# A hook may reasonably be written to take the response alone, both values, or
+# neither; passing both unconditionally turned the first shape into a 500.
+# WeakKey so hook GC reclaims the entry.
+_after_hook_sig_cache: weakref.WeakKeyDictionary[Callable[..., Any], tuple[bool, bool]] = (
+    weakref.WeakKeyDictionary()
+)
+
 # `request._state` key holding the per-route filtered response-phase
 # middleware chain, set by the request phase only when the matched route
 # declares `exclude_middleware`. Absent for routes with no exclusions, so
@@ -304,7 +312,12 @@ class DispatchMixin:
         # Content-Length (cheap reject) and the actually-buffered body size
         # (defence-in-depth when no Content-Length was sent). Per
         # RFC 9110 Sec. 15.5.14, the status is 413 Content Too Large.
-        max_size = self.config.get("MAX_CONTENT_LENGTH")
+        # Skipped when the transport already applied this app's limit to both
+        # the declared and the received length - which both shipped transports
+        # do. It still runs for a request that reached dispatch another way: a
+        # mounted sub-app (a fresh `Request`, and possibly a smaller limit), or
+        # a caller invoking `handle_request` directly.
+        max_size = None if request._length_enforced else self.config.get("MAX_CONTENT_LENGTH")
         if max_size is not None:
             declared = request.content_length
             over = declared is not None and declared > max_size
@@ -425,6 +438,10 @@ class DispatchMixin:
         `_bp_name`, `resolver`) that the `finally` block reads.
         """
         _exc: Exception | None = None
+        # Whether a background task took ownership of releasing this request's
+        # upload spool files. Bound before the `try` so the `finally` can read
+        # it even when dispatch raises before any task could be scheduled.
+        _scheduled_bg = False
         _bp_name: str | None = None
         # Resolver allocation is deferred until a non-trivial route demands
         # it. A trivial-plan route (no injected params, no dependencies)
@@ -489,7 +506,10 @@ class DispatchMixin:
                 # no-callback request pays no extra coroutine on the fast path.
                 if request._state and request._state.get("_after_this_request"):
                     response = await self._run_after_hooks(request, response, None)
-                self._schedule_background_tasks(request, response)
+                # Returning from inside the `try` still runs the `finally`
+                # below, so the release decision is recorded here and taken
+                # there - one rule for every exit rather than two.
+                _scheduled_bg = self._schedule_background_tasks(request, response)
                 return response
 
             # Phase: request-phase middleware. Skipped entirely - no awaited
@@ -574,8 +594,10 @@ class DispatchMixin:
                 response = await self._run_after_hooks(request, response, _bp_name)
 
             # Schedule any background tasks (DI-injected queue + the
-            # response-attached task) in fire-and-forget fashion.
-            self._schedule_background_tasks(request, response)
+            # response-attached task) in fire-and-forget fashion. When one was
+            # scheduled it owns releasing the request's upload spool files,
+            # because it may still be reading them.
+            _scheduled_bg = self._schedule_background_tasks(request, response)
 
             # Fused response phase. The slot is `None` when no middleware is
             # registered, so the whole block is skipped with no awaited no-op.
@@ -663,6 +685,13 @@ class DispatchMixin:
                 _td_hooks = self._select_teardown_request_hooks(_bp_name)
                 if _td_hooks:
                     await self._run_teardown_hooks(_td_hooks, _exc, "teardown_request")
+
+            # Release the spool files a multipart parse opened. An upload past
+            # the spool threshold is a real file on disk, and nothing closed it
+            # once the response was sent. Skipped when a background task was
+            # scheduled: it may still be reading them, and releases them itself.
+            if not _scheduled_bg and request._form is not None:
+                request._close_uploads()
 
             # `teardown_appcontext` fires when the app context pops; in
             # veloce that happens at the end of each request (no separate
@@ -1101,14 +1130,12 @@ class DispatchMixin:
         """
         # Run after_request hooks - app-level then matched blueprint.
         for hook in reversed(self._after_request_hooks):
-            hook_result = await self._call_handler(hook, {"request": request, "response": response})
+            hook_result = await self._call_after_hook(hook, request, response)
             if hook_result is not None and isinstance(hook_result, Response):
                 response = hook_result
         if self._bp_after_hooks and bp_name is not None:
             for hook in reversed(self._bp_after_hooks.get(bp_name, ())):
-                hook_result = await self._call_handler(
-                    hook, {"request": request, "response": response}
-                )
+                hook_result = await self._call_after_hook(hook, request, response)
                 if hook_result is not None and isinstance(hook_result, Response):
                     response = hook_result
 
@@ -1118,21 +1145,27 @@ class DispatchMixin:
         one_shot = request._state.get("_after_this_request") if request._state else None
         if one_shot:
             for fn in one_shot:
-                fn_result = await self._call_handler(fn, {"request": request, "response": response})
+                fn_result = await self._call_after_hook(fn, request, response)
                 if fn_result is not None and isinstance(fn_result, Response):
                     response = fn_result
         return response
 
-    def _schedule_background_tasks(self, request: Request, response: Response) -> None:
+    def _schedule_background_tasks(self, request: Request, response: Response) -> bool:
         """Schedule the DI-injected queue and response-attached background task.
 
         Both run through `spawn()`, the single tracked-task path: each is held
         by a strong reference (so the loop cannot GC it mid-flight) and is
         cancelled-and-drained on shutdown alongside app-spawned tasks rather
         than orphaned, and its failures surface through the same logging path.
+
+        Returns whether anything was scheduled. A background task outlives the
+        response and may still be reading an upload, so when one exists the
+        request's spool files are released after it finishes rather than at
+        teardown; the caller uses this to decide which.
         """
+        coros = []
         if request._background_tasks is not None:
-            self.spawn(request._background_tasks.run_all())
+            coros.append(request._background_tasks.run_all())
 
         # Response-attached background task (shape:
         # `Response(content=..., background=BackgroundTask(fn))`).
@@ -1148,7 +1181,29 @@ class DispatchMixin:
             else:
                 coro = None
             if coro is not None:
-                self.spawn(coro)
+                coros.append(coro)
+
+        if not coros:
+            return False
+        tasks = [self.spawn(coro) for coro in coros]
+
+        # Release the request's upload spool files once the last of them
+        # finishes. A done-callback rather than another spawned task: it adds
+        # no tracked task to drain at shutdown, and leaves the tasks running
+        # concurrently as they did before. A failed task still counts as done,
+        # so a failure cannot strand the files.
+        if request._form is not None:
+            remaining = len(tasks)
+
+            def _release(_task: asyncio.Task[Any]) -> None:
+                nonlocal remaining
+                remaining -= 1
+                if remaining == 0:
+                    request._close_uploads()
+
+            for task in tasks:
+                task.add_done_callback(_release)
+        return True
 
     # ── Error handling and handler invocation ──────────────
 
@@ -1212,6 +1267,26 @@ class DispatchMixin:
         # Run sync handlers in the thread pool so they cannot block the event
         # loop; `offload` preserves request-scoped ContextVars.
         return await offload(handler, **kwargs)
+
+    async def _call_after_hook(self, hook: Callable, request: Request, response: Response) -> Any:
+        """Call an after-request hook, adapting kwargs to match its signature."""
+        flags = _after_hook_sig_cache.get(hook)
+        if flags is None:
+            params = inspect.signature(hook).parameters
+            # A hook taking `**kwargs` accepts whatever is offered.
+            if any(p.kind is p.VAR_KEYWORD for p in params.values()):
+                flags = (True, True)
+            else:
+                flags = ("request" in params, "response" in params)
+            with contextlib.suppress(TypeError):
+                _after_hook_sig_cache[hook] = flags
+        wants_request, wants_response = flags
+        kwargs: dict[str, Any] = {}
+        if wants_request:
+            kwargs["request"] = request
+        if wants_response:
+            kwargs["response"] = response
+        return await self._call_handler(hook, kwargs)
 
     async def _call_exc_handler(
         self, handler: Callable, request: Request, exc: BaseException

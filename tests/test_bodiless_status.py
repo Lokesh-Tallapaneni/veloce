@@ -116,8 +116,9 @@ def test_native_encode_304_advertises_representation_length():
     assert enc.endswith(b"\r\n\r\n")  # but no body sent
 
 
-def test_make_conditional_304_has_no_content_length():
-    # The normal 304 path (downgrade) clears the body and CL; advertised len 0.
+def test_make_conditional_304_advertises_the_representation_length():
+    # The downgrade drops the body, so the length has to be recorded first -
+    # otherwise the 304 advertises 0 for a representation that is 5 bytes.
     from veloce import Request
 
     resp = Response(status_code=200, body=b"hello")
@@ -131,4 +132,5 @@ def test_make_conditional_304_has_no_content_length():
     )
     resp.make_conditional(req)
     assert resp.status_code == 304
-    assert b"Content-Length: 0" in resp.encode()
+    assert b"Content-Length: 5" in resp.encode()
+    assert resp.encode().endswith(b"\r\n\r\n")

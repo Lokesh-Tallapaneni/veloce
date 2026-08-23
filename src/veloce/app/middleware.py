@@ -106,6 +106,19 @@ class MiddlewareMixin:
                 self._asgi_middleware.append((middleware, options))
                 self._gen += 1
         elif isinstance(middleware, Middleware):
+            # An already-built instance takes no construction arguments, so the
+            # only option it can honour is the name override - and it must, or
+            # `exclude_middleware=[name]` silently matches nothing and a route
+            # keeps a middleware the author believes they opted out of.
+            name = options.pop("name", None)
+            if name is not None:
+                middleware.name = name
+            if options:
+                raise TypeError(
+                    f"add_middleware() received {', '.join(sorted(options))} for an "
+                    "already-built middleware instance; construction arguments must "
+                    "be passed to the constructor, or pass the class instead."
+                )
             self._register_middleware(middleware, priority)
         else:
             # A bare ASGI middleware instance cannot be wired up - veloce

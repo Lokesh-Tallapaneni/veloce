@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 import orjson
 
+from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import _JSONRPC_INVALID_REQUEST
 from veloce.contrib.mcp.session import MCPSession
 
@@ -125,6 +126,9 @@ class StdioTransport:
         # a handler's `sample` / `elicit` / `roots` reaches it. The loop is serial,
         # so a direct write never races the loop's response write.
         self.server.set_notifier(self.send)
+        # Names the transport for `MCPContext.transport`; set once for the
+        # serve task, whose context every dispatched call inherits.
+        _transport_var.set("stdio")
         self.server.set_requester(self.request)
         # One session for the connection's lifetime: it records the client's
         # advertised capabilities from `initialize` and lets the server enforce

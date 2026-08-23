@@ -23,6 +23,11 @@ from veloce import Depends, Security, Veloce
 from veloce._handler_plan import build_plan, compute_parallel_groups
 from veloce.testclient import TestClient
 
+#: How long each probe dependency sleeps. A sequential resolver makes the
+#: second dependency start a whole delay behind the first; a concurrent one
+#: starts both at once.
+_DEP_DELAY = 0.05
+
 
 def test_independent_async_siblings_run_in_parallel():
     """Two sibling Depends() begin concurrently rather than sequentially.
@@ -37,12 +42,12 @@ def test_independent_async_siblings_run_in_parallel():
 
     async def slow_a() -> str:
         starts.append(time.monotonic())
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_DEP_DELAY)
         return "a"
 
     async def slow_b() -> str:
         starts.append(time.monotonic())
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_DEP_DELAY)
         return "b"
 
     @app.get("/parallel")
@@ -53,9 +58,12 @@ def test_independent_async_siblings_run_in_parallel():
     assert resp.status_code == 200
     assert resp.json() == {"a": "a", "b": "b"}
     assert len(starts) == 2
-    # Both deps must begin within a tiny window of each other —
-    # sequential would mean the second waits ~50 ms behind the first.
-    assert abs(starts[1] - starts[0]) < 0.010, (
+    # Both deps must begin close together; sequential would mean the second
+    # waits a whole `_DEP_DELAY` behind the first. The budget is half that delay
+    # rather than a small absolute number: it still fails a sequential
+    # implementation by a wide margin, while leaving enough headroom that a
+    # loaded scheduler cannot fail a correct one.
+    assert abs(starts[1] - starts[0]) < _DEP_DELAY / 2, (
         f"siblings did not start concurrently: delta={starts[1] - starts[0]:.4f}s"
     )
 

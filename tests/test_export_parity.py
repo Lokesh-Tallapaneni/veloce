@@ -134,11 +134,17 @@ def _declared_all(tree: ast.Module) -> list[str] | None:
     return None
 
 
+#: Modules whose names are typing machinery rather than package surface. A
+#: gateway that resolves an export lazily needs `TYPE_CHECKING` and `Any` to do
+#: it, and neither is something a user imports from the package.
+_NON_SURFACE_MODULES = frozenset({"__future__", "typing"})
+
+
 def _imported_names(tree: ast.Module) -> set[str]:
     """Public names a module binds through `from X import Y`."""
     names: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module != "__future__":
+        if isinstance(node, ast.ImportFrom) and node.module not in _NON_SURFACE_MODULES:
             for alias in node.names:
                 bound = alias.asname or alias.name
                 if not bound.startswith("_"):

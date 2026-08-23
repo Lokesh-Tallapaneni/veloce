@@ -32,6 +32,7 @@ from urllib.parse import quote
 from veloce import status
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
 from veloce.contrib.mcp._helpers import _notifier_var
+from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
     MCPError,
@@ -240,6 +241,7 @@ async def _stream(
 
 async def _run(server: MCPServer, connection: _SSEConnection, dispatch: _Dispatch) -> None:
     """Handle one message, queueing its notifications and response on the stream."""
+    transport_token = _transport_var.set("sse")
     token = _notifier_var.set(connection.send)
     set_principal(dispatch.principal)
     try:
@@ -255,3 +257,4 @@ async def _run(server: MCPServer, connection: _SSEConnection, dispatch: _Dispatc
         )
     finally:
         _notifier_var.reset(token)
+        _transport_var.reset(transport_token)

@@ -147,6 +147,13 @@ gunicorn main:app -k veloce.workers.VeloceWorker \
     --workers 4 --max-requests 10000 --max-requests-jitter 1000
 ```
 
+!!! warning "`--max-requests` does not bound a WebSocket worker's lifetime"
+    The counter is consulted at request boundaries, and a WebSocket has none
+    until it closes, so a worker serving only long-lived WebSocket connections
+    never reaches the limit and never recycles. That is deliberate - recycling
+    one would mean dropping a live connection - but it means `--max-requests`
+    is not a wall-clock lifetime bound for a WebSocket-heavy deployment.
+
 ## Per-worker versus shared state
 
 Every worker is a separate operating-system process with its own Python

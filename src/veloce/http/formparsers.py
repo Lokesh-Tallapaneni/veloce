@@ -144,6 +144,10 @@ def parse_multipart_form(
 
     result = FormData()
     state: dict[str, Any] = {
+        # True between a part's begin and its end. A body that stops mid-part
+        # leaves it set, which is how a truncated upload is told apart from a
+        # complete one - the parser itself reports no error for either.
+        "part_open": False,
         "parts_seen": 0,
         "files_seen": 0,
         "fields_seen": 0,
@@ -168,6 +172,7 @@ def parse_multipart_form(
         raise RequestEntityTooLarge(message)
 
     def on_part_begin() -> None:
+        state["part_open"] = True
         state["parts_seen"] += 1
         if state["parts_seen"] > max_parts:
             _too_large(f"multipart form exceeds the {max_parts}-part limit")
@@ -243,6 +248,7 @@ def parse_multipart_form(
         state["spool"].write(data[start:end])
 
     def on_part_end() -> None:
+        state["part_open"] = False
         # An empty part never emits part data, so classify it here too.
         if not state["disposition_parsed"]:
             _resolve_part_kind()
@@ -333,6 +339,13 @@ def parse_multipart_form(
             # 200 would silently drop the missing fields/files, so reject the
             # whole body with 400 — the same posture as a malformed boundary.
             raise BadRequest("multipart/form-data body is malformed") from exc
+        if state["part_open"]:
+            # The body ended inside a part: no closing delimiter, and for the
+            # underlying parser that is simply the end of input rather than an
+            # error. Accepting it would return 200 with the truncated part's
+            # field missing, so the caller could not tell a short upload from a
+            # form that genuinely omitted it.
+            raise BadRequest("multipart/form-data body is truncated")
     except BaseException:
         for value in result.values():
             if isinstance(value, UploadFile):

@@ -24,6 +24,20 @@ import orjson
 
 from veloce._protocol_constants import URL_SCHEME_HTTP
 
+# Per-process cap on simultaneously-open connections for the built-in serving
+# path. Without it, a DDoS can exhaust RAM by opening sockets faster than
+# dispatch can drain them.
+DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
+
+# Write-side flow-control high watermark (bytes). When a streaming/SSE producer
+# outruns a slow client the event loop's transport write buffer grows; left
+# unbounded that is a per-connection memory-exhaustion vector. Handed to
+# `transport.set_write_buffer_limits()`, it makes asyncio invoke
+# `pause_writing`/`resume_writing` once the buffer crosses the mark, which the
+# streaming path awaits on. The low mark is left to asyncio's default (a
+# quarter of high) when only the high mark is supplied.
+DEFAULT_WRITE_BUFFER_HIGH_WATER = 256 * 1024
+
 _logger = logging.getLogger(__name__)
 
 
@@ -166,6 +180,10 @@ class Config(dict[str, Any]):
             "REQUEST_HANDLER_TIMEOUT": 30,
             "KEEP_ALIVE_TIMEOUT": 75,
             "REQUEST_TIMEOUT": 30,
+            # Read by the built-in serving path alongside the timeouts above;
+            # seeded here so every key it consults is discoverable in one place.
+            "MAX_CONCURRENT_CONNECTIONS": DEFAULT_MAX_CONCURRENT_CONNECTIONS,
+            "WRITE_BUFFER_HIGH_WATER": DEFAULT_WRITE_BUFFER_HIGH_WATER,
             # OS-level TCP keepalive for the built-in (Veloce.run / gunicorn
             # worker) serving path. When enabled, SO_KEEPALIVE is set on each
             # accepted socket so the kernel probes idle peers and tears down
@@ -270,6 +288,14 @@ class Config(dict[str, Any]):
         a `.env` file carries no types. Only UPPERCASE keys are kept (see
         `from_mapping`). With `silent=True` a missing file returns
         `False` rather than raising.
+
+        Keys are stored exactly as the file spells them, and `os.environ` is
+        not touched. This does not compose with `from_prefixed_env`, which
+        strips its prefix: a file setting `MYAPP_TIMEOUT` becomes the config key
+        `MYAPP_TIMEOUT` here and `TIMEOUT` there. `veloce run` seeds
+        `os.environ` from the same file before importing the app, so an app
+        using both reads two different keys depending on how it was started -
+        pick one of the two and use it on every path.
         """
         try:
             with open(filename, encoding="utf-8") as handle:
@@ -302,6 +328,9 @@ class Config(dict[str, Any]):
         with JSON-decoded values (falling back to the raw string when JSON
         parsing fails). Nested config via `__` separator: `VELOCE_MAIL__SERVER`
         sets `config["MAIL"]["SERVER"]`.
+
+        Reads `os.environ` only. `from_env_file` reads a file and keeps each key
+        verbatim, so the two name the same setting differently - see its note.
         """
         sep = f"{prefix}_"
         for name, raw in os.environ.items():

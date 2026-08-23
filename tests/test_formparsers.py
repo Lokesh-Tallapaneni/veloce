@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from veloce import Request, TestClient, Veloce
 from veloce.http.formparsers import _parse_content_disposition
 
 
@@ -371,3 +372,84 @@ def test_declared_charset_valid_bytes_still_decode():
     body = head + "café".encode() + tail
     form = parse_multipart_form(body, _ct())
     assert form["name"] == "café"
+
+
+# ── A truncated body is refused, not silently accepted ───────────────
+
+_TRUNC_BOUNDARY = "----truncation-probe"
+_TRUNC_HEADERS = {"Content-Type": f"multipart/form-data; boundary={_TRUNC_BOUNDARY}"}
+
+
+def _multipart(*fields: tuple[str, str], terminator: bool = True) -> bytes:
+    parts = "".join(
+        f'--{_TRUNC_BOUNDARY}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
+        for name, value in fields
+    )
+    return (parts + (f"--{_TRUNC_BOUNDARY}--\r\n" if terminator else "")).encode()
+
+
+def _echo_app() -> Veloce:
+    app = Veloce(openapi_url=None)
+
+    @app.post("/upload")
+    async def upload(request: Request):
+        form = await request.form()
+        return {"fields": {k: v for k, v in form.items() if isinstance(v, str)}}
+
+    return app
+
+
+def test_a_body_truncated_mid_part_is_refused():
+    """The parser reports no error for a short body, so the field just vanished.
+
+    A truncated upload returned 200 with the cut part's field silently missing,
+    which a caller cannot tell from a form that genuinely omitted it.
+    """
+    complete = _multipart(("a", "value-a"), ("b", "value-b"))
+    truncated = complete[: complete.index(b"value-b")]
+    with TestClient(_echo_app()) as client:
+        response = client.post("/upload", content=truncated, headers=_TRUNC_HEADERS)
+    assert response.status_code == 400
+    assert "truncated" in response.json()["detail"]
+
+
+def test_a_body_truncated_in_a_part_header_is_refused():
+    complete = _multipart(("a", "value-a"), ("b", "value-b"))
+    with TestClient(_echo_app()) as client:
+        response = client.post("/upload", content=complete[:60], headers=_TRUNC_HEADERS)
+    assert response.status_code == 400
+
+
+def test_a_body_missing_its_closing_delimiter_is_refused():
+    """The final part never ends, which is the same truncation."""
+    with TestClient(_echo_app()) as client:
+        response = client.post(
+            "/upload", content=_multipart(("a", "1"), terminator=False), headers=_TRUNC_HEADERS
+        )
+    assert response.status_code == 400
+
+
+def test_a_complete_body_is_still_accepted():
+    with TestClient(_echo_app()) as client:
+        response = client.post(
+            "/upload", content=_multipart(("a", "1"), ("b", "2")), headers=_TRUNC_HEADERS
+        )
+    assert response.status_code == 200
+    assert response.json()["fields"] == {"a": "1", "b": "2"}
+
+
+def test_an_empty_form_is_still_accepted():
+    """A terminator with no parts is a valid empty form, not a truncation."""
+    with TestClient(_echo_app()) as client:
+        response = client.post(
+            "/upload", content=f"--{_TRUNC_BOUNDARY}--\r\n".encode(), headers=_TRUNC_HEADERS
+        )
+    assert response.status_code == 200
+    assert response.json()["fields"] == {}
+
+
+def test_an_empty_field_value_is_still_accepted():
+    with TestClient(_echo_app()) as client:
+        response = client.post("/upload", content=_multipart(("a", "")), headers=_TRUNC_HEADERS)
+    assert response.status_code == 200
+    assert response.json()["fields"] == {"a": ""}

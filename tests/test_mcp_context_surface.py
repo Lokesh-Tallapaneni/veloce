@@ -249,3 +249,140 @@ def test_component_access_explains_itself_off_a_server():
     ctx = MCPContext("probe")
     with pytest.raises(RuntimeError, match="list_resources"):
         ctx.list_resources()
+
+
+# ── The call's identity, its task, and the app it runs in ────────────
+
+
+def _probe_app(seen: dict) -> Veloce:
+    app = Veloce(openapi_url=None)
+    app.state.pool = "a-connection-pool"
+
+    @app.mcp_tool(description="Record what the context exposes")
+    async def report(ctx: MCPContext) -> dict:
+        seen.update(
+            {
+                "request_id": ctx.request_id,
+                "origin_request_id": ctx.origin_request_id,
+                "task_id": ctx.task_id,
+                "transport": ctx.transport,
+                "client_id": ctx.client_id,
+                "lifespan_context": ctx.lifespan_context,
+            }
+        )
+        return {"ok": True}
+
+    return app
+
+
+async def _call(app: Veloce, msg_id: object = 42, params: dict | None = None) -> dict:
+    return await MCPServer(app).handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "method": "tools/call",
+            "params": {"name": "report", "arguments": {}, **(params or {})},
+        },
+        MCPSession(),
+    )
+
+
+async def test_the_request_id_is_the_id_of_the_call_being_served():
+    """A handler correlating its own work needs the id the client sent."""
+    seen: dict = {}
+    await _call(_probe_app(seen), msg_id=42)
+    assert seen["request_id"] == 42
+
+
+async def test_the_lifespan_context_is_the_application_state():
+    """A pool opened in a startup hook is reached the same way through either door."""
+    seen: dict = {}
+    await _call(_probe_app(seen))
+    assert seen["lifespan_context"].pool == "a-connection-pool"
+
+
+async def test_an_inline_call_has_no_task_id():
+    seen: dict = {}
+    await _call(_probe_app(seen))
+    assert seen["task_id"] is None
+    assert seen["origin_request_id"] is None
+
+
+async def test_an_unauthenticated_call_has_no_client_id():
+    """`client_info` is what the client said; `client_id` is what it proved."""
+    seen: dict = {}
+    await _call(_probe_app(seen))
+    assert seen["client_id"] is None
+
+
+async def test_the_transport_is_none_off_a_transport():
+    """A bare dispatch is not being served by one, and says so."""
+    seen: dict = {}
+    await _call(_probe_app(seen))
+    assert seen["transport"] is None
+
+
+async def test_a_task_reports_its_handle_and_the_call_that_created_it():
+    """A task outlives the call that started it, so the two ids differ in meaning.
+
+    `task_id` is the handle the client polls with; `origin_request_id` is the
+    request it is correlating against.
+    """
+    import asyncio
+
+    seen: dict = {}
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Runs in the background", task_support=True)
+    async def report(ctx: MCPContext) -> dict:
+        seen.update(
+            {
+                "task_id": ctx.task_id,
+                "origin_request_id": ctx.origin_request_id,
+                "is_background_task": ctx.is_background_task,
+            }
+        )
+        return {"ok": True}
+
+    response = await MCPServer(app).handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {"name": "report", "arguments": {}, "task": {"ttl": 5000}},
+        },
+        MCPSession(),
+    )
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if seen:
+            break
+
+    handle = response["result"]["task"]["taskId"]
+    assert seen["task_id"] == handle
+    assert seen["origin_request_id"] == 7
+    assert seen["is_background_task"] is True
+
+
+def test_the_transport_names_itself_over_http():
+    """`transport` is only meaningful on a transport, so it is proved on one."""
+    seen: dict = {}
+    app = Veloce(openapi_url=None)
+
+    @app.mcp_tool(description="Report the transport")
+    async def report(ctx: MCPContext) -> dict:
+        seen["transport"] = ctx.transport
+        return {"ok": True}
+
+    app.mount_mcp(transport="http")
+    response = app.test_client().post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "report", "arguments": {}},
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert seen["transport"] == "http"

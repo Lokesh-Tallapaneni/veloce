@@ -10,12 +10,19 @@ on:
   # Lets the release workflow gate a tag on this exact matrix.
   workflow_call:
 
+# Read-only by default: nothing here writes to the repository, and a token
+# scoped no wider than the work is what limits the blast radius of a compromised
+# third-party action.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
+    timeout-minutes: 20
     name: test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -23,10 +30,12 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -45,13 +54,16 @@ jobs:
         run: uv run pytest -q --cov=veloce --cov-report=term-missing --cov-fail-under=90
 
   windows:
+    timeout-minutes: 20
     name: test (windows, py3.12)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           python-version: "3.12"
 
@@ -67,13 +79,16 @@ jobs:
         run: uv run pytest -q
 
   no-msgspec:
+    timeout-minutes: 20
     name: test without msgspec
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           python-version: "3.12"
 
@@ -88,13 +103,16 @@ jobs:
         run: uv run pytest -q
 
   fuzz:
+    timeout-minutes: 20
     name: parser fuzzing (hypothesis)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           python-version: "3.12"
 
@@ -110,10 +128,13 @@ jobs:
           HYPOTHESIS_PROFILE: ci
 
   test-layout:
+    timeout-minutes: 20
     name: test file layout
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # Catch-all / iteration-named test files are forbidden; each test
       # belongs in test_<feature>.py. Enforce the rule structurally so it

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from veloce import Veloce
-from veloce.contrib.templating import Jinja2Templates
+from veloce.contrib.templating import Jinja2Templates, render_template_string
 from veloce.testclient import TestClient
 
 
@@ -155,3 +155,111 @@ def test_multiple_renders_sync_idempotently(tmpl_dir: Path):
     r1 = client.get("/x")
     r2 = client.get("/x")
     assert r1.body == r2.body == b"[ok]"
+
+
+# ── The string helper sees app-registered helpers ────────────────────
+
+
+def _string_app(suffix: str = "") -> Veloce:
+    """An app with no template folder, so the string helper takes its fallback."""
+    app = Veloce(openapi_url=None)
+
+    @app.template_filter("shout")
+    def shout(value):  # noqa: ANN001, ANN202
+        return str(value).upper() + suffix
+
+    @app.template_global()
+    def house():  # noqa: ANN202
+        return "nordwind" + suffix
+
+    @app.template_test("loud")
+    def loud(value):  # noqa: ANN001, ANN202
+        return str(value).isupper()
+
+    return app
+
+
+def test_a_registered_filter_resolves_without_a_template_folder():
+    """The fallback environment never received the app's helpers.
+
+    `render_template_string` fell back to a bare environment, so a template
+    using `@app.template_filter` raised `No filter named ...` and surfaced as
+    a 500 with nothing pointing at the cause - while the docstring said the
+    helper honours app-level filters.
+    """
+    app = _string_app()
+
+    @app.get("/")
+    async def index():
+        return render_template_string("{{ x|shout }}", x="hi")
+
+    with TestClient(app) as client:
+        assert client.get("/").text == "HI"
+
+
+def test_a_registered_global_resolves_too():
+    app = _string_app()
+
+    @app.get("/")
+    async def index():
+        return render_template_string("{{ house() }}")
+
+    with TestClient(app) as client:
+        assert client.get("/").text == "nordwind"
+
+
+def test_a_registered_test_resolves_too():
+    app = _string_app()
+
+    @app.get("/")
+    async def index():
+        return render_template_string("{{ 'AB' is loud }}")
+
+    with TestClient(app) as client:
+        assert client.get("/").text == "True"
+
+
+def test_one_app_does_not_see_another_app_filter():
+    """The fallback env is per app, so registrations cannot bleed across."""
+    first, second = _string_app("!"), _string_app("?")
+
+    for app in (first, second):
+
+        @app.get("/")
+        async def index():
+            return render_template_string("{{ x|shout }}", x="hi")
+
+    with TestClient(first) as client:
+        assert client.get("/").text == "HI!"
+    with TestClient(second) as client:
+        assert client.get("/").text == "HI?"
+
+
+def test_a_filter_registered_after_the_first_render_is_picked_up():
+    """The sync is token-keyed on the registration counts, not once-only."""
+    app = _string_app()
+
+    @app.get("/")
+    async def index():
+        return render_template_string("{{ x|whisper }}", x="HI")
+
+    with TestClient(app) as client:
+        assert client.get("/").status_code == 500
+
+        @app.template_filter("whisper")
+        def whisper(value):  # noqa: ANN001, ANN202
+            return str(value).lower()
+
+        assert client.get("/").text == "hi"
+
+
+def test_an_unregistered_filter_still_fails():
+    """Syncing the app's helpers must not make an unknown name resolve."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/")
+    async def index():
+        return render_template_string("{{ x|nosuchfilter }}", x="hi")
+
+    with TestClient(app) as client:
+        assert client.get("/").status_code == 500

@@ -131,6 +131,9 @@ class UploadFile:
         The upload's read cursor is reset to 0 before reading and restored
         to its prior position afterwards so the upload remains available
         for re-inspection.
+
+        This opens and writes on the calling thread. In an async handler use
+        `save_async`, which is the same work hopped to a thread.
         """
         pos = self.file.tell()
         try:
@@ -147,6 +150,15 @@ class UploadFile:
                 self.file.seek(pos)
 
     # ── Async file API ─────────────────────────────────────
+
+    async def save_async(self, destination: str | BinaryIO, buffer_size: int = 16384) -> None:
+        """Stream this upload into `destination` without blocking the event loop.
+
+        The async counterpart of `save`, with identical behaviour: handlers are
+        async, so opening and writing on the calling thread would block the loop
+        for the length of the upload.
+        """
+        await asyncio.to_thread(self.save, destination, buffer_size)
 
     async def read(self, size: int = -1) -> bytes:
         """Read up to size bytes from the upload."""

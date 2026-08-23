@@ -179,12 +179,26 @@ Pass `ping_comment="..."` to set the text of the keep-alive frame (it must be
 a single line and is only meaningful alongside `ping`):
 
 ```python
-    return EventSourceResponse(generate(), ping=15, ping_comment="keepalive")
+import asyncio
+
+from veloce import EventSourceResponse, Request, ServerSentEvent, Veloce
+
+app = Veloce()
 
 
 async def wait_for_next_update() -> str:
     await asyncio.sleep(30)
     return "update"
+
+
+@app.get("/slow")
+async def slow(request: Request):
+    async def generate():
+        while True:
+            data = await wait_for_next_update()
+            yield ServerSentEvent(data=data)
+
+    return EventSourceResponse(generate(), ping=15, ping_comment="keepalive")
 ```
 
 !!! warning "`ping` must be a finite positive number of seconds"

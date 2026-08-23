@@ -197,3 +197,51 @@ def test_unit_method_gate_and_skips():
     out = asyncio.new_event_loop().run_until_complete(mw.process_response(_req("POST"), resp))
     assert out is resp
     assert not out.headers.get("ETag")
+
+
+# ── The ASGI emit path agrees with the native one ────────────────────
+
+
+def _etag_app() -> Veloce:
+    app = Veloce(openapi_url=None)
+    app.add_middleware(ConditionalGetMiddleware())
+
+    @app.get("/r")
+    async def resource():
+        return {"a": "x" * 40}
+
+    return app
+
+
+def test_a_304_advertises_the_representation_length_over_asgi():
+    """The 200 advertised 48 bytes and the 304 advertised 0 for the same entity."""
+    with TestClient(_etag_app()) as client:
+        first = client.get("/r")
+        assert first.headers["content-length"] == "48"
+        second = client.get("/r", headers={"If-None-Match": first.headers["etag"]})
+        assert second.status_code == 304
+        assert second.headers["content-length"] == "48"
+
+
+def test_a_304_over_asgi_sends_no_body():
+    with TestClient(_etag_app()) as client:
+        etag = client.get("/r").headers["etag"]
+        assert client.get("/r", headers={"If-None-Match": etag}).body == b""
+
+
+def test_a_304_over_asgi_still_carries_its_validator():
+    with TestClient(_etag_app()) as client:
+        etag = client.get("/r").headers["etag"]
+        assert client.get("/r", headers={"If-None-Match": etag}).headers["etag"] == etag
+
+
+def test_a_head_response_still_advertises_the_get_length():
+    """HEAD shares the branch the 304 length is computed on."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/r")
+    async def resource():
+        return {"a": "x" * 40}
+
+    with TestClient(app) as client:
+        assert client.head("/r").headers["content-length"] == "48"

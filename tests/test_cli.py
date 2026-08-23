@@ -878,3 +878,77 @@ def test_cli_version_short_flag(capsys):
     captured = capsys.readouterr()
     output = (captured.out + captured.err).strip()
     assert output == f"veloce {__version__}"
+
+
+# ── `routes` and `check` load the dotenv file too ────────────────────
+
+
+@pytest.mark.parametrize("command", ["routes", "check"])
+def test_the_app_importing_commands_accept_the_env_file_flags(command):
+    """Both imported the app under a different environment than `run` would.
+
+    `veloce check` exists to predict deployed configuration, so importing the
+    app without the dotenv file every other app-importing subcommand loads made
+    its verdict describe a different application.
+    """
+    parser = build_parser()
+    args = parser.parse_args([command, "demo:app", "--env-file", ".env.test"])
+    assert args.env_file == ".env.test"
+    assert args.no_env_file is False
+
+    args = parser.parse_args([command, "demo:app", "--no-env-file"])
+    assert args.no_env_file is True
+
+
+@pytest.mark.parametrize("command", ["routes", "check"])
+def test_the_dotenv_file_reaches_the_imported_app(tmp_path, monkeypatch, capsys, command):
+    """The audit must see the value the deployment will run with."""
+    (tmp_path / "envapp.py").write_text(
+        textwrap.dedent(
+            """
+            import os
+            from veloce import Veloce
+
+            app = Veloce(debug=os.environ.get("VELOCE_TEST_DEBUG") == "1", openapi_url=None)
+
+            @app.get("/x")
+            async def x():
+                return {}
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text("VELOCE_TEST_DEBUG=1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delenv("VELOCE_TEST_DEBUG", raising=False)
+
+    main([command, "envapp:app"])
+    capsys.readouterr()
+    import envapp
+
+    assert envapp.app.debug is True
+
+
+def test_no_env_file_keeps_the_audit_off_the_dotenv(tmp_path, monkeypatch, capsys):
+    (tmp_path / "envapp2.py").write_text(
+        textwrap.dedent(
+            """
+            import os
+            from veloce import Veloce
+
+            app = Veloce(debug=os.environ.get("VELOCE_TEST_DEBUG2") == "1", openapi_url=None)
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text("VELOCE_TEST_DEBUG2=1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delenv("VELOCE_TEST_DEBUG2", raising=False)
+
+    main(["check", "envapp2:app", "--no-env-file"])
+    capsys.readouterr()
+    import envapp2
+
+    assert envapp2.app.debug is False

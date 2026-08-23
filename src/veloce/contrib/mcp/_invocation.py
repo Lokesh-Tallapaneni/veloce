@@ -20,6 +20,7 @@ from veloce.contrib.mcp._helpers import (
     _inflight_var,
     _log_level_var,
     _notifier_var,
+    _request_id_var,
     _requester_var,
     _route_path_params,
     _RouteResponse,
@@ -228,6 +229,7 @@ class InvocationMixin:
             session=session,
             server=self,
             request_meta=request_meta,
+            request_id=_request_id_var.get(),
         )
         # Expose this context on its in-flight registration so a
         # `notifications/cancelled` flips `ctx.cancelled` (cooperative stop) as

@@ -481,6 +481,31 @@ def redirect(
     return RedirectResponse(location, status_code=code, headers=headers)
 
 
+# ── url_for() ─────────────────────────────────────────────
+
+
+def url_for(endpoint: str, /, **path_params: Any) -> str:
+    """Build the URL for a named route on the active app.
+
+    The module-level form of `current_app.url_for`, for code that is already
+    inside a request and does not hold the app. Templates receive `url_for`
+    automatically, so this is for handlers and helpers.
+
+    The endpoint is positional-only, so a route may have a `{endpoint}` or
+    `{name}` segment and still be reversed.
+
+    Raises `RuntimeError` outside an application context, where there is no app
+    whose routing table could answer.
+    """
+    app = _current_app_var.get()
+    if app is None:
+        raise RuntimeError(
+            "url_for() requires an active application context - "
+            "call it inside a request, or use `app.url_for(...)` directly."
+        )
+    return app.url_for(endpoint, **path_params)
+
+
 # ── jsonify() ─────────────────────────────────────────────
 
 

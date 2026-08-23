@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import CORSMiddleware, Veloce
+from veloce import CORSMiddleware, Middleware, Veloce
+from veloce.http.header_set import HeaderSet
 from veloce.testclient import TestClient
 
 # ── Construction validation ────────────────────────────────────────────
@@ -385,3 +386,171 @@ def test_preflight_wildcard_methods_allows_any():
         headers={"origin": "http://a.example", "access-control-request-method": "DELETE"},
     )
     assert resp.status_code == 204
+
+
+# ── The qualifier headers require an allowed origin ──────────────────
+
+
+def _qualified_app() -> Veloce:
+    app = Veloce(openapi_url=None)
+    app.add_middleware(
+        CORSMiddleware(
+            allow_origins=["https://good.test"],
+            allow_headers=["Content-Type"],
+            allow_credentials=True,
+            expose_headers=["X-Total"],
+        )
+    )
+
+    @app.get("/")
+    async def index():
+        return {"ok": True}
+
+    return app
+
+
+def _has(response, name: str) -> bool:
+    return name in {key.lower() for key in response.headers}
+
+
+def test_an_allowed_origin_gets_both_qualifiers():
+    with TestClient(_qualified_app()) as client:
+        response = client.get("/", headers={"Origin": "https://good.test"})
+    assert response.headers["access-control-allow-origin"] == "https://good.test"
+    assert _has(response, "access-control-allow-credentials")
+    assert _has(response, "access-control-expose-headers")
+
+
+def test_a_refused_origin_gets_neither_qualifier():
+    """Both were sent regardless, advertising credentials for an origin that
+    was not allowed - harmless to a browser, misleading in a capture."""
+    with TestClient(_qualified_app()) as client:
+        response = client.get("/", headers={"Origin": "https://evil.test"})
+    assert "access-control-allow-origin" not in {k.lower() for k in response.headers}
+    assert not _has(response, "access-control-allow-credentials")
+    assert not _has(response, "access-control-expose-headers")
+
+
+def test_a_same_origin_response_carries_no_cors_qualifiers():
+    """A request with no Origin is not a CORS request at all."""
+    with TestClient(_qualified_app()) as client:
+        response = client.get("/")
+    assert not _has(response, "access-control-allow-credentials")
+    assert not _has(response, "access-control-expose-headers")
+
+
+def test_a_preflight_for_an_allowed_origin_still_carries_them():
+    with TestClient(_qualified_app()) as client:
+        response = client.options(
+            "/",
+            headers={
+                "Origin": "https://good.test",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+    assert _has(response, "access-control-allow-credentials")
+    assert _has(response, "access-control-expose-headers")
+
+
+def test_a_wildcard_origin_still_exposes_its_headers():
+    """The gate is on an origin being granted, not on it being specific."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(CORSMiddleware(allow_origins=["*"], expose_headers=["X-Total"]))
+
+    @app.get("/")
+    async def index():
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        response = client.get("/", headers={"Origin": "https://any.test"})
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert _has(response, "access-control-expose-headers")
+
+
+# ── The exposure list is merged, not clobbered ───────────────────────
+
+
+class _Contributor(Middleware):
+    """A middleware that adds one header to the exposure list."""
+
+    name = "contributor"
+
+    def __init__(self, key: str = "Access-Control-Expose-Headers") -> None:
+        super().__init__()
+        self.key = key
+
+    async def process_response(self, request, response):
+        merged = HeaderSet(response.headers.get(self.key, ""))
+        merged.update(["X-Board-Page"])
+        response.headers[self.key] = merged.to_header()
+        return response
+
+
+def _merging_app(key: str) -> Veloce:
+    app = Veloce(openapi_url=None)
+    # Higher priority runs later in the response phase, so CORS writes last.
+    app.add_middleware(
+        CORSMiddleware(allow_origins=["https://good.test"], expose_headers=["X-Total"]),
+        priority=85,
+    )
+    app.add_middleware(_Contributor(key), priority=50)
+
+    @app.get("/")
+    async def index():
+        return {"ok": True}
+
+    return app
+
+
+def _exposed(response) -> set[str]:
+    values = [
+        v for k, v in response.headers.items() if k.lower() == "access-control-expose-headers"
+    ]
+    assert len(values) == 1, values
+    return {token.strip() for token in values[0].split(",")}
+
+
+@pytest.mark.parametrize("key", ["Access-Control-Expose-Headers", "access-control-expose-headers"])
+def test_another_middleware_contribution_survives(key):
+    """CORS assigned the header outright, discarding what another had merged.
+
+    `Access-Control-Expose-Headers` is a list header several parties contribute
+    to - the shape `Response.add_vary` exists for - so whichever middleware ran
+    last won and a header a route meant to expose never reached the browser.
+    The casing variant matters because `Response.headers` is a plain dict.
+    """
+    with TestClient(_merging_app(key)) as client:
+        response = client.get("/", headers={"Origin": "https://good.test"})
+    assert _exposed(response) == {"X-Total", "X-Board-Page"}
+
+
+def test_the_configured_headers_are_still_guaranteed():
+    app = Veloce(openapi_url=None)
+    app.add_middleware(
+        CORSMiddleware(allow_origins=["https://good.test"], expose_headers=["X-Total"])
+    )
+
+    @app.get("/")
+    async def index():
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        response = client.get("/", headers={"Origin": "https://good.test"})
+    assert _exposed(response) == {"X-Total"}
+
+
+def test_a_duplicate_contribution_is_not_repeated():
+    app = Veloce(openapi_url=None)
+    app.add_middleware(
+        CORSMiddleware(allow_origins=["https://good.test"], expose_headers=["X-Board-Page"]),
+        priority=85,
+    )
+    app.add_middleware(_Contributor(), priority=50)
+
+    @app.get("/")
+    async def index():
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        response = client.get("/", headers={"Origin": "https://good.test"})
+    assert _exposed(response) == {"X-Board-Page"}
