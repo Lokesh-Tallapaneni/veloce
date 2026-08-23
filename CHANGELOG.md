@@ -8,12 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Benchmarks page: measured throughput against other frameworks, and the method behind the numbers.
-- `GZipMiddleware.min_offload_size` reports the size at or above which a buffered body is compressed on the thread pool.
+- Benchmarks page: measured throughput against other frameworks, and the method behind the numbers. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
+- `GZipMiddleware.min_offload_size` reports the size at or above which a buffered body is compressed on the thread pool. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
 
 ### Changed
 
-- `GZipMiddleware` compresses a buffered body below `min_stream_chunk_offload` inline instead of on the thread pool. Measured at 32 concurrent requests: 12,489 vs 5,393 requests per second for a 6 KiB body, 5,432 vs 4,102 at 32 KiB; past roughly 48 KiB the pool wins and is still used.
+- `GZipMiddleware` compresses a buffered body below `min_stream_chunk_offload` inline instead of on the thread pool. Measured at 32 concurrent requests: 12,489 vs 5,393 requests per second for a 6 KiB body, 5,432 vs 4,102 at 32 KiB; past roughly 48 KiB the pool wins and is still used. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
 
 ## [0.17.0] - 2026-08-23
 
