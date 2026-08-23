@@ -223,6 +223,7 @@ nav:
   - About:
       - Why Veloce Exists: surpass/why-veloce-exists.md
       - Performance: surpass/performance.md
+      - Benchmarks: surpass/benchmarks.md
       - Native Server Deep Dive: surpass/native-server.md
       - Comparison: comparison.md
       - Veloce vs Starlette: surpass/veloce-vs-starlette.md
