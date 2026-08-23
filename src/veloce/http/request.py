@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl
 
 import orjson
 from multidict import MultiDict
@@ -62,6 +61,7 @@ from veloce.http.datastructures import (
     RangeSpec,
     State,
     UploadFile,
+    _parse_qs_pairs,
     parse_multipart_form,
 )
 from veloce.http.dates import parse_date
@@ -1321,11 +1321,7 @@ class Request:
                 except UnicodeDecodeError as exc:
                     raise BadRequest("form body is not valid UTF-8") from exc
                 try:
-                    items = parse_qsl(
-                        decoded,
-                        keep_blank_values=True,
-                        max_num_fields=max_fields,
-                    )
+                    items = _parse_qs_pairs(decoded, max_fields)
                 except ValueError as exc:
                     raise RequestEntityTooLarge(
                         f"form exceeds the {max_fields}-field limit"

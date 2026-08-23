@@ -36,6 +36,32 @@ from veloce.http.cookies import iter_cookies
 _MAX_QUERY_FIELDS = 1000
 
 
+def _parse_qs_pairs(value: str, max_fields: int | None) -> list[tuple[str, str]]:
+    """Parse `a=1&b=2` into ordered pairs, decoding escapes only when present.
+
+    `urllib.parse.parse_qsl` is pure Python and calls `unquote_plus` twice per
+    field; `unquote_plus` allocates a replaced string before scanning for `%`.
+    A value carrying neither `%` nor `+` has nothing for any of that to do, and
+    that is the shape of most query strings and most urlencoded bodies.
+
+    Escaped input delegates to `parse_qsl`, which stays the single decoder, so
+    the two paths cannot disagree about what an escape means. The guard is two
+    scans over a short string and is within noise of free on the escaped path.
+
+    `parse_qsl` counts fields as `1 + value.count("&")`, which is exactly
+    `len(value.split("&"))`, so the `max_fields` cap - and the 414 / 413 the
+    callers raise from it - is enforced at the same boundary either way.
+    """
+    if "%" in value or "+" in value:
+        return parse_qsl(value, keep_blank_values=True, max_num_fields=max_fields)
+    parts = value.split("&")
+    if max_fields is not None and len(parts) > max_fields:
+        raise ValueError("Max number of fields exceeded")
+    # Blank values are kept (`a=` is `("a", "")`) and an empty segment is
+    # skipped, both matching `parse_qsl(keep_blank_values=True)`.
+    return [(k, v) for k, _, v in (part.partition("=") for part in parts if part)]
+
+
 # ── Request scope primitives ──────────────────────────────
 class Address(NamedTuple):
     """Client/server address - ASGI shape.
@@ -1015,11 +1041,7 @@ class QueryParams(_GetListMixin, MultiDict):
         if not query_string:
             return cls()
         try:
-            items = parse_qsl(
-                query_string,
-                keep_blank_values=True,
-                max_num_fields=_MAX_QUERY_FIELDS,
-            )
+            items = _parse_qs_pairs(query_string, _MAX_QUERY_FIELDS)
         except ValueError as exc:
             # parse_qsl raises when the field count exceeds the cap;
             # surface as 414 so the framework returns a clean response.
