@@ -957,7 +957,8 @@ class MCPServer(TasksMixin, InvocationMixin):
             and not self._any_scoped_tools
             else await self._visible_tools()
         )
-        return self._listing("tools", tools, _tool_key, self._describe_tool, params)
+        describe = self._describe_tool_modern if _requests_modern(params) else self._describe_tool
+        return self._listing("tools", tools, _tool_key, describe, params)
 
     async def _handle_resources_list(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._listing(
@@ -1286,17 +1287,37 @@ class MCPServer(TasksMixin, InvocationMixin):
 
     @staticmethod
     def _describe_tool(tool: MCPTool) -> dict[str, Any]:
-        """Return this tool's `tools/list` entry, building it once per tool.
+        """Return this tool's `tools/list` entry as the handshake revisions define it.
 
         The entry is memoized on the tool because it is a pure function of
         registration data: nothing it reads can change once the registry is
-        built, and it holds nothing caller- or revision-specific. Callers treat
-        the returned mapping as read-only - the dispatcher stamps `ttlMs` /
-        `cacheScope` onto the enclosing result, never onto an entry.
+        built. Callers treat the returned mapping as read-only - the dispatcher
+        stamps `ttlMs` / `cacheScope` onto the enclosing result, never onto an
+        entry.
         """
         entry = tool.listing_entry
         if entry is None:
             entry = tool.listing_entry = _build_tool_listing_entry(tool)
+        return entry
+
+    @staticmethod
+    def _describe_tool_modern(tool: MCPTool) -> dict[str, Any]:
+        """Return the entry as the modern revision defines it.
+
+        That revision removed `execution` from `Tool`: task support is
+        negotiated through the extension capability instead, so a listing
+        carrying the field does not validate against the schema the client
+        negotiated. Only a task-capable tool differs, and its second shape is
+        memoized like the first, so a listing costs no more than before.
+        """
+        entry = tool.listing_entry_modern
+        if entry is None:
+            base = MCPServer._describe_tool(tool)
+            entry = tool.listing_entry_modern = (
+                {key: value for key, value in base.items() if key != "execution"}
+                if "execution" in base
+                else base
+            )
         return entry
 
     async def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
