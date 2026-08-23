@@ -31,10 +31,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from itertools import count
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any
 
 import orjson
 
@@ -323,16 +324,133 @@ class MCPRequestError(Exception):
     """A server->client request failed (the client replied with an error or closed)."""
 
 
+_STDIN_FD = 0
+_STDOUT_FD = 1
+_STDERR_FD = 2
+
+# Set while a stdio server holds the process wire. Two servers on one process
+# would each divert the other's descriptors, so the second is refused instead.
+_wire_claimed = False
+
+
+def _descriptor_is_open(fd: int) -> bool:
+    """Whether `fd` refers to something this process can still write to."""
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
+
+
+def _restore_wire(wire_in: int, wire_out: int) -> None:
+    """Point the standard descriptors back at the pipes they started on."""
+    for source, target in ((wire_in, _STDIN_FD), (wire_out, _STDOUT_FD)):
+        with contextlib.suppress(OSError):
+            os.dup2(source, target)
+
+
+@contextlib.contextmanager
+def _isolated_wire() -> Iterator[tuple[IO[bytes], IO[bytes]]]:
+    """Yield the protocol (reader, writer) with descriptors 0 and 1 pointed away.
+
+    While a stdio server is running the process's standard output *is* the
+    protocol pipe, so anything else written there - a `print` left in a handler,
+    a library that logs to stdout, a subprocess a tool spawns - lands in the
+    newline-delimited JSON stream as a line the client cannot parse. The client
+    reports malformed JSON, which points at everything except the write that
+    caused it.
+
+    The isolation has to be at the descriptor level: a child process inherits
+    descriptors rather than Python file objects, so rebinding `sys.stdout` would
+    not cover a tool that shells out. The wire is duplicated onto private
+    descriptors (not inherited, per PEP 446), descriptor 0 is pointed at the null
+    device and descriptor 1 at stderr, and both are restored on the way out. A
+    stray write then shows up as diagnostics on stderr instead of corrupting the
+    protocol, and a child no longer inherits the server's end of either pipe -
+    which on Windows is also what stops it blocking in interpreter startup behind
+    the server's pending read (CPython gh-78961).
+
+    Every failure path degrades to serving the streams as they are, because a
+    half-diverted wire is worse than an unisolated one.
+    """
+    sys.stdout.flush()
+    try:
+        wire_in = os.dup(_STDIN_FD)
+        wire_out = os.dup(_STDOUT_FD)
+    except OSError:
+        # Nothing to duplicate: an embedded interpreter, or a standard stream
+        # already closed. Serve on the streams as they are rather than not at all.
+        yield sys.stdin.buffer, sys.stdout.buffer
+        return
+
+    null_fd = -1
+    diverted = False
+    try:
+        try:
+            null_fd = os.open(os.devnull, os.O_RDWR)
+            os.dup2(null_fd, _STDIN_FD)
+            # Stderr is where a stray write belongs; with no stderr to divert to,
+            # the null device at least keeps it off the wire.
+            os.dup2(_STDERR_FD if _descriptor_is_open(_STDERR_FD) else null_fd, _STDOUT_FD)
+            diverted = True
+        except OSError:
+            _restore_wire(wire_in, wire_out)
+        if not diverted:
+            yield sys.stdin.buffer, sys.stdout.buffer
+            return
+        with (
+            os.fdopen(wire_in, "rb", closefd=False) as reader,
+            os.fdopen(wire_out, "wb", closefd=False) as writer,
+        ):
+            yield reader, writer
+    finally:
+        if diverted:
+            # `sys.stdout` buffers, and its buffer is flushed to whatever
+            # descriptor 1 points at when the flush happens - so a `print` left
+            # unflushed by a handler would be written to the wire the moment it
+            # is restored, or at interpreter exit. Drain it while it still
+            # drains to stderr.
+            with contextlib.suppress(Exception):
+                sys.stdout.flush()
+            _restore_wire(wire_in, wire_out)
+        for fd in (wire_in, wire_out, null_fd):
+            if fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+
+
 async def serve_stdio(server: MCPServer) -> None:
     """Serve `server` over the real process stdin / stdout.
+
+    The wire is isolated from the rest of the process for the duration: the
+    protocol is carried on private duplicates of descriptors 0 and 1 while the
+    standard ones point at the null device and at stderr, so a handler that
+    prints, logs to stdout or spawns a child cannot corrupt the JSON-RPC stream.
 
     Blocking stdin reads are offloaded to the default thread executor so the
     event loop stays responsive; stdout writes are flushed per line so a
     client reading the pipe sees each response immediately.
     """
+    global _wire_claimed
+    if _wire_claimed:
+        raise RuntimeError(
+            "a stdio MCP server is already serving this process; the standard "
+            "descriptors carry one protocol stream and cannot carry two."
+        )
+
     loop = asyncio.get_running_loop()
-    stdin = sys.stdin.buffer
-    stdout = sys.stdout.buffer
+    _wire_claimed = True
+    try:
+        with _isolated_wire() as (stdin, stdout):
+            await _serve_on(server, loop, stdin, stdout)
+    finally:
+        _wire_claimed = False
+
+
+async def _serve_on(
+    server: MCPServer, loop: asyncio.AbstractEventLoop, stdin: IO[bytes], stdout: IO[bytes]
+) -> None:
+    """Run the transport's read / write loop over one pair of byte streams."""
 
     async def read_line() -> bytes | None:
         line = await loop.run_in_executor(None, stdin.readline)

@@ -791,6 +791,31 @@ The `initialize` request is never cancellable (the spec forbids it), and a cance
 naming an already-finished or unknown request is ignored. Over the Streamable HTTP
 transport a cancelled call closes its SSE stream without a response frame.
 
+### Handler output on stdio
+
+Over stdio the process's standard output *is* the protocol pipe, so anything else
+written there would be injected into the JSON-RPC stream as a line the client
+cannot parse. Veloce isolates the wire for the duration: the protocol is carried
+on private duplicates of descriptors 0 and 1, while descriptor 0 points at the
+null device and descriptor 1 at stderr. Both are restored when serving ends.
+
+In practice this means a `print` left in a handler, a library that logs to stdout,
+and a subprocess a tool spawns all land on **stderr**, where they are visible as
+diagnostics instead of corrupting the protocol — and a handler that reads
+`sys.stdin` sees end-of-file rather than eating the next request.
+
+!!! tip "Prefer `ctx.log` over `print`"
+    A message meant for the client belongs on the MCP logging channel:
+
+    ```python
+    from veloce import MCPContext
+
+    @app.mcp_tool(description="Rebuild the index")
+    async def reindex(ctx: MCPContext) -> dict:
+        await ctx.log("starting")
+        return {"ok": True}
+    ```
+
 ### Call timeout
 
 The stdio transport serves calls one at a time, so a handler that blocks forever
