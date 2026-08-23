@@ -30,6 +30,7 @@ from veloce._handler_plan import (
     K_RESPONSE,
     K_SECURITY_SCOPES,
     MK_BODY,
+    _unwrap_optional,
 )
 from veloce._model_backend import (
     ModelBackend,
@@ -501,6 +502,27 @@ def _coerce_json_scalar(slot: _Slot, value: Any, target: Any) -> Any:
     return _coerce_value(value, target, slot.name, "body")
 
 
+def _coerce_list_item(slot: _Slot, value: Any, target: Any, nullable: bool) -> Any:
+    """Coerce one array element, whose nullability is the inner type's own.
+
+    `_coerce_json_scalar` reads `slot.is_optional`, which describes the whole
+    parameter: `list[str] | None` may be omitted, but its members are strings.
+    The `None` case is therefore settled here before delegating.
+    """
+    if value is None:
+        if nullable:
+            return None
+        raise _wrong_type(slot.name, _declared_type_name(target), None)
+    # A declared member type that is a model is validated onto it, the way a
+    # model-typed parameter is; `_coerce_json_scalar` only settles scalars and
+    # would hand the handler the raw mapping.
+    if is_pydantic_model(target):
+        return _validate_model(value, target)
+    if is_adaptable_model(target):
+        return _validate_adapted(value, target)
+    return _coerce_json_scalar(slot, value, target)
+
+
 def _declared_type_name(target: Any) -> str:
     """Name the JSON type a declared parameter type accepts."""
     if target is bool:
@@ -535,10 +557,21 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
         return value
 
     if kind == K_QUERY_LIST:
-        inner = slot.list_inner
+        # The tool published an array, so a scalar is the model's mistake to
+        # correct exactly as a wrong scalar type is. Wrapping it handed the
+        # handler a one-element list nothing asked for: a search told to filter
+        # by `'["a","b"]'` - a shape models really do send - filtered by one
+        # nonsense tag and returned a plausible empty result with nothing in the
+        # trace to say why. Elements go through the same strict coercion as a
+        # bare parameter of the inner type, not the query-string one, which
+        # would read `42` as a `list[str]` member.
+        if value is None and slot.is_optional:
+            # The parameter itself is nullable, so the array is simply absent.
+            return None
         if not isinstance(value, list):
-            value = [value]
-        return [_coerce_value(v, inner, slot.name, "body") for v in value]
+            raise _wrong_type(slot.name, "an array", value)
+        item_nullable, item_type = _unwrap_optional(slot.list_inner)
+        return [_coerce_list_item(slot, item, item_type, item_nullable) for item in value]
 
     if kind == K_QUERY:
         return _coerce_json_scalar(slot, value, slot.target_type)

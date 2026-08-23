@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
+### Changed
+
+- An MCP `list[T]` tool argument refuses a non-array and a wrong-typed member instead of wrapping or passing it through; send the array the published schema declares. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 ### Fixed
 
 - `stream=True` is honored on a blueprint route and on an included router's route. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

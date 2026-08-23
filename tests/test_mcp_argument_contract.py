@@ -14,6 +14,7 @@ undeclared names would reject calls that legitimately work.
 from __future__ import annotations
 
 import orjson
+import pytest
 from pydantic import BaseModel
 
 from veloce import Depends, Veloce
@@ -374,3 +375,159 @@ async def test_the_refusal_names_the_argument_and_what_was_expected():
     assert "flag" in text
     assert "expected a boolean" in text
     assert "got a number" in text
+
+
+# ── Array arguments are as strict as scalar ones ─────────────────────
+#
+# The binder refuses a wrong scalar type on the stated grounds that a mismatch
+# is the model's mistake to correct and passing it through leaves the handler
+# holding a type it never declared. The array branch used to wrap ANY non-list
+# in a one-element list instead, so a tool told to filter by `'["a","b"]'` - a
+# shape models really do send - filtered by one nonsense tag and returned a
+# plausible empty result, with nothing in the trace to say why.
+
+
+def _array_app() -> Veloce:
+    app = Veloce(title="ArrayProbe", openapi_url=None)
+
+    @app.mcp_tool(description="Filter by tags")
+    async def search(tags: list[str]) -> dict:
+        return {"tags": tags, "types": [type(t).__name__ for t in tags]}
+
+    @app.mcp_tool(description="Sum some numbers")
+    async def total(values: list[int]) -> dict:
+        return {"values": values}
+
+    @app.mcp_tool(description="Filter by optional tags")
+    async def optional_tags(tags: list[str] | None = None) -> dict:
+        return {"tags": tags}
+
+    @app.mcp_tool(description="Take a list whose members may be null")
+    async def nullable_members(items: list[str | None]) -> dict:
+        return {"items": items}
+
+    return app
+
+
+def _array_server() -> MCPServer:
+    return MCPServer(_array_app())
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '["a","b"]',  # the stringified array a model most often sends
+        "a",
+        42,
+        4.5,
+        True,
+        {"tags": ["a"]},
+    ],
+)
+async def test_a_non_array_is_refused_rather_than_wrapped(value):
+    failed, message = await _call(_array_server(), "search", {"tags": value})
+    assert failed
+    assert "expected an array" in message
+
+
+async def test_an_actual_array_is_still_accepted():
+    failed, message = await _call(_array_server(), "search", {"tags": ["a", "b"]})
+    assert not failed
+    assert orjson.loads(message)["tags"] == ["a", "b"]
+
+
+async def test_an_empty_array_is_accepted():
+    """Empty is a legitimate array, not a missing one."""
+    failed, message = await _call(_array_server(), "search", {"tags": []})
+    assert not failed
+    assert orjson.loads(message)["tags"] == []
+
+
+@pytest.mark.parametrize("member", [42, 4.5, True, ["nested"], {"k": "v"}])
+async def test_a_member_of_the_wrong_type_is_refused(member):
+    """`list[str]` means every member is a string, not just the first."""
+    failed, message = await _call(_array_server(), "search", {"tags": ["ok", member]})
+    assert failed
+    assert "expected a string" in message
+
+
+async def test_a_null_member_is_refused_when_the_inner_type_is_not_nullable():
+    failed, _ = await _call(_array_server(), "search", {"tags": [None]})
+    assert failed
+
+
+async def test_a_null_member_is_accepted_when_the_inner_type_is_nullable():
+    """`list[str | None]` declares members that may be null; they are."""
+    failed, message = await _call(_array_server(), "nullable_members", {"items": ["a", None]})
+    assert not failed
+    assert orjson.loads(message)["items"] == ["a", None]
+
+
+async def test_a_nullable_member_list_still_refuses_a_wrong_type():
+    failed, _ = await _call(_array_server(), "nullable_members", {"items": [42]})
+    assert failed
+
+
+async def test_an_optional_array_accepts_an_explicit_null():
+    """The parameter itself is nullable, so the array is simply absent."""
+    failed, message = await _call(_array_server(), "optional_tags", {"tags": None})
+    assert not failed
+    assert orjson.loads(message)["tags"] is None
+
+
+async def test_an_optional_array_may_be_omitted_entirely():
+    failed, message = await _call(_array_server(), "optional_tags", {})
+    assert not failed
+    assert orjson.loads(message)["tags"] is None
+
+
+async def test_an_optional_array_still_refuses_a_non_array():
+    """Nullable is not the same as untyped."""
+    failed, message = await _call(_array_server(), "optional_tags", {"tags": "a"})
+    assert failed
+    assert "expected an array" in message
+
+
+async def test_an_optional_array_still_refuses_a_null_member():
+    """The parameter's nullability is not its members'."""
+    failed, _ = await _call(_array_server(), "optional_tags", {"tags": [None]})
+    assert failed
+
+
+async def test_array_members_get_the_same_coercion_a_bare_parameter_gets():
+    """Strictness means matching the scalar contract, not exceeding it."""
+    failed, message = await _call(_array_server(), "total", {"values": [7, 8.0]})
+    assert not failed
+    assert orjson.loads(message)["values"] == [7, 8]
+
+
+async def test_a_member_that_would_lose_precision_is_refused():
+    failed, message = await _call(_array_server(), "total", {"values": [7.5]})
+    assert failed
+    assert "fractional" in message
+
+
+async def test_a_declared_member_model_is_validated_onto_it():
+    """`list[Model]` members are models, not the raw mappings that were sent."""
+    app = Veloce(title="ModelArray", openapi_url=None)
+
+    @app.mcp_tool(description="Take several items")
+    async def take(items: list[Item]) -> dict:
+        return {"kinds": [type(i).__name__ for i in items], "names": [i.name for i in items]}
+
+    failed, message = await _call(
+        MCPServer(app), "take", {"items": [{"name": "a"}, {"name": "b", "qty": 3}]}
+    )
+    assert not failed
+    assert orjson.loads(message) == {"kinds": ["Item", "Item"], "names": ["a", "b"]}
+
+
+async def test_a_member_model_that_does_not_validate_is_reported():
+    app = Veloce(title="ModelArray", openapi_url=None)
+
+    @app.mcp_tool(description="Take several items")
+    async def take(items: list[Item]) -> dict:
+        return {"count": len(items)}
+
+    failed, _ = await _call(MCPServer(app), "take", {"items": [{"qty": 1}]})
+    assert failed
