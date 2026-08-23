@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-23
+
 ### Added
 
 - `VeloceDeprecationWarning` carries every Veloce deprecation and is visible under the default warning filter. ([#284](https://github.com/Lokesh-Tallapaneni/veloce/pull/284))
