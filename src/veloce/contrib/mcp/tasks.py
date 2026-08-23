@@ -301,12 +301,18 @@ class TasksCapability(_ServerCapability):
 
     __slots__ = ()
 
-    def advertise(self) -> dict[str, Any] | None:
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         if not any(tool.task_support for tool in self._server.registry.tools.values()):
             return None
         # `list` / `cancel` are the optional sub-capabilities this server answers;
         # `requests.tools/call` declares that a `tools/call` may be task-augmented.
-        return {"tasks": {"list": {}, "cancel": {}, "requests": {"tools/call": {}}}}
+        # The modern revision retired `tasks/list`, so it is not offered there -
+        # advertising it would promise a method the dispatcher answers with
+        # method-not-found.
+        entry: dict[str, Any] = {"cancel": {}, "requests": {"tools/call": {}}}
+        if not modern:
+            entry["list"] = {}
+        return {"tasks": entry}
 
     def extensions(self) -> dict[str, Any] | None:
         """Advertise the tasks extension when any tool opts into task execution."""

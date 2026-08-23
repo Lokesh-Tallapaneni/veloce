@@ -242,7 +242,7 @@ class SubscriptionsCapability(_ServerCapability):
 
     __slots__ = ()
 
-    def advertise(self) -> dict[str, Any] | None:
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         return None
 
     def handlers(self) -> dict[str, MethodHandler]:

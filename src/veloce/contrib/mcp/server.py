@@ -18,6 +18,7 @@ through the same `app.add_instrumentation` hook the request path uses.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable
@@ -310,6 +311,13 @@ def _http_status_for(error: MCPError) -> int:
     return status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
+def _requests_modern(params: dict[str, Any] | None) -> bool:
+    """Whether this request states a protocol version, which only a modern client does."""
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    raw = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
+    return isinstance(raw, str)
+
+
 class MCPServer(TasksMixin, InvocationMixin):
     """Serve a Veloce app's MCP tools over JSON-RPC 2.0.
 
@@ -341,6 +349,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         "_subscriptions_enabled",
         "_connections",
         "_capabilities",
+        "_era_aware_capabilities",
         "_methods",
         "_inflight",
         "_tasks",
@@ -458,6 +467,13 @@ class MCPServer(TasksMixin, InvocationMixin):
         if self._subscriptions_enabled:
             capabilities.append(SubscriptionsCapability(self))
         self._capabilities: tuple[Capability, ...] = tuple(capabilities)
+        # Which capabilities vary their advertisement by protocol revision,
+        # resolved once here rather than inspected on every handshake.
+        self._era_aware_capabilities: frozenset[Capability] = frozenset(
+            capability
+            for capability in self._capabilities
+            if "modern" in inspect.signature(capability.advertise).parameters
+        )
         # Built once at construction so per-request dispatch is one dict lookup.
         # A new method is registered here, never wired into a dispatcher branch.
         self._methods: dict[str, MethodHandler] = self._build_method_map()
@@ -1023,7 +1039,7 @@ class MCPServer(TasksMixin, InvocationMixin):
             if isinstance(requested, str) and requested in _SUPPORTED_PROTOCOL_VERSIONS
             else LATEST_PROTOCOL_VERSION
         )
-        capabilities = self._advertised_capabilities()
+        capabilities = self._advertised_capabilities(_requests_modern(params))
         server_info = self._server_info()
         result: dict[str, Any] = {
             "protocolVersion": version,
@@ -1037,15 +1053,23 @@ class MCPServer(TasksMixin, InvocationMixin):
             result["instructions"] = self.server_instructions
         return result
 
-    def _advertised_capabilities(self) -> dict[str, Any]:
-        """Collect every held capability's advertisement.
+    def _advertised_capabilities(self, modern: bool = False) -> dict[str, Any]:
+        """Collect every held capability's advertisement for the caller's revision.
 
         A `None` advertisement is dropped so a client never probes a primitive
-        the app does not expose.
+        the app does not expose. The revision is passed to the capabilities whose
+        `advertise` accepts it, so one whose methods a revision retired can
+        withhold or narrow its entry instead of promising what the dispatcher
+        would then answer with method-not-found. Which capabilities accept it is
+        resolved once at construction, not per handshake.
         """
         capabilities: dict[str, Any] = {}
         for capability in self._capabilities:
-            entry = capability.advertise()
+            entry = (
+                capability.advertise(modern=modern)
+                if capability in self._era_aware_capabilities
+                else capability.advertise()
+            )
             if entry is not None:
                 capabilities.update(entry)
         return capabilities
@@ -1078,7 +1102,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         `serverInfo` travels in `_meta` here rather than as a top-level field,
         which is where the modern revision moved it.
         """
-        capabilities = self._advertised_capabilities()
+        capabilities = self._advertised_capabilities(_requests_modern(params))
         extensions = self._advertised_extensions()
         if extensions:
             capabilities = {**capabilities, "extensions": extensions}

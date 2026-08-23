@@ -23,7 +23,7 @@ class ToolsCapability(_ServerCapability):
 
     __slots__ = ()
 
-    def advertise(self) -> dict[str, Any]:
+    def advertise(self, *, modern: bool = False) -> dict[str, Any]:
         # The registry is fixed once the server is built, but what a connection is
         # *listed* is not: a handler may narrow this connection's view with
         # `MCPContext.hide`, and the client is told so it fetches the list again.
@@ -41,7 +41,7 @@ class ResourcesCapability(_ServerCapability):
 
     __slots__ = ()
 
-    def advertise(self) -> dict[str, Any] | None:
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         # The `subscribe`/`listChanged` sub-capabilities are advertised only when
         # the app opts into resource subscriptions AND the connection answering
         # `initialize` is stateful. Subscriptions are per-connection state delivered
@@ -75,7 +75,7 @@ class PromptsCapability(_ServerCapability):
 
     __slots__ = ()
 
-    def advertise(self) -> dict[str, Any] | None:
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         if not self._server.prompts.prompts:
             return None
         return {"prompts": {"listChanged": self._connection_can_be_told()}}
@@ -88,16 +88,18 @@ class PromptsCapability(_ServerCapability):
 
 
 class LoggingCapability(_ServerCapability):
-    """The ``logging/setLevel`` method, always advertised.
+    """The ``logging/setLevel`` method, advertised on the revisions that have it.
 
-    Any tool may emit a log message through `MCPContext.log`, and the client may
-    raise the minimum level, so logging is advertised for every server.
+    Any tool may emit a log message through `MCPContext.log`, and a handshake-era
+    client may raise the minimum level once per connection. The modern revision
+    removed the method - a client sets its level per request in `_meta` - so the
+    capability is withheld there rather than advertised and then refused.
     """
 
     __slots__ = ()
 
-    def advertise(self) -> dict[str, Any]:
-        return {"logging": {}}
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
+        return None if modern else {"logging": {}}
 
     def handlers(self) -> dict[str, MethodHandler]:
         return {"logging/setLevel": self._server._handle_set_log_level}

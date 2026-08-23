@@ -29,12 +29,17 @@ class Capability:
         if "__slots__" not in cls.__dict__:
             raise TypeError(f"{cls.__name__} must declare __slots__")
 
-    def advertise(self) -> dict[str, Any] | None:
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         """Return this capability's entry for the `initialize` capabilities object.
 
         A single-key mapping (e.g. ``{"tools": {"listChanged": False}}``) merged
         into the advertised capabilities, or `None` when the app exposes nothing
         for this area so the client does not probe an empty primitive.
+
+        Declare a `modern` keyword parameter to vary the entry by protocol
+        revision - the server passes it when the signature accepts it, so a
+        capability whose methods a revision retired can withhold or narrow what
+        it advertises rather than promising something the dispatcher refuses.
         """
         raise NotImplementedError
 

@@ -158,7 +158,7 @@ class CompletionsCapability(_ServerCapability):
 
     __slots__ = ()
 
-    def advertise(self) -> dict[str, Any] | None:
+    def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         if not self._has_completers():
             return None
         return {"completions": {}}
