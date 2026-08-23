@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 # Status codes
 from veloce import status
+from veloce._warnings import VeloceDeprecationWarning
 from veloce.app import Plugin, URLRule, Veloce
 
 # Background tasks
@@ -391,6 +392,7 @@ __all__ = [
     "Security",
     "SecurityScopes",
     # Exceptions
+    "VeloceDeprecationWarning",
     "VeloceError",
     "HTTPException",
     "FilesKeyError",

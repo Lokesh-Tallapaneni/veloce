@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Veloce
+from veloce import Veloce, VeloceDeprecationWarning
 from veloce.testclient import TestClient
 
 
@@ -61,7 +61,7 @@ def test_add_event_handler_emits_deprecation_warning():
     async def handler():
         pass
 
-    with pytest.warns(DeprecationWarning, match="on_startup"):
+    with pytest.warns(VeloceDeprecationWarning, match="on_startup"):
         app.add_event_handler("startup", handler)
     assert handler in app._on_startup
 
@@ -69,7 +69,7 @@ def test_add_event_handler_emits_deprecation_warning():
 def test_on_event_emits_deprecation_warning():
     app = Veloce()
 
-    with pytest.warns(DeprecationWarning, match="on_startup"):
+    with pytest.warns(VeloceDeprecationWarning, match="on_startup"):
 
         @app.on_event("startup")
         async def handler():

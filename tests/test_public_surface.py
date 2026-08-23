@@ -165,6 +165,7 @@ VELOCE_ALL = {
     "UploadFile",
     "ValidationError",
     "Veloce",
+    "VeloceDeprecationWarning",
     "VeloceError",
     "View",
     "WebSocket",

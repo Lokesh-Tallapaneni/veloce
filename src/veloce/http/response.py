@@ -64,6 +64,7 @@ from veloce._internal import (
     is_json_mimetype,
 )
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
+from veloce._warnings import VeloceDeprecationWarning
 from veloce.encoders import orjson_default
 from veloce.http.cache_control import CacheControl
 from veloce.http.cookies import dump_cookie, iter_cookies
@@ -1660,7 +1661,7 @@ class FileResponse(Response):
                 "from async handlers, or wrap the sync call in "
                 "`asyncio.to_thread(...)`. This will raise in a future "
                 "release.",
-                DeprecationWarning,
+                VeloceDeprecationWarning,
                 stacklevel=2,
             )
         with open(path, "rb") as f:

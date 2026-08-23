@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `VeloceDeprecationWarning` carries every Veloce deprecation and is visible under the default warning filter.
 - `url_for` is importable from the top level, building a URL against the active app.
 - `UploadFile.save_async` streams an upload to disk without blocking the event loop.
 - `WebSocket.accepted_subprotocol` reports the subprotocol the connection settled on.
@@ -32,10 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Request.is_disconnected()` reports a real disconnect on a `stream=True` route.
 - `MAX_CONCURRENT_CONNECTIONS` and `WRITE_BUFFER_HIGH_WATER` are seeded in `default_config()`.
 - A multipart body that ends inside a part is refused with 400 instead of returning 200 with the field missing.
+- A multipart upload's spool file is closed once the request is done with it, instead of surviving until collection.
 - `Request.url_for(..., _external=True)` builds from the request's recovered scheme, host, port and `script_root`.
+
+### Deprecated
+
+- `Veloce.on_event()` warns through `VeloceDeprecationWarning`; use `@app.on_startup` / `@app.on_shutdown`. Removal in v1.0.0.
+- `FileResponse(path)` on a running loop warns through `VeloceDeprecationWarning`; use `await FileResponse.from_path(path)`.
 
 ### Changed
 
+- Deprecation warnings are raised as `VeloceDeprecationWarning` rather than `DeprecationWarning`, which the default filter hid.
 - `import veloce` no longer imports the MCP, OpenAPI or Redis integrations; they resolve on first use.
 - `MAX_CONTENT_LENGTH` is enforced once per request by the transport that read the body, instead of again during dispatch.
 - `add_middleware` raises `TypeError` on a construction argument passed with an already-built instance, instead of dropping it.

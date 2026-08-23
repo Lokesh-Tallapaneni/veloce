@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl
@@ -1419,6 +1420,25 @@ class Request:
         """Return body as text, draining the source once."""
         body = await self._drain_body()
         return body.decode("utf-8", errors="replace")
+
+    def _close_uploads(self) -> None:
+        """Close the spool files this request's multipart parse opened.
+
+        An upload larger than the spool threshold is a real file on disk, and
+        nothing closed it once the response was sent - the descriptor and the
+        temp file survived until the garbage collector happened to reach the
+        `UploadFile`. Under sustained upload traffic that is descriptor
+        exhaustion. Called once the request is finished with, which is after
+        any background task has run.
+        """
+        form = self._form
+        if form is None:
+            return
+        for value in form.values():
+            close = getattr(value, "file", None)
+            if close is not None and not getattr(close, "closed", True):
+                with contextlib.suppress(Exception):
+                    close.close()
 
     async def is_disconnected(self) -> bool:
         """Whether the client has disconnected.

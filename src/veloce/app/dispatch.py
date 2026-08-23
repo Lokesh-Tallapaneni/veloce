@@ -438,6 +438,10 @@ class DispatchMixin:
         `_bp_name`, `resolver`) that the `finally` block reads.
         """
         _exc: Exception | None = None
+        # Whether a background task took ownership of releasing this request's
+        # upload spool files. Bound before the `try` so the `finally` can read
+        # it even when dispatch raises before any task could be scheduled.
+        _scheduled_bg = False
         _bp_name: str | None = None
         # Resolver allocation is deferred until a non-trivial route demands
         # it. A trivial-plan route (no injected params, no dependencies)
@@ -502,7 +506,10 @@ class DispatchMixin:
                 # no-callback request pays no extra coroutine on the fast path.
                 if request._state and request._state.get("_after_this_request"):
                     response = await self._run_after_hooks(request, response, None)
-                self._schedule_background_tasks(request, response)
+                # Returning from inside the `try` still runs the `finally`
+                # below, so the release decision is recorded here and taken
+                # there - one rule for every exit rather than two.
+                _scheduled_bg = self._schedule_background_tasks(request, response)
                 return response
 
             # Phase: request-phase middleware. Skipped entirely - no awaited
@@ -587,8 +594,10 @@ class DispatchMixin:
                 response = await self._run_after_hooks(request, response, _bp_name)
 
             # Schedule any background tasks (DI-injected queue + the
-            # response-attached task) in fire-and-forget fashion.
-            self._schedule_background_tasks(request, response)
+            # response-attached task) in fire-and-forget fashion. When one was
+            # scheduled it owns releasing the request's upload spool files,
+            # because it may still be reading them.
+            _scheduled_bg = self._schedule_background_tasks(request, response)
 
             # Fused response phase. The slot is `None` when no middleware is
             # registered, so the whole block is skipped with no awaited no-op.
@@ -676,6 +685,13 @@ class DispatchMixin:
                 _td_hooks = self._select_teardown_request_hooks(_bp_name)
                 if _td_hooks:
                     await self._run_teardown_hooks(_td_hooks, _exc, "teardown_request")
+
+            # Release the spool files a multipart parse opened. An upload past
+            # the spool threshold is a real file on disk, and nothing closed it
+            # once the response was sent. Skipped when a background task was
+            # scheduled: it may still be reading them, and releases them itself.
+            if not _scheduled_bg and request._form is not None:
+                request._close_uploads()
 
             # `teardown_appcontext` fires when the app context pops; in
             # veloce that happens at the end of each request (no separate
@@ -1134,16 +1150,22 @@ class DispatchMixin:
                     response = fn_result
         return response
 
-    def _schedule_background_tasks(self, request: Request, response: Response) -> None:
+    def _schedule_background_tasks(self, request: Request, response: Response) -> bool:
         """Schedule the DI-injected queue and response-attached background task.
 
         Both run through `spawn()`, the single tracked-task path: each is held
         by a strong reference (so the loop cannot GC it mid-flight) and is
         cancelled-and-drained on shutdown alongside app-spawned tasks rather
         than orphaned, and its failures surface through the same logging path.
+
+        Returns whether anything was scheduled. A background task outlives the
+        response and may still be reading an upload, so when one exists the
+        request's spool files are released after it finishes rather than at
+        teardown; the caller uses this to decide which.
         """
+        coros = []
         if request._background_tasks is not None:
-            self.spawn(request._background_tasks.run_all())
+            coros.append(request._background_tasks.run_all())
 
         # Response-attached background task (shape:
         # `Response(content=..., background=BackgroundTask(fn))`).
@@ -1159,7 +1181,29 @@ class DispatchMixin:
             else:
                 coro = None
             if coro is not None:
-                self.spawn(coro)
+                coros.append(coro)
+
+        if not coros:
+            return False
+        tasks = [self.spawn(coro) for coro in coros]
+
+        # Release the request's upload spool files once the last of them
+        # finishes. A done-callback rather than another spawned task: it adds
+        # no tracked task to drain at shutdown, and leaves the tasks running
+        # concurrently as they did before. A failed task still counts as done,
+        # so a failure cannot strand the files.
+        if request._form is not None:
+            remaining = len(tasks)
+
+            def _release(_task: asyncio.Task[Any]) -> None:
+                nonlocal remaining
+                remaining -= 1
+                if remaining == 0:
+                    request._close_uploads()
+
+            for task in tasks:
+                task.add_done_callback(_release)
+        return True
 
     # ── Error handling and handler invocation ──────────────
 
