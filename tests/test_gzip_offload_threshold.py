@@ -60,9 +60,10 @@ def test_a_large_body_still_goes_to_the_thread_pool(monkeypatch):
     assert count == 1
 
 
-def test_the_buffered_threshold_matches_the_streaming_one():
-    middleware = GZipMiddleware()
-    assert middleware.min_offload_size == middleware.min_stream_chunk_offload
+def test_one_threshold_governs_both_halves():
+    """A single knob, so tuning cannot leave the two paths disagreeing."""
+    middleware = GZipMiddleware(min_stream_chunk_offload=4096)
+    assert middleware.min_stream_chunk_offload == 4096
 
 
 def test_lowering_the_threshold_moves_the_buffered_path_too(monkeypatch):

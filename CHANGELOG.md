@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Benchmarks page: measured throughput against other frameworks, and the method behind the numbers. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
-- `GZipMiddleware.min_offload_size` reports the size at or above which a buffered body is compressed on the thread pool. ([#286](https://github.com/Lokesh-Tallapaneni/veloce/pull/286))
 
 ### Changed
 

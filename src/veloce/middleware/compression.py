@@ -125,12 +125,11 @@ class GZipMiddleware(Middleware):
         # `zlib.compressobj`. A chunk at or above this many bytes is offloaded
         # to the thread-pool executor (CPU-bound); smaller frames compress
         # inline to avoid task-scheduling overhead on the common case.
+        # One threshold for both halves. A buffered body and a streamed chunk
+        # ask the same question - "is this big enough that the pool beats
+        # holding the loop?" - so a caller who tunes it gets it applied to both
+        # rather than to half the middleware.
         self.min_stream_chunk_offload = min_stream_chunk_offload
-        # The buffered path uses the same threshold: the question it answers -
-        # "is this body big enough that the pool beats holding the loop?" - is
-        # the same one, so a caller who tuned it for streams gets the tuning
-        # applied consistently rather than only to half the middleware.
-        self.min_offload_size = min_stream_chunk_offload
         # Bare content types that must never be buffered through compression:
         # SSE (`text/event-stream`) trades wire size for per-event latency, and
         # routing it through `compressobj` would merge/delay events.
@@ -193,7 +192,7 @@ class GZipMiddleware(Middleware):
         # chunk.
         level = self.compresslevel
         body = response.body
-        if len(body) < self.min_offload_size:
+        if len(body) < self.min_stream_chunk_offload:
             compressed = gzip.compress(body, level)
         else:
             compressed = await offload(gzip.compress, body, level)
