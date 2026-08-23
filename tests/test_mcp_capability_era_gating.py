@@ -155,3 +155,48 @@ def test_a_capability_that_accepts_the_revision_is_detected():
     accepting = [type(c).__name__ for c in server._era_aware_capabilities]
     assert "LoggingCapability" in accepting
     assert "TasksCapability" in accepting
+
+
+# ── Nothing unproducible is advertised ───────────────────────────────
+#
+# The rule this module exists for, stated once as a property rather than per
+# capability: a client chooses what to do from what the server says it can do,
+# so a server that offers something it then refuses sends the client down a
+# path that cannot work. The modern multi-round-trip `input_required` result is
+# the current instance - the discriminator is named in the source but no interim
+# result is produced and `requestState` is unmodelled, so it must not appear in
+# anything a client reads.
+
+
+def _client_visible_payloads() -> str:
+    """Everything a client learns about this server's surface, as one blob."""
+    import asyncio
+    import json
+
+    from veloce.contrib.mcp.session import MCPSession
+
+    server = MCPServer(_app())
+    modern = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+
+    async def ask(method: str) -> dict:
+        return await server.handle_message(
+            {"jsonrpc": "2.0", "id": 1, "method": method, "params": {"_meta": modern}},
+            MCPSession(),
+        )
+
+    async def gather() -> list[dict]:
+        return [await ask(m) for m in ("server/discover", "tools/list", "prompts/list")]
+
+    return json.dumps(asyncio.run(gather()))
+
+
+def test_the_unproduced_interim_result_is_not_advertised():
+    """`input_required` is not implemented, so nothing may offer it."""
+    assert "input_required" not in _client_visible_payloads()
+
+
+def test_the_result_discriminators_that_are_advertised_can_all_be_produced():
+    from veloce.contrib.mcp.server import RESULT_TYPE_COMPLETE, RESULT_TYPE_TASK
+
+    produced = {RESULT_TYPE_COMPLETE, RESULT_TYPE_TASK}
+    assert "input_required" not in produced
