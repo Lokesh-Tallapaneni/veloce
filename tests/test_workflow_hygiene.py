@@ -92,3 +92,23 @@ def test_no_checkout_persists_its_credentials(path: pathlib.Path):
         f"{path.name}: {checkouts} checkout(s), "
         f"{text.count('persist-credentials: false')} with persist-credentials: false"
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "doc"), _documents(), ids=lambda v: v if isinstance(v, str) else ""
+)
+def test_no_reusable_workflow_call_sets_a_timeout(name: str, doc: dict):
+    """`timeout-minutes` alongside `uses:` is rejected at startup.
+
+    GitHub refuses the whole file, so every job in it silently never runs -
+    including the release gate. The timeout belongs on the jobs inside the
+    called workflow, which this suite checks separately.
+    """
+    offenders = [
+        job
+        for job, spec in doc.get("jobs", {}).items()
+        if isinstance(spec, dict) and "uses" in spec and "timeout-minutes" in spec
+    ]
+    assert not offenders, (
+        f"{name}: timeout-minutes is not valid on a reusable-workflow call: {offenders}"
+    )

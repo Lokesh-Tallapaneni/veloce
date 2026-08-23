@@ -13,7 +13,6 @@ jobs:
   # Windows + no-msgspec + fuzz + coverage), not a single-interpreter run, so
   # a tag cannot ship an artifact broken on an interpreter/OS the matrix covers.
   ci:
-    timeout-minutes: 20
     name: CI
     uses: ./.github/workflows/ci.yml
 
