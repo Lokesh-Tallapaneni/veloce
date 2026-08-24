@@ -1243,30 +1243,21 @@ class DispatchMixin:
     def _subdomain_matches(self, request: Request, subdomain: str) -> bool:
         """Check whether `request`'s host carries the expected subdomain.
 
-        `subdomain` is the literal subdomain string (`"api"`,
-        `"admin"`) - the request's `Host` header must be
-        `{subdomain}.{SERVER_NAME}`. `"*"` matches any non-empty
-        subdomain of `SERVER_NAME`. When no `SERVER_NAME` is configured
-        we degrade to comparing the leftmost label of the host with
-        the subdomain literal - useful for tests that drive the app
-        without setting `SERVER_NAME`.
+        `subdomain` is the literal subdomain string (`"api"`, `"admin"`); `"*"`
+        matches any non-empty subdomain. What the request's subdomain *is* comes
+        from `Request.subdomain`, which is the same question a handler asks.
+
+        The two used to derive it separately and disagreed: `Request.subdomain`
+        short-circuits an IP literal, because its dots are address structure and
+        not name labels, and this one did not. So a route declared
+        `subdomain="192"` matched a request to `192.168.1.1`, and the handler
+        that matched then asked the framework the same question and was told the
+        subdomain was empty.
         """
-        host = _extract_host(request.host or "")
-        if not host:
-            return False
-        server_name = (self.config.get("SERVER_NAME") or "").lower()
-        if server_name:
-            if not host.endswith("." + server_name):
-                return False
-            prefix = host[: -(len(server_name) + 1)]
-            if subdomain == "*":
-                return bool(prefix)
-            return prefix == subdomain
-        # No SERVER_NAME - compare the leftmost label.
-        leftmost = host.split(".", 1)[0]
+        actual = request.subdomain
         if subdomain == "*":
-            return "." in host
-        return leftmost == subdomain
+            return bool(actual)
+        return actual == subdomain
 
     async def _call_handler(
         self, handler: Callable, kwargs: dict, is_coro: bool | None = None

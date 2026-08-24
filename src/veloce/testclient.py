@@ -666,8 +666,13 @@ class TestClient:
         # The in-memory test client is a testing tool: relax the
         # first-request setup lock so a test can register routes/hooks between
         # calls (the lock guards real concurrent serving, not single-threaded
-        # test dispatch).
+        # test dispatch). Remembered and restored on `close()`, because the app
+        # is not the client's to change permanently: an app touched by a
+        # TestClient and then served in the same process never froze its route
+        # table again, whatever DEBUG or TESTING said.
+        self._prior_setup_lock: bool | None = None
         if hasattr(app, "_setup_lock_enabled"):
+            self._prior_setup_lock = app._setup_lock_enabled
             app._setup_lock_enabled = False
 
         # Run startup lifecycle once at construction so users can mutate
@@ -1057,6 +1062,10 @@ class TestClient:
             self._lifespan_run = False
         if self._owns_loop and not self._loop.is_closed():
             self._loop.close()
+        # Hand the app back as it was found.
+        if self._prior_setup_lock is not None:
+            self.app._setup_lock_enabled = self._prior_setup_lock
+            self._prior_setup_lock = None
 
     def __enter__(self) -> TestClient:
         return self
@@ -1320,9 +1329,11 @@ class AsyncTestClient:
     async def __aenter__(self) -> AsyncTestClient:
         self._entered = True
         # Relax the first-request setup lock for the same reason as the sync
-        # TestClient: in-memory test dispatch is single-threaded, so late
-        # registration is safe and convenient here.
+        # TestClient, and restore it on exit for the same reason: the app is
+        # not the client's to change permanently.
+        self._prior_setup_lock = None
         if hasattr(self.app, "_setup_lock_enabled"):
+            self._prior_setup_lock = self.app._setup_lock_enabled
             self.app._setup_lock_enabled = False
         if hasattr(self.app, "_run_lifecycle"):
             await self.app._run_lifecycle(LIFECYCLE_STARTUP)
@@ -1334,6 +1345,10 @@ class AsyncTestClient:
             await self.app._run_lifecycle(LIFECYCLE_SHUTDOWN)
             self._lifespan_run = False
         self._entered = False
+        # Hand the app back as it was found.
+        if getattr(self, "_prior_setup_lock", None) is not None:
+            self.app._setup_lock_enabled = self._prior_setup_lock
+            self._prior_setup_lock = None
 
     # ── Cookie management ─────────────────────────────────
 

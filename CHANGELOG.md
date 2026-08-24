@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Added
+- `StaticFiles(max_age=...)` sets the cache lifetime, and the handler honours `SEND_FILE_MAX_AGE_DEFAULT` as `send_file` already did. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `GRACEFUL_DRAIN_TIMEOUT` bounds how long shutdown waits for in-flight requests; it was a literal 30 seconds no setting could reach. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Auditable` carries the audit contract for every middleware shape, so a `BaseHTTPMiddleware` can declare `sets_hardening_headers` and contribute findings. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Converter.specificity` declares how restrictive a custom converter is, so it can outrank `str` during route matching. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -65,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+- `app.mount()` accepts any handler exposing `prefix` and `handle(request)`, not only a `StaticFiles`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A subdomain route no longer matches an IP-literal host, where the router and `request.subdomain` disagreed. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- An instrumentation hook marked `is_access_log` suppresses the built-in access log, so `run(access_log=True)` does not log twice. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `TestClient` restores the app's setup lock on close instead of leaving it disabled. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `session_transaction()` seeds the cookie under the name the middleware reads, so a `cookie_prefix=` session is found instead of silently running anonymous. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `session_transaction()` works before the first request when the signing key comes from `app.config`, and explains why a server-side backend cannot be seeded. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Veloce(root_path=...)` reaches `request.root_path`, `script_root`, external `url_for` and slash redirects; it was stored and read by nothing. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

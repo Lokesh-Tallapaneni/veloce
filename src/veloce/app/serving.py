@@ -181,8 +181,11 @@ class ServingMixin:
         # this would circle at import time.
         from veloce.observability import instrument_access_log
 
+        # Ask the hook whether it is an access log, rather than testing which
+        # module defined it: a user's own access-log instrumentation could not
+        # suppress the built-in one, so `run(access_log=True)` logged twice.
         for hook in self._instrumentation:
-            if getattr(hook, "__module__", None) == "veloce.observability":
+            if getattr(hook, "is_access_log", False):
                 return
         instrument_access_log(cast("Veloce", self))
 

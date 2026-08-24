@@ -97,6 +97,10 @@ def log_requests_as_json(
         payload = _json_payload(metrics, include_streamed=True, include_path=include_path)
         resolved.log(level, "%s", dumps(payload).decode())
 
+    # The marker `run(access_log=True)` reads to decide whether an access log
+    # is already installed. Set on the function so anyone writing their own can
+    # set it too and suppress the built-in one.
+    _emit.is_access_log = True  # type: ignore[attr-defined]
     app.add_instrumentation(_emit)
     return _emit
 
@@ -109,6 +113,10 @@ def instrument_access_log(
     include_streamed: bool = True,
 ) -> Callable[[RequestMetrics], None]:
     """Register the unified access-log hook (text or JSON), route-keyed."""
+    # Marked, not identified by `__module__`: `run(access_log=True)` skips
+    # installing this when an access log is already present, and testing where
+    # the function was *defined* meant a user's own access-log instrumentation
+    # could not suppress the built-in one, so both logged every request.
     resolved = logger if logger is not None else _default_access_logger()
 
     def _emit(metrics: RequestMetrics) -> None:
@@ -134,5 +142,9 @@ def instrument_access_log(
                 metrics.duration_ms,
             )
 
+    # The marker `run(access_log=True)` reads to decide whether an access log
+    # is already installed. Set on the function so anyone writing their own can
+    # set it too and suppress the built-in one.
+    _emit.is_access_log = True  # type: ignore[attr-defined]
     app.add_instrumentation(_emit)
     return _emit

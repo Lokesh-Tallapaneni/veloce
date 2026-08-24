@@ -111,7 +111,11 @@ class MountingMixin:
         # dispatcher tries `await mounted(scope, receive, send)`. Route
         # it through the static-handler list with the mount prefix as
         # the lookup prefix instead.
-        if isinstance(app, StaticFiles):
+        # The protocol the dispatcher needs, not the class that happens to
+        # implement it: `.prefix` plus an awaitable `handle(request)`. Gating on
+        # `StaticFiles` rejected a user's own handler implementing exactly that,
+        # which the dispatcher would have served without knowing the difference.
+        if hasattr(app, "prefix") and callable(getattr(app, "handle", None)):
             app.prefix = prefix.rstrip("/")
             self._register_feature_state(self._static_handlers, app)
             return

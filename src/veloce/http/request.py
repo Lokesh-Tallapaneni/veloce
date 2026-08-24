@@ -153,6 +153,7 @@ class Request:
         "_url",
         "_background_tasks",
         "_parsed_ct",
+        "_subdomain",
         "_accept_mimetypes",
         "_accept_languages",
         "_accept_encodings",
@@ -245,6 +246,7 @@ class Request:
         # `None` means "not yet parsed"; the parse happens at most once
         # per request, on first read of `mimetype` or `mimetype_params`.
         self._parsed_ct: tuple[str, dict[str, str]] | None = None
+        self._subdomain: str | None = None
         self._accept_mimetypes: AcceptHeader | None = None
         self._accept_languages: AcceptHeader | None = None
         self._accept_encodings: AcceptHeader | None = None
@@ -927,40 +929,55 @@ class Request:
     def subdomain(self) -> str:
         """Leftmost host label minus `app.config["SERVER_NAME"]`.
 
-        Returns the empty string when the request host equals
-        `SERVER_NAME` exactly (apex), or when `SERVER_NAME` isn't
-        configured and the host has no dots. With `SERVER_NAME` set,
-        the returned value is the prefix that wouldn't match the
-        configured apex; without it, the leftmost label.
+        Returns the empty string when the request host equals `SERVER_NAME`
+        exactly (apex), when `SERVER_NAME` is not configured and the host has no
+        dots, or when the host is an IP literal.
+
+        Cached: a subdomain-routed request asks twice - once by the router to
+        decide the match, once by the handler to read the value - and it is
+        derived from request data that cannot change. The router asks through
+        this property rather than deriving its own answer, because the two used
+        to disagree.
         """
+        cached = self._subdomain
+        if cached is not None:
+            return cached
+        # Derived inline rather than in a helper: this is on the match path for
+        # every subdomain-routed request, and the extra frame was measurable.
+        #
         # `_extract_host` is the framework's one host-from-Host-header reader,
         # and the only one that handles an IPv6 literal: splitting on the first
         # colon takes `2001` out of `2001:db8::1`, so a bare IPv6 host produced
-        # a nonsense subdomain. This was the seventh site to answer "what is the
-        # host", and the only one that hand-rolled it.
+        # a nonsense subdomain.
         host = _extract_host(self.host or "")
         if not host:
+            self._subdomain = ""
             return ""
         # An IP literal has no subdomain: its dots and colons are address
         # structure, not name labels. Splitting on them produced `192` for an
         # IPv4 host and `::ffff:192` for an IPv4-mapped IPv6 one.
-        if ":" in host or host.replace(".", "").isdigit():
+        # The all-digits test allocates, so it runs only behind a one-character
+        # pre-check: a hostname may legally begin with a digit, but almost none
+        # does, and an IPv4 literal always does.
+        if ":" in host or (host[0].isdigit() and host.replace(".", "").isdigit()):
+            self._subdomain = ""
             return ""
-        app = getattr(self, "app", None)
-        cfg = getattr(app, "config", None) if app is not None else None
-        server_name = (cfg.get("SERVER_NAME") if cfg else "") or ""
-        server_name = server_name.lower()
+        app = self.app
+        cfg = app.config if app is not None else None
+        server_name = ((cfg.get("SERVER_NAME") if cfg else "") or "").lower()
         if server_name:
-            if host == server_name:
-                return ""
             if host.endswith("." + server_name):
-                return host[: -(len(server_name) + 1)]
+                self._subdomain = value = host[: -(len(server_name) + 1)]
+                return value
+            self._subdomain = ""
             return ""
-        # No SERVER_NAME - return the leftmost label only when the host
-        # has more than one label (otherwise it's the apex).
+        # No SERVER_NAME - the leftmost label, but only when the host has more
+        # than one (otherwise it is the apex).
         if "." not in host:
+            self._subdomain = ""
             return ""
-        return host.split(".", 1)[0]
+        self._subdomain = value = host.split(".", 1)[0]
+        return value
 
     @property
     def environ(self) -> dict[str, Any]:

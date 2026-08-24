@@ -107,6 +107,10 @@ def _not_modified(etag: str, last_modified: str) -> Response:
     )
 
 
+#: Sent when neither the handler nor the app configures a cache lifetime.
+_DEFAULT_CACHE_CONTROL = "public, max-age=3600"
+
+
 class StaticFiles:
     """Serve static files from a directory — all file I/O runs in executor.
 
@@ -149,8 +153,17 @@ class StaticFiles:
         must_exist: bool = True,
         precompressed: bool = False,
         redirect_status: int = HTTP_307_TEMPORARY_REDIRECT,
+        max_age: int | None = None,
     ) -> None:
         self.directory = os.path.abspath(directory)
+        # How long a client may cache an asset. `send_file` already honours
+        # `SEND_FILE_MAX_AGE_DEFAULT`; this handler wrote `max-age=3600` as a
+        # literal in two places and took no argument, so the app-wide setting
+        # reached one way of serving a file and not the other. Resolved once
+        # here rather than per response: it cannot change for the life of the
+        # handler.
+        self.max_age = max_age
+        self._cache_control = f"public, max-age={max_age}" if max_age is not None else None
         # Validate the configured directory once at construction (a setup-time
         # context, not an async request path). A typo otherwise builds a
         # handler that silently 404s every asset, discoverable only by hitting
@@ -323,6 +336,23 @@ class StaticFiles:
             if variant_stat is not None and stat.S_ISREG(variant_stat.st_mode):
                 return (variant_path, enc, variant_stat)
         return None
+
+    def _cache_control_for(self, request: Any) -> str:
+        """The `Cache-Control` to send, from the handler or the app's default.
+
+        An explicit `max_age=` on the handler wins; otherwise
+        `SEND_FILE_MAX_AGE_DEFAULT` applies, which is what `send_file` already
+        honours - so one setting now governs both ways of serving a file. With
+        neither, the previous literal is the default.
+        """
+        if self._cache_control is not None:
+            return self._cache_control
+        app = getattr(request, "app", None)
+        config = getattr(app, "config", None) if app is not None else None
+        configured = config.get("SEND_FILE_MAX_AGE_DEFAULT") if config else None
+        if configured is None:
+            return _DEFAULT_CACHE_CONTROL
+        return f"public, max-age={configured}"
 
     def audit(self, ctx: Any) -> Any:
         """Report a served root the constructor could only warn about.
@@ -599,7 +629,7 @@ class StaticFiles:
                 HEADER_ETAG: etag,
                 HEADER_LAST_MODIFIED: last_modified,
                 HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
-                HEADER_CACHE_CONTROL: "public, max-age=3600",
+                HEADER_CACHE_CONTROL: self._cache_control_for(request),
             }
             if content_encoding is not None:
                 # The range is over the compressed bytes; advertise the
@@ -624,7 +654,7 @@ class StaticFiles:
             HEADER_ETAG: etag,
             HEADER_LAST_MODIFIED: last_modified,
             HEADER_ACCEPT_RANGES: HEADER_VALUE_BYTES,
-            HEADER_CACHE_CONTROL: "public, max-age=3600",
+            HEADER_CACHE_CONTROL: self._cache_control_for(request),
         }
         if content_encoding is not None:
             common_headers[HEADER_CONTENT_ENCODING] = content_encoding
