@@ -192,6 +192,7 @@ from veloce.middleware import (
     SecurityHeadersMiddleware,
     ServerSessionMiddleware,
     SessionMiddleware,
+    SessionMiddlewareBase,
     TrustedHostMiddleware,
     WebSocketOriginMiddleware,
     csp_nonce,
@@ -362,6 +363,7 @@ __all__ = [
     "RequestIDMiddleware",
     "SessionMiddleware",
     "ServerSessionMiddleware",
+    "SessionMiddlewareBase",
     "ProxyFix",
     "rotate_csrf_token",
     # Sessions

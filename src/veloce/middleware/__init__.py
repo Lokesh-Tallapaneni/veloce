@@ -26,7 +26,11 @@ from veloce.middleware.security import (
     WebSocketOriginMiddleware,
     csp_nonce,
 )
-from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
+from veloce.middleware.sessions import (
+    ServerSessionMiddleware,
+    SessionMiddleware,
+    SessionMiddlewareBase,
+)
 
 __all__ = [
     "Middleware",
@@ -47,5 +51,6 @@ __all__ = [
     "RequestIDMiddleware",
     "SessionMiddleware",
     "ServerSessionMiddleware",
+    "SessionMiddlewareBase",
     "ProxyFix",
 ]

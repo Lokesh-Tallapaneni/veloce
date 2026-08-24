@@ -8,7 +8,7 @@ lifetime - lived on the cookie backend only, so "remember me" silently did
 nothing on the server-side one: users were logged out at the default window
 whatever `PERMANENT_SESSION_LIFETIME` said.
 
-`_SessionMiddlewareBase` now carries the type and the lifetime decision, so a
+`SessionMiddlewareBase` now carries the type and the lifetime decision, so a
 backend added later inherits both without an edit in `app/core.py`.
 """
 
@@ -20,7 +20,7 @@ from veloce import Veloce
 from veloce.middleware.sessions import (
     ServerSessionMiddleware,
     SessionMiddleware,
-    _SessionMiddlewareBase,
+    SessionMiddlewareBase,
 )
 from veloce.sessions import InMemorySessionStore
 from veloce.testclient import TestClient
@@ -108,7 +108,7 @@ def test_a_backend_added_later_is_audited_without_touching_the_audit():
     class RedisLikeSessionMiddleware(ServerSessionMiddleware):
         pass
 
-    assert issubclass(RedisLikeSessionMiddleware, _SessionMiddlewareBase)
+    assert issubclass(RedisLikeSessionMiddleware, SessionMiddlewareBase)
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
     app.add_middleware(RedisLikeSessionMiddleware())

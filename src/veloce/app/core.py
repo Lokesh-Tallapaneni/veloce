@@ -67,6 +67,8 @@ from veloce.http.response import (
     Response,
 )
 from veloce.middleware import Middleware
+from veloce.middleware.security import SecurityHeadersMiddleware
+from veloce.middleware.sessions import SessionMiddlewareBase
 from veloce.routing.router import Router, _readd_route
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -943,21 +945,25 @@ class Veloce(
         self.config["SESSION_COOKIE_HTTPONLY"] = True
         if self.config.get("SESSION_COOKIE_SAMESITE") is None:
             self.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-        from veloce.middleware.security import SecurityHeadersMiddleware
-
         if not any(isinstance(m, SecurityHeadersMiddleware) for m in self._middlewares):
             self.add_middleware(SecurityHeadersMiddleware(hsts_max_age=31536000))
 
     def security_audit(self) -> list[str]:
         """Return human-readable warnings about the current security posture.
 
-        An empty list means nothing was flagged. Drives the
-        `veloce check` CLI command and is also callable directly from a
-        pre-deploy script or a test.
-        """
-        from veloce.middleware.security import SecurityHeadersMiddleware
-        from veloce.middleware.sessions import _SessionMiddlewareBase
+        Four things are checked: `debug`, `SECRET_KEY`, a session cookie that
+        is not `Secure`, and a response stack with no hardening headers. An
+        empty list means none of those was flagged. Drives the `veloce check`
+        CLI command and is also callable directly from a pre-deploy script or
+        a test.
 
+        The middleware checks recognise Veloce's own types - a session
+        backend is seen by subclassing `SessionMiddlewareBase`, headers by
+        `SecurityHeadersMiddleware`. An app that hardens through a middleware
+        outside those families, or through a reverse proxy, is not seen here
+        and must be verified separately; a clean audit is not a statement
+        about middleware this framework cannot identify.
+        """
         warnings: list[str] = []
         if self.debug:
             warnings.append("DEBUG is enabled - disable it before deploying to production.")
@@ -969,7 +975,7 @@ class Veloce(
         # The shared base, not one backend: testing the cookie backend alone let
         # a server-side-session app pass this audit while shipping its session id
         # over plain HTTP, and would miss any backend added later.
-        has_session = any(isinstance(m, _SessionMiddlewareBase) for m in self._middlewares)
+        has_session = any(isinstance(m, SessionMiddlewareBase) for m in self._middlewares)
         if has_session and not self.config.get("SESSION_COOKIE_SECURE"):
             warnings.append(
                 "SESSION_COOKIE_SECURE is off - the session cookie can be sent over plain HTTP."

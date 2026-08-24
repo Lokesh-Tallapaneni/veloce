@@ -16,6 +16,7 @@ The middleware base classes and every middleware shipped with the framework.
 ::: veloce.LoggingMiddleware
 ::: veloce.RequestIDMiddleware
 ::: veloce.ProxyFix
+::: veloce.SessionMiddlewareBase
 ::: veloce.SessionMiddleware
 ::: veloce.ServerSessionMiddleware
 ::: veloce.CSPMiddleware

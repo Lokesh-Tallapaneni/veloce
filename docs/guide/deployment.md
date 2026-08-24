@@ -267,6 +267,32 @@ Once the package is installed, `veloce deploy prod` runs your command.
 - Keep `debug=False` for anything reachable beyond `localhost` — debug
   tracebacks leak source and internals.
 
+### What the audit can and cannot see
+
+The middleware checks recognise Veloce's own types: a session backend is
+seen by subclassing [`SessionMiddlewareBase`](../reference/middleware.md), and
+hardening headers by `SecurityHeadersMiddleware`. That covers both built-in
+session backends and any custom one written the documented way:
+
+```python
+from veloce import SessionMiddlewareBase
+
+class RedisSessionMiddleware(SessionMiddlewareBase):
+    ...
+```
+
+A subclass inherits the `session.permanent` lifetime rule and is audited
+like a built-in. A session middleware written from `Middleware` directly
+gets neither — `veloce check` reports no issue while the cookie ships over
+plain HTTP.
+
+!!! warning "A clean audit is not a proof"
+
+    If you harden through a middleware outside these families, or at a
+    reverse proxy, the audit cannot see it and stays silent. Verify those
+    separately — the audit reports on what it can identify, not on
+    everything that matters.
+
 ### Regex constraints and ReDoS
 
 A `pattern=` (or `regex=`) constraint on `Query`, `Path`, `Header`,

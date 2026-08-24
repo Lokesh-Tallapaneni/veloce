@@ -22,10 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `WEBSOCKET_IDLE_TIMEOUT` closes an idle WebSocket with `1001 Going Away` on both transports; it was read only by the built-in server, and is now a documented config key. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `TestClient(app, loop=...)` drives the app on a loop you supply, which the client never closes. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `SessionMiddlewareBase` is public; subclass it to add a session backend that `security_audit` recognises. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
 
+- `SessionMiddlewareBase.cookie_lifetime` replaces the private `_cookie_lifetime`; a subclass calling the old name must rename it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `security_audit` documents that it recognises Veloce's own middleware types, so a clean run is not a statement about middleware it cannot identify. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A nested blueprint's hooks and URL processors run only on that blueprint's own routes, not on every route under its parent. Register a guard on the parent blueprint to keep app-wide coverage. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `ServerSessionMiddleware` honours `session.permanent`, so a permanent session's cookie and store entry both use `PERMANENT_SESSION_LIFETIME`. Sessions that previously expired at the 14-day default now live as long as that setting says; pass `permanent_lifetime=` to cap it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `security_audit()` warns about a non-`Secure` session cookie for any session middleware, so an app using `ServerSessionMiddleware` may see a warning `veloce check` did not previously report. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

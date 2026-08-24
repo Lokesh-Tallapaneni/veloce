@@ -224,24 +224,38 @@ def _overlay_shared_cookie_config(middleware: Any, cfg: Any, deferred: set[str])
         middleware.samesite = _cfg_or(cfg, "SESSION_COOKIE_SAMESITE", middleware.samesite)
 
 
-class _SessionMiddlewareBase(Middleware):
-    """The type, and the lifetime rule, that every session backend shares.
+class SessionMiddlewareBase(Middleware):
+    """Base class for a session middleware — subclass it to add a backend.
 
-    Two defects had one cause: there was no type meaning "a session
-    middleware". `security_audit` asks `isinstance` to warn about a session
-    cookie that is not `Secure`, and with only the cookie backend to name, a
-    server-side-session app passed `veloce check` clean while shipping its
-    session id over plain HTTP. And the documented `session.permanent` rule -
-    use the longer lifetime - was implemented on the cookie backend alone, so
-    "remember me" silently did nothing on the server-side one and users were
-    logged out at the default regardless of configuration.
+    Subclassing supplies two things a backend would otherwise have to
+    reimplement. It inherits the documented `session.permanent` rule (a
+    permanent session takes the longer lifetime), and it becomes the type
+    `Veloce.security_audit` recognises, so `veloce check` warns when the
+    backend's session cookie is not `Secure`. A backend that does not
+    subclass gets neither, and the audit passes it in silence.
 
-    A new backend inherits both by subclassing, with no edit in `app/core.py`;
-    the `ServerSessionMiddleware` docstring openly invites a Redis-backed one.
-    The shared cookie-attribute plumbing stays in the module-level helpers
-    (`_shared_cookie_settings`, `_overlay_shared_cookie_config`) that both
-    backends already call - this base owns the contract those helpers do not
-    carry, which is the type itself and the lifetime decision.
+    A subclass sets `max_age` and `permanent_lifetime`, then calls
+    `cookie_lifetime(session)` wherever it writes the cookie or the store
+    entry. Both built-in backends - `SessionMiddleware` (signed cookie) and
+    `ServerSessionMiddleware` (server-side store) - are subclasses, and
+    adding another requires no edit inside the framework.
+
+    Usage::
+
+        from veloce import SessionMiddlewareBase
+
+        class RedisSessionMiddleware(SessionMiddlewareBase):
+            def __init__(self, client, max_age=3600, permanent_lifetime=2592000):
+                self.client = client
+                self.max_age = max_age
+                self.permanent_lifetime = permanent_lifetime
+
+            async def process_response(self, request, response):
+                session = request.session
+                ttl = self.cookie_lifetime(session)
+                await self.client.setex(session.sid, ttl, session.serialize())
+                response.set_cookie("session", session.sid, max_age=ttl, secure=True)
+                return response
     """
 
     #: Cookie lifetime, in seconds, for a session not marked permanent.
@@ -250,12 +264,12 @@ class _SessionMiddlewareBase(Middleware):
     #: `session.permanent`.
     permanent_lifetime: int
 
-    def _cookie_lifetime(self, session: Any) -> int:
+    def cookie_lifetime(self, session: Any) -> int:
         """Return the lifetime this session's cookie and entry should carry."""
         return self.permanent_lifetime if getattr(session, "permanent", False) else self.max_age
 
 
-class SessionMiddleware(_SessionMiddlewareBase):
+class SessionMiddleware(SessionMiddlewareBase):
     """Server-side session stored in a signed, timestamped cookie.
 
     Constructor arguments left out fall back to the app's config on the first
@@ -516,7 +530,7 @@ class SessionMiddleware(_SessionMiddlewareBase):
             return response
 
         cookie_value = self._signer.dumps(session)
-        lifetime = self._cookie_lifetime(session)
+        lifetime = self.cookie_lifetime(session)
         # Browsers silently truncate Set-Cookie above ~4 KB, which corrupts
         # the session on the next request. Measure the rendered header and
         # drop the cookie (with a warning) rather than raising - a raise here
@@ -686,7 +700,7 @@ class SessionMiddleware(_SessionMiddlewareBase):
         )
 
 
-class ServerSessionMiddleware(_SessionMiddlewareBase):
+class ServerSessionMiddleware(SessionMiddlewareBase):
     """Server-side session - the cookie carries only an opaque session id.
 
     The session payload lives in a `SessionStore`, not in the cookie, so a
@@ -851,7 +865,7 @@ class ServerSessionMiddleware(_SessionMiddlewareBase):
         session_id = request._state.get("_session_id")
         # One lifetime for the entry and its cookie, so a `permanent` session
         # does not outlive its store entry or vice versa.
-        lifetime = self._cookie_lifetime(session)
+        lifetime = self.cookie_lifetime(session)
         if not session:
             # The handler emptied the session - revoke it server-side and
             # tell the client to drop the cookie.
@@ -895,7 +909,7 @@ class ServerSessionMiddleware(_SessionMiddlewareBase):
             return
         # Slide by the lifetime this session is entitled to, so a permanent one
         # is not quietly demoted to the default window on a read-only request.
-        lifetime = self._cookie_lifetime(request._state.get("session"))
+        lifetime = self.cookie_lifetime(request._state.get("session"))
         if not await self.store.touch(session_id, lifetime):
             self._clear_session_cookie(response)
             return
