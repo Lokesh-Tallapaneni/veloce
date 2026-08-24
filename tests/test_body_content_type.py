@@ -49,6 +49,10 @@ def _client(**config) -> TestClient:
     async def raw(request) -> dict:
         return await request.json()
 
+    @app.post("/manual")
+    async def manual(request) -> dict:
+        return {"seen": await request.json()}
+
     return TestClient(app)
 
 
@@ -178,3 +182,56 @@ def test_both_ways_of_reading_a_body_agree(verbose):
     via_request = client.post("/raw", content=_MALFORMED, headers=headers)
     assert via_model.status_code == via_request.status_code == 400
     assert via_model.json()["detail"] == via_request.json()["detail"]
+
+
+# ── The same rule on the manual door ─────────────────────────────────
+#
+# The gate reached the body-model path and nothing else, so a handler that read
+# its body with `await request.json()` still parsed a cross-origin `text/plain`
+# send. Both doors now consult one predicate.
+
+
+def _manual(client: TestClient, content_type: str | None, content: bytes = _BODY):
+    headers = {"content-type": content_type} if content_type is not None else {}
+    return client.post("/manual", content=content, headers=headers)
+
+
+@pytest.mark.parametrize(
+    "content_type", ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data"]
+)
+def test_the_manual_door_refuses_the_cors_safelisted_types(content_type):
+    """The defect: this door parsed the body a cross-origin form can send."""
+    response = _manual(_client(), content_type)
+    assert response.status_code == 200
+    assert response.json()["seen"] is None
+
+
+@pytest.mark.parametrize(
+    "content_type", ["application/json", "application/vnd.api+json", "APPLICATION/JSON"]
+)
+def test_the_manual_door_still_reads_a_json_body(content_type):
+    assert _manual(_client(), content_type).json()["seen"] == {"name": "x", "qty": 1}
+
+
+def test_the_manual_door_still_reads_a_body_with_no_declared_type():
+    """Absence asserts nothing, and a browser cannot omit it cross-origin."""
+    assert _manual(_client(), None).json()["seen"] == {"name": "x", "qty": 1}
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [None, "application/json", "application/vnd.api+json", "text/plain", "text/html"],
+)
+def test_both_doors_agree_on_every_content_type(content_type):
+    """One rule: whatever a body model accepts, the manual read accepts."""
+    client = _client()
+    model_read = _post(client, content_type).status_code == 200
+    manual_read = _manual(client, content_type).json()["seen"] is not None
+    assert model_read == manual_read, content_type
+
+
+def test_a_structured_suffix_outside_the_application_tree_is_refused_by_both():
+    """`text/foo+json` is not JSON; the two doors used to disagree about it."""
+    client = _client()
+    assert _post(client, "text/foo+json").status_code == 422
+    assert _manual(client, "text/foo+json").json()["seen"] is None

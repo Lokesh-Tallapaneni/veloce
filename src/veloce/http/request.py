@@ -43,7 +43,7 @@ from veloce._constants import (
     MIME_MULTIPART_FORM_DATA,
 )
 from veloce._header_parsing import parse_media_type_params
-from veloce._internal import _coerce_bool, is_json_mimetype
+from veloce._internal import _coerce_bool, is_json_mimetype, json_body_refused
 from veloce._protocol_constants import URL_SCHEME_HTTPS
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
@@ -1260,10 +1260,18 @@ class Request:
         with the cached parse. The async signature exists so the
         `await request.json()` idiom does not blow up at runtime.
 
-        The synchronous `request.get_json()` accessor is available for
-        callers that prefer a sync API.
+        A body whose `Content-Type` declares it is not JSON reads as `None`
+        rather than being parsed, which is what stops a cross-origin
+        `text/plain` send from driving a JSON endpoint. An absent header
+        declares nothing and is still parsed.
+
+        The synchronous `request.get_json()` accessor is available for callers
+        that prefer a sync API. It is stricter by default: it requires a
+        positive JSON declaration and takes `force=True` to parse regardless.
         """
         if self._json is _UNPARSED:
+            if json_body_refused(self.mimetype):
+                return None
             body = await self._drain_body()
             if not body:
                 self._json = None

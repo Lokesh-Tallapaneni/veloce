@@ -129,9 +129,24 @@ already buffered or still streaming in.
 | Accessor | Returns |
 | --- | --- |
 | `await request.body()` | the full body as `bytes`. |
-| `await request.json()` | the body parsed as JSON (raises `400` on malformed JSON, returns `None` for an empty body). |
+| `await request.json()` | the body parsed as JSON (raises `400` on malformed JSON, returns `None` for an empty body, and `None` when `Content-Type` declares the body is not JSON). |
 | `await request.text()` | the body decoded as UTF-8. |
 | `await request.get_data(as_text=True)` | the body decoded via the `Content-Type` charset. |
+
+!!! warning "A declared non-JSON body is not parsed"
+    `await request.json()` returns `None` when the request declares a
+    `Content-Type` that is not JSON. `text/plain`, `multipart/form-data` and
+    `application/x-www-form-urlencoded` are the types a cross-origin form or
+    `fetch` may send with **no CORS preflight**, so parsing a body under one of
+    them lets an attacker drive the endpoint through a cookie-authenticated
+    victim's browser. An absent header asserts nothing and is still parsed; a
+    `+json` suffix such as `application/vnd.api+json` is JSON. A JSON body model
+    applies the same rule and answers `422`.
+
+!!! note "Changed in version 0.18"
+    `await request.json()` previously parsed the body whatever the
+    `Content-Type` said. Send `application/json`, or read the raw bytes with
+    `await request.body()` and parse them yourself.
 
 ```python title="app.py"
 from veloce import Request, Veloce

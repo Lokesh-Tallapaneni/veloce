@@ -21,7 +21,7 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 from typing_extensions import Doc
 
-from veloce._constants import MIME_JSON, MSG_FIELD_REQUIRED, STATE_INJECTED_RESPONSE
+from veloce._constants import MSG_FIELD_REQUIRED, STATE_INJECTED_RESPONSE
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
@@ -43,7 +43,12 @@ from veloce._handler_plan import (
     _slot_parallel_safe,
     parallel_group_end,
 )
-from veloce._internal import _BaseExceptionGroup, _is_async_callable, offload
+from veloce._internal import (
+    _BaseExceptionGroup,
+    _is_async_callable,
+    json_body_refused,
+    offload,
+)
 from veloce._model_backend import ModelBackend, _msgspec, adapter_for, is_pydantic_model
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
@@ -977,9 +982,13 @@ class DependencyResolver:
         An absent header is accepted: plenty of clients omit it, and its absence
         asserts nothing about the body. A `+json` structured suffix (RFC 6839),
         such as `application/vnd.api+json`, is JSON and is accepted too.
+
+        The rule lives in `json_body_refused` so this door and
+        `await request.json()` cannot answer differently; re-spelling it here
+        is what let the two disagree on `text/foo+json`.
         """
         mimetype = request.mimetype
-        if not mimetype or mimetype == MIME_JSON or mimetype.endswith("+json"):
+        if not json_body_refused(mimetype):
             return
         raise RequestValidationError(
             [

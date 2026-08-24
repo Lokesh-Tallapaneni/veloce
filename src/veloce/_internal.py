@@ -126,6 +126,23 @@ def is_json_mimetype(mimetype: str) -> bool:
     return mimetype.startswith("application/") and mimetype.endswith("+json")
 
 
+def json_body_refused(mimetype: str) -> bool:
+    """Whether a declared content type forbids reading the body as JSON.
+
+    An absent header declares nothing and is not a refusal: plenty of clients
+    omit it, and a browser cannot omit it on a cross-origin send. A declared
+    non-JSON type is a refusal, which is what closes the CSRF avenue -
+    `text/plain`, `multipart/form-data` and `application/x-www-form-urlencoded`
+    are the types a cross-origin form or `fetch` may send with no CORS
+    preflight, so an endpoint that parses a body under one of them can be
+    driven through a cookie-authenticated victim's browser.
+
+    Single source of the rule for every door that reads a request body as
+    JSON, so a new one cannot answer differently.
+    """
+    return bool(mimetype) and not is_json_mimetype(mimetype)
+
+
 def offload(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> asyncio.Future[Any]:
     """Run a sync callable in the default executor, preserving request context.
 
