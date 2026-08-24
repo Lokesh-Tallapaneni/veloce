@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every `Response` header accessor reads the header under any casing; `vary`, `allow`, `cache_control`, `date`, `location`, `age` and seven others saw only the canonical spelling. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `response.expires = None` and `last_modified = None` remove the header whatever casing it was stored under; a third spelling survived while the getter reported the clear had worked. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An MCP request naming a handshake-era revision in `_meta` is served instead of refused for a header that revision never defined. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `describe_tools` advertises the modern tool shape to a modern client; under `tool_search` it is the only definition such a client sees. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `tasks/cancel` and the task status notification spell the duration fields the way the caller's revision does, matching creation and polling. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

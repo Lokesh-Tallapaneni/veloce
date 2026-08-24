@@ -548,12 +548,15 @@ class Response:
     def _set_http_date_header(self, name: str, value: Any) -> None:
         """Set an HTTP-date header from datetime / unix ts / preformatted str.
 
-        `value=None` removes the header (both canonical and lower-case
-        variants). Naive datetimes are interpreted as UTC.
+        `value=None` removes the header under whatever casing it was stored.
+        Popping only the canonical and lower-case spellings left a third one on
+        the wire while the getter, which reads case-insensitively, reported the
+        clear had worked. Naive datetimes are interpreted as UTC.
         """
         if value is None:
-            self.headers.pop(name, None)
-            self.headers.pop(name.lower(), None)
+            stored = header_key(self.headers, name)
+            if stored is not None:
+                del self.headers[stored]
             self._encoded = None
             return
         if isinstance(value, datetime) and value.tzinfo is None:
@@ -718,6 +721,17 @@ class Response:
         # beat two `.get` lookups plus a defensive `.pop`; a (vanishingly rare)
         # empty-valued lower-case `vary` key falls through to the merge path,
         # which still clears it. This runs on every session-touched response.
+        #
+        # A third spelling is knowingly not handled. Only `Vary` and `vary` are
+        # probed, so a caller that wrote `response.headers["VARY"]` by hand
+        # leaves a value this path orphans and the emit-side case-fold dedup
+        # then drops. Making the guard case-insensitive means scanning the
+        # header dict whenever no `Vary` is present, which is precisely when
+        # this path runs: measured on one Windows desktop, 116 ns to 521 ns per
+        # call on a four-header response, about 3% of a request. Framework code
+        # writes `Vary` through this method or the canonical constant, so the
+        # exposure is user code bypassing both. The `vary` property reads
+        # case-insensitively and reports whatever is actually stored.
         if len(header_names) == 1 and HEADER_VARY not in headers and "vary" not in headers:
             value = header_names[0]
             headers[HEADER_VARY] = value
@@ -747,7 +761,7 @@ class Response:
         write back - call `add_vary(...)` or reassign for that.
         """
 
-        return HeaderSet(self.headers.get(HEADER_VARY, ""))
+        return HeaderSet(header_get(self.headers, HEADER_VARY) or "")
 
     @vary.setter
     def vary(self, value: Any) -> None:
@@ -765,7 +779,7 @@ class Response:
         Assign a `HeaderSet`, iterable, or comma-separated string.
         """
 
-        return HeaderSet(self.headers.get(HEADER_ALLOW, ""))
+        return HeaderSet(header_get(self.headers, HEADER_ALLOW) or "")
 
     @allow.setter
     def allow(self, value: Any) -> None:
@@ -782,7 +796,7 @@ class Response:
         Sent on `401 Unauthorized` to tell the client which auth
         scheme(s) to use. `None` when unset.
         """
-        return self.headers.get(HEADER_WWW_AUTHENTICATE)
+        return header_get(self.headers, HEADER_WWW_AUTHENTICATE)
 
     @www_authenticate.setter
     def www_authenticate(self, value: str | None) -> None:
@@ -825,7 +839,7 @@ class Response:
     @property
     def content_encoding(self) -> str | None:
         """The `Content-Encoding` header - RFC 9110 Sec. 8.4. `None` when unset."""
-        return self.headers.get(HEADER_CONTENT_ENCODING)
+        return header_get(self.headers, HEADER_CONTENT_ENCODING)
 
     @content_encoding.setter
     def content_encoding(self, value: str | None) -> None:
@@ -835,7 +849,7 @@ class Response:
     @property
     def content_language(self) -> str | None:
         """The `Content-Language` header - RFC 9110 Sec. 8.5. `None` when unset."""
-        return self.headers.get(HEADER_CONTENT_LANGUAGE)
+        return header_get(self.headers, HEADER_CONTENT_LANGUAGE)
 
     @content_language.setter
     def content_language(self, value: str | None) -> None:
@@ -849,7 +863,7 @@ class Response:
         Typically `bytes` (range requests supported) or `none`
         (explicitly unsupported). `None` when the header is unset.
         """
-        return self.headers.get(HEADER_ACCEPT_RANGES)
+        return header_get(self.headers, HEADER_ACCEPT_RANGES)
 
     @accept_ranges.setter
     def accept_ranges(self, value: str | None) -> None:
@@ -885,7 +899,7 @@ class Response:
     @property
     def content_range(self) -> str | None:
         """The raw `Content-Range` header - RFC 9110 Sec. 14.4. `None` if unset."""
-        return self.headers.get(HEADER_CONTENT_RANGE)
+        return header_get(self.headers, HEADER_CONTENT_RANGE)
 
     @property
     def date(self) -> Any:
@@ -895,7 +909,7 @@ class Response:
         or POSIX timestamp to set it; assign `None` to remove it.
         """
 
-        return parse_date(self.headers.get(HEADER_DATE))
+        return parse_date(header_get(self.headers, HEADER_DATE))
 
     @date.setter
     def date(self, value: Any) -> None:
@@ -909,7 +923,7 @@ class Response:
     @property
     def location(self) -> str | None:
         """The `Location` header - RFC 9110 Sec. 10.2.2. `None` when unset."""
-        return self.headers.get(HEADER_LOCATION)
+        return header_get(self.headers, HEADER_LOCATION)
 
     @location.setter
     def location(self, value: str | None) -> None:
@@ -919,7 +933,7 @@ class Response:
     @property
     def content_location(self) -> str | None:
         """The `Content-Location` header - RFC 9110 Sec. 8.7. `None` when unset."""
-        return self.headers.get(HEADER_CONTENT_LOCATION)
+        return header_get(self.headers, HEADER_CONTENT_LOCATION)
 
     @content_location.setter
     def content_location(self, value: str | None) -> None:
@@ -934,7 +948,7 @@ class Response:
         unset. Assign an int / `timedelta` / `datetime` to set it;
         assign `None` to remove it.
         """
-        raw = self.headers.get(HEADER_RETRY_AFTER)
+        raw = header_get(self.headers, HEADER_RETRY_AFTER)
         if not raw:
             return None
         raw = raw.strip()
@@ -959,7 +973,7 @@ class Response:
     @property
     def age(self) -> int | None:
         """The `Age` header in seconds - RFC 9110 Sec. 5.1. `None` when unset."""
-        raw = self.headers.get(HEADER_AGE)
+        raw = header_get(self.headers, HEADER_AGE)
         if not raw or not raw.strip().isdigit():
             return None
         return int(raw.strip())
@@ -1023,7 +1037,7 @@ class Response:
         `resp.cache_control.no_store`, etc.
         """
 
-        return CacheControl(self.headers.get(HEADER_CACHE_CONTROL, ""))
+        return CacheControl(header_get(self.headers, HEADER_CACHE_CONTROL) or "")
 
     def iter_encoded(self) -> Any:
         """Yield the response body.
