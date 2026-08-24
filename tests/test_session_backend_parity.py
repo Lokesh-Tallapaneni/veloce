@@ -88,7 +88,7 @@ def test_the_audit_flags_an_insecure_cookie_on_either_backend(middleware):
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
     app.add_middleware(middleware)
-    assert any("SESSION_COOKIE_SECURE" in w for w in app.security_audit())
+    assert any("session cookie is not Secure" in w for w in app.security_audit())
 
 
 @pytest.mark.parametrize(
@@ -99,7 +99,7 @@ def test_a_secure_cookie_is_not_flagged_on_either_backend(middleware):
     app = Veloce(openapi_url=None)
     app.config.update({"SECRET_KEY": "k", "SESSION_COOKIE_SECURE": True})
     app.add_middleware(middleware)
-    assert not any("SESSION_COOKIE_SECURE" in w for w in app.security_audit())
+    assert not any("session cookie is not Secure" in w for w in app.security_audit())
 
 
 def test_a_backend_added_later_is_audited_without_touching_the_audit():
@@ -112,7 +112,7 @@ def test_a_backend_added_later_is_audited_without_touching_the_audit():
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
     app.add_middleware(RedisLikeSessionMiddleware())
-    assert any("SESSION_COOKIE_SECURE" in w for w in app.security_audit())
+    assert any("session cookie is not Secure" in w for w in app.security_audit())
 
 
 # ── One answer to `session.permanent` ────────────────────────────────

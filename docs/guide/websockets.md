@@ -305,11 +305,9 @@ strict-by-default missing-`Origin` rejection. Pick the middleware when
 one policy covers everything.
 
 !!! warning "Heads-up"
-    `app.use_secure_defaults()` does **not** register
-    `WebSocketOriginMiddleware`. The helper sets cookie defaults and
-    registers `SecurityHeadersMiddleware` (which is purely HTTP). Add a
-    `WebSocketOriginMiddleware` explicitly — there is no allow-list it
-    could infer from the app.
+    `SecurityHeadersMiddleware` is purely HTTP and does nothing for a
+    WebSocket handshake. Add a `WebSocketOriginMiddleware` explicitly —
+    there is no allow-list it could infer from the app.
 
 ## Handshake data and dependencies
 

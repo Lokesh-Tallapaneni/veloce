@@ -7,7 +7,10 @@ import textwrap
 
 import pytest
 
-from veloce import __version__
+from veloce import (
+    SecurityHeadersMiddleware,  # noqa: F401
+    __version__,
+)
 from veloce import cli as cli_module
 from veloce.cli import _apply_env_file, _load_app, build_parser, main
 
@@ -217,10 +220,12 @@ def test_check_command_clean_app(tmp_path, monkeypatch, capsys):
     module_path.write_text(
         textwrap.dedent(
             """
-            from veloce import Veloce
+            from veloce import SecurityHeadersMiddleware, Veloce
             app = Veloce(openapi_url=None)
             app.config["SECRET_KEY"] = "a-real-secret"
-            app.use_secure_defaults()
+            app.add_middleware(SecurityHeadersMiddleware(
+                hsts_max_age=31536000, content_security_policy="default-src 'self'"
+            ))
             """
         )
     )

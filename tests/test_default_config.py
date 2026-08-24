@@ -28,7 +28,21 @@ def test_config_reads_never_keyerror_on_defaults():
     app = Veloce()
     # Previously a bare read could KeyError; now seeded keys return values.
     assert app.config["MAX_CONTENT_LENGTH"] == 100 * 1024 * 1024
-    assert app.config["SESSION_COOKIE_NAME"] == "session"
+    assert app.config["PREFERRED_URL_SCHEME"] == "http"
+
+
+def test_the_session_cookie_keys_are_not_seeded():
+    """They configure nothing - a session middleware takes its cookie settings
+    from its own constructor - so seeding them would advertise a knob that
+    does not turn."""
+    app = Veloce()
+    for key in (
+        "SESSION_COOKIE_NAME",
+        "SESSION_COOKIE_SECURE",
+        "SESSION_COOKIE_HTTPONLY",
+        "SESSION_COOKIE_SAMESITE",
+    ):
+        assert key not in app.config
 
 
 def test_default_config_staticmethod_returns_dict():

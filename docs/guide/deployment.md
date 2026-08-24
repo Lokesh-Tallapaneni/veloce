@@ -258,8 +258,9 @@ Once the package is installed, `veloce deploy prod` runs your command.
 
 ### Hardening checklist
 
-- Call `app.use_secure_defaults()` (secure session cookies +
-  `SecurityHeadersMiddleware`) for any internet-facing deployment.
+- Pass `secure=True` to your session middleware, and register
+  `SecurityHeadersMiddleware(hsts_max_age=31536000)`, for any
+  internet-facing deployment.
 - Run `veloce check your_module:app` before deploying — it flags
   `DEBUG`, a missing `SECRET_KEY`, insecure session cookies, and missing
   security headers.

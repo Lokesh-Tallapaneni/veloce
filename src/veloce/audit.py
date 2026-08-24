@@ -149,7 +149,7 @@ def run(app: Veloce, *, routes_final: bool = False) -> list[Finding]:
                 "No middleware sets hardening headers - responses ship without nosniff, "
                 "frame-deny or a referrer policy.",
                 severity="warning",
-                fix="call app.use_secure_defaults()",
+                fix="app.add_middleware(SecurityHeadersMiddleware(hsts_max_age=31536000))",
                 id="hardening-headers-missing",
             )
         )

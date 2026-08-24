@@ -927,31 +927,6 @@ class Veloce(
 
     # ── Security posture ───────────────────────────────────
 
-    def use_secure_defaults(self) -> None:
-        """Apply a security-hardened configuration baseline.
-
-        - Marks the session cookie `Secure`, `HttpOnly`, and (unless
-          already configured) `SameSite=Lax`.
-        - Registers `SecurityHeadersMiddleware` - `nosniff`, frame-deny,
-          a referrer policy, and a one-year HSTS max-age - unless one is
-          already present.
-
-        Call once after construction, before serving. Production-oriented:
-        the `Secure` cookie flag means cookies are not sent over plain
-        HTTP, so do not call this for local HTTP development.
-        """
-        self.config["SESSION_COOKIE_SECURE"] = True
-        self.config["SESSION_COOKIE_HTTPONLY"] = True
-        if self.config.get("SESSION_COOKIE_SAMESITE") is None:
-            self.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-        # Imported here, not at module scope: this is the one place the core
-        # constructs a specific middleware, and an app that never calls it
-        # should not load the module on its account.
-        from veloce.middleware.security import SecurityHeadersMiddleware
-
-        if not any(isinstance(m, SecurityHeadersMiddleware) for m in self._middlewares):
-            self.add_middleware(SecurityHeadersMiddleware(hsts_max_age=31536000))
-
     def security_audit(self) -> list[str]:
         """Return human-readable warnings about the current security posture.
 

@@ -193,14 +193,25 @@ keyword arguments:
 | `chunked`            | `False`        | Split an oversized signed value across numbered cookies and reassemble it. |
 | `max_chunks`         | `8`            | Upper bound on chunk cookies; larger sessions are dropped with a warning. |
 
-Arguments left out fall back to `app.config` on the first request:
-`secret_key` to `SECRET_KEY` (also settable as `app.secret_key`),
-`cookie_name` to `SESSION_COOKIE_NAME`, `path` to `APPLICATION_ROOT`,
-`httponly` / `secure` / `samesite` to the matching `SESSION_COOKIE_*` keys,
-`permanent_lifetime` to `PERMANENT_SESSION_LIFETIME`, and `max_cookie_size`
-to `MAX_COOKIE_SIZE`. An explicit argument always wins over config, and a
-config key left at its default keeps the middleware default shown above. So
-the shortest complete setup is:
+The constructor is the only source for these. An argument left out takes the
+default shown above and does not change again — `app.config` is not consulted,
+so what you read here is what the cookie carries, and two session middlewares
+can carry different cookies.
+
+`secret_key` is the exception: left out, it is taken from `SECRET_KEY` (also
+settable as `app.secret_key`) on the first request. It is the application's
+signing key rather than an attribute of this cookie, and `app.secret_key` is
+already its only home.
+
+!!! warning "Cookie settings moved out of config"
+
+    `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_NAME`, `SESSION_COOKIE_HTTPONLY`
+    and `SESSION_COOKIE_SAMESITE` no longer configure anything. Setting one
+    stops the app at startup with an `AuditFailed` naming it, rather than
+    letting a cookie you believe is `Secure` quietly travel over plain HTTP.
+    Pass `secure=True` to the middleware instead.
+
+So the shortest complete setup is:
 
 ```python
 app = Veloce()

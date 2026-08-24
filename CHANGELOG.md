@@ -26,12 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Finding`, `AuditContext` and `AuditFailed` carry a severity, a remedy and a stable id; `veloce.audit.run(app)` returns them. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SILENCED_AUDIT_IDS` drops named findings, so an accepted one is turned off without turning the audit off. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Middleware.audit_needs_routes` skips a route-reading check until the route table is final. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `SecurityHeadersMiddleware` reports the opt-in headers it is not sending, with the value to pass. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Middleware.sets_hardening_headers` marks a middleware that adds hardening headers, satisfying the audit's headers check. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SessionMiddlewareBase` is public; subclass it to add a session backend that `security_audit` recognises. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
 
+- `SessionMiddleware` and `ServerSessionMiddleware` take every cookie setting from their constructor; `SESSION_COOKIE_NAME`, `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_HTTPONLY` and `SESSION_COOKIE_SAMESITE` no longer configure them, and setting one stops startup with `AuditFailed`. Pass `secure=True` and the rest as arguments. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `SECRET_KEY` remains the one session setting read from the app; a middleware given no `secret_key=` still signs with it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SessionMiddlewareBase.cookie_lifetime` replaces the private `_cookie_lifetime`; a subclass calling the old name must rename it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `security_audit` asks each registered middleware for its findings instead of naming middleware classes, so a middleware written outside Veloce is audited like a built-in. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Startup runs the full audit and refuses to serve on an `error` finding, raising `AuditFailed`; `RateLimitMiddleware` raised `ValueError` for the same case, which `AuditFailed` still is. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -51,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TestClient` builds a `SelectorEventLoop` on Windows; pass `loop=asyncio.ProactorEventLoop()` for a handler that spawns a subprocess. Measured on one Windows desktop: 73.0 vs 93.6 us per request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An ASGI WebSocket message is read and written one coroutine frame deep when no timeout is set. Measured on one Windows desktop: 1.34 vs 2.02 us per echo round. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An MCP `list[T]` tool argument refuses a non-array and a wrong-typed member instead of wrapping or passing it through; send the array the published schema declares. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
+### Removed
+
+- `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
 - `security_audit` no longer warns about a session middleware constructed with an explicit `secure=True`; it read only `SESSION_COOKIE_SECURE`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

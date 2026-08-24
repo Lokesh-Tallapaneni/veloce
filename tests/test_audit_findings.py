@@ -21,6 +21,8 @@ from veloce import (
     Finding,
     Middleware,
     RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+    SessionMiddleware,
     TestClient,
     Veloce,
 )
@@ -31,7 +33,11 @@ from veloce.ratelimit import FixedWindow
 def _app(*middleware: Middleware, **kw: Any) -> Veloce:
     app = Veloce(openapi_url=None, **kw)
     app.config["SECRET_KEY"] = "k"
-    app.use_secure_defaults()
+    app.add_middleware(
+        SecurityHeadersMiddleware(
+            hsts_max_age=31536000, content_security_policy="default-src 'self'"
+        )
+    )
     for mw in middleware:
         app.add_middleware(mw)
     return app
@@ -116,7 +122,11 @@ def test_a_route_reading_check_is_skipped_before_startup():
     """`veloce check` imports the app; a startup-registered route is not there."""
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
-    app.use_secure_defaults()
+    app.add_middleware(
+        SecurityHeadersMiddleware(
+            hsts_max_age=31536000, content_security_policy="default-src 'self'"
+        )
+    )
 
     @app.on_startup
     async def late():
@@ -153,7 +163,11 @@ def test_the_context_reports_the_phase():
 def test_a_route_reading_check_runs_once_the_table_is_final():
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
-    app.use_secure_defaults()
+    app.add_middleware(
+        SecurityHeadersMiddleware(
+            hsts_max_age=31536000, content_security_policy="default-src 'self'"
+        )
+    )
 
     @app.get("/real")
     async def real():
@@ -183,3 +197,56 @@ def test_a_finding_renders_its_message_and_remedy():
 def test_security_audit_renders_the_findings():
     app = _app(Noisy())
     assert app.security_audit() == [str(f) for f in run(app)]
+
+
+# ── config that no longer configures ─────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "key", ["SESSION_COOKIE_SECURE", "SESSION_COOKIE_NAME", "SESSION_COOKIE_HTTPONLY"]
+)
+def test_a_retired_session_config_key_refuses_the_boot(key):
+    """The upgrade hazard, closed.
+
+    `SESSION_COOKIE_SECURE = True` plus a bare `SessionMiddleware()` used to
+    produce a `Secure` cookie. The constructor is the only source now, so the
+    same code would produce a plain one - silently, on a security setting. It
+    stops the boot instead.
+    """
+    app = Veloce(openapi_url=None)
+    app.config["SECRET_KEY"] = "k"
+    app.config[key] = True
+    app.add_middleware(SessionMiddleware(secret_key="k"))
+    with pytest.raises(AuditFailed) as exc:
+        TestClient(app)
+    assert exc.value.findings[0].id == "session-config-retired"
+    assert key in str(exc.value)
+
+
+def test_a_secure_cookie_set_the_new_way_is_clean():
+    app = Veloce(openapi_url=None)
+    app.config["SECRET_KEY"] = "k"
+    app.add_middleware(SessionMiddleware(secret_key="k", secure=True))
+    app.add_middleware(SecurityHeadersMiddleware(hsts_max_age=31536000))
+    assert [f for f in run(app) if f.at_least("warning")] == []
+
+
+def test_the_headers_middleware_reports_what_it_is_not_sending():
+    """The judgment about HSTS lives with the header, not in an app helper."""
+    app = Veloce(openapi_url=None)
+    app.config["SECRET_KEY"] = "k"
+    app.add_middleware(SecurityHeadersMiddleware())
+    ids = {f.id for f in run(app)}
+    assert ids == {"hsts-not-sent", "csp-not-sent"}
+    assert all(f.severity == "info" for f in run(app))
+
+
+def test_a_configured_header_is_not_reported():
+    app = Veloce(openapi_url=None)
+    app.config["SECRET_KEY"] = "k"
+    app.add_middleware(
+        SecurityHeadersMiddleware(
+            hsts_max_age=31536000, content_security_policy="default-src 'self'"
+        )
+    )
+    assert run(app) == []

@@ -61,10 +61,6 @@ The defaults are:
 | `MAX_FORM_FIELD_SIZE` | `None` | Per-text-field size limit in bytes; overrides `MAX_FORM_PART_SIZE` for text parts. |
 | `MAX_FORM_FIELD_MEMORY` | `None` | Cumulative resident-memory ceiling (bytes) across all text fields, including field-name bytes. |
 | `MAX_COOKIE_SIZE` | `4093` | Size ceiling for the emitted session cookie. |
-| `SESSION_COOKIE_NAME` | `"session"` | Name of the session cookie. |
-| `SESSION_COOKIE_HTTPONLY` | `True` | Set `HttpOnly` on the session cookie. |
-| `SESSION_COOKIE_SECURE` | `False` | Set `Secure` on the session cookie. |
-| `SESSION_COOKIE_SAMESITE` | `None` | `SameSite` attribute for the session cookie (`None` keeps the middleware default, `lax`). |
 | `PERMANENT_SESSION_LIFETIME` | `2678400` | Lifetime of a permanent session in seconds (31 days). |
 | `JSON_SORT_KEYS` | `False` | Sort keys when serialising JSON responses. |
 | `JSONIFY_PRETTYPRINT_REGULAR` | `False` | Pretty-print JSON responses. |
@@ -90,10 +86,10 @@ file arrive as strings and are coerced (`"false"`, `"0"`, `"off"` read as
 off). `JSON_SORT_KEYS` orders the keys of every JSON response, whatever the
 handler returned - a `dict`, a `list`, a model, or `jsonify(...)`.
 
-The `SECRET_KEY`, `SESSION_COOKIE_*`, `PERMANENT_SESSION_LIFETIME`,
-`MAX_COOKIE_SIZE`, and `APPLICATION_ROOT` keys are consumed by the session
-middlewares: any setting not passed explicitly to `SessionMiddleware` /
-`ServerSessionMiddleware` resolves from config on the first request, so
+`SECRET_KEY` is the one key the session middlewares read: a middleware
+constructed without `secret_key=` signs with it. Every **cookie** setting -
+name, path, `Secure`, `HttpOnly`, `SameSite`, lifetime - comes from the
+middleware's own constructor and from nowhere else, so
 `app.secret_key = "..."` plus a bare `app.add_middleware(SessionMiddleware)`
 is a complete setup. Explicit constructor arguments always win over config.
 
@@ -355,7 +351,7 @@ precedence order.
   `PROPAGATE_EXCEPTIONS` into the right behaviour for failed requests, and
   register custom error responses.
 - [Sessions](sessions.md) and [Middleware](middleware.md) — the
-  `SESSION_COOKIE_*` and `SECRET_KEY` keys drive session signing and cookie
+  `SECRET_KEY` drives session signing; cookie
   attributes.
 - The [API reference](../reference/index.md) documents the public `veloce`
   surface; `Config` and its loader methods live in `veloce.config`.

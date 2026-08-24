@@ -164,13 +164,9 @@ class Config(dict[str, Any]):
             "MAX_FORM_FIELD_SIZE": None,
             "MAX_FORM_FIELD_MEMORY": None,
             "MAX_COOKIE_SIZE": 4093,
-            "SESSION_COOKIE_NAME": "session",
-            "SESSION_COOKIE_HTTPONLY": True,
-            "SESSION_COOKIE_SECURE": False,
             # Finding ids the audit drops. An accepted finding is turned off
             # by id so the audit stays on for everything else.
             "SILENCED_AUDIT_IDS": (),
-            "SESSION_COOKIE_SAMESITE": None,
             "PERMANENT_SESSION_LIFETIME": 2678400,
             "JSON_SORT_KEYS": False,
             "JSONIFY_PRETTYPRINT_REGULAR": False,

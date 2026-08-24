@@ -32,7 +32,7 @@ from veloce.middleware import Middleware
 COVERED = {
     "debug": "DEBUG is enabled",
     "secret-key": "SECRET_KEY is not set",
-    "session-cookie-secure": "SESSION_COOKIE_SECURE is off",
+    "session-cookie-secure": "The session cookie is not Secure",
     "hardening-headers": "No middleware sets hardening headers",
 }
 
@@ -53,28 +53,16 @@ def test_the_audit_covers_exactly_the_documented_set():
 
 
 def test_a_hardened_app_is_clean():
+    """Hardening is now spelled where it takes effect - in each constructor."""
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
-    app.add_middleware(SessionMiddleware(secret_key="k"))
-    app.use_secure_defaults()
+    app.add_middleware(SessionMiddleware(secret_key="k", secure=True))
+    app.add_middleware(
+        SecurityHeadersMiddleware(
+            hsts_max_age=31536000, content_security_policy="default-src 'self'"
+        )
+    )
     assert app.security_audit() == []
-
-
-def test_use_secure_defaults_answers_every_finding_it_claims_to():
-    """The remediation half must actually clear what the detection half flags."""
-    app = _wide_open()
-    app.config["SECRET_KEY"] = "k"
-    app.debug = False
-    app.use_secure_defaults()
-    assert app.security_audit() == []
-
-
-def test_use_secure_defaults_does_not_stack_a_second_headers_middleware():
-    app = Veloce(openapi_url=None)
-    app.use_secure_defaults()
-    app.use_secure_defaults()
-    installed = [m for m in app._middlewares if isinstance(m, SecurityHeadersMiddleware)]
-    assert len(installed) == 1
 
 
 # ── third-party backends ─────────────────────────────────────────────
@@ -102,7 +90,7 @@ def test_both_built_in_backends_are_audited(backend):
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
     app.add_middleware(backend)
-    assert any("SESSION_COOKIE_SECURE is off" in w for w in app.security_audit())
+    assert any("The session cookie is not Secure" in w for w in app.security_audit())
 
 
 def test_a_custom_backend_subclassing_the_base_is_audited():
@@ -110,7 +98,7 @@ def test_a_custom_backend_subclassing_the_base_is_audited():
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
     app.add_middleware(CustomSessionMiddleware())
-    assert any("SESSION_COOKIE_SECURE is off" in w for w in app.security_audit())
+    assert any("The session cookie is not Secure" in w for w in app.security_audit())
 
 
 def test_the_base_carries_the_permanent_lifetime_rule_to_a_subclass():
@@ -131,7 +119,7 @@ def test_a_middleware_declaring_nothing_is_not_audited():
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
     app.add_middleware(DetachedSessionMiddleware())
-    assert not any("SESSION_COOKIE_SECURE" in w for w in app.security_audit())
+    assert not any("not Secure" in w for w in app.security_audit())
 
 
 # ── the audit asks middleware, it does not name classes ──────────────
@@ -169,7 +157,11 @@ def test_a_third_party_middleware_can_satisfy_the_hardening_check():
 def test_a_third_party_middleware_can_contribute_its_own_finding():
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
-    app.use_secure_defaults()
+    app.add_middleware(
+        SecurityHeadersMiddleware(
+            hsts_max_age=31536000, content_security_policy="default-src 'self'"
+        )
+    )
     app.add_middleware(ThirdPartyAuditedMiddleware())
     assert app.security_audit() == ["MY_TOKEN is not set. (set MY_TOKEN)"]
     app.config["MY_TOKEN"] = "t"
@@ -181,7 +173,7 @@ def test_an_explicitly_secure_backend_is_not_warned_about():
     app = Veloce(openapi_url=None)
     app.config["SECRET_KEY"] = "k"
     app.add_middleware(SessionMiddleware(secret_key="k", secure=True))
-    assert not any("SESSION_COOKIE_SECURE" in w for w in app.security_audit())
+    assert not any("not Secure" in w for w in app.security_audit())
 
 
 def test_the_core_names_no_middleware_at_module_scope():
@@ -189,8 +181,7 @@ def test_the_core_names_no_middleware_at_module_scope():
 
     A module-level `from veloce.middleware...` in the app core means every
     app pays to import a middleware it may never register, and means the core
-    knows a specific optional feature. `use_secure_defaults` constructs one,
-    so it imports inside the call; nothing else may.
+    knows a specific optional feature. Nothing in the core may import one.
     """
     import ast
 
@@ -213,5 +204,6 @@ def test_the_audit_needs_no_middleware_class_to_run():
     app.config["SECRET_KEY"] = "k"
     assert app.security_audit() == [
         "No middleware sets hardening headers - responses ship without nosniff, "
-        "frame-deny or a referrer policy. (call app.use_secure_defaults())"
+        "frame-deny or a referrer policy. "
+        "(app.add_middleware(SecurityHeadersMiddleware(hsts_max_age=31536000)))"
     ]
