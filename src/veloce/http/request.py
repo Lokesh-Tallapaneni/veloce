@@ -888,16 +888,26 @@ class Request:
 
     @property
     def root_path(self) -> str:
-        """ASGI `scope["root_path"]` - the URL prefix the app is mounted under.
+        """The URL prefix the app is mounted under.
 
-        Comes from the ASGI server (e.g. uvicorn `--root-path /api`) or
-        from `app.mount("/sub", inner_app)`. Used so an app behind a
-        prefix can generate correct external URLs without knowing the
-        prefix at code-time.
+        Comes from the ASGI server (e.g. uvicorn `--root-path /api`) or from
+        `app.mount("/sub", inner_app)`, and falls back to `Veloce(root_path=...)`
+        when neither supplies one. That constructor argument is documented as a
+        way to set the prefix and was read by nothing, so an app configured that
+        way built unprefixed external URLs and unprefixed slash redirects.
+
+        The server wins when it sets one: it knows where the app was actually
+        mounted, and the constructor argument is a declaration made before that
+        is known. The built-in server sets none, which is why the fallback
+        matters there.
 
         Returns the empty string when the app is at root.
         """
-        return self.scope.get("root_path", "") if isinstance(self.scope, dict) else ""
+        scope_root = self.scope.get("root_path", "") if isinstance(self.scope, dict) else ""
+        if scope_root:
+            return scope_root
+        app = self.app
+        return app.root_path if app is not None else ""
 
     @property
     def script_root(self) -> str:

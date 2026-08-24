@@ -307,7 +307,10 @@ class Veloce(
         self._openapi_setup = False
         self.openapi_schema: dict[str, Any] | None = None
         self.redirect_slashes = redirect_slashes
-        self.root_path = root_path
+        # Normalised once here rather than at each reader: a trailing slash
+        # would double the separator in every URL built from it, and the value
+        # is compared and concatenated in several places.
+        self.root_path = "/" + root_path.strip("/") if root_path.strip("/") else ""
         self.openapi_tags = openapi_tags
         self.openapi_external_docs = openapi_external_docs
         self.servers = servers

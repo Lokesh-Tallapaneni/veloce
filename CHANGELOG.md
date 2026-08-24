@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+- `Veloce(root_path=...)` reaches `request.root_path`, `script_root`, external `url_for` and slash redirects; it was stored and read by nothing. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A blueprint mounted at two prefixes runs its hooks and URL processors once per request, not once per mount. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Silencing `ratelimit-overrides-unknown` no longer turns a startup refusal into a 500 on every request; the request path reports and the audit decides. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `security_audit` walks dispatch-shape middleware, ASGI middleware classes and static handlers, not only `Middleware` instances; a correctly hardened app was reported as unhardened. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
