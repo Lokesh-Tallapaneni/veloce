@@ -43,7 +43,12 @@ from veloce._constants import (
     MIME_MULTIPART_FORM_DATA,
 )
 from veloce._header_parsing import parse_media_type_params
-from veloce._internal import _coerce_bool, is_json_mimetype, json_body_refused
+from veloce._internal import (
+    _coerce_bool,
+    _extract_host,
+    is_json_mimetype,
+    json_body_refused,
+)
 from veloce._protocol_constants import SECURE_URL_SCHEMES, URL_SCHEME_HTTPS
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
@@ -907,8 +912,18 @@ class Request:
         the returned value is the prefix that wouldn't match the
         configured apex; without it, the leftmost label.
         """
-        host = (self.host or "").split(":", 1)[0].lower()
+        # `_extract_host` is the framework's one host-from-Host-header reader,
+        # and the only one that handles an IPv6 literal: splitting on the first
+        # colon takes `2001` out of `2001:db8::1`, so a bare IPv6 host produced
+        # a nonsense subdomain. This was the seventh site to answer "what is the
+        # host", and the only one that hand-rolled it.
+        host = _extract_host(self.host or "")
         if not host:
+            return ""
+        # An IP literal has no subdomain: its dots and colons are address
+        # structure, not name labels. Splitting on them produced `192` for an
+        # IPv4 host and `::ffff:192` for an IPv4-mapped IPv6 one.
+        if ":" in host or host.replace(".", "").isdigit():
             return ""
         app = getattr(self, "app", None)
         cfg = getattr(app, "config", None) if app is not None else None

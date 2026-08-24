@@ -106,3 +106,62 @@ def test_request_subdomain_property_without_server_name():
     req_apex = _req("/x", "localhost")
     req_apex.app = app
     assert req_apex.subdomain == ""
+
+
+# ── `subdomain` reads the host through the framework's one reader ────
+#
+# `_extract_host` is the single host-from-Host-header reader, and the only one
+# that understands an IPv6 literal - a bare `2001:db8::1` has no port, and a
+# bracketed one hides its colons behind `[]`. `Request.subdomain` hand-rolled
+# `split(":", 1)[0]` instead, which is the exact shape the repository's own IPv6
+# guardrail forbids, and made it the seventh site answering "what is the host".
+#
+# An IP literal has no subdomain either way: its dots and colons are address
+# structure, not name labels.
+
+
+def _subdomain(host: str, server_name: str | None = None) -> str:
+    from veloce import Veloce
+    from veloce.http.request import Request
+
+    request = Request("GET", "/", "", {"Host": host}, b"")
+    if server_name is not None:
+        app = Veloce(openapi_url=None)
+        app.config["SERVER_NAME"] = server_name
+        request.app = app
+    return request.subdomain
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("sub.example.com", "sub"),
+        ("SUB.EXAMPLE.COM", "sub"),
+        ("sub.example.com:8443", "sub"),
+        ("example.com", "example"),
+    ],
+)
+def test_a_named_host_still_yields_its_leftmost_label(host, expected):
+    assert _subdomain(host) == expected
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "2001:db8::1",
+        "[2001:db8::1]:8080",
+        "::ffff:192.0.2.1",
+        "[::ffff:192.0.2.1]:443",
+        "[a.b.c::1]",
+        "192.0.2.1",
+        "192.0.2.1:8080",
+    ],
+)
+def test_an_ip_literal_has_no_subdomain(host):
+    """The defect: the bracket or an address label leaked out as a subdomain."""
+    assert _subdomain(host) == ""
+
+
+def test_a_configured_server_name_still_strips_the_apex():
+    assert _subdomain("tenant.example.com", server_name="example.com") == "tenant"
+    assert _subdomain("example.com", server_name="example.com") == ""
