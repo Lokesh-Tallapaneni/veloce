@@ -31,6 +31,7 @@ from veloce._protocol_constants import (
 from veloce.exceptions import WebSocketDisconnect
 from veloce.http.cookies import parse_cookie
 from veloce.http.datastructures import Address, QueryParams, State
+from veloce.json_provider import dumps_for
 from veloce.status import (
     WS_1000_NORMAL_CLOSURE,
     WS_1001_GOING_AWAY,
@@ -824,11 +825,10 @@ class WebSocket:
         """
         if mode not in ("text", "binary"):
             raise ValueError(f"mode must be 'text' or 'binary', got {mode!r}")
-        # Through the application's provider, so a frame carries the same JSON
-        # dialect its HTTP responses do. `app` is set for a dispatched
-        # connection; a socket built outside one falls back to the default.
-        app = self.app
-        payload = app.json.dumps(data) if app is not None else orjson.dumps(data)
+        # The shared encoder, so a frame carries the same JSON dialect the
+        # application's responses do. `app` is set for a dispatched connection
+        # and `None` for a socket built outside one.
+        payload = dumps_for(self.app, data)
         if mode == "binary":
             await self.send_bytes(payload)
         else:

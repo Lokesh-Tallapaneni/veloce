@@ -72,6 +72,14 @@ UNEXPORTED: dict[str, str] = {
     # by dotted string, never imported by application code.
     "cli.build_parser": "console-script entry point, referenced by dotted path",
     "cli.main": "console-script entry point, referenced by dotted path",
+    # `json_provider.py` — the shared JSON encoders. Framework-internal: every
+    # surface that sends JSON to a client routes through them so an
+    # application's dialect cannot reach some and miss others. Public-named
+    # rather than underscored because `app/` imports them across a subpackage
+    # boundary, which guardrails forbid for a private symbol.
+    "json_provider.dumps_for": "internal shared encoder, crosses a subpackage boundary",
+    "json_provider.dumps_current": "internal shared encoder, crosses a subpackage boundary",
+    "json_provider.resolve_dumps": "internal hot-path resolver, crosses a subpackage boundary",
     # `debug.py` — the debug traceback renderer, wired by the app when
     # `DEBUG` is set.
     "debug.render_traceback_html": "internal debug-page renderer wired by the app",

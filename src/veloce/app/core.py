@@ -1060,12 +1060,9 @@ class Veloce(
         """
         # Deferred like the sibling import above it: `json_provider` reaches
         # back into the app package.
-        from veloce.json_provider import DefaultJSONProvider
+        from veloce.json_provider import resolve_dumps
 
-        provider = self.json
-        if type(provider) is DefaultJSONProvider and not provider._config_options:
-            return None
-        return provider.dumps
+        return resolve_dumps(self)
 
     def send_static_file(self, filename: str) -> Any:
         """Serve a file from `app.static_folder`.

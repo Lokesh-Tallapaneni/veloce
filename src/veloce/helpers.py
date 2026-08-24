@@ -513,9 +513,11 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
     """Create a JSON response - a concise shorthand.
 
     Honours two app-config flags when called inside a request:
-    - `JSON_SORT_KEYS` (default True) - sort dict keys alphabetically.
+    - `JSON_SORT_KEYS` (default False) - sort dict keys alphabetically.
     - `JSONIFY_PRETTYPRINT_REGULAR` (default False) - indent the output
       with 2 spaces for readability. Often enabled under DEBUG.
+
+    Both reach every JSON response, not only this helper.
 
     Usage::
 
