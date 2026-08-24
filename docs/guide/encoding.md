@@ -86,10 +86,48 @@ async def stats() -> dict:
     return {"mean": mean if math.isfinite(mean) else None}
 ```
 
-!!! note
-    Some frameworks raise instead, turning this into a `500`. Veloce does not,
-    and cannot cheaply: the underlying serialiser has no option for it and
-    detecting it would mean walking every response payload on every request.
+If you would rather a non-finite value fail loudly, give the app a provider that
+refuses one and return through it — see
+[Choosing the serialiser with JSONProvider](#choosing-the-serialiser-with-jsonprovider):
+
+```python
+import json
+
+from veloce import JSONProvider, Veloce, jsonify
+
+
+class StrictJSONProvider(JSONProvider):
+    def dumps(self, obj, **kwargs) -> bytes:
+        return json.dumps(obj, allow_nan=False, separators=(",", ":")).encode()
+
+    def loads(self, data):
+        return json.loads(data)
+
+
+app = Veloce()
+app.json_provider_class = StrictJSONProvider
+
+
+@app.get("/stats")
+async def stats():
+    return jsonify({"mean": float("nan")})   # -> 500, and logged
+```
+
+Note the `jsonify(...)`: a bare `dict` return takes the direct orjson path and
+does not consult the provider, as the warning in that section explains.
+
+!!! note "Why this is not the default"
+    The `null` is not a preference so much as the shape of the problem. An
+    encoder has three choices and each gives something up: write `NaN` and
+    `Infinity` literals (what the standard library does by default — a strict
+    client cannot parse the result), refuse and fail the request, or write
+    `null`. Veloce's default is the only one of the three that always produces
+    parseable JSON.
+
+    Refusing by default is not cheaply available either: the underlying
+    serialiser has no option for non-finite floats and never consults a
+    `default=` hook for a native `float`, so detecting one would mean walking
+    every response payload on every request.
 
 ## jsonable_encoder
 
