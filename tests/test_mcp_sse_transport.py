@@ -434,3 +434,76 @@ async def test_an_authenticated_client_is_served():
             )
         assert posted.status_code == 202
         assert (await stream.message())["result"]["content"][0]["text"] == "5"
+
+
+# ── A closed stream reclaims what its session owned ──────────────────
+#
+# stdio evicts its session on EOF and the Streamable HTTP store evicts on
+# expiry; this transport unregistered the connection and stopped there. That
+# drops the notification sink and the listen streams but leaves the session's
+# tasks registered, and `TaskRegistry.evict_expired` deliberately never reaps an
+# unsettled task - so a never-settling task created on a stream outlived it,
+# together with its running asyncio runner, for the lifetime of the process.
+
+
+def _task_app() -> tuple[Veloce, object]:
+    """An app whose SSE transport is registered explicitly, so the server is reachable."""
+    from veloce.contrib.mcp.server import MCPServer
+    from veloce.contrib.mcp.transports.sse import register_sse_transport
+
+    app = Veloce(title="LegacySSE", version="1.0.0", openapi_url=None)
+
+    @app.mcp_tool(description="Never settles", task_support=True)
+    async def blocker(ctx: MCPContext) -> int:
+        await asyncio.Event().wait()
+        return 1
+
+    server = MCPServer(app)
+    register_sse_transport(app, server)
+    return app, server
+
+
+async def test_a_closed_stream_reclaims_its_unsettled_tasks():
+    """The defect: the task and its runner outlived the connection forever."""
+    app, server = _task_app()
+    async with _Stream(app) as stream:
+        endpoint = (await stream.event())["data"]
+        async with AsyncTestClient(app) as client:
+            await client.post(
+                endpoint,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "blocker", "arguments": {}, "task": {}},
+                },
+            )
+        await stream.message()
+        assert len(server._tasks.tasks) == 1, "the task should exist while the stream is open"
+
+    # Let the generator's cleanup run now the stream is cancelled.
+    await asyncio.sleep(0.05)
+    assert server._tasks.tasks == {}, "the task outlived the stream that owned it"
+
+
+async def test_a_closed_stream_leaves_no_running_runner():
+    """The registry entry is half of it; the asyncio task is the other half."""
+    app, server = _task_app()
+    async with _Stream(app) as stream:
+        endpoint = (await stream.event())["data"]
+        async with AsyncTestClient(app) as client:
+            await client.post(
+                endpoint,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "blocker", "arguments": {}, "task": {}},
+                },
+            )
+        await stream.message()
+        runners = [t.runner for t in server._tasks.tasks.values() if t.runner is not None]
+        assert runners and not all(r.done() for r in runners)
+
+    await asyncio.sleep(0.05)
+    assert all(r.done() or r.cancelled() for r in runners)

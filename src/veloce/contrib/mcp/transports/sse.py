@@ -239,6 +239,15 @@ async def _stream(
         server.unregister_connection(conn_token)
         for task in pending:
             task.cancel()
+        # Reclaim what the connection owned, the same way stdio does on EOF and
+        # the HTTP session store does on eviction. Unregistering alone drops the
+        # notification sink and the listen streams but leaves the session's tasks
+        # registered, and `TaskRegistry.evict_expired` deliberately never reaps a
+        # task that has not settled - so a never-settling task created on this
+        # stream outlived it, with its running asyncio runner, for the lifetime
+        # of the process. The session is minted per stream here, so it has no
+        # life beyond this point to protect.
+        server.evict_session(connection.session)
     yield ServerSentEvent(retry=_SSE_RETRY_MS)
 
 
