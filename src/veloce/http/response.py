@@ -9,7 +9,7 @@ import stat
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 from urllib.parse import quote
 
 import orjson
@@ -143,6 +143,39 @@ def _read_file_bytes(path: str) -> bytes:
     """Read a whole file's bytes - run in an executor for large reads."""
     with open(path, "rb") as f:
         return f.read()
+
+
+async def _stream_file(path: str, loop: Any) -> Any:
+    """Yield a file's bytes in chunks, each read in the executor.
+
+    The open and every read are offloaded, so no disk I/O runs on the event
+    loop, and only one chunk is resident at a time.
+    """
+    handle = await loop.run_in_executor(None, _open_file_binary, path)
+    try:
+        while True:
+            chunk = await loop.run_in_executor(None, _read_file_chunk, handle)
+            if not chunk:
+                return
+            yield chunk
+    finally:
+        await loop.run_in_executor(None, handle.close)
+
+
+def _open_file_binary(path: str) -> BinaryIO:
+    """Open `path` for binary reading - run in an executor."""
+    return open(path, "rb")  # noqa: SIM115 - closed by `_stream_file`
+
+
+#: Bytes per chunk when streaming a file off disk. Large enough that the
+#: per-chunk executor hop is amortised, small enough that a concurrent download
+#: holds this rather than the whole file.
+FILE_STREAM_CHUNK = 64 * 1024
+
+
+def _read_file_chunk(handle: BinaryIO) -> bytes:
+    """Read one chunk from an open file - run in an executor."""
+    return handle.read(FILE_STREAM_CHUNK)
 
 
 class Response:
@@ -1713,6 +1746,24 @@ class FileResponse(Response):
             headers=hdrs,
         )
 
+    async def stream_to(
+        self,
+        transport: Any,
+        drain: Callable[[], Awaitable[None]] | None = None,
+        keep_alive: bool = True,
+    ) -> None:
+        """Write the head, then the file's chunks, on the raw transport.
+
+        The head is the buffered one - a file's length is known, so the body is
+        length-delimited and not chunk-framed. `drain` throttles a producer
+        outrunning a slow client, exactly as the other streaming responses do.
+        """
+        transport.write(self.encode(keep_alive=keep_alive))
+        async for chunk in self._stream:
+            transport.write(chunk)
+            if drain is not None:
+                await drain()
+
     @classmethod
     async def from_path(
         cls,
@@ -1733,23 +1784,33 @@ class FileResponse(Response):
 
         st = _stat_regular_file(path)
 
-        if st.st_size <= _INLINE_READ_MAX:
-            # ASYNC230: a bounded inline read is deliberate here - the file is
-            # known to be <= 64 KiB, so this read is microseconds and avoids the
-            # ~100 us thread-pool hop (measured) that dominates serving a small
-            # asset. Files above the threshold take the offloaded branch below,
-            # preserving the no-blocking-large-reads guarantee.
-            with open(path, "rb") as f:  # noqa: ASYNC230
-                body = f.read()
-        else:
-            body = await loop.run_in_executor(None, _read_file_bytes, path)
-
         content_type, hdrs = _build_file_headers(
             path, st, filename, content_type, content_disposition_type, headers
         )
 
+        if st.st_size <= _INLINE_READ_MAX:
+            # ASYNC230: a bounded inline read is deliberate here - the file is
+            # known to be <= 64 KiB, so this read is microseconds and avoids the
+            # ~100 us thread-pool hop (measured) that dominates serving a small
+            # asset.
+            with open(path, "rb") as f:  # noqa: ASYNC230
+                body = f.read()
+            resp = Response.__new__(cls)
+            Response.__init__(
+                resp, status_code=HTTP_200_OK, body=body, content_type=content_type, headers=hdrs
+            )
+            return resp
+
+        # A larger file is streamed off disk rather than read whole. Reading it
+        # whole made resident memory scale with (file size x concurrent
+        # requests) - four concurrent 32 MiB downloads measured at 134 MB RSS -
+        # which needs no malice to hurt, only ordinary traffic. The length is
+        # known from the stat, so the response stays length-delimited: this
+        # streams a known-size body, it does not switch to chunked encoding.
         resp = Response.__new__(cls)
         Response.__init__(
-            resp, status_code=HTTP_200_OK, body=body, content_type=content_type, headers=hdrs
+            resp, status_code=HTTP_200_OK, body=b"", content_type=content_type, headers=hdrs
         )
+        resp.headers[HEADER_CONTENT_LENGTH] = str(st.st_size)
+        resp._stream = _stream_file(path, loop)
         return resp

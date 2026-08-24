@@ -602,8 +602,12 @@ class AsgiMixin:
             # `http.response.body` chunks instead of one buffered
             # payload. No `content-length`: the ASGI server frames it.
             if response.is_streamed:
-                stream_headers, _, _ = _build_asgi_headers(
-                    response.headers, skip_content_length=True
+                # A streamed body usually has no length to advertise, but a
+                # file's is known from its stat - keep the one the response set
+                # so a streamed download stays length-delimited rather than
+                # silently becoming a chunked one.
+                stream_headers, _, _stream_has_cl = _build_asgi_headers(
+                    response.headers, skip_content_length=False
                 )
                 # A bodiless status carries no payload and no default
                 # content-type, the same rule the buffered branch below

@@ -49,17 +49,23 @@ class TestFileResponseAsync:
         assert resp.headers.get("ETag")
 
     @pytest.mark.asyncio
-    async def test_from_path_large_file_offloaded(self, tmp_path):
-        # A file above the threshold is read in the executor and returns the
-        # full body unchanged.
+    async def test_from_path_large_file_streams_the_whole_body(self, tmp_path):
+        # A file above the threshold is streamed off disk in executor-read
+        # chunks rather than held whole, so the bytes arrive from `_stream`
+        # instead of `body`. It still advertises its length: the size is known
+        # from the stat, so the response stays length-delimited.
         from veloce.http.response import _INLINE_READ_MAX
 
         test_file = tmp_path / "large.bin"
         body = b"L" * (_INLINE_READ_MAX + 4096)
         test_file.write_bytes(body)
         resp = await FileResponse.from_path(str(test_file))
-        assert resp.body == body
-        assert len(resp.body) == _INLINE_READ_MAX + 4096
+
+        assert resp.is_streamed
+        assert resp.body == b""
+        assert resp.headers["Content-Length"] == str(len(body))
+        streamed = b"".join([chunk async for chunk in resp._stream])
+        assert streamed == body
 
     @pytest.mark.asyncio
     async def test_from_path_directory_rejected(self, tmp_path):

@@ -38,7 +38,7 @@ from veloce.config import (
 from veloce.exceptions import RequestEntityTooLarge, WebSocketDisconnect
 from veloce.http._body import RequestBodySource
 from veloce.http.request import Request
-from veloce.http.response import Response, StreamingResponse
+from veloce.http.response import Response
 from veloce.websocket import WebSocket, compute_accept
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -1234,7 +1234,11 @@ class HttpProtocol(asyncio.Protocol):
                     await response.stream_to(self.transport, drain=self.drain, keep_alive=False)
                 self.transport.close()
                 return False
-            if isinstance(response, StreamingResponse):
+            # `is_streamed`, not a class test: a response that produces
+            # chunks must be emitted as one whatever type it is, and testing
+            # for `StreamingResponse` is what let `EventSourceResponse` and
+            # then a streamed `FileResponse` fall to the buffered encoder.
+            if response.is_streamed:
                 if is_head:
                     # The encoded head advertises the (would-be) representation;
                     # a HEAD response stops there - no chunks, no chunked
