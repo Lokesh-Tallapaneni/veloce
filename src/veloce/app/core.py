@@ -1613,6 +1613,7 @@ class Veloce(
         # Stash the blueprint under its registered name so `app.blueprints`
         # and `app.iter_blueprints()` can return it later. Re-registration
         # under the same name overwrites.
+        already_registered = bp_name in self._blueprints_map
         self._blueprints_map[bp_name] = blueprint
 
         # Splice each route onto the app's tree under the combined prefix.
@@ -1635,10 +1636,21 @@ class Veloce(
         # The ancestor chain is flattened here rather than walked per request:
         # `<bp>.<child>` holds the blueprint's hooks followed by the child's, so
         # dispatch still does one lookup with one key.
+        # Mounting the same blueprint twice is supported and re-registers its
+        # routes under the second prefix - but every bucket below is keyed by the
+        # blueprint's *name*, and both mounts give their routes the same
+        # `<bpname>.` endpoint prefix. So one lookup finds one bucket, and
+        # appending to it a second time ran every hook twice on a single
+        # request: a rate-limit or audit `before_request` double-counted.
+        # The routes above are per-mount; everything from here down is per-name.
         for own_attr, scoped_attr, bucket in (
-            ("_before_request_hooks", "_scoped_before_hooks", self._bp_before_hooks),
-            ("_after_request_hooks", "_scoped_after_hooks", self._bp_after_hooks),
-            ("_teardown_request_hooks", "_scoped_teardown_hooks", self._bp_teardown_hooks),
+            ()
+            if already_registered
+            else (
+                ("_before_request_hooks", "_scoped_before_hooks", self._bp_before_hooks),
+                ("_after_request_hooks", "_scoped_after_hooks", self._bp_after_hooks),
+                ("_teardown_request_hooks", "_scoped_teardown_hooks", self._bp_teardown_hooks),
+            )
         ):
             own = getattr(blueprint, own_attr)
             scoped = getattr(blueprint, scoped_attr)
@@ -1667,16 +1679,21 @@ class Veloce(
 
             return _gated
 
-        for fn in blueprint._url_value_preprocessors:
-            self._url_value_preprocessors.append(_proc_gate(fn, url_gate_prefix))
-        for fn in blueprint._url_default_funcs:
-            self._url_default_funcs.append(_proc_gate(fn, url_gate_prefix))
+        if not already_registered:
+            for fn in blueprint._url_value_preprocessors:
+                self._url_value_preprocessors.append(_proc_gate(fn, url_gate_prefix))
+            for fn in blueprint._url_default_funcs:
+                self._url_default_funcs.append(_proc_gate(fn, url_gate_prefix))
         # A nested child's processors gate on the child's own prefix. Gated at
         # the parent's, a child's `url_value_preprocessor` rewrote the path
         # params of every route under the parent, siblings included.
         for scoped_attr, target in (
-            ("_scoped_url_value_preprocessors", self._url_value_preprocessors),
-            ("_scoped_url_default_funcs", self._url_default_funcs),
+            ()
+            if already_registered
+            else (
+                ("_scoped_url_value_preprocessors", self._url_value_preprocessors),
+                ("_scoped_url_default_funcs", self._url_default_funcs),
+            )
         ):
             for suffix, fns in getattr(blueprint, scoped_attr).items():
                 prefix = f"{bp_name}.{suffix}."
