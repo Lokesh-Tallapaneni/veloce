@@ -66,7 +66,6 @@ from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import (
     _JSONRPC_FORBIDDEN,
     _JSONRPC_INTERNAL_ERROR,
-    _JSONRPC_INVALID_REQUEST,
     HeaderMismatchError,
     MCPError,
     OriginNotAllowedError,
@@ -74,6 +73,8 @@ from veloce.contrib.mcp.errors import (
     SessionNotFoundError,
     SessionRequiredError,
     _error,
+    invalid_request_error,
+    parse_error,
 )
 from veloce.contrib.mcp.server import (
     _SERVED_VERSION_SET,
@@ -95,7 +96,6 @@ if TYPE_CHECKING:  # pragma: no cover
 _logger = logging.getLogger(__name__)
 
 # JSON-RPC 2.0 Sec. 5.1 parse error - a body that is not a single JSON object.
-_JSONRPC_PARSE_ERROR = -32700
 
 # Header carrying the session id when session management is enabled (MCP
 # 2025-06-18 Streamable HTTP transport: the server assigns it on the initialize
@@ -249,14 +249,14 @@ async def _handle_http(
         message = await request.json()
     except Exception:
         return JSONResponse(
-            _error(None, _JSONRPC_PARSE_ERROR, "Parse error"),
+            parse_error(),
             status_code=status.HTTP_400_BAD_REQUEST,
         )
     if not request.data:
         # No body at all is no JSON document to read, which is the parse failure
         # rather than a well-formed document of the wrong shape.
         return JSONResponse(
-            _error(None, _JSONRPC_PARSE_ERROR, "Parse error"),
+            parse_error(),
             status_code=status.HTTP_400_BAD_REQUEST,
         )
     if not isinstance(message, dict):
@@ -264,7 +264,7 @@ async def _handle_http(
         # keeps these apart: -32700 says the text could not be read, -32600 says
         # what was read is not a Request object.
         return JSONResponse(
-            _error(None, _JSONRPC_INVALID_REQUEST, "Invalid Request"),
+            invalid_request_error(),
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 

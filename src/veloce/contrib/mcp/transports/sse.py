@@ -39,6 +39,8 @@ from veloce.contrib.mcp.errors import (
     SessionNotFoundError,
     SessionRequiredError,
     _error,
+    invalid_request_error,
+    parse_error,
 )
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.http import _authenticate, _logger, _validate_origin
@@ -145,17 +147,18 @@ def register_sse_transport(
         except MCPError as exc:
             return JSONResponse(exc.to_error(None), status_code=exc.http_status)
 
+        # There is no stream frame to carry a failure for a message whose id could
+        # not be read, so it is reported on the POST - with the code the other two
+        # transports use. Answering -32603 for both failures made a client with
+        # per-code retry logic behave differently purely by which wire it used.
         try:
             message = await request.json()
         except Exception:
-            message = None
+            return JSONResponse(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
+        if message is None:
+            return JSONResponse(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
         if not isinstance(message, dict):
-            # There is no stream frame to carry a parse error for a message whose
-            # id could not be read, so this one failure is reported on the POST.
-            return JSONResponse(
-                _error(None, _JSONRPC_INTERNAL_ERROR, "request body must be a JSON-RPC object"),
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
+            return JSONResponse(invalid_request_error(), status_code=status.HTTP_400_BAD_REQUEST)
 
         # The answer travels on the stream, not on this response, so the dispatch
         # runs detached and the POST is acknowledged immediately. This is the

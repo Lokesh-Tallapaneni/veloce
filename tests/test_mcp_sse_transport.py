@@ -263,16 +263,45 @@ async def test_a_post_naming_an_unknown_session_is_not_found():
     assert response.status_code == 404
 
 
-async def test_a_body_that_is_not_a_json_rpc_object_is_refused():
-    """There is no stream frame to carry an error for a message with no readable id."""
+async def _refuse(body: bytes) -> dict:
+    """POST `body` on a live session and return the JSON-RPC error it draws."""
     app = _app()
     async with _Stream(app) as stream:
         endpoint = (await stream.event())["data"]
         async with AsyncTestClient(app) as client:
             response = await client.post(
-                endpoint, content=b"not json", headers={"content-type": "application/json"}
+                endpoint, content=body, headers={"content-type": "application/json"}
             )
         assert response.status_code == 400
+        return response.json()["error"]
+
+
+async def test_a_body_that_is_not_a_json_rpc_object_is_refused():
+    """There is no stream frame to carry an error for a message with no readable id."""
+    error = await _refuse(b"not json")
+    assert error["code"] == -32700
+
+
+async def test_an_unreadable_body_is_a_parse_error():
+    """JSON-RPC Sec. 5.1: -32700 says the text could not be read.
+
+    This transport answered -32603 for both failures, so a client with per-code
+    retry logic behaved differently purely by which wire it had connected over.
+    """
+    assert (await _refuse(b'{"jsonrpc": '))["code"] == -32700
+
+
+async def test_a_readable_body_of_the_wrong_shape_is_an_invalid_request():
+    """-32600 says what was read is not a Request object. A batch array lands here."""
+    assert (await _refuse(b"[1,2,3]"))["code"] == -32600
+
+
+@pytest.mark.parametrize(
+    ("body", "code"), [(b'{"jsonrpc": ', -32700), (b"[1,2,3]", -32600), (b'"text"', -32600)]
+)
+async def test_this_transport_answers_what_the_others_answer(body, code):
+    """One malformed body, one code, whichever transport received it."""
+    assert (await _refuse(body))["code"] == code
 
 
 async def test_a_closed_stream_stops_accepting_its_session():

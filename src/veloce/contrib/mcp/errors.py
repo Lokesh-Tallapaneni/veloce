@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 # JSON-RPC 2.0 error codes (Sec. 5.1) plus the MCP "method not found" reuse.
+_JSONRPC_PARSE_ERROR = -32700
 _JSONRPC_INVALID_REQUEST = -32600
 _JSONRPC_METHOD_NOT_FOUND = -32601
 _JSONRPC_INVALID_PARAMS = -32602
@@ -52,6 +53,27 @@ def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, 
     if data is not None:
         error["data"] = data
     return {"jsonrpc": "2.0", "id": msg_id, "error": error}
+
+
+def parse_error() -> dict[str, Any]:
+    """The JSON-RPC error for a body that could not be read as JSON at all.
+
+    JSON-RPC keeps two failures apart: -32700 says the text could not be read,
+    -32600 says what was read is not a Request object. Every transport frames
+    its own bytes, but the two answers live here so a transport cannot invent a
+    third - the SSE POST used to report both as -32603, so a client with
+    per-code retry logic behaved differently purely by which wire it used.
+    """
+    return _error(None, _JSONRPC_PARSE_ERROR, "Parse error")
+
+
+def invalid_request_error() -> dict[str, Any]:
+    """The JSON-RPC error for a readable body that is not a Request object.
+
+    A JSON array lands here too: the revisions this server speaks carry no
+    batches. See `parse_error` for why the two are distinct.
+    """
+    return _error(None, _JSONRPC_INVALID_REQUEST, "Invalid Request")
 
 
 def _insufficient_scope(required: frozenset[str]) -> str:

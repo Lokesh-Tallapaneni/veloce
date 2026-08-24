@@ -40,7 +40,7 @@ from typing import IO, TYPE_CHECKING, Any
 import orjson
 
 from veloce.contrib.mcp.context import _transport_var
-from veloce.contrib.mcp.errors import _JSONRPC_INVALID_REQUEST
+from veloce.contrib.mcp.errors import invalid_request_error, parse_error
 from veloce.contrib.mcp.session import MCPSession
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -49,7 +49,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 # JSON-RPC 2.0 Sec. 5.1 parse error - returned for a line that is not valid
 # JSON. The id is null because the request could not be read.
-_JSONRPC_PARSE_ERROR = -32700
 
 # Prefix for server-issued request ids so a server->client request never collides
 # with a client-issued id (the client owns its own id space; the server owns this).
@@ -281,13 +280,13 @@ class StdioTransport:
         try:
             message = orjson.loads(stripped)
         except orjson.JSONDecodeError:
-            return None, self._parse_error()
+            return None, parse_error()
         if not isinstance(message, dict):
             # It parsed, so the failure is the shape, not the JSON. JSON-RPC keeps
             # these apart: -32700 says the text could not be read, -32600 says what
             # was read is not a Request object. A batch array lands here too, since
             # the revisions this server speaks do not carry batches.
-            return None, self._invalid_request()
+            return None, invalid_request_error()
         return message, None
 
     def _resolve_reply(self, message: dict[str, Any]) -> None:
@@ -302,22 +301,6 @@ class StdioTransport:
         else:
             result = message.get("result")
             future.set_result(result if isinstance(result, dict) else {})
-
-    @staticmethod
-    def _parse_error() -> dict[str, Any]:
-        return {
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": _JSONRPC_PARSE_ERROR, "message": "Parse error"},
-        }
-
-    @staticmethod
-    def _invalid_request() -> dict[str, Any]:
-        return {
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": _JSONRPC_INVALID_REQUEST, "message": "Invalid Request"},
-        }
 
 
 class MCPRequestError(Exception):
