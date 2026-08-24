@@ -317,6 +317,9 @@ class RateLimitMiddleware(Middleware):
         # single override map across them, so `strict_overrides=False` downgrades
         # the unmatched keys to a warning and starts anyway.
         self._strict_overrides = strict_overrides
+        # The last set of unmatched override keys reported, so a route-table
+        # change logs once rather than on every rebuild.
+        self._reported_unknown: list[str] = []
         if strategy is None:
             if backend is not None:
                 raise ValueError("backend requires a strategy; pass strategy= as well")
@@ -427,27 +430,36 @@ class RateLimitMiddleware(Middleware):
             return []
         return sorted(key for key in self._overrides if key not in known)
 
-    def _reject_unknown_overrides(self, known: set[str]) -> None:
-        """Raise when an override key matches no registered route template.
+    def _report_unknown_overrides(self, known: set[str]) -> None:
+        """Log once when an override key matches no route in the current table.
 
-        A key that matches nothing means a route the operator believes is
-        throttled but is not, so it is rejected rather than ignored.
+        Whether an unmatched key is fatal is decided at startup, by `audit`:
+        `strict_overrides` makes it an `error` that refuses the boot, otherwise
+        a `warning`. This is the same question asked again after the route table
+        has changed, which only happens once the app is already serving - so it
+        reports rather than decides.
+
+        It used to raise here as well, and that turned the documented way of
+        accepting the finding into an outage: silencing
+        `ratelimit-overrides-unknown` let the boot succeed and then every
+        request hit this `ValueError`. A key that matches no route means an
+        override is inactive; refusing to answer any request at all is never the
+        proportionate response to that.
+
+        Logged once per set of keys, not per request, because this runs whenever
+        the route table generation changes.
         """
         unknown = self._unknown_overrides(known)
-        if unknown and not self._strict_overrides:
-            _logger.warning(
-                "RateLimitMiddleware overrides reference route template(s) %s that match no "
-                "registered route; those overrides are inactive",
-                unknown,
-            )
+        if not unknown or unknown == self._reported_unknown:
             return
-        if unknown:
-            raise ValueError(
-                f"RateLimitMiddleware overrides reference route template(s) {unknown} "
-                "that match no registered route; an override key is the full route "
-                "template as registered, including any blueprint url_prefix "
-                "(for example '/api/login', not '/login')"
-            )
+        self._reported_unknown = unknown
+        _logger.warning(
+            "RateLimitMiddleware overrides reference route template(s) %s that match no "
+            "registered route; those overrides are inactive. An override key is the full "
+            "route template as registered, including any blueprint url_prefix "
+            "(for example '/api/login', not '/login')",
+            unknown,
+        )
 
     def audit(self, ctx: AuditContext) -> Iterable[Finding]:
         """Report `overrides` keys that match no registered route.
@@ -492,9 +504,10 @@ class RateLimitMiddleware(Middleware):
             return {}
         combined, known = self._collect_route_strategies(app)
         if self._overrides is not None:
-            # Startup validation already rejected unknown keys; this repeats the
-            # check because a route table can change after startup.
-            self._reject_unknown_overrides(known)
+            # `audit` decided at startup whether an unmatched key is fatal; this
+            # is the same question after a route-table change, so it only
+            # reports.
+            self._report_unknown_overrides(known)
             combined.update(self._overrides)
         self._route_strategies = combined
         self._route_strategies_gen = gen if gen is not None else -1

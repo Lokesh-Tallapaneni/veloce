@@ -346,7 +346,11 @@ def _req(app, path):
     return Request(method="GET", path=path, query_string="", headers={}, body=b"", app=app)
 
 
-def test_unknown_override_key_raises_on_first_request():
+def test_unknown_override_key_is_reported_not_raised_on_a_request():
+    """It used to raise here, so silencing the startup finding - the documented
+    way of accepting it - turned every request into a 500 instead."""
+    from veloce.audit import run
+
     app = Veloce(openapi_url=None)
 
     @app.get("/cheap")
@@ -354,8 +358,12 @@ def test_unknown_override_key_raises_on_first_request():
         return {}
 
     mw = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/nope": FixedWindow(1)})
-    with pytest.raises(ValueError, match="match no registered route"):
-        mw._build_route_strategies(_req(app, "/cheap"))
+    app.add_middleware(mw)
+    # The request path reports; the audit is what decides it is fatal.
+    assert mw._build_route_strategies(_req(app, "/cheap")) is not None
+    assert [
+        f.severity for f in run(app, routes_final=True) if f.id == "ratelimit-overrides-unknown"
+    ] == ["error"]
 
 
 def test_valid_override_key_passes_validation():
@@ -413,9 +421,16 @@ def test_blueprint_override_key_needs_prefix():
 
     app.register_blueprint(bp)
     # The bare "/login" matches no route; the prefixed "/api/login" does.
+    from veloce.audit import run
+
     bad = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/login": FixedWindow(1)})
-    with pytest.raises(ValueError, match="match no registered route"):
-        bad._build_route_strategies(_req(app, "/api/login"))
+    bad_app = Veloce(openapi_url=None)
+    bad_app.register_blueprint(bp)
+    bad_app.add_middleware(bad)
+    finding = next(
+        f for f in run(bad_app, routes_final=True) if f.id == "ratelimit-overrides-unknown"
+    )
+    assert "/login" in str(finding)
     ok = RateLimitMiddleware(strategy=FixedWindow(10), overrides={"/api/login": FixedWindow(1)})
     assert "/api/login" in ok._build_route_strategies(_req(app, "/api/login"))
 
