@@ -21,7 +21,6 @@ from veloce._constants import (
     MSG_INVALID_QUERY_STRING,
     MSG_LABEL_HEADER_NAME,
     MSG_LABEL_SET_COOKIE_VALUE,
-    MSG_REQUEST_BODY_EXCEEDS_MAX,
 )
 from veloce._internal import (
     MIME_HTML,
@@ -70,6 +69,7 @@ from veloce.http._body import ASGIBodySource
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
+    Response,
 )
 from veloce.routing.router import RouteInfo
 from veloce.websocket import WebSocket
@@ -177,6 +177,7 @@ class AsgiMixin:
         logger: Any
         match: Callable[..., Any]
         handle_request: Callable[..., Any]
+        _body_too_large_response: Callable[..., Any]
         _ensure_pipeline: Callable[..., Any]
         _setup_openapi: Callable[..., Any]
         _openapi_setup: bool
@@ -189,42 +190,40 @@ class AsgiMixin:
         _override_subplans: Any
         _dependency_overrides: Any
 
-    async def _emit_error(self, send: Callable, status_code: int, payload: dict) -> None:
-        """Emit a JSON error response directly over ASGI.
+    async def _emit_response(self, send: Callable, response: Response) -> None:
+        """Emit an already-built `Response` over ASGI, headers included.
 
-        Shared by `_emit_413` / `_emit_400` so the cold pre-`Request` reject
-        paths build their `http.response.start` + `http.response.body` messages
-        from one implementation.
+        The cold reject path. It carries the response's own headers - which is
+        what lets a rejection that ran the response phase ship its CORS and
+        security headers, rather than reaching the client as an opaque
+        cross-origin failure with no `Access-Control-Allow-Origin` on it.
+
+        Deliberately separate from the buffered emit in `__call__`: that one is
+        the hot path and is written inline against precomputed caches, and
+        routing a reject through it would mean restructuring it.
         """
-        resp = JSONResponse(payload, status_code=status_code)
-        body = resp.body
+        body = response.body
+        headers, has_ct, has_cl = (
+            _build_asgi_headers(response.headers, skip_content_length=False)
+            if response.headers
+            else ([], False, False)
+        )
+        if not has_cl:
+            headers.append((RAW_HEADER_CONTENT_LENGTH, str(len(body)).encode("ascii")))
+        if not has_ct:
+            headers.append((RAW_HEADER_CONTENT_TYPE, response.content_type.encode()))
         await send(
             {
                 "type": ASGI_EVENT_HTTP_RESPONSE_START,
-                "status": status_code,
-                "headers": [
-                    (RAW_HEADER_CONTENT_TYPE, resp.content_type.encode()),
-                    (RAW_HEADER_CONTENT_LENGTH, str(len(body)).encode()),
-                ],
+                "status": response.status_code,
+                "headers": headers,
             }
         )
         await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": body})
 
-    async def _emit_413(self, send: Callable, limit: int) -> None:
-        """Emit a 413 response directly over ASGI.
-
-        Used by the incremental body-size guard in `__call__`, which
-        runs before a `Request` object exists.
-        """
-        await self._emit_error(
-            send,
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            {
-                "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
-                "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                "limit": limit,
-            },
-        )
+    async def _emit_error(self, send: Callable, status_code: int, payload: dict) -> None:
+        """Emit a JSON error response directly over ASGI."""
+        await self._emit_response(send, JSONResponse(payload, status_code=status_code))
 
     async def _emit_400(self, send: Callable, detail: str) -> None:
         """Emit a 400 response directly over ASGI.
@@ -432,6 +431,7 @@ class AsgiMixin:
             # running total catches chunked bodies that omit it. The check
             # walks raw bytes tuples rather than forcing the Headers build.
             max_size = self.config.get("MAX_CONTENT_LENGTH")
+            declared_over = False
             if max_size is not None:
                 declared_b: bytes | None = None
                 # Compared as received: ASGI mandates lowercase header names, so
@@ -455,9 +455,7 @@ class AsgiMixin:
                         over = int(declared_b) > max_size
                     except ValueError:
                         over = False
-                    if over:
-                        await self._emit_413(send, max_size)
-                        return
+                    declared_over = over
 
             # ASGI HTTP scope mandates `path` and `query_string` keys -
             # direct subscript skips the `.get(default)` default-arg pop.
@@ -470,6 +468,24 @@ class AsgiMixin:
                 query = scope["query_string"].decode("ascii")
             except UnicodeDecodeError:
                 await self._emit_400(send, MSG_INVALID_QUERY_STRING)
+                return
+
+            # A body over the limit is refused through the same builder the
+            # dispatch path uses, on a real `Request`, so the rejection runs the
+            # response phase: it carries the app's CORS and security headers and
+            # states one payload shape. Emitting it before a `Request` existed is
+            # why a cross-origin upload that tripped the limit reached the client
+            # as an opaque CORS failure rather than as a 413. Paid only by a
+            # request that is being refused.
+            if declared_over:
+                await self._emit_response(
+                    send,
+                    await self._body_too_large_response(
+                        Request(scope["method"], path, query, raw_headers, b"", scope=scope),
+                        cp,
+                        max_size,
+                    ),
+                )
                 return
 
             # Match the route ONCE here and thread the result into
@@ -509,13 +525,27 @@ class AsgiMixin:
                             body_parts.append(chunk)
                             received += len(chunk)
                             if max_size is not None and received > max_size:
-                                await self._emit_413(send, max_size)
+                                await self._emit_response(
+                                    send,
+                                    await self._body_too_large_response(
+                                        Request(method, path, query, raw_headers, b"", scope=scope),
+                                        cp,
+                                        max_size,
+                                    ),
+                                )
                                 return
                         if not message.get("more_body", False):
                             break
                     body = b"".join(body_parts)
                 elif max_size is not None and len(body) > max_size:
-                    await self._emit_413(send, max_size)
+                    await self._emit_response(
+                        send,
+                        await self._body_too_large_response(
+                            Request(method, path, query, raw_headers, b"", scope=scope),
+                            cp,
+                            max_size,
+                        ),
+                    )
                     return
                 request = Request(
                     method=method,

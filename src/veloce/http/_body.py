@@ -30,6 +30,7 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
+from veloce._constants import MSG_REQUEST_BODY_EXCEEDS_MAX
 from veloce.exceptions import RequestEntityTooLarge
 
 # ASGI message types consumed by the pull-based body source below.
@@ -184,7 +185,7 @@ class RequestBodySource:
 
     def _check_overflow(self) -> None:
         if self._overflow:
-            raise RequestEntityTooLarge(f"Request body exceeds the {self._max}-byte limit")
+            raise RequestEntityTooLarge(MSG_REQUEST_BODY_EXCEEDS_MAX)
 
     def __aiter__(self) -> RequestBodySource:
         return self
@@ -288,7 +289,7 @@ class ASGIBodySource:
             if chunk:
                 self._size += len(chunk)
                 if self._max is not None and self._size > self._max:
-                    raise RequestEntityTooLarge(f"Request body exceeds the {self._max}-byte limit")
+                    raise RequestEntityTooLarge(MSG_REQUEST_BODY_EXCEEDS_MAX)
                 return chunk
             if self._done:
                 raise StopAsyncIteration
@@ -321,7 +322,7 @@ class ASGIBodySource:
             if chunk:
                 self._size += len(chunk)
                 if self._max is not None and self._size > self._max:
-                    raise RequestEntityTooLarge(f"Request body exceeds the {self._max}-byte limit")
+                    raise RequestEntityTooLarge(MSG_REQUEST_BODY_EXCEEDS_MAX)
                 if parts is None:
                     if last:
                         # Whole body arrived in one message: skip the list/join.
