@@ -108,16 +108,10 @@ def _app_findings(app: Any) -> list[Finding]:
                 id="debug-enabled",
             )
         )
-    if not app.config.get("SECRET_KEY"):
-        findings.append(
-            Finding(
-                "SECRET_KEY is not set - session middleware that does not pass its own "
-                "secret_key= cannot sign cookies.",
-                severity="warning",
-                fix="set app.secret_key",
-                id="secret-key-missing",
-            )
-        )
+    # `SECRET_KEY` is deliberately not checked here. Only the session middleware
+    # reads it, and only it knows whether it was handed a key directly - reading
+    # the config alone warned about a middleware constructed with an explicit
+    # `secret_key=`, and stayed a warning for one that could not sign at all.
     return findings
 
 

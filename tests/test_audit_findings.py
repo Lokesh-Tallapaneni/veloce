@@ -86,7 +86,7 @@ def test_a_warning_does_not_refuse_the_boot():
     """Otherwise a non-Secure cookie would make local HTTP development impossible."""
     app = Veloce(openapi_url=None)
     client = TestClient(app)
-    assert [f.severity for f in run(app)] == ["warning", "warning"]
+    assert [f.severity for f in run(app)] == ["warning"]
     assert client.get("/nope").status_code == 404
 
 
@@ -112,7 +112,7 @@ def test_silencing_one_finding_leaves_the_others():
     app.config["SILENCED_AUDIT_IDS"] = ("debug-enabled",)
     ids = {f.id for f in run(app)}
     assert "debug-enabled" not in ids
-    assert "secret-key-missing" in ids
+    assert "hardening-headers-missing" in ids
 
 
 # ── the phase a check runs in ────────────────────────────────────────

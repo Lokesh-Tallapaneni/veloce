@@ -426,6 +426,28 @@ class SessionMiddleware(SessionMiddlewareBase):
         self.chunked = chunked
         self.max_chunks = max_chunks
 
+    def audit(self, ctx: AuditContext) -> Iterable[Finding]:
+        """Report a backend that cannot sign, on top of the shared checks.
+
+        A cookie session is signed, so a middleware with neither a
+        `secret_key=` argument nor a configured `SECRET_KEY` cannot serve a
+        single request - it raises on the first one. That is an `error`, which
+        refuses the boot, rather than a warning discovered by traffic.
+
+        The middleware answers this and not the audit, because only it knows
+        whether the constructor supplied a key: reading `SECRET_KEY` alone
+        warned about a backend that was already signing correctly.
+        """
+        yield from super().audit(ctx)
+        if self._pending_config and not ctx.app.config.get("SECRET_KEY"):
+            yield Finding(
+                f"{type(self).__name__} has no signing key, so it cannot sign a "
+                "session cookie and every request through it fails.",
+                severity="error",
+                fix="pass secret_key= to the middleware, or set app.secret_key",
+                id="session-secret-key-missing",
+            )
+
     def _resolve_config(self, request: Request) -> None:
         """Take the signing key from the app when the constructor was not given one.
 

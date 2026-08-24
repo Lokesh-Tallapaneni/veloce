@@ -31,7 +31,6 @@ from veloce.middleware import Middleware
 # Whichever way it moves, the diff shows what a clean `veloce check` now means.
 COVERED = {
     "debug": "DEBUG is enabled",
-    "secret-key": "SECRET_KEY is not set",
     "session-cookie-secure": "The session cookie is not Secure",
     "hardening-headers": "No middleware sets hardening headers",
 }

@@ -41,11 +41,14 @@ def test_secret_key_from_app_config_signs_sessions():
         assert client.get("/get").json() == {"who": "alice"}
 
 
-def test_missing_secret_key_raises_on_first_request():
+def test_missing_secret_key_refuses_the_boot():
+    """It used to raise on the first request: startup succeeded, health checks
+    passed, and then every request through the middleware failed."""
+    from veloce.audit import AuditFailed
+
     app = Veloce(openapi_url=None)
-    app.config["PROPAGATE_EXCEPTIONS"] = True
     app.add_middleware(SessionMiddleware)
     _add_session_routes(app)
 
-    with TestClient(app) as client, pytest.raises(RuntimeError, match="secret key"):
-        client.get("/set")
+    with pytest.raises(AuditFailed, match="signing key"):
+        TestClient(app)

@@ -331,10 +331,15 @@ class TestSyncHandlers:
 
 
 def test_security_audit_flags_insecure_app():
+    from veloce import SessionMiddleware
+
     insecure = Veloce(debug=True, openapi_url=None)
+    insecure.add_middleware(SessionMiddleware(secret_key="k" * 32))
     warnings = insecure.security_audit()
     assert any("DEBUG" in w for w in warnings)
-    assert any("SECRET_KEY" in w for w in warnings)
+    # The session cookie is the app-level posture the audit reports on; the
+    # signing key belongs to the middleware, which reports it itself.
+    assert any("not Secure" in w for w in warnings)
 
 
 def test_security_audit_clean_after_hardening():
