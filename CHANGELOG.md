@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A quoted `Content-Type` parameter containing `;` is no longer cut short: `profile="a;b"` was read as `"a`. The same applies to the `Accept` media-range key. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A quoted header parameter written with whitespace before the opening quote (`filename = "r.pdf"`) no longer keeps that space in its value. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The deployment guide's deprecation section named the wrong warning category, so the command it gave caught nothing. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `veloce --version` reports the same fallback as `veloce.__version__` when the package metadata cannot be read; it claimed `0.3.0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `stream=True` is honored on a blueprint route and on an included router's route. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
