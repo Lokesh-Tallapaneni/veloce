@@ -417,7 +417,7 @@ def _resolve_scalar_param(
         # `_guard_plain_mutable_default`); immutable defaults read inline.
         if slot.default_factory is not None:
             return slot.default_factory()
-        return slot.default
+        return slot._static_default
     if slot.is_optional:
         return None
     if allow_query:
@@ -449,7 +449,7 @@ def _resolve_list_param(slot: Any, request: Request, path_params: dict[str, str]
         # `_guard_plain_mutable_default`); immutable defaults read inline.
         if slot.default_factory is not None:
             return slot.default_factory()
-        return slot.default
+        return slot._static_default
     if slot.is_optional:
         return None
     raise RequestValidationError(

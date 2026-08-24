@@ -347,7 +347,7 @@ def _emit_scalar_param(
         ns[f"_df{j}"] = slot.default_factory
         default_expr = f"_df{j}()"
     else:
-        ns[f"_d{j}"] = slot.default
+        ns[f"_d{j}"] = slot._static_default
         default_expr = f"_d{j}"
 
     lines.append(f"    _v = path_params.get({name!r}, _M)")

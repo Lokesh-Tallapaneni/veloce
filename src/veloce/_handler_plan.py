@@ -206,8 +206,8 @@ def _guard_plain_mutable_default(slot: _Slot, name: str) -> None:
     nudge the explicit-marker path already gives. Markers carry their own
     `default` handling, so this only fires for slots holding a static default.
     """
-    if slot.has_default and isinstance(slot.default, (list, dict, set)):
-        original = slot.default
+    if slot.has_default and isinstance(slot._static_default, (list, dict, set)):
+        original = slot._static_default
         slot.default_factory = lambda: copy.deepcopy(original)
         _warn_shared_mutable_default(name, original)
 
@@ -224,7 +224,7 @@ class _Slot:
         "kind",
         "name",
         "target_type",
-        "default",
+        "_static_default",
         "default_factory",
         "has_default",
         "is_optional",
@@ -249,7 +249,7 @@ class _Slot:
         self.kind = kind
         self.name = name
         self.target_type: Any = None
-        self.default: Any = None
+        self._static_default: Any = None
         # Set only for marker slots that carry a `default_factory`; plain
         # path/query slots leave this None and read the static `default`.
         self.default_factory: Callable[[], Any] | None = None
@@ -286,6 +286,31 @@ class _Slot:
         # Which model backend validates a K_BODY_MODEL slot - Pydantic or
         # msgspec, tagged at registration by `backend_of(inner_type)`.
         self.backend = ModelBackend.NONE
+
+    @property
+    def default(self) -> Any:
+        """This slot's default value, fresh per call when it needs to be.
+
+        `_guard_plain_mutable_default` wraps a bare `param: list = []` in a
+        copying factory so one request's `.append` cannot reach the next, and
+        leaves the raw field pointing at the original object. Every binder that
+        reads that field directly therefore has to remember to check the factory
+        first - and the MCP binder did not, so a mutable default was shared
+        across tool calls while HTTP requests each got their own.
+
+        Reading `slot.default`, the obvious spelling, now gives the safe value.
+        The shared object is still reachable as `_static_default`, which is a
+        deliberate act rather than an oversight.
+
+        The interpreter and both compiled resolvers branch on `default_factory`
+        before they need a value and read the raw field, so none of them pays
+        for this property. Code generation MUST keep doing so: it snapshots the
+        value into the generated namespace once, and a property read there would
+        bake in a single materialised copy - relocating the bug rather than
+        fixing it.
+        """
+        factory = self.default_factory
+        return factory() if factory is not None else self._static_default
 
 
 # ── Parallel-dependency grouping ──────────────────────────
@@ -847,7 +872,7 @@ def build_plan(
                 slot = _Slot(K_UPLOAD_FILE, param_name)
                 slot.is_optional = is_optional
                 slot.has_default = has_default
-                slot.default = default if has_default else None
+                slot._static_default = default if has_default else None
                 slots.append(slot)
             continue
 
@@ -870,7 +895,7 @@ def build_plan(
             slot = _Slot(K_QUERY_LIST, param_name)
             slot.list_inner = list_inner
             slot.has_default = has_default
-            slot.default = default if has_default else None
+            slot._static_default = default if has_default else None
             slot.is_optional = is_optional
             _guard_plain_mutable_default(slot, param_name)
             slots.append(slot)
@@ -885,7 +910,7 @@ def build_plan(
         slot.target_type = inner_type if inner_type is not None else str
         slot.is_optional = is_optional
         slot.has_default = has_default
-        slot.default = default if has_default else None
+        slot._static_default = default if has_default else None
         _guard_plain_mutable_default(slot, param_name)
         slots.append(slot)
 
