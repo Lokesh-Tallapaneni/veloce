@@ -16,7 +16,6 @@ from typing import Any
 
 import orjson
 
-from veloce._internal import _current_app_var
 from veloce.encoders import orjson_default
 from veloce.http.response import JSONResponse
 from veloce.status import HTTP_200_OK
@@ -124,24 +123,10 @@ class DefaultJSONProvider(JSONProvider):
         return orjson.loads(data)
 
 
-def dumps_for(app: Any, payload: Any) -> bytes:
-    """Serialise `payload` through `app`'s provider, or directly without one.
-
-    The one place a JSON payload bound for a client is encoded. Every surface
-    that sends one - a response body, a websocket frame, a server-sent event -
-    goes through here, so an application's dialect cannot reach some of them and
-    miss others. `app` is `None` outside a request, where there is no provider
-    to ask and the direct encoder applies.
-    """
-    if app is None:
-        return orjson.dumps(payload, default=orjson_default)
-    encoded: bytes = app.json.dumps(payload)
-    return encoded
-
-
-def dumps_current(payload: Any) -> bytes:
-    """Serialise through the app handling this request, or directly outside one."""
-    return dumps_for(_current_app_var.get(), payload)
+# `dumps_for` / `dumps_current` live in `_internal`, so `http.response` - the
+# lower layer - can reach the one encode funnel without importing this module.
+# `resolve_dumps` stays here because it answers a question only a provider can:
+# whether this app configured one at all.
 
 
 def resolve_dumps(app: Any) -> Any:

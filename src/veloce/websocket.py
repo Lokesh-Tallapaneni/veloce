@@ -21,7 +21,7 @@ from veloce._constants import (
     HEADER_SEC_WEBSOCKET_KEY,
     HEADER_SEC_WEBSOCKET_PROTOCOL,
 )
-from veloce._internal import _is_async_callable, _reject_header_crlf, offload
+from veloce._internal import _is_async_callable, _reject_header_crlf, dumps_for, offload
 from veloce._protocol_constants import (
     ASGI_EVENT_WS_ACCEPT,
     ASGI_EVENT_WS_CLOSE,
@@ -32,7 +32,6 @@ from veloce._protocol_constants import (
 from veloce.exceptions import WebSocketDisconnect
 from veloce.http.cookies import parse_cookie
 from veloce.http.datastructures import Address, QueryParams, State
-from veloce.json_provider import dumps_for
 from veloce.status import (
     WS_1000_NORMAL_CLOSURE,
     WS_1001_GOING_AWAY,

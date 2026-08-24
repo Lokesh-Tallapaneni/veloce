@@ -62,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+- `JSONResponse` and a bare mapping yielded to `EventSourceResponse` honour `JSON_SORT_KEYS` and a custom JSON provider; both encoded directly and missed the app's dialect. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A `date`, `datetime`, `time`, `timedelta`, `decimal`, `any(...)` or custom converter outranks `str` whatever the declaration order; which route answered depended on which was declared first. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A route guarded by a custom `SecurityScheme` is published with its security requirement; the document asserted the route was open. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A scheme that cannot describe itself warns during the schema build instead of silently publishing the route as unauthenticated. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

@@ -7,8 +7,6 @@ import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
 
-import orjson
-
 from veloce._constants import (
     HEADER_CACHE_CONTROL,
     HEADER_CONTENT_TYPE,
@@ -18,10 +16,8 @@ from veloce._constants import (
     HEADER_X_ACCEL_BUFFERING,
     MIME_TEXT_EVENT_STREAM,
 )
-from veloce._internal import _encode_response_head
-from veloce.encoders import orjson_default
+from veloce._internal import _encode_response_head, dumps_current
 from veloce.http.response import Response
-from veloce.json_provider import dumps_current
 from veloce.status import HTTP_200_OK
 
 # SSE keep-alive frame: a comment line (colon-prefixed) the spec requires
@@ -300,10 +296,10 @@ class EventSourceResponse(Response):
         # letting a non-bytes object fall through and crash the chunk writer.
         # A Mapping serialises to a JSON `data:` field; a scalar uses its text.
         # `bool` is a subclass of `int`, so its `True`/`False` text is fine.
-        if isinstance(item, Mapping):
-            data = orjson.dumps(item, default=orjson_default).decode("utf-8")
-        else:
-            data = str(item)
+        # `ServerSentEvent.json` above already goes through the provider; a bare
+        # yielded Mapping took a different encoder in the same file, so one
+        # stream could carry two dialects.
+        data = dumps_current(item).decode("utf-8") if isinstance(item, Mapping) else str(item)
         return ServerSentEvent(data=data).encode()
 
     @classmethod

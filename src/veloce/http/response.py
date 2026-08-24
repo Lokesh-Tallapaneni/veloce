@@ -58,12 +58,12 @@ from veloce._internal import (
     _file_etag,
     _header_value_has_crlf,
     _reject_header_crlf,
+    dumps_current,
     guess_content_type,
     is_json_mimetype,
 )
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, SET_COOKIE_JOINER
 from veloce._warnings import VeloceDeprecationWarning
-from veloce.encoders import orjson_default
 from veloce.http.cache_control import CacheControl
 from veloce.http.cookies import dump_cookie, iter_cookies
 from veloce.http.dates import http_date, parse_date
@@ -1345,7 +1345,13 @@ class JSONResponse(Response):
         background: Any = None,
     ) -> None:
         try:
-            body = orjson.dumps(data, default=orjson_default)
+            # Through the app's provider, not a bare `orjson.dumps`: a
+            # `JSON_SORT_KEYS` or a custom `json_provider_class` reached a
+            # handler returning a dict and silently missed one returning this
+            # class, so one application emitted two dialects. Outside a request
+            # there is no app to ask and the direct encoder applies, which is
+            # what `dumps_current` already resolves.
+            body = dumps_current(data)
         except TypeError as exc:
             raise ValueError(f"JSONResponse data is not JSON-serializable: {exc}") from exc
         super().__init__(
@@ -1355,6 +1361,24 @@ class JSONResponse(Response):
             headers=headers,
             background=background,
         )
+
+    @classmethod
+    def _from_encoded(cls, body: bytes) -> JSONResponse:
+        """Wrap already-encoded JSON bytes, for a caller that resolved the dialect.
+
+        `from_bytes` is the public form and validates its argument; the dispatch
+        path has just produced these bytes itself and has already asked the app
+        which encoder to use, so it needs neither the check nor a second lookup
+        through `__init__`.
+        """
+        resp = cls.__new__(cls)
+        Response.__init__(
+            resp,
+            status_code=HTTP_200_OK,
+            body=body,
+            content_type=cls.default_media_type,
+        )
+        return resp
 
     @classmethod
     def from_bytes(

@@ -81,8 +81,6 @@ UNEXPORTED: dict[str, str] = {
     # application's dialect cannot reach some and miss others. Public-named
     # rather than underscored because `app/` imports them across a subpackage
     # boundary, which guardrails forbid for a private symbol.
-    "json_provider.dumps_for": "internal shared encoder, crosses a subpackage boundary",
-    "json_provider.dumps_current": "internal shared encoder, crosses a subpackage boundary",
     "json_provider.resolve_dumps": "internal hot-path resolver, crosses a subpackage boundary",
     # `debug.py` — the debug traceback renderer, wired by the app when
     # `DEBUG` is set.

@@ -40,6 +40,8 @@ from email.header import Header
 from http import HTTPStatus
 from typing import Any
 
+import orjson
+
 from veloce._constants import (
     HEADER_CONNECTION,
     HEADER_VALUE_CLOSE,
@@ -52,6 +54,7 @@ from veloce._constants import (
     MSG_LABEL_SET_COOKIE_VALUE,
 )
 from veloce._protocol_constants import SET_COOKIE_JOINER
+from veloce.encoders import orjson_default
 from veloce.secret import Secret
 
 # Lower-cased once: the head builder tests it against a set of folded names.
@@ -512,6 +515,41 @@ _current_app_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
 _current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "veloce_current_request", default=None
 )
+
+
+def dumps_for(app: Any, payload: Any) -> bytes:
+    """Serialise `payload` through `app`'s provider, or directly without one.
+
+    The one place a JSON payload bound for a client is encoded. Every surface
+    that sends one - a response body, a websocket frame, a server-sent event -
+    goes through here, so an application's dialect cannot reach some of them and
+    miss others. `app` is `None` outside a request, where there is no provider
+    to ask and the direct encoder applies.
+
+    Lives here rather than in `json_provider` because `http.response` is the
+    lower layer and must be able to call it: the provider knows about responses,
+    not the other way round. `json_provider` re-exports it under its documented
+    name.
+    """
+    if app is None:
+        return orjson.dumps(payload, default=orjson_default)
+    # The app resolves its provider once and caches `None` when the stock one
+    # with nothing configured is active, because that emits exactly what the
+    # direct call does. Reading the cache rather than going through
+    # `app.json.dumps` unconditionally keeps an application that configured no
+    # dialect on the same direct path it was on before.
+    dumps = app._handler_json_dumps
+    if dumps is _UNRESOLVED_JSON_DUMPS:
+        dumps = app._handler_json_dumps = app._resolve_handler_json_dumps()
+    if dumps is None:
+        return orjson.dumps(payload, default=orjson_default)
+    encoded: bytes = dumps(payload)
+    return encoded
+
+
+def dumps_current(payload: Any) -> bytes:
+    """Serialise through the app handling this request, or directly outside one."""
+    return dumps_for(_current_app_var.get(), payload)
 
 
 # Distinguishes "the handler-JSON serialiser has not been resolved yet" from a

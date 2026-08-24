@@ -19,6 +19,7 @@ import weakref
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
+import orjson
 from pydantic import BaseModel as _PydanticBaseModel
 
 from veloce import status
@@ -63,6 +64,7 @@ from veloce.app.urls import URLRule as URLRule
 from veloce.blueprints import _endpoint_blueprint
 from veloce.debug import render_traceback_html
 from veloce.dependency import DependencyResolver, Depends
+from veloce.encoders import orjson_default
 from veloce.exceptions import (
     HTTPException,
 )
@@ -1451,12 +1453,15 @@ class DispatchMixin:
         framework's own wire format, not the application's.
         """
         dumps = self._json_dumps_override()
-        if dumps is None:
-            return JSONResponse(data)
-        # `from_bytes`, not a bare `Response`: the return type is part of the
-        # contract - a `default_response_class` check and an `isinstance` on the
-        # coerced response both expect a `JSONResponse`.
-        return JSONResponse.from_bytes(dumps(data))
+        # `from_bytes` on both branches, not a bare `Response`: the return type
+        # is part of the contract - a `default_response_class` check and an
+        # `isinstance` on the coerced response both expect a `JSONResponse`.
+        # And encoding here rather than through `JSONResponse(data)` avoids
+        # resolving the dialect twice: this line has just done it. The
+        # constructor resolves it for a handler that builds one itself, which
+        # is the path that has no other way to learn the application's dialect.
+        body = orjson.dumps(data, default=orjson_default) if dumps is None else dumps(data)
+        return JSONResponse._from_encoded(body)
 
     def _json_dumps_override(self) -> Any:
         """The configured serialiser, or `None` to take the direct path.
