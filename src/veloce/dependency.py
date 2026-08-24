@@ -21,7 +21,7 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 from typing_extensions import Doc
 
-from veloce._constants import MSG_FIELD_REQUIRED, STATE_INJECTED_RESPONSE
+from veloce._constants import MIME_JSON, MSG_FIELD_REQUIRED, STATE_INJECTED_RESPONSE
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
@@ -47,7 +47,7 @@ from veloce._internal import _BaseExceptionGroup, _is_async_callable, offload
 from veloce._model_backend import ModelBackend, _msgspec, adapter_for, is_pydantic_model
 from veloce._resolver_codegen import compile_graph_resolver, compile_param_resolver
 from veloce.background import BackgroundTasks
-from veloce.exceptions import RequestValidationError, ValidationError
+from veloce.exceptions import HTTPException, RequestValidationError, ValidationError
 from veloce.http.request import Request
 from veloce.http.response import Response
 
@@ -962,8 +962,38 @@ class DependencyResolver:
             return await self._resolve_adapted_body(slot, request)
         return await self._resolve_pydantic_body(slot, request)
 
+    @staticmethod
+    def _require_json_body(request: Request) -> None:
+        """Refuse a body whose `Content-Type` declares it is not JSON.
+
+        Beyond reading what the client said rather than guessing, this closes a
+        CSRF avenue. `text/plain`, `multipart/form-data` and
+        `application/x-www-form-urlencoded` are the content types a cross-origin
+        form or `fetch` may send *without* a CORS preflight (the Fetch
+        Standard's CORS-safelisted request headers), so a JSON endpoint that
+        parses a body under `text/plain` can be driven cross-origin through a
+        cookie-authenticated victim's browser with no preflight to stop it.
+
+        An absent header is accepted: plenty of clients omit it, and its absence
+        asserts nothing about the body. A `+json` structured suffix (RFC 6839),
+        such as `application/vnd.api+json`, is JSON and is accepted too.
+        """
+        mimetype = request.mimetype
+        if not mimetype or mimetype == MIME_JSON or mimetype.endswith("+json"):
+            return
+        raise RequestValidationError(
+            [
+                {
+                    "loc": ["body"],
+                    "msg": f"Expected a JSON body; got Content-Type {mimetype!r}",
+                    "type": "value_error",
+                }
+            ]
+        )
+
     async def _resolve_adapted_body(self, slot: Any, request: Request) -> Any:
         """Validate a dataclass / `TypedDict` body through its cached adapter."""
+        self._require_json_body(request)
         raw = await request.body()
         if not raw.strip():
             if slot.is_optional:
@@ -986,6 +1016,7 @@ class DependencyResolver:
             ) from e
 
     async def _resolve_pydantic_body(self, slot: Any, request: Request) -> Any:
+        self._require_json_body(request)
         try:
             body_data = await request.json()
             return slot.model.model_validate(body_data)
@@ -1006,6 +1037,15 @@ class DependencyResolver:
             ) from e
         except ValidationError:
             raise
+        except HTTPException:
+            # A malformed body already reached `Request.on_json_loading_failed`,
+            # which raises `BadRequest` under a deliberate policy: a stable
+            # message by default, the decoder's reason only under
+            # `JSON_ERRORS_VERBOSE` / debug, since the offsets derive from
+            # attacker-controlled input. Swallowing it here replaced all of that
+            # with a generic message, so the documented opt-in did nothing for a
+            # body model and the two ways of reading a body disagreed.
+            raise
         except Exception as err:
             raise RequestValidationError(
                 [
@@ -1020,6 +1060,7 @@ class DependencyResolver:
     async def _resolve_msgspec_body(self, slot: Any, request: Request) -> Any:
         # Reached only for a msgspec.Struct body slot, which the registration
         # tagging in `_handler_plan` produces only when msgspec is installed.
+        self._require_json_body(request)
         raw = await request.body()
         # An empty or whitespace-only body is "missing", not a decode error -
         # `msgspec.json.decode(b"")` would raise an opaque truncation error.

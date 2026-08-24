@@ -2,9 +2,9 @@
 
 The flag is named after the access log and, until now, printed the startup
 banner and nothing else — the built-in server answered every request silently.
-That is out of step with both peers (uvicorn and Flask's dev server log each
-request), and it matters most exactly when something is wrong: a failing
-endpoint left nothing to correlate a report against.
+A development server is expected to say what it served, and the silence matters
+most exactly when something is wrong: a failing endpoint left nothing to
+correlate a report against.
 
 It is installed for the built-in server only. Under an ASGI server that server
 writes the access log, and a second one would duplicate every line.

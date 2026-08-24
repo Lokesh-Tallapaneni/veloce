@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A JSON body model refuses a body whose `Content-Type` declares it is not JSON, closing a CSRF avenue: `text/plain` and the form types are sent cross-origin without a CORS preflight. An absent header and a `+json` suffix are still accepted. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The MCP HTTP transport requires and cross-checks `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` on the `2026-07-28` revision. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Malformed JSON in a body model follows the same policy as `request.json()`: a `400` with a stable message, and the decoder's reason only under `JSON_ERRORS_VERBOSE` or debug. It was a `422` with a generic message, so the opt-in did nothing there. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `run(access_log=True)` writes a per-request access line; it previously printed only the startup banner. The ASGI path is unchanged, where the server already logs. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A `bool` query, path, header or cookie parameter accepts Pydantic's spellings (`on`/`off`, `t`/`f`, `y`/`n` as well as `true`/`false`, `1`/`0`, `yes`/`no`) and refuses anything else with a `422`; it previously read every unrecognised value, including `on` and any typo, as `False`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `log_exception` takes an optional `request=` and names it in the record. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
