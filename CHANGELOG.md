@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Query strings and urlencoded bodies carrying no percent-escape skip per-field decoding. Measured on one Windows desktop: 20.9 vs 26.0 us for a three-parameter query read, 35.3 vs 43.4 us for a five-field form POST; an escaped value is unchanged. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `veloce.__version__` reads the package metadata on first access instead of at import. Measured on one Windows desktop: about 14 ms off a ~342 ms cold start. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A cookie value is percent-decoded only when it carries an escape or a quote. Measured on one Windows desktop: 1.84 vs 3.03 us for a four-cookie header. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Content-Type` parsing skips the parameter walk when the header declares no parameters. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The `MAX_CONTENT_LENGTH` header scan matches the name as ASGI mandates it rather than lowercasing every header. A server that sends a differently-cased `Content-Length` loses the early rejection, not the limit. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -28,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `veloce --version` reports the same fallback as `veloce.__version__` when the package metadata cannot be read; it claimed `0.3.0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `stream=True` is honored on a blueprint route and on an included router's route. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A blueprint route keeps its MCP resource mime type, size, annotations and `_meta`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Capabilities are advertised per protocol revision, so none is offered and then refused. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

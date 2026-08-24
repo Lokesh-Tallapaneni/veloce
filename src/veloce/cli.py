@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from veloce._constants import MSG_APP_REFERENCE_FORM
+from veloce._version import resolve_version
 from veloce.config import _parse_env_lines
 
 # ── Constants ─────────────────────────────────────────────
@@ -65,14 +66,10 @@ _COMMAND_ENTRY_POINT_GROUP = "veloce.commands"
 
 
 def _resolve_version() -> str:
-    # Avoid `from veloce import __version__` so `veloce --version` does not
-    # drag the entire framework (router, middleware, security, sse, ...) into
-    # sys.modules just to print a string. Fallback must mirror the one in
-    # `veloce/__init__.py` for editable installs without resolved metadata.
-    try:
-        return importlib.metadata.version("veloceframework")
-    except importlib.metadata.PackageNotFoundError:
-        return "0.3.0"
+    # Not `from veloce import __version__`, so `veloce --version` does not drag
+    # the whole framework into sys.modules to print a string. Both spellings
+    # resolve through the same helper, so their fallbacks cannot drift.
+    return resolve_version()
 
 
 def _load_app(reference: str) -> Any:

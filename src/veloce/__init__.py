@@ -43,6 +43,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.context import MCPContext
 
 # Static files
+# Event-loop watchdog
 from veloce.contrib.staticfiles import StaticFiles
 
 # Templating - top-level shortcuts. The full Jinja2Templates
@@ -302,25 +303,10 @@ from veloce.testclient import AsyncTestClient, TestClient
 
 # Class-based views
 from veloce.views import MethodView, View
-
-# Event-loop watchdog
 from veloce.watchdog import EventLoopWatchdog
 
 # WebSocket
 from veloce.websocket import WebSocket
-
-try:
-    from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
-    from importlib.metadata import version as _pkg_version
-
-    __version__ = _pkg_version("veloceframework")
-    del _pkg_version, _PackageNotFoundError
-except Exception:
-    # Editable install before metadata is materialised, or an unsupported
-    # runtime. The installed package metadata is the single source of the
-    # version (`pyproject.toml`); fall back to a non-version sentinel rather
-    # than a second hand-maintained literal so the two cannot drift.
-    __version__ = "0.0.0+unknown"
 
 # `APIRouter` aliases `Router`, whose constructor takes the keyword
 # surface that name implies (`prefix=`, `tags=`, `dependencies=`,
@@ -601,6 +587,15 @@ _LAZY_EXPORTS: dict[str, str] = {
 
 def __getattr__(name: str) -> Any:
     """Import the module owning a lazily-exported name, then cache it here."""
+    if name == "__version__":
+        # Reading the installed package metadata walks the distribution's files
+        # and costs real time on a cold interpreter, which every CLI invocation
+        # and every serverless cold start would otherwise pay to produce a
+        # string almost nothing asks for.
+        from veloce._version import resolve_version
+
+        globals()["__version__"] = value = resolve_version()
+        return value
     module_name = _LAZY_EXPORTS.get(name)
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

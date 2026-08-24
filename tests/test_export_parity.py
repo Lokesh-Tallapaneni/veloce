@@ -141,9 +141,15 @@ _NON_SURFACE_MODULES = frozenset({"__future__", "typing"})
 
 
 def _imported_names(tree: ast.Module) -> set[str]:
-    """Public names a module binds through `from X import Y`."""
+    """Public names a module binds through a top-level `from X import Y`.
+
+    Only a module-level import binds a module attribute, which is what makes a
+    name reachable as `veloce.X` and therefore what `__all__` has to account
+    for. An import inside a function binds a local and is invisible either way,
+    so it is not part of the surface this checks.
+    """
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in tree.body:
         if isinstance(node, ast.ImportFrom) and node.module not in _NON_SURFACE_MODULES:
             for alias in node.names:
                 bound = alias.asname or alias.name
