@@ -801,8 +801,14 @@ class WebSocket:
             raise RuntimeError("WebSocket.send_text(): call accept() before sending")
         if self._closed:
             raise WebSocketDisconnect()
-        if self._is_asgi:
-            await self._asgi_send_safe({"type": ASGI_EVENT_WS_SEND, "text": data})
+        if self._asgi_send is not None:
+            # Sent here rather than through `_asgi_send_safe`, for the same reason
+            # the receive path is inlined: this is the frame every message pays.
+            # The error handling itself stays in `_asgi_send_failed`.
+            try:
+                await self._asgi_send({"type": ASGI_EVENT_WS_SEND, "text": data})
+            except (ConnectionError, OSError) as exc:
+                self._asgi_send_failed(exc)
             return
         await self._raw_send(data.encode("utf-8"), opcode=0x1)
 
@@ -826,8 +832,14 @@ class WebSocket:
             raise RuntimeError("WebSocket.send_bytes(): call accept() before sending")
         if self._closed:
             raise WebSocketDisconnect()
-        if self._is_asgi:
-            await self._asgi_send_safe({"type": ASGI_EVENT_WS_SEND, "bytes": data})
+        if self._asgi_send is not None:
+            # Sent here rather than through `_asgi_send_safe`, for the same reason
+            # the receive path is inlined: this is the frame every message pays.
+            # The error handling itself stays in `_asgi_send_failed`.
+            try:
+                await self._asgi_send({"type": ASGI_EVENT_WS_SEND, "bytes": data})
+            except (ConnectionError, OSError) as exc:
+                self._asgi_send_failed(exc)
             return
         await self._raw_send(data, opcode=0x2)
 
@@ -843,20 +855,38 @@ class WebSocket:
         try:
             await self._asgi_send(message)
         except (ConnectionError, OSError) as exc:
-            self._closed = True
-            raise WebSocketDisconnect(WS_1006_ABNORMAL_CLOSURE) from exc
+            self._asgi_send_failed(exc)
+
+    def _asgi_send_failed(self, exc: BaseException) -> NoReturn:
+        """Turn a dead-peer transport error into a disconnect and mark us closed.
+
+        The one place that normalization happens, shared with the inline send
+        path below so the two cannot come to disagree about what a broken pipe
+        means to a handler.
+        """
+        self._closed = True
+        raise WebSocketDisconnect(WS_1006_ABNORMAL_CLOSURE) from exc
+
+    def _asgi_disconnected(self, msg: dict) -> NoReturn:
+        """Record the peer's close from a `websocket.disconnect` and raise.
+
+        The one place ASGI peer-close is turned into connection state, so the
+        unbounded receive path below - which reads the message itself to stay
+        one coroutine frame deep - shares this rather than repeating it.
+        """
+        self._closed = True
+        # The ASGI server reports the peer's close code (and, on newer
+        # servers, the reason). Expose them via the same accessors the
+        # raw-transport path populates so handlers see one API.
+        code = msg.get("code", WS_1005_NO_STATUS_RCVD)
+        self.close_code = code
+        self.close_reason = msg.get("reason", "") or ""
+        raise WebSocketDisconnect(code)
 
     async def _asgi_recv_msg(self) -> dict:
         msg = await self._asgi_receive()
         if msg["type"] == ASGI_EVENT_WS_DISCONNECT:
-            self._closed = True
-            # The ASGI server reports the peer's close code (and, on newer
-            # servers, the reason). Expose them via the same accessors the
-            # raw-transport path populates so handlers see one API.
-            code = msg.get("code", WS_1005_NO_STATUS_RCVD)
-            self.close_code = code
-            self.close_reason = msg.get("reason", "") or ""
-            raise WebSocketDisconnect(code)
+            self._asgi_disconnected(msg)
         return msg
 
     async def receive(self) -> dict[str, Any]:
@@ -984,8 +1014,17 @@ class WebSocket:
         `WebSocketDisconnect` instead of `asyncio.TimeoutError`.
         """
         self._check_can_receive("receive_text")
-        if self._is_asgi:
-            msg = await self._asgi_recv_text_or_bytes(timeout)
+        if self._asgi_send is not None:
+            # The ASGI receive is taken here rather than through the timeout and
+            # envelope wrappers: with no deadline to arm there is nothing for them
+            # to do, and this is the frame every message on every connection pays.
+            # The peer-close handling itself stays in `_asgi_disconnected`.
+            if timeout is None and self._idle_timeout is None:
+                msg = await self._asgi_receive()
+                if msg["type"] == ASGI_EVENT_WS_DISCONNECT:
+                    self._asgi_disconnected(msg)
+            else:
+                msg = await self._asgi_recv_text_or_bytes(timeout)
             return msg.get("text") or (msg.get("bytes") or b"").decode("utf-8")
         data = await self._raw_recv(timeout)
         return data.decode("utf-8") if isinstance(data, bytes) else str(data)
@@ -1063,8 +1102,17 @@ class WebSocket:
         `WebSocketDisconnect` instead of `asyncio.TimeoutError`.
         """
         self._check_can_receive("receive_bytes")
-        if self._is_asgi:
-            msg = await self._asgi_recv_text_or_bytes(timeout)
+        if self._asgi_send is not None:
+            # The ASGI receive is taken here rather than through the timeout and
+            # envelope wrappers: with no deadline to arm there is nothing for them
+            # to do, and this is the frame every message on every connection pays.
+            # The peer-close handling itself stays in `_asgi_disconnected`.
+            if timeout is None and self._idle_timeout is None:
+                msg = await self._asgi_receive()
+                if msg["type"] == ASGI_EVENT_WS_DISCONNECT:
+                    self._asgi_disconnected(msg)
+            else:
+                msg = await self._asgi_recv_text_or_bytes(timeout)
             return msg.get("bytes") or msg.get("text", "").encode("utf-8")
         return await self._raw_recv(timeout)
 
