@@ -103,9 +103,16 @@ def _merge_scoped_lists(
 
     The list counterpart of `_merge_scoped`: the child's own callables land
     under its bare name, each already-scoped descendant keeps its suffix.
+
+    The child's entry is written even when it declares nothing of this
+    category, because `dst` is what tells registration which descendant paths
+    exist. Recorded only when non-empty, a child that declares no
+    `before_request` of its own left no `<parent>.<child>` path at all - and
+    the parent's own hooks, which apply to every route beneath it, had nowhere
+    to be flattened onto. A guard on the parent then never ran on the child's
+    routes.
     """
-    if child_own:
-        dst[child_name] = list(child_own)
+    dst[child_name] = list(child_own)
     for suffix, entries in child_scoped.items():
         dst[f"{child_name}.{suffix}"] = entries
 

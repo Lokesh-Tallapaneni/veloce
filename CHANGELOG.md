@@ -60,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+- A blueprint's `before_request`, `after_request` and `teardown_request` run on routes of a nested blueprint that declares none of its own; a guard on a parent blueprint was skipped there. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `security_audit` no longer warns about a session middleware constructed with an explicit `secure=True`; it read only `SESSION_COOKIE_SECURE`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - The `Connection` header states what the built-in server actually did: an HTTP/1.0 request, one asking for `Connection: close`, and a native SSE stream were all answered `keep-alive` on a socket the server then closed. `EventSourceResponse` no longer sets `Connection` as a response header. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
