@@ -90,6 +90,19 @@ _inflight_var: ContextVar[_InFlight | None] = ContextVar("_mcp_inflight", defaul
 # handler signature carries only params. Set once per message beside the session.
 _request_id_var: ContextVar[Any] = ContextVar("_mcp_request_id", default=None)
 
+# Whether the message being answered came from a modern client, resolved once by
+# `handle_message` and read by every function that shapes a result. It is a
+# ContextVar rather than an argument threaded through those functions because a
+# `modern=` parameter is one a new call site can be written without: that is how
+# `tasks/cancel` and the task status notification came to emit the handshake
+# field names to a modern client while creation and polling emitted the modern
+# ones. Per message, not per connection - the modern revision negotiates nothing
+# and states its version on every request, so one connection may carry both eras.
+# A detached task runner inherits the era of the request that created it, which
+# is what its notifications should carry. Defaults to the handshake era so a bare
+# `handle_message` call outside a transport still resolves.
+_era_modern_var: ContextVar[bool] = ContextVar("_mcp_era_modern", default=False)
+
 # The current call's server->client request issuer, set by a bidirectional
 # transport so a tool's `MCPContext.sample` / `elicit` / `roots` can call the
 # client and await the correlated reply. `None` off a bidirectional transport (the

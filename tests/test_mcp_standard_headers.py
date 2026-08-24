@@ -321,6 +321,55 @@ def test_a_handshake_request_naming_its_own_revision_is_still_untouched():
     assert "error" not in response.json()
 
 
+def test_a_handshake_revision_named_in_the_body_is_not_held_to_modern_headers():
+    """The gate reads the revision each half names, not the presence of `_meta`.
+
+    A client that spells `2025-06-18` in both the header and `_meta` names a
+    revision that defined none of these headers, so demanding them refused a
+    request that was correct in both places.
+    """
+    client = _client()
+    response = _post(
+        client,
+        _body("tools/list", version=HANDSHAKE),
+        _headers(mcp_protocol_version=HANDSHAKE),
+    )
+    assert response.status_code == 200
+    assert "error" not in response.json()
+
+
+def test_a_handshake_revision_in_the_body_alone_is_untouched():
+    client = _client()
+    response = _post(client, _body("tools/list", version=HANDSHAKE), _headers())
+    assert response.status_code == 200
+    assert "error" not in response.json()
+
+
+def test_the_two_doors_agree_on_a_handshake_revision():
+    """The same message must not be served on one transport and refused on the other."""
+    import asyncio
+
+    app = Veloce(title="Headers", openapi_url=None)
+
+    @app.mcp_tool(description="Add two numbers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    server = MCPServer(app)
+    register_http_transport(app, server)
+
+    message = _body("tools/list", version=HANDSHAKE)
+    over_http = TestClient(app).post(
+        "/mcp", json=message, headers=_headers(mcp_protocol_version=HANDSHAKE)
+    )
+    direct = asyncio.run(server.handle_message(message))
+
+    assert over_http.status_code == 200
+    assert "error" not in over_http.json()
+    assert "error" not in direct
+    assert over_http.json()["result"] == direct["result"]
+
+
 def test_a_handshake_call_needs_no_name_header():
     client = _client()
     response = client.post(

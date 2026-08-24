@@ -35,6 +35,7 @@ from veloce.contrib.mcp._helpers import (
     _describe_prompt,
     _describe_resource,
     _describe_resource_template,
+    _era_modern_var,
     _InFlight,
     _inflight_var,
     _log_level_var,
@@ -309,13 +310,6 @@ def _http_status_for(error: MCPError) -> int:
     if isinstance(error, InvalidRequestError):
         return status.HTTP_400_BAD_REQUEST
     return status.HTTP_500_INTERNAL_SERVER_ERROR
-
-
-def _requests_modern(params: dict[str, Any] | None) -> bool:
-    """Whether this request states a protocol version, which only a modern client does."""
-    meta = params.get("_meta") if isinstance(params, dict) else None
-    raw = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
-    return isinstance(raw, str)
 
 
 class MCPServer(TasksMixin, InvocationMixin):
@@ -771,6 +765,9 @@ class MCPServer(TasksMixin, InvocationMixin):
         # stateless path leaves the subscribe handler to reject the call.
         session_token = _session_var.set(session)
         request_id_token = _request_id_var.set(msg_id)
+        # Publish the era resolved above so every shaping function reads one
+        # answer instead of re-deriving its own from `params`.
+        era_token = _era_modern_var.set(is_modern)
         # A fresh slot per message, so `_meta` a handler attaches belongs to this
         # call's result and cannot reach the next one.
         result_meta_token = _result_meta_var.set(None)
@@ -803,6 +800,7 @@ class MCPServer(TasksMixin, InvocationMixin):
                 _inflight_var.reset(token)
                 _session_var.reset(session_token)
                 _request_id_var.reset(request_id_token)
+                _era_modern_var.reset(era_token)
                 _result_meta_var.reset(result_meta_token)
                 if log_level_token is not None:
                     _log_level_var.reset(log_level_token)
@@ -957,8 +955,7 @@ class MCPServer(TasksMixin, InvocationMixin):
             and not self._any_scoped_tools
             else await self._visible_tools()
         )
-        describe = self._describe_tool_modern if _requests_modern(params) else self._describe_tool
-        return self._listing("tools", tools, _tool_key, describe, params)
+        return self._listing("tools", tools, _tool_key, self._describe_tool, params)
 
     async def _handle_resources_list(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._listing(
@@ -1040,7 +1037,7 @@ class MCPServer(TasksMixin, InvocationMixin):
             if isinstance(requested, str) and requested in _SUPPORTED_PROTOCOL_VERSIONS
             else LATEST_PROTOCOL_VERSION
         )
-        capabilities = self._advertised_capabilities(_requests_modern(params))
+        capabilities = self._advertised_capabilities(_era_modern_var.get())
         server_info = self._server_info()
         result: dict[str, Any] = {
             "protocolVersion": version,
@@ -1103,7 +1100,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         `serverInfo` travels in `_meta` here rather than as a top-level field,
         which is where the modern revision moved it.
         """
-        capabilities = self._advertised_capabilities(_requests_modern(params))
+        capabilities = self._advertised_capabilities(_era_modern_var.get())
         extensions = self._advertised_extensions()
         if extensions:
             capabilities = {**capabilities, "extensions": extensions}
@@ -1305,38 +1302,38 @@ class MCPServer(TasksMixin, InvocationMixin):
 
     @staticmethod
     def _describe_tool(tool: MCPTool) -> dict[str, Any]:
-        """Return this tool's `tools/list` entry as the handshake revisions define it.
+        """Return this tool's `tools/list` entry for the era being answered.
 
         The entry is memoized on the tool because it is a pure function of
         registration data: nothing it reads can change once the registry is
-        built. Callers treat the returned mapping as read-only - the dispatcher
-        stamps `ttlMs` / `cacheScope` onto the enclosing result, never onto an
-        entry.
+        built. The modern revision removed `execution` from `Tool` - task
+        support is negotiated through the extension capability instead, so an
+        entry carrying the field does not validate against the schema that
+        client negotiated - and that second shape is memoized alongside the
+        first. Only a task-capable tool differs, so a listing costs no more than
+        before.
+
+        The era is read here rather than chosen by the caller: every site that
+        advertises a tool definition - `tools/list`, the `tool_search`
+        catalogue, `MCPContext` - reaches this one function, so none of them can
+        advertise the wrong shape by forgetting to ask.
+
+        Callers treat the returned mapping as read-only - the dispatcher stamps
+        `ttlMs` / `cacheScope` onto the enclosing result, never onto an entry.
         """
         entry = tool.listing_entry
         if entry is None:
             entry = tool.listing_entry = _build_tool_listing_entry(tool)
-        return entry
-
-    @staticmethod
-    def _describe_tool_modern(tool: MCPTool) -> dict[str, Any]:
-        """Return the entry as the modern revision defines it.
-
-        That revision removed `execution` from `Tool`: task support is
-        negotiated through the extension capability instead, so a listing
-        carrying the field does not validate against the schema the client
-        negotiated. Only a task-capable tool differs, and its second shape is
-        memoized like the first, so a listing costs no more than before.
-        """
-        entry = tool.listing_entry_modern
-        if entry is None:
-            base = MCPServer._describe_tool(tool)
-            entry = tool.listing_entry_modern = (
-                {key: value for key, value in base.items() if key != "execution"}
-                if "execution" in base
-                else base
+        if not _era_modern_var.get():
+            return entry
+        modern = tool.listing_entry_modern
+        if modern is None:
+            modern = tool.listing_entry_modern = (
+                {key: value for key, value in entry.items() if key != "execution"}
+                if "execution" in entry
+                else entry
             )
-        return entry
+        return modern
 
     async def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")

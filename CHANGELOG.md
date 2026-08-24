@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An MCP request naming a handshake-era revision in `_meta` is served instead of refused for a header that revision never defined. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `describe_tools` advertises the modern tool shape to a modern client; under `tool_search` it is the only definition such a client sees. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `tasks/cancel` and the task status notification spell the duration fields the way the caller's revision does, matching creation and polling. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A WebSocket handler's exception is reported on the built-in server; a peer that left cancelled the close handshake and the failure was lost. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An unhandled exception is logged with its traceback and the failing request instead of vanishing into a generic `500`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A quoted `Content-Type` parameter containing `;` is no longer cut short: `profile="a;b"` was read as `"a`. The same applies to the `Accept` media-range key. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

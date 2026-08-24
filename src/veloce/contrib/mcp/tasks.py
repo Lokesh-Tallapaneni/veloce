@@ -33,6 +33,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from veloce.contrib.mcp._helpers import _era_modern_var
 from veloce.contrib.mcp._registry_base import Registry
 from veloce.contrib.mcp.capabilities.base import _ServerCapability
 from veloce.contrib.mcp.descriptors import MCPDescriptor
@@ -129,13 +130,19 @@ class MCPTask(MCPDescriptor):
     # work that asked for input.
     input_responses: dict[str, Any] = field(default_factory=dict)
 
-    def describe(self, *, modern: bool = False) -> dict[str, Any]:
+    def describe(self) -> dict[str, Any]:
         """Shape this task into the MCP Task object the task methods return.
 
         The extension renamed the two duration fields, so a modern client is sent
         `ttlMs` / `pollIntervalMs` and a handshake client the names its revision
         defined. Everything else is common to both.
+
+        The era is read from the message being answered rather than passed in:
+        creation and polling supplied it while cancellation and the status
+        notification did not, so one task reported `ttlMs` on the way in and
+        `ttl` on the way out.
         """
+        modern = _era_modern_var.get()
         task: dict[str, Any] = {
             "taskId": self.name,
             "status": self.status,
@@ -255,22 +262,14 @@ def new_task(tool_name: str, ttl_ms: int, owner_key: int | None = None) -> MCPTa
     return task
 
 
-def _modern_params(params: dict[str, Any]) -> bool:
-    """Whether the request carrying these params declared a modern revision."""
-    meta = params.get("_meta")
-    return isinstance(meta, dict) and isinstance(
-        meta.get("io.modelcontextprotocol/protocolVersion"), str
-    )
-
-
-def create_task_result(task: MCPTask, *, modern: bool = False) -> dict[str, Any]:
+def create_task_result(task: MCPTask) -> dict[str, Any]:
     """Build the `CreateTaskResult` returned immediately for a task-augmented call.
 
     Carries the new task object plus the non-binding model-immediate-response
     hint so the client knows no immediate model turn is expected.
     """
     return {
-        "task": task.describe(modern=modern),
+        "task": task.describe(),
         "_meta": {_META_MODEL_IMMEDIATE_RESPONSE: True},
     }
 
@@ -350,7 +349,7 @@ class TasksCapability(_ServerCapability):
         `tasks/result`, so a completed task carries its result here.
         """
         task = self._lookup(params)
-        return task.describe(modern=_modern_params(params))
+        return task.describe()
 
     async def _result(self, params: dict[str, Any]) -> dict[str, Any]:
         """Return a settled task's `tools/call` result (``tasks/result``).

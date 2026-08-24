@@ -81,7 +81,6 @@ from veloce.contrib.mcp.server import (
     MODERN_PROTOCOL_VERSION,
     MCPServer,
     _notifier_var,
-    _requests_modern,
 )
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.event_store import SSEEventStore
@@ -488,22 +487,28 @@ def _validate_standard_headers(request: Request, message: dict[str, Any]) -> Non
     Request Headers" and "Server Validation").
 
     Earlier revisions defined none of these headers, so a handshake-era request
-    is left alone; the request is modern when either end says so, because a
-    header a proxy trusted is exactly what must not go unchecked.
+    is left alone; the request is modern when either end names a modern revision,
+    because a header a proxy trusted is exactly what must not go unchecked.
     """
     method = message.get("method")
     if not isinstance(method, str):
         # Not a request object at all - the shape check downstream owns it.
         return
     header_version = request.headers.get("mcp-protocol-version")
-    if not _is_modern_version(header_version) and not _requests_modern(message.get("params")):
+    params = message.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    raw_body_version = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
+    body_version = raw_body_version if isinstance(raw_body_version, str) else None
+    # The gate opens on the revision each half *names*, not on the mere presence
+    # of a `_meta` version. A body naming a handshake-era revision is a
+    # handshake-era request, and holding it to headers that revision never
+    # defined would refuse a call that spelled its version correctly in both
+    # places.
+    if not _is_modern_version(header_version) and not _is_modern_version(body_version):
         return
 
     if not _is_modern_version(header_version):
         raise HeaderMismatchError("MCP-Protocol-Version is required on this protocol revision")
-    params = message.get("params")
-    meta = params.get("_meta") if isinstance(params, dict) else None
-    body_version = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
     if body_version is not None and body_version != header_version:
         raise HeaderMismatchError(
             "MCP-Protocol-Version does not match the version in the request body"

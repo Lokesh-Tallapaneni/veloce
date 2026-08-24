@@ -18,6 +18,7 @@ from veloce._model_backend import shape_through_model
 from veloce.contrib.mcp._helpers import (
     _binary_result,
     _content_blocks,
+    _era_modern_var,
     _notifier_var,
     _progress_token,
     _request_id_var,
@@ -75,15 +76,6 @@ _STREAM_DRAIN_TIMEOUT = 30.0
 
 # The `_meta` key a modern request states its revision in. Duplicated here rather
 # than imported from `server`, which imports this module.
-_META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
-
-
-def _modern_request(params: dict[str, Any]) -> bool:
-    """Whether this request declared a modern protocol version in its `_meta`."""
-    meta = params.get("_meta")
-    return isinstance(meta, dict) and isinstance(meta.get(_META_PROTOCOL_VERSION), str)
-
-
 def _client_declared_tasks() -> bool:
     """Whether the calling client advertised the tasks extension."""
     session = _session_var.get()
@@ -126,7 +118,7 @@ class TasksMixin:
             )
         # A task is never handed to a client that did not declare the extension:
         # it would be given a handle it has no `tasks/*` methods to resolve.
-        modern = _modern_request(params)
+        modern = _era_modern_var.get()
         if modern and not _client_declared_tasks():
             raise InvalidParamsError(
                 "This client did not declare the "
@@ -160,7 +152,7 @@ class TasksMixin:
         task.runner = asyncio.ensure_future(
             self._run_task(task, tool, arguments, progress_token, _request_id_var.get())
         )
-        return create_task_result(task, modern=modern)
+        return create_task_result(task)
 
     async def _run_task(
         self,
