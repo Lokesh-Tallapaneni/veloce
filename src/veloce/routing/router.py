@@ -118,7 +118,10 @@ def _reverse_converters_for(template: str) -> dict[str, _Converter]:
     no single coercing converter, so they are omitted - those params accept any
     stringifiable value during reverse. Built-in, custom, and `any(...)` specs
     map to the same converter the radix matcher applies, so url_for can reject a
-    value the matcher would never accept. `any(...)` is whitelisted explicitly
+    value the matcher would never accept. A bare or raw-regex placeholder is
+    therefore *not* validated - `url_for` guarantees resolvability only for the
+    placeholders this returns, which is why the omission is stated here rather
+    than promised away. `any(...)` is whitelisted explicitly
     because it carries parentheses that the bare-identifier test reads as regex.
     """
     converters: dict[str, _Converter] = {}
@@ -2138,7 +2141,19 @@ class Router:
             self._reverse_converters[name] = converters
         for pname, converter in converters.items():
             value = path_params[pname]
-            ok, _ = converter.match(str(value))
+            text = str(value)
+            # A segment-bounded converter never sees a `/` when matching - the
+            # path splitter has already cut on it - so its `match` has no reason
+            # to test for one, and `StringConverter` does not. Reversing did
+            # test with `match` alone, so `url_for(..., name="a/b")` returned
+            # `/b/a/b`, a URL this router cannot match. The slash test belongs
+            # here, on the reverse path, and not in `match`: adding it there
+            # would put a scan on every parameterised match to fix a URL-
+            # building bug. `greedy` is the existing flag for the one converter
+            # that legitimately crosses segments.
+            ok, _ = converter.match(text)
+            if ok and not converter.greedy and "/" in text:
+                ok = False
             if not ok:
                 raise ValueError(
                     f"Value {value!r} for path parameter {pname!r} is invalid for route {name!r}"

@@ -146,3 +146,64 @@ def test_app_wraps_invalid_value_in_build_error():
     with pytest.raises(BuildError) as exc:
         app.url_for("item", id="abc")
     assert isinstance(exc.value.__cause__, ValueError)
+
+
+# ── A reversed URL must be one this router can match ─────────────────
+#
+# `url_for` validates each typed placeholder through the same converter the
+# matcher applies, so a reversed URL is guaranteed to resolve. A
+# segment-bounded converter never sees a `/` when matching - the path splitter
+# has already cut on it - so its `match` has no reason to test for one, and
+# `StringConverter` does not. Reversing tested with `match` alone, so
+# `url_for("typed", name="a/b")` returned `/b/a/b`: a URL this router cannot
+# match, emitted by the function whose job is to guarantee it can.
+#
+# The test belongs on the reverse path, not in `match`: adding it there would
+# put a scan on every parameterised match to fix a URL-building bug.
+
+
+def _slash_app():
+    from veloce import Veloce
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/b/{name:str}", name="typed")
+    async def typed(name: str):
+        return {"n": name}
+
+    @app.get("/p/{rest:path}", name="greedy")
+    async def greedy(rest: str):
+        return {"r": rest}
+
+    return app
+
+
+def test_a_slash_in_a_segment_bounded_value_is_refused():
+    """The defect: it returned a URL its own router answers 404 for."""
+    app = _slash_app()
+    # The app wraps a reverse failure as `BuildError`, as it does for any other
+    # invalid value.
+    with pytest.raises(BuildError):
+        app.url_for("typed", name="a/b")
+
+
+def test_a_value_without_a_slash_is_still_built():
+    app = _slash_app()
+    assert app.url_for("typed", name="a-b") == "/b/a-b"
+
+
+def test_a_greedy_converter_still_accepts_slashes():
+    """`path` legitimately crosses segments; the guard must not catch it."""
+    app = _slash_app()
+    url = app.url_for("greedy", rest="a/b/c")
+    assert url == "/p/a/b/c"
+
+
+def test_every_built_url_resolves():
+    """The property `url_for` exists to guarantee."""
+    from veloce.testclient import TestClient
+
+    app = _slash_app()
+    client = TestClient(app)
+    for name, params in (("typed", {"name": "a-b"}), ("greedy", {"rest": "a/b/c"})):
+        assert client.get(app.url_for(name, **params)).status_code == 200, name
