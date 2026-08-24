@@ -38,19 +38,26 @@ from veloce.routing.router import RouteInfo, Router, _readd_route
 
 
 def _endpoint_blueprint(endpoint: str | None) -> str | None:
-    """Return the blueprint name encoded in an endpoint, or `None`.
+    """Return the dotted blueprint path encoded in an endpoint, or `None`.
 
-    Blueprint routes have endpoints of the form `"{bp}.{routename}"`;
-    app-level routes have a bare `"routename"` (no dot). This is the
-    same convention `register_blueprint` and `url_for` already use.
+    Blueprint routes have endpoints of the form `"{bp}.{routename}"`, and a
+    nested one `"{bp}.{child}.{routename}"`; app-level routes have a bare
+    `"routename"` (no dot). This is the same convention `register_blueprint` and
+    `url_for` already use.
+
+    Everything before the *last* dot, so a nested route resolves to the
+    blueprint it was declared on rather than to its outermost ancestor - reading
+    only the first segment is what made a child's hooks apply to every route
+    under the parent, siblings included. The app flattens each path's ancestor
+    chain at registration, so this stays one key and one lookup per request.
 
     Read per request by the app's dispatch and hook paths (`app/dispatch.py`,
-    `app/core.py`) to find the blueprint whose hooks apply, so it lives with the
-    convention it decodes rather than being restated there.
+    `app/core.py`), so it lives with the convention it decodes rather than being
+    restated there.
     """
     if not endpoint:
         return None
-    dot = endpoint.find(".")
+    dot = endpoint.rfind(".")
     return endpoint[:dot] if dot >= 0 else None
 
 
@@ -69,6 +76,53 @@ def _merge_scoped(
         dst[child_name] = dict(child_own)
     for suffix, table in child_scoped.items():
         dst[f"{child_name}.{suffix}"] = table
+
+
+#: Every registration category that must stay scoped to the blueprint it was
+#: declared on. Each row is `(own attribute, scoped attribute)`. A category
+#: merged with a plain `extend` instead silently acquires the parent's scope -
+#: which is what let a child's `before_request` run on a sibling's routes - so a
+#: new category belongs in this table rather than in a hand-written line.
+#: Error handlers are merged separately because they are mappings, not lists.
+_SCOPED_LIST_CATEGORIES: tuple[tuple[str, str], ...] = (
+    ("_before_request_hooks", "_scoped_before_hooks"),
+    ("_after_request_hooks", "_scoped_after_hooks"),
+    ("_teardown_request_hooks", "_scoped_teardown_hooks"),
+    ("_url_value_preprocessors", "_scoped_url_value_preprocessors"),
+    ("_url_default_funcs", "_scoped_url_default_funcs"),
+)
+
+
+def _merge_scoped_lists(
+    dst: dict[str, list],
+    child_own: list,
+    child_scoped: dict[str, list],
+    child_name: str,
+) -> None:
+    """Merge a child's own + already-scoped callable lists into `dst`.
+
+    The list counterpart of `_merge_scoped`: the child's own callables land
+    under its bare name, each already-scoped descendant keeps its suffix.
+    """
+    if child_own:
+        dst[child_name] = list(child_own)
+    for suffix, entries in child_scoped.items():
+        dst[f"{child_name}.{suffix}"] = entries
+
+
+def _resolve_scoped_chain(own: list, scoped: dict[str, list], suffix: str) -> list:
+    """Flatten the callables that apply to a descendant, outermost first.
+
+    A route under `<bp>.<child>.<grandchild>` runs the hooks declared on the
+    blueprint, then the child's, then the grandchild's. Flattening the chain at
+    registration keeps the per-request path a single dict lookup rather than a
+    walk up the endpoint's parent chain.
+    """
+    chain = list(own)
+    parts = suffix.split(".")
+    for depth in range(len(parts)):
+        chain.extend(scoped.get(".".join(parts[: depth + 1]), ()))
+    return chain
 
 
 class Blueprint(Router):
@@ -140,6 +194,18 @@ class Blueprint(Router):
         # gated to blueprint endpoints at register time.
         self._url_value_preprocessors: list[Callable] = []
         self._url_default_funcs: list[Callable] = []
+        # A nested child's hooks and URL processors, kept under the child's
+        # dotted suffix for the same reason its error handlers are: merged into
+        # the lists above they became this blueprint's own, so a child's
+        # `before_request` guard ran on a *sibling* child's routes and a child's
+        # `url_value_preprocessor` rewrote a sibling's path params. Each entry
+        # holds only that descendant's own callables; the app flattens the chain
+        # at register time so one lookup per request still serves them.
+        self._scoped_before_hooks: dict[str, list[Callable]] = {}
+        self._scoped_after_hooks: dict[str, list[Callable]] = {}
+        self._scoped_teardown_hooks: dict[str, list[Callable]] = {}
+        self._scoped_url_value_preprocessors: dict[str, list[Callable]] = {}
+        self._scoped_url_default_funcs: dict[str, list[Callable]] = {}
 
     # ── Hook decorators ───────────────────────────────────
 
@@ -237,9 +303,17 @@ class Blueprint(Router):
         # endpoint-gated when *this* blueprint registers onto the app
         # (parent gate covers `<parent_name>.` which matches
         # `<parent_name>.<child_name>....`).
-        self._before_request_hooks.extend(child._before_request_hooks)
-        self._after_request_hooks.extend(child._after_request_hooks)
-        self._teardown_request_hooks.extend(child._teardown_request_hooks)
+        # Every list category stays scoped to the child under its dotted name,
+        # for the same reason the error handlers below do: merged into this
+        # blueprint's own lists they become this blueprint's, and a
+        # `@child.before_request` guard would then run on a sibling's routes.
+        for own_attr, scoped_attr in _SCOPED_LIST_CATEGORIES:
+            _merge_scoped_lists(
+                getattr(self, scoped_attr),
+                getattr(child, own_attr),
+                getattr(child, scoped_attr),
+                child.name,
+            )
         # Error handlers stay scoped to the child (and its descendants) under the
         # child's dotted name, not merged into this blueprint's own tables - so a
         # `@child.errorhandler` only catches the child's routes, never a sibling's.
@@ -255,8 +329,6 @@ class Blueprint(Router):
             child._scoped_status_handlers,
             child.name,
         )
-        self._url_value_preprocessors.extend(child._url_value_preprocessors)
-        self._url_default_funcs.extend(child._url_default_funcs)
 
     # ── Route collection inspection - used by register_blueprint ──
 

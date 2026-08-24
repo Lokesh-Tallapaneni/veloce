@@ -201,6 +201,19 @@ cannot be registered as a child of itself — doing so raises `ValueError`.
     the parent's `register_blueprint`, just as you can when registering onto
     an app.
 
+Everything registered on a blueprint — `before_request`, `after_request`,
+`teardown_request`, `url_value_preprocessor`, `url_defaults` and error handlers
+— applies to that blueprint's own routes and to its descendants', never to a
+sibling's. A parent's hooks still run for a child's routes, outermost first, and
+`after_request` hooks unwind innermost first.
+
+!!! warning "Changed in version 0.18"
+    A nested child's hooks and URL processors previously ran on **every** route
+    under the parent, siblings included. If you relied on that — a guard
+    declared on one child protecting its siblings — move the registration to the
+    parent blueprint, where it covers the whole subtree by design. Error
+    handlers were already scoped this way and are unchanged.
+
 ## Inspecting registered blueprints
 
 After registration, [`app.blueprints`](../reference/application.md#veloce.Veloce.blueprints)

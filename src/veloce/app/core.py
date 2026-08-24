@@ -54,7 +54,7 @@ from veloce.app.templating import TemplatingMixin
 from veloce.app.testing import TestingMixin
 from veloce.app.urls import URLRule as URLRule
 from veloce.app.urls import _URLMap
-from veloce.blueprints import _endpoint_blueprint
+from veloce.blueprints import _endpoint_blueprint, _resolve_scoped_chain
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.exceptions import (
     BuildError,
@@ -1654,41 +1654,58 @@ class Veloce(
         # directly: a flat list of gated closures would test every hook of
         # every blueprint on every request, which is O(blueprints * hooks) of
         # no-op work for an app with many of either.
-        if blueprint._before_request_hooks:
-            self._bp_before_hooks.setdefault(bp_name, []).extend(blueprint._before_request_hooks)
-        if blueprint._after_request_hooks:
-            self._bp_after_hooks.setdefault(bp_name, []).extend(blueprint._after_request_hooks)
-        if blueprint._teardown_request_hooks:
-            self._bp_teardown_hooks.setdefault(bp_name, []).extend(
-                blueprint._teardown_request_hooks
-            )
-        # Keep the compiled `is_bare` flag fresh when a blueprint contributes
-        # hooks but no routes (a route-bearing blueprint already bumps `_gen`
-        # through route registration).
-        if (
-            blueprint._before_request_hooks
-            or blueprint._after_request_hooks
-            or blueprint._teardown_request_hooks
+        # A nested child's hooks are bucketed under the child's own dotted path,
+        # not the parent's, so they reach the child's routes and not a sibling's.
+        # The ancestor chain is flattened here rather than walked per request:
+        # `<bp>.<child>` holds the blueprint's hooks followed by the child's, so
+        # dispatch still does one lookup with one key.
+        for own_attr, scoped_attr, bucket in (
+            ("_before_request_hooks", "_scoped_before_hooks", self._bp_before_hooks),
+            ("_after_request_hooks", "_scoped_after_hooks", self._bp_after_hooks),
+            ("_teardown_request_hooks", "_scoped_teardown_hooks", self._bp_teardown_hooks),
         ):
-            self._gen += 1
+            own = getattr(blueprint, own_attr)
+            scoped = getattr(blueprint, scoped_attr)
+            if own:
+                bucket.setdefault(bp_name, []).extend(own)
+            for suffix in scoped:
+                chain = _resolve_scoped_chain(own, scoped, suffix)
+                if chain:
+                    bucket.setdefault(f"{bp_name}.{suffix}", []).extend(chain)
+            if own or scoped:
+                # Keep the compiled `is_bare` flag fresh when a blueprint
+                # contributes hooks but no routes (a route-bearing blueprint
+                # already bumps `_gen` through route registration).
+                self._gen += 1
 
         # URL processors (L7) - wrapped so they only fire for endpoints
         # belonging to the blueprint. The endpoint string is the first
         # arg of the `(endpoint, values)` callable.
         url_gate_prefix = f"{bp_name}."
 
-        def _proc_gate(fn: Callable) -> Callable:
+        def _proc_gate(fn: Callable, gate_prefix: str) -> Callable:
             def _gated(endpoint: str, values: dict) -> Any:
-                if endpoint and endpoint.startswith(url_gate_prefix):
+                if endpoint and endpoint.startswith(gate_prefix):
                     return fn(endpoint, values)
                 return None
 
             return _gated
 
         for fn in blueprint._url_value_preprocessors:
-            self._url_value_preprocessors.append(_proc_gate(fn))
+            self._url_value_preprocessors.append(_proc_gate(fn, url_gate_prefix))
         for fn in blueprint._url_default_funcs:
-            self._url_default_funcs.append(_proc_gate(fn))
+            self._url_default_funcs.append(_proc_gate(fn, url_gate_prefix))
+        # A nested child's processors gate on the child's own prefix. Gated at
+        # the parent's, a child's `url_value_preprocessor` rewrote the path
+        # params of every route under the parent, siblings included.
+        for scoped_attr, target in (
+            ("_scoped_url_value_preprocessors", self._url_value_preprocessors),
+            ("_scoped_url_default_funcs", self._url_default_funcs),
+        ):
+            for suffix, fns in getattr(blueprint, scoped_attr).items():
+                prefix = f"{bp_name}.{suffix}."
+                for fn in fns:
+                    target.append(_proc_gate(fn, prefix))
 
         # Error handlers stay scoped to the blueprint's own routes: bucket them
         # under the blueprint name rather than merging into the app-global
