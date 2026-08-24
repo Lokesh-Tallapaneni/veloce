@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import socket as _socket
 import threading
@@ -575,7 +576,7 @@ class HttpProtocol(asyncio.Protocol):
         # `_ws_task` so connection_lost can cancel it if the client drops.
         self._ws_task = self.loop.create_task(self.app._run_websocket(ws, ws_match.route_info))
         HttpProtocol._active_tasks.add(self._ws_task)
-        self._ws_task.add_done_callback(self._task_done)
+        self._ws_task.add_done_callback(functools.partial(self._ws_task_done, ws))
         return True
 
     def _write_ws_http_error(self, status_code: int, reason: bytes, extra: bytes = b"") -> None:
@@ -966,6 +967,22 @@ class HttpProtocol(asyncio.Protocol):
         exc = task.exception()
         if exc is not None:
             _logger.error("Unhandled error in request dispatch: %s", exc, exc_info=exc)
+
+    @staticmethod
+    def _ws_task_done(ws: WebSocket, task: asyncio.Task) -> None:
+        """Callback for a completed WebSocket dispatch task.
+
+        A handler that raises closes with 1011 first, and that close awaits. A
+        peer that has already gone brings `connection_lost` in to cancel this
+        task mid-handshake, so the task ends *cancelled* and its exception is
+        gone - the failure would be reported nowhere. `_run_websocket` records
+        it on the socket before the close for exactly this case, so read it back
+        rather than treating a cancellation as nothing to report.
+        """
+        HttpProtocol._active_tasks.discard(task)
+        exc = ws._handler_exc if task.cancelled() else task.exception()
+        if exc is not None:
+            _logger.error("Unhandled error in websocket handler: %s", exc, exc_info=exc)
 
     def data_received(self, data: bytes) -> None:
         # Once the connection has diverted to WebSocket mode, every byte is a

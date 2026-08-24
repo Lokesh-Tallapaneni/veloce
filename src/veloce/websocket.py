@@ -241,6 +241,7 @@ class WebSocket:
         "_frag_buffer",
         "_frag_opcode",
         "_frag_validator",
+        "_handler_exc",
         "_handshake_sent",
         "_hb_handle",
         "_hb_next_token",
@@ -390,6 +391,9 @@ class WebSocket:
         # Incremental UTF-8 validator for the TEXT message currently being
         # reassembled (`None` for a binary message); see `_Utf8Validator`.
         self._frag_validator: _Utf8Validator | None = None
+        # The handler's exception, kept so a driver can still report it when the
+        # close handshake it was raised through is cancelled by a vanished peer.
+        self._handler_exc: BaseException | None = None
         # Peer-supplied close code/reason, populated when a Close frame is
         # received (raw-transport mode). `close_code` stays `None` until the
         # peer closes; `close_reason` is the decoded UTF-8 reason or "".

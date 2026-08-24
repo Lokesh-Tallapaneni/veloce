@@ -315,6 +315,13 @@ class AsgiMixin:
                     await ws.close(code=exc.code, reason=exc.reason or "")
         except Exception as exc:
             ws_exc = exc
+            # Recorded before the close below, because the close awaits: a peer
+            # that has already gone makes the native driver cancel this task
+            # mid-handshake, and the re-raise never runs. The driver reads this
+            # back so the failure is reported instead of vanishing with the
+            # cancellation. Under an ASGI server the re-raise reaches the
+            # server, which logs it, so nothing is logged here.
+            ws._handler_exc = exc
             if ws._needs_close:
                 with contextlib.suppress(Exception):
                     await ws.close(code=status.WS_1011_INTERNAL_ERROR)

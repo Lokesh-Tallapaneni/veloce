@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A WebSocket handler's exception is reported on the built-in server; a peer that left cancelled the close handshake and the failure was lost. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An unhandled exception is logged with its traceback and the failing request instead of vanishing into a generic `500`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A quoted `Content-Type` parameter containing `;` is no longer cut short: `profile="a;b"` was read as `"a`. The same applies to the `Accept` media-range key. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A quoted header parameter written with whitespace before the opening quote (`filename = "r.pdf"`) no longer keeps that space in its value. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
