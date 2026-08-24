@@ -500,6 +500,20 @@ class HttpProtocol(asyncio.Protocol):
 
         path, query_bytes = self._parse_request_target()
 
+        # Host / Origin allow-lists first, before the route table is consulted.
+        # An HTTP middleware's `process_request` never sees a handshake, so the
+        # allow-lists are applied here. Matching first told an origin the app has
+        # already decided not to trust whether a path exists - a 404 for an
+        # unknown one, a 403 for a known one - and the ASGI path gated first, so
+        # the two transports also disagreed about which refusal a request drew.
+        # A rejection here precedes the 101 (the upgrade has not completed), so
+        # it is an HTTP 403, not a close frame.
+        host_str = _extract_host(host.decode("latin-1")) if host else ""
+        origin_str = origin.decode("latin-1") if origin is not None else ""
+        if _ws_handshake_rejection(self.app._middlewares, host_str, origin_str):
+            self._write_ws_http_error(status.HTTP_403_FORBIDDEN, b"Forbidden")
+            return True
+
         # Match BEFORE sending the 101 so we never switch protocols on a path
         # with no handler. No handler -> 404 (RFC-correct: the upgrade has not
         # completed, so the refusal is an ordinary HTTP response, not a close
@@ -507,16 +521,6 @@ class HttpProtocol(asyncio.Protocol):
         ws_match = self.app.match(ROUTE_METHOD_WEBSOCKET, path)
         if ws_match is None:
             self._write_ws_http_error(status.HTTP_404_NOT_FOUND, b"Not Found")
-            return True
-
-        # Host / Origin allow-lists. An HTTP middleware's `process_request`
-        # never sees a handshake, so consult the public predicates directly. A
-        # rejection here precedes the 101 (the upgrade has not completed), so it
-        # is an HTTP 403, not a close frame.
-        host_str = _extract_host(host.decode("latin-1")) if host else ""
-        origin_str = origin.decode("latin-1") if origin is not None else ""
-        if _ws_handshake_rejection(self.app._middlewares, host_str, origin_str):
-            self._write_ws_http_error(status.HTTP_403_FORBIDDEN, b"Forbidden")
             return True
 
         # Send the 101 (RFC 6455 Sec. 4.2.2) synchronously to switch the byte

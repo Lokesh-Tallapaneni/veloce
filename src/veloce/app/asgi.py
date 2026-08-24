@@ -156,16 +156,41 @@ def _build_asgi_headers(
     return asgi_headers, has_ct, has_cl
 
 
-async def _refuse_websocket(receive: Callable, send: Callable) -> None:
+async def _refuse_websocket(
+    receive: Callable,
+    send: Callable,
+    scope: dict | None = None,
+    status_code: int | None = None,
+) -> None:
     """Refuse an ASGI WebSocket handshake per the spec.
 
-    Drain the `websocket.connect` then send a `websocket.close` with the
-    policy-violation code 1008. Shared by the host-check, origin-check, and
-    no-handler refusal paths.
+    Drain the `websocket.connect`, then refuse. A `status_code` is sent as a
+    real pre-accept HTTP response when the server advertises the ASGI
+    `websocket.http.response` extension, so an unknown path answers 404 the way
+    the built-in server does; without the extension - and for a policy refusal
+    with no status of its own - the refusal is a `websocket.close` with the
+    policy-violation code 1008, which a server renders as 403.
+
+    A close frame was the only refusal this path could make, so every reason
+    reached the client as one status while the built-in server distinguished
+    them.
     """
     msg = await receive()
-    if msg["type"] == ASGI_EVENT_WS_CONNECT:
-        await send({"type": ASGI_EVENT_WS_CLOSE, "code": status.WS_1008_POLICY_VIOLATION})
+    if msg["type"] != ASGI_EVENT_WS_CONNECT:
+        return
+    if status_code is not None and scope is not None:
+        extensions = scope.get("extensions") or {}
+        if "websocket.http.response" in extensions:
+            await send(
+                {
+                    "type": "websocket.http.response.start",
+                    "status": status_code,
+                    "headers": [(b"content-length", b"0")],
+                }
+            )
+            await send({"type": "websocket.http.response.body", "body": b""})
+            return
+    await send({"type": ASGI_EVENT_WS_CLOSE, "code": status.WS_1008_POLICY_VIOLATION})
 
 
 class AsgiMixin:
@@ -738,8 +763,9 @@ class AsgiMixin:
 
             ws_match = self.match(ROUTE_METHOD_WEBSOCKET, scope.get("path", "/"))
             if ws_match is None:
-                # No handler - refuse the connection per ASGI WS spec.
-                await _refuse_websocket(receive, send)
+                # No handler. A 404 says so where the server can carry one,
+                # matching the built-in server; otherwise the spec's close.
+                await _refuse_websocket(receive, send, scope, status.HTTP_404_NOT_FOUND)
                 return
 
             ws = WebSocket.from_asgi(scope, receive, send)
