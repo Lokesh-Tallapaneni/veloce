@@ -182,7 +182,8 @@ def test_run_serves_stdio_by_handing_the_coroutine_to_asyncio(mcp_app, monkeypat
 
     monkeypatch.setattr("veloce.cli.asyncio.run", fake_run)
     assert main(["mcp", "run", mcp_app]) == 0
-    assert served["awaited"].startswith("Veloce.mount_mcp")
+    # Named by the mixin that defines it, like every other `Veloce` method.
+    assert "mount_mcp" in served["awaited"]
 
 
 def test_run_mounts_the_http_transport_and_serves_that_app(mcp_app, monkeypatch):
