@@ -59,6 +59,18 @@ class OAuth2PasswordBearer(_OAuth2BearerScheme):
         self.auto_error = auto_error
         self.scopes = scopes or {}
 
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """The password flow, with the token endpoint and scopes it advertises."""
+        return {
+            "type": "oauth2",
+            "flows": {
+                OAUTH2_GRANT_TYPE_PASSWORD: {
+                    "tokenUrl": self.token_url,
+                    "scopes": self.scopes,
+                }
+            },
+        }
+
 
 class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
     """OAuth2 Authorization-Code (with PKCE) Bearer flow.
@@ -97,6 +109,17 @@ class OAuth2AuthorizationCodeBearer(_OAuth2BearerScheme):
         self.scopes = scopes or {}
         self.auto_error = auto_error
 
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """The authorization-code flow; `refreshUrl` is omitted when unset."""
+        flow: dict[str, Any] = {
+            "authorizationUrl": self.authorizationUrl,
+            "tokenUrl": self.tokenUrl,
+            "scopes": self.scopes,
+        }
+        if self.refreshUrl:
+            flow["refreshUrl"] = self.refreshUrl
+        return {"type": "oauth2", "flows": {"authorizationCode": flow}}
+
 
 class OpenIdConnect(_OAuth2BearerScheme):
     """OpenID Connect Bearer authentication.
@@ -116,6 +139,10 @@ class OpenIdConnect(_OAuth2BearerScheme):
     ) -> None:
         self.openIdConnectUrl = openIdConnectUrl
         self.auto_error = auto_error
+
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """OpenID Connect discovery, published as its single URL."""
+        return {"type": "openIdConnect", "openIdConnectUrl": self.openIdConnectUrl}
 
 
 class OAuth2PasswordRequestForm:

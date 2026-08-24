@@ -27,6 +27,8 @@ class _APIKeyBase(SecurityScheme):
     """
 
     _source_attr: str = ""  # subclass overrides - Request attribute name
+    #: The OpenAPI `in` location the subclass reads the key from.
+    _openapi_in: str = ""
     # `auto_error` is owned by `SecurityScheme`'s slots.
     __slots__ = ("name", "realm", "_challenge")
 
@@ -34,6 +36,11 @@ class _APIKeyBase(SecurityScheme):
         super().__init_subclass__(**kwargs)
         if not cls._source_attr:
             raise TypeError(f"{cls.__name__} must set _source_attr to a Request attribute name")
+        # Paired with `_source_attr`: a subclass that reads a location OpenAPI
+        # cannot name would publish a scheme object with an empty `in`, which
+        # is what silent under-description looked like before.
+        if not cls._openapi_in:
+            raise TypeError(f"{cls.__name__} must set _openapi_in to an OpenAPI 'in' location")
 
     def __init__(self, name: str, auto_error: bool = True, realm: str = "") -> None:
         # Keep the user's casing for the OpenAPI spec; header lookup goes
@@ -65,12 +72,17 @@ class _APIKeyBase(SecurityScheme):
         source: Any = getattr(request, self._source_attr)
         return _extract_api_key(source, self.name, self.auto_error, self._challenge)
 
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """An API key, in the location this subclass reads it from."""
+        return {"type": "apiKey", "in": self._openapi_in, "name": self.name}
+
 
 class APIKeyHeader(_APIKeyBase):
     """API Key authentication via HTTP header."""
 
     __slots__ = ()
     _source_attr = "headers"
+    _openapi_in = "header"
 
 
 class APIKeyQuery(_APIKeyBase):
@@ -78,6 +90,7 @@ class APIKeyQuery(_APIKeyBase):
 
     __slots__ = ()
     _source_attr = "query_params"
+    _openapi_in = "query"
 
 
 class APIKeyCookie(_APIKeyBase):
@@ -85,3 +98,4 @@ class APIKeyCookie(_APIKeyBase):
 
     __slots__ = ()
     _source_attr = "cookies"
+    _openapi_in = "cookie"

@@ -101,6 +101,10 @@ class HTTPBasic(SecurityScheme):
             )
         return HTTPBasicCredentials(username=username, password=password)
 
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """HTTP authentication, published with the scheme it advertises."""
+        return {"type": "http", "scheme": "basic"}
+
 
 class HTTPDigestCredentials:
     """Parsed Digest auth challenge response - RFC 7616 Sec. 3.4."""
@@ -211,6 +215,10 @@ class HTTPDigest(SecurityScheme):
             return None
         return _parse_digest(auth[_DIGEST_PREFIX_LEN:])
 
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """HTTP authentication, published with the scheme it advertises."""
+        return {"type": "http", "scheme": "digest"}
+
 
 def _default_nonce() -> str:
     """Generate an opaque nonce for the Digest challenge.
@@ -258,3 +266,7 @@ class HTTPBearer(_BearerScheme):
         self.auto_error = auto_error
         self.scheme_name = scheme_name
         self._bearer_scheme = scheme_name
+
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """HTTP authentication, published with the scheme it advertises."""
+        return {"type": "http", "scheme": "bearer"}

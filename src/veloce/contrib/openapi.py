@@ -12,6 +12,7 @@ import logging
 import pathlib
 import types
 import uuid
+import warnings
 import weakref
 from decimal import Decimal
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
@@ -27,19 +28,13 @@ from veloce._model_backend import (
     is_msgspec_struct,
     is_pydantic_model,
 )
-from veloce._protocol_constants import HTTP_METHOD_QUERY, OAUTH2_GRANT_TYPE_PASSWORD
+from veloce._protocol_constants import HTTP_METHOD_QUERY
 from veloce._route_contract import RouteContract, iter_param_descriptors
 from veloce.dependency import Depends
 from veloce.http.response import HTMLResponse, JSONResponse
 from veloce.routing.converters import path_param_schemas
 from veloce.routing.params import ParamBase
-from veloce.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery
-from veloce.security.http import HTTPBasic, HTTPBearer, HTTPDigest
-from veloce.security.oauth2 import (
-    OAuth2AuthorizationCodeBearer,
-    OAuth2PasswordBearer,
-    OpenIdConnect,
-)
+from veloce.security.base import SecurityScheme
 from veloce.status import HTTP_200_OK, HTTP_422_UNPROCESSABLE_ENTITY
 
 _logger = logging.getLogger(__name__)
@@ -1281,73 +1276,25 @@ def _extract_responses(
 def _scheme_definition(scheme: Any) -> tuple[str, dict] | None:
     """Return `(name, OpenAPI security scheme object)` for a Security() target.
 
-    Returns `None` for unknown scheme classes. The name is derived from the
-    scheme class so duplicate registrations of the same scheme reuse the same
-    `components.securitySchemes` entry.
+    The scheme describes itself through `SecurityScheme.openapi_scheme`. A
+    nine-branch `isinstance` cascade over the built-in classes lived here and
+    returned `None` for everything else, so a user's own `SecurityScheme`
+    subclass authenticated correctly at runtime and was published as an
+    endpoint with no security requirement - a document asserting the route was
+    open. Asking the object means a scheme defined outside this package is
+    published like a built-in.
+
+    `None` still means "cannot be described", which the caller reports rather
+    than passing off as an unguarded route. The name is the scheme's class name
+    so repeated registrations share one `components.securitySchemes` entry.
     """
-    cls_name = type(scheme).__name__
-    if isinstance(scheme, OAuth2PasswordBearer):
-        return cls_name, {
-            "type": "oauth2",
-            "flows": {
-                OAUTH2_GRANT_TYPE_PASSWORD: {
-                    "tokenUrl": getattr(scheme, "token_url", ""),
-                    "scopes": getattr(scheme, "scopes", {}) or {},
-                }
-            },
-        }
-    if isinstance(scheme, OAuth2AuthorizationCodeBearer):
-        flow: dict[str, Any] = {
-            "authorizationUrl": getattr(scheme, "authorizationUrl", ""),
-            "tokenUrl": getattr(scheme, "tokenUrl", ""),
-            "scopes": getattr(scheme, "scopes", {}) or {},
-        }
-        refresh = getattr(scheme, "refreshUrl", None)
-        if refresh:
-            flow["refreshUrl"] = refresh
-        return cls_name, {
-            "type": "oauth2",
-            "flows": {"authorizationCode": flow},
-        }
-    if isinstance(scheme, OpenIdConnect):
-        return cls_name, {
-            "type": "openIdConnect",
-            "openIdConnectUrl": getattr(scheme, "openIdConnectUrl", ""),
-        }
-    if isinstance(scheme, HTTPBearer):
-        return cls_name, {
-            "type": "http",
-            "scheme": "bearer",
-        }
-    if isinstance(scheme, HTTPBasic):
-        return cls_name, {
-            "type": "http",
-            "scheme": "basic",
-        }
-    if isinstance(scheme, HTTPDigest):
-        return cls_name, {
-            "type": "http",
-            "scheme": "digest",
-        }
-    if isinstance(scheme, APIKeyHeader):
-        return cls_name, {
-            "type": "apiKey",
-            "in": "header",
-            "name": getattr(scheme, "name", ""),
-        }
-    if isinstance(scheme, APIKeyQuery):
-        return cls_name, {
-            "type": "apiKey",
-            "in": "query",
-            "name": getattr(scheme, "name", ""),
-        }
-    if isinstance(scheme, APIKeyCookie):
-        return cls_name, {
-            "type": "apiKey",
-            "in": "cookie",
-            "name": getattr(scheme, "name", ""),
-        }
-    return None
+    describe = getattr(scheme, "openapi_scheme", None)
+    if describe is None:
+        return None
+    definition = describe()
+    if not definition:
+        return None
+    return type(scheme).__name__, definition
 
 
 def _collect_security_requirements(
@@ -1378,6 +1325,19 @@ def _collect_security_requirements(
                 requirements.append({name: scopes})
                 # Don't recurse past a known scheme - its internals are
                 # implementation, not policy.
+                return
+            if isinstance(target, SecurityScheme):
+                # It guards the route but cannot say how. Publishing nothing
+                # asserts the route is open, which is the one thing that must
+                # not happen quietly - a generated client and the Authorize
+                # button both read this as "no credential needed".
+                warnings.warn(
+                    f"{type(target).__name__} guards a route but does not implement "
+                    "openapi_scheme(), so the route is published with no security "
+                    "requirement - readers of the schema will see it as unauthenticated. "
+                    "Return an OpenAPI Security Scheme Object from openapi_scheme().",
+                    stacklevel=2,
+                )
                 return
             # Generic dep - recurse into its handler signature.
             inner = target

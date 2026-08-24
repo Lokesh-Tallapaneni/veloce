@@ -45,6 +45,29 @@ class SecurityScheme:
         """Extract the credential from the request, or 401 when `auto_error`."""
         raise NotImplementedError
 
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """Describe this scheme as an OpenAPI Security Scheme Object.
+
+        Return the object published under `components.securitySchemes`, or
+        `None` when the scheme cannot be described. A route guarded by an
+        undescribed scheme is published with no security requirement - which
+        asserts the endpoint is open - so the schema build warns rather than
+        doing that silently.
+
+        Only the scheme knows what it reads and how a client should send it,
+        so it answers for itself: a subclass adding a new authentication style
+        implements this and is published like a built-in.
+
+        Usage::
+
+            class CertHeaderAuth(SecurityScheme):
+                __slots__ = ()
+
+                def openapi_scheme(self):
+                    return {"type": "apiKey", "in": "header", "name": "X-Cert"}
+        """
+        return None
+
 
 class _BearerScheme(SecurityScheme):
     """Shared `Authorization: Bearer` extraction.

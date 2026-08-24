@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Added
+- `SecurityScheme.openapi_scheme` publishes a custom authentication scheme in the OpenAPI document like a built-in. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `WEBSOCKET_IDLE_TIMEOUT` closes an idle WebSocket with `1001 Going Away` on both transports; it was read only by the built-in server, and is now a documented config key. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `TestClient(app, loop=...)` drives the app on a loop you supply, which the client never closes. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -60,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+- A route guarded by a custom `SecurityScheme` is published with its security requirement; the document asserted the route was open. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A scheme that cannot describe itself warns during the schema build instead of silently publishing the route as unauthenticated. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `from_env_file` gives a value the type its config key is read as, so `MAX_CONTENT_LENGTH=1000` no longer raises `TypeError` on every request with a body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `DEBUG=false`, `JSON_SORT_KEYS=false` and `TCP_KEEPALIVE=false` in an env file read as off; a non-empty string was truthy, so they read as on. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SILENCED_AUDIT_IDS` from an env file splits on commas; left a string, a membership test matched single characters. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
