@@ -407,9 +407,18 @@ class URL:
         # what uvicorn sets under TLS. `X-Forwarded-Proto` is a hint set
         # by reverse proxies and only meaningful when ProxyFix or similar
         # has trusted it. Plain `http` is the final fallback.
+        # Normalised here, once, because this is the single point every consumer
+        # reads the scheme through. RFC 3986 Sec. 3.1 makes a scheme
+        # case-insensitive and RFC 7239 Sec. 4 says the same of the `proto`
+        # directive, so a proxy spelling either `HTTPS` is naming the same
+        # scheme - and comparing it verbatim made `is_secure` answer `False` on
+        # an encrypted connection.
         if scope_scheme:
-            scheme = scope_scheme
-        elif trust_forwarded_proto and headers.get(HEADER_X_FORWARDED_PROTO) == URL_SCHEME_HTTPS:
+            scheme = scope_scheme.lower()
+        elif (
+            trust_forwarded_proto
+            and headers.get(HEADER_X_FORWARDED_PROTO, "").lower() == URL_SCHEME_HTTPS
+        ):
             scheme = URL_SCHEME_HTTPS
         else:
             scheme = URL_SCHEME_HTTP

@@ -41,7 +41,7 @@ from veloce._constants import (
     HEADER_X_RATELIMIT_RESET,
 )
 from veloce._internal import _current_request_var, _extract_host
-from veloce._protocol_constants import URL_SCHEME_HTTPS, URL_SCHEME_WSS
+from veloce._protocol_constants import URL_SCHEME_HTTPS
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, header_present
 from veloce.middleware.base import Middleware
@@ -640,19 +640,22 @@ class HTTPSRedirectMiddleware(Middleware):
         # an agent turns a tool call into an unusable 308.
         if request.is_mcp:
             return None
-        # Trust ASGI scope first - the server set it based on the actual
-        # transport, not a header that anyone could spoof.
-        scope_scheme = request.scope.get("scheme") if request.scope else None
-        if scope_scheme in (URL_SCHEME_HTTPS, URL_SCHEME_WSS):
+        # `request.is_secure` is the framework's answer to "is this connection
+        # encrypted": it reads the normalised scheme, so it accepts `wss` and any
+        # casing a proxy used, and it probes the raw transport's TLS object -
+        # which a re-derivation here did not, so serving TLS natively produced a
+        # 308 back to the URL just received, an infinite loop.
+        if request.is_secure:
             return None
-        # Fall back to X-Forwarded-Proto for environments behind a
-        # TLS-terminating proxy that doesn't set scope correctly - but only
-        # where nothing has already judged that header. Once `ProxyFix` has
-        # run it writes the scheme it trusted into the scope above, so reading
-        # the raw header here would accept a hop `ProxyFix` deliberately
-        # refused: a TLS-stripping attacker could then suppress this very
-        # redirect by adding one header. `URL.from_request` stands the same
-        # fallback down for the same reason.
+        # `is_secure` deliberately does not accept an untrusted `X-Forwarded-Proto`
+        # over an ASGI scope that says `http`, because that is a claim about the
+        # hop in front rather than about this connection. A redirect guard must,
+        # or a TLS-terminating proxy that does not set the scope would have every
+        # request bounced back to a URL it already served over TLS. Only where
+        # nothing has judged the header: once `ProxyFix` has run it writes the
+        # scheme it trusted into the scope above, so reading the raw header here
+        # would accept a hop `ProxyFix` deliberately refused - a TLS-stripping
+        # attacker could then suppress this very redirect by adding one header.
         if not (request._state and "proxy_fix_applied" in request._state):
             fwd_proto = request.headers.get(HEADER_X_FORWARDED_PROTO, "").lower()
             if fwd_proto == URL_SCHEME_HTTPS:

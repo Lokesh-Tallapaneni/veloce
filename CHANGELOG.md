@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `await request.json()` applies that same rule and reads a declared non-JSON body as `None`, closing the avenue for handlers that parse the body themselves. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HTTPException` copies the headers it is given, so a security scheme's cached `WWW-Authenticate` challenge cannot accumulate one request's `Set-Cookie` or CORS headers and ship them on the next `401`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A request inside a mounted sub-app reports the connection's scheme and client address; `request.is_secure` read `False` over TLS and `request.client_host` read `None`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `HTTPSRedirectMiddleware` no longer redirects a request that arrived over TLS, which looped when the app served TLS itself or a proxy spelled the scheme in any casing but lowercase. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Request.is_secure` is `True` for a `wss` connection and for any casing of an encrypted scheme; `request.scheme` and `url_for(_external=True)` are normalised to lowercase per RFC 3986 Sec. 3.1. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The MCP HTTP transport requires and cross-checks `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` on the `2026-07-28` revision. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 

@@ -166,6 +166,13 @@ class ProxyFix(Middleware):
             # ASGI scope says "http" (TLS terminated upstream) but the
             # trusted hop tells us the original scheme was "https".
             request.headers[HEADER_X_FORWARDED_PROTO] = proto
+            # Normalise on the way in. RFC 7239 Sec. 4 makes the `proto`
+            # directive case-insensitive and RFC 3986 Sec. 3.1 says the same of
+            # a URI scheme, so a proxy spelling `HTTPS` names the same scheme -
+            # but written verbatim it reached every consumer that compares the
+            # raw scope value, and an uppercase hop made a guard read an
+            # encrypted connection as cleartext.
+            proto = proto.lower()
             # `Request.scope` is a framework-owned field always set in __init__
             # (to `scope or {}`), so access it directly; only the dict shape is
             # checked before mutating the scheme key.

@@ -44,7 +44,7 @@ from veloce._constants import (
 )
 from veloce._header_parsing import parse_media_type_params
 from veloce._internal import _coerce_bool, is_json_mimetype, json_body_refused
-from veloce._protocol_constants import URL_SCHEME_HTTPS
+from veloce._protocol_constants import SECURE_URL_SCHEMES, URL_SCHEME_HTTPS
 from veloce.exceptions import BadRequest, RequestEntityTooLarge
 from veloce.http.cache_control import CacheControl
 from veloce.http.datastructures import (
@@ -847,8 +847,8 @@ class Request:
 
     @property
     def is_secure(self) -> bool:
-        """Return True if the request uses HTTPS."""
-        return self.url.scheme == URL_SCHEME_HTTPS
+        """Return True if the connection is encrypted (`https` or `wss`)."""
+        return self.url.scheme in SECURE_URL_SCHEMES
 
     @property
     def scheme(self) -> str:
