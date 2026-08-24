@@ -14,7 +14,7 @@ import signal
 import socket
 import ssl
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from veloce._protocol_constants import (
     LIFECYCLE_SHUTDOWN,
@@ -22,6 +22,9 @@ from veloce._protocol_constants import (
     URL_SCHEME_HTTP,
     URL_SCHEME_HTTPS,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from veloce.app.core import Veloce
 
 
 class ServingMixin:
@@ -40,6 +43,7 @@ class ServingMixin:
         _shutdown_subapps: Callable[..., Any]
         _drain_spawned_tasks: Callable[..., Any]
         _setup_openapi: Callable[..., Any]
+        _instrumentation: Any
 
     def run(
         self,
@@ -148,6 +152,12 @@ class ServingMixin:
             print(f"\n  Veloce v{self.version}")
             print(f"  Listening on {scheme}://{host}:{port}")
             print("  Press Ctrl+C to stop\n")
+            # The flag named itself after this and only printed the banner: a
+            # development server that answers requests silently is the odd one
+            # out, and a request that fails leaves nothing to correlate it with.
+            # Only the built-in server installs it - under an ASGI server that
+            # server writes the access log, and a second one would duplicate it.
+            self._install_dev_access_log()
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -160,6 +170,21 @@ class ServingMixin:
             # Graceful shutdown: drain pending tasks, run lifecycle hooks
             loop.run_until_complete(self._graceful_shutdown(loop))
             loop.close()
+
+    def _install_dev_access_log(self) -> None:
+        """Register the per-request access log for the built-in server.
+
+        A no-op when the application already registered one, so `run()` never
+        doubles up on an app that called `instrument_access_log` itself.
+        """
+        # Deferred: `observability` imports from the app package, so hoisting
+        # this would circle at import time.
+        from veloce.observability import instrument_access_log
+
+        for hook in self._instrumentation:
+            if getattr(hook, "__module__", None) == "veloce.observability":
+                return
+        instrument_access_log(cast("Veloce", self))
 
     async def _serve(self, host: str, port: int, access_log: bool, ssl_context: Any = None) -> None:
         """Create the server and run forever."""

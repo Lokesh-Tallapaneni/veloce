@@ -59,6 +59,38 @@ a [`JSONResponse`](../reference/responses.md#veloce.JSONResponse) when you want 
 See [Requests and responses](requests-responses.md) for the full return-value
 rules.
 
+### NaN and Infinity become `null`
+
+JSON has no representation for `NaN`, `Infinity` or `-Infinity` — RFC 8259
+forbids all three — so an encoder has to choose. Veloce's default serialiser
+writes `null`:
+
+```python
+@app.get("/stats")
+async def stats() -> dict:
+    return {"mean": float("nan")}   # -> {"mean": null}
+```
+
+The response stays valid JSON and the request succeeds. The trade-off is that a
+non-finite value is indistinguishable from a genuine `null` at the client, and
+that is usually a bug upstream — a division by zero or an empty aggregate.
+Guard it where the value is produced:
+
+```python
+import math
+
+
+@app.get("/stats")
+async def stats() -> dict:
+    mean = compute_mean()
+    return {"mean": mean if math.isfinite(mean) else None}
+```
+
+!!! note
+    Some frameworks raise instead, turning this into a `500`. Veloce does not,
+    and cannot cheaply: the underlying serialiser has no option for it and
+    detecting it would mean walking every response payload on every request.
+
 ## jsonable_encoder
 
 Use [`jsonable_encoder`](../reference/openapi.md#veloce.jsonable_encoder) when you need
