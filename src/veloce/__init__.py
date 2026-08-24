@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from veloce import status
 from veloce._warnings import VeloceDeprecationWarning
 from veloce.app import Plugin, URLRule, Veloce
+from veloce.audit import AuditContext, AuditFailed, Finding
 
 # Background tasks
 from veloce.background import BackgroundTask, BackgroundTasks
@@ -335,6 +336,7 @@ __all__ = [
     "RedirectResponse",
     "StreamingResponse",
     "FileResponse",
+    "Finding",
     "EventSourceResponse",
     # Middleware
     "Middleware",
@@ -488,6 +490,8 @@ __all__ = [
     "MethodView",
     # Helpers
     "Aborter",
+    "AuditContext",
+    "AuditFailed",
     "abort",
     "after_this_request",
     "async_send_file",

@@ -207,7 +207,9 @@ def test_check_command_reports_issues(tmp_path, monkeypatch, capsys):
     rc = main(["check", "cli_check_bad:app"])
     assert rc == 1
     out = capsys.readouterr().out
-    assert "issue" in out.lower()
+    # Each line carries its severity, so a reader can tell what blocks a deploy.
+    assert "finding" in out.lower()
+    assert "[warning] DEBUG is enabled" in out
 
 
 def test_check_command_clean_app(tmp_path, monkeypatch, capsys):

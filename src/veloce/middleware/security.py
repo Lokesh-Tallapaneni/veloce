@@ -17,7 +17,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from veloce import status
 from veloce._constants import (
@@ -42,9 +42,16 @@ from veloce._constants import (
 )
 from veloce._internal import _current_request_var, _extract_host
 from veloce._protocol_constants import URL_SCHEME_HTTPS
+from veloce.audit import Finding
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, header_present
 from veloce.middleware.base import Middleware
+
+if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Iterable
+
+    from veloce.audit import AuditContext
+
 from veloce.ratelimit import (
     RATE_LIMIT_ATTR,
     InMemoryRateLimitBackend,
@@ -290,6 +297,8 @@ class RateLimitMiddleware(Middleware):
         )
     """
 
+    audit_needs_routes = True
+
     def __init__(
         self,
         max_requests: int = 100,
@@ -412,15 +421,19 @@ class RateLimitMiddleware(Middleware):
                 tagged_strategies[info.path_template] = tagged
         return tagged_strategies, known
 
+    def _unknown_overrides(self, known: set[str]) -> list[str]:
+        """Override keys matching no route template in `known`."""
+        if self._overrides is None:
+            return []
+        return sorted(key for key in self._overrides if key not in known)
+
     def _reject_unknown_overrides(self, known: set[str]) -> None:
         """Raise when an override key matches no registered route template.
 
         A key that matches nothing means a route the operator believes is
         throttled but is not, so it is rejected rather than ignored.
         """
-        if self._overrides is None:
-            return
-        unknown = sorted(key for key in self._overrides if key not in known)
+        unknown = self._unknown_overrides(known)
         if unknown and not self._strict_overrides:
             _logger.warning(
                 "RateLimitMiddleware overrides reference route template(s) %s that match no "
@@ -436,18 +449,33 @@ class RateLimitMiddleware(Middleware):
                 "(for example '/api/login', not '/login')"
             )
 
-    def _validate_config(self, app: Any) -> None:
-        """Validate the `overrides` map against `app`'s routes at startup.
+    def audit(self, ctx: AuditContext) -> Iterable[Finding]:
+        """Report `overrides` keys that match no registered route.
 
-        Called once per app startup, after every route is registered, so a stale
-        or misspelled override key fails the boot with a message naming it -
-        rather than surfacing as a `500` on each subsequent request, which is
-        what the per-request build alone would produce.
+        A key matching nothing means a route the operator believes is throttled
+        but is not. Under `strict_overrides` that is an `error`, so the boot
+        fails naming the keys rather than the app serving unthrottled; otherwise
+        it is a warning and the overrides are simply inactive.
+
+        Reads the route table, so `audit_needs_routes` keeps it from running
+        against an app that was imported but never started - routes registered
+        during startup are not there yet, and would read as missing.
         """
         if self._strategy is None or self._overrides is None:
-            return
-        _tagged, known = self._collect_route_strategies(app)
-        self._reject_unknown_overrides(known)
+            return ()
+        _tagged, known = self._collect_route_strategies(ctx.app)
+        unknown = self._unknown_overrides(known)
+        if not unknown:
+            return ()
+        return (
+            Finding(
+                f"RateLimitMiddleware overrides name route template(s) {unknown} that match "
+                "no registered route.",
+                severity="error" if self._strict_overrides else "warning",
+                fix="correct the override keys, or drop them",
+                id="ratelimit-overrides-unknown",
+            ),
+        )
 
     def _build_route_strategies(
         self, request: Request, gen: int | None = None

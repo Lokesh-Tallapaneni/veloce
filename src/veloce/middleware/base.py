@@ -9,10 +9,15 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from veloce.http.request import Request
 from veloce.http.response import Response
+
+if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Iterable
+
+    from veloce.audit import AuditContext, Finding
 
 # The `call_next` argument type, so user dispatch functions can annotate it.
 CallNext = Callable[[Request], Awaitable[Response]]
@@ -32,10 +37,16 @@ class Middleware:
     name: str = ""
 
     # Set True by a middleware that adds hardening headers to every response.
-    # `Veloce.security_audit` warns when nothing in the stack claims this, and
-    # asks the marker rather than naming a class so a middleware outside this
-    # package answers the question too.
+    # The audit warns when nothing in the stack claims this, and asks the marker
+    # rather than naming a class so a middleware outside this package answers
+    # the question too.
     sets_hardening_headers: ClassVar[bool] = False
+
+    # Set True when `audit` reads the route table. The audit then skips this
+    # middleware until the table is final, so `veloce check` - which imports the
+    # app without starting it - cannot report a route as missing when it is
+    # merely registered later, during startup.
+    audit_needs_routes: ClassVar[bool] = False
 
     def __init__(self, *, name: str | None = None) -> None:
         if name is not None:
@@ -54,16 +65,21 @@ class Middleware:
         """Called after route handler. Can modify the response."""
         return response
 
-    def security_posture(self, config: Any) -> list[str]:
-        """Return warnings about this middleware's own configuration.
+    def audit(self, ctx: AuditContext) -> Iterable[Finding]:
+        """Report what is wrong with this middleware's own configuration.
 
-        `Veloce.security_audit` collects these from every registered
-        middleware, so a check belongs to the middleware it is about and an
-        app that does not register one never loads the code that checks it.
-        Return an empty list when nothing is wrong. Runs at audit time only -
-        never on a request path.
+        The audit collects these from every registered middleware, so a check
+        belongs to the middleware it is about and an app that registers none
+        never loads the code that checks them. Return nothing when there is
+        nothing to say.
+
+        Severity decides what a finding does: an `error` refuses the boot, a
+        `warning` fails `veloce check` without stopping anything, and `info`
+        fails nothing. Set `audit_needs_routes` when the check reads
+        `ctx.app`'s routes. Runs at audit and startup time only - never on a
+        request path.
         """
-        return []
+        return ()
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__}>"

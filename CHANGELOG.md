@@ -22,7 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `WEBSOCKET_IDLE_TIMEOUT` closes an idle WebSocket with `1001 Going Away` on both transports; it was read only by the built-in server, and is now a documented config key. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `TestClient(app, loop=...)` drives the app on a loop you supply, which the client never closes. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `Middleware.security_posture` lets any middleware contribute its own finding to `security_audit`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Middleware.audit` lets any middleware contribute findings to the audit, with a severity that decides whether startup refuses to serve. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Finding`, `AuditContext` and `AuditFailed` carry a severity, a remedy and a stable id; `veloce.audit.run(app)` returns them. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `SILENCED_AUDIT_IDS` drops named findings, so an accepted one is turned off without turning the audit off. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Middleware.audit_needs_routes` skips a route-reading check until the route table is final. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Middleware.sets_hardening_headers` marks a middleware that adds hardening headers, satisfying the audit's headers check. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SessionMiddlewareBase` is public; subclass it to add a session backend that `security_audit` recognises. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -30,7 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `SessionMiddlewareBase.cookie_lifetime` replaces the private `_cookie_lifetime`; a subclass calling the old name must rename it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
-- `security_audit` asks each registered middleware for its posture instead of naming middleware classes, so a middleware written outside Veloce is audited like a built-in. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `security_audit` asks each registered middleware for its findings instead of naming middleware classes, so a middleware written outside Veloce is audited like a built-in. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- Startup runs the full audit and refuses to serve on an `error` finding, raising `AuditFailed`; `RateLimitMiddleware` raised `ValueError` for the same case, which `AuditFailed` still is. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `veloce check` labels each line with its severity and exits 0 when only `info` findings are present. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A nested blueprint's hooks and URL processors run only on that blueprint's own routes, not on every route under its parent. Register a guard on the parent blueprint to keep app-wide coverage. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `ServerSessionMiddleware` honours `session.permanent`, so a permanent session's cookie and store entry both use `PERMANENT_SESSION_LIFETIME`. Sessions that previously expired at the 14-day default now live as long as that setting says; pass `permanent_lifetime=` to cap it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `security_audit()` warns about a non-`Secure` session cookie for any session middleware, so an app using `ServerSessionMiddleware` may see a warning `veloce check` did not previously report. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

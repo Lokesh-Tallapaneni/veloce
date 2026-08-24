@@ -68,6 +68,10 @@ SUBPACKAGE_ONLY: dict[str, str] = {
 # Public classes and functions defined in a top-level leaf module that are
 # deliberately not exported anywhere.
 UNEXPORTED: dict[str, str] = {
+    # `audit.py` — public, but deliberately module-qualified. A bare `run` in the
+    # top-level namespace would read as the server (`Veloce.run`); the audit is
+    # called as `veloce.audit.run(app)`, which says what it runs.
+    "audit.run": "public as veloce.audit.run; a top-level `run` would collide with Veloce.run",
     # `cli.py` — console-script entry points, reached through `[project.scripts]`
     # by dotted string, never imported by application code.
     "cli.build_parser": "console-script entry point, referenced by dotted path",

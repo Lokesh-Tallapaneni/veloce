@@ -17,16 +17,22 @@ import logging
 import secrets
 import warnings
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from veloce._constants import HEADER_COOKIE
 from veloce._internal import _coerce_bool, _coerce_int
+from veloce.audit import Finding
 from veloce.http.cookies import dump_cookie
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.middleware.base import Middleware
 from veloce.sessions import InMemorySessionStore, Session, SessionStore
 from veloce.signing import BadSignature, Signer
+
+if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Iterable
+
+    from veloce.audit import AuditContext
 
 # The logger name is part of the public contract: callers (and the test
 # suite) filter on "veloce.sessions", so it stays a literal rather than
@@ -284,11 +290,18 @@ class SessionMiddlewareBase(Middleware):
             return _coerce_bool(_cfg_or(config, "SESSION_COOKIE_SECURE", self.secure))
         return bool(getattr(self, "secure", False))
 
-    def security_posture(self, config: Any) -> list[str]:
+    def audit(self, ctx: AuditContext) -> Iterable[Finding]:
         """Warn when this backend's session cookie can travel over plain HTTP."""
-        if self.cookie_is_secure(config):
-            return []
-        return ["SESSION_COOKIE_SECURE is off - the session cookie can be sent over plain HTTP."]
+        if self.cookie_is_secure(ctx.app.config):
+            return ()
+        return (
+            Finding(
+                "SESSION_COOKIE_SECURE is off - the session cookie can be sent over plain HTTP.",
+                severity="warning",
+                fix="set SESSION_COOKIE_SECURE, or pass secure=True",
+                id="session-cookie-insecure",
+            ),
+        )
 
 
 class SessionMiddleware(SessionMiddlewareBase):

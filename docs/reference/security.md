@@ -57,3 +57,12 @@ Authentication schemes, token handling, password hashing, and the signing primit
 ::: veloce.constant_time_compare
 ::: veloce.safe_join
 ::: veloce.secure_filename
+
+## Audit
+
+The structured form of `Veloce.security_audit()`. `veloce.audit.run(app)`
+returns `Finding` objects; startup refuses to serve on an `error`.
+
+::: veloce.Finding
+::: veloce.AuditContext
+::: veloce.AuditFailed

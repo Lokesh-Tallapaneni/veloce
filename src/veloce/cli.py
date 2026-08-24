@@ -43,6 +43,7 @@ from typing import Any
 
 from veloce._constants import MSG_APP_REFERENCE_FORM
 from veloce._version import resolve_version
+from veloce.audit import run as audit_run
 from veloce.config import _parse_env_lines
 
 # ── Constants ─────────────────────────────────────────────
@@ -299,11 +300,15 @@ def _cmd_check(args: argparse.Namespace) -> int:
     app = _load_app(args.app)
     _require_app_attr(app, "security_audit", "`.security_audit()`")
 
-    issues = app.security_audit()
-    if issues:
-        print(f"Security audit: {len(issues)} issue(s) found:")
-        for issue in issues:
-            print(f"  - {issue}")
+    # The structured form, not `app.security_audit()`: severity is what decides
+    # the exit code, so an informational finding is reported without failing a
+    # deploy that is otherwise sound.
+    findings = audit_run(app)
+    failing = [f for f in findings if f.at_least("warning")]
+    if findings:
+        print(f"Security audit: {len(findings)} finding(s):")
+        for finding in findings:
+            print(f"  - [{finding.severity}] {finding}")
     else:
         print("Security audit: no issues found.")
 
@@ -317,7 +322,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
             print(f"  - {finding}")
     else:
         print("Response contracts: every route publishes a response schema.")
-    return 1 if issues else 0
+    return 1 if failing else 0
 
 
 def _cmd_mcp_run(args: argparse.Namespace) -> int:

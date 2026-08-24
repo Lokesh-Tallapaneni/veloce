@@ -25,6 +25,8 @@ from veloce._protocol_constants import (
     LIFECYCLE_STARTUP,
 )
 from veloce._warnings import VeloceDeprecationWarning
+from veloce.audit import AuditFailed
+from veloce.audit import run as audit_run
 
 if TYPE_CHECKING:  # pragma: no cover
     from types import CodeType, FrameType
@@ -464,16 +466,21 @@ class LifecycleMixin:
                     self._watchdog.start()
                     stack.push_async_callback(self._stop_watchdog)
 
-                # Middleware whose configuration references the route table can
-                # only be checked once every route exists, which is here - after
-                # the startup handlers and the sub-app fan-out have registered
-                # theirs. A middleware validates by exposing `_validate_config`;
-                # raising from it fails the boot, so a misconfiguration surfaces
-                # at startup instead of as an error on every later request.
-                for _mw in self._middlewares:
-                    _validate = getattr(_mw, "_validate_config", None)
-                    if _validate is not None:
-                        _validate(self)
+                # The route table is final here - after the startup handlers
+                # and the sub-app fan-out have registered theirs - so this is
+                # the first moment a route-reading check can run. An `error`
+                # finding fails the boot, which is what a misconfiguration
+                # should do rather than surfacing as a 500 on every later
+                # request. Everything below `error` is reported in debug and
+                # left alone in production, where `veloce check` is the gate
+                # and startup should not spend the time or the log lines.
+                _findings = audit_run(cast("Veloce", self), routes_final=True)
+                _fatal = [f for f in _findings if f.severity == "error"]
+                if _fatal:
+                    raise AuditFailed(_fatal)
+                if self.debug:
+                    for _audit_finding in _findings:
+                        self.logger.warning("audit: %s", _audit_finding)
 
                 # In debug, surface response contracts at first boot: a route
                 # that publishes no schema, or whose `response_model` disagrees

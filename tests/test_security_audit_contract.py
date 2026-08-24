@@ -17,6 +17,7 @@ import pytest
 
 import veloce.app.core
 from veloce import (
+    Finding,
     SecurityHeadersMiddleware,
     ServerSessionMiddleware,
     SessionMiddleware,
@@ -151,10 +152,10 @@ class ThirdPartyAuditedMiddleware(Middleware):
     async def process_response(self, request: Any, response: Any) -> Any:
         return response
 
-    def security_posture(self, config: Any) -> list[str]:
-        if not config.get("MY_TOKEN"):
-            return ["MY_TOKEN is not set - requests are accepted unauthenticated."]
-        return []
+    def audit(self, ctx: Any) -> Any:
+        if not ctx.app.config.get("MY_TOKEN"):
+            return (Finding("MY_TOKEN is not set.", "error", fix="set MY_TOKEN", id="my-token"),)
+        return ()
 
 
 def test_a_third_party_middleware_can_satisfy_the_hardening_check():
@@ -170,7 +171,7 @@ def test_a_third_party_middleware_can_contribute_its_own_finding():
     app.config["SECRET_KEY"] = "k"
     app.use_secure_defaults()
     app.add_middleware(ThirdPartyAuditedMiddleware())
-    assert app.security_audit() == ["MY_TOKEN is not set - requests are accepted unauthenticated."]
+    assert app.security_audit() == ["MY_TOKEN is not set. (set MY_TOKEN)"]
     app.config["MY_TOKEN"] = "t"
     assert app.security_audit() == []
 
@@ -212,5 +213,5 @@ def test_the_audit_needs_no_middleware_class_to_run():
     app.config["SECRET_KEY"] = "k"
     assert app.security_audit() == [
         "No middleware sets hardening headers - responses ship without nosniff, "
-        "frame-deny or a referrer policy (call app.use_secure_defaults())."
+        "frame-deny or a referrer policy. (call app.use_secure_defaults())"
     ]

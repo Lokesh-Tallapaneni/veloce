@@ -271,20 +271,30 @@ Once the package is installed, `veloce deploy prod` runs your command.
 
 Middleware reports on itself. The audit walks the registered middleware and
 asks each one, so a middleware written outside Veloce is audited on the same
-terms as a built-in:
+terms as a built-in. Severity decides what a finding *does*:
+
+| severity | at startup | `veloce check` |
+| --- | --- | --- |
+| `error` | refuses to serve (`AuditFailed`) | exits 1 |
+| `warning` | logged in debug | exits 1 |
+| `info` | logged in debug | reported, exits 0 |
 
 ```python
-from veloce import Middleware
+from veloce import Finding, Middleware
 
 class TenantAuthMiddleware(Middleware):
-    def security_posture(self, config):
-        if not config.get("TENANT_SIGNING_KEY"):
-            return ["TENANT_SIGNING_KEY is not set - tenant headers are unverified."]
-        return []
+    def audit(self, ctx):
+        if not ctx.app.config.get("TENANT_SIGNING_KEY"):
+            yield Finding(
+                "TENANT_SIGNING_KEY is not set - tenant headers are unverified.",
+                severity="error",
+                fix="set TENANT_SIGNING_KEY",
+                id="tenant-signing-key-missing",
+            )
 ```
 
-Anything that adds hardening headers declares it, and satisfies the
-headers check without being a `SecurityHeadersMiddleware`:
+Anything adding hardening headers declares it, and satisfies the headers check
+without being a `SecurityHeadersMiddleware`:
 
 ```python
 class MyHeadersMiddleware(Middleware):
@@ -293,21 +303,29 @@ class MyHeadersMiddleware(Middleware):
 
 A session backend gets its cookie check by subclassing
 [`SessionMiddlewareBase`](../reference/middleware.md), which also carries the
-`session.permanent` lifetime rule:
+`session.permanent` lifetime rule.
+
+!!! note "Checks that read the route table"
+
+    `veloce check` imports your app without starting it, so routes registered
+    during startup do not exist yet. A check that reads `ctx.app`'s routes must
+    set `audit_needs_routes = True`; it is then skipped until startup rather
+    than reporting a live route as missing.
+
+### Silencing an accepted finding
+
+Turn off one finding by id, so the audit stays on for everything else:
 
 ```python
-from veloce import SessionMiddlewareBase
-
-class RedisSessionMiddleware(SessionMiddlewareBase):
-    ...
+app.config["SILENCED_AUDIT_IDS"] = ("hardening-headers-missing",)
 ```
 
 !!! warning "A clean audit is not a proof"
 
     The audit reports on this app's middleware. Hardening the app does not
     own — TLS terminated at a reverse proxy, headers added by a CDN — is
-    invisible to it, as is a middleware that declares neither hook. Verify
-    those separately.
+    invisible to it, as is a middleware that reports nothing. Verify those
+    separately.
 
 ### Regex constraints and ReDoS
 

@@ -54,6 +54,7 @@ from veloce.app.templating import TemplatingMixin
 from veloce.app.testing import TestingMixin
 from veloce.app.urls import URLRule as URLRule
 from veloce.app.urls import _URLMap
+from veloce.audit import run as audit_run
 from veloce.blueprints import _endpoint_blueprint, _resolve_scoped_chain
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.exceptions import (
@@ -954,41 +955,19 @@ class Veloce(
     def security_audit(self) -> list[str]:
         """Return human-readable warnings about the current security posture.
 
-        Four things are checked: `debug`, `SECRET_KEY`, a session cookie that
-        is not `Secure`, and a response stack with no hardening headers. An
-        empty list means none of those was flagged. Drives the `veloce check`
-        CLI command and is also callable directly from a pre-deploy script or
-        a test.
+        A rendering of `veloce.audit.run(self)`, which is the structured form -
+        severity, remedy and a stable id per finding. Use that where a tool
+        needs to tell an `error` from a `warning`; this stays a list of lines
+        to print. An empty list means nothing was flagged.
 
-        Middleware reports on itself: anything registered here contributes
-        through `Middleware.security_posture`, and anything adding hardening
-        headers says so with `Middleware.sets_hardening_headers`, so a
+        Middleware reports on itself through `Middleware.audit`, so a
         middleware written outside this package is audited on the same terms
         as a built-in one. What stays invisible is hardening the app does not
-        own - a reverse proxy terminating TLS, or a middleware that declares
-        neither - so a clean audit is a statement about this app's middleware,
+        own - a reverse proxy terminating TLS, or a middleware that reports
+        nothing - so a clean audit is a statement about this app's middleware,
         not about the deployment around it.
         """
-        warnings: list[str] = []
-        if self.debug:
-            warnings.append("DEBUG is enabled - disable it before deploying to production.")
-        if not self.config.get("SECRET_KEY"):
-            warnings.append(
-                "SECRET_KEY is not set - session middleware that does not pass "
-                "its own secret_key= cannot sign cookies (set app.secret_key)."
-            )
-        # Each middleware reports on its own configuration. Asking the
-        # registered instances - rather than naming classes here - keeps the
-        # core free of any middleware import, and lets a middleware written
-        # elsewhere be audited on the same terms as a built-in one.
-        for middleware in self._middlewares:
-            warnings.extend(middleware.security_posture(self.config))
-        if not any(type(m).sets_hardening_headers for m in self._middlewares):
-            warnings.append(
-                "No middleware sets hardening headers - responses ship without nosniff, "
-                "frame-deny or a referrer policy (call app.use_secure_defaults())."
-            )
-        return warnings
+        return [str(finding) for finding in audit_run(self)]
 
     def response_contract_audit(self) -> list[str]:
         """Report routes whose declared response contract is absent or contradictory.
