@@ -285,6 +285,7 @@ class RouteInfo:
         "mcp_task_support",
         "excluded_middleware",
         "stream",
+        "strict_slashes",
         "_mw_chain_cache",
     )
 
@@ -407,6 +408,13 @@ class RouteInfo:
         # a route until the body is drained. Set by `add_route`; default False
         # preserves the buffer-before-handler behaviour every other route has.
         self.stream = False
+        # The slash-matching mode this route was declared with. It shapes the
+        # radix node and the regex route rather than the request, so it lived
+        # only on those - and `_readd_route`, which rebuilds a route from its
+        # `RouteInfo`, had nothing to read. A blueprint route declared
+        # `strict_slashes=False` therefore lost it on registration while the
+        # same route reached through `include_router` kept it.
+        self.strict_slashes: bool | None = None
         # MCP exposure (contrib.mcp). `expose_as_mcp_tool` opts this route
         # into the MCP tool registry; `mcp_description` is the LLM-facing
         # description (separate from the docstring), required by the MCP
@@ -950,6 +958,7 @@ class Router:
         # `__init__` argument, so it has to be carried across explicitly - it
         # was the one field this copy dropped.
         merged.stream = info.stream
+        merged.strict_slashes = info.strict_slashes
         return merged
 
     def _commit_merged_method(
@@ -1289,6 +1298,7 @@ class Router:
             excluded_middleware=frozenset(exclude_middleware) if exclude_middleware else None,
         )
         route_info.stream = stream
+        route_info.strict_slashes = strict_slashes
 
         # Pre-compute the handler resolution plan once, here at registration.
         # A WebSocket route's plan is built in websocket mode so the
@@ -2338,6 +2348,7 @@ def _readd_route(
         path=full_path,
         handler=info.handler,
         methods=methods,
+        strict_slashes=info.strict_slashes,
         dependencies=info.dependencies,
         response_model=info.response_model,
         tags=info.tags,
