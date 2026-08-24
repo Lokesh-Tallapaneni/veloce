@@ -394,8 +394,12 @@ class Request:
         ct = self.content_type
         if not ct:
             return ("", {})
-        mt, _, rest = ct.partition(";")
+        mt, semi, rest = ct.partition(";")
         mimetype = mt.strip().lower()
+        if not semi:
+            # No parameters to walk: `partition` already said so, and most
+            # content types carry none.
+            return (mimetype, {})
         return (mimetype, dict(parse_media_type_params(rest)))
 
     @property

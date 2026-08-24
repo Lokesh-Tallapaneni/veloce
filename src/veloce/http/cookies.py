@@ -41,15 +41,23 @@ def iter_cookies(header: str | None) -> Iterator[tuple[str, str]]:
         return
     seen: set[str] = set()
     for chunk in header.split(";"):
-        chunk = chunk.strip()
-        if "=" not in chunk:
+        # `partition` already reports whether a separator was there, so the
+        # separate membership test - a second scan of every chunk - is not
+        # needed to skip a segment that carries none.
+        name, eq, value = chunk.partition("=")
+        if not eq:
             continue
-        name, _, value = chunk.partition("=")
         name = name.strip()
         if name in seen:
             continue
         seen.add(name)
-        yield name, unquote(unquote_value(value))
+        value = value.strip()
+        # `dump_cookie` percent-encodes and optionally quotes; a value carrying
+        # neither marker is already what it decodes to. The strip above has to
+        # stay for this branch, since `unquote_value` is what does it otherwise.
+        if "%" in value or '"' in value:
+            value = unquote(unquote_value(value))
+        yield name, value
 
 
 def parse_cookie(header: str | None) -> dict[str, str]:

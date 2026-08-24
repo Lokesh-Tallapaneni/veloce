@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Query strings and urlencoded bodies carrying no percent-escape skip per-field decoding. Measured on one Windows desktop: 20.9 vs 26.0 us for a three-parameter query read, 35.3 vs 43.4 us for a five-field form POST; an escaped value is unchanged. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A cookie value is percent-decoded only when it carries an escape or a quote. Measured on one Windows desktop: 1.84 vs 3.03 us for a four-cookie header. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Content-Type` parsing skips the parameter walk when the header declares no parameters. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The `MAX_CONTENT_LENGTH` header scan matches the name as ASGI mandates it rather than lowercasing every header. A server that sends a differently-cased `Content-Length` loses the early rejection, not the limit. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `TestClient` builds a `SelectorEventLoop` on Windows; pass `loop=asyncio.ProactorEventLoop()` for a handler that spawns a subprocess. Measured on one Windows desktop: 73.0 vs 93.6 us per request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An ASGI WebSocket message is read and written one coroutine frame deep when no timeout is set. Measured on one Windows desktop: 1.34 vs 2.02 us per echo round. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

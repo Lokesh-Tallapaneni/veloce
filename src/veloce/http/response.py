@@ -273,9 +273,10 @@ class Response:
         ct = self.content_type or ""
         if ct == self._ct_cache_key:
             return
-        media, _, rest = ct.partition(";")
+        media, semi, rest = ct.partition(";")
         self._mimetype = media.strip().lower()
-        params = dict(parse_media_type_params(rest))
+        # `partition` already reports whether there were parameters at all.
+        params = dict(parse_media_type_params(rest)) if semi else {}
         self._ct_params = params
         # RFC 9110 Sec. 8.3.1 makes media-type parameter names case-insensitive
         # and RFC 9110 Sec. 5.6.6 allows whitespace around `=`, so the charset
