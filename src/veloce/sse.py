@@ -20,7 +20,7 @@ from veloce._constants import (
     HEADER_X_ACCEL_BUFFERING,
     MIME_TEXT_EVENT_STREAM,
 )
-from veloce._internal import _encode_response_head
+from veloce._internal import _current_app_var, _encode_response_head
 from veloce.encoders import orjson_default
 from veloce.http.response import Response
 from veloce.status import HTTP_200_OK
@@ -35,6 +35,15 @@ _PING_FRAME = b": ping\r\n\r\n"
 # (a `Mapping`, an `int`/`float`, etc.) is coerced into a single-`data:`
 # event by `_encode_event` rather than crashing the chunk writer.
 _SSEItem = Any
+
+
+def _dumps_json(payload: Any) -> bytes:
+    """Serialise an SSE payload through the active app's provider, or directly."""
+    app = _current_app_var.get()
+    if app is not None:
+        encoded: bytes = app.json.dumps(payload)
+        return encoded
+    return orjson.dumps(payload, default=orjson_default)
 
 
 class ServerSentEvent:
@@ -92,10 +101,12 @@ class ServerSentEvent:
         constructor when the payload is already a formatted string.
         """
         return cls(
-            # Use the same orjson fallback the JSON response stack uses, so a
-            # payload that serialises in `JSONResponse`/`app.json` also works
-            # when streamed over SSE (e.g. Decimal, set, Path).
-            data=orjson.dumps(payload, default=orjson_default).decode("utf-8"),
+            # Through the application's provider when there is one, so a
+            # streamed event carries the same JSON dialect its responses do.
+            # Outside a request there is no app, and the direct call keeps the
+            # orjson fallback the response stack uses, so a payload that
+            # serialises there (Decimal, set, Path) still serialises here.
+            data=_dumps_json(payload).decode("utf-8"),
             event=event,
             id=id,
             retry=retry,

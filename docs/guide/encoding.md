@@ -305,7 +305,8 @@ it. Set `app.json_provider_class` to a class (instantiated lazily) or assign
     Every value a handler returns — a `dict`, a `list`, a model, a msgspec
     struct, a `(body, status)` tuple, `jsonify(...)`, or a `JSONResponse`
     subclass named by `response_class` — is serialised by the active provider,
-    so one dialect covers the whole application.
+    as are `ws.send_json(...)` frames and `ServerSentEvent.json(...)` events, so
+    one dialect covers the whole application.
 
     An app that configures nothing keeps the direct orjson path, so the default
     pays nothing for the indirection.

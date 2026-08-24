@@ -178,3 +178,71 @@ def test_a_framework_error_body_is_not_restyled():
     # `detail` before `status_code` is the framework's own ordering; sorting
     # would put `detail` first too, so assert the shape rather than the order.
     assert b"detail" in body
+
+
+# ── The streaming surfaces follow it too ─────────────────────────────
+#
+# A WebSocket frame and an SSE event carry application data to a client, the
+# same as a response body, so the same dialect applies. They reached the
+# encoder directly and were the last two surfaces that did not.
+
+
+def _socket_app(**config) -> Veloce:
+    app = Veloce(openapi_url=None)
+    app.config.update(config)
+
+    @app.websocket("/ws")
+    async def echo(ws):
+        await ws.accept()
+        await ws.send_json(dict(_DATA))
+
+    @app.get("/sse")
+    async def stream():
+        from veloce.sse import EventSourceResponse, ServerSentEvent
+
+        async def events():
+            yield ServerSentEvent.json(dict(_DATA))
+
+        return EventSourceResponse(events())
+
+    return app
+
+
+def test_a_websocket_frame_keeps_insertion_order_by_default():
+    with TestClient(_socket_app()).websocket_connect("/ws") as ws:
+        assert ws.receive_text() == _INSERTION.decode()
+
+
+def test_a_websocket_frame_follows_the_setting():
+    with TestClient(_socket_app(JSON_SORT_KEYS=True)).websocket_connect("/ws") as ws:
+        assert ws.receive_text() == _SORTED.decode()
+
+
+def test_a_websocket_frame_follows_a_custom_provider():
+    app = _socket_app()
+    app.json_provider_class = UpperKeyProvider
+    with TestClient(app).websocket_connect("/ws") as ws:
+        assert b'"B"' in ws.receive_text().encode()
+
+
+def test_an_sse_event_keeps_insertion_order_by_default():
+    assert _INSERTION.decode() in TestClient(_socket_app()).get("/sse").text
+
+
+def test_an_sse_event_follows_the_setting():
+    body = TestClient(_socket_app(JSON_SORT_KEYS=True)).get("/sse").text
+    assert _SORTED.decode() in body
+
+
+async def test_a_socket_built_outside_a_request_still_serialises():
+    """No app to consult is not an error; it falls back to the default."""
+    from veloce.websocket import WebSocket
+
+    class _T:
+        def write(self, data): ...
+        def writelines(self, data): ...
+        def is_closing(self):
+            return False
+
+    ws = WebSocket(_T(), {"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="})
+    assert ws.app is None

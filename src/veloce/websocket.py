@@ -824,7 +824,11 @@ class WebSocket:
         """
         if mode not in ("text", "binary"):
             raise ValueError(f"mode must be 'text' or 'binary', got {mode!r}")
-        payload = orjson.dumps(data)
+        # Through the application's provider, so a frame carries the same JSON
+        # dialect its HTTP responses do. `app` is set for a dispatched
+        # connection; a socket built outside one falls back to the default.
+        app = self.app
+        payload = app.json.dumps(data) if app is not None else orjson.dumps(data)
         if mode == "binary":
             await self.send_bytes(payload)
         else:
