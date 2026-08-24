@@ -106,7 +106,17 @@ class HTTPException(VeloceError):
             status_code = self.code
         self.status_code = status_code
         self.detail = detail or self.description
-        self.headers = headers or {}
+        # Copy on the way in. This mapping becomes the response's `headers`,
+        # which response middleware (CORS / Session / SecurityHeaders) mutates
+        # in place, so sharing it with the raiser lets one request's `Set-Cookie`
+        # or `Access-Control-Allow-Origin` accumulate on a caller-held dict and
+        # ship on every later raise. A security scheme that caches its
+        # `WWW-Authenticate` challenge once - the sensible thing to do, since it
+        # is request-invariant - is exactly the shape that leaks. Copying here
+        # rather than at each raise site means no scheme, present or future, has
+        # to know the rule. The cost lands only on a request that has already
+        # failed and is about to serialise an error body.
+        self.headers = dict(headers) if headers else {}
         super().__init__(self.detail)
 
 
