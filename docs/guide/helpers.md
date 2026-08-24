@@ -191,7 +191,7 @@ async def positional():
 
 Passing both positional and keyword arguments raises `TypeError`. When
 called inside a request, `jsonify` honours two `app.config` flags:
-`JSON_SORT_KEYS` (default `True`) sorts dict keys, and
+`JSON_SORT_KEYS` (default `False`) sorts dict keys, and
 `JSONIFY_PRETTYPRINT_REGULAR` (default `False`) indents the output.
 
 ## redirect

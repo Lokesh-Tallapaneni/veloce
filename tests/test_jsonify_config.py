@@ -6,8 +6,12 @@ from veloce import Request, Veloce, jsonify
 from veloce.testclient import TestClient
 
 
-def test_jsonify_default_sorts_keys():
-    """the built-in default: `JSON_SORT_KEYS` is True → keys sorted, no indent."""
+def test_jsonify_keeps_insertion_order_by_default():
+    """The built-in default: `JSON_SORT_KEYS` is False, so order is as written.
+
+    Sorting costs 24-49% of the serialise and is not what most JSON APIs do, so
+    it is opt-in. `test_jsonify_sort_keys_when_config_set` covers the opt-in.
+    """
     app = Veloce(debug=True, openapi_url=None)
 
     @app.get("/x")
@@ -15,8 +19,7 @@ def test_jsonify_default_sorts_keys():
         return jsonify(b=2, a=1, c=3)
 
     resp = TestClient(app).get("/x")
-    # spec-faithful: keys sorted alphabetically, compact output.
-    assert resp.body == b'{"a":1,"b":2,"c":3}'
+    assert resp.body == b'{"b":2,"a":1,"c":3}'
 
 
 def test_jsonify_no_sort_when_disabled():

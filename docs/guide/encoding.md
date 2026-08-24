@@ -301,12 +301,20 @@ Subclass `JSONProvider` to plug in a different serialiser, then point the app at
 it. Set `app.json_provider_class` to a class (instantiated lazily) or assign
 `app.json` an instance directly.
 
-!!! warning "A bare `dict` return does not go through the provider"
-    A handler returning a bare `dict` or `list` is serialised on the direct
-    orjson path, which does not consult `app.json`. A custom dialect - key
-    sorting, a house encoder - therefore applies to `jsonify(...)`,
-    `app.json.response(...)` and explicit `JSONResponse`, but not to those
-    returns. Return `jsonify(...)` from any handler whose dialect must apply.
+!!! note "Which responses the provider reaches"
+    Every value a handler returns — a `dict`, a `list`, a model, a msgspec
+    struct, a `(body, status)` tuple, `jsonify(...)`, or a `JSONResponse`
+    subclass named by `response_class` — is serialised by the active provider,
+    so one dialect covers the whole application.
+
+    An app that configures nothing keeps the direct orjson path, so the default
+    pays nothing for the indirection.
+
+    What the provider does **not** reach is the framework's own wire formats:
+    cache keys (which always sort, so equal mappings hash alike), signed
+    cookies, JWTs, and protocol frames. Those are not the application's to
+    restyle. A `JSONResponse` you construct yourself outside a request has no
+    application to consult and stays on the direct path.
 
 ```python title="app.py"
 import json
@@ -352,7 +360,7 @@ cannot drift.
 
 | Config key | orjson option | Effect |
 | --- | --- | --- |
-| `JSON_SORT_KEYS` | `OPT_SORT_KEYS` | Sort object keys for deterministic output. |
+| `JSON_SORT_KEYS` | `OPT_SORT_KEYS` | Sort object keys for deterministic output. Off by default. |
 | `JSONIFY_PRETTYPRINT_REGULAR` | `OPT_INDENT_2` | Indent output by two spaces. |
 
 ```python title="app.py"

@@ -19,7 +19,7 @@ def test_default_config_values():
     app = Veloce()
     assert app.config["DEBUG"] is False
     assert app.config["TESTING"] is False
-    assert app.config["JSON_SORT_KEYS"] is True
+    assert app.config["JSON_SORT_KEYS"] is False
     assert app.config["APPLICATION_ROOT"] == "/"
     assert app.config["PREFERRED_URL_SCHEME"] == "http"
 

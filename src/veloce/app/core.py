@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from typing_extensions import Doc
 
 from veloce._internal import (
+    _UNRESOLVED_JSON_DUMPS,
     MIME_HTML,
     _coerce_bool,
     _is_async_callable,
@@ -683,6 +684,13 @@ class Veloce(
 
         self.json_provider_class: Any = DefaultJSONProvider
         self._json_provider: Any = None
+        # Resolved on first use from the provider above: `None` means "the
+        # default provider with nothing configured", which is byte-for-byte what
+        # the direct orjson path already emits - so an app that configured
+        # nothing keeps that path and pays only a `None` test. Anything else is
+        # the provider's own `dumps`, so a configured dialect reaches a handler's
+        # `dict` / `list` / model return the way it already reaches `jsonify`.
+        self._handler_json_dumps: Any = _UNRESOLVED_JSON_DUMPS
         # Callable `Aborter`. Lazily built on first `app.aborter`
         # access so subclasses can override before use without paying
         # construction cost for apps that don't touch it.
@@ -1024,11 +1032,15 @@ class Veloce(
         encoders is just: `app.json_provider_class = MyJSONProvider`.
         Setting `app.json = instance` replaces it explicitly.
 
-        The provider serialises `jsonify(...)` and anything else that asks it
-        for bytes. A handler returning a bare `dict` or `list` takes the direct
-        orjson path instead and does not consult it, so a custom dialect - key
-        sorting, a house encoder - does not reach those responses. Return
-        `jsonify(...)` from a handler whose dialect must apply.
+        The provider serialises every value a handler returns - a `dict`, a
+        `list`, a model, a msgspec struct, a `(body, status)` tuple, `jsonify`,
+        and a `JSONResponse` subclass named by `response_class` - so one dialect
+        covers the application. An app that configures nothing keeps the direct
+        orjson path and pays nothing for the indirection.
+
+        It does not reach the framework's own wire formats: cache keys always
+        sort so equal mappings hash alike, and signed cookies, JWTs and protocol
+        frames are not the application's to restyle.
         """
         if self._json_provider is None:
             self._json_provider = self.json_provider_class(self)
@@ -1037,6 +1049,23 @@ class Veloce(
     @json.setter
     def json(self, provider: Any) -> None:
         self._json_provider = provider
+
+    def _resolve_handler_json_dumps(self) -> Any:
+        """The serialiser a handler's JSON return must use, or `None` for direct.
+
+        `None` is returned when the active provider is the stock one with no
+        configured options, because the direct path already produces exactly
+        what it would. Resolved once: like the provider itself, the options are
+        read when first asked for, so set them before the first request.
+        """
+        # Deferred like the sibling import above it: `json_provider` reaches
+        # back into the app package.
+        from veloce.json_provider import DefaultJSONProvider
+
+        provider = self.json
+        if type(provider) is DefaultJSONProvider and not provider._config_options:
+            return None
+        return provider.dumps
 
     def send_static_file(self, filename: str) -> Any:
         """Serve a file from `app.static_folder`.

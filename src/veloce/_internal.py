@@ -471,3 +471,10 @@ _current_app_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
 _current_request_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "veloce_current_request", default=None
 )
+
+
+# Distinguishes "the handler-JSON serialiser has not been resolved yet" from a
+# resolved `None`, which means "take the direct path". Lives here because the
+# app's core resolves it and the dispatch mixin reads it, and those two cannot
+# import each other.
+_UNRESOLVED_JSON_DUMPS: Any = object()

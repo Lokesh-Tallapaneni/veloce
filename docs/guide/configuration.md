@@ -66,7 +66,7 @@ The defaults are:
 | `SESSION_COOKIE_SECURE` | `False` | Set `Secure` on the session cookie. |
 | `SESSION_COOKIE_SAMESITE` | `None` | `SameSite` attribute for the session cookie (`None` keeps the middleware default, `lax`). |
 | `PERMANENT_SESSION_LIFETIME` | `2678400` | Lifetime of a permanent session in seconds (31 days). |
-| `JSON_SORT_KEYS` | `True` | Sort keys when serialising JSON. |
+| `JSON_SORT_KEYS` | `False` | Sort keys when serialising JSON responses. |
 | `JSONIFY_PRETTYPRINT_REGULAR` | `False` | Pretty-print JSON responses. |
 | `PROPAGATE_EXCEPTIONS` | `None` | Re-raise unhandled exceptions out of dispatch. |
 | `SEND_FILE_MAX_AGE_DEFAULT` | `None` | Default `Cache-Control: max-age` for `send_file` / `async_send_file` when the caller passes no `max_age=`. |
@@ -86,7 +86,8 @@ controls whether unhandled exceptions re-raise: when it is left at `None`,
 exceptions propagate only if both `DEBUG` and `TESTING` are `True` (useful
 so test runs surface the real traceback). Boolean keys loaded from an env
 file arrive as strings and are coerced (`"false"`, `"0"`, `"off"` read as
-off). `JSON_SORT_KEYS` affects the ordering of keys in JSON responses.
+off). `JSON_SORT_KEYS` orders the keys of every JSON response, whatever the
+handler returned - a `dict`, a `list`, a model, or `jsonify(...)`.
 
 The `SECRET_KEY`, `SESSION_COOKIE_*`, `PERMANENT_SESSION_LIFETIME`,
 `MAX_COOKIE_SIZE`, and `APPLICATION_ROOT` keys are consumed by the session

@@ -37,6 +37,7 @@ from veloce._constants import (
     STATE_INJECTED_RESPONSE,
 )
 from veloce._internal import (
+    _UNRESOLVED_JSON_DUMPS,
     MIME_HTML,
     MIME_JSON,
     _coerce_bool,
@@ -190,6 +191,8 @@ class DispatchMixin:
         _instrumentation: Any
         _middlewares: Any
         log_exception: Callable[..., Any]
+        _handler_json_dumps: Any
+        _resolve_handler_json_dumps: Callable[..., Any]
         _should_propagate_exceptions: Callable[..., Any]
         _setup_locked: bool
         _setup_lock_enabled: bool
@@ -1432,6 +1435,35 @@ class DispatchMixin:
         # Non-pydantic model (e.g. plain class) - pass through unchanged.
         return result
 
+    def _json_from_handler(self, data: Any) -> Response:
+        """Build the JSON response for a handler's `dict` / `list` / model return.
+
+        Takes the direct path unless the application configured a provider or a
+        JSON option, in which case that dialect applies here the way it already
+        applies to `jsonify`. Framework-generated bodies (an error payload, a
+        validation report) are deliberately not routed through it: those are the
+        framework's own wire format, not the application's.
+        """
+        dumps = self._json_dumps_override()
+        if dumps is None:
+            return JSONResponse(data)
+        # `from_bytes`, not a bare `Response`: the return type is part of the
+        # contract - a `default_response_class` check and an `isinstance` on the
+        # coerced response both expect a `JSONResponse`.
+        return JSONResponse.from_bytes(dumps(data))
+
+    def _json_dumps_override(self) -> Any:
+        """The configured serialiser, or `None` to take the direct path.
+
+        Resolved once and cached. `None` is the stock case - the default
+        provider with no options set - where the direct path already emits
+        exactly what the provider would, so nothing is paid for the indirection.
+        """
+        dumps = self._handler_json_dumps
+        if dumps is _UNRESOLVED_JSON_DUMPS:
+            dumps = self._handler_json_dumps = self._resolve_handler_json_dumps()
+        return dumps
+
     def _coerce_response(self, result: Any, response_class: Any = None) -> Response:
         """Convert handler return value to a Response object."""
         if isinstance(result, Response):
@@ -1443,7 +1475,7 @@ class DispatchMixin:
         # Gated on `response_class is None` so the JSONResponse-subclass branch
         # below still owns dicts when a class was requested.
         if type(result) is dict and response_class is None:
-            return JSONResponse(result)
+            return self._json_from_handler(result)
         # A msgspec struct (or a list of structs) encodes in C with no
         # intermediate dict. With no response_class it is written straight to a
         # JSON Response; with one, it is normalized to builtins so the requested
@@ -1452,7 +1484,12 @@ class DispatchMixin:
         # recurses on the struct body.
         if _HAS_MSGSPEC and _is_msgspec_payload(result):
             if response_class is None:
-                return Response(body=_msgspec.json.encode(result), content_type=MIME_JSON)
+                dumps = self._json_dumps_override()
+                if dumps is None:
+                    return Response(body=_msgspec.json.encode(result), content_type=MIME_JSON)
+                # A configured dialect outranks the struct fast path: convert to
+                # builtins so the same serialiser answers for every return type.
+                return JSONResponse.from_bytes(dumps(_msgspec.to_builtins(result)))
             result = _msgspec.to_builtins(result)
         # Use custom response_class if specified
         if response_class is not None:
@@ -1475,15 +1512,20 @@ class DispatchMixin:
                 return resp
             if isinstance(response_class, type) and issubclass(response_class, JSONResponse):
                 if isinstance(result, _PydanticBaseModel):
-                    return response_class(result.model_dump())
-                return response_class(result)
+                    result = result.model_dump()
+                dumps = self._json_dumps_override()
+                if dumps is None:
+                    return response_class(result)
+                # `from_bytes` on the requested class, so a subclass keeps its
+                # own `default_media_type` while the dialect still applies.
+                return response_class.from_bytes(dumps(result))
             if isinstance(result, str):
                 return response_class(result)
             if isinstance(result, bytes):
                 return response_class(result)
             return response_class(result)
         if isinstance(result, (dict, list)):
-            return JSONResponse(result)
+            return self._json_from_handler(result)
         if isinstance(result, str):
             # A bare `str` return defaults to text/html - the same default
             # `make_response()` applies, so the media type is consistent
@@ -1493,7 +1535,7 @@ class DispatchMixin:
             return Response(body=result, content_type=MIME_HTML)
         # Pydantic model
         if isinstance(result, _PydanticBaseModel):
-            return JSONResponse(result.model_dump())
+            return self._json_from_handler(result.model_dump())
         # Tuple response (body, status_code) or (body, status_code, headers)
         if isinstance(result, tuple):
             if len(result) == 2:
@@ -1516,7 +1558,7 @@ class DispatchMixin:
                 resp.headers.update(headers)
                 resp._encoded = None
                 return resp
-        return JSONResponse(result)
+        return self._json_from_handler(result)
 
     # ── Middleware phases ──────────────────────────────────
 

@@ -169,7 +169,7 @@ class Config(dict[str, Any]):
             "SESSION_COOKIE_SECURE": False,
             "SESSION_COOKIE_SAMESITE": None,
             "PERMANENT_SESSION_LIFETIME": 2678400,
-            "JSON_SORT_KEYS": True,
+            "JSON_SORT_KEYS": False,
             "JSONIFY_PRETTYPRINT_REGULAR": False,
             # Surface the verbose JSON decoder reason in the 400 response body.
             # Off in production so a malformed body can't leak decoder internals;
