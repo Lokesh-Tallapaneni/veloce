@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A `bool` query, path, header or cookie parameter accepts Pydantic's spellings (`on`/`off`, `t`/`f`, `y`/`n` as well as `true`/`false`, `1`/`0`, `yes`/`no`) and refuses anything else with a `422`; it previously read every unrecognised value, including `on` and any typo, as `False`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `log_exception` takes an optional `request=` and names it in the record. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Query strings and urlencoded bodies carrying no percent-escape skip per-field decoding. Measured on one Windows desktop: 20.9 vs 26.0 us for a three-parameter query read, 35.3 vs 43.4 us for a five-field form POST; an escaped value is unchanged. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `veloce.__version__` reads the package metadata on first access instead of at import. Measured on one Windows desktop: about 14 ms off a ~342 ms cold start. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

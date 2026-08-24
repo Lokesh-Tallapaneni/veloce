@@ -90,6 +90,25 @@ def _type_adapter(target_type: Any) -> TypeAdapter | None:
         return None
 
 
+# The boolean spellings a request value may take, matching what Pydantic accepts
+# so a bare `bool` parameter and one carried on a model agree about the same
+# query string. Anything outside these is refused rather than read as False:
+# `?errors_only=ture` meant "no filter", which is a bug the caller never heard
+# about, on a framework that already refuses `?page=abc`.
+_TRUE_VALUES = frozenset({"1", "on", "t", "true", "y", "yes"})
+_FALSE_VALUES = frozenset({"0", "off", "f", "false", "n", "no"})
+
+
+def _coerce_bool_value(value: str) -> bool:
+    """Read a request string as a boolean, refusing anything that is not one."""
+    lowered = value.lower()
+    if lowered in _TRUE_VALUES:
+        return True
+    if lowered in _FALSE_VALUES:
+        return False
+    raise ValueError(f"not a boolean: {value!r}")
+
+
 def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> Any:
     """Match a request value against a `Literal[...]` parameter.
 
@@ -102,7 +121,8 @@ def _coerce_literal(value: Any, target_type: Any, param_name: str, loc: str) -> 
     members = get_args(target_type)
     candidates: list[Any] = [value]
     if isinstance(value, str):
-        candidates.append(value.lower() in ("true", "1", "yes"))
+        with contextlib.suppress(ValueError):
+            candidates.append(_coerce_bool_value(value))
         with contextlib.suppress(ValueError):
             candidates.append(int(value))
         with contextlib.suppress(ValueError):
@@ -184,7 +204,7 @@ def _coerce_value(value: Any, target_type: Any, param_name: str, loc: str) -> An
             return float(value)
         if target_type is bool:
             if isinstance(value, str):
-                return value.lower() in ("true", "1", "yes")
+                return _coerce_bool_value(value)
             return bool(value)
         # Enum (or any class with __members__).
         if hasattr(target_type, "__members__"):

@@ -114,12 +114,13 @@ async def by_tags(request: Request, tag: list[str] = []):
     return {"tags": tag}   # /tags?tag=a&tag=b -> ["a", "b"]
 ```
 
-A `bool`-annotated query, path, header, or cookie parameter is coerced from
-the raw string.
+A `bool`-annotated query, path, header, or cookie parameter is read from the
+raw string. Case does not matter, and the accepted spellings are:
 
-The value is true only when it lower-cases to one of `true`,
-`1`, or `yes`; every other string (including `false`, `0`, `no`, `off`, and the
-empty string) coerces to `False`.
+| | Spellings |
+|---|---|
+| **True** | `true`, `1`, `on`, `t`, `y`, `yes` |
+| **False** | `false`, `0`, `off`, `f`, `n`, `no` |
 
 ```python
 from veloce import Request, Veloce
@@ -132,15 +133,30 @@ async def list_items(request: Request, archived: bool = False):
     return {"archived": archived}   # /items?archived=yes -> True
 ```
 
-!!! warning "Bool coercion accepts a fixed token set"
-    Unlike FastAPI, which treats `on`/`off` as valid bool tokens, Veloce only
-    recognises `true`, `1`, and `yes` (case-insensitively) as `True`.
+Anything else is a `422`, the same as `?page=abc` for an `int` — a value that
+contradicts the declared type is the caller's mistake to correct:
 
-    Anything else is `False` — there is no `422` for an unrecognised value, so a
-    typo like `archived=ture` silently reads as `False`.
+```json
+{"detail": [{"loc": ["query", "archived"],
+             "msg": "Invalid value for archived: expected bool",
+             "type": "type_error"}]}
+```
 
-    The same token set applies to `Query`, `Path`, `Header`, and `Cookie`
-    parameters.
+An omitted parameter still takes its default; only a *present* value that is
+not a boolean is refused.
+
+!!! note "Changed in version 0.18"
+    These are Pydantic's spellings, so a bare `bool` parameter and one carried
+    on a body model now agree about the same value. Previously only `true`,
+    `1` and `yes` were true and **every other string — including `on`, and
+    including a typo like `archived=ture` — read as `False` with no error**.
+
+    If you relied on that, the values to check are `on`/`off`/`t`/`f`/`y`/`n`
+    (which now mean what they say) and anything unrecognised (which now `422`s
+    instead of meaning `False`).
+
+    The same spellings apply to `Query`, `Path`, `Header`, and `Cookie`
+    parameters, and to a `Literal[True]` / `Literal[False]` annotation.
 
 ## Path
 
