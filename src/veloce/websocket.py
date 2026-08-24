@@ -8,6 +8,7 @@ import contextlib
 import enum
 import hashlib
 import inspect
+import logging
 import math
 import struct
 from typing import TYPE_CHECKING, Any, NoReturn, cast
@@ -96,6 +97,50 @@ def _validate_heartbeat(heartbeat: float | None) -> None:
 _PEER_CLOSE_CODES_OK = frozenset(
     {1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014}
 )
+
+_logger = logging.getLogger(__name__)
+
+
+def _sanitise_close(code: int, reason: str) -> tuple[int, str]:
+    """Normalise an outbound close code and reason to what may go on the wire.
+
+    RFC 6455 Sec. 5.5 caps a control frame at 125 bytes, so the reason is at
+    most 123 after the 2-byte code; the truncation walks back to a codepoint
+    boundary so the frame stays valid UTF-8. Sec. 7.4.1 reserves 1005, 1006 and
+    1015 for local use and forbids them - and anything outside the assigned
+    ranges - from appearing on the wire.
+
+    Applied above the transport branch in `close`, because only the raw branch
+    clamped: the same call closed cleanly on one transport and, under an ASGI
+    server whose library rejects the frame, dropped the socket so the peer saw
+    an abnormal 1006 instead.
+
+    An out-of-range code is coerced rather than raised. `close` runs on the
+    teardown path, where `Veloce._run_websocket` suppresses exceptions - a raise
+    would skip the close entirely and turn a bad code into the 1006 this is
+    meant to avoid.
+    """
+    if code > 4999 or (code < 3000 and code not in _PEER_CLOSE_CODES_OK):
+        _logger.warning(
+            "WebSocket close code %s may not appear on the wire (RFC 6455 Sec. 7.4.1); "
+            "closing with %s instead",
+            code,
+            WS_1000_NORMAL_CLOSURE,
+        )
+        code = WS_1000_NORMAL_CLOSURE
+    if not reason:
+        return code, ""
+    encoded = reason.encode("utf-8")
+    if len(encoded) <= 123:
+        return code, reason
+    encoded = encoded[:123]
+    while encoded:
+        try:
+            return code, encoded.decode("utf-8")
+        except UnicodeDecodeError:
+            encoded = encoded[:-1]
+    return code, ""
+
 
 # Terminal sentinel pushed onto the raw receive queue to wake a handler parked
 # in `receive_*()` when the connection is closed out-of-band (e.g. a heartbeat
@@ -1172,6 +1217,7 @@ class WebSocket:
         peer-initiated close already carries the peer's frame, so the reply is
         sent and the transport closed without waiting.
         """
+        code, reason = _sanitise_close(code, reason)
         if self._is_asgi:
             if self._closed:
                 return
@@ -1199,16 +1245,9 @@ class WebSocket:
             self._peer_close_event = asyncio.Event()
         payload = struct.pack("!H", code)
         if reason:
-            reason_bytes = reason.encode("utf-8")[:123]
-            # Walk back from a 123-byte truncation if the byte boundary
-            # landed mid-codepoint - keeps the close-frame valid UTF-8.
-            while reason_bytes:
-                try:
-                    reason_bytes.decode("utf-8")
-                    break
-                except UnicodeDecodeError:
-                    reason_bytes = reason_bytes[:-1]
-            payload += reason_bytes
+            # Already clamped to the control-frame budget on a codepoint
+            # boundary by `_sanitise_close`, above the transport branch.
+            payload += reason.encode("utf-8")
         with contextlib.suppress(Exception):
             self._send_frame(payload, opcode=0x8)
         # Server-initiated close: await the peer's reply close frame so both
