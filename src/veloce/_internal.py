@@ -41,6 +41,9 @@ from http import HTTPStatus
 from typing import Any
 
 from veloce._constants import (
+    HEADER_CONNECTION,
+    HEADER_VALUE_CLOSE,
+    HEADER_VALUE_KEEP_ALIVE,
     MIME_JSON,
     MIME_OCTET_STREAM,
     MIME_TEXT_HTML_UTF8,
@@ -50,6 +53,9 @@ from veloce._constants import (
 )
 from veloce._protocol_constants import SET_COOKIE_JOINER
 from veloce.secret import Secret
+
+# Lower-cased once: the head builder tests it against a set of folded names.
+HEADER_CONNECTION_LC = HEADER_CONNECTION.lower()
 
 MIME_HTML = MIME_TEXT_HTML_UTF8
 MIME_PLAIN = MIME_TEXT_PLAIN_UTF8
@@ -255,12 +261,22 @@ def _encode_response_head(
     status_code: int,
     default_headers: dict[str, str],
     headers: dict[str, str],
+    *,
+    keep_alive: bool,
 ) -> list[str]:
     """Build the HTTP/1.1 status line plus header lines for a response.
 
     Shared by ``Response.encode()``, ``StreamingResponse.encode()`` and
-    ``EventSourceResponse.stream_to()`` so the three raw-transport heads
-    stay in lock-step. ``default_headers`` are framework defaults applied
+    ``EventSourceResponse.encode()`` so the raw-transport heads stay in
+    lock-step.
+
+    ``keep_alive`` says whether the connection survives this response. It is
+    required rather than defaulted: each head used to hardcode
+    ``Connection: keep-alive`` while the protocol took the actual decision, so
+    an HTTP/1.0 request, or one asking for ``Connection: close``, was answered
+    by a server that closed the socket and a header saying it had not. Making
+    it required means a response type added later cannot inherit a default that
+    contradicts its transport. ``default_headers`` are framework defaults applied
     in their given order; each is emitted only when the caller has not
     supplied a header of the same name (case-insensitive), so a
     lower-cased ``content-type`` override does not produce a duplicate.
@@ -278,6 +294,14 @@ def _encode_response_head(
     parts = [f"HTTP/1.1 {status_code} {reason}".rstrip() + "\r\n"]
 
     user_keys_lc = {k.lower() for k in headers}
+    # The transport decides whether the connection survives; every head used to
+    # state `keep-alive` regardless, so a socket the server was about to close
+    # was described as reusable.
+    if HEADER_CONNECTION_LC not in user_keys_lc:
+        parts.append(
+            f"{HEADER_CONNECTION}: "
+            f"{HEADER_VALUE_KEEP_ALIVE if keep_alive else HEADER_VALUE_CLOSE}\r\n"
+        )
     for name, value in default_headers.items():
         if name.lower() not in user_keys_lc:
             _reject_header_crlf(value, f"{name} header value")

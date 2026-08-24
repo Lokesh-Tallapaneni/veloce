@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `Connection` header states what the built-in server actually did: an HTTP/1.0 request, one asking for `Connection: close`, and a native SSE stream were all answered `keep-alive` on a socket the server then closed. `EventSourceResponse` no longer sets `Connection` as a response header. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A `StreamingResponse` with a bodiless status (`204`, `205`, `304`) sends no chunks and advertises no `Transfer-Encoding`, which RFC 9112 Sec. 6.1 forbids there; it previously desynchronised keep-alive connections. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Assigning `response.body` refreshes `Content-Length`, as `set_data` already did; a middleware rewriting a body advertised the previous length. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A `HEAD` on an `EventSourceResponse` advertises the chunked framing its `GET` uses instead of `Content-Length: 0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

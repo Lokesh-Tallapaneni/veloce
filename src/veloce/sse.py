@@ -11,11 +11,9 @@ import orjson
 
 from veloce._constants import (
     HEADER_CACHE_CONTROL,
-    HEADER_CONNECTION,
     HEADER_CONTENT_TYPE,
     HEADER_TRANSFER_ENCODING,
     HEADER_VALUE_CHUNKED,
-    HEADER_VALUE_KEEP_ALIVE,
     HEADER_VALUE_NO_CACHE,
     HEADER_X_ACCEL_BUFFERING,
     MIME_TEXT_EVENT_STREAM,
@@ -187,10 +185,14 @@ class EventSourceResponse(Response):
         else:
             self._ping_frame = _PING_FRAME
         hdrs = dict(headers) if headers else {}
+        # `Connection` is deliberately not set here. It is the transport's
+        # decision, and stating it as a response header made it a user header
+        # that outranked the transport - so a native SSE stream, which the
+        # protocol closes when the generator ends, advertised `keep-alive` on a
+        # socket it was about to close. `encode()` takes the answer instead.
         hdrs.update(
             {
                 HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
-                HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
                 HEADER_X_ACCEL_BUFFERING: "no",
             }
         )
@@ -206,7 +208,7 @@ class EventSourceResponse(Response):
         # `bytes` stream - see `_encode_stream`.
         self._stream = self._encode_stream(content)
 
-    def encode(self) -> bytes:
+    def encode(self, keep_alive: bool = True) -> bytes:
         """Encode the event-stream head.
 
         `EventSourceResponse` extends `Response`, not `StreamingResponse`, so it
@@ -222,10 +224,11 @@ class EventSourceResponse(Response):
         default_headers = {
             HEADER_CONTENT_TYPE: self.content_type,
             HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
-            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
             HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
         }
-        parts = _encode_response_head(self.status_code, default_headers, self.headers)
+        parts = _encode_response_head(
+            self.status_code, default_headers, self.headers, keep_alive=keep_alive
+        )
         parts.append("\r\n")
         return "".join(parts).encode("latin-1")
 
@@ -233,6 +236,7 @@ class EventSourceResponse(Response):
         self,
         transport: Any,
         drain: Callable[[], Awaitable[None]] | None = None,
+        keep_alive: bool = True,
     ) -> None:
         """Stream SSE events to transport.
 
@@ -242,7 +246,7 @@ class EventSourceResponse(Response):
         instead of growing it without bound. It is a no-op until the buffer
         crosses the high-water mark.
         """
-        transport.write(self.encode())
+        transport.write(self.encode(keep_alive=keep_alive))
 
         async for chunk in self._stream:
             # `_stream` is normalised to bytes by `_encode_stream`.

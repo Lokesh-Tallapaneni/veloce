@@ -19,7 +19,6 @@ from veloce._constants import (
     HEADER_AGE,
     HEADER_ALLOW,
     HEADER_CACHE_CONTROL,
-    HEADER_CONNECTION,
     HEADER_CONTENT_DISPOSITION,
     HEADER_CONTENT_ENCODING,
     HEADER_CONTENT_LANGUAGE,
@@ -38,7 +37,6 @@ from veloce._constants import (
     HEADER_VALUE_ATTACHMENT,
     HEADER_VALUE_BYTES,
     HEADER_VALUE_CHUNKED,
-    HEADER_VALUE_KEEP_ALIVE,
     HEADER_VALUE_NO_CACHE,
     HEADER_VALUE_PUBLIC,
     HEADER_VARY,
@@ -348,9 +346,16 @@ class Response:
             self.status_code = int(head)
         self._encoded = None
 
-    def encode(self) -> bytes:
-        """Encode to raw HTTP/1.1 bytes - called once, cached."""
-        if self._encoded is not None:
+    def encode(self, keep_alive: bool = True) -> bytes:
+        """Encode to raw HTTP/1.1 bytes - called once, cached.
+
+        `keep_alive` is what the transport decided about this connection; the
+        head advertises it rather than always claiming `keep-alive`. Only the
+        keep-alive encode is cached, so a response re-encoded for a closing
+        connection cannot serve a stale `Connection` line, and the common path
+        keeps its single cached blob.
+        """
+        if keep_alive and self._encoded is not None:
             return self._encoded
 
         # Bodiless statuses (1xx/204/205/304) carry no payload and no default
@@ -363,17 +368,18 @@ class Response:
         is_304 = self.status_code == HTTP_304_NOT_MODIFIED
         body = self.body if body_allowed else b""
         advertised_length = len(self.body) if (body_allowed or is_304) else 0
-        default_headers = {
-            HEADER_CONTENT_LENGTH: str(advertised_length),
-            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
-        }
+        default_headers = {HEADER_CONTENT_LENGTH: str(advertised_length)}
         if body_allowed:
             default_headers = {HEADER_CONTENT_TYPE: self.content_type, **default_headers}
-        parts = _encode_response_head(self.status_code, default_headers, self.headers)
+        parts = _encode_response_head(
+            self.status_code, default_headers, self.headers, keep_alive=keep_alive
+        )
         parts.append("\r\n")
 
-        self._encoded = "".join(parts).encode("latin-1") + body
-        return self._encoded
+        encoded = "".join(parts).encode("latin-1") + body
+        if keep_alive:
+            self._encoded = encoded
+        return encoded
 
     def set_cookie(
         self,
@@ -1532,7 +1538,7 @@ class StreamingResponse(Response):
         for chunk in iterable:
             yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
 
-    def encode(self) -> bytes:
+    def encode(self, keep_alive: bool = True) -> bytes:
         """For streaming, encode headers with chunked transfer.
 
         A bodiless status carries neither a payload nor framing for one: RFC
@@ -1542,19 +1548,19 @@ class StreamingResponse(Response):
         applied the rule; this twin did not.
         """
         if not status_permits_body(self.status_code):
-            default_headers = {
-                HEADER_CONTENT_LENGTH: "0",
-                HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
-            }
-            parts = _encode_response_head(self.status_code, default_headers, self.headers)
+            default_headers = {HEADER_CONTENT_LENGTH: "0"}
+            parts = _encode_response_head(
+                self.status_code, default_headers, self.headers, keep_alive=keep_alive
+            )
             parts.append("\r\n")
             return "".join(parts).encode("latin-1")
         default_headers = {
             HEADER_CONTENT_TYPE: self.content_type,
             HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
-            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
         }
-        parts = _encode_response_head(self.status_code, default_headers, self.headers)
+        parts = _encode_response_head(
+            self.status_code, default_headers, self.headers, keep_alive=keep_alive
+        )
         parts.append("\r\n")
         return "".join(parts).encode("latin-1")
 
@@ -1562,6 +1568,7 @@ class StreamingResponse(Response):
         self,
         transport: Any,
         drain: Callable[[], Awaitable[None]] | None = None,
+        keep_alive: bool = True,
     ) -> None:
         """Stream chunks to transport.
 
@@ -1571,7 +1578,7 @@ class StreamingResponse(Response):
         write buffer without bound. `drain` is a no-op until the buffer crosses
         the high-water mark, so the fast path pays one already-set check.
         """
-        transport.write(self.encode())
+        transport.write(self.encode(keep_alive=keep_alive))
         # `transport.writelines` (where supported) keeps the size-line,
         # payload, and trailer as separate buffers instead of concatenating
         # them into a fresh bytes object per chunk; fall back to a single

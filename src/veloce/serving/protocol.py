@@ -1221,10 +1221,13 @@ class HttpProtocol(asyncio.Protocol):
         is_head = request.method == HTTP_METHOD_HEAD
         try:
             if getattr(response, "is_event_source", False):
+                # The stream owns the connection and this path closes it when
+                # the generator ends, so the head must say so rather than
+                # advertising a socket the client may reuse.
                 if is_head:
-                    self.transport.write(response.encode())
+                    self.transport.write(response.encode(keep_alive=False))
                 else:
-                    await response.stream_to(self.transport, drain=self.drain)
+                    await response.stream_to(self.transport, drain=self.drain, keep_alive=False)
                 self.transport.close()
                 return False
             if isinstance(response, StreamingResponse):
@@ -1233,13 +1236,15 @@ class HttpProtocol(asyncio.Protocol):
                     # a HEAD response stops there - no chunks, no chunked
                     # terminator (HEAD bodies are forbidden regardless of
                     # Transfer-Encoding).
-                    self.transport.write(response.encode())
+                    self.transport.write(response.encode(keep_alive=keep_alive))
                 else:
-                    await response.stream_to(self.transport, drain=self.drain)
+                    await response.stream_to(
+                        self.transport, drain=self.drain, keep_alive=keep_alive
+                    )
             elif is_head:
-                self.transport.write(_strip_response_body(response.encode()))
+                self.transport.write(_strip_response_body(response.encode(keep_alive=keep_alive)))
             else:
-                self.transport.write(response.encode())
+                self.transport.write(response.encode(keep_alive=keep_alive))
         except Exception:
             _logger.exception(MSG_ERROR_RESPONSE_EMISSION)
             self.transport.close()
@@ -1263,7 +1268,7 @@ class HttpProtocol(asyncio.Protocol):
         transport = self.transport
         if transport is not None and not transport.is_closing():
             try:
-                transport.write(response.encode())
+                transport.write(response.encode(keep_alive=False))
             except Exception:
                 _logger.exception(MSG_ERROR_RESPONSE_EMISSION)
             transport.close()

@@ -115,6 +115,8 @@ HEADER_VALUE_CHUNKED = "chunked"
 HEADER_VALUE_DENY = "DENY"
 HEADER_VALUE_GZIP = "gzip"
 HEADER_VALUE_KEEP_ALIVE = "keep-alive"
+# The `Connection` value for a response after which the socket closes.
+HEADER_VALUE_CLOSE = "close"
 HEADER_VALUE_NO_CACHE = "no-cache"
 HEADER_VALUE_NOSNIFF = "nosniff"
 HEADER_VALUE_PUBLIC = "public"
