@@ -218,8 +218,20 @@ class Response:
 
     @body.setter
     def body(self, value: bytes) -> None:
-        """Set the response body."""
+        """Set the response body, keeping any `Content-Length` in step.
+
+        `data` is documented as an alias for this attribute, but only
+        `set_data` refreshed the header - so a middleware that rewrote
+        `response.body` (the obvious spelling) advertised the old length and
+        desynchronised a keep-alive connection. The refresh lives here, on the
+        single assignment both spellings go through, rather than being repeated
+        by each caller. The constructor assigns `_body` directly, so a response
+        that never reassigns its body pays nothing.
+        """
         self._body = value
+        stored = header_key(self.headers, HEADER_CONTENT_LENGTH)
+        if stored is not None:
+            self.headers[stored] = str(len(value))
         self._encoded = None
 
     # ── `media_type` alias ────────────────────────────────
@@ -646,22 +658,15 @@ class Response:
         """Replace the response body.
 
         Accepts `bytes` or `str` (UTF-8 encoded). Invalidates the cached
-        HTTP/1.1 encode so the new body wire-out on the next emit.
-        Refreshes `Content-Length` when previously set on the headers.
+        HTTP/1.1 encode so the new body wire-out on the next emit, and
+        refreshes `Content-Length` when previously set - assigning
+        `response.body` directly does the same.
         """
         if isinstance(value, str):
             value = value.encode("utf-8")
-        # The `body` property setter clears `_encoded`; no separate
-        # invalidation needed.
+        # The `body` property setter clears `_encoded` and refreshes any
+        # `Content-Length`; no separate invalidation or refresh needed.
         self.body = value
-        # If `Content-Length` was explicitly set (e.g. by caller after
-        # the prior body), refresh it to match. The ASGI emit path
-        # always recomputes Content-Length from `body`, so leaving
-        # the header stale would only affect the raw HTTP/1.1 encode
-        # path. Keep both consistent.
-        for key in (HEADER_CONTENT_LENGTH, "content-length"):
-            if key in self.headers:
-                self.headers[key] = str(len(value))
 
     def set_cache_control(
         self,
@@ -1528,7 +1533,22 @@ class StreamingResponse(Response):
             yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
 
     def encode(self) -> bytes:
-        """For streaming, encode headers with chunked transfer."""
+        """For streaming, encode headers with chunked transfer.
+
+        A bodiless status carries neither a payload nor framing for one: RFC
+        9112 Sec. 6.1 forbids `Transfer-Encoding` on a 204, and a 204 that ships
+        chunks desynchronises a keep-alive connection because the client reads
+        them as the next response. The buffered `Response.encode` has always
+        applied the rule; this twin did not.
+        """
+        if not status_permits_body(self.status_code):
+            default_headers = {
+                HEADER_CONTENT_LENGTH: "0",
+                HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
+            }
+            parts = _encode_response_head(self.status_code, default_headers, self.headers)
+            parts.append("\r\n")
+            return "".join(parts).encode("latin-1")
         default_headers = {
             HEADER_CONTENT_TYPE: self.content_type,
             HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,

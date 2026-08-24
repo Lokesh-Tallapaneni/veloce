@@ -528,19 +528,26 @@ class AsgiMixin:
             # `http.response.body` chunks instead of one buffered
             # payload. No `content-length`: the ASGI server frames it.
             if response.is_streamed:
-                # CRLF-validate every header value - the ASGI emit path
-                # bypasses `Response.encode()`, so the splitting guard must
-                # be applied here too. Built-in content types hit the cache.
-                _ct = response.content_type
-                _ct_bytes = _CT_BYTES_CACHE.get(_ct)
-                if _ct_bytes is None:
-                    _ct_bytes = _reject_header_crlf(_ct, "content-type").encode()
                 stream_headers, _, _ = _build_asgi_headers(
                     response.headers, skip_content_length=True
                 )
-                # ASGI does not mandate header order, so append (O(1)) rather
-                # than insert at the front (O(n) list shift).
-                stream_headers.append((RAW_HEADER_CONTENT_TYPE, _ct_bytes))
+                # A bodiless status carries no payload and no default
+                # content-type, the same rule the buffered branch below
+                # applies. Without it a streamed 204 shipped its chunks, and a
+                # client on a keep-alive connection read them as the start of
+                # the next response.
+                _body_allowed = status.status_permits_body(response.status_code)
+                if _body_allowed:
+                    # CRLF-validate every header value - the ASGI emit path
+                    # bypasses `Response.encode()`, so the splitting guard must
+                    # be applied here too. Built-in content types hit the cache.
+                    _ct = response.content_type
+                    _ct_bytes = _CT_BYTES_CACHE.get(_ct)
+                    if _ct_bytes is None:
+                        _ct_bytes = _reject_header_crlf(_ct, "content-type").encode()
+                    # ASGI does not mandate header order, so append (O(1))
+                    # rather than insert at the front (O(n) list shift).
+                    stream_headers.append((RAW_HEADER_CONTENT_TYPE, _ct_bytes))
                 await send(
                     {
                         "type": ASGI_EVENT_HTTP_RESPONSE_START,
@@ -548,7 +555,7 @@ class AsgiMixin:
                         "headers": stream_headers,
                     }
                 )
-                if scope["method"] != HTTP_METHOD_HEAD:
+                if _body_allowed and scope["method"] != HTTP_METHOD_HEAD:
                     async for chunk in getattr(response, "_stream"):  # noqa: B009
                         await send(
                             {

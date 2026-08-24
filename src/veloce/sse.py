@@ -206,6 +206,29 @@ class EventSourceResponse(Response):
         # `bytes` stream - see `_encode_stream`.
         self._stream = self._encode_stream(content)
 
+    def encode(self) -> bytes:
+        """Encode the event-stream head.
+
+        `EventSourceResponse` extends `Response`, not `StreamingResponse`, so it
+        inherited the buffered `encode()` - and the native transport calls
+        `encode()` to answer a HEAD. A HEAD on an SSE route therefore advertised
+        `Content-Length: 0` for a resource whose GET streams indefinitely, which
+        a caching intermediary may act on. RFC 9110 Sec. 9.3.2 requires the
+        header section a GET would have produced.
+
+        `stream_to` writes this same head, so the two cannot come to describe
+        the response differently.
+        """
+        default_headers = {
+            HEADER_CONTENT_TYPE: self.content_type,
+            HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
+            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
+            HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
+        }
+        parts = _encode_response_head(self.status_code, default_headers, self.headers)
+        parts.append("\r\n")
+        return "".join(parts).encode("latin-1")
+
     async def stream_to(
         self,
         transport: Any,
@@ -219,15 +242,7 @@ class EventSourceResponse(Response):
         instead of growing it without bound. It is a no-op until the buffer
         crosses the high-water mark.
         """
-        default_headers = {
-            HEADER_CONTENT_TYPE: self.content_type,
-            HEADER_CACHE_CONTROL: HEADER_VALUE_NO_CACHE,
-            HEADER_CONNECTION: HEADER_VALUE_KEEP_ALIVE,
-            HEADER_TRANSFER_ENCODING: HEADER_VALUE_CHUNKED,
-        }
-        parts = _encode_response_head(self.status_code, default_headers, self.headers)
-        parts.append("\r\n")
-        transport.write("".join(parts).encode("latin-1"))
+        transport.write(self.encode())
 
         async for chunk in self._stream:
             # `_stream` is normalised to bytes by `_encode_stream`.
