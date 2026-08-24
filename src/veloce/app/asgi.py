@@ -416,12 +416,20 @@ class AsgiMixin:
             max_size = self.config.get("MAX_CONTENT_LENGTH")
             if max_size is not None:
                 declared_b: bytes | None = None
-                # ASGI mandates lowercase header names, but `.lower()`
-                # defends against a non-compliant server before we trust
-                # the declared length. The loop only runs when
-                # `MAX_CONTENT_LENGTH` is configured (cold on the hot path).
+                # Compared as received: ASGI mandates lowercase header names, so
+                # a compliant server matches here, and the config ships a default
+                # so this walks every header of every request - a `.lower()` per
+                # header is a bytes allocation each time, on requests that mostly
+                # carry no `Content-Length` at all.
+                #
+                # A server that violates that mandate loses only the early
+                # rejection, not the limit: both body branches below enforce the
+                # received length on their own (a running total across chunks,
+                # and `ASGIBodySource` for a streamed body), so an oversized body
+                # is still refused - just after the first read rather than before
+                # it.
                 for _hk, _hv in raw_headers:
-                    if _hk.lower() == RAW_HEADER_CONTENT_LENGTH:
+                    if _hk == RAW_HEADER_CONTENT_LENGTH:
                         declared_b = _hv
                         break
                 if declared_b is not None:

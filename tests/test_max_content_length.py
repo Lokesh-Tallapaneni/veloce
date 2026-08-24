@@ -253,3 +253,67 @@ def test_a_request_built_outside_a_transport_is_still_checked():
         return await app.handle_request(request)
 
     assert asyncio.run(drive()).status_code == 413
+
+
+# ── The declared-length scan compares the header as received ─────────
+#
+# ASGI mandates lowercase header names, so the scan matches the name as it
+# arrives rather than lowercasing every header of every request to find one
+# that is usually absent. What a spec-violating server loses is the *early*
+# rejection, not the limit: the received length is enforced independently on
+# both body branches. These drive the scope directly, because the test client
+# builds a compliant scope and could not express the violation.
+
+
+def _drive(app, headers: list[tuple[bytes, bytes]], body: bytes) -> int:
+    """Send one POST through the raw ASGI surface and return its status."""
+    status: list[int] = []
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "path": "/echo",
+        "raw_path": b"/echo",
+        "query_string": b"",
+        "headers": headers,
+        "client": ("127.0.0.1", 5555),
+        "server": ("127.0.0.1", 8000),
+        "scheme": "http",
+        "root_path": "",
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            status.append(message["status"])
+
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(app(scope, receive, send))
+    return status[0]
+
+
+def test_a_compliant_declared_length_over_the_limit_is_refused():
+    app = _app(max_size=16)
+    headers = [(b"host", b"testserver"), (b"content-length", b"999999")]
+    assert _drive(app, headers, b"x" * 999999) == 413
+
+
+def test_an_oddly_cased_declared_length_still_has_its_body_refused():
+    """The early rejection is lost; the limit is not."""
+    app = _app(max_size=16)
+    headers = [(b"host", b"testserver"), (b"Content-Length", b"999999")]
+    assert _drive(app, headers, b"x" * 999999) == 413
+
+
+def test_a_body_with_no_declared_length_at_all_is_still_refused():
+    app = _app(max_size=16)
+    assert _drive(app, [(b"host", b"testserver")], b"x" * 999999) == 413
+
+
+def test_an_oddly_cased_declared_length_within_the_limit_is_served():
+    app = _app(max_size=1024)
+    headers = [(b"host", b"testserver"), (b"Content-Length", b"8")]
+    assert _drive(app, headers, b"x" * 8) == 200
