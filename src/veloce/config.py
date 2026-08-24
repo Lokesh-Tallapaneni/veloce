@@ -252,6 +252,12 @@ class Config(dict[str, Any]):
             # background task on shutdown: each task is cancelled and awaited
             # for at most this long before the drain moves on.
             "GRACEFUL_TASK_TIMEOUT": 10,
+            # How long shutdown waits for in-flight requests to finish after
+            # every connection has been asked to quiesce. Separate from
+            # GRACEFUL_TASK_TIMEOUT, which bounds background-task cancellation:
+            # the two run in sequence, so a container's termination grace period
+            # must cover both.
+            "GRACEFUL_DRAIN_TIMEOUT": 30,
             # Seconds a WebSocket may sit idle before it is closed 1001.
             # `None` disables it. Applies on both transports.
             "WEBSOCKET_IDLE_TIMEOUT": None,

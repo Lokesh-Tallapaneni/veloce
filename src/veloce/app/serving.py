@@ -310,10 +310,17 @@ class ServingMixin:
         # Phase two (hard fallback): give in-flight dispatch tasks a bounded
         # window to finish draining, then cancel any straggler so shutdown
         # cannot block forever on a handler that ignores the drain.
+        #
+        # How long that window is belongs to the deployment, not to the
+        # framework: it has to fit inside the orchestrator's termination grace
+        # period, which the framework cannot know. Written as a literal here, a
+        # container with a ten-second grace was killed mid-drain and no operator
+        # setting could change it - while the two budgets either side of this
+        # line were both config-driven.
         if HttpProtocol._active_tasks:
             await asyncio.wait(
                 HttpProtocol._active_tasks,
-                timeout=30,
+                timeout=self.config.get("GRACEFUL_DRAIN_TIMEOUT", 30),
             )
 
         # Cancel any still-running tasks

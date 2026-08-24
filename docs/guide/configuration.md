@@ -72,6 +72,7 @@ The defaults are:
 | `TCP_KEEPALIVE_COUNT` | `None` | Failed probes before the connection is dropped (`TCP_KEEPCNT`); Linux only. |
 | `JSON_ERRORS_VERBOSE` | `False` | Include parser detail in JSON body-parse error responses. |
 | `GRACEFUL_TASK_TIMEOUT` | `10` | Seconds to wait for background tasks to finish cancelling on shutdown. |
+| `GRACEFUL_DRAIN_TIMEOUT` | `30` | Seconds shutdown waits for in-flight requests to finish. Runs before `GRACEFUL_TASK_TIMEOUT`, so a container's termination grace period must cover both. |
 | `WEBSOCKET_IDLE_TIMEOUT` | `None` | Seconds a WebSocket may sit idle before it is closed with `1001 Going Away`. `None` disables it. A handler's `set_idle_timeout()` overrides it. |
 
 A few of these keys drive framework behaviour directly. `MAX_CONTENT_LENGTH`

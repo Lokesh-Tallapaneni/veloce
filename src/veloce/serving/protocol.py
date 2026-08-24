@@ -36,6 +36,7 @@ from veloce.config import (
     DEFAULT_MAX_CONCURRENT_CONNECTIONS,
     DEFAULT_WRITE_BUFFER_HIGH_WATER,
 )
+from veloce.config import Config as _Config
 from veloce.exceptions import RequestEntityTooLarge, WebSocketDisconnect
 from veloce.http._body import RequestBodySource
 from veloce.http.request import Request
@@ -207,7 +208,10 @@ class HttpProtocol(asyncio.Protocol):
     _active_connections: int = 0
     _connections_lock: threading.Lock = threading.Lock()
 
-    KEEP_ALIVE_TIMEOUT = 75  # seconds (matches nginx default)
+    # Fallback for a protocol built without an app config. The shipped
+    # default lives in `Config.default_config()`; declaring the number in
+    # both places left two lines to keep in step for one value.
+    KEEP_ALIVE_TIMEOUT = _Config.default_config()["KEEP_ALIVE_TIMEOUT"]
     # Slowloris guard: once a request's bytes start arriving, the whole
     # request line + headers + body must complete within this budget,
     # otherwise the connection is dropped with 408. Bounds how long a

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Added
+- `GRACEFUL_DRAIN_TIMEOUT` bounds how long shutdown waits for in-flight requests; it was a literal 30 seconds no setting could reach. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Auditable` carries the audit contract for every middleware shape, so a `BaseHTTPMiddleware` can declare `sets_hardening_headers` and contribute findings. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Converter.specificity` declares how restrictive a custom converter is, so it can outrank `str` during route matching. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SecurityScheme.openapi_scheme` publishes a custom authentication scheme in the OpenAPI document like a built-in. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
