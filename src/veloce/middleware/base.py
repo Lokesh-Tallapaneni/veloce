@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import Any, ClassVar
 
 from veloce.http.request import Request
 from veloce.http.response import Response
@@ -30,6 +31,12 @@ class Middleware:
     # to the class name; a per-instance override is honoured by `__init__`.
     name: str = ""
 
+    # Set True by a middleware that adds hardening headers to every response.
+    # `Veloce.security_audit` warns when nothing in the stack claims this, and
+    # asks the marker rather than naming a class so a middleware outside this
+    # package answers the question too.
+    sets_hardening_headers: ClassVar[bool] = False
+
     def __init__(self, *, name: str | None = None) -> None:
         if name is not None:
             self.name = name
@@ -46,6 +53,17 @@ class Middleware:
     async def process_response(self, request: Request, response: Response) -> Response:
         """Called after route handler. Can modify the response."""
         return response
+
+    def security_posture(self, config: Any) -> list[str]:
+        """Return warnings about this middleware's own configuration.
+
+        `Veloce.security_audit` collects these from every registered
+        middleware, so a check belongs to the middleware it is about and an
+        app that does not register one never loads the code that checks it.
+        Return an empty list when nothing is wrong. Runs at audit time only -
+        never on a request path.
+        """
+        return []
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__}>"

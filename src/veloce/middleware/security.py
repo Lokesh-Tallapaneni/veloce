@@ -695,6 +695,8 @@ class SecurityHeadersMiddleware(Middleware):
     these are defaults, not overrides.
     """
 
+    sets_hardening_headers = True
+
     def __init__(
         self,
         *,

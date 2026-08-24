@@ -269,10 +269,31 @@ Once the package is installed, `veloce deploy prod` runs your command.
 
 ### What the audit can and cannot see
 
-The middleware checks recognise Veloce's own types: a session backend is
-seen by subclassing [`SessionMiddlewareBase`](../reference/middleware.md), and
-hardening headers by `SecurityHeadersMiddleware`. That covers both built-in
-session backends and any custom one written the documented way:
+Middleware reports on itself. The audit walks the registered middleware and
+asks each one, so a middleware written outside Veloce is audited on the same
+terms as a built-in:
+
+```python
+from veloce import Middleware
+
+class TenantAuthMiddleware(Middleware):
+    def security_posture(self, config):
+        if not config.get("TENANT_SIGNING_KEY"):
+            return ["TENANT_SIGNING_KEY is not set - tenant headers are unverified."]
+        return []
+```
+
+Anything that adds hardening headers declares it, and satisfies the
+headers check without being a `SecurityHeadersMiddleware`:
+
+```python
+class MyHeadersMiddleware(Middleware):
+    sets_hardening_headers = True
+```
+
+A session backend gets its cookie check by subclassing
+[`SessionMiddlewareBase`](../reference/middleware.md), which also carries the
+`session.permanent` lifetime rule:
 
 ```python
 from veloce import SessionMiddlewareBase
@@ -281,17 +302,12 @@ class RedisSessionMiddleware(SessionMiddlewareBase):
     ...
 ```
 
-A subclass inherits the `session.permanent` lifetime rule and is audited
-like a built-in. A session middleware written from `Middleware` directly
-gets neither — `veloce check` reports no issue while the cookie ships over
-plain HTTP.
-
 !!! warning "A clean audit is not a proof"
 
-    If you harden through a middleware outside these families, or at a
-    reverse proxy, the audit cannot see it and stays silent. Verify those
-    separately — the audit reports on what it can identify, not on
-    everything that matters.
+    The audit reports on this app's middleware. Hardening the app does not
+    own — TLS terminated at a reverse proxy, headers added by a CDN — is
+    invisible to it, as is a middleware that declares neither hook. Verify
+    those separately.
 
 ### Regex constraints and ReDoS
 

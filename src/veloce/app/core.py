@@ -66,13 +66,11 @@ from veloce.http.request import Request
 from veloce.http.response import (
     Response,
 )
-from veloce.middleware import Middleware
-from veloce.middleware.security import SecurityHeadersMiddleware
-from veloce.middleware.sessions import SessionMiddlewareBase
 from veloce.routing.router import Router, _readd_route
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon
+    from veloce.middleware import Middleware
 
 
 class Veloce(
@@ -945,6 +943,11 @@ class Veloce(
         self.config["SESSION_COOKIE_HTTPONLY"] = True
         if self.config.get("SESSION_COOKIE_SAMESITE") is None:
             self.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+        # Imported here, not at module scope: this is the one place the core
+        # constructs a specific middleware, and an app that never calls it
+        # should not load the module on its account.
+        from veloce.middleware.security import SecurityHeadersMiddleware
+
         if not any(isinstance(m, SecurityHeadersMiddleware) for m in self._middlewares):
             self.add_middleware(SecurityHeadersMiddleware(hsts_max_age=31536000))
 
@@ -957,12 +960,14 @@ class Veloce(
         CLI command and is also callable directly from a pre-deploy script or
         a test.
 
-        The middleware checks recognise Veloce's own types - a session
-        backend is seen by subclassing `SessionMiddlewareBase`, headers by
-        `SecurityHeadersMiddleware`. An app that hardens through a middleware
-        outside those families, or through a reverse proxy, is not seen here
-        and must be verified separately; a clean audit is not a statement
-        about middleware this framework cannot identify.
+        Middleware reports on itself: anything registered here contributes
+        through `Middleware.security_posture`, and anything adding hardening
+        headers says so with `Middleware.sets_hardening_headers`, so a
+        middleware written outside this package is audited on the same terms
+        as a built-in one. What stays invisible is hardening the app does not
+        own - a reverse proxy terminating TLS, or a middleware that declares
+        neither - so a clean audit is a statement about this app's middleware,
+        not about the deployment around it.
         """
         warnings: list[str] = []
         if self.debug:
@@ -972,18 +977,16 @@ class Veloce(
                 "SECRET_KEY is not set - session middleware that does not pass "
                 "its own secret_key= cannot sign cookies (set app.secret_key)."
             )
-        # The shared base, not one backend: testing the cookie backend alone let
-        # a server-side-session app pass this audit while shipping its session id
-        # over plain HTTP, and would miss any backend added later.
-        has_session = any(isinstance(m, SessionMiddlewareBase) for m in self._middlewares)
-        if has_session and not self.config.get("SESSION_COOKIE_SECURE"):
+        # Each middleware reports on its own configuration. Asking the
+        # registered instances - rather than naming classes here - keeps the
+        # core free of any middleware import, and lets a middleware written
+        # elsewhere be audited on the same terms as a built-in one.
+        for middleware in self._middlewares:
+            warnings.extend(middleware.security_posture(self.config))
+        if not any(type(m).sets_hardening_headers for m in self._middlewares):
             warnings.append(
-                "SESSION_COOKIE_SECURE is off - the session cookie can be sent over plain HTTP."
-            )
-        if not any(isinstance(m, SecurityHeadersMiddleware) for m in self._middlewares):
-            warnings.append(
-                "No SecurityHeadersMiddleware registered - responses ship without hardening "
-                "headers (call app.use_secure_defaults())."
+                "No middleware sets hardening headers - responses ship without nosniff, "
+                "frame-deny or a referrer policy (call app.use_secure_defaults())."
             )
         return warnings
 

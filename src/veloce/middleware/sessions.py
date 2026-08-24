@@ -263,10 +263,32 @@ class SessionMiddlewareBase(Middleware):
     #: Cookie and store lifetime, in seconds, for a session marked
     #: `session.permanent`.
     permanent_lifetime: int
+    #: Whether the session cookie carries `Secure`. A subclass that does not
+    #: set it is audited as insecure.
+    secure: bool = False
 
     def cookie_lifetime(self, session: Any) -> int:
         """Return the lifetime this session's cookie and entry should carry."""
         return self.permanent_lifetime if getattr(session, "permanent", False) else self.max_age
+
+    def cookie_is_secure(self, config: Any) -> bool:
+        """Whether this backend's session cookie will carry `Secure`.
+
+        A backend that took `secure=` explicitly is answered from that; one
+        that left it to the app is answered from `SESSION_COOKIE_SECURE`,
+        because the audit runs before the first request settles it. An
+        unanswerable backend reads as not secure, so the audit warns rather
+        than staying quiet about a cookie it cannot vouch for.
+        """
+        if "secure" in getattr(self, "_deferred_settings", ()):
+            return _coerce_bool(_cfg_or(config, "SESSION_COOKIE_SECURE", self.secure))
+        return bool(getattr(self, "secure", False))
+
+    def security_posture(self, config: Any) -> list[str]:
+        """Warn when this backend's session cookie can travel over plain HTTP."""
+        if self.cookie_is_secure(config):
+            return []
+        return ["SESSION_COOKIE_SECURE is off - the session cookie can be sent over plain HTTP."]
 
 
 class SessionMiddleware(SessionMiddlewareBase):
