@@ -312,6 +312,21 @@ def _http_status_for(error: MCPError) -> int:
     return status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
+class _ServerPageSize:
+    """Sentinel type: "use the server's configured page size".
+
+    A distinct type rather than a bare `object()` so the page-size parameter
+    narrows to `int | None` for the type checker once the sentinel is ruled out,
+    and so an explicit `page_size=None` - meaning "the whole catalogue, unpaged"
+    - stays distinguishable from "the caller said nothing".
+    """
+
+    __slots__ = ()
+
+
+_SERVER_PAGE_SIZE = _ServerPageSize()
+
+
 class MCPServer(TasksMixin, InvocationMixin):
     """Serve a Veloce app's MCP tools over JSON-RPC 2.0.
 
@@ -957,14 +972,27 @@ class MCPServer(TasksMixin, InvocationMixin):
         )
         return self._listing("tools", tools, _tool_key, self._describe_tool, params)
 
-    async def _handle_resources_list(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _resource_listing(
+        self, params: dict[str, Any], page_size: int | None | _ServerPageSize = _SERVER_PAGE_SIZE
+    ) -> dict[str, Any]:
+        """Build the `resources/list` result.
+
+        One implementation, called by the JSON-RPC handler and by
+        `MCPContext.list_resources`. The context method used to have its own,
+        which applied scope narrowing but not the connection's hidden set - so a
+        handler enumerating the catalogue contradicted the client's own listing.
+        """
         return self._listing(
             "resources",
             self._readable(self.resources.statics(), self._any_scoped_resources),
             _resource_key,
             _describe_resource,
             params,
+            page_size=page_size,
         )
+
+    async def _handle_resources_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._resource_listing(params)
 
     async def _handle_resource_templates_list(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._listing(
@@ -975,14 +1003,21 @@ class MCPServer(TasksMixin, InvocationMixin):
             params,
         )
 
-    async def _handle_prompts_list(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _prompt_listing(
+        self, params: dict[str, Any], page_size: int | None | _ServerPageSize = _SERVER_PAGE_SIZE
+    ) -> dict[str, Any]:
+        """Build the `prompts/list` result. See `_resource_listing`."""
         return self._listing(
             "prompts",
             self._readable(self.prompts.prompts.values(), self._any_scoped_prompts),
             _prompt_key,
             _describe_prompt,
             params,
+            page_size=page_size,
         )
+
+    async def _handle_prompts_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._prompt_listing(params)
 
     @staticmethod
     def _readable(items: Iterable[_ScopedT], any_scoped: bool) -> Iterable[_ScopedT]:
@@ -1004,12 +1039,17 @@ class MCPServer(TasksMixin, InvocationMixin):
         key_of: Callable[[Any], str],
         describe: Callable[[Any], dict[str, Any]],
         params: dict[str, Any],
+        page_size: int | None | _ServerPageSize = _SERVER_PAGE_SIZE,
     ) -> dict[str, Any]:
         """Shape one page of a catalogue into its list result.
 
         Paging happens before shaping, so a page costs the entries it emits
         rather than the whole catalogue. `nextCursor` is present only while more
         remain, which is what tells a client to ask again.
+
+        `page_size` overrides the server's own; `None` returns the whole
+        catalogue unpaged, which is what the `MCPContext` listings want - they
+        answer a handler, not a client that can ask again for the next page.
         """
         # A connection that hid something sees the catalogue without it. Applied
         # before paging, so a hidden entry never occupies a slot on a page.
@@ -1017,7 +1057,11 @@ class MCPServer(TasksMixin, InvocationMixin):
         hidden = session.hidden if session is not None else None
         if hidden:
             items = [item for item in items if key_of(item) not in hidden]
-        page, cursor = paginate(items, key_of, params.get("cursor"), self._page_size)
+        if isinstance(page_size, _ServerPageSize):
+            size: int | None = self._page_size
+        else:
+            size = page_size
+        page, cursor = paginate(items, key_of, params.get("cursor"), size)
         result: dict[str, Any] = {key: [describe(item) for item in page]}
         if cursor is not None:
             result["nextCursor"] = cursor
@@ -1482,10 +1526,6 @@ class MCPServer(TasksMixin, InvocationMixin):
 
     # ── Resources ─────────────────────────────────────────
 
-    def _resources_list(self) -> dict[str, Any]:
-        readable = self._readable(self.resources.statics(), self._any_scoped_resources)
-        return {"resources": [_describe_resource(r) for r in readable]}
-
     async def _resources_read(self, params: dict[str, Any]) -> dict[str, Any]:
         """Read one resource by URI, replaying its route through `_invoke`.
 
@@ -1536,10 +1576,6 @@ class MCPServer(TasksMixin, InvocationMixin):
         return {"contents": [_resource_contents(uri, response, _declared_mime_type(resource))]}
 
     # ── Prompts ───────────────────────────────────────────
-
-    def _prompts_list(self) -> dict[str, Any]:
-        readable = self._readable(self.prompts.prompts.values(), self._any_scoped_prompts)
-        return {"prompts": [_describe_prompt(p) for p in readable]}
 
     async def _prompts_get(self, params: dict[str, Any]) -> dict[str, Any]:
         """Render one prompt by name, replaying its callable through `_invoke`.

@@ -440,15 +440,25 @@ class MCPContext:
         return rendered
 
     def list_resources(self) -> list[dict[str, Any]]:
-        """List this server's registered resources, as `resources/list` reports them."""
+        """List this server's registered resources, as `resources/list` reports them.
+
+        Routed through the one listing builder rather than a private twin, so a
+        primitive this connection hid with `hide()` is absent here too - the
+        twin applied scope narrowing and not the hidden set, so a handler
+        enumerating the catalogue contradicted what the client's own listing
+        showed. Unpaged: a handler cannot ask again for the next page.
+        """
         server = self._require_server("list_resources")
-        resources: list[dict[str, Any]] = server._resources_list()["resources"]
+        resources: list[dict[str, Any]] = server._resource_listing({}, page_size=None)["resources"]
         return resources
 
     def list_prompts(self) -> list[dict[str, Any]]:
-        """List this server's registered prompts, as `prompts/list` reports them."""
+        """List this server's registered prompts, as `prompts/list` reports them.
+
+        Hidden-aware and unpaged, for the reasons `list_resources` gives.
+        """
         server = self._require_server("list_prompts")
-        prompts: list[dict[str, Any]] = server._prompts_list()["prompts"]
+        prompts: list[dict[str, Any]] = server._prompt_listing({}, page_size=None)["prompts"]
         return prompts
 
     async def send_notification(self, method: str, params: dict[str, Any] | None = None) -> None:
