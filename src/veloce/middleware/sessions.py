@@ -224,7 +224,38 @@ def _overlay_shared_cookie_config(middleware: Any, cfg: Any, deferred: set[str])
         middleware.samesite = _cfg_or(cfg, "SESSION_COOKIE_SAMESITE", middleware.samesite)
 
 
-class SessionMiddleware(Middleware):
+class _SessionMiddlewareBase(Middleware):
+    """The type, and the lifetime rule, that every session backend shares.
+
+    Two defects had one cause: there was no type meaning "a session
+    middleware". `security_audit` asks `isinstance` to warn about a session
+    cookie that is not `Secure`, and with only the cookie backend to name, a
+    server-side-session app passed `veloce check` clean while shipping its
+    session id over plain HTTP. And the documented `session.permanent` rule -
+    use the longer lifetime - was implemented on the cookie backend alone, so
+    "remember me" silently did nothing on the server-side one and users were
+    logged out at the default regardless of configuration.
+
+    A new backend inherits both by subclassing, with no edit in `app/core.py`;
+    the `ServerSessionMiddleware` docstring openly invites a Redis-backed one.
+    The shared cookie-attribute plumbing stays in the module-level helpers
+    (`_shared_cookie_settings`, `_overlay_shared_cookie_config`) that both
+    backends already call - this base owns the contract those helpers do not
+    carry, which is the type itself and the lifetime decision.
+    """
+
+    #: Cookie lifetime, in seconds, for a session not marked permanent.
+    max_age: int
+    #: Cookie and store lifetime, in seconds, for a session marked
+    #: `session.permanent`.
+    permanent_lifetime: int
+
+    def _cookie_lifetime(self, session: Any) -> int:
+        """Return the lifetime this session's cookie and entry should carry."""
+        return self.permanent_lifetime if getattr(session, "permanent", False) else self.max_age
+
+
+class SessionMiddleware(_SessionMiddlewareBase):
     """Server-side session stored in a signed, timestamped cookie.
 
     Constructor arguments left out fall back to the app's config on the first
@@ -487,8 +518,7 @@ class SessionMiddleware(Middleware):
             return response
 
         cookie_value = self._signer.dumps(session)
-        # A `permanent` session uses the longer lifetime for `Max-Age`.
-        lifetime = self.permanent_lifetime if getattr(session, "permanent", False) else self.max_age
+        lifetime = self._cookie_lifetime(session)
         # Browsers silently truncate Set-Cookie above ~4 KB, which corrupts
         # the session on the next request. Measure the rendered header and
         # drop the cookie (with a warning) rather than raising - a raise here
@@ -658,7 +688,7 @@ class SessionMiddleware(Middleware):
         )
 
 
-class ServerSessionMiddleware(Middleware):
+class ServerSessionMiddleware(_SessionMiddlewareBase):
     """Server-side session - the cookie carries only an opaque session id.
 
     The session payload lives in a `SessionStore`, not in the cookie, so a
@@ -682,6 +712,7 @@ class ServerSessionMiddleware(Middleware):
         store: SessionStore | None = None,
         cookie_name: str = _UNSET,
         max_age: int = 86400 * 14,
+        permanent_lifetime: int = _UNSET,
         path: str = _UNSET,
         httponly: bool = _UNSET,
         secure: bool = _UNSET,
@@ -721,6 +752,12 @@ class ServerSessionMiddleware(Middleware):
         self.store = store if store is not None else InMemorySessionStore()
         self.cookie_name = cookie_name
         self.max_age = max_age
+        # A session the handler marked `permanent` lives this long instead - the
+        # same rule the cookie backend applies, and the same default, so the two
+        # answer `session.permanent = True` identically. Left unset it is read
+        # from `PERMANENT_SESSION_LIFETIME` once an app is bound.
+        self._permanent_deferred = permanent_lifetime is _UNSET
+        self.permanent_lifetime = 86400 * 31 if permanent_lifetime is _UNSET else permanent_lifetime
         self.path = path
         self.httponly = httponly
         self.secure = secure
@@ -749,6 +786,13 @@ class ServerSessionMiddleware(Middleware):
         cfg = app.config if app is not None else {}
         deferred = self._deferred_settings
         _overlay_shared_cookie_config(self, cfg, deferred)
+        # Read from the same config key the cookie backend reads, so one app
+        # setting governs `session.permanent` whichever backend is installed.
+        if self._permanent_deferred:
+            self.permanent_lifetime = _coerce_int(
+                _cfg_or(cfg, "PERMANENT_SESSION_LIFETIME", self.permanent_lifetime),
+                name="PERMANENT_SESSION_LIFETIME",
+            )
         self._wire_cookie_name = _wire_name(self.cookie_prefix, self.cookie_name)
         _validate_cookie_security(
             cookie_prefix=self.cookie_prefix,
@@ -807,6 +851,9 @@ class ServerSessionMiddleware(Middleware):
             return response
 
         session_id = request._state.get("_session_id")
+        # One lifetime for the entry and its cookie, so a `permanent` session
+        # does not outlive its store entry or vice versa.
+        lifetime = self._cookie_lifetime(session)
         if not session:
             # The handler emptied the session - revoke it server-side and
             # tell the client to drop the cookie.
@@ -823,17 +870,17 @@ class ServerSessionMiddleware(Middleware):
                 await self.store.delete(session_id)
             # Mint an unguessable id - 256 bits of entropy - and create it.
             session_id = secrets.token_urlsafe(32)
-            await self.store.write(session_id, dict(session), self.max_age)
+            await self.store.write(session_id, dict(session), lifetime)
         else:
             # An already-stored session: write back only if it still
             # exists. A concurrent request may have revoked it (logout,
             # `store.delete(...)`) while this one was in flight - a plain
             # `write` would resurrect it, so use the conditional `replace`.
-            if not await self.store.replace(session_id, dict(session), self.max_age):
+            if not await self.store.replace(session_id, dict(session), lifetime):
                 # Revoked under us - honour the revocation and drop the cookie.
                 self._clear_session_cookie(response)
                 return response
-        self._set_session_cookie(response, session_id)
+        self._set_session_cookie(response, session_id, lifetime)
         return response
 
     async def _renew(self, request: Request, response: Response) -> None:
@@ -848,12 +895,15 @@ class ServerSessionMiddleware(Middleware):
         # there is nothing to slide forward.
         if session_id is None:
             return
-        if not await self.store.touch(session_id, self.max_age):
+        # Slide by the lifetime this session is entitled to, so a permanent one
+        # is not quietly demoted to the default window on a read-only request.
+        lifetime = self._cookie_lifetime(request._state.get("session"))
+        if not await self.store.touch(session_id, lifetime):
             self._clear_session_cookie(response)
             return
-        self._set_session_cookie(response, session_id)
+        self._set_session_cookie(response, session_id, lifetime)
 
-    def _set_session_cookie(self, response: Response, session_id: str) -> None:
+    def _set_session_cookie(self, response: Response, session_id: str, lifetime: int) -> None:
         """Write the opaque session-id cookie with this middleware's attributes.
 
         Single place mapping the cookie attribute set to `set_cookie`, mirroring
@@ -862,7 +912,7 @@ class ServerSessionMiddleware(Middleware):
         response.set_cookie(
             self.cookie_name,
             session_id,
-            max_age=self.max_age,
+            max_age=lifetime,
             path=self.path,
             domain=self.domain,
             httponly=self.httponly,

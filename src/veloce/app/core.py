@@ -956,7 +956,7 @@ class Veloce(
         pre-deploy script or a test.
         """
         from veloce.middleware.security import SecurityHeadersMiddleware
-        from veloce.middleware.sessions import SessionMiddleware
+        from veloce.middleware.sessions import _SessionMiddlewareBase
 
         warnings: list[str] = []
         if self.debug:
@@ -966,7 +966,10 @@ class Veloce(
                 "SECRET_KEY is not set - session middleware that does not pass "
                 "its own secret_key= cannot sign cookies (set app.secret_key)."
             )
-        has_session = any(isinstance(m, SessionMiddleware) for m in self._middlewares)
+        # The shared base, not one backend: testing the cookie backend alone let
+        # a server-side-session app pass this audit while shipping its session id
+        # over plain HTTP, and would miss any backend added later.
+        has_session = any(isinstance(m, _SessionMiddlewareBase) for m in self._middlewares)
         if has_session and not self.config.get("SESSION_COOKIE_SECURE"):
             warnings.append(
                 "SESSION_COOKIE_SECURE is off - the session cookie can be sent over plain HTTP."

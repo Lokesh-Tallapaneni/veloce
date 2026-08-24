@@ -314,9 +314,20 @@ Install the backend with `pip install veloceframework[redis]`.
 
 `ServerSessionMiddleware` takes the same cookie options as
 `SessionMiddleware` (`cookie_name`, `max_age`, `path`, `httponly`,
-`secure`, `samesite`) plus a `store` argument. It has no `secret_key`
-(the cookie carries no signed payload to protect) and no
-`permanent_lifetime`.
+`secure`, `samesite`, `permanent_lifetime`) plus a `store` argument. It has no
+`secret_key` — the cookie carries no signed payload to protect.
+
+`session.permanent = True` works the same way it does on the cookie backend: the
+cookie's `Max-Age` **and** the store entry's TTL both switch to
+`permanent_lifetime` (`PERMANENT_SESSION_LIFETIME`, 31 days by default), so the
+entry never expires out from under a cookie the client still holds.
+
+!!! warning "Changed in version 0.18"
+    `ServerSessionMiddleware` previously ignored `session.permanent` and used
+    `max_age` for every session, so "remember me" silently did nothing and users
+    were logged out after 14 days whatever `PERMANENT_SESSION_LIFETIME` said.
+    Permanent sessions now live longer than before — pass `permanent_lifetime=`
+    to cap it explicitly if that is not what you want.
 
 ### Revoking a session
 
