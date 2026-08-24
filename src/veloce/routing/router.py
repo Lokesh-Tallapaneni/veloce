@@ -28,11 +28,7 @@ from veloce._protocol_constants import (
     URL_SCHEME_HTTP,
 )
 from veloce.routing.converters import (
-    FloatConverter,
-    IntConverter,
-    PathConverter,
     StringConverter,
-    UUIDConverter,
     _Converter,
     _is_parametrized_spec,
     _iter_placeholders,
@@ -164,21 +160,21 @@ def _check_duplicate_params(full_path: str) -> None:
         seen.add(ph.name)
 
 
-# Converter specificity - lower = more restrictive = tried first during
-# match. Ensures `/items/{id:int}` beats `/items/{slug:str}` regardless
-# of registration order. The sort runs once per `add_route` call (at app
-# startup), never on the per-request match path.
-_CONVERTER_PRIORITY: dict[type, int] = {
-    UUIDConverter: 0,
-    IntConverter: 1,
-    FloatConverter: 2,
-    StringConverter: 3,
-    PathConverter: 4,
-}
-
-
 def _converter_sort_key(node: RadixNode) -> int:
-    return _CONVERTER_PRIORITY.get(type(node.converter), 3)
+    """Order competing parameter segments, most restrictive first.
+
+    The value comes from the converter (`_Converter.specificity`), not from a
+    table here: a table lists only the classes someone remembered to add, and
+    six of the eleven built-ins were missing from the one this replaced. They
+    silently scored the same as `str`, so which handler answered
+    `/a/2020-01-01` depended on the order the two routes appeared in the file.
+
+    Runs once per `add_route` at startup, never on the per-request match path.
+    """
+    converter = node.converter
+    # A parameter child always carries one; the fallback keeps the ordering
+    # defined rather than raising during registration if one ever does not.
+    return _Converter.specificity if converter is None else converter.specificity
 
 
 # ── Radix tree structures ──────────────────────────────────

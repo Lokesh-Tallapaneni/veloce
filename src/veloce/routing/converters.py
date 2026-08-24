@@ -84,6 +84,19 @@ class _Converter:
     __slots__ = ()
     greedy = False
 
+    #: How restrictive this converter is. When two parameter segments compete
+    #: for the same position, the lower value is tried first, so
+    #: `/items/{id:int}` beats `/items/{slug:str}` however they were declared.
+    #:
+    #: Declared on the converter rather than in a table the router keeps,
+    #: because a table only knows the classes someone remembered to add: six of
+    #: the eleven built-ins were missing from it and silently tied with `str`,
+    #: which made route resolution depend on the order the decorators appear in
+    #: the file. A custom converter that does not declare one is assumed no
+    #: more restrictive than `str`, which is the only safe assumption about a
+    #: pattern the framework cannot see.
+    specificity = 50
+
     def match(self, value: str) -> tuple[bool, Any]:
         """Validate (and coerce) `value`. Return (ok, coerced)."""
         raise NotImplementedError
@@ -100,6 +113,8 @@ class StringConverter(_Converter):
     """
 
     __slots__ = ("_minlength", "_maxlength")
+    #: Any single non-empty segment - the baseline.
+    specificity = 50
 
     _minlength: int
     _maxlength: int | None
@@ -147,6 +162,8 @@ class IntConverter(_Converter):
     """
 
     __slots__ = ("_min", "_max", "_signed")
+    #: Digits only, optionally signed.
+    specificity = 20
 
     def __init__(
         self,
@@ -188,6 +205,8 @@ class FloatConverter(_Converter):
     """
 
     __slots__ = ("_min", "_max", "_signed")
+    #: Digits with a required fractional part.
+    specificity = 41
 
     def __init__(
         self,
@@ -230,6 +249,8 @@ class UUIDConverter(_Converter):
     """Matches a canonical UUID per RFC 4122; coerces to uuid.UUID."""
 
     __slots__ = ()
+    #: A fixed 36-character format; almost nothing else matches.
+    specificity = 10
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept a canonical RFC 4122 UUID segment; coerce to `uuid.UUID`."""
@@ -245,6 +266,8 @@ class PathConverter(_Converter):
     """Greedy converter - consumes the rest of the URL, including slashes."""
 
     __slots__ = ()
+    #: Greedy: consumes the rest of the URL. Always tried last.
+    specificity = 90
     greedy = True
 
     def match(self, value: str) -> tuple[bool, Any]:
@@ -288,6 +311,8 @@ class DateConverter(_Converter):
     """Matches an ISO 8601 date; coerces to datetime.date."""
 
     __slots__ = ()
+    #: A fixed ISO-8601 shape.
+    specificity = 31
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept an ISO 8601 date segment; coerce to `datetime.date`."""
@@ -303,6 +328,8 @@ class DateTimeConverter(_Converter):
     """Matches an ISO 8601 datetime; coerces to datetime.datetime."""
 
     __slots__ = ()
+    #: A fixed ISO-8601 shape.
+    specificity = 30
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept an ISO 8601 datetime segment; coerce to `datetime.datetime`."""
@@ -318,6 +345,8 @@ class TimeConverter(_Converter):
     """Matches an ISO 8601 time; coerces to datetime.time."""
 
     __slots__ = ()
+    #: A fixed ISO-8601 shape.
+    specificity = 32
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept an ISO 8601 time segment; coerce to `datetime.time`."""
@@ -340,6 +369,8 @@ class TimeDeltaConverter(_Converter):
     """
 
     __slots__ = ()
+    #: A fixed duration shape.
+    specificity = 33
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept an ISO 8601 duration or `str(timedelta)` segment; coerce to `timedelta`."""
@@ -371,6 +402,8 @@ class DecimalConverter(_Converter):
     """Matches a decimal literal; coerces to decimal.Decimal."""
 
     __slots__ = ()
+    #: Digits with an optional fractional part.
+    specificity = 40
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept a decimal-literal segment; coerce to `decimal.Decimal`."""
@@ -386,6 +419,8 @@ class AnyConverter(_Converter):
     """Matches one of a fixed set of literal values: `{x:any(red,blue)}`."""
 
     __slots__ = ("_choices",)
+    #: An explicit set of literals - only those values match.
+    specificity = 25
 
     def __init__(self, choices: tuple[str, ...]) -> None:
         self._choices = frozenset(choices)
