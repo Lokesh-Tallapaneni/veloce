@@ -94,6 +94,8 @@ def build_input_schema(
     plan: HandlerPlan,
     schemas_registry: dict[str, dict[str, Any]],
     path_template: str | None = None,
+    *,
+    dependency_inputs: dict[str, _Slot] | None = None,
 ) -> dict[str, Any]:
     """Build the MCP tool input JSON Schema from a handler plan.
 
@@ -113,6 +115,14 @@ def build_input_schema(
     input is merged in by name; the `Depends` slots themselves (and other
     inject-only slots) are never inputs.
 
+    `dependency_inputs`, when given, is filled with the published inputs that
+    are declared *inside* a `Depends` sub-dependency, keyed by name. Those are
+    the ones `bind_arguments` does not coerce itself - it seeds them onto the
+    synthetic request for the HTTP resolver to read - so the caller needs them
+    to hold the call to the same declared types this schema advertises.
+    Collected here rather than by a second walk, because this is already the one
+    traversal that decides what a tool publishes.
+
     `path_template` is the backing route's path, for a tool exposed from one. Its
     parameters are part of the call's contract whether or not a signature names
     them - a dependency reading `request.path_params` consumes the same value -
@@ -123,7 +133,9 @@ def build_input_schema(
     properties: dict[str, Any] = {}
     required: list[str] = []
 
-    _collect_input_slots(plan.slots, properties, required, schemas_registry, set())
+    _collect_input_slots(
+        plan.slots, properties, required, schemas_registry, set(), input_slots=dependency_inputs
+    )
     if path_template:
         for name, param_schema in path_param_schemas(path_template).items():
             if name not in properties:
@@ -208,6 +220,8 @@ def _collect_input_slots(
     schemas_registry: dict[str, dict[str, Any]],
     seen_plans: set[int],
     in_depends: bool = False,
+    *,
+    input_slots: dict[str, _Slot] | None = None,
 ) -> None:
     """Accumulate client-supplied input properties from a slot list.
 
@@ -231,7 +245,13 @@ def _collect_input_slots(
                 continue
             seen_plans.add(plan_id)
             _collect_input_slots(
-                sub_plan.slots, properties, required, schemas_registry, seen_plans, True
+                sub_plan.slots,
+                properties,
+                required,
+                schemas_registry,
+                seen_plans,
+                True,
+                input_slots=input_slots,
             )
             continue
 
@@ -257,6 +277,8 @@ def _collect_input_slots(
         properties[slot.name] = prop_schema
         if is_required:
             required.append(slot.name)
+        if in_depends and input_slots is not None:
+            input_slots[slot.name] = slot
 
 
 def _collect_defs(
@@ -710,6 +732,7 @@ async def bind_arguments(
     route_dep_plans: list[Any] | None = None,
     request: Request | None = None,
     route_defaults: dict[str, Any] | None = None,
+    dependency_inputs: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Request]:
     """Resolve handler kwargs for a tool call from the JSON `arguments`.
 
@@ -737,6 +760,15 @@ async def bind_arguments(
     no URL, so the defaults are overlaid *under* the explicit `arguments`
     (explicit argument > route default > Python default) and the merged mapping
     feeds both handler-kwarg binding and the DI graph, matching HTTP precedence.
+
+    `dependency_inputs` names the published inputs declared inside a `Depends`
+    sub-dependency. Those are seeded onto the synthetic request for the HTTP
+    resolver to read, and that resolver reads a query string - where `"1"` and
+    `"yes"` have to mean true, because a query string has nothing else to offer.
+    An agent sends typed JSON and the tool's own `inputSchema` advertises the
+    declared type, so they are coerced here by the same strict rule the
+    top-level slots use. Without it, moving a parameter behind a dependency
+    silently changed whether the same value was accepted.
     """
     resolver.reset()
 
@@ -750,6 +782,23 @@ async def bind_arguments(
         if merged:
             merged.update(arguments)
             arguments = merged
+
+    # Hold a sub-dependency's inputs to the type this tool published, before the
+    # seeding below hands them to a resolver that reads query-string rules. A
+    # fresh dict is built only when there is something to coerce, so a tool with
+    # no `Depends` inputs pays one truthiness test.
+    if dependency_inputs:
+        coerced: dict[str, Any] | None = None
+        for name, slot in dependency_inputs.items():
+            if name not in arguments:
+                continue
+            value = _coerce_argument(slot, arguments[name])
+            if value is not arguments[name]:
+                if coerced is None:
+                    coerced = dict(arguments)
+                coerced[name] = value
+        if coerced is not None:
+            arguments = coerced
 
     # Expose the MCPContext to the resolver so a sub-dependency that declares a
     # parameter typed `MCPContext` receives it. The top-level handler's context

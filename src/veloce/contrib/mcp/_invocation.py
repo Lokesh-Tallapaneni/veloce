@@ -462,6 +462,7 @@ class InvocationMixin:
                 tool.route_dep_plans,
                 request=request,
                 route_defaults=route_defaults,
+                dependency_inputs=tool.dependency_inputs,
             )
         except RequestValidationError as err:
             raise _InvalidArgumentsError(_argument_error_text(err.errors)) from err

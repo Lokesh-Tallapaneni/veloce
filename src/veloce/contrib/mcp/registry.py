@@ -66,6 +66,13 @@ class MCPTool(MCPDescriptor):
     # `request.method` sees the route's real verb, not the MCP origin. `None`
     # for a pure `@app.mcp_tool`, which keeps the synthetic MCP method.
     route_method: str | None = None
+    # The published inputs declared inside a `Depends` sub-dependency, by name.
+    # `bind_arguments` coerces its own top-level slots but seeds these onto the
+    # synthetic request for the HTTP resolver to read, and that resolver reads a
+    # query string - where "1" and "yes" have to mean true. An agent sends typed
+    # JSON, and this tool's own `inputSchema` says so, so the door holds them to
+    # the declared type rather than to query-string rules.
+    dependency_inputs: dict[str, Any] = field(default_factory=dict)
     # Every HTTP method the route serves (a multi-verb route yields several).
     # The annotation hints are computed conservatively across this whole set so
     # a `GET`+`DELETE` route is flagged destructive even though its leading verb
@@ -289,7 +296,8 @@ def _register_explicit_tool(
     tool_name = f"{namespace}_{base}" if namespace else base
     desc = require_mcp_description(tool_name, description)
     plan = build_plan(handler)
-    schema = build_input_schema(plan, registry.schemas)
+    dependency_inputs: dict[str, Any] = {}
+    schema = build_input_schema(plan, registry.schemas, dependency_inputs=dependency_inputs)
     output_schema, output_model = _output_schema_for(handler, None, registry.schemas)
     registry.add(
         MCPTool(
@@ -298,6 +306,7 @@ def _register_explicit_tool(
             handler=handler,
             plan=plan,
             input_schema=schema,
+            dependency_inputs=dependency_inputs,
             output_schema=output_schema,
             output_model=output_model,
             required_scopes=scopes or frozenset(),
@@ -327,7 +336,10 @@ def _tool_from_route(
     tool_name = _tool_name_from_route_name(info.name)
     desc = require_mcp_description(tool_name, info.mcp_description)
     plan = info.handler_plan if info.handler_plan is not None else build_plan(info.handler)
-    schema = build_input_schema(plan, schemas_registry, info.path_template)
+    dependency_inputs: dict[str, Any] = {}
+    schema = build_input_schema(
+        plan, schemas_registry, info.path_template, dependency_inputs=dependency_inputs
+    )
     output_schema, output_model = _output_schema_for(info.handler, info, schemas_registry)
     return MCPTool(
         name=tool_name,
@@ -336,6 +348,7 @@ def _tool_from_route(
         handler=info.handler,
         plan=plan,
         input_schema=schema,
+        dependency_inputs=dependency_inputs,
         meta=getattr(info, "mcp_meta", None),
         output_schema=output_schema,
         output_model=output_model,
