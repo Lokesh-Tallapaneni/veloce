@@ -25,6 +25,20 @@ class MountingMixin:
         _static_handlers: Any
         _register_feature_state: Any
 
+    def _path_under_mount(self, path: str) -> bool:
+        """Whether `path` is served by a mounted sub-application.
+
+        Asked by the ASGI transport before it decides to drain the body: a
+        mounted path matches no route here, so without this the eager drain runs
+        before anything can ask whether the sub-app's route streams, and a
+        `stream=True` route silently became a buffered one once mounted. Only
+        consulted when the compiled pipeline says mounts exist.
+        """
+        for prefix, prefix_slash, _sub_app in self._mounted_apps:
+            if path.startswith(prefix_slash) or path == prefix:
+                return True
+        return False
+
     def mount(self, prefix: str, app: Any, *, expose_mcp: bool = False) -> None:
         """Mount a sub-application at a path prefix.
 

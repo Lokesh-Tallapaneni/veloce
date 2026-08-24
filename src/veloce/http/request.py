@@ -265,7 +265,13 @@ class Request:
 
     @classmethod
     def derive_for_mount(
-        cls, parent: Request, sub_path: str, body: bytes, sub_app: Any, prefix: str
+        cls,
+        parent: Request,
+        sub_path: str,
+        body: bytes,
+        sub_app: Any,
+        prefix: str,
+        body_source: Any = None,
     ) -> Request:
         """Build the request a mounted sub-app is dispatched with.
 
@@ -280,6 +286,10 @@ class Request:
         sees, the `root_path` that makes its `url_for` build prefix-correct URLs,
         and the now-stale absolute `raw_path`. This mirrors what `_asgi_app`
         already does for a mounted raw ASGI app.
+
+        `body_source` hands the live body over instead of bytes, for a sub-app
+        route that streams: only the sub-app knows whether its route does, so
+        the transport cannot decide before dispatch reaches here.
 
         `_length_enforced` deliberately stays `False`: the sub-app is checked
         against its own `MAX_CONTENT_LENGTH`, not its parent's.
@@ -297,6 +307,7 @@ class Request:
             transport=parent.transport,
             app=sub_app,
             scope=scope,
+            body_source=body_source,
         )
 
     # ── Method, path and query ────────────────────────────
@@ -1519,19 +1530,23 @@ class Request:
         Streamed requests (raw HTTP/1.1) yield each chunk as the socket
         delivers it, so `async for chunk in request.stream(): ...` processes
         a large body incrementally without ever buffering it whole. For
-        in-memory requests (TestClient / ASGI), or once a streamed body has
-        already been drained and cached, the buffered bytes are sliced into
-        64 KiB chunks instead.
+        in-memory requests (TestClient / ASGI) the buffered bytes are sliced
+        into 64 KiB chunks instead.
+
+        A streamed body is consume-once: nothing is retained as it passes, so a
+        later `request.body()` on a `stream=True` route sees an empty body
+        rather than a copy the route asked not to keep.
         """
         if self._body_source is not None and not self._body_drained:
-            # Pull live from the source so a streaming handler observes
-            # chunks at the cadence the protocol feeds them. Cache as we go
-            # so a later `.body()` / `.data` still sees the full payload.
-            parts: list[bytes] = []
+            # Pull live from the source so a streaming handler observes chunks at
+            # the cadence the protocol feeds them, and hold nothing. Accumulating
+            # them to back a later `.body()` gave every `stream=True` route the
+            # memory profile of a buffered one - 33.6 MB retained for a 32 MiB
+            # upload the handler had already consumed - which is the property the
+            # route opted in to avoid. A body source is consume-once, as an ASGI
+            # receive channel is, so the bytes are gone once yielded.
             async for chunk in self._body_source:
-                parts.append(chunk)
                 yield chunk
-            self._body = b"".join(parts)
             self._body_drained = True
             return
         body = await self._drain_body()

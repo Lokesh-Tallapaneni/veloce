@@ -207,6 +207,7 @@ class AsgiMixin:
         _setup_openapi: Callable[..., Any]
         _openapi_setup: bool
         _match_asgi_mount: Callable[..., Any]
+        _path_under_mount: Callable[..., Any]
         _run_lifecycle: Callable[..., Any]
         _pipeline: Any
         _gen: int
@@ -525,7 +526,14 @@ class AsgiMixin:
             # both before any body byte is read.
             method = scope["method"]
             match = self.match(method, path)
-            if match is not None and match.route_info.stream:
+            # A path under a mount matches nothing here - the route lives in the
+            # sub-app - so the eager drain below would run before anything could
+            # ask whether that route streams, and a `stream=True` route silently
+            # became a buffered one once its app was mounted. Hand the mounted
+            # path a lazy source instead and let the mount dispatch decide: it
+            # drains for a buffered sub-route, exactly as this branch would have.
+            mounted = match is None and cp.has_mounted_apps and self._path_under_mount(path)
+            if mounted or (match is not None and match.route_info.stream):
                 request = Request(
                     method=method,
                     path=path,

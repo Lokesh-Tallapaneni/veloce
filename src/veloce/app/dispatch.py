@@ -895,11 +895,26 @@ class DispatchMixin:
             for prefix, prefix_slash, sub_app in self._mounted_apps:
                 if request.path.startswith(prefix_slash) or request.path == prefix:
                     sub_path = request.path[len(prefix) :] or "/"
+                    # Only the sub-app knows whether its route streams. Hand the
+                    # body source straight over when it does, so a `stream=True`
+                    # route keeps streaming once mounted; otherwise drain here,
+                    # which is what the transport would have done at top level.
+                    sub_match = (
+                        sub_app.match(request.method, sub_path)
+                        if hasattr(sub_app, "match")
+                        else None
+                    )
+                    streams = sub_match is not None and sub_match.route_info.stream
                     # `derive_for_mount` owns what the mount changes and what it
                     # carries forward; it stacks under the parent's own root_path
                     # when the parent is itself mounted.
                     sub_request = Request.derive_for_mount(
-                        request, sub_path, await request.body(), sub_app, prefix
+                        request,
+                        sub_path,
+                        b"" if streams else await request.body(),
+                        sub_app,
+                        prefix,
+                        body_source=request._body_source if streams else None,
                     )
                     if hasattr(sub_app, "handle_request"):
                         response = await sub_app.handle_request(sub_request)
