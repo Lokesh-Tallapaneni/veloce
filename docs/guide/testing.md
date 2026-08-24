@@ -50,6 +50,27 @@ client = TestClient(app)
     so startup hooks have already populated `app.state` before your first call.
     The matching `shutdown` runs on `close()` or context-manager exit.
 
+!!! note "The event loop the client uses"
+    The client drives your app on its own event loop. On Windows that is a
+    `SelectorEventLoop` rather than the platform default: the in-memory client
+    opens no socket and spawns no process, so the default proactor loop's I/O
+    completion port is pure overhead on every request.
+
+    Pass your own loop when you need one — in particular for a handler that
+    calls `asyncio.create_subprocess_exec`, which on Windows requires the
+    proactor loop:
+
+    ```python
+    import asyncio
+
+    from veloce.testclient import TestClient
+
+    loop = asyncio.ProactorEventLoop()
+    client = TestClient(app, loop=loop)
+    ```
+
+    A loop you pass is yours: the client never closes it.
+
 ## Making requests
 
 The client mirrors the HTTP verbs and returns a response object exposing these

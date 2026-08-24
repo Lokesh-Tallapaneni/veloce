@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import mimetypes
 import secrets
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 from urllib.parse import unquote, urlencode, urlparse
@@ -598,6 +599,24 @@ async def _collect_response(app: Any, scope: dict[str, Any], receive: Any) -> Te
     return TestResponse(status_code, b"".join(body_chunks), raw_headers)
 
 
+def _new_loop() -> asyncio.AbstractEventLoop:
+    """Build the event loop a test client drives its app on.
+
+    On Windows the default is the proactor loop, whose every iteration goes
+    through an I/O completion port. The in-memory client opens no socket and
+    spawns no process, so that machinery runs on each request and finds nothing
+    to do; the selector loop does the same work materially cheaper.
+
+    The one thing it cannot do is `asyncio.create_subprocess_*`, which on
+    Windows requires the proactor loop. A test whose handler spawns a
+    subprocess passes its own loop instead: `TestClient(app,
+    loop=asyncio.ProactorEventLoop())`.
+    """
+    if sys.platform == "win32":
+        return asyncio.SelectorEventLoop()
+    return asyncio.new_event_loop()
+
+
 # ── Sync client ───────────────────────────────────────────
 
 
@@ -623,6 +642,7 @@ class TestClient:
         app: Any,
         base_url: str = f"{URL_SCHEME_HTTP}://testserver",
         follow_redirects: bool = False,
+        loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         self.app = app
         self.base_url = base_url
@@ -632,11 +652,16 @@ class TestClient:
         self._owns_loop = False
         self._lifespan_run = False
 
-        try:
-            self._loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self._loop = asyncio.new_event_loop()
-            self._owns_loop = True
+        if loop is not None:
+            # A caller's loop is theirs to close; see `_new_loop` for the one
+            # case that needs this.
+            self._loop = loop
+        else:
+            try:
+                self._loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._loop = _new_loop()
+                self._owns_loop = True
 
         # The in-memory test client is a testing tool: relax the
         # first-request setup lock so a test can register routes/hooks between
