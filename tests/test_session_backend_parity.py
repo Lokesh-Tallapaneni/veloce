@@ -6,7 +6,7 @@ a server-side-session app passed `veloce check` clean while shipping its session
 id over plain HTTP. And the documented `session.permanent` rule - use the longer
 lifetime - lived on the cookie backend only, so "remember me" silently did
 nothing on the server-side one: users were logged out at the default window
-whatever `PERMANENT_SESSION_LIFETIME` said.
+whatever `permanent_lifetime=` said.
 
 `SessionMiddlewareBase` now carries the type and the lifetime decision, so a
 backend added later inherits both without an edit in `app/core.py`.
@@ -120,12 +120,12 @@ def test_a_backend_added_later_is_audited_without_touching_the_audit():
 
 def test_the_server_backend_honours_permanent():
     """The defect: it used its default window whatever the config said."""
-    client = _app(ServerSessionMiddleware(), permanent=True, PERMANENT_SESSION_LIFETIME=_PERMANENT)
+    client = _app(ServerSessionMiddleware(permanent_lifetime=_PERMANENT), permanent=True)
     assert _max_age(client.get("/login")) == _PERMANENT
 
 
 def test_the_server_backend_still_uses_its_default_when_not_permanent():
-    client = _app(ServerSessionMiddleware(), permanent=False, PERMANENT_SESSION_LIFETIME=_PERMANENT)
+    client = _app(ServerSessionMiddleware(permanent_lifetime=_PERMANENT), permanent=False)
     assert _max_age(client.get("/login")) == _DEFAULT
 
 
@@ -135,19 +135,15 @@ def test_both_backends_agree_on_the_cookie_lifetime(permanent):
     cookie = _app(
         SessionMiddleware(secret_key="k", max_age=_DEFAULT),
         permanent=permanent,
-        PERMANENT_SESSION_LIFETIME=_PERMANENT,
     )
-    server = _app(
-        ServerSessionMiddleware(), permanent=permanent, PERMANENT_SESSION_LIFETIME=_PERMANENT
-    )
+    server = _app(ServerSessionMiddleware(permanent_lifetime=_PERMANENT), permanent=permanent)
     assert _max_age(cookie.get("/login")) == _max_age(server.get("/login"))
 
 
-def test_an_explicit_permanent_lifetime_beats_the_config():
+def test_an_explicit_permanent_lifetime_is_honoured():
     client = _app(
         ServerSessionMiddleware(permanent_lifetime=99),
         permanent=True,
-        PERMANENT_SESSION_LIFETIME=_PERMANENT,
     )
     assert _max_age(client.get("/login")) == 99
 
@@ -161,7 +157,6 @@ def test_the_store_ttl_matches_the_permanent_cookie_lifetime():
     client = _app(
         ServerSessionMiddleware(store=store),
         permanent=True,
-        PERMANENT_SESSION_LIFETIME=_PERMANENT,
     )
     response = client.get("/login")
     assert store.ttls == [_PERMANENT]
@@ -174,7 +169,6 @@ def test_a_renewed_permanent_session_slides_by_the_permanent_lifetime():
     client = _app(
         ServerSessionMiddleware(store=store, renew_on_access=True),
         permanent=True,
-        PERMANENT_SESSION_LIFETIME=_PERMANENT,
     )
     client.get("/login")
     store.ttls.clear()

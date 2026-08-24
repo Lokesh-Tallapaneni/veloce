@@ -38,9 +38,9 @@ if TYPE_CHECKING:  # pragma: no cover
 # `__name__` (which would resolve to "veloce.middleware.sessions").
 _logger = logging.getLogger("veloce.sessions")
 
-# Marks a constructor argument the caller left out, so it can be resolved
-# against `app.config` on the first request. `None` cannot serve as the
-# marker - it is a meaningful value for several settings (e.g. `samesite`).
+# Marks a constructor argument the caller left out, so the library default
+# applies. `None` cannot serve as the marker - it is a meaningful value for
+# several settings (e.g. `samesite`).
 _UNSET: Any = object()
 
 # RFC 6265 Sec. 6.1 only mandates 4096 bytes per cookie (name + value + attrs);
@@ -181,8 +181,8 @@ def _begin_session_response(
     return accessed, modified
 
 
-# The cookie settings both session middlewares take, and what each falls back
-# to when the constructor is not given one. Held here rather than spelled out in
+# The cookie settings both session middlewares take, and the default each uses
+# when the constructor is not given one. Held here rather than spelled out in
 # each `__init__` so a new shared setting is wired in one place - the two copies
 # had already diverged in how they render SameSite.
 _SHARED_COOKIE_DEFAULTS: dict[str, Any] = {
@@ -211,10 +211,13 @@ def _shared_cookie_settings(**supplied: Any) -> dict[str, Any]:
 # Config keys that configured the session cookie before the constructor became
 # its only source. Kept only to recognise a stale configuration and say so.
 _RETIRED_CONFIG_KEYS: dict[str, str] = {
-    "SESSION_COOKIE_NAME": "cookie_name",
+    "APPLICATION_ROOT": "path",
+    "MAX_COOKIE_SIZE": "max_cookie_size",
+    "PERMANENT_SESSION_LIFETIME": "permanent_lifetime",
     "SESSION_COOKIE_HTTPONLY": "httponly",
-    "SESSION_COOKIE_SECURE": "secure",
+    "SESSION_COOKIE_NAME": "cookie_name",
     "SESSION_COOKIE_SAMESITE": "samesite",
+    "SESSION_COOKIE_SECURE": "secure",
 }
 
 
@@ -287,7 +290,9 @@ class SessionMiddlewareBase(Middleware):
                 f"{', '.join(stale)} no longer configures the session cookie - "
                 f"{type(self).__name__} takes its cookie settings from its constructor.",
                 severity="error",
-                fix=f"pass {_RETIRED_CONFIG_KEYS[stale[0]]}= to {type(self).__name__}",
+                fix="pass "
+                + ", ".join(f"{_RETIRED_CONFIG_KEYS[key]}=" for key in stale)
+                + f" to {type(self).__name__}",
                 id="session-config-retired",
             )
         if not self.cookie_is_secure():
@@ -302,14 +307,15 @@ class SessionMiddlewareBase(Middleware):
 class SessionMiddleware(SessionMiddlewareBase):
     """Server-side session stored in a signed, timestamped cookie.
 
-    Constructor arguments left out fall back to the app's config on the first
-    request: `secret_key` to `SECRET_KEY` (also settable as `app.secret_key`),
-    `cookie_name` to `SESSION_COOKIE_NAME`, `path` to `APPLICATION_ROOT`,
-    `httponly`/`secure`/`samesite` to the `SESSION_COOKIE_*` keys,
-    `permanent_lifetime` to `PERMANENT_SESSION_LIFETIME`, and
-    `max_cookie_size` to `MAX_COOKIE_SIZE`. An explicit argument always wins
-    over config. Without either a `secret_key=` argument or a configured
-    `SECRET_KEY`, the first request raises.
+    Every cookie setting comes from this constructor. An argument left out
+    takes the library default and does not change again - `app.config` is not
+    consulted, so what the signature says is what the cookie carries, and two
+    session middlewares can carry different cookies.
+
+    `secret_key` is the exception: left out, it is taken from `SECRET_KEY`
+    (also settable as `app.secret_key`) on the first request, because it is the
+    application's signing key rather than an attribute of this cookie. Without
+    either, the first request raises.
 
     Set `renew_on_access=True` for sliding expiry: a session that was only read
     during a request has its cookie re-signed with a fresh `Max-Age` on the way
@@ -346,13 +352,9 @@ class SessionMiddleware(SessionMiddlewareBase):
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
-        # Arguments left out resolve against `app.config` on the first
-        # request: SECRET_KEY, SESSION_COOKIE_NAME, APPLICATION_ROOT (cookie
-        # path), SESSION_COOKIE_HTTPONLY, SESSION_COOKIE_SECURE,
-        # SESSION_COOKIE_SAMESITE, PERMANENT_SESSION_LIFETIME and
-        # MAX_COOKIE_SIZE. The library defaults are installed now as working
-        # stand-ins, so the object is fully formed at construction and
-        # behaves exactly as before when no config key overrides them.
+        # Every cookie setting is settled here from the argument or the library
+        # default, so the object is fully formed at construction. Only
+        # `secret_key` is still resolved later, against `SECRET_KEY`.
         shared = _shared_cookie_settings(
             cookie_name=cookie_name,
             path=path,
@@ -735,8 +737,8 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
-        # Cookie settings left out resolve against `app.config` on the first
-        # request (see SessionMiddleware); library defaults stand in until then.
+        # Every cookie setting comes from the argument or the library default
+        # (see SessionMiddleware); `app.config` is not consulted.
         shared = _shared_cookie_settings(
             cookie_name=cookie_name,
             path=path,

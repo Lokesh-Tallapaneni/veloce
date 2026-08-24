@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
+- `APPLICATION_ROOT`, `MAX_COOKIE_SIZE` and `PERMANENT_SESSION_LIFETIME` are removed from the config defaults and stop startup when set; pass `path=`, `max_cookie_size=` and `permanent_lifetime=` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `SessionMiddleware` and `ServerSessionMiddleware` take every cookie setting from their constructor; `SESSION_COOKIE_NAME`, `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_HTTPONLY` and `SESSION_COOKIE_SAMESITE` no longer configure them, and setting one stops startup with `AuditFailed`. Pass `secure=True` and the rest as arguments. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SECRET_KEY` remains the one session setting read from the app; a middleware given no `secret_key=` still signs with it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

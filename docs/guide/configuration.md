@@ -50,7 +50,6 @@ The defaults are:
 | `TESTING` | `False` | Mark the app as under test. |
 | `SECRET_KEY` | `None` | Key for signing sessions and tokens. |
 | `SERVER_NAME` | `None` | Host (and optional port) used for URL building. |
-| `APPLICATION_ROOT` | `"/"` | Mount path of the application; also the default `Path` of the session cookie. |
 | `PREFERRED_URL_SCHEME` | `"http"` | Scheme used when generating external URLs. |
 | `MAX_CONTENT_LENGTH` | `104857600` (100 MiB) | Maximum request body size in bytes. The body is buffered in memory, so the default bounds a large-request OOM; raise it for large-upload endpoints, or set `None` for unlimited. |
 | `MAX_FORM_PARTS` | `1000` | Maximum number of form parts (multipart) or fields (urlencoded). `None` lifts the cap for both. |
@@ -60,8 +59,6 @@ The defaults are:
 | `MAX_FORM_FILE_SIZE` | `None` | Per-file size limit in bytes; overrides `MAX_FORM_PART_SIZE` for file parts. |
 | `MAX_FORM_FIELD_SIZE` | `None` | Per-text-field size limit in bytes; overrides `MAX_FORM_PART_SIZE` for text parts. |
 | `MAX_FORM_FIELD_MEMORY` | `None` | Cumulative resident-memory ceiling (bytes) across all text fields, including field-name bytes. |
-| `MAX_COOKIE_SIZE` | `4093` | Size ceiling for the emitted session cookie. |
-| `PERMANENT_SESSION_LIFETIME` | `2678400` | Lifetime of a permanent session in seconds (31 days). |
 | `JSON_SORT_KEYS` | `False` | Sort keys when serialising JSON responses. |
 | `JSONIFY_PRETTYPRINT_REGULAR` | `False` | Pretty-print JSON responses. |
 | `PROPAGATE_EXCEPTIONS` | `None` | Re-raise unhandled exceptions out of dispatch. |
@@ -299,7 +296,7 @@ app = Veloce()
 app.config.from_mapping(
     {"DEBUG": False},
     SECRET_KEY="from-mapping",
-    MAX_COOKIE_SIZE=8192,
+    PREFERRED_URL_SCHEME="https",
 )
 ```
 

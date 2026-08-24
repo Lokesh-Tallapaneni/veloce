@@ -150,9 +150,7 @@ _ENV_TYPED_NONE_DEFAULTS: dict[str, str] = {
 
 #: Keys an env file supplies as free-form text. Listed so the completeness test
 #: can tell "deliberately a string" from "nobody decided yet".
-_ENV_FREE_FORM: frozenset[str] = frozenset(
-    {"SECRET_KEY", "SERVER_NAME", "APPLICATION_ROOT", "PREFERRED_URL_SCHEME"}
-)
+_ENV_FREE_FORM: frozenset[str] = frozenset({"SECRET_KEY", "SERVER_NAME", "PREFERRED_URL_SCHEME"})
 
 
 def _coerce_env_value(key: str, value: Any, current: Any) -> Any:
@@ -206,7 +204,6 @@ class Config(dict[str, Any]):
             "TESTING": False,
             "SECRET_KEY": None,
             "SERVER_NAME": None,
-            "APPLICATION_ROOT": "/",
             "PREFERRED_URL_SCHEME": URL_SCHEME_HTTP,
             # Default request-body ceiling. The body is buffered in memory, so an
             # unbounded default lets one large request OOM the process; 100 MiB is
@@ -220,11 +217,9 @@ class Config(dict[str, Any]):
             "MAX_FORM_FILE_SIZE": None,
             "MAX_FORM_FIELD_SIZE": None,
             "MAX_FORM_FIELD_MEMORY": None,
-            "MAX_COOKIE_SIZE": 4093,
             # Finding ids the audit drops. An accepted finding is turned off
             # by id so the audit stays on for everything else.
             "SILENCED_AUDIT_IDS": (),
-            "PERMANENT_SESSION_LIFETIME": 2678400,
             "JSON_SORT_KEYS": False,
             "JSONIFY_PRETTYPRINT_REGULAR": False,
             # Surface the verbose JSON decoder reason in the 400 response body.

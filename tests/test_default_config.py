@@ -20,7 +20,6 @@ def test_default_config_values():
     assert app.config["DEBUG"] is False
     assert app.config["TESTING"] is False
     assert app.config["JSON_SORT_KEYS"] is False
-    assert app.config["APPLICATION_ROOT"] == "/"
     assert app.config["PREFERRED_URL_SCHEME"] == "http"
 
 
@@ -41,6 +40,9 @@ def test_the_session_cookie_keys_are_not_seeded():
         "SESSION_COOKIE_SECURE",
         "SESSION_COOKIE_HTTPONLY",
         "SESSION_COOKIE_SAMESITE",
+        "APPLICATION_ROOT",
+        "MAX_COOKIE_SIZE",
+        "PERMANENT_SESSION_LIFETIME",
     ):
         assert key not in app.config
 
@@ -64,10 +66,13 @@ def test_each_app_gets_independent_config():
     assert b.config["DEBUG"] is False
 
 
-def test_permanent_session_lifetime_default():
-    app = Veloce()
-    # 31 days in seconds — the default.
-    assert app.config["PERMANENT_SESSION_LIFETIME"] == 2678400
+def test_the_session_lifetime_default_lives_on_the_middleware():
+    """It configures the cookie, so it belongs to the middleware, not config."""
+    from veloce import SessionMiddleware
+
+    assert "PERMANENT_SESSION_LIFETIME" not in Veloce().config
+    # 31 days in seconds - the default.
+    assert SessionMiddleware(secret_key="k" * 32).permanent_lifetime == 2678400
 
 
 class TestAppConfig:
