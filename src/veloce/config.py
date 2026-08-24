@@ -22,6 +22,7 @@ from typing import IO, Any
 
 import orjson
 
+from veloce._internal import _coerce_bool, _coerce_int
 from veloce._protocol_constants import URL_SCHEME_HTTP
 
 # Per-process cap on simultaneously-open connections for the built-in serving
@@ -126,6 +127,62 @@ def _import_string(dotted_path: str) -> object:
             ) from err
         return obj
     raise ImportError(f"could not import {dotted_path!r}")
+
+
+#: Keys whose value is typed but whose default is `None`, so the type cannot be
+#: read off the default. Every other key is typed from its own default, and
+#: `tests/test_env_file_typing.py` asserts this table plus the typed defaults
+#: covers every key in `default_config()` - a new key cannot be added without a
+#: decision about what an env file's string should become.
+_ENV_TYPED_NONE_DEFAULTS: dict[str, str] = {
+    "MAX_FORM_FIELDS": "int",
+    "MAX_FORM_FIELD_MEMORY": "int",
+    "MAX_FORM_FIELD_SIZE": "int",
+    "MAX_FORM_FILES": "int",
+    "MAX_FORM_FILE_SIZE": "int",
+    "PROPAGATE_EXCEPTIONS": "bool",
+    "SEND_FILE_MAX_AGE_DEFAULT": "int",
+    "TCP_KEEPALIVE_COUNT": "int",
+    "TCP_KEEPALIVE_IDLE": "int",
+    "TCP_KEEPALIVE_INTERVAL": "int",
+    "WEBSOCKET_IDLE_TIMEOUT": "int",
+}
+
+#: Keys an env file supplies as free-form text. Listed so the completeness test
+#: can tell "deliberately a string" from "nobody decided yet".
+_ENV_FREE_FORM: frozenset[str] = frozenset(
+    {"SECRET_KEY", "SERVER_NAME", "APPLICATION_ROOT", "PREFERRED_URL_SCHEME"}
+)
+
+
+def _coerce_env_value(key: str, value: Any, current: Any) -> Any:
+    """Give an env-file string the type its config key is read as.
+
+    A `.env` file carries no types, so every value arrives as a string and
+    `MAX_CONTENT_LENGTH=1000` reached a `>` against an int - a `TypeError` on
+    every request carrying a body. `DEBUG=false` was worse: a non-empty string
+    is truthy, so the setting read as the opposite of what was written.
+
+    The target type comes from the key's own default, which is the one place
+    already describing what the key holds. `bool` is tested before `int`
+    because `bool` is a subclass of it.
+    """
+    if not isinstance(value, str):
+        return value
+    if isinstance(current, bool):
+        return _coerce_bool(value)
+    if isinstance(current, int):
+        return _coerce_int(value, name=key)
+    if isinstance(current, tuple):
+        # A list-valued key is written `A,B` in an env file; left a string, a
+        # membership test would match single characters rather than entries.
+        return tuple(part.strip() for part in value.split(",") if part.strip())
+    declared = _ENV_TYPED_NONE_DEFAULTS.get(key)
+    if declared == "int":
+        return _coerce_int(value, name=key)
+    if declared == "bool":
+        return _coerce_bool(value)
+    return value
 
 
 class Config(dict[str, Any]):
@@ -286,9 +343,11 @@ class Config(dict[str, Any]):
         `export ` prefix is accepted, and a value wrapped in matching
         single or double quotes is unquoted. An unquoted value may carry
         a trailing ` #` inline comment, which is stripped; a `#` inside
-        quotes is kept literal. Values are stored as plain strings -
-        a `.env` file carries no types. Only UPPERCASE keys are kept (see
-        `from_mapping`). With `silent=True` a missing file returns
+        quotes is kept literal. A `.env` file carries no types, so a value for
+        a key with a known type is converted to it: `DEBUG=false` stores `False`
+        rather than a truthy string, and `MAX_CONTENT_LENGTH=1000` stores `1000`
+        rather than `"1000"`. An unparseable number raises, naming the key. Only
+        UPPERCASE keys are kept (see `from_mapping`). With `silent=True` a missing file returns
         `False` rather than raising.
 
         Keys are stored exactly as the file spells them, and `os.environ` is
@@ -306,7 +365,13 @@ class Config(dict[str, Any]):
             if silent:
                 return False
             raise
-        return self.from_mapping(_parse_env_lines(lines, source=filename))
+        parsed = _parse_env_lines(lines, source=filename)
+        defaults = self.default_config()
+        typed = {
+            key: _coerce_env_value(key, value, self.get(key, defaults.get(key)))
+            for key, value in parsed.items()
+        }
+        return self.from_mapping(typed)
 
     # ── from_envvar ───────────────────────────────────────
 

@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+- `from_env_file` gives a value the type its config key is read as, so `MAX_CONTENT_LENGTH=1000` no longer raises `TypeError` on every request with a body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `DEBUG=false`, `JSON_SORT_KEYS=false` and `TCP_KEEPALIVE=false` in an env file read as off; a non-empty string was truthy, so they read as on. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `SILENCED_AUDIT_IDS` from an env file splits on commas; left a string, a membership test matched single characters. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A blueprint's `before_request`, `after_request` and `teardown_request` run on routes of a nested blueprint that declares none of its own; a guard on a parent blueprint was skipped there. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `security_audit` no longer warns about a session middleware constructed with an explicit `secure=True`; it read only `SESSION_COOKIE_SECURE`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
