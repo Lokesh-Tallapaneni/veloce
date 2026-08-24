@@ -712,19 +712,50 @@ class TestClient:
 
         Raises `RuntimeError` if the app has no `SessionMiddleware`.
         """
-        from veloce.middleware.sessions import SessionMiddleware
+        from veloce.middleware.sessions import (
+            SessionMiddleware,
+            SessionMiddlewareBase,
+            _build_signer,
+        )
         from veloce.sessions import Session
         from veloce.signing import BadSignature
 
-        mw = next(
-            (m for m in getattr(self.app, "_middlewares", []) if isinstance(m, SessionMiddleware)),
-            None,
-        )
+        registered = getattr(self.app, "_middlewares", [])
+        mw = next((m for m in registered if isinstance(m, SessionMiddleware)), None)
         if mw is None:
+            # Distinguish "no session at all" from "a session this cannot seed":
+            # the second is a real setup, and the generic message sent the reader
+            # looking for a mistake they had not made.
+            other = next((m for m in registered if isinstance(m, SessionMiddlewareBase)), None)
+            if other is not None:
+                raise RuntimeError(
+                    f"session_transaction() seeds a signed cookie, which "
+                    f"{type(other).__name__} does not use - write to its store directly instead"
+                )
             raise RuntimeError("session_transaction() requires SessionMiddleware on the app")
 
+        # The signing key may still be waiting on `SECRET_KEY`: it is resolved on
+        # the first request, and seeding a session before one is exactly what
+        # this helper is for. Settle it now rather than failing on a missing
+        # attribute.
+        if mw._pending_config:
+            secret = self.app.config.get("SECRET_KEY")
+            if not secret:
+                raise RuntimeError(
+                    "session_transaction() needs a signing key - pass secret_key= to the "
+                    "middleware, or set app.secret_key"
+                )
+            mw._signer = _build_signer(secret)
+            mw._pending_config = False
+
+        # The wire name, not `cookie_name`: a `cookie_prefix` puts `__Host-` or
+        # `__Secure-` in front, and the middleware reads only the prefixed name.
+        # Seeded under the bare name the cookie was simply never found, so a test
+        # asserting authenticated behaviour silently exercised the anonymous path
+        # and passed anyway.
+        wire_name = mw._wire_cookie_name
         sess = Session()
-        existing = self._cookies.get(mw.cookie_name)
+        existing = self._cookies.get(wire_name)
         if existing:
             try:
                 decoded = mw._signer.loads(existing, max_age=max(mw.max_age, mw.permanent_lifetime))
@@ -735,7 +766,7 @@ class TestClient:
 
         yield sess
 
-        self._cookies[mw.cookie_name] = mw._signer.dumps(dict(sess))
+        self._cookies[wire_name] = mw._signer.dumps(dict(sess))
 
     # ── Header / cookie plumbing ──────────────────────────
 

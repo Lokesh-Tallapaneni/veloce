@@ -64,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+- `session_transaction()` seeds the cookie under the name the middleware reads, so a `cookie_prefix=` session is found instead of silently running anonymous. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `session_transaction()` works before the first request when the signing key comes from `app.config`, and explains why a server-side backend cannot be seeded. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Veloce(root_path=...)` reaches `request.root_path`, `script_root`, external `url_for` and slash redirects; it was stored and read by nothing. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A blueprint mounted at two prefixes runs its hooks and URL processors once per request, not once per mount. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Silencing `ratelimit-overrides-unknown` no longer turns a startup refusal into a 500 on every request; the request path reports and the audit decides. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
