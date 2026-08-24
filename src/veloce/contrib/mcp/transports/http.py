@@ -179,11 +179,39 @@ def register_http_transport(
         # session management is on); GET resumes a dropped stream when resumability
         # is on (it carries Last-Event-ID), else there is no standalone
         # server-to-client stream this server keeps, so a GET is answered 405.
+        #
+        # Admission control runs here, above the verb switch, rather than inside
+        # each verb's handler. Every verb is subject to the same three rules, and a
+        # check that lives in a handler is one a newly added verb can be written
+        # without - which is how a `DELETE` came to terminate a session with no
+        # credential and no `Origin` check at all. Ordering is deliberate: the two
+        # header checks are cheap and unconditional, so a request that fails them
+        # never reaches token verification.
+        try:
+            _validate_origin(request, allowed_origins)
+            _validate_protocol_version(request)
+        except MCPError as exc:
+            return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+
+        # Names the transport for `MCPContext.transport`. Set on the request's own
+        # context rather than inside the streaming runner: a plain JSON POST never
+        # enters that branch, and the runner inherits this context anyway.
+        _transport_var.set("http")
+
+        if auth is not None:
+            principal, challenge = await _authenticate(auth, request)
+            if challenge is not None:
+                return challenge
+            # Publish the identity for the duration of this request so the
+            # dispatched tool / resource (and any business dependency) reads it
+            # through `current_principal`; the SSE runner task copies this context.
+            set_principal(principal)
+
         if request.method == "DELETE":
             return await _handle_delete(store, request)
         if request.method == "GET":
-            return _handle_get(event_store, request, allowed_origins)
-        return await _handle_http(server, request, auth, allowed_origins, store, event_store)
+            return _handle_get(event_store, request)
+        return await _handle_http(server, request, store, event_store)
 
     app.add_route(
         path,
@@ -210,35 +238,14 @@ def register_http_transport(
 async def _handle_http(
     server: MCPServer,
     request: Request,
-    auth: MCPAuth | None,
-    allowed_origins: frozenset[str] | None = None,
     store: HttpSessionStore | None = None,
     event_store: SSEEventStore | None = None,
 ) -> Response:
-    """Authenticate, then dispatch one JSON-RPC message from an HTTP POST body."""
-    # Origin and protocol-version checks are spec MUSTs that precede dispatch; a
-    # violation raises an `MCPError` subclass carrying its own HTTP status, so the
-    # two checks share one rejection path (a JSON-RPC error body at that status).
-    try:
-        _validate_origin(request, allowed_origins)
-        _validate_protocol_version(request)
-    except MCPError as exc:
-        return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+    """Dispatch one JSON-RPC message from an HTTP POST body.
 
-    # Names the transport for `MCPContext.transport`. Set on the request's own
-    # context rather than inside the streaming runner: a plain JSON POST never
-    # enters that branch, and the runner inherits this context anyway.
-    _transport_var.set("http")
-
-    if auth is not None:
-        principal, challenge = await _authenticate(auth, request)
-        if challenge is not None:
-            return challenge
-        # Publish the identity for the duration of this request so the dispatched
-        # tool / resource (and any business dependency) reads it through
-        # `current_principal`; the SSE runner task copies this context.
-        set_principal(principal)
-
+    The caller has already run admission control (`Origin`, `MCP-Protocol-Version`,
+    authentication) and published the principal.
+    """
     try:
         message = await request.json()
     except Exception:
@@ -353,6 +360,10 @@ async def _handle_delete(store: HttpSessionStore | None, request: Request) -> Re
     A `DELETE` is meaningful only under session management: without it the verb is
     unsupported (HTTP 405). With it, a live id is terminated (HTTP 204) and a
     missing / already-terminated id is HTTP 404.
+
+    The caller has already run admission control, so terminating a session
+    requires the same credential and passes the same `Origin` check as any
+    other request to this endpoint.
     """
     if store is None:
         return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
@@ -365,11 +376,7 @@ async def _handle_delete(store: HttpSessionStore | None, request: Request) -> Re
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def _handle_get(
-    event_store: SSEEventStore | None,
-    request: Request,
-    allowed_origins: frozenset[str] | None = None,
-) -> Response:
+def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response:
     """Resume a dropped SSE stream from `Last-Event-ID`, or answer 405.
 
     A `GET` is meaningful only under resumability and only as a resume: the client
@@ -377,16 +384,10 @@ def _handle_get(
     events that one stream produced after it (scoped to that stream, never another
     POST's). Without resumability, or without the header, there is no standalone
     server-push stream, so the verb is unsupported (HTTP 405).
-    """
-    # The Origin and protocol-version checks are the same spec MUSTs the POST path
-    # runs; a resume must not bypass the DNS-rebinding defense, so they precede any
-    # replay. A violation raises an `MCPError` subclass carrying its HTTP status.
-    try:
-        _validate_origin(request, allowed_origins)
-        _validate_protocol_version(request)
-    except MCPError as exc:
-        return JSONResponse(exc.to_error(None), status_code=exc.http_status)
 
+    The caller has already run admission control, so a replay cannot bypass the
+    DNS-rebinding defense or reach an unauthenticated client.
+    """
     if event_store is None:
         return _method_not_allowed()
     last_event_id = request.headers.get(_LAST_EVENT_ID_HEADER)

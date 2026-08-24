@@ -1686,6 +1686,18 @@ app.mount_mcp(transport="http", auth=MCPAuth(
     a token minted for another service — or forwarding it onward — is the
     spec-forbidden "token passthrough" anti-pattern.
 
+`auth=` and `allowed_origins=` gate **every** verb the endpoint serves, not just the
+`POST` that carries a call: a `GET` resuming a stream and a `DELETE` terminating a
+session are checked the same way. A client that reconnects with only a
+`Last-Event-ID`, or tears a session down without presenting its token, is answered
+`401`. The protected-resource metadata at `/.well-known/oauth-protected-resource`
+stays reachable without a credential — a client cannot present a token before it has
+discovered where to get one.
+
+!!! note "Changed in version 0.18"
+    `GET` and `DELETE` previously skipped authentication, and `DELETE` also skipped
+    the `Origin` check. Send the token on all three verbs.
+
 For the **stdio** transport there is no OAuth handshake — the process is launched
 locally and trusted — so pass a static identity instead:
 `app.mount_mcp(principal=Principal(subject="local", scopes={"mcp:tools"}))`.
