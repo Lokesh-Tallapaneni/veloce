@@ -356,7 +356,6 @@ class SessionMiddleware(_SessionMiddlewareBase):
         self.domain = domain
         self.cookie_prefix = cookie_prefix
         self.partitioned = partitioned
-        self._samesite_cap = self.samesite.capitalize() if self.samesite else None
         self._wire_cookie_name = _wire_name(cookie_prefix, cookie_name)
         # `PERMANENT_SESSION_LIFETIME` analog - used for the cookie
         # `Max-Age` when `session.permanent` is set. Defaults to 31 days.
@@ -420,7 +419,6 @@ class SessionMiddleware(_SessionMiddlewareBase):
             self.max_cookie_size = _coerce_int(
                 _cfg_or(cfg, "MAX_COOKIE_SIZE", self.max_cookie_size), name="MAX_COOKIE_SIZE"
             )
-        self._samesite_cap = self.samesite.capitalize() if self.samesite else None
         self._wire_cookie_name = _wire_name(self.cookie_prefix, self.cookie_name)
         _validate_cookie_security(
             cookie_prefix=self.cookie_prefix,
@@ -598,7 +596,7 @@ class SessionMiddleware(_SessionMiddlewareBase):
             domain=self.domain,
             httponly=self.httponly,
             secure=self.secure,
-            samesite=self._samesite_cap,
+            samesite=self.samesite,
             prefix=self.cookie_prefix if prefix else None,
         )
         # Mirrors `Response.set_cookie`: CHIPS keys a partitioned cookie to the

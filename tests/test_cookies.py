@@ -157,3 +157,99 @@ def test_cookies_cached():
     req = _req([(b"cookie", b"a=1")])
     first = req.cookies
     assert req.cookies is first
+
+
+# ── `samesite` is normalised once, in the serialiser ─────────────────
+#
+# Three places fixed the value up on the way in: `dump_cookie` stripped and
+# capitalised, `Response.set_cookie` turned a whitespace-only value into `None`,
+# and `SessionMiddleware` carried a pre-capitalised `_samesite_cap` while its own
+# delete path passed the raw string through. So a value one of them rejected
+# reached the serialiser from one caller and not another: `samesite="  "` made
+# the cookie-backed session raise on *every* response while the server-side one
+# shipped a cookie with no `SameSite` at all.
+#
+# The whole rule lives in `dump_cookie` now, so there is no "on the way in" for
+# the copies to disagree about.
+
+
+@pytest.mark.parametrize("value", ["lax", "Lax", "LAX", " lax "])
+def test_any_casing_or_padding_renders_the_canonical_attribute(value):
+    from veloce import Response
+
+    response = Response(body=b"x")
+    response.set_cookie("k", "v", samesite=value)
+    assert "SameSite=Lax" in response.headers["Set-Cookie"]
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\t"])
+def test_a_blank_samesite_omits_the_attribute(value):
+    from veloce import Response
+
+    response = Response(body=b"x")
+    response.set_cookie("k", "v", samesite=value)
+    assert "SameSite" not in response.headers["Set-Cookie"]
+
+
+def test_an_unrecognised_samesite_is_still_refused():
+    from veloce import Response
+
+    response = Response(body=b"x")
+    with pytest.raises(ValueError, match="samesite"):
+        response.set_cookie("k", "v", samesite="sometimes")
+
+
+@pytest.mark.parametrize("value", ["  ", "lax", "STRICT", ""])
+def test_both_session_backends_answer_a_samesite_the_same_way(value):
+    """The defect: one raised on every response where the other stayed silent."""
+    from veloce import Veloce
+    from veloce.middleware.sessions import ServerSessionMiddleware, SessionMiddleware
+    from veloce.testclient import TestClient
+
+    def render(middleware) -> str:
+        app = Veloce(openapi_url=None)
+        app.secret_key = "k"
+        app.add_middleware(middleware)
+
+        @app.get("/s")
+        async def touch(request):
+            request.session["u"] = 1
+            return {"ok": True}
+
+        response = TestClient(app).get("/s")
+        assert response.status_code == 200
+        cookie = response.headers.get("set-cookie", "")
+        return next(
+            (p.strip() for p in cookie.split(";") if p.strip().lower().startswith("samesite")),
+            "",
+        )
+
+    assert render(SessionMiddleware(secret_key="k", samesite=value)) == render(
+        ServerSessionMiddleware(samesite=value)
+    )
+
+
+def test_a_session_delete_cookie_agrees_with_its_write():
+    """`_delete_cookie` passed the raw value while `_render_cookie` capitalised."""
+    from veloce import Veloce
+    from veloce.middleware.sessions import SessionMiddleware
+    from veloce.testclient import TestClient
+
+    app = Veloce(openapi_url=None)
+    app.secret_key = "k"
+    app.add_middleware(SessionMiddleware(secret_key="k", samesite="STRICT"))
+
+    @app.get("/in")
+    async def sign_in(request):
+        request.session["u"] = 1
+        return {"ok": True}
+
+    @app.get("/out")
+    async def sign_out(request):
+        request.session.clear()
+        return {"ok": True}
+
+    client = TestClient(app)
+    assert "SameSite=Strict" in client.get("/in").headers["set-cookie"]
+    cleared = client.get("/out").headers.get("set-cookie", "")
+    assert "SameSite=STRICT" not in cleared

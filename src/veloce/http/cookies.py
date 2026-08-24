@@ -158,7 +158,17 @@ def dump_cookie(
         parts.append("HttpOnly")
     if samesite is not None:
         _reject_header_crlf(samesite, "cookie samesite")
+        # The whole rule lives here, in the one function that renders a
+        # `Set-Cookie`. Callers used to fix the value up on the way in - one
+        # dropped a whitespace-only value, one capitalised, one passed the raw
+        # string through - so a value this rejects reached it from one caller
+        # and not another: `samesite="  "` made the cookie backend raise on
+        # every response while the server-side one shipped a cookie with no
+        # `SameSite` at all. Normalising inside the serialiser means there is no
+        # "on the way in" for the copies to disagree about.
         normalised = samesite.strip().capitalize()
+        if not normalised:
+            return "; ".join(parts)
         if normalised not in ("Strict", "Lax", "None"):
             raise ValueError("samesite must be 'Strict', 'Lax', or 'None'")
         parts.append(f"SameSite={normalised}")

@@ -429,9 +429,6 @@ class Response:
         five fields (name, value, domain, path, samesite), so `set_cookie`
         does not repeat it.
         """
-        # Normalise empty samesite to None so dump_cookie omits it.
-        if samesite is not None and not samesite.strip():
-            samesite = None
 
         # dump_cookie accepts datetime and numeric timestamps but not
         # pre-formatted strings. Handle the string case separately.
