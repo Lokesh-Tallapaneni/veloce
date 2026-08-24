@@ -1646,12 +1646,11 @@ class Veloce(
 
         # Bucket the blueprint's hooks under its name so dispatch can
         # look them up by the matched route's endpoint prefix instead of
-        # walking every blueprint's gated wrapper on every request.
-        # Previously: a `_gate` closure per hook in the flat
-        # `_before_request_hooks` list did a `req.endpoint.startswith(...)`
-        # check on every hook for every request - O(B*H) no-op work for
-        # apps with many blueprints. Now the dispatcher reads
-        # `_bp_before_hooks[bp_name]` directly.
+        # walking every blueprint's gated wrapper on every request. Keyed by
+        # blueprint name so the dispatcher reads `_bp_before_hooks[bp_name]`
+        # directly: a flat list of gated closures would test every hook of
+        # every blueprint on every request, which is O(blueprints * hooks) of
+        # no-op work for an app with many of either.
         if blueprint._before_request_hooks:
             self._bp_before_hooks.setdefault(bp_name, []).extend(blueprint._before_request_hooks)
         if blueprint._after_request_hooks:

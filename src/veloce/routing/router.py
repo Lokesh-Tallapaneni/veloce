@@ -390,14 +390,15 @@ class RouteInfo:
         # True when the handler takes no injected parameters and the route
         # carries no dependencies - the dispatcher then skips the
         # dependency resolver entirely (the "trivial-route" fast path).
-        # Set by `add_route` once the plans are built.
+        # Set by `_finalize_plans`, which `add_route` calls once the plans
+        # are built.
         self.is_trivial_plan = False
         self.is_request_only_plan = False
         # True when this route can take the straight-line dispatch fast path:
         # an async trivial/request-only plan with no response_model, custom
         # response_class, non-default status, subdomain/host constraint,
-        # defaults, or middleware exclusion. Set by `_attach_plans`; left False
-        # for synthetic routes that bypass it.
+        # defaults, or middleware exclusion. Set by `_finalize_plans`; left
+        # False for synthetic routes that bypass it.
         self.is_fast_eligible = False
         # Opt-in request-body streaming (ASGI path). When True, the dispatch
         # layer does NOT eagerly buffer the body before the handler, so the

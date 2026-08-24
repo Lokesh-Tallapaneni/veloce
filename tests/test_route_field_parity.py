@@ -28,7 +28,7 @@ _ROUTER_SRC = pathlib.Path(inspect.getfile(Router)).read_text(encoding="utf-8")
 #: Fields that legitimately differ on a re-registered route. The first group is
 #: rewritten by the merge itself - the prefix changes the path and name, and the
 #: parent's tags, dependencies and responses are combined in. The second is
-#: derived from the handler at registration time (`_attach_plans`), so carrying a
+#: derived from the handler at registration time (`_finalize_plans`), so carrying a
 #: stale copy across would be wrong, not right.
 _REWRITTEN = {
     "name",

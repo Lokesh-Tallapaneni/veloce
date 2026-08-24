@@ -176,6 +176,54 @@ def _begin_session_response(
     return accessed, modified
 
 
+# The cookie settings both session middlewares take, and what each falls back
+# to when the constructor is not given one. Held here rather than spelled out in
+# each `__init__` so a new shared setting is wired in one place - the two copies
+# had already diverged in how they render SameSite.
+_SHARED_COOKIE_DEFAULTS: dict[str, Any] = {
+    "cookie_name": "session",
+    "path": "/",
+    "httponly": True,
+    "secure": False,
+    "samesite": "lax",
+}
+
+
+def _shared_cookie_settings(**supplied: Any) -> tuple[dict[str, Any], set[str]]:
+    """Settle the shared cookie settings, reporting which were left to config.
+
+    A setting the caller did not pass takes its default now and is named in the
+    returned set, so `_resolve_config` knows to reconsider it against the app's
+    config once one is bound. A setting the caller did pass is theirs and is
+    never overridden.
+    """
+    deferred = {name for name, value in supplied.items() if value is _UNSET}
+    settled = {
+        name: _SHARED_COOKIE_DEFAULTS[name] if value is _UNSET else value
+        for name, value in supplied.items()
+    }
+    return settled, deferred
+
+
+def _overlay_shared_cookie_config(middleware: Any, cfg: Any, deferred: set[str]) -> None:
+    """Re-read the deferred shared cookie settings from the bound app's config."""
+    if "cookie_name" in deferred:
+        middleware.cookie_name = _cfg_or(cfg, "SESSION_COOKIE_NAME", middleware.cookie_name)
+    if "path" in deferred:
+        middleware.path = _cfg_or(cfg, "APPLICATION_ROOT", middleware.path)
+    # Config read from `from_env_file` is strings, so the boolean fields are
+    # coerced: `SESSION_COOKIE_SECURE=false` must read as False, not as a truthy
+    # non-empty string.
+    if "httponly" in deferred:
+        middleware.httponly = _coerce_bool(
+            _cfg_or(cfg, "SESSION_COOKIE_HTTPONLY", middleware.httponly)
+        )
+    if "secure" in deferred:
+        middleware.secure = _coerce_bool(_cfg_or(cfg, "SESSION_COOKIE_SECURE", middleware.secure))
+    if "samesite" in deferred:
+        middleware.samesite = _cfg_or(cfg, "SESSION_COOKIE_SAMESITE", middleware.samesite)
+
+
 class SessionMiddleware(Middleware):
     """Server-side session stored in a signed, timestamped cookie.
 
@@ -230,32 +278,28 @@ class SessionMiddleware(Middleware):
         # MAX_COOKIE_SIZE. The library defaults are installed now as working
         # stand-ins, so the object is fully formed at construction and
         # behaves exactly as before when no config key overrides them.
-        self._deferred_settings = {
-            setting
-            for setting, value in (
-                ("cookie_name", cookie_name),
-                ("path", path),
-                ("httponly", httponly),
-                ("secure", secure),
-                ("samesite", samesite),
-                ("permanent_lifetime", permanent_lifetime),
-                ("max_cookie_size", max_cookie_size),
-            )
-            if value is _UNSET
-        }
+        shared, self._deferred_settings = _shared_cookie_settings(
+            cookie_name=cookie_name,
+            path=path,
+            httponly=httponly,
+            secure=secure,
+            samesite=samesite,
+        )
+        cookie_name = shared["cookie_name"]
+        path = shared["path"]
+        httponly = shared["httponly"]
+        secure = shared["secure"]
+        samesite = shared["samesite"]
+        # The settings only this middleware takes.
+        for setting, value in (
+            ("permanent_lifetime", permanent_lifetime),
+            ("max_cookie_size", max_cookie_size),
+        ):
+            if value is _UNSET:
+                self._deferred_settings.add(setting)
         if secret_key is None:
             self._deferred_settings.add("secret_key")
         self._pending_config = bool(self._deferred_settings)
-        if cookie_name is _UNSET:
-            cookie_name = "session"
-        if path is _UNSET:
-            path = "/"
-        if httponly is _UNSET:
-            httponly = True
-        if secure is _UNSET:
-            secure = False
-        if samesite is _UNSET:
-            samesite = "lax"
         if permanent_lifetime is _UNSET:
             permanent_lifetime = 86400 * 31
         if max_cookie_size is _UNSET:
@@ -333,19 +377,9 @@ class SessionMiddleware(Middleware):
                     "before the first request."
                 )
             self._signer = _build_signer(secret)
-        if "cookie_name" in deferred:
-            self.cookie_name = _cfg_or(cfg, "SESSION_COOKIE_NAME", self.cookie_name)
-        if "path" in deferred:
-            self.path = _cfg_or(cfg, "APPLICATION_ROOT", self.path)
-        # Config from `from_env_file` is strings, so bool/int fields are coerced;
-        # `SESSION_COOKIE_SECURE=false` must read as False, not a truthy "false",
-        # and the numeric fields must be ints before the `<=` / `max()` below.
-        if "httponly" in deferred:
-            self.httponly = _coerce_bool(_cfg_or(cfg, "SESSION_COOKIE_HTTPONLY", self.httponly))
-        if "secure" in deferred:
-            self.secure = _coerce_bool(_cfg_or(cfg, "SESSION_COOKIE_SECURE", self.secure))
-        if "samesite" in deferred:
-            self.samesite = _cfg_or(cfg, "SESSION_COOKIE_SAMESITE", self.samesite)
+        _overlay_shared_cookie_config(self, cfg, deferred)
+        # The numeric settings only this middleware takes; they must be ints
+        # before the `<=` / `max()` comparisons downstream.
         if "permanent_lifetime" in deferred:
             self.permanent_lifetime = _coerce_int(
                 _cfg_or(cfg, "PERMANENT_SESSION_LIFETIME", self.permanent_lifetime),
@@ -663,28 +697,19 @@ class ServerSessionMiddleware(Middleware):
         super().__init__(name=name)
         # Cookie settings left out resolve against `app.config` on the first
         # request (see SessionMiddleware); library defaults stand in until then.
-        self._deferred_settings = {
-            setting
-            for setting, value in (
-                ("cookie_name", cookie_name),
-                ("path", path),
-                ("httponly", httponly),
-                ("secure", secure),
-                ("samesite", samesite),
-            )
-            if value is _UNSET
-        }
+        shared, self._deferred_settings = _shared_cookie_settings(
+            cookie_name=cookie_name,
+            path=path,
+            httponly=httponly,
+            secure=secure,
+            samesite=samesite,
+        )
+        cookie_name = shared["cookie_name"]
+        path = shared["path"]
+        httponly = shared["httponly"]
+        secure = shared["secure"]
+        samesite = shared["samesite"]
         self._pending_config = bool(self._deferred_settings)
-        if cookie_name is _UNSET:
-            cookie_name = "session"
-        if path is _UNSET:
-            path = "/"
-        if httponly is _UNSET:
-            httponly = True
-        if secure is _UNSET:
-            secure = False
-        if samesite is _UNSET:
-            samesite = "lax"
         _validate_cookie_security(
             cookie_prefix=cookie_prefix,
             partitioned=partitioned,
@@ -723,17 +748,7 @@ class ServerSessionMiddleware(Middleware):
         app = request.app
         cfg = app.config if app is not None else {}
         deferred = self._deferred_settings
-        if "cookie_name" in deferred:
-            self.cookie_name = _cfg_or(cfg, "SESSION_COOKIE_NAME", self.cookie_name)
-        if "path" in deferred:
-            self.path = _cfg_or(cfg, "APPLICATION_ROOT", self.path)
-        # Coerce dotenv-string config to bool (see SessionMiddleware._resolve_config).
-        if "httponly" in deferred:
-            self.httponly = _coerce_bool(_cfg_or(cfg, "SESSION_COOKIE_HTTPONLY", self.httponly))
-        if "secure" in deferred:
-            self.secure = _coerce_bool(_cfg_or(cfg, "SESSION_COOKIE_SECURE", self.secure))
-        if "samesite" in deferred:
-            self.samesite = _cfg_or(cfg, "SESSION_COOKIE_SAMESITE", self.samesite)
+        _overlay_shared_cookie_config(self, cfg, deferred)
         self._wire_cookie_name = _wire_name(self.cookie_prefix, self.cookie_name)
         _validate_cookie_security(
             cookie_prefix=self.cookie_prefix,

@@ -99,12 +99,10 @@ class MCPSession:
         # connection that never does pays one falsy check per listing.
         self.hidden: set[str] = set()
         # Minimum level for `notifications/message`, set by `logging/setLevel`.
-        # The spec scopes this to the connection, and holding it here is what
-        # makes it survive between messages: it previously lived only in a
-        # ContextVar the handler set and never reset, so it persisted by leaking
-        # into whatever context happened to call it - which worked on the serial
-        # stdio loop and silently did nothing over HTTP, where each request runs
-        # in its own context. `None` means the client has not chosen one.
+        # The spec scopes it to the connection, so it lives on the connection:
+        # a ContextVar would be scoped to whichever context happened to set it,
+        # which is the serial stdio loop's context on one transport and a single
+        # request's on the other. `None` means the client has not chosen one.
         self.log_level: str | None = None
 
     @property

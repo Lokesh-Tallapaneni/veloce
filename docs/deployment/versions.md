@@ -91,12 +91,36 @@ pip install "veloceframework>=1.0,<2.0"
 ## Surfacing deprecations early
 
 Before a public symbol is removed it keeps working for at least one minor
-release and raises a `DeprecationWarning` that names its replacement. Turn those
-warnings into test failures so an upgrade surfaces them before production:
+release and raises a `VeloceDeprecationWarning` that names its replacement.
+
+That category is rooted at `UserWarning`, not at `DeprecationWarning`, and
+deliberately so: Python's default filter shows a `DeprecationWarning` only when
+it is raised from `__main__`. Every application served by uvicorn or gunicorn
+reaches Veloce from an application module instead, so a deprecation would have
+been silent there and the removal would have arrived unannounced.
+
+Turn the warnings into test failures so an upgrade surfaces them before
+production:
 
 ```bash
-python -W error::DeprecationWarning -m pytest
+python -W error::UserWarning -m pytest
 ```
+
+To be precise about the category rather than promoting every `UserWarning`:
+
+```python
+import warnings
+
+from veloce import VeloceDeprecationWarning
+
+warnings.filterwarnings("error", category=VeloceDeprecationWarning)
+```
+
+The same call with `"ignore"` silences them once you have read them.
+
+!!! warning
+    `python -W error::DeprecationWarning` does **not** catch these. Veloce's
+    deprecations are not `DeprecationWarning` subclasses, for the reason above.
 
 ## Next steps
 
