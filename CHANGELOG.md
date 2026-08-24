@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Added
+- `Auditable` carries the audit contract for every middleware shape, so a `BaseHTTPMiddleware` can declare `sets_hardening_headers` and contribute findings. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Converter.specificity` declares how restrictive a custom converter is, so it can outrank `str` during route matching. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SecurityScheme.openapi_scheme` publishes a custom authentication scheme in the OpenAPI document like a built-in. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
@@ -63,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+- `security_audit` walks dispatch-shape middleware, ASGI middleware classes and static handlers, not only `Middleware` instances; a correctly hardened app was reported as unhardened. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A `StaticFiles` directory that does not exist is reported by `veloce check`; it previously only warned at construction. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `security_audit` no longer warns that `SECRET_KEY` is unset for a session middleware constructed with its own `secret_key=`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A session middleware with no signing key from either source refuses startup instead of raising on the first request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `JSONResponse` and a bare mapping yielded to `EventSourceResponse` honour `JSON_SORT_KEYS` and a custom JSON provider; both encoded directly and missed the app's dialect. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

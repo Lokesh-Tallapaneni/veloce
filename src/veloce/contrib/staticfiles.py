@@ -164,6 +164,7 @@ class StaticFiles:
             if must_exist:
                 raise ValueError(problem)
             warnings.warn(problem, stacklevel=2)
+            self._setup_problem: str | None = problem
         elif not os.access(self.directory, (os.R_OK | os.X_OK) if directory_index else os.X_OK):
             # Serving a known file needs SEARCH (X_OK) on the directory; a
             # directory listing additionally needs READ (R_OK). Require exactly
@@ -177,6 +178,7 @@ class StaticFiles:
             if must_exist:
                 raise ValueError(problem)
             warnings.warn(problem, stacklevel=2)
+            self._setup_problem = problem
         # The served root's real (symlink-resolved) path. Constant for the
         # life of the handler, so resolve it once here rather than calling
         # realpath on it per request in the containment check.
@@ -321,6 +323,29 @@ class StaticFiles:
             if variant_stat is not None and stat.S_ISREG(variant_stat.st_mode):
                 return (variant_path, enc, variant_stat)
         return None
+
+    def audit(self, ctx: Any) -> Any:
+        """Report a served root the constructor could only warn about.
+
+        `must_exist=False` downgrades a missing or unreadable directory to a
+        `warnings.warn` at construction, which never reaches `veloce check` -
+        so an app whose asset root was a typo passed a clean audit and 404ed
+        every asset. Informational: the dev flow that creates the directory
+        after wiring the app is the reason the downgrade exists.
+        """
+        problem = getattr(self, "_setup_problem", None)
+        if problem is None:
+            return ()
+        from veloce.audit import Finding
+
+        return (
+            Finding(
+                f"{problem}, so every asset under {self.prefix!r} will 404.",
+                severity="info",
+                fix="create the directory, or correct the path passed to StaticFiles",
+                id="static-directory-missing",
+            ),
+        )
 
     async def handle(self, request: Request) -> Response | None:
         """Handle a static file request - file I/O offloaded to thread pool."""

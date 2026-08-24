@@ -15,6 +15,7 @@ reporting a route as missing when it is merely not registered yet.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -115,6 +116,28 @@ def _app_findings(app: Any) -> list[Finding]:
     return findings
 
 
+def _registered(app: Veloce) -> Iterator[Any]:
+    """Every registered component that could report on itself.
+
+    Veloce accepts middleware in three shapes and static handlers besides, and
+    the audit used to walk only `_middlewares`. A `BaseHTTPMiddleware` that
+    hardened every response was reported as absent; a `StaticFiles` pointed at a
+    directory that does not exist warned at construction and reached
+    `veloce check` not at all.
+
+    The entries are heterogeneous by design - a plain function registered with
+    `@app.middleware("http")` sits beside a class - so each is asked whether it
+    can answer rather than assumed to. An ASGI middleware is held as a class
+    with its keyword arguments, never instantiated until the stack is built, so
+    only its class-level marker can be read.
+    """
+    yield from app._middlewares
+    yield from app._http_middleware_funcs
+    yield from app._static_handlers
+    for entry in app._asgi_middleware:
+        yield entry[0]
+
+
 def run(app: Veloce, *, routes_final: bool = False) -> list[Finding]:
     """Collect every finding about `app`, newest concern last.
 
@@ -129,13 +152,15 @@ def run(app: Veloce, *, routes_final: bool = False) -> list[Finding]:
     # One pass: whether anything hardens responses is a question about the set,
     # which no member can answer, so it is settled alongside collecting them.
     hardened = False
-    for middleware in app._middlewares:
-        cls = type(middleware)
-        if cls.sets_hardening_headers:
+    for component in _registered(app):
+        cls = component if isinstance(component, type) else type(component)
+        if getattr(cls, "sets_hardening_headers", False):
             hardened = True
-        if cls.audit_needs_routes and not routes_final:
+        if getattr(cls, "audit_needs_routes", False) and not routes_final:
             continue
-        findings.extend(middleware.audit(ctx))
+        report = getattr(component, "audit", None)
+        if report is not None:
+            findings.extend(report(ctx))
 
     if not hardened:
         findings.append(
