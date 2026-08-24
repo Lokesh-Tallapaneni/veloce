@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `log_exception` takes an optional `request=` and names it in the record. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Query strings and urlencoded bodies carrying no percent-escape skip per-field decoding. Measured on one Windows desktop: 20.9 vs 26.0 us for a three-parameter query read, 35.3 vs 43.4 us for a five-field form POST; an escaped value is unchanged. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `veloce.__version__` reads the package metadata on first access instead of at import. Measured on one Windows desktop: about 14 ms off a ~342 ms cold start. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A cookie value is percent-decoded only when it carries an escape or a quote. Measured on one Windows desktop: 1.84 vs 3.03 us for a four-cookie header. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -29,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An unhandled exception is logged with its traceback and the failing request instead of vanishing into a generic `500`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A quoted `Content-Type` parameter containing `;` is no longer cut short: `profile="a;b"` was read as `"a`. The same applies to the `Accept` media-range key. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A quoted header parameter written with whitespace before the opening quote (`filename = "r.pdf"`) no longer keeps that space in its value. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The deployment guide's deprecation section named the wrong warning category, so the command it gave caught nothing. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

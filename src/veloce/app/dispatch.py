@@ -189,6 +189,7 @@ class DispatchMixin:
         _mcp_context: Any
         _instrumentation: Any
         _middlewares: Any
+        log_exception: Callable[..., Any]
         _should_propagate_exceptions: Callable[..., Any]
         _setup_locked: bool
         _setup_lock_enabled: bool
@@ -642,6 +643,13 @@ class DispatchMixin:
             # `raise` re-raises the active exception with its original traceback.
             if self._should_propagate_exceptions():
                 raise
+            # Log it here or it is lost. The response is a generic 500 and the
+            # exception does not leave the app, so an ASGI server's error
+            # logging never sees it and the native server has nothing to catch
+            # either - an unhandled failure would reach production with no
+            # record anywhere. `got_request_exception` fires below, but only
+            # for an app that subscribed to it; this is the default.
+            self.log_exception(exc, request)
             return await self._shape_server_error(request, exc, cp, excluded)
         finally:
             # Yield-dependency teardowns first - they conceptually wrap the

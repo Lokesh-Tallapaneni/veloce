@@ -386,6 +386,37 @@ references a shared `HTTPValidationError` component schema (the
 Operations with no validatable parameter never advertise a `422`, and an explicit
 `422` declared through `responses=` or `openapi_extra` is kept as-is.
 
+## Unhandled exceptions are logged
+
+An exception no handler catches becomes a generic `500` — and is recorded on the
+app's logger at `ERROR` level, with the traceback and the request that failed:
+
+```
+Exception on /orders/42 [POST]
+Traceback (most recent call last):
+  ...
+RuntimeError: connection pool exhausted
+```
+
+This needs no logging setup: Python's handler of last resort puts an unconfigured
+`ERROR` record on stderr. It is the app's own logger — `logging.getLogger(app.import_name)`
+— so it is configured, routed or silenced like any other:
+
+```python
+import logging
+
+logging.getLogger("myapp").setLevel(logging.CRITICAL)   # silence it
+logging.getLogger("myapp").addHandler(my_handler)       # or route it
+```
+
+A **handled** exception is not logged: registering `@app.exception_handler(...)`
+for it means the application dealt with it. Neither is an `HTTPException` such as
+`abort(404)`, which is an outcome rather than a failure. A propagated exception
+(below) is not logged either — it carries its own traceback to the caller.
+
+To ship these somewhere else, subscribe to the `got_request_exception` signal;
+it fires for the same exceptions and is how an error tracker hooks in.
+
 ## Propagating exceptions during tests
 
 By default Veloce catches unhandled exceptions and returns a `500`. While

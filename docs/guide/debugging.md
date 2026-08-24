@@ -73,9 +73,11 @@ remote-code-execution surface.
 
 ## Surfacing exceptions in tests
 
-By default an unhandled exception becomes a `500` response, which is correct
-for production but hides the real error from a test. Set `PROPAGATE_EXCEPTIONS`
-to re-raise it out of dispatch so the assertion sees the original traceback.
+By default an unhandled exception becomes a `500` response and is logged with
+its traceback (see [Error handling](error-handling.md#unhandled-exceptions-are-logged)),
+which is right for production but still hides the error from an assertion. Set
+`PROPAGATE_EXCEPTIONS` to re-raise it out of dispatch so the test sees the
+original traceback directly.
 
 ```python
 from veloce import TestClient, Veloce

@@ -158,14 +158,26 @@ class ErrorsMixin:
         """
         self.register_error_handler(exc_class_or_status, handler)
 
-    def log_exception(self, exc: BaseException) -> None:
+    def log_exception(self, exc: BaseException, request: Request | None = None) -> None:
         """Log an exception with traceback.
 
-        Routes the exception through the app logger at ERROR level.
-        Used internally before falling back to a 500 response; exposed
-        publicly so error-handler code can re-log via the same path.
+        Routes the exception through the app logger at ERROR level. Used
+        internally before falling back to a 500 response; exposed publicly so
+        error-handler code can re-log via the same path.
+
+        `request` names the request that failed, which is most of the value of
+        the record: a traceback with no path is hard to place in a live log.
+        Callers with no request in hand (a background task, a CLI hook) omit it.
+
+        Silencing this is `logging.getLogger(app.import_name).setLevel(...)` or
+        any other ordinary logging configuration - it is the app's own logger,
+        deliberately, so an operator turns it down the way they turn down
+        anything else.
         """
-        self.logger.error("Exception on request", exc_info=exc)
+        if request is not None:
+            self.logger.error("Exception on %s [%s]", request.path, request.method, exc_info=exc)
+        else:
+            self.logger.error("Exception on request", exc_info=exc)
 
     async def handle_http_exception(
         self, exc: HTTPException, request: Request | None = None
@@ -257,7 +269,7 @@ class ErrorsMixin:
             if isinstance(result, Response):
                 return result
             return self._coerce_response(result)
-        self.log_exception(exc)
+        self.log_exception(exc, request)
         return JSONResponse(
             {"detail": MSG_INTERNAL_SERVER_ERROR},
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
