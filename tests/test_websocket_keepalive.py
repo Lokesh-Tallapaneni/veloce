@@ -354,3 +354,81 @@ async def test_raw_mode_silent_after_frame_still_idle_closes():
     finally:
         await feeder
     assert transport.closed is True
+
+
+# ── The configured window reaches both transports ────────────────────
+#
+# `WEBSOCKET_IDLE_TIMEOUT` was read only where the native transport builds its
+# socket, so the one config-driven way to reap a silent peer was inert under an
+# ASGI server - the transport most apps deploy. It is applied at
+# `Veloce._run_websocket` instead, the single funnel both transports dispatch
+# through, so a transport added later inherits it.
+
+
+def _idle_app(**config):
+    from veloce import Veloce
+
+    app = Veloce(openapi_url=None)
+    app.config.update(config)
+
+    @app.websocket("/ws")
+    async def handler(ws):
+        await ws.accept()
+        try:
+            await ws.receive_text()
+        except WebSocketDisconnect:
+            return
+
+    return app
+
+
+def _observed_timeout(**config) -> float | None:
+    """The idle timeout the socket actually carries once dispatch has begun."""
+    from veloce import Veloce
+
+    seen: dict[str, float | None] = {}
+    app = Veloce(openapi_url=None)
+    app.config.update(config)
+
+    @app.websocket("/ws")
+    async def handler(ws):
+        await ws.accept()
+        seen["timeout"] = ws._idle_timeout
+        await ws.close()
+
+    from veloce.testclient import TestClient
+
+    with TestClient(app).websocket_connect("/ws"):
+        pass
+    return seen.get("timeout")
+
+
+def test_the_configured_window_reaches_an_asgi_socket():
+    """The defect: only the native transport read this key."""
+    assert _observed_timeout(WEBSOCKET_IDLE_TIMEOUT=12.5) == 12.5
+
+
+def test_no_configured_window_leaves_the_socket_unbounded():
+    assert _observed_timeout() is None
+    assert _observed_timeout(WEBSOCKET_IDLE_TIMEOUT=None) is None
+
+
+def test_a_handler_can_still_override_the_configured_window():
+    """`set_idle_timeout` is documented as the handler's own control."""
+    from veloce import Veloce
+    from veloce.testclient import TestClient
+
+    seen: dict[str, float | None] = {}
+    app = Veloce(openapi_url=None)
+    app.config["WEBSOCKET_IDLE_TIMEOUT"] = 30.0
+
+    @app.websocket("/ws")
+    async def handler(ws):
+        await ws.accept()
+        ws.set_idle_timeout(1.0)
+        seen["timeout"] = ws._idle_timeout
+        await ws.close()
+
+    with TestClient(app).websocket_connect("/ws"):
+        pass
+    assert seen["timeout"] == 1.0

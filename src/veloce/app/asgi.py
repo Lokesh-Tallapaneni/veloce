@@ -272,6 +272,17 @@ class AsgiMixin:
         # Mirror `Request.app` so a WebSocket handler reaches its application
         # directly, not only through the `current_app` proxy.
         ws.app = self
+        # Apply the configured idle timeout here rather than at each transport's
+        # construction site: only the native one read the config, so the single
+        # config-driven way to reap a silent peer was inert on the transport most
+        # apps deploy. This is the one funnel every WebSocket handler passes
+        # through, so a transport added later inherits it. Guarded, so an
+        # explicit `from_asgi(idle_timeout=...)` still wins over config, and a
+        # handler's own `set_idle_timeout` still overrides both.
+        if ws._idle_timeout is None:
+            configured = self.config.get("WEBSOCKET_IDLE_TIMEOUT")
+            if configured is not None:
+                ws.set_idle_timeout(configured)
         g._reset()
         # A fresh resolver per connection: a WebSocket is long-lived,
         # so its yield-dependency teardown stack must not be cleared

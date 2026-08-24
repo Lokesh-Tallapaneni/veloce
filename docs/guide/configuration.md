@@ -70,15 +70,16 @@ The defaults are:
 | `JSONIFY_PRETTYPRINT_REGULAR` | `False` | Pretty-print JSON responses. |
 | `PROPAGATE_EXCEPTIONS` | `None` | Re-raise unhandled exceptions out of dispatch. |
 | `SEND_FILE_MAX_AGE_DEFAULT` | `None` | Default `Cache-Control: max-age` for `send_file` / `async_send_file` when the caller passes no `max_age=`. |
-| `REQUEST_HANDLER_TIMEOUT` | `30` | Per-handler timeout in seconds. |
-| `KEEP_ALIVE_TIMEOUT` | `75` | Keep-alive timeout in seconds. |
-| `REQUEST_TIMEOUT` | `30` | Request read timeout in seconds. |
+| `REQUEST_HANDLER_TIMEOUT` | `30` | Per-handler timeout in seconds, on the built-in serving path. Under an ASGI server the handler is not bounded by Veloce; use the server's own timeout. |
+| `KEEP_ALIVE_TIMEOUT` | `75` | Keep-alive timeout in seconds, on the built-in serving path. |
+| `REQUEST_TIMEOUT` | `30` | Request read timeout in seconds, on the built-in serving path. |
 | `TCP_KEEPALIVE` | `True` | Enable OS-level TCP keepalive (`SO_KEEPALIVE`) on the built-in serving path. |
 | `TCP_KEEPALIVE_IDLE` | `None` | Idle seconds before the first keepalive probe (`TCP_KEEPIDLE`); Linux/macOS only. |
 | `TCP_KEEPALIVE_INTERVAL` | `None` | Seconds between keepalive probes (`TCP_KEEPINTVL`); Linux only. |
 | `TCP_KEEPALIVE_COUNT` | `None` | Failed probes before the connection is dropped (`TCP_KEEPCNT`); Linux only. |
 | `JSON_ERRORS_VERBOSE` | `False` | Include parser detail in JSON body-parse error responses. |
 | `GRACEFUL_TASK_TIMEOUT` | `10` | Seconds to wait for background tasks to finish cancelling on shutdown. |
+| `WEBSOCKET_IDLE_TIMEOUT` | `None` | Seconds a WebSocket may sit idle before it is closed with `1001 Going Away`. `None` disables it. A handler's `set_idle_timeout()` overrides it. |
 
 A few of these keys drive framework behaviour directly. `MAX_CONTENT_LENGTH`
 bounds the request body the server will read. `PROPAGATE_EXCEPTIONS`

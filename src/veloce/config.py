@@ -201,6 +201,9 @@ class Config(dict[str, Any]):
             # background task on shutdown: each task is cancelled and awaited
             # for at most this long before the drain moves on.
             "GRACEFUL_TASK_TIMEOUT": 10,
+            # Seconds a WebSocket may sit idle before it is closed 1001.
+            # `None` disables it. Applies on both transports.
+            "WEBSOCKET_IDLE_TIMEOUT": None,
         }
 
     @staticmethod
