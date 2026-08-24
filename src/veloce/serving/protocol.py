@@ -16,6 +16,7 @@ import weakref
 from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
+from urllib.parse import unquote
 
 import httptools
 
@@ -131,6 +132,13 @@ _WS_HEADER_HOST = b"host"
 _WS_HEADER_ORIGIN = b"origin"
 # RFC 6455 Sec. 4.2.2: the only WebSocket protocol version Veloce speaks.
 _WS_SUPPORTED_VERSION = b"13"
+
+
+#: `%` as an int, for the percent-escape test on the request target. Membership
+#: of an int in `bytes` is a memchr; membership of a one-byte `bytes` is a
+#: substring search, an order of magnitude dearer on a path this runs on for
+#: every request.
+_PERCENT_BYTE = 0x25
 
 
 class HttpProtocol(asyncio.Protocol):
@@ -886,14 +894,28 @@ class HttpProtocol(asyncio.Protocol):
     def _parse_request_target(self) -> tuple[str, bytes]:
         """Split the parsed request line into `(path, raw_query_bytes)`.
 
-        `path` is ascii-decoded (defaulting to `/` when absent); the query is
-        returned raw so the WebSocket scope can carry the bytes verbatim while
-        the HTTP path decodes them. Shared by the HTTP dispatch and the
-        WebSocket upgrade so the request-target split lives in one place.
+        `path` is percent-decoded, as the ASGI scope's `path` is, so
+        `/items/a%20b` binds `"a b"` on this transport too - it bound the raw
+        `"a%20b"` before, and the same app answered differently depending on
+        how it was served. The decode is skipped when the target carries no
+        `%`, which is almost every request, so the common path pays one
+        C-level scan of the raw bytes and no allocation.
+
+        The query is returned raw so the WebSocket scope can carry the bytes
+        verbatim while the HTTP path decodes them. Shared by the HTTP dispatch
+        and the WebSocket upgrade so the request-target split lives in one
+        place.
         """
         parsed = httptools.parse_url(self.url)
-        path = parsed.path.decode("ascii") if parsed.path else "/"
-        return path, parsed.query or b""
+        raw_path = parsed.path
+        if not raw_path:
+            return "/", parsed.query or b""
+        if _PERCENT_BYTE in raw_path:
+            # `unquote` on the decoded text, matching what an ASGI server puts
+            # in `scope["path"]`; a malformed escape is left as written rather
+            # than raising, which is also what that path does.
+            return unquote(raw_path.decode("ascii")), parsed.query or b""
+        return raw_path.decode("ascii"), parsed.query or b""
 
     def _declared_content_length(self) -> int | None:
         """Parse the just-parsed request's `Content-Length` header, or None.
