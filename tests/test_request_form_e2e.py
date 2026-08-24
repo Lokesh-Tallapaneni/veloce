@@ -192,3 +192,81 @@ def test_form_parser_unquoted_value():
         )
     assert resp.status_code == 200
     assert "plain" in observed["keys"]
+
+
+# ── `MAX_FORM_PARTS = None` means the same thing to both encodings ───
+#
+# The urlencoded branch read `None` as "no cap" - the comment beside it says so
+# - while the multipart branch read it as "keep the built-in 1000", because the
+# parser's `max_parts` was typed `int`. So one config value lifted the limit for
+# one encoding and silently kept it for the other.
+
+_BOUNDARY = "B0uNd"
+_OVER_DEFAULT = 1500
+
+
+def _form_client(**config) -> TestClient:
+    app = Veloce(openapi_url=None)
+    app.config.update(config)
+
+    @app.post("/f")
+    async def parse(request: Request):
+        form = await request.form()
+        return {"n": len(list(form.keys()))}
+
+    return TestClient(app)
+
+
+def _urlencoded(count: int) -> tuple[bytes, dict[str, str]]:
+    body = "&".join(f"k{i}=v" for i in range(count)).encode()
+    return body, {"content-type": "application/x-www-form-urlencoded"}
+
+
+def _multipart(count: int) -> tuple[bytes, dict[str, str]]:
+    body = (
+        b"".join(
+            f'--{_BOUNDARY}\r\nContent-Disposition: form-data; name="k{i}"\r\n\r\nv\r\n'.encode()
+            for i in range(count)
+        )
+        + f"--{_BOUNDARY}--\r\n".encode()
+    )
+    return body, {"content-type": f"multipart/form-data; boundary={_BOUNDARY}"}
+
+
+def test_a_none_cap_lifts_the_limit_for_a_multipart_body():
+    """The defect: multipart kept the built-in 1000 whatever the config said."""
+    body, headers = _multipart(_OVER_DEFAULT)
+    response = _form_client(MAX_FORM_PARTS=None).post("/f", content=body, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["n"] == _OVER_DEFAULT
+
+
+def test_a_none_cap_lifts_the_limit_for_a_urlencoded_body():
+    body, headers = _urlencoded(_OVER_DEFAULT)
+    response = _form_client(MAX_FORM_PARTS=None).post("/f", content=body, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["n"] == _OVER_DEFAULT
+
+
+def test_both_encodings_answer_the_same_cap_the_same_way():
+    """One config value, one meaning, whichever encoding was sent."""
+    for config in ({"MAX_FORM_PARTS": None}, {}, {"MAX_FORM_PARTS": 2000}):
+        client = _form_client(**config)
+        u_body, u_headers = _urlencoded(_OVER_DEFAULT)
+        m_body, m_headers = _multipart(_OVER_DEFAULT)
+        urlencoded = client.post("/f", content=u_body, headers=u_headers).status_code
+        multipart = client.post("/f", content=m_body, headers=m_headers).status_code
+        assert urlencoded == multipart, config
+
+
+def test_the_default_cap_still_refuses_an_oversized_multipart_body():
+    """Lifting the cap on request must not lift it by default."""
+    body, headers = _multipart(_OVER_DEFAULT)
+    assert _form_client().post("/f", content=body, headers=headers).status_code == 413
+
+
+def test_an_explicit_cap_is_still_enforced_for_both():
+    for build in (_urlencoded, _multipart):
+        body, headers = build(20)
+        response = _form_client(MAX_FORM_PARTS=5).post("/f", content=body, headers=headers)
+        assert response.status_code == 413

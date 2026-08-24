@@ -80,7 +80,7 @@ def parse_multipart_form(
     body: bytes,
     content_type: str,
     *,
-    max_parts: int = DEFAULT_MAX_MULTIPART_PARTS,
+    max_parts: int | None = DEFAULT_MAX_MULTIPART_PARTS,
     max_files: int | None = None,
     max_fields: int | None = None,
     max_part_size: int = DEFAULT_MAX_MULTIPART_PART_SIZE,
@@ -91,7 +91,8 @@ def parse_multipart_form(
 ) -> FormData:
     """Parse multipart/form-data into FormData with UploadFile support.
 
-    `max_parts` caps the total number of parts. `max_files` and
+    `max_parts` caps the total number of parts; `None` disables the cap,
+    matching what `MAX_FORM_PARTS = None` means for a urlencoded body. `max_files` and
     `max_fields`, when set, additionally cap file parts and text-field
     parts independently, so a form may allow many small fields while
     permitting only a few uploads (or vice versa).
@@ -174,7 +175,7 @@ def parse_multipart_form(
     def on_part_begin() -> None:
         state["part_open"] = True
         state["parts_seen"] += 1
-        if state["parts_seen"] > max_parts:
+        if max_parts is not None and state["parts_seen"] > max_parts:
             _too_large(f"multipart form exceeds the {max_parts}-part limit")
         state["headers"] = {}
         state["header_field"] = bytearray()

@@ -53,7 +53,7 @@ The defaults are:
 | `APPLICATION_ROOT` | `"/"` | Mount path of the application; also the default `Path` of the session cookie. |
 | `PREFERRED_URL_SCHEME` | `"http"` | Scheme used when generating external URLs. |
 | `MAX_CONTENT_LENGTH` | `104857600` (100 MiB) | Maximum request body size in bytes. The body is buffered in memory, so the default bounds a large-request OOM; raise it for large-upload endpoints, or set `None` for unlimited. |
-| `MAX_FORM_PARTS` | `1000` | Maximum number of multipart form parts. |
+| `MAX_FORM_PARTS` | `1000` | Maximum number of form parts (multipart) or fields (urlencoded). `None` lifts the cap for both. |
 | `MAX_FORM_PART_SIZE` | `10485760` | Maximum size of a single form part in bytes (applies to both file and text parts unless overridden below). |
 | `MAX_FORM_FILES` | `None` | Maximum number of file parts (`None` = only bounded by `MAX_FORM_PARTS`). |
 | `MAX_FORM_FIELDS` | `None` | Maximum number of text-field parts (`None` = only bounded by `MAX_FORM_PARTS`). |

@@ -1378,7 +1378,7 @@ class Request:
             elif mt == MIME_MULTIPART_FORM_DATA:
                 # Per-app multipart caps come from config when an app is
                 # bound; otherwise the module defaults apply.
-                max_parts = DEFAULT_MAX_MULTIPART_PARTS
+                max_parts: int | None = DEFAULT_MAX_MULTIPART_PARTS
                 max_part_size = DEFAULT_MAX_MULTIPART_PART_SIZE
                 mp_max_files: int | None = None
                 mp_max_fields: int | None = None
@@ -1387,9 +1387,11 @@ class Request:
                 mp_max_field_memory: int | None = None
                 cfg = self._config()
                 if cfg is not None:
-                    cfg_parts = cfg.get("MAX_FORM_PARTS", max_parts)
-                    if cfg_parts is not None:
-                        max_parts = cfg_parts
+                    # `None` disables the cap, the same as it does for the
+                    # urlencoded branch above. Reading it as "keep the default"
+                    # meant one config value lifted the limit for one encoding
+                    # and silently kept it for the other.
+                    max_parts = cfg.get("MAX_FORM_PARTS", max_parts)
                     cfg_part_size = cfg.get("MAX_FORM_PART_SIZE", max_part_size)
                     if cfg_part_size is not None:
                         max_part_size = cfg_part_size
