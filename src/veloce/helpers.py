@@ -550,11 +550,28 @@ def make_response(
 ) -> Response:
     """Create a Response - a convenience wrapper.
 
+    A tuple body is unpacked as `(body, status)` / `(body, status, headers)` /
+    `(body, headers)`, the same shapes a handler may return and `app.make_response`
+    already accepted. Without that, `make_response((b"raw", 201))` JSON-encoded
+    the tuple - status code and all - into a `200` body, so the same call answered
+    differently depending on which `make_response` a caller reached for.
+
     Usage::
 
         resp = make_response("Hello", 200)
         resp = make_response({"data": True}, 201)
+        resp = make_response((b"raw", 201))
     """
+    if isinstance(body, tuple) and body:
+        inner: Any = body[0]
+        if len(body) == 3:
+            status_code, headers = body[1], body[2]
+        elif len(body) == 2:
+            if isinstance(body[1], int):
+                status_code = body[1]
+            else:
+                headers = body[1]
+        return make_response(inner, status_code, headers, content_type)
     if isinstance(body, (dict, list)):
         return JSONResponse(body, status_code=status_code, headers=headers)
     if isinstance(body, str):

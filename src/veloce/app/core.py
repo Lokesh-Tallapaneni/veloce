@@ -1334,6 +1334,11 @@ class Veloce(
         - `dict` / `list` -> wrapped as a JSON response via `jsonify`
         - `tuple` of `(body,)`, `(body, status)`, `(body, status, headers)`,
           or `(body, headers)` -> unpacked and re-coerced
+        - anything else -> JSON, matching what dispatch does with the same
+          value returned from a handler
+
+        `veloce.make_response` applies the same table; dispatch keeps its own
+        fast lanes for the shapes a handler returns most, but answers alike.
         """
         if isinstance(value, Response):
             return value
@@ -1365,7 +1370,12 @@ class Veloce(
                 body=value.encode("utf-8"),
                 content_type=MIME_HTML,
             )
-        raise TypeError(f"Cannot coerce {type(value).__name__} to Response")
+        # Anything else is JSON-encoded, which is what a handler returning the
+        # same value already gets from dispatch. Raising here made the public
+        # coercer refuse `123` and `None` while a handler returning them was
+        # answered `200` with a JSON body - one framework, two answers for one
+        # value.
+        return jsonify(value)
 
     # ── Endpoint and hook introspection ────────────────────
 

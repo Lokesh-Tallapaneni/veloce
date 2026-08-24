@@ -156,10 +156,26 @@ def test_make_response_tuple_headers_only():
     assert resp.headers["X-Foo"] == "bar"
 
 
-def test_make_response_unsupported_raises():
-    app = Veloce()
-    with pytest.raises(TypeError):
-        app.make_response(object())
+def test_make_response_matches_dispatch_for_an_unserialisable_value():
+    """`app.make_response` used to raise where a handler returning the same
+    value was answered `200`. It now agrees with dispatch, whose fallback
+    stringifies an unknown object through `orjson_default`. Whether that
+    stringification is the right default is a separate question - the point
+    here is that one framework gives one answer.
+    """
+    from veloce.testclient import TestClient
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/o")
+    async def unserialisable():
+        return object()
+
+    via_dispatch = TestClient(app).get("/o")
+    via_helper = app.make_response(object())
+    assert via_dispatch.status_code == via_helper.status_code == 200
+    assert via_dispatch.text.startswith('"<object object at')
+    assert via_helper.body.decode().startswith('"<object object at')
 
 
 def test_bare_str_return_and_make_response_str_share_content_type():
