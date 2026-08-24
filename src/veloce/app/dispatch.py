@@ -895,20 +895,11 @@ class DispatchMixin:
             for prefix, prefix_slash, sub_app in self._mounted_apps:
                 if request.path.startswith(prefix_slash) or request.path == prefix:
                     sub_path = request.path[len(prefix) :] or "/"
-                    # Surface the mount prefix as the sub-app's `root_path`, the
-                    # same way the ASGI-mount path does (`_asgi_app`), so a route
-                    # inside the sub-app sees `request.root_path == <mount prefix>`
-                    # and `url_for` builds prefix-correct URLs. Stacks under the
-                    # parent's own root_path when the parent is itself mounted.
-                    sub_request = Request(
-                        method=request.method,
-                        path=sub_path,
-                        query_string=request.query_string,
-                        headers=request.headers,
-                        body=await request.body(),
-                        transport=request.transport,
-                        app=sub_app,
-                        scope={"root_path": request.root_path + prefix},
+                    # `derive_for_mount` owns what the mount changes and what it
+                    # carries forward; it stacks under the parent's own root_path
+                    # when the parent is itself mounted.
+                    sub_request = Request.derive_for_mount(
+                        request, sub_path, await request.body(), sub_app, prefix
                     )
                     if hasattr(sub_app, "handle_request"):
                         response = await sub_app.handle_request(sub_request)

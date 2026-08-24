@@ -258,6 +258,42 @@ class Request:
         self._range: Any = _UNSET
         self._auth: Any = _UNSET
 
+    @classmethod
+    def derive_for_mount(
+        cls, parent: Request, sub_path: str, body: bytes, sub_app: Any, prefix: str
+    ) -> Request:
+        """Build the request a mounted sub-app is dispatched with.
+
+        The sub-app answers the same connection, so everything the connection
+        determined - the scheme, the client address, the server, any ASGI
+        extensions - is carried forward rather than re-declared. Synthesising a
+        scope holding only `root_path` is what left `request.is_secure` reading
+        `False` over TLS and `request.client_host` reading `None` inside a mount,
+        and would have dropped every scope-derived property added later too.
+
+        Only what the mount itself changes is overridden: the path the sub-app
+        sees, the `root_path` that makes its `url_for` build prefix-correct URLs,
+        and the now-stale absolute `raw_path`. This mirrors what `_asgi_app`
+        already does for a mounted raw ASGI app.
+
+        `_length_enforced` deliberately stays `False`: the sub-app is checked
+        against its own `MAX_CONTENT_LENGTH`, not its parent's.
+        """
+        scope = dict(parent.scope)
+        scope["path"] = sub_path
+        scope["root_path"] = parent.root_path + prefix
+        scope.pop("raw_path", None)
+        return cls(
+            method=parent.method,
+            path=sub_path,
+            query_string=parent.query_string,
+            headers=parent.headers,
+            body=body,
+            transport=parent.transport,
+            app=sub_app,
+            scope=scope,
+        )
+
     # ── Method, path and query ────────────────────────────
     @property
     def query_params(self) -> QueryParams:

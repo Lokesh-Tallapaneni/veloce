@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A JSON body model refuses a body whose `Content-Type` declares it is not JSON, closing a CSRF avenue: `text/plain` and the form types are sent cross-origin without a CORS preflight. An absent header and a `+json` suffix are still accepted. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `await request.json()` applies that same rule and reads a declared non-JSON body as `None`, closing the avenue for handlers that parse the body themselves. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HTTPException` copies the headers it is given, so a security scheme's cached `WWW-Authenticate` challenge cannot accumulate one request's `Set-Cookie` or CORS headers and ship them on the next `401`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A request inside a mounted sub-app reports the connection's scheme and client address; `request.is_secure` read `False` over TLS and `request.client_host` read `None`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The MCP HTTP transport requires and cross-checks `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` on the `2026-07-28` revision. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
