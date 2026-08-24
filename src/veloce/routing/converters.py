@@ -48,11 +48,20 @@ _BUILTIN_REGEX: dict[str, str] = {
     "str": r"[^/]+",
     "string": r"[^/]+",
     "int": r"-?\d+",
-    "float": r"-?\d+\.\d+",
+    # A superset of what `FloatConverter.match` accepts: an optional sign, and a
+    # dot with digits on either side or both. It was `-?\d+\.\d+`, which is
+    # *stricter* than the converter, so `+1.5`, `.5` and `5.` were rejected
+    # before the converter was consulted - the same route matched on the radix
+    # tree and 404'd on the regex fallback. The dot stays required so a float
+    # placeholder does not also match what an `int` one would.
+    "float": r"[+-]?(?:\d+\.\d*|\.\d+)",
     "uuid": _UUID_PATTERN,
     "path": r".+",
-    # Single-segment (no slash) fragments for the regex fallback; the
-    # converter re-validates the matched group, so these stay permissive.
+    # Single-segment (no slash) fragments for the regex fallback. Each must be a
+    # SUPERSET of what its converter accepts - the converter re-validates the
+    # matched group, so a fragment narrower than its converter silently rejects
+    # values the converter would have taken, and `_match_regex` moves on to the
+    # next route instead.
     "date": r"\d{4}-\d{2}-\d{2}",
     "datetime": r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:[+-][\d:]+|Z)?",
     "time": r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?",

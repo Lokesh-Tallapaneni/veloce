@@ -449,3 +449,81 @@ def test_app_date_route_e2e():
     assert r.status_code == 200
     assert r.json()["when"] == "2024-01-15"
     assert client.get("/d/bad").status_code == 404
+
+
+# ── A fragment must be a superset of its converter ───────────────────
+#
+# The regex fallback's fragments exist to pre-filter a segment before the
+# converter re-validates it, and a comment beside them said they "stay
+# permissive" for exactly that reason. `float` was not: `-?\d+\.\d+` is stricter
+# than `FloatConverter.match`, so `+1.5`, `.5` and `5.` were rejected before the
+# converter was consulted. The same route matched on the radix tree and 404'd on
+# the regex fallback, so moving a route to a shape the tree cannot express -
+# any partial-segment placeholder - silently narrowed what it accepted.
+
+_FLOAT_SPELLINGS = ["1.5", "+1.5", "-1.5", ".5", "5."]
+
+
+def _both_paths_app():
+    from veloce import Veloce
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/t/{v:float}")
+    async def radix(v: float):
+        return {"v": v}
+
+    # A partial-segment placeholder forces the regex fallback.
+    @app.get("/r/pre{v:float}")
+    async def regex(v: float):
+        return {"v": v}
+
+    return app
+
+
+def _client():
+    from veloce.testclient import TestClient
+
+    return TestClient(_both_paths_app())
+
+
+@pytest.mark.parametrize("value", _FLOAT_SPELLINGS)
+def test_the_regex_fallback_accepts_every_float_the_tree_does(value):
+    """The defect: three legal spellings 404'd on the regex path alone."""
+    client = _client()
+    assert client.get(f"/t/{value}").status_code == 200, value
+    assert client.get(f"/r/pre{value}").status_code == 200, value
+
+
+@pytest.mark.parametrize("value", _FLOAT_SPELLINGS)
+def test_both_paths_coerce_to_the_same_value(value):
+    client = _client()
+    assert client.get(f"/t/{value}").json() == client.get(f"/r/pre{value}").json()
+
+
+@pytest.mark.parametrize("value", ["1.5e3", "abc", "nan", "inf"])
+def test_what_the_converter_rejects_is_rejected_on_both_paths(value):
+    """Widening the fragment must not accept what the converter refuses."""
+    client = _client()
+    assert client.get(f"/t/{value}").status_code == 404, value
+    assert client.get(f"/r/pre{value}").status_code == 404, value
+
+
+def test_a_float_placeholder_does_not_swallow_an_int_route():
+    """The dot stays required, so `123` is still an int and not a float."""
+    from veloce import Veloce
+    from veloce.testclient import TestClient
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/x/{v:float}")
+    async def as_float(v: float):
+        return {"kind": "float"}
+
+    @app.get("/y/{v:int}")
+    async def as_int(v: int):
+        return {"kind": "int"}
+
+    client = TestClient(app)
+    assert client.get("/y/123").json() == {"kind": "int"}
+    assert client.get("/x/123").status_code == 404
