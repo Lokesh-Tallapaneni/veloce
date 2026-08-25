@@ -232,6 +232,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `handle_http_exception` renders the same body as the request cycle for an exception with an empty detail. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `response_model=Sequence[Model]`, `tuple[Model, ...]` and `set[Model]` document an array of refs. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The `HTTPValidationError` schema declares the `status_code` every 422 response carries. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Body()` on a model parameter validates it, instead of passing the raw decoded body to the handler. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ## [0.17.1] - 2026-08-23
 
