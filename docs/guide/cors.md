@@ -99,9 +99,13 @@ a wildcard, so Veloce echoes the exact request `Origin` (never `*`) and adds
 `Vary: Origin` so caches key the response per origin.
 
 ```python
+from veloce import CORSMiddleware, Veloce
+
+app = Veloce()
 app.add_middleware(
     CORSMiddleware(
         allow_origins=["https://app.example.com"],
+        allow_headers=["Authorization", "Content-Type"],
         allow_credentials=True,
     )
 )
@@ -110,8 +114,11 @@ app.add_middleware(
 !!! warning "Credentials cannot be combined with a wildcard"
     `allow_credentials=True` with `allow_origins=["*"]`, `allow_headers=["*"]`,
     or a wildcard `allow_origin_regex` (`.*` and equivalents) raises a
-    `ValueError` at construction (Fetch CORS spec Sec. 3.2.4). List the concrete
-    origins you trust instead.
+    `ValueError` at construction (Fetch CORS spec Sec. 3.2.4).
+
+    `allow_headers` defaults to `["*"]`, so **omitting it is a wildcard** and
+    credentials will not construct. List concrete origins *and* concrete headers,
+    as the example above does.
 
 ## How preflight is answered
 

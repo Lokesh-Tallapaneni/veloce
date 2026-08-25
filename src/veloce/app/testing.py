@@ -78,9 +78,10 @@ class TestingMixin:
         dispatch pipeline. Strict subset of what `handle_request` does:
         no middleware, no DI, no handler.
         """
-        from veloce.app.contexts import (
-            _TestRequestContext,  # lazy: breaks app->_contexts->http cycle
-        )
+        # Lazy for the reason the module docstring gives - keeping the context
+        # machinery off `import veloce` - not for a cycle: hoisting it was
+        # measured to import cleanly in every ordering.
+        from veloce.app.contexts import _TestRequestContext
 
         return _TestRequestContext(
             cast("Veloce", self),

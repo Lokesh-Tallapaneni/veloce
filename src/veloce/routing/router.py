@@ -27,6 +27,7 @@ from veloce._protocol_constants import (
     ROUTE_METHOD_WEBSOCKET,
     URL_SCHEME_HTTP,
 )
+from veloce.exceptions import DuplicateRouteError
 from veloce.routing.converters import (
     StringConverter,
     _Converter,
@@ -812,12 +813,6 @@ class Router:
                 incoming_name,
             )
             return
-        # Deferred import: veloce.exceptions pulls in the http response stack,
-        # which transitively imports exceptions again; importing it at module
-        # top would create a routing<->http import cycle. This path runs only
-        # on an actual collision, never on the registration hot path.
-        from veloce.exceptions import DuplicateRouteError
-
         raise DuplicateRouteError(path, method, existing_name, incoming_name)
 
     def _drop_replaced_route_name(

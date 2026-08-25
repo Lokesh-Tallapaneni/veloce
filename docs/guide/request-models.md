@@ -146,7 +146,8 @@ client = TestClient(app)
 
 bad = client.post("/items", json={"name": "Widget", "price": -1})
 assert bad.status_code == 422
-assert bad.json()["detail"][0]["loc"] == ["price"]
+# `loc` names the source first, then the field.
+assert bad.json()["detail"][0]["loc"] == ["body", "price"]
 ```
 
 !!! note

@@ -1,7 +1,7 @@
 ---
 description: >-
   Migrate a FastAPI app to Veloce — a divergence map covering the install name, OAuth2 token_url,
-  whole-body params, and explicit response_model.
+  whole-body params, and Union response models.
 tags: [migration, fastapi, divergence, compatibility]
 ---
 
@@ -14,7 +14,7 @@ This page maps every divergence to its Veloce form, then lists what Veloce adds
 beyond FastAPI.
 
 Most rows are one-line edits; the behavioural ones (whole-body params,
-`response_model` inference) bite silently, so read those first.
+`Union` response models) bite silently, so read those first.
 
 ```bash
 pip install veloceframework
@@ -34,9 +34,9 @@ Each row is a FastAPI idiom and its Veloce equivalent. The behavioural rows
 | `pip install fastapi` | `pip install veloceframework` | Import name stays `veloce`. |
 | `OAuth2PasswordBearer(tokenUrl=...)` | `OAuth2PasswordBearer(token_url=...)` | snake_case; advanced schemes keep camelCase (below). |
 | Two body-model params split the JSON | Each body param gets the **whole** body | Behavioural — nest in one model. |
-| `response_model` inferred from `-> Item` | `response_model=Item` declared explicitly | Behavioural — no return-annotation inference. |
+| `response_model` inferred from `-> Item` | Same — the return annotation supplies it | `response_model=` still wins when both are given. |
 | `response_model=Union[A, B]` filters output | Documents only, does **not** filter | Behavioural — passes the value through unchanged. |
-| `?flag=on` / `?flag=t` coerce to `True` | Only `true`, `1`, `yes` (case-insensitive) | Behavioural — other strings are `False`. |
+| `?flag=on` / `?flag=t` coerce to `True` | Same — plus `y`/`n` and their negatives | An unreadable value is a `422`, not `False`. |
 | `FastAPI(docs_url="")` to disable | `Veloce(docs_url=None)` | `""` is a real (empty) path, not "off". |
 | `Response(content=..., media_type=...)` | `Response(body=..., content_type=...)` | Constructor kwargs renamed. |
 | `WSGIMiddleware` | Not provided | Veloce is ASGI-and-native only. |
@@ -192,11 +192,18 @@ assert resp.json() == {"name": "spoon"}
     Declaring two model parameters validates the *same* body twice — it does not
     key them by parameter name.
 
-## `response_model` is explicit, never inferred
+## `response_model` is inferred from the return annotation
 
-Veloce does not read the return annotation. A `-> Item` hint documents nothing
-and filters nothing; pass `response_model=` on the route to shape and prune the
-output.
+A `-> UserOut` hint shapes and prunes the output exactly as `response_model=`
+does, the same way it does in FastAPI. Pass `response_model=` when you want a
+different model from the one you annotate; it wins over the annotation.
+
+!!! note "Changed in version 0.12"
+
+    The return annotation was previously ignored, so a route annotated
+    `-> UserOut` returned every field of whatever object it built. If you added
+    an annotation for documentation only and relied on it not filtering, name
+    the wider model in `response_model=`.
 
 ```python hl_lines="18"
 from pydantic import BaseModel
@@ -236,10 +243,12 @@ return value and emits only that model's fields.
     but the return value passes through unchanged — Veloce does not pick a member
     of the union to validate against. Use a single model when you need filtering.
 
-## Bool query coercion accepts only `true`, `1`, `yes`
+## Bool coercion refuses a value it cannot read
 
-A `bool` query, path, header, or cookie parameter is `True` only when the value
-(lower-cased) is `true`, `1`, or `yes`. Every other string is `False`.
+A `bool` query, path, header, or cookie parameter accepts `true`, `1`, `on`,
+`t`, `y`, `yes` and their false counterparts, in any case. Anything else is a
+`422` rather than a silent `False` — see [Parameters](../guide/parameters.md) for
+the full table.
 
 ```python
 from veloce import TestClient, Veloce
@@ -255,8 +264,14 @@ async def search(verbose: bool = False):
 client = TestClient(app)
 
 assert client.get("/search?verbose=yes").json() == {"verbose": True}
-assert client.get("/search?verbose=on").json() == {"verbose": False}
+assert client.get("/search?verbose=on").json() == {"verbose": True}
+assert client.get("/search?verbose=banana").status_code == 422
 ```
+
+!!! note "Changed in version 0.18"
+
+    An unreadable value was previously `False`. FastAPI refuses it too, so this
+    is now the closer behaviour, not the further one.
 
 ## Disabling docs uses `None`, not `""`
 

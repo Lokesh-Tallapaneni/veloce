@@ -191,10 +191,10 @@ class ServingMixin:
 
     async def _serve(self, host: str, port: int, access_log: bool, ssl_context: Any = None) -> None:
         """Create the server and run forever."""
-        # Deferred: serving.protocol imports `veloce.status`, which triggers
-        # `veloce/__init__` -> back to this app module. Hoisting would
-        # circle at package import time. Both call sites below share the
-        # same break.
+        # Deferred for import cost, not for a cycle: hoisting this import was
+        # measured to add 11 modules and ~8ms to `import veloce`, which every
+        # application pays and only one that calls `run()` uses. Both call sites
+        # below share the same deferral.
         from veloce.serving.protocol import HttpProtocol
 
         loop = asyncio.get_running_loop()
@@ -301,9 +301,8 @@ class ServingMixin:
         with a timeout, then cancelled - so a stuck handler can never hang the
         process.
         """
-        # Deferred: same `veloce.status` -> `veloce/__init__` cycle that
-        # the matching import in `_serve` breaks. These are the only two
-        # call sites; not worth a structural refactor.
+        # Deferred for the same import-cost reason as the matching import in
+        # `_serve`, which this shares. These are the only two call sites.
         from veloce.serving.protocol import HttpProtocol
 
         # Phase one: flip every live connection's drain flag so each self-

@@ -1481,9 +1481,10 @@ class DispatchMixin:
 
         Takes the direct path unless the application configured a provider or a
         JSON option, in which case that dialect applies here the way it already
-        applies to `jsonify`. Framework-generated bodies (an error payload, a
-        validation report) are deliberately not routed through it: those are the
-        framework's own wire format, not the application's.
+        applies to `jsonify` - and, since the dialect was extended to every
+        response, the way it applies to an error payload and a validation report
+        too. Only genuine protocol frames stay outside it: a signed cookie, a
+        JWT, an MCP JSON-RPC envelope.
         """
         dumps = self._json_dumps_override()
         # `from_bytes` on both branches, not a bare `Response`: the return type

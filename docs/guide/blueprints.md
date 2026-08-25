@@ -59,14 +59,14 @@ are all inherited.
 
 ## APIRouter
 
-If you come from FastAPI, `APIRouter` is available as an alias for
-`Blueprint` — it is the exact same class, exported under both names.
+If you come from FastAPI, `APIRouter` is available as an alias for `Router`. It
+takes `prefix=` and no name, matching FastAPI's own signature:
 
 ```python
 from veloce import APIRouter, Request, Veloce
 
 app = Veloce()
-router = APIRouter("items", url_prefix="/items")
+router = APIRouter(prefix="/items")
 
 
 @router.get("/")
@@ -74,8 +74,14 @@ async def list_items(request: Request):
     return {"items": []}
 
 
-app.register_blueprint(router)
+app.include_router(router)
 ```
+
+!!! note "Changed in version 0.6"
+
+    `APIRouter` aliased `Blueprint` before 0.6. Construct a `Blueprint` when you
+    want a *named* route group — the name is what `url_for("items.list_items")`
+    resolves against, and it is what `register_blueprint` expects.
 
 ## URL prefixes
 

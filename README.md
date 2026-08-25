@@ -42,7 +42,8 @@ Veloce is a from-scratch async Python web framework — not a wrapper around Sta
   registration into a `HandlerPlan`; the per-request hot path performs
   no reflection.
 * **Radix-tree routing** with typed path converters (`int`, `float`,
-  `uuid`, `path`, plus custom).
+  `string`, `uuid`, `path`, `date`, `datetime`, `time`, `timedelta`,
+  `decimal`, `any`, plus custom).
 * **Typed dependency injection** via `Depends`, `Security`,
   `SecurityScopes`, including `yield`-style dependencies with teardown.
 * **OpenAPI 3.1** generated from Pydantic models, served through
@@ -54,9 +55,8 @@ Veloce is a from-scratch async Python web framework — not a wrapper around Sta
 
 Python 3.10+.
 
-Veloce depends on a small native-extension stack: `orjson`,
-`httptools`, `pydantic` v2, `python-multipart`, `multidict`, and
-`uvloop` on non-Windows platforms.
+Veloce depends on `orjson`, `httptools`, `pydantic` v2, `python-multipart`,
+`multidict`, `jinja2`, and `uvloop` on non-Windows platforms.
 
 ## Installation
 
@@ -90,11 +90,15 @@ async def read_item(item_id: int) -> dict[str, int]:
     return {"item_id": item_id}
 ```
 
-Run it with the built-in server (no extra dependencies):
+Run it:
 
 ```bash
 veloce run main:app
 ```
+
+`veloce run` serves under `uvicorn` when it is installed and falls back to the
+built-in server, which needs no extra dependencies. To pin the built-in server
+regardless, call `app.run()`.
 
 `uvicorn` is an optional extra — install it (`pip install veloceframework[uvicorn]`)
 to serve under it or any other ASGI server, or use `app.run()` / the gunicorn
