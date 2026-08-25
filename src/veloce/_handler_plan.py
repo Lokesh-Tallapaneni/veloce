@@ -860,6 +860,15 @@ def build_plan(
             # author at `default_factory`, which builds a fresh value per call.
             if default.default_factory is None and isinstance(default.default, (list, dict, set)):
                 _warn_shared_mutable_default(param_name, default.default)
+            # `payload: Payload = Body()` declares the same thing as a bare
+            # `payload: Payload`, so it must validate the same way. Recorded here
+            # rather than tested per request: the resolver reads one attribute
+            # instead of calling `is_pydantic_model` on every body.
+            if slot.marker_kind == MK_BODY and slot.target_type is not None:
+                backend = backend_of(slot.target_type)
+                if backend is not ModelBackend.NONE:
+                    slot.model = slot.target_type
+                    slot.backend = backend
             slots.append(slot)
             continue
 

@@ -280,6 +280,13 @@ def _err_missing_marker(loc: str, name: str) -> RequestValidationError:
 # ── Markers ───────────────────────────────────────────────
 
 
+#: Caught by `_validate_marker_body`. Empty when msgspec is absent, which makes
+#: the `except` clause a no-op rather than a NameError.
+_msgspec_validation_error: tuple[type[BaseException], ...] = (
+    (_msgspec.ValidationError,) if _msgspec is not None else ()
+)
+
+
 class Depends:
     """Dependency marker — use in function signature defaults.
 
@@ -1101,6 +1108,42 @@ class DependencyResolver:
                 [{"loc": ["body"], "msg": "Invalid JSON body", "type": "value_error"}]
             ) from e
 
+    @staticmethod
+    def _validate_marker_body(value: Any, slot: Any) -> Any:
+        """Validate an already-extracted `Body()` value against the slot's model.
+
+        `payload: Payload = Body()` declares the same contract as a bare
+        `payload: Payload`, so it validates the same way and reports errors under
+        the same `["body", ...]` location. It cannot reuse `_resolve_body_model`:
+        `embed=True` means the value has already been taken from under the
+        parameter name, and those resolvers read the whole body themselves.
+        """
+        backend = slot.backend
+        try:
+            if backend == ModelBackend.MSGSPEC:
+                return _msgspec.convert(value, type=slot.model, strict=False)
+            if backend == ModelBackend.ADAPTED:
+                return adapter_for(slot.model).validate_python(value)
+            return slot.model.model_validate(value)
+        except PydanticValidationError as e:
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": ["body", *(str(part) for part in err["loc"])],
+                        "msg": err["msg"],
+                        "type": err["type"],
+                    }
+                    for err in e.errors()
+                ]
+            ) from e
+        except _msgspec_validation_error as e:
+            # msgspec embeds the field path in the message text rather than
+            # exposing it, so `loc` stays `["body"]` - as `_resolve_msgspec_body`
+            # does for the same reason.
+            raise RequestValidationError(
+                [{"loc": ["body"], "msg": str(e), "type": "value_error"}]
+            ) from e
+
     async def _resolve_marker(
         self, slot: Any, request: Request, path_params: dict[str, str]
     ) -> Any:
@@ -1143,6 +1186,11 @@ class DependencyResolver:
         elif mk == 3:  # MK_COOKIE
             raw = request.cookies.get(lookup)
         elif mk == 4:  # MK_BODY
+            # The same content-type policy the bare-model body applies. A JSON
+            # endpoint that parses a `text/plain` body is reachable cross-origin
+            # without a preflight; the two body forms must not differ on that.
+            if slot.model is not None:
+                self._require_json_body(request)
             body = await request.json()
             # `Body(embed=True)` - the value lives under the param name
             # inside the JSON object, rather than being the whole body.
@@ -1161,6 +1209,12 @@ class DependencyResolver:
             if slot.is_optional:
                 return None
             raise _err_missing_marker(loc, slot.name)
+
+        # A model target is validated by the model, not coerced as a scalar:
+        # `_coerce_scalar` passes a `dict` straight through, so the handler used
+        # to receive the raw decoded body and fail on its first attribute access.
+        if slot.model is not None:
+            return self._validate_marker_body(raw, slot)
 
         raw = _coerce_scalar(raw, slot.target_type, slot.name, loc)
 
