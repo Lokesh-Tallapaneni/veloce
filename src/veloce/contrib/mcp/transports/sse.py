@@ -44,7 +44,12 @@ from veloce.contrib.mcp.errors import (
     parse_error,
 )
 from veloce.contrib.mcp.session import MCPSession
-from veloce.contrib.mcp.transports.http import _authenticate, _logger, _validate_origin
+from veloce.contrib.mcp.transports.http import (
+    _authenticate,
+    _logger,
+    _validate_origin,
+    register_metadata_route,
+)
 from veloce.http.response import JSONResponse, Response
 from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
@@ -187,6 +192,7 @@ def register_sse_transport(
         include_in_schema=False,
         exclude_middleware=exclude_middleware,
     )
+    register_metadata_route(app, auth, exclude_middleware)
     record_endpoint(app, "sse", path, auth, allowed_origins)
 
 

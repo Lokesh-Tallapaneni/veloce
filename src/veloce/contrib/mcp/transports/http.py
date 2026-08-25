@@ -222,18 +222,35 @@ def register_http_transport(
     )
     record_endpoint(app, "http", path, auth, allowed_origins)
 
-    if auth is not None:
+    register_metadata_route(app, auth, exclude_middleware)
 
-        async def mcp_metadata(request: Request) -> Response:
-            return JSONResponse(auth.metadata())
 
-        app.add_route(
-            PROTECTED_RESOURCE_METADATA_PATH,
-            mcp_metadata,
-            methods=["GET"],
-            include_in_schema=False,
-            exclude_middleware=exclude_middleware,
-        )
+def register_metadata_route(
+    app: Any, auth: MCPAuth | None, exclude_middleware: Sequence[str] | None
+) -> None:
+    """Serve the RFC 9728 protected-resource metadata `_challenge` points at.
+
+    Every `401` either transport emits names this path in its `WWW-Authenticate`
+    header, so a client that follows the challenge - which is the whole point of
+    the header - must find something there. Registered by the HTTP transport
+    alone, an SSE mount answered its own challenge with a 404.
+
+    The path is fixed by the RFC, so two mounts on one app would collide; the
+    second is a no-op, since both would serve the same document.
+    """
+    if auth is None or app.match("GET", PROTECTED_RESOURCE_METADATA_PATH) is not None:
+        return
+
+    async def mcp_metadata(request: Request) -> Response:
+        return JSONResponse(auth.metadata())
+
+    app.add_route(
+        PROTECTED_RESOURCE_METADATA_PATH,
+        mcp_metadata,
+        methods=["GET"],
+        include_in_schema=False,
+        exclude_middleware=exclude_middleware,
+    )
 
 
 async def _handle_http(
