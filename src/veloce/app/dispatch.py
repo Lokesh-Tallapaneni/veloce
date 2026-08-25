@@ -1207,13 +1207,23 @@ class DispatchMixin:
         request's spool files are released after it finishes rather than at
         teardown; the caller uses this to decide which.
         """
-        coros = []
-        if request._background_tasks is not None:
-            coros.append(request._background_tasks.run_all())
-
         # Response-attached background task (shape:
-        # `Response(content=..., background=BackgroundTask(fn))`).
+        # `Response(content=..., background=BackgroundTask(fn))`). Read through
+        # `getattr` rather than `response.background`: the attribute is a
+        # `Response` slot every construction path in this tree initialises, but a
+        # user subclass whose `__init__` skips `super()` would turn a direct read
+        # into an `AttributeError` on the response path.
+        injected = request._background_tasks
         attached_bg = getattr(response, "background", None)
+        # Both sources checked before anything is allocated: almost every
+        # response has neither, and used to build a list only to discard it.
+        if injected is None and attached_bg is None:
+            return False
+
+        coros = []
+        if injected is not None:
+            coros.append(injected.run_all())
+
         if attached_bg is not None:
             # `BackgroundTasks` collection -> `.run_all()`;
             # single `BackgroundTask` -> `.run()`. Anything else with
