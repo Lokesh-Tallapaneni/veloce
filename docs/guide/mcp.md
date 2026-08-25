@@ -58,9 +58,16 @@ automatically. A route — of any HTTP verb, including a mutating `POST` / `PUT`
 explicitly with `expose_as_mcp_tool=True`:
 
 ```python
+from pydantic import BaseModel
+
+
+class User(BaseModel):
+    name: str
+
+
 @app.post("/users", expose_as_mcp_tool=True, mcp_description="Create a user")
-async def create_user(user: User):
-    ...
+async def create_user(user: User) -> dict:
+    return {"created": user.name}
 ```
 
 An exposed route keeps every guard it has as an HTTP endpoint — its `Security`
@@ -1277,14 +1284,23 @@ from veloce.contrib.mcp import add_mcp_proxy
 app = Veloce(title="Gateway")
 
 
+UPSTREAM_URL = "https://upstream.example.com/mcp"
+
+
 async def call_upstream(method: str, params: dict) -> dict:
-    response = await client.post(UPSTREAM_URL, json={
+    """One JSON-RPC request against the upstream server."""
+    response = await app.state.client.post(UPSTREAM_URL, json={
         "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
     })
     return response.json()["result"]
 
 
-await add_mcp_proxy(app, "search", call_upstream)
+@app.on_startup
+async def attach_upstream() -> None:
+    # `add_mcp_proxy` is awaited, so it runs from startup rather than at import.
+    await add_mcp_proxy(app, "search", call_upstream)
+
+
 app.mount_mcp(transport="http")
 ```
 
@@ -1318,10 +1334,12 @@ from veloce.contrib.mcp.registry import build_registry
 
 app = Veloce(title="Search")
 
+SERVER_KEY = "the credential the agent must not supply"
+
 
 @app.mcp_tool(description="Search the index (internal)")
 async def search(query: str, api_key: str, limit: int = 5) -> dict:
-    return await backend.search(query, api_key, limit)
+    return {"query": query, "limit": limit}
 
 
 app.add_mcp_tool(
@@ -1526,6 +1544,8 @@ store:
 import json
 from dataclasses import asdict
 
+from redis.asyncio import Redis
+
 from veloce.contrib.mcp import SessionRecord
 
 
@@ -1544,6 +1564,7 @@ class RedisSessions:
         await self._client.delete(f"mcp:{session_id}")
 
 
+redis = Redis.from_url("redis://localhost:6379")
 app.mount_mcp(transport="http", sessions=True, session_backend=RedisSessions(redis))
 ```
 
@@ -1732,11 +1753,19 @@ authorization = MCPAuthorizationServer(
 register_authorization_server(app, authorization)
 
 app.mount_mcp(transport="http", auth=MCPAuth(
-    verify=authorization.verifier(),
+    verify=authorization.verifier(resource="https://api.example.com/mcp"),
     resource_server_url="https://api.example.com/mcp",
     authorization_servers=["https://api.example.com"],
 ))
 ```
+
+!!! warning "Pass `resource=` to the verifier"
+    It is the same URI as `resource_server_url`, and it is what enforces
+    audience binding ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)): a token
+    this authorization server minted for a *different* MCP server is refused.
+    Building the verifier without it leaves that check off and warns at startup —
+    the previous section's warning applies here too, and this is how Veloce
+    satisfies it for you.
 
 That serves the four endpoints an MCP client walks:
 
@@ -1816,6 +1845,15 @@ once and run over HTTP and MCP alike.
 ### Reconciling existing middleware and dependencies
 
 ```python
+from veloce import Middleware, Principal
+from veloce.contrib.mcp import MCPAuth
+
+
+def verify(token: str) -> Principal | None:
+    """Your token validation - see the section above."""
+    return Principal(subject="agent", scopes={"mcp:tools"}) if token else None
+
+
 class AuthMiddleware(Middleware):
     async def process_request(self, request):
         if request.is_mcp:           # a replayed tool call — transport already authed
@@ -1824,8 +1862,14 @@ class AuthMiddleware(Middleware):
 
 app.add_middleware(AuthMiddleware)
 
+mcp_auth = MCPAuth(
+    verify=verify,                                   # from the section above
+    resource_server_url="https://api.example.com/mcp",
+    authorization_servers=["https://auth.example.com"],
+)
+
 # Drop the same middleware from the /mcp transport route (it has its own MCPAuth):
-app.mount_mcp(transport="http", auth=MCPAuth(...), exclude_middleware=["AuthMiddleware"])
+app.mount_mcp(transport="http", auth=mcp_auth, exclude_middleware=["AuthMiddleware"])
 ```
 
 An exposed route's `Depends`, `Security`, and request middleware **run** on the
@@ -2111,9 +2155,9 @@ answers with at most that many entries, plus a `nextCursor` while more remain.
 app.mount_mcp(transport="http", page_size=50)
 ```
 
-```json
-// tools/list -> {"tools": [ ...50 entries... ], "nextCursor": "NDk6b3BfNDk="}
-// tools/list {"cursor": "NDk6b3BfNDk="} -> the next 50
+```text
+tools/list                              -> {"tools": [ ...50 entries... ], "nextCursor": "NDk6b3BfNDk="}
+tools/list {"cursor": "NDk6b3BfNDk="}   -> the next 50
 ```
 
 A client walks the catalogue by passing the `nextCursor` it received back as
@@ -2185,8 +2229,9 @@ the newest revision both sides speak. `instructions` comes from the app's
 
 ### Version mismatch
 
-A request declaring a version the server does not serve is rejected with
-`-32022`, naming what *is* served so the client can retry rather than fail:
+A **modern** request — one declaring its revision in `_meta` — that names a
+version the server does not serve is rejected with `-32022`, naming what *is*
+served so the client can retry rather than fail:
 
 ```json
 {
@@ -2197,6 +2242,11 @@ A request declaring a version the server does not serve is rejected with
   }
 }
 ```
+
+A **handshake** `initialize` is different: it negotiates rather than rejects. A
+client asking for a version the server does not serve is answered with one the
+server does, and decides for itself whether to continue — which is what the
+handshake exists for.
 
 Every modern result also carries `resultType: "complete"`. Handshake-era
 results do not — that field belongs to the modern revision only.

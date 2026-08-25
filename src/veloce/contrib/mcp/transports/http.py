@@ -61,7 +61,7 @@ from itertools import count
 from typing import TYPE_CHECKING, Any, cast
 
 from veloce import status
-from veloce.contrib.mcp._helpers import encode_envelope
+from veloce.contrib.mcp._helpers import encode_envelope, transport_route_name
 from veloce.contrib.mcp._posture import record_endpoint
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
 from veloce.contrib.mcp.context import _transport_var
@@ -236,6 +236,7 @@ def register_http_transport(
         methods=["POST", "GET", "DELETE"],
         include_in_schema=False,
         exclude_middleware=exclude_middleware,
+        name=transport_route_name("mcp_endpoint", path),
     )
     record_endpoint(app, "http", path, auth, allowed_origins)
 

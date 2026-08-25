@@ -675,3 +675,16 @@ class _RouteResponse:
     def __init__(self, response: Response, model_filtered: bool = False) -> None:
         self.response = response
         self.model_filtered = model_filtered
+
+
+def transport_route_name(base: str, path: str) -> str:
+    """A route name unique to one mount of one transport.
+
+    A transport's internal routes took their name from the handler function, so
+    the name was fixed however many times the transport was mounted. Mounting at
+    two paths - which `mount_mcp` supports and the guide documents - therefore
+    left the first mount unreachable by name, with `url_for` silently resolving
+    to the second. These routes carry `include_in_schema=False`; the name exists
+    for `url_for` and diagnostics, so qualifying it by path costs nothing.
+    """
+    return f"{base}:{path}"
