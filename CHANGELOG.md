@@ -44,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An env file refuses a value that is not the type its config key declares, naming the key. `DEBUG=flase` read as `False`; an empty value still reads as off. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - An MCP `Capability` declares the methods a modern revision retired as `handshake_only_methods`; the server derives what it refuses from those instead of a separate table. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - An app-level `url_value_preprocessor` runs before a blueprint's, matching the request hooks; registration order no longer interleaves the two. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

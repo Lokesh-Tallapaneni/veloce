@@ -22,7 +22,6 @@ from typing import IO, Any
 
 import orjson
 
-from veloce._internal import _coerce_bool, _coerce_int
 from veloce._protocol_constants import URL_SCHEME_HTTP
 
 # Per-process cap on simultaneously-open connections for the built-in serving
@@ -157,6 +156,51 @@ _ENV_TYPED_NONE_DEFAULTS: dict[str, str] = {
 _ENV_FREE_FORM: frozenset[str] = frozenset({"SECRET_KEY", "SERVER_NAME", "PREFERRED_URL_SCHEME"})
 
 
+#: The tokens an env file may write for a boolean, matching what Pydantic's own
+#: bool parser accepts - the same set every dotenv-reading tool has converged on.
+#: Written out here rather than delegated to `pydantic.TypeAdapter`: importing
+#: `TypeAdapter` pulls `importlib.metadata` onto the base import path, which
+#: `test_import_laziness` forbids for cold-start reasons, and the membership test
+#: is about twice as fast besides (190ns against 353ns, measured).
+_ENV_TRUE = frozenset({"1", "true", "t", "yes", "y", "on"})
+#: The empty string is here and not an error: every dotenv reader treats `KEY=`
+#: as an empty value, and for a flag the conventional reading is "off". It is a
+#: value the operator can have meant; `flase` is not.
+_ENV_FALSE = frozenset({"0", "false", "f", "no", "n", "off", ""})
+
+#: What each declared type is called in the error a bad value raises.
+_ENV_TYPE_NAMES = {"int": "an integer", "bool": "a boolean (true/false, yes/no, on/off, 1/0)"}
+
+
+def _coerce_env_typed(value: str, kind: str, *, name: str) -> Any:
+    """Parse an env-file string as `kind`, refusing a value that is not one.
+
+    The refusal is the point. The integer path always rejected a non-integer, but
+    the boolean path could not fail: anything outside the truthy tokens read as
+    `False`, so `DEBUG=flase` was indistinguishable from `DEBUG=false` and a typo
+    in a security flag silently selected the unsafe value.
+
+    Raises `ValueError` naming the config key, so the message points at the line
+    of the `.env` file to fix rather than at a `TypeError` several layers later.
+    """
+    if kind == "bool":
+        token = value.strip().lower()
+        if token in _ENV_TRUE:
+            return True
+        if token in _ENV_FALSE:
+            return False
+        raise ValueError(_env_type_error(name, kind, value))
+    try:
+        return int(value)
+    except ValueError as err:
+        raise ValueError(_env_type_error(name, kind, value)) from err
+
+
+def _env_type_error(name: str, kind: str, value: str) -> str:
+    """The message for a value that is not the type its key declares."""
+    return f"{name} must be {_ENV_TYPE_NAMES[kind]}, got {value!r}"
+
+
 def _coerce_env_value(key: str, value: Any, current: Any) -> Any:
     """Give an env-file string the type its config key is read as.
 
@@ -172,18 +216,16 @@ def _coerce_env_value(key: str, value: Any, current: Any) -> Any:
     if not isinstance(value, str):
         return value
     if isinstance(current, bool):
-        return _coerce_bool(value)
+        return _coerce_env_typed(value, "bool", name=key)
     if isinstance(current, int):
-        return _coerce_int(value, name=key)
+        return _coerce_env_typed(value, "int", name=key)
     if isinstance(current, tuple):
         # A list-valued key is written `A,B` in an env file; left a string, a
         # membership test would match single characters rather than entries.
         return tuple(part.strip() for part in value.split(",") if part.strip())
     declared = _ENV_TYPED_NONE_DEFAULTS.get(key)
-    if declared == "int":
-        return _coerce_int(value, name=key)
-    if declared == "bool":
-        return _coerce_bool(value)
+    if declared is not None:
+        return _coerce_env_typed(value, declared, name=key)
     return value
 
 
