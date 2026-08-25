@@ -98,6 +98,8 @@ class LoggingCapability(_ServerCapability):
 
     __slots__ = ()
 
+    handshake_only_methods = frozenset({"logging/setLevel"})
+
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         return None if modern else {"logging": {}}
 

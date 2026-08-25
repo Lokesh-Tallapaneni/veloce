@@ -178,17 +178,11 @@ RESULT_TYPE_TASK = "task"
 # Methods a handshake-era client has and a modern one does not. Still served to the
 # revision that defined them, reported as not found to the revision that removed
 # them, so a client discovers the surface it actually has.
-_HANDSHAKE_ONLY_METHODS = frozenset(
-    {
-        # Retired by the tasks extension.
-        "tasks/list",
-        "tasks/result",
-        # Removed by the modern revision. A modern client sets its log level per
-        # request in `_meta` instead of once per connection, and has no `ping`.
-        "ping",
-        "logging/setLevel",
-    }
-)
+# `ping` belongs to no capability - it is answered by the server itself - so its
+# retirement is declared here. Every other era-retired method is declared by the
+# capability that owns it, as `Capability.handshake_only_methods`, and the
+# effective set is their union (see `_handshake_only_methods`).
+_CORE_HANDSHAKE_ONLY_METHODS = frozenset({"ping"})
 _CACHEABLE_METHODS = frozenset(
     {
         "server/discover",
@@ -375,6 +369,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         "_subscriptions_enabled",
         "_connections",
         "_capabilities",
+        "_handshake_only",
         "_era_aware_capabilities",
         "_methods",
         "_inflight",
@@ -503,6 +498,11 @@ class MCPServer(TasksMixin, InvocationMixin):
         # Built once at construction so per-request dispatch is one dict lookup.
         # A new method is registered here, never wired into a dispatcher branch.
         self._methods: dict[str, MethodHandler] = self._build_method_map()
+        # The era-retired methods, gathered from the capabilities that own them
+        # exactly as the method map is. One rule, one place to edit.
+        self._handshake_only: frozenset[str] = _CORE_HANDSHAKE_ONLY_METHODS.union(
+            *(capability.handshake_only_methods for capability in self._capabilities)
+        )
         # Cancellable requests in flight, keyed by `(connection_key, msg_id)` so a
         # JSON-RPC id is unique only within its own connection. The client owns its
         # id space per connection, so two HTTP clients of the same server routinely
@@ -771,7 +771,7 @@ class MCPServer(TasksMixin, InvocationMixin):
             ).to_error(msg_id)
 
         handler = self._methods.get(method)
-        if handler is not None and is_modern and method in _HANDSHAKE_ONLY_METHODS:
+        if handler is not None and is_modern and method in self._handshake_only:
             # The tasks extension retired these; a modern client polls `tasks/get`,
             # whose result carries the completed answer. Reported as not found so a
             # client discovers the surface it actually has.

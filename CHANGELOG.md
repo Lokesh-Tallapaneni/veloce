@@ -44,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An MCP `Capability` declares the methods a modern revision retired as `handshake_only_methods`; the server derives what it refuses from those instead of a separate table. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - An app-level `url_value_preprocessor` runs before a blueprint's, matching the request hooks; registration order no longer interleaves the two. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `app.url_value_preprocessors` and `app.url_default_functions` key each blueprint's entries under its dotted name instead of flattening them under `None`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Three deferred imports of Veloce modules are hoisted to module scope and three are documented with the cycle they break. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

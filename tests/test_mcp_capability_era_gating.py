@@ -108,11 +108,23 @@ async def test_a_handshake_client_is_still_offered_task_listing():
 
 @pytest.mark.parametrize("modern", [True, False])
 async def test_no_advertised_capability_names_a_method_the_dispatcher_refuses(modern: bool):
-    """The general rule the two cases above are instances of."""
-    from veloce.contrib.mcp.server import _HANDSHAKE_ONLY_METHODS
+    """The general rule the two cases above are instances of.
+
+    Read off the server rather than a module constant: the retired set is the
+    union of what each capability declares, so this checks the set the
+    dispatcher will actually consult.
+    """
+    from veloce import Veloce
+    from veloce.contrib.mcp.server import MCPServer
+
+    probe = Veloce(openapi_url=None)
+
+    @probe.mcp_tool(description="A tool")
+    async def _probe() -> dict:
+        return {}
 
     capabilities = await _capabilities(modern=modern)
-    refused = _HANDSHAKE_ONLY_METHODS if modern else frozenset()
+    refused = MCPServer(probe)._handshake_only if modern else frozenset()
 
     offending = []
     for area, entry in capabilities.items():

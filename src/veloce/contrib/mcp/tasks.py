@@ -300,6 +300,8 @@ class TasksCapability(_ServerCapability):
 
     __slots__ = ()
 
+    handshake_only_methods = frozenset({"tasks/list", "tasks/result"})
+
     def advertise(self, *, modern: bool = False) -> dict[str, Any] | None:
         if not any(tool.task_support for tool in self._server.registry.tools.values()):
             return None

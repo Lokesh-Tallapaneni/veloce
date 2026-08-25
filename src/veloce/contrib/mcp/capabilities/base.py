@@ -22,6 +22,16 @@ class Capability:
 
     __slots__ = ()
 
+    #: Methods of this capability that the modern revision retired. The server
+    #: refuses them with method-not-found there, so a client discovers the
+    #: surface it actually has.
+    #:
+    #: Declared here rather than in a name table in the dispatcher: withholding
+    #: a method from `advertise(modern=True)` and refusing it at dispatch are two
+    #: halves of one rule, and split across two files a capability author edits
+    #: one and the server then advertises what it refuses.
+    handshake_only_methods: frozenset[str] = frozenset()
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         # A slotted base whose subclass forgets `__slots__` silently regains a
         # per-instance `__dict__`; fail loudly so the discipline is structural.
