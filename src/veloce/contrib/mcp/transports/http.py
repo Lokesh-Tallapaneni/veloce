@@ -94,6 +94,7 @@ from veloce.sse import EventSourceResponse, ServerSentEvent
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.request import Request
+from veloce.security._utils import _extract_bearer_token
 
 _logger = logging.getLogger(__name__)
 
@@ -325,7 +326,12 @@ async def _handle_http(
         session = MCPSession(persistent=False)
 
     is_request = "id" in message and isinstance(message.get("method"), str)
-    accepts_sse = "text/event-stream" in request.headers.get("accept", "")
+    # Through the framework's own parser rather than a substring test, which
+    # read `text/event-streaming` as a match and ignored `q=0` - so a client
+    # that explicitly refused the stream was handed one. `quality_explicit`
+    # excludes a `*/*` wildcard, keeping the existing choice of JSON unless the
+    # stream was actually asked for.
+    accepts_sse = request.accept_mimetypes.quality_explicit("text/event-stream") > 0
     if is_request and accepts_sse:
         return _stream_response(
             server, message, current_principal(), session, session_id, event_store
@@ -567,10 +573,13 @@ async def _authenticate(
     A missing or invalid token yields a `401` challenge; a valid token missing the
     endpoint's required scopes yields a `403`. On success the challenge is `None`.
     """
-    header = request.headers.get("authorization", "")
-    scheme, _, raw_token = header.partition(" ")
-    token = raw_token.strip()
-    if scheme.lower() != "bearer" or not token:
+    # The framework's own extractor, not a second parse: RFC 6750 Sec. 2.1 and
+    # RFC 7235 permit only SP/HTAB between scheme and token, and a bare `.strip()`
+    # also trimmed newlines and NBSP - so a token this door accepted was one the
+    # HTTP door rejected. `auto_error=False` returns `None` instead of raising,
+    # since a challenge response is what this path owes the caller.
+    token = _extract_bearer_token(request, auto_error=False)
+    if not token:
         return None, _challenge(auth, 401, "invalid_token")
 
     try:
