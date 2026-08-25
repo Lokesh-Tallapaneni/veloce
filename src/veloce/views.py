@@ -37,7 +37,9 @@ from typing import Any, ClassVar
 from veloce._constants import HEADER_ALLOW
 from veloce._internal import _is_async_callable
 from veloce._protocol_constants import HTTP_METHOD_GET
+from veloce.dependency import Depends
 from veloce.exceptions import MethodNotAllowed
+from veloce.routing.params import ParamBase
 
 # Standard HTTP method names (RFC 9110 Sec. 9.3). Lower-cased because that's
 # how methods are spelled on the class; we upper-case for the Allow header.
@@ -148,6 +150,35 @@ class View:
         raise NotImplementedError(f"{type(self).__name__} must implement dispatch_request()")
 
 
+def _reject_unresolvable_defaults(cls: type, verb: str, method: Any) -> None:
+    """Refuse a verb method declaring a parameter marker or `Depends`.
+
+    A `MethodView` is one route serving several verbs, so there is one handler
+    plan for the route and none per verb - nothing resolves these. Left alone the
+    default object itself was passed, so `q: str = Query(default="")` handed the
+    method a `Query` instance and the view answered with its repr. Raised at
+    class-definition time, like the `async def` check above, so the mistake
+    surfaces on import rather than as a nonsense response.
+    """
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):  # pragma: no cover - builtins and C callables
+        return
+    offenders = [
+        param.name
+        for param in parameters.values()
+        if isinstance(param.default, (ParamBase, Depends))
+    ]
+    if not offenders:
+        return
+    raise TypeError(
+        f"{cls.__name__}.{verb} declares {', '.join(offenders)} with a parameter "
+        f"marker or Depends(), which a MethodView verb method cannot resolve: the "
+        f"route has one handler plan shared by every verb. Read the value from "
+        f"`request` inside the method, or use a function handler."
+    )
+
+
 class MethodView(View):
     """Class-based view dispatching one async method per HTTP verb.
 
@@ -171,6 +202,7 @@ class MethodView(View):
                 raise TypeError(
                     f"{cls.__name__}.{name} must be async (Veloce handlers are `async def`-only)"
                 )
+            _reject_unresolvable_defaults(cls, name, attr)
 
     @classmethod
     def _allowed_methods(cls) -> list[str]:
