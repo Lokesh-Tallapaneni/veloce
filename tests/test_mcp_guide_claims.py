@@ -265,3 +265,22 @@ def test_every_named_context_method_exists():
 
     for name in set(re.findall(r"`ctx\.([a-z_]+)", GUIDE.read_text(encoding="utf-8"))):
         assert hasattr(MCPContext, name), name
+
+
+def test_every_internal_anchor_link_resolves():
+    """A broken in-page anchor renders as a dead link and fails a strict build.
+
+    Caught one introduced by this review's own edits: `#authenticating-an-agent`,
+    where the heading is "Authentication and authorization". `mkdocs --strict`
+    reports it, but the strict build cannot run on every machine (the social-card
+    plugin needs libcairo), so the check belongs here too.
+    """
+    import re
+
+    text = GUIDE.read_text(encoding="utf-8")
+    anchors = {
+        re.sub(r"[^a-z0-9\s-]", "", heading.strip().lower()).replace(" ", "-")
+        for heading in re.findall(r"^#{1,6}\s+(.+)$", text, re.MULTILINE)
+    }
+    for link in set(re.findall(r"\]\(#([a-z0-9-]+)\)", text)):
+        assert link in anchors, f"#{link} matches no heading in mcp.md"

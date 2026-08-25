@@ -141,7 +141,7 @@ Headers are a separate matter and are deliberately **not** inherited. A replayed
 request has no headers at all, so a credential presented to the transport is
 never re-read by the route's own `Security` scheme, and a tool argument can
 never masquerade as one. Authentication over MCP is the validated
-[`Principal`](#authenticating-an-agent), not a request header.
+[`Principal`](#authentication-and-authorization), not a request header.
 
 A client-supplied parameter declared inside a `Depends` dependency - including a
 body model - is advertised in the tool's input schema, so `tools/list` and
