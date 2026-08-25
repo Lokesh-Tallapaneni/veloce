@@ -102,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `MethodView` verb method declaring a parameter marker or `Depends()` raises `TypeError` at class definition. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Config.from_mapping` raises `TypeError` for a non-uppercase keyword argument instead of dropping it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Route registration no longer computes a dependency-grouping map that nothing read. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- An MCP server-to-client request is refused when the client advertised the capability as `false`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Removed
 
@@ -229,6 +230,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HTTPBearer(scheme_name=...)` publishes that scheme in the OpenAPI document, not a fixed `bearer`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `handle_http_exception` renders the same body as the request cycle for an exception with an empty detail. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `response_model=Sequence[Model]`, `tuple[Model, ...]` and `set[Model]` document an array of refs. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The `HTTPValidationError` schema declares the `status_code` every 422 response carries. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ## [0.17.1] - 2026-08-23
 
