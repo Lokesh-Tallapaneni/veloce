@@ -316,6 +316,32 @@ Put `@rate_limit` **below** the route decorator so the route registers the tagge
 handler. A decorated route gets its own per-client counter, independent of the
 default budget.
 
+The tag is honoured whichever way the middleware was constructed. It works the
+same above a bare `max_requests`/`window_seconds` limiter as it does above a
+`strategy=`:
+
+```python
+from veloce import FixedWindow, RateLimitMiddleware, rate_limit
+
+app.add_middleware(RateLimitMiddleware(max_requests=1000, window_seconds=60))
+
+
+@app.post("/login")
+@rate_limit(FixedWindow(limit=5, window=60))
+async def login(request):
+    ...
+```
+
+A thousand requests a minute for the app, five a minute for `/login`, counted
+separately — spending the login budget leaves the rest of the app untouched, and
+vice versa.
+
+!!! note "Changed in version 0.18.0"
+    `@rate_limit` above a `max_requests=`/`window_seconds=` limiter used to be
+    collected by nothing and dropped in silence, so the route ran unthrottled.
+    If you have a decorated route on that form of the middleware, it is being
+    enforced from this version on — check the limit is the one you want.
+
 For handlers you cannot decorate, the `overrides` map is the central alternative.
 Its key is the route's **full** path template as matched at runtime (the value of
 `request.url_rule`), so a route on a blueprint with `url_prefix="/api"` uses

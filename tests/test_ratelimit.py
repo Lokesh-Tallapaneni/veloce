@@ -708,3 +708,150 @@ def test_strict_overrides_defaults_to_failing_startup():
     )
     with pytest.raises(ValueError, match="match no registered route"):
         TestClient(app)
+
+
+# ── @rate_limit in the max_requests= constructor mode ────────────────
+#
+# `rate_limit()` promises unconditionally that "a decorated handler is limited
+# by `strategy` ... overriding the RateLimitMiddleware default". That held only
+# when the middleware was built with `strategy=`. Built the other way -
+# `RateLimitMiddleware(max_requests=..., window_seconds=...)`, the default
+# shape - the tag was collected by nothing and dropped in silence:
+#
+#     app.add_middleware(RateLimitMiddleware(max_requests=1000, window_seconds=60))
+#
+#     @app.post("/login")
+#     @rate_limit(FixedWindow(limit=2, window=60))
+#     async def login(): ...      # -> 200, 200, 200, 200
+#
+# A strict limit on a sensitive route silently became no limit at all. The
+# constructor already refuses `backend=` and `overrides=` without `strategy=`,
+# so the one misconfiguration it did not report was the one that mattered.
+
+
+def _tagged_app(**middleware_kwargs) -> Veloce:
+    from veloce import rate_limit
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(**middleware_kwargs))
+
+    @app.get("/login")
+    @rate_limit(FixedWindow(2, 60))
+    async def login(request: Request):
+        return {"ok": True}
+
+    @app.get("/open")
+    async def open_route(request: Request):
+        return {"ok": True}
+
+    return app
+
+
+def test_tag_is_honored_in_the_max_requests_mode():
+    """The defect: the decorator was dropped without a word."""
+    with TestClient(_tagged_app(max_requests=1000, window_seconds=60)) as tc:
+        codes = [tc.get("/login", headers=_UA).status_code for _ in range(4)]
+    assert codes == [200, 200, 429, 429]
+
+
+def test_both_constructor_modes_agree():
+    """The tag must mean the same thing whichever way the middleware was built."""
+    with TestClient(_tagged_app(max_requests=1000, window_seconds=60)) as tc:
+        legacy = [tc.get("/login", headers=_UA).status_code for _ in range(4)]
+    with TestClient(_tagged_app(strategy=FixedWindow(1000, 60))) as tc:
+        strategy = [tc.get("/login", headers=_UA).status_code for _ in range(4)]
+    assert legacy == strategy
+
+
+def test_an_untagged_route_keeps_the_default_budget():
+    """Only the tagged route changes; everything else keeps the plain limit."""
+    with TestClient(_tagged_app(max_requests=3, window_seconds=60)) as tc:
+        codes = [tc.get("/open", headers=_UA).status_code for _ in range(4)]
+    assert codes == [200, 200, 200, 429]
+
+
+def test_the_tagged_route_has_its_own_counter():
+    """A tagged route must not spend, or be spent by, the default budget."""
+    with TestClient(_tagged_app(max_requests=3, window_seconds=60)) as tc:
+        for _ in range(3):
+            assert tc.get("/open", headers=_UA).status_code == 200
+        assert tc.get("/open", headers=_UA).status_code == 429
+        # The default budget is exhausted; the tagged route has its own.
+        assert tc.get("/login", headers=_UA).status_code == 200
+
+
+def test_the_tagged_route_still_reports_its_headers():
+    """X-RateLimit-* must describe the tag's budget, not the default."""
+    with TestClient(_tagged_app(max_requests=1000, window_seconds=60)) as tc:
+        response = tc.get("/login", headers=_UA)
+    assert response.headers.get("X-RateLimit-Limit") == "2"
+    assert response.headers.get("X-RateLimit-Remaining") == "1"
+
+
+def test_a_refused_tagged_request_sends_retry_after():
+    with TestClient(_tagged_app(max_requests=1000, window_seconds=60)) as tc:
+        for _ in range(2):
+            tc.get("/login", headers=_UA)
+        refused = tc.get("/login", headers=_UA)
+    assert refused.status_code == 429
+    assert int(refused.headers["Retry-After"]) > 0
+
+
+async def test_distinct_clients_keep_distinct_tagged_buckets():
+    """A shared bucket would let one caller exhaust everyone else's quota.
+
+    Driven through the middleware directly: `TestClient` reports one peer for
+    every request, and the peer outranks every other signal in `_bucket_key`,
+    so the caller cannot be varied over the wire here.
+    """
+    app = _tagged_app(max_requests=1000, window_seconds=60)
+    middleware = app._middlewares[-1]
+
+    async def call(agent: str):
+        request = make_request(path="/login", headers={"User-Agent": agent})
+        request.app = app
+        request._state["url_rule"] = "/login"
+        return await middleware.process_request(request)
+
+    assert await call("first") is None
+    assert await call("first") is None
+    refused = await call("first")
+    assert refused is not None and refused.status_code == 429
+    assert await call("second") is None
+
+
+def test_a_route_added_after_the_first_request_is_tagged():
+    """The route table can grow; the tag map is rebuilt on generation change."""
+    from veloce import rate_limit
+
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(max_requests=1000, window_seconds=60))
+
+    @app.get("/first")
+    async def first(request: Request):
+        return {"ok": True}
+
+    tc = TestClient(app)
+    assert tc.get("/first", headers=_UA).status_code == 200
+
+    @app.get("/late")
+    @rate_limit(FixedWindow(1, 60))
+    async def late(request: Request):
+        return {"ok": True}
+
+    assert tc.get("/late", headers=_UA).status_code == 200
+    assert tc.get("/late", headers=_UA).status_code == 429
+
+
+def test_the_untagged_common_path_is_unchanged():
+    """No tagged route anywhere: the legacy sliding log must behave as before."""
+    app = Veloce(openapi_url=None)
+    app.add_middleware(RateLimitMiddleware(max_requests=2, window_seconds=60))
+
+    @app.get("/plain")
+    async def plain(request: Request):
+        return {"ok": True}
+
+    with TestClient(app) as tc:
+        codes = [tc.get("/plain", headers=_UA).status_code for _ in range(3)]
+    assert codes == [200, 200, 429]

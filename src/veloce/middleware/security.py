@@ -320,6 +320,20 @@ class RateLimitMiddleware(Middleware):
         # The last set of unmatched override keys reported, so a route-table
         # change logs once rather than on every rebuild.
         self._reported_unknown: list[str] = []
+        # Shared by both construction modes: a `@rate_limit` tag is honored
+        # either way, and resolving one needs the per-route map and a backend to
+        # evaluate against. In the `max_requests=` mode the backend is built
+        # lazily, so an app with no tagged route never allocates one.
+        self._backend: RateLimitBackend | None = None
+        self._overrides: dict[str, RateLimitStrategy] | None = None
+        # Per-route strategies, keyed by route template, combining
+        # `@rate_limit`-tagged handlers with the explicit `overrides` map.
+        # Resolved lazily and rebuilt whenever the app's route-table generation
+        # advances, so a route added after the first request is picked up. An
+        # empty result means no per-route limits, so the per-request path stays
+        # a single client-keyed evaluation.
+        self._route_strategies: dict[str, RateLimitStrategy] | None = None
+        self._route_strategies_gen: int = -1
         if strategy is None:
             if backend is not None:
                 raise ValueError("backend requires a strategy; pass strategy= as well")
@@ -343,20 +357,11 @@ class RateLimitMiddleware(Middleware):
             # Pluggable algorithm + backend path. The backend runs the pure
             # strategy under its own atomic read-modify-write.
             self._backend = backend if backend is not None else InMemoryRateLimitBackend()
-            self._overrides: dict[str, RateLimitStrategy] | None = None
             if overrides:
                 for route, override in overrides.items():
                     if not isinstance(override, RateLimitStrategy):
                         raise TypeError(f"overrides[{route!r}] must be a RateLimitStrategy")
                 self._overrides = dict(overrides)
-            # Per-route strategies, keyed by route template, combining
-            # `@rate_limit`-tagged handlers with the explicit `overrides` map.
-            # Resolved lazily and rebuilt whenever the app's route-table
-            # generation advances, so a route added after the first request is
-            # picked up. An empty result means no per-route limits, so the
-            # per-request path stays a single client-keyed evaluation.
-            self._route_strategies: dict[str, RateLimitStrategy] | None = None
-            self._route_strategies_gen: int = -1
 
     async def process_request(self, request: Request) -> Response | None:
         """Enforce per-client request rate limits."""
@@ -393,6 +398,7 @@ class RateLimitMiddleware(Middleware):
             key = self._bucket_key(request)
         # Wall-clock time so the same key on a shared backend agrees across
         # workers and hosts; the strategy refills/counts against it.
+        assert self._backend is not None
         result = await self._backend.evaluate(key, strategy, time.time())
         if not result.allowed:
             rejected = Response(
@@ -514,6 +520,29 @@ class RateLimitMiddleware(Middleware):
         return combined
 
     async def _process_legacy(self, request: Request) -> Response | None:
+        # A `@rate_limit` tag names the strategy for its own route, so that
+        # route is evaluated by the strategy machinery and never reaches the
+        # sliding log below. Its counter is keyed by route as well as client,
+        # so the tagged budget and the default budget stay independent - the
+        # same scoping `_process_strategy` applies to an override.
+        app = request.app
+        gen = app._gen if app is not None else None
+        per_route = self._route_strategies
+        if per_route is None or gen != self._route_strategies_gen:
+            per_route = self._build_route_strategies(request, gen)
+        # No tagged route anywhere: the sliding log below is reached with one
+        # int compare and one truthiness test added, and no backend is built.
+        if per_route:
+            route = request.url_rule
+            tagged = per_route.get(route) if route is not None else None
+            if tagged is not None:
+                if self._backend is None:
+                    self._backend = InMemoryRateLimitBackend()
+                # Delegate rather than restate the evaluation: `_process_strategy`
+                # resolves this same route to the same tag, scopes the key, and
+                # refuses identically, so a tag means one thing in both modes.
+                return await self._process_strategy(request, tagged)
+
         client = self._bucket_key(request)
         now = time.monotonic()
         cutoff = now - self.window_seconds
