@@ -40,6 +40,7 @@ from veloce.routing.converters import (
     parse_converter,
 )
 from veloce.status import HTTP_200_OK
+from veloce.websocket import build_listener_handler
 
 RouteHandler = Callable[..., Coroutine[Any, Any, Any]]
 
@@ -2022,12 +2023,6 @@ class Router:
 
         For full control over the handshake and loop use `@app.websocket`.
         """
-
-        # Imported here, not at module top: `router` is imported during app
-        # bootstrap before `veloce.websocket`'s dependency chain is fully
-        # initialised, so a top-level import forms a cycle. This is a
-        # registration-time decorator call, not a per-request hot path.
-        from veloce.websocket import build_listener_handler
 
         def decorator(func: RouteHandler | Callable[..., Any]) -> RouteHandler | Callable[..., Any]:
             """Build the listener handler, register it, and return `func`."""
