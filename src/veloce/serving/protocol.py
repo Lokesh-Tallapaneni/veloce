@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import unquote
 
 import httptools
-import orjson
 
 from veloce import status
 from veloce._constants import (
@@ -27,7 +26,7 @@ from veloce._constants import (
     MSG_ERROR_RESPONSE_EMISSION,
     MSG_INTERNAL_SERVER_ERROR,
 )
-from veloce._internal import _extract_host, _ws_handshake_rejection
+from veloce._internal import _extract_host, _ws_handshake_rejection, dumps_for
 from veloce._protocol_constants import (
     HTTP_METHOD_HEAD,
     RAW_HEADER_CONTENT_LENGTH,
@@ -968,7 +967,7 @@ class HttpProtocol(asyncio.Protocol):
             self._current_source = None
         # The same body the ASGI path answers with, so one app does not describe
         # the same refusal two ways depending on how it is served.
-        body = orjson.dumps(too_large_payload(self.app.config.get("MAX_CONTENT_LENGTH")))
+        body = dumps_for(self.app, too_large_payload(self.app.config.get("MAX_CONTENT_LENGTH")))
         self._emit_http_error(
             status.HTTP_413_CONTENT_TOO_LARGE,
             b"Content Too Large",

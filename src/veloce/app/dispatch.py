@@ -45,6 +45,7 @@ from veloce._internal import (
     _current_request_var,
     _extract_host,
     _is_async_callable,
+    dumps_for,
     offload,
 )
 from veloce._model_backend import _HAS_MSGSPEC, _msgspec, is_msgspec_struct, is_pydantic_model
@@ -235,10 +236,14 @@ class DispatchMixin:
         Shared by the eager declared/buffered check and the streamed-body drain so
         both reject with the identical `{detail, status_code, limit}` payload.
         """
-        response: Response = JSONResponse(
-            too_large_payload(max_size),
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        # Encoded against `self` rather than through `JSONResponse`'s own
+        # resolution: this runs before the app contextvar is bound, so the
+        # dialect was applied only when a previous request on the same task had
+        # left it set.
+        response: Response = JSONResponse._from_encoded(
+            dumps_for(self, too_large_payload(max_size))
         )
+        response.status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
         # No route matched on a reject, so no per-route exclusion chain exists.
         if cp is not None and cp.http_post is not None:
             response = await self._run_response_phase(cp.http_post, request, response, False)

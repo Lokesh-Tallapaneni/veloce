@@ -30,6 +30,7 @@ from veloce._internal import (
     _encode_header_value,
     _extract_host,
     _reject_header_crlf,
+    dumps_for,
 )
 from veloce._pipeline import (
     CompiledPipeline,
@@ -248,8 +249,18 @@ class AsgiMixin:
         await send({"type": ASGI_EVENT_HTTP_RESPONSE_BODY, "body": body})
 
     async def _emit_error(self, send: Callable, status_code: int, payload: dict) -> None:
-        """Emit a JSON error response directly over ASGI."""
-        await self._emit_response(send, JSONResponse(payload, status_code=status_code))
+        """Emit a JSON error response directly over ASGI, in the app's dialect.
+
+        Encoded through `dumps_for(self, ...)` rather than by letting
+        `JSONResponse` resolve it: this runs before dispatch binds the app
+        contextvar, so `dumps_current` found nothing and fell back to the direct
+        encoder. The app is not missing here - it is `self` - it simply was not
+        bound yet, and the result was a refusal whose shape depended on whether an
+        earlier request had happened to leave the contextvar set on this task.
+        """
+        response = JSONResponse._from_encoded(dumps_for(self, payload))
+        response.status_code = status_code
+        await self._emit_response(send, response)
 
     async def _emit_400(self, send: Callable, detail: str) -> None:
         """Emit a 400 response directly over ASGI.
