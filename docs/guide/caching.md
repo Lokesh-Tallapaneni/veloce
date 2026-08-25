@@ -137,8 +137,6 @@ written rather than on the request that first needs it:
 
 ```python
 class MyCache(Cache):
-    __slots__ = ()
-
     async def get(self, key: str) -> bytes | None: ...
     async def set(self, key: str, value: bytes, ttl: int) -> None: ...
     # `delete` forgotten

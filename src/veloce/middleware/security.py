@@ -140,9 +140,14 @@ class CSPMiddleware(Middleware):
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
-        assert policy is not None or report_only_policy is not None, (
-            "CSPMiddleware requires at least one of policy or report_only_policy"
-        )
+        # `ValueError`, not the `AssertionError` this project uses for API
+        # misuse elsewhere: `python -O` strips asserts, and with this one gone
+        # the middleware constructed from an empty configuration and emitted no
+        # header at all. A security control that fails open under an optimised
+        # interpreter is worse than an absent one, because the stack claims it
+        # is there.
+        if policy is None and report_only_policy is None:
+            raise ValueError("CSPMiddleware requires at least one of policy or report_only_policy")
         self._enforce_template = _normalize_csp(policy) if policy is not None else None
         self._report_template = (
             _normalize_csp(report_only_policy) if report_only_policy is not None else None

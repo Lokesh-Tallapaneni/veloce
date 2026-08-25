@@ -164,7 +164,10 @@ def test_lazy_materialization_without_handler_read():
 
 
 def test_init_misuse():
-    with pytest.raises(AssertionError):
+    # `ValueError`, not `AssertionError`: `python -O` strips asserts, and the
+    # middleware used to construct from an empty configuration under it and then
+    # emit no header. See `test_csp_requires_a_policy_under_o.py`.
+    with pytest.raises(ValueError):
         CSPMiddleware()
     with pytest.raises(TypeError):
         CSPMiddleware(policy=123)  # type: ignore[arg-type]
