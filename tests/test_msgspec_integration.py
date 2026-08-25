@@ -352,8 +352,8 @@ def test_mcp_msgspec_body_input_schema_is_object():
     `tools/call` delivers (MCP does not inline a struct's fields the way it does
     a Pydantic model).
     """
+    from veloce import Body
     from veloce.contrib.mcp.registry import build_registry
-    from veloce.routing.params import Body
 
     app = Veloce(openapi_url=None)
 

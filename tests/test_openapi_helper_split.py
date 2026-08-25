@@ -15,7 +15,7 @@ import hashlib
 import orjson
 from pydantic import BaseModel
 
-from veloce import Veloce
+from veloce import File, Form, Header, Query, Veloce
 from veloce.contrib.openapi import (
     SchemaRegistry,
     _build_info_object,
@@ -27,7 +27,6 @@ from veloce.contrib.openapi import (
     get_openapi_schema,
 )
 from veloce.dependency import Security
-from veloce.routing.params import File, Form, Header, Query
 from veloce.security.http import HTTPBearer
 
 

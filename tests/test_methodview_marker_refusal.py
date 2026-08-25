@@ -13,7 +13,7 @@ route has one handler plan and nothing resolves a per-verb marker. The default
 object was passed straight through, so the documented example answered with the
 repr of a marker:
 
-    GET /search?q=abc  ->  {"query": "<veloce.routing.params.Query object at 0x...>"}
+    GET /search?q=abc  ->  {"query": "<veloce._params.Query object at 0x...>"}
     GET /dep           ->  {"d":     "<veloce.dependency.Depends object at 0x...>"}
 
 and the operation's OpenAPI `parameters` was `null`.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from veloce import Depends, Query, Request, Veloce
+from veloce import Depends, Header, Query, Request, Veloce
 from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
@@ -20,7 +20,6 @@ from veloce._handler_plan import (
 )
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
-from veloce.routing.params import Header
 
 
 class _Item(BaseModel):

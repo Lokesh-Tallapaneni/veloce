@@ -6,8 +6,7 @@ import os
 
 import pytest
 
-from veloce import Blueprint, Depends, Veloce
-from veloce.routing.params import Query
+from veloce import Blueprint, Depends, Query, Veloce
 from veloce.testclient import TestClient
 
 

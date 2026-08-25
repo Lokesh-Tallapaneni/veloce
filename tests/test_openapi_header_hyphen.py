@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from veloce import Veloce
-from veloce.routing.params import Header
+from veloce import Header, Veloce
 from veloce.testclient import TestClient
 
 

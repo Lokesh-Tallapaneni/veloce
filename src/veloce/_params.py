@@ -7,8 +7,9 @@ Half the framework needs these classes - `_handler_plan`, `views`,
 `_handler_plan`. That was a real cycle, worked around by a deferred import.
 Keeping the markers on a neutral leaf removes the cycle instead of deferring it.
 
-`veloce.routing.params` re-exports every name here, so the public import path is
-unchanged and there is exactly one class object per marker.
+The markers stay public through `veloce.__all__` and `veloce.routing`, so there is
+exactly one class object per marker and no module exists merely to redirect to
+this one.
 
 Usage::
 

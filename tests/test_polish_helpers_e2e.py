@@ -10,9 +10,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from veloce import Request, UploadFile, Veloce
+from veloce import File, Form, Header, Query, Request, UploadFile, Veloce
 from veloce.dependency import Security
-from veloce.routing.params import File, Form, Header, Query
 from veloce.security.http import HTTPBearer
 from veloce.testclient import TestClient
 

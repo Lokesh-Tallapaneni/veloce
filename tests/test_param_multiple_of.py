@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import Query, Veloce
-from veloce.routing.params import Path
+from veloce import Path, Query, Veloce
 from veloce.testclient import TestClient
 
 

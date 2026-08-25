@@ -14,11 +14,11 @@ import warnings
 
 import pytest
 
-from veloce import Query, Veloce
+from veloce import Header, Query, Veloce
 from veloce._handler_plan import build_plan
+from veloce._params import ParamBase
 from veloce._resolver_codegen import compile_param_resolver
 from veloce.dependency import RequestValidationError, _coerce_value
-from veloce.routing.params import Header, ParamBase
 from veloce.testclient import TestClient
 
 # ── Marker-level behaviour ────────────────────────────────────────────

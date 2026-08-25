@@ -20,9 +20,14 @@ it. Seven modules did, four of which sit above `routing` in the dependency
 direction.
 
 The markers now live in `veloce/_params.py`, a neutral leaf that imports nothing
-from veloce, and `veloce/routing/params.py` re-exports them so the public import
-path is unchanged. The cycle is gone at its cause rather than deferred around,
-and `router` imports `_handler_plan` at module scope like any other module.
+from veloce. The cycle is gone at its cause rather than deferred around, and
+`router` imports `_handler_plan` at module scope like any other module.
+
+`veloce/routing/params.py` is gone rather than kept as a re-export shim. The
+seven markers are public through `veloce.__all__` and through `veloce.routing`;
+the module path was documented nowhere, so by this project's own definition of
+the public surface it was never public API, and a second file existing only to
+redirect is the redundancy this change is about.
 
 This file pins the whole contract: one class object per marker however you reach
 it, every marker still binding end to end, and the import working in any order.
@@ -31,6 +36,7 @@ it, every marker still binding end to end, and the import working in any order.
 from __future__ import annotations
 
 import os
+import pathlib
 import subprocess
 import sys
 from pathlib import Path as _Path
@@ -116,7 +122,6 @@ def test_the_marker_module_loads_with_no_veloce_package_at_all():
     [
         "veloce",
         "veloce.routing.router",
-        "veloce.routing.params",
         "veloce._params",
         "veloce._handler_plan",
         "veloce.routing",
@@ -146,13 +151,13 @@ def test_the_handler_plan_can_be_imported_alone():
 @pytest.mark.parametrize("name", MARKERS)
 def test_every_import_path_yields_the_same_class(name):
     """A second copy would break every `isinstance` check in the resolver."""
-    import veloce._params as private
+    import veloce._params as leaf
+    import veloce.routing as routing
 
-    import veloce.routing.params as public
-
-    objects = [getattr(private, name), getattr(public, name)]
-    if hasattr(veloce, name):
-        objects.append(getattr(veloce, name))
+    objects = [getattr(leaf, name)]
+    for module in (veloce, routing):
+        if hasattr(module, name):
+            objects.append(getattr(module, name))
     assert all(obj is objects[0] for obj in objects)
 
 
@@ -163,11 +168,26 @@ def test_a_marker_is_still_a_parambase(name):
     assert issubclass(getattr(veloce, name), ParamBase)
 
 
-def test_the_public_module_still_exposes_every_name():
-    import veloce.routing.params as public
+def test_the_redirect_only_module_is_gone():
+    """Undocumented, and a file that only redirects is the redundancy removed."""
+    assert not (SRC / "veloce/routing/params.py").exists()
 
-    for name in MARKERS:
-        assert hasattr(public, name), name
+
+def test_nothing_in_the_tree_still_imports_the_removed_path():
+    """An *import*, not a mention.
+
+    This file is skipped: it names the removed path in its own prose and in the
+    needles just below, so it would always match itself.
+    """
+    here = pathlib.Path(__file__).resolve()
+    needles = ("from veloce.routing.params " + "import", "import veloce.routing.params")
+    for directory in ("veloce", "../tests"):
+        for path in (SRC / directory).rglob("*.py"):
+            if path.resolve() == here:
+                continue
+            source = path.read_text(encoding="utf-8")
+            for needle in needles:
+                assert needle not in source, f"{path}: {needle}"
 
 
 def test_the_routing_package_still_re_exports_the_markers():

@@ -107,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `veloce.routing.params` is removed; import the markers from `veloce` or `veloce.routing`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
 
