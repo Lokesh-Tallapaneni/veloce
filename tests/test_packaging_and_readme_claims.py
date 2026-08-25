@@ -208,3 +208,37 @@ def test_the_all_extra_matches_the_individual_extras():
         spec.split(">=")[0].split("[")[0].split(";")[0].strip() for spec in extras["all"]
     }
     assert combined == named_in_all
+
+
+# ── the documented pinning policy matches the manifest ───────────────
+
+
+def test_no_runtime_dependency_declares_an_upper_bound():
+    """The documented policy: a floor and no ceiling, except for a known
+    incompatibility. A speculative ceiling propagates into every downstream
+    resolution and can block an application from taking a fix."""
+    for spec in _pyproject()["project"]["dependencies"]:
+        assert "<" not in spec, spec
+
+
+def test_the_versions_page_documents_the_floor_policy():
+    page = ROOT / "docs/deployment/versions.md"
+    text = page.read_text(encoding="utf-8")
+    assert "How Veloce pins its own dependencies" in text
+    assert "floor and no ceiling" in text
+
+
+def test_the_floors_quoted_in_the_docs_match_the_manifest():
+    """A worked example that drifts from the manifest teaches the wrong number."""
+    import re as _re
+
+    page = ROOT / "docs/deployment/versions.md"
+    section = page.read_text(encoding="utf-8").split("## How Veloce pins its own", 1)[1]
+    quoted = dict(_re.findall(r'"([a-z0-9-]+)>=([0-9.]+)"', section))
+    declared = {
+        spec.split(">=")[0].strip(): spec.split(">=")[1].split(";")[0].strip()
+        for spec in _pyproject()["project"]["dependencies"]
+        if ">=" in spec
+    }
+    for name, version in quoted.items():
+        assert declared.get(name) == version, f"{name}: docs say {version}"
