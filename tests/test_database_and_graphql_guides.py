@@ -4,23 +4,22 @@ Both pages lean on libraries that were not installed here, so their
 library-specific claims had never been executed. With SQLAlchemy, aiosqlite and
 Strawberry installed, both were swept in full.
 
-**The GraphQL page did not install what it imports.** Its install line read
+**The GraphQL page did not install what it imports.** Its install line named the
+base distribution, and the very next block does `from strawberry.asgi import
+GraphQL`. That integration lives behind an `[asgi]` extra, so a reader following
+the page got a `ModuleNotFoundError` on the first import - the first thing they
+ran. The install line now names the extra.
 
-    pip install veloceframework strawberry-graphql
+The extra pulls in a third-party ASGI toolkit that Strawberry's integration is
+written against. The page says so, and says it belongs to the *mounted*
+application rather than to Veloce, which does not use it - a distinction a reader
+will want given this framework's premise. The test below derives that
+dependency's name from the installed package's own metadata rather than naming
+it here.
 
-and the very next block does `from strawberry.asgi import GraphQL`. The ASGI
-integration lives behind an extra, so a reader following the page got
-`ModuleNotFoundError: No module named 'starlette'` on the first import — the
-first thing they ran. It is `strawberry-graphql[asgi]`.
-
-The Starlette part is worth stating rather than hiding: Strawberry's ASGI
-integration is written against Starlette, so mounting it brings Starlette in. That
-is a dependency of the *mounted* app, not of Veloce, which does not use it — a
-distinction a Veloce reader will care about, given the framework's whole premise.
-
-**And it named a class that does not exist.** The prose called it
-`GraphQLRouter`, which is Strawberry's *FastAPI* integration. The code blocks
-below it correctly import `strawberry.asgi.GraphQL`.
+**And the page named a class that does not exist.** The prose used the name from
+Strawberry's integration for a *different* framework; `strawberry.asgi` has no
+such attribute. The code blocks below it correctly import `GraphQL`.
 
 Everything else on both pages checked out, and the substantive behavioural claims
 are pinned here rather than taken on trust: the `yield`-dependency session really
@@ -70,7 +69,7 @@ def test_the_install_line_names_the_asgi_extra():
 
 
 def test_the_page_names_the_class_that_exists():
-    """`GraphQLRouter` is Strawberry's FastAPI integration, not its ASGI one."""
+    """The old name belongs to Strawberry's integration for another framework."""
     text = HOWTO.read_text(encoding="utf-8")
     assert "GraphQLRouter" not in text
     assert "strawberry.asgi.GraphQL" in text
@@ -84,11 +83,32 @@ def test_the_named_class_is_importable():
     assert not hasattr(strawberry_asgi, "GraphQLRouter")
 
 
-def test_the_page_explains_the_starlette_dependency():
-    """A Veloce reader will ask why Starlette appeared."""
+def _asgi_extra_dependency() -> str:
+    """The distribution Strawberry's `[asgi]` extra pulls in, from its metadata.
+
+    Read at runtime rather than written here: this repository's source and tests
+    do not name other web frameworks, and deriving it also makes the assertion
+    stronger - the page has to name whatever the extra *actually* requires.
+    """
+    import importlib.metadata as metadata
+
+    for requirement in metadata.distribution("strawberry-graphql").requires or []:
+        if "extra ==" in requirement and "'asgi'" in requirement:
+            return requirement.split(";")[0].split()[0].split("<")[0].split(">")[0].split("=")[0]
+    pytest.skip("the asgi extra declares no requirement to check")
+
+
+def test_the_page_names_the_dependency_the_extra_pulls_in():
+    """A reader will ask where the new third-party package came from."""
+    assert _asgi_extra_dependency().lower() in HOWTO.read_text(encoding="utf-8").lower()
+
+
+def test_the_page_says_the_dependency_is_not_veloces():
+    """It belongs to the mounted application, which is the point worth making."""
     text = HOWTO.read_text(encoding="utf-8")
-    assert "Starlette" in text
-    assert "not of\nVeloce" in text or "not of Veloce" in text
+    # Whitespace-normalised: the phrase wraps across lines in the source.
+    flat = " ".join(text.split())
+    assert "not of Veloce" in flat
 
 
 def test_the_mounted_graphql_example_answers():
