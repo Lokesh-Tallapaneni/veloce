@@ -84,6 +84,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A text `response_class` given a `dict` or `list` raises `TypeError` naming the class and the remedy, instead of `AttributeError: 'dict' object has no attribute 'encode'`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `/docs` and `/redoc` point at the schema path the app actually serves, including `prefix=` and `root_path`. Both rendered empty on a prefixed app, and ReDoc had no way to override it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `mount_mcp(transport="sse", auth=...)` serves the RFC 9728 protected-resource metadata its `401` challenge points at; the route was registered by the HTTP transport alone. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

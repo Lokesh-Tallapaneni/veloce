@@ -589,8 +589,10 @@ class Router:
         self.tags = list(tags or [])
         # a Response subclass used when a registered route
         # doesn't pick its own `response_class=`. Routes still override
-        # per-call; this is just the fallback before the built-in default
-        # (`JSONResponse` for dict/list returns) kicks in.
+        # per-call. Once set it is the class every return value goes to - a text
+        # class given a `dict` raises rather than falling back to JSON, since a
+        # route declaring HTML and returning a mapping has stated two things that
+        # cannot both hold. Unset, dict/list returns take `JSONResponse`.
         self.default_response_class = default_response_class
         # Router-level dependencies - applied to every route
         # registered on this router. Per-route `dependencies=` is

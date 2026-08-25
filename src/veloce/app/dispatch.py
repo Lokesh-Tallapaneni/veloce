@@ -1459,6 +1459,22 @@ class DispatchMixin:
         # Non-pydantic model (e.g. plain class) - pass through unchanged.
         return result
 
+    @staticmethod
+    def _response_class_mismatch(response_class: Any, result: Any) -> str:
+        """The message for a return value the declared response class cannot render.
+
+        A text response class encodes what it is given, so a `dict` reached
+        `.encode()` and produced `AttributeError: 'dict' object has no attribute
+        'encode'` - a 500 naming neither the class that was asked for nor the
+        route that returned the value.
+        """
+        name = getattr(response_class, "__name__", response_class)
+        return (
+            f"{name} cannot render a {type(result).__name__}; it encodes str or bytes. "
+            f"Return a str, or declare response_class=JSONResponse on this route "
+            f"to send the value as JSON."
+        )
+
     def _json_from_handler(self, data: Any) -> Response:
         """Build the JSON response for a handler's `dict` / `list` / model return.
 
@@ -1546,11 +1562,9 @@ class DispatchMixin:
                 # `from_bytes` on the requested class, so a subclass keeps its
                 # own `default_media_type` while the dialect still applies.
                 return response_class.from_bytes(dumps(result))
-            if isinstance(result, str):
+            if isinstance(result, (str, bytes)):
                 return response_class(result)
-            if isinstance(result, bytes):
-                return response_class(result)
-            return response_class(result)
+            raise TypeError(self._response_class_mismatch(response_class, result))
         if isinstance(result, (dict, list)):
             return self._json_from_handler(result)
         if isinstance(result, str):

@@ -21,8 +21,8 @@ For the basics of returning a response, see [Requests and responses](requests-re
 ## Choosing a response class
 
 Pass `response_class=` to a route to control how the handler's return value is
-encoded. The class is called with the return value, so a dict returned from this
-handler is rendered as HTML-bytes by `HTMLResponse` rather than JSON:
+encoded. The class is called with the return value, so the string this handler
+returns is sent as HTML rather than being JSON-encoded:
 
 ```python title="app.py"
 from veloce import HTMLResponse, Veloce
@@ -37,6 +37,11 @@ async def page():
 
 The default is `JSONResponse`. Returning a `Response` instance from the handler
 always wins over `response_class` — the instance is sent as-is.
+
+A text response class encodes `str` or `bytes`. Returning a `dict` or a `list`
+under one raises `TypeError` naming both, since there is no sensible rendering of
+a mapping as HTML — declare `response_class=JSONResponse` on that route, or
+return a string.
 
 ### A default class for the whole app
 
