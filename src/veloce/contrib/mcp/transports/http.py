@@ -61,6 +61,7 @@ from itertools import count
 from typing import TYPE_CHECKING, Any, cast
 
 from veloce import status
+from veloce.contrib.mcp._helpers import encode_envelope
 from veloce.contrib.mcp._posture import record_endpoint
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
 from veloce.contrib.mcp.context import _transport_var
@@ -128,6 +129,21 @@ _STREAM_ID_ENTROPY_BYTES = 12
 _STREAM_END = object()
 
 
+def _protocol_response(
+    payload: Any, *, status_code: int = status.HTTP_200_OK, headers: dict[str, str] | None = None
+) -> Response:
+    """A response carrying an MCP protocol document, encoded as protocol.
+
+    `JSONResponse` resolves the application's JSON provider, which is right for
+    application data and wrong for a JSON-RPC envelope - see `encode_envelope`.
+    """
+    response = JSONResponse._from_encoded(encode_envelope(payload))
+    response.status_code = status_code
+    if headers:
+        response.headers.update(headers)
+    return response
+
+
 def register_http_transport(
     app: Any,
     server: MCPServer,
@@ -191,7 +207,7 @@ def register_http_transport(
             _validate_origin(request, allowed_origins)
             _validate_protocol_version(request)
         except MCPError as exc:
-            return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+            return _protocol_response(exc.to_error(None), status_code=exc.http_status)
 
         # Names the transport for `MCPContext.transport`. Set on the request's own
         # context rather than inside the streaming runner: a plain JSON POST never
@@ -242,7 +258,7 @@ def register_metadata_route(
         return
 
     async def mcp_metadata(request: Request) -> Response:
-        return JSONResponse(auth.metadata())
+        return _protocol_response(auth.metadata())
 
     app.add_route(
         PROTECTED_RESOURCE_METADATA_PATH,
@@ -267,25 +283,16 @@ async def _handle_http(
     try:
         message = await request.json()
     except Exception:
-        return JSONResponse(
-            parse_error(),
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
+        return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
     if not request.data:
         # No body at all is no JSON document to read, which is the parse failure
         # rather than a well-formed document of the wrong shape.
-        return JSONResponse(
-            parse_error(),
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
+        return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
     if not isinstance(message, dict):
         # It parsed, so the failure is the shape rather than the JSON. JSON-RPC
         # keeps these apart: -32700 says the text could not be read, -32600 says
         # what was read is not a Request object.
-        return JSONResponse(
-            invalid_request_error(),
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
+        return _protocol_response(invalid_request_error(), status_code=status.HTTP_400_BAD_REQUEST)
 
     # When session management is on, every request except `initialize` must echo a
     # live session id (HTTP 400 if missing, 404 once terminated); `initialize`
@@ -300,7 +307,7 @@ async def _handle_http(
     try:
         _validate_standard_headers(request, message)
     except MCPError as exc:
-        return JSONResponse(exc.to_error(message.get("id")), status_code=exc.http_status)
+        return _protocol_response(exc.to_error(message.get("id")), status_code=exc.http_status)
 
     is_initialize = message.get("method") == "initialize"
     session_id: str | None = None
@@ -309,7 +316,7 @@ async def _handle_http(
         try:
             session_id, session = await _bind_session(store, request, is_initialize)
         except MCPError as exc:
-            return JSONResponse(exc.to_error(message.get("id")), status_code=exc.http_status)
+            return _protocol_response(exc.to_error(message.get("id")), status_code=exc.http_status)
     else:
         # A throwaway session for this POST only: it isolates the in-flight registry
         # (so a concurrent POST's colliding id cannot cancel this one) but is not a
@@ -341,7 +348,7 @@ async def _handle_http(
     if isinstance(error, dict) and error.get("code") == _JSONRPC_FORBIDDEN:
         scopes = (error.get("data") or {}).get("requiredScopes") or []
         return _forbidden(response, scopes)
-    return _with_session(JSONResponse(response), session_id)
+    return _with_session(_protocol_response(response), session_id)
 
 
 async def _bind_session(
@@ -387,7 +394,7 @@ async def _handle_delete(store: HttpSessionStore | None, request: Request) -> Re
         return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
     session_id = request.headers.get("mcp-session-id")
     if not session_id or not await store.terminate(session_id):
-        return JSONResponse(
+        return _protocol_response(
             SessionNotFoundError("unknown or terminated session").to_error(None),
             status_code=status.HTTP_404_NOT_FOUND,
         )
@@ -415,7 +422,7 @@ def _handle_get(event_store: SSEEventStore | None, request: Request) -> Response
 
     async def events() -> Any:
         for event_id, payload in missed:
-            yield ServerSentEvent.json(payload, id=event_id)
+            yield ServerSentEvent(data=encode_envelope(payload).decode(), id=event_id)
         # Close the resumed stream with the same reconnect hint a live stream uses,
         # so a second drop reconnects on the same schedule.
         yield ServerSentEvent(retry=_SSE_RETRY_MS)
@@ -545,7 +552,7 @@ def _forbidden(response: dict[str, Any], scopes: list[str]) -> Response:
     parts = ['Bearer error="insufficient_scope"']
     if scopes:
         parts.append(f'scope="{" ".join(scopes)}"')
-    return JSONResponse(
+    return _protocol_response(
         response,
         status_code=status.HTTP_403_FORBIDDEN,
         headers={"WWW-Authenticate": ", ".join(parts)},
@@ -588,7 +595,7 @@ def _challenge(auth: MCPAuth, status_code: int, error: str) -> Response:
     if error == "insufficient_scope" and auth.required_scopes:
         parts.append(f'scope="{" ".join(sorted(auth.required_scopes))}"')
     body = {"error": error}
-    return JSONResponse(
+    return _protocol_response(
         body, status_code=status_code, headers={"WWW-Authenticate": ", ".join(parts)}
     )
 
@@ -721,7 +728,7 @@ def _stream_response(
                 if item is _STREAM_END:
                     break
                 event_id, payload = item
-                yield ServerSentEvent.json(payload, id=event_id)
+                yield ServerSentEvent(data=encode_envelope(payload).decode(), id=event_id)
             # A closing frame carrying the reconnect hint, so a client that drops
             # mid-stream knows how long to wait before reconnecting.
             yield ServerSentEvent(retry=_SSE_RETRY_MS)

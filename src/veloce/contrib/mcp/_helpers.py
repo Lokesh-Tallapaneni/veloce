@@ -466,7 +466,7 @@ def _user_text_message(text: str) -> dict[str, Any]:
 _PROMPT_ROLES = frozenset({"user", "assistant"})
 
 
-def _normalize_prompt_message(item: Any) -> dict[str, Any]:
+def _normalize_prompt_message(item: Any, dumps: Any = None) -> dict[str, Any]:
     """Normalise one prompt message item into an MCP prompt message.
 
     A string is a user text message; a mapping is read as a ``{"role", "content"}``
@@ -481,10 +481,10 @@ def _normalize_prompt_message(item: Any) -> dict[str, Any]:
         if isinstance(content, str):
             content = TextContent(content).to_payload()
         return {"role": role if role in _PROMPT_ROLES else "user", "content": content}
-    return _user_text_message(_stringify(item))
+    return _user_text_message(_stringify(item, dumps))
 
 
-def _normalize_prompt_messages(result: Any) -> list[dict[str, Any]]:
+def _normalize_prompt_messages(result: Any, dumps: Any = None) -> list[dict[str, Any]]:
     """Normalise a prompt callable's return into MCP prompt messages.
 
     A string becomes a single user text message; a list becomes one message per
@@ -493,8 +493,8 @@ def _normalize_prompt_messages(result: Any) -> list[dict[str, Any]]:
     if isinstance(result, str):
         return [_user_text_message(result)]
     if isinstance(result, list):
-        return [_normalize_prompt_message(item) for item in result]
-    return [_user_text_message(_stringify(result))]
+        return [_normalize_prompt_message(item, dumps) for item in result]
+    return [_user_text_message(_stringify(result, dumps))]
 
 
 # Returned by a handler whose request is answered later rather than now. A
@@ -567,8 +567,21 @@ def _response_body_value(response: Response) -> Any:
     return body.decode("utf-8", "replace")
 
 
-def _stringify(result: Any) -> str:
-    """Serialise a handler return value to the text content of a tool result."""
+def _stringify(result: Any, dumps: Any = None) -> str:
+    """Serialise a handler return value to the text content of a tool result.
+
+    `dumps` is the application's serialiser, or `None` when it configured none
+    and the direct encoder already emits the same bytes. `MCPServer` resolves it
+    once at construction, so this costs an argument rather than a per-call
+    lookup - the reason an earlier attempt was rejected was a `contextvar` read
+    here, 99ns against a 424ns render.
+
+    Without it, a tool declared with `@app.mcp_tool` returned stock JSON while a
+    tool exposed from a route returned the app's dialect - the route-backed one
+    only by accident, because its response body is encoded through the provider
+    and then decoded and re-encoded here. Two tools, one server, one payload,
+    two answers.
+    """
     if isinstance(result, str):
         return result
     # A bare byte string is the text form of the result, not a value inside it,
@@ -582,7 +595,27 @@ def _stringify(result: Any) -> str:
     # refuses outright (a `Secret`) or a structure it cannot represent (a cycle).
     # Emitting a Python repr for either would put the shape this encoder exists
     # to prevent into the model's context; failing the call reports it instead.
+    if dumps is not None:
+        encoded: bytes = dumps(result)
+        return encoded.decode()
     return orjson.dumps(result, default=_orjson_default).decode()
+
+
+def encode_envelope(payload: Any) -> bytes:
+    """Encode a JSON-RPC envelope, or any other MCP protocol document.
+
+    Protocol frames are not the application's to restyle. `json_provider` states
+    the rule for the framework's own wire formats - signed cookies, JWTs,
+    protocol frames - and stdio already followed it; the HTTP and SSE transports
+    did not, so a custom `json_provider_class` injected its keys into the
+    JSON-RPC envelope and `JSONIFY_PRETTYPRINT_REGULAR` inflated every SSE frame
+    into a dozen `data:` lines. The same server framed its protocol two ways
+    depending on which transport carried it.
+
+    The application's dialect still reaches the application's data - a tool
+    result's content - through `_stringify`. This is the envelope around it.
+    """
+    return orjson.dumps(payload, default=_orjson_default)
 
 
 def _orjson_default(value: Any) -> Any:

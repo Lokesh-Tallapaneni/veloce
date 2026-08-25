@@ -274,8 +274,12 @@ def test_every_line_on_the_wire_is_json(tmp_path):
 # ── the writer is configured like the others ─────────────────────────
 
 
-def test_the_stdio_writer_passes_a_fallback_encoder():
-    """A guard: it was the only writer that did not."""
+def test_the_stdio_writer_uses_the_shared_envelope_encoder():
+    """A guard: it was the only writer with no fallback at all.
+
+    It now shares `encode_envelope` with the HTTP and SSE transports, so all
+    three frame the protocol identically.
+    """
     import pathlib
 
     source = (
@@ -287,5 +291,5 @@ def test_the_stdio_writer_passes_a_fallback_encoder():
         / "transports"
         / "stdio.py"
     ).read_text(encoding="utf-8")
-    assert "orjson.dumps(payload, default=_orjson_default)" in source
+    assert "encode_envelope(payload)" in source
     assert "orjson.dumps(payload)" not in source

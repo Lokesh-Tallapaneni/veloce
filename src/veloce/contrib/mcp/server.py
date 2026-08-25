@@ -99,6 +99,7 @@ from veloce.contrib.mcp.subscriptions import (
 from veloce.contrib.mcp.tasks import TaskRegistry, TasksCapability
 from veloce.contrib.mcp.toolsearch import ToolSearch
 from veloce.http.response import Response
+from veloce.json_provider import resolve_dumps
 from veloce.principal import current_principal
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -372,6 +373,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         "_subscriptions_enabled",
         "_connections",
         "_capabilities",
+        "_result_dumps",
         "_handshake_only",
         "_era_aware_capabilities",
         "_methods",
@@ -437,6 +439,10 @@ class MCPServer(TasksMixin, InvocationMixin):
         # declares one title and it serves as both. Instructions prefer the
         # longer `description`, then the one-line `summary`, and are omitted when
         # neither is set.
+        # The application's serialiser, resolved once. `resolve_dumps` returns
+        # `None` when nothing is configured and the direct encoder already emits
+        # the same bytes, so an app with no dialect pays nothing per tool call.
+        self._result_dumps = resolve_dumps(app)
         self.server_title = app.title
         # Identity the spec lets a server publish about itself beyond its name:
         # icons a client can render beside it, and a page describing it. Both come
@@ -1586,7 +1592,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         except _InBandError as exc:
             raise InternalError(str(exc)) from exc
         if response.status_code >= 400:
-            body = _stringify(_response_body_value(response))
+            body = _stringify(_response_body_value(response), self._result_dumps)
             if response.status_code == status.HTTP_404_NOT_FOUND:
                 raise ResourceNotFoundError(body)
             if response.status_code in (
@@ -1621,7 +1627,7 @@ class MCPServer(TasksMixin, InvocationMixin):
             raise InvalidParamsError("prompts/get 'arguments' must be an object")
 
         result = await self._run_invoke(prompt.tool, arguments, _progress_token(params))
-        out: dict[str, Any] = {"messages": _normalize_prompt_messages(result)}
+        out: dict[str, Any] = {"messages": _normalize_prompt_messages(result, self._result_dumps)}
         if prompt.description:
             out["description"] = prompt.description
         return out

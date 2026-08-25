@@ -96,6 +96,7 @@ class TasksMixin:
         # Attributes / methods the host server (and `InvocationMixin`) provide.
         app: Any
         _tasks: TaskRegistry
+        _result_dumps: Any
         _produce_tool_result: Callable[..., Any]
         _error_text: Callable[..., Any]
 
@@ -361,7 +362,7 @@ class TasksMixin:
         # shape). A success goes through the shared success shaping so a declared
         # `outputSchema` yields `structuredContent` alongside the text block.
         if response.status_code >= 400:
-            return _text_result(_stringify(shaped), is_error=True)
+            return _text_result(_stringify(shaped, self._result_dumps), is_error=True)
         # A handler that returned its own `Response` bypassed the route
         # `response_model` filter, so its decoded body is not yet trusted to
         # conform to the advertised `outputSchema`. Re-run it through the filter
@@ -391,7 +392,7 @@ class TasksMixin:
                     try:
                         shaped = self.app._apply_response_model(shaped, route_info)
                     except Exception:
-                        return _text_result(_stringify(shaped))
+                        return _text_result(_stringify(shaped, self._result_dumps))
             elif tool.output_model is not None:
                 # The output schema came from the handler's return annotation, not
                 # a `response_model`, so `_build_response` never filtered to it -
@@ -400,7 +401,7 @@ class TasksMixin:
                 try:
                     shaped = shape_through_model(shaped, tool.output_model)
                 except Exception:
-                    return _text_result(_stringify(shaped))
+                    return _text_result(_stringify(shaped, self._result_dumps))
         return self._success_result(tool, shaped)
 
     def _success_result(self, tool: MCPTool, shaped: Any) -> dict[str, Any]:
@@ -422,7 +423,7 @@ class TasksMixin:
             return _text_result(str(exc), is_error=True)
         if blocks is not None:
             return {"content": blocks}
-        result = _text_result(_stringify(shaped))
+        result = _text_result(_stringify(shaped, self._result_dumps))
         if tool.output_schema is not None:
             structured = _to_structured(shaped)
             if structured is not None:

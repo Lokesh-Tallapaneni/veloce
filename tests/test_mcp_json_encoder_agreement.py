@@ -1,26 +1,27 @@
-"""One MCP endpoint answers with one JSON encoder, whatever the client accepts.
+"""An MCP protocol frame is protocol, whichever transport carries it.
 
-The Streamable HTTP transport can answer the same `tools/call` two ways: a plain
-JSON body, or the same object wrapped in an SSE frame. Which one you get is
-decided by the request's `Accept` header alone.
+A JSON-RPC envelope is the framework's own wire format. `json_provider` states
+the rule for those — signed cookies, JWTs, protocol frames "are not the
+application's to restyle" — and `stdio` followed it. The HTTP and SSE transports
+did not: they built every reply with `JSONResponse` and every frame with
+`ServerSentEvent.json`, both of which resolve the application's provider.
 
-Those two paths used to reach different encoders. The SSE frame went through the
-app's configured JSON provider; the plain body went through a `JSONResponse`
-shortcut that called `orjson.dumps` directly. So an app that had customised its
-JSON — a sort order, a stamped envelope, a registered type encoder — got that
-customisation on one of its own replies and not the other, chosen by a header the
-client sets:
+So an app with a custom `json_provider_class` had its keys injected into the
+JSON-RPC envelope, and with `JSONIFY_PRETTYPRINT_REGULAR` every SSE frame
+inflated into a dozen `data:` lines — while the same server over stdio framed
+the same messages correctly. One server, two protocol dialects, chosen by
+transport.
 
-    plain JSON reply : {"jsonrpc":"2.0","id":1,"result":{...}}
-    SSE-framed reply : data: {"dialect":"custom","jsonrpc":"2.0","id":1,"result":{...}}
+**This reverses part of an earlier decision, deliberately.** An earlier pass
+(recorded as audit finding 2.22) established that the plain-JSON reply and the
+SSE frame must *agree*, and pinned that by asserting both carried the app's
+dialect. The agreement property was right and is kept — strengthened, in fact,
+because stdio is now in it too. The direction was wrong: they agree by both
+being plain protocol, not by both being restyled.
 
-That shortcut was the app-wide defect fixed as 1.1 (`JSONResponse` bypassing the
-provider), and closing it closed every MCP site that funnelled into it. What was
-missing was any test saying so: the dialect suite covered the HTTP surfaces and
-never touched MCP, which is how one endpoint came to disagree with itself.
-
-These tests are that coverage — every MCP reply shape, both transports, both
-`Accept` values.
+The application's dialect still reaches the application's data — a tool result's
+content — which `test_mcp_result_text_rendering` covers. Envelope plain, content
+in the app's dialect, is the whole rule.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ INITIALIZE = {
 
 
 class ShoutingProvider(DefaultJSONProvider):
-    """Stamps every object it encodes, so a bypass is unmistakable."""
+    """Stamps every object it encodes, so a leak into protocol is unmistakable."""
 
     def dumps(self, obj, **kwargs):
         if isinstance(obj, dict):
@@ -53,20 +54,21 @@ class ShoutingProvider(DefaultJSONProvider):
         return super().dumps(obj, **kwargs)
 
 
-def _app(**mount):
+def _app(**config):
     app = Veloce(title="EncoderAgreement", version="1.0.0", openapi_url=None)
     app.json_provider_class = ShoutingProvider
+    app.config.update(config)
 
     @app.mcp_tool(description="Add two numbers")
     async def add(a: int, b: int) -> int:
         return a + b
 
-    app.mount_mcp(transport="http", path="/mcp", **mount)
+    app.mount_mcp(transport="http", path="/mcp")
     return app
 
 
-def _client():
-    client = _app().test_client()
+def _client(**config):
+    client = _app(**config).test_client()
     client.post("/mcp", json=INITIALIZE, headers={"Accept": "application/json"})
     return client
 
@@ -81,44 +83,22 @@ def _call(ident: int = 1) -> dict:
 
 
 def _sse_payload(text: str) -> dict:
-    """The JSON object carried by an SSE reply's `data:` line."""
     for line in text.splitlines():
         if line.startswith("data:") and line[5:].strip():
             return json.loads(line[5:])
     raise AssertionError(f"no data frame in: {text!r}")
 
 
-# ── the two Accept values agree ──────────────────────────────────────
-
-
-def test_both_accept_values_produce_the_same_object():
-    """The defect: the header decided which encoder ran."""
-    client = _client()
-    plain = client.post("/mcp", json=_call(), headers={"Accept": "application/json"}).json()
-    framed = _sse_payload(
-        client.post("/mcp", json=_call(), headers={"Accept": "text/event-stream"}).text
-    )
-    assert plain == framed
+# ── the envelope is protocol ─────────────────────────────────────────
 
 
 @pytest.mark.parametrize("accept", ["application/json", "text/event-stream"])
-def test_the_dialect_reaches_a_tool_reply(accept):
-    client = _client()
-    response = client.post("/mcp", json=_call(), headers={"Accept": accept})
+def test_the_envelope_does_not_carry_the_dialect(accept):
+    """The defect: a custom provider injected its key into the JSON-RPC frame."""
+    response = _client().post("/mcp", json=_call(), headers={"Accept": accept})
     payload = response.json() if accept == "application/json" else _sse_payload(response.text)
-    assert payload["dialect"] == "custom"
-
-
-@pytest.mark.parametrize("accept", ["application/json", "text/event-stream"])
-def test_the_reply_is_still_correct(accept):
-    """Routing through the provider must not change the answer."""
-    client = _client()
-    response = client.post("/mcp", json=_call(), headers={"Accept": accept})
-    payload = response.json() if accept == "application/json" else _sse_payload(response.text)
-    assert payload["result"]["content"][0]["text"] == "3"
-
-
-# ── every reply shape, not just a tool call ──────────────────────────
+    assert "dialect" not in payload
+    assert payload["jsonrpc"] == "2.0"
 
 
 @pytest.mark.parametrize(
@@ -130,10 +110,11 @@ def test_the_reply_is_still_correct(accept):
         ("tools/call", None),
     ],
 )
-def test_every_successful_reply_shape_carries_the_dialect(label, message):
-    client = _client()
-    response = client.post("/mcp", json=message or _call(), headers={"Accept": "application/json"})
-    assert response.json()["dialect"] == "custom"
+def test_no_successful_reply_shape_carries_the_dialect(label, message):
+    response = _client().post(
+        "/mcp", json=message or _call(), headers={"Accept": "application/json"}
+    )
+    assert "dialect" not in response.json()
 
 
 @pytest.mark.parametrize(
@@ -147,11 +128,50 @@ def test_every_successful_reply_shape_carries_the_dialect(label, message):
         ),
     ],
 )
-def test_every_error_reply_shape_carries_the_dialect(label, message):
-    """Error bodies took the same shortcut as success bodies."""
+def test_no_error_reply_shape_carries_the_dialect(label, message):
+    """An error envelope is protocol too."""
+    response = _client().post("/mcp", json=message, headers={"Accept": "application/json"})
+    assert "dialect" not in response.json()
+
+
+def test_the_legacy_transport_frames_protocol_too():
+    app = Veloce(title="LegacySSE", version="1.0.0", openapi_url=None)
+    app.json_provider_class = ShoutingProvider
+
+    @app.mcp_tool(description="Add two numbers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    app.mount_mcp(transport="sse", path="/sse")
+    response = app.test_client().post("/messages", json=_call())
+    assert "dialect" not in response.json()
+
+
+def test_a_formatting_option_does_not_reach_the_envelope():
+    """`JSONIFY_PRETTYPRINT_REGULAR` inflated every SSE frame into `data:` lines."""
+    client = _client(JSONIFY_PRETTYPRINT_REGULAR=True)
+    body = client.post("/mcp", json=_call(), headers={"Accept": "application/json"}).text
+    assert "\n" not in body.strip()
+
+
+def test_sort_keys_does_not_reach_the_envelope():
+    client = _client(JSON_SORT_KEYS=True)
+    body = client.post("/mcp", json=_call(), headers={"Accept": "application/json"}).text
+    # Protocol order, not sorted: `jsonrpc` precedes `id`.
+    assert body.index('"jsonrpc"') < body.index('"id"')
+
+
+# ── the two Accept values still agree ────────────────────────────────
+
+
+def test_both_accept_values_produce_the_same_envelope():
+    """The property the earlier pass established; kept, with the direction fixed."""
     client = _client()
-    response = client.post("/mcp", json=message, headers={"Accept": "application/json"})
-    assert response.json()["dialect"] == "custom"
+    plain = client.post("/mcp", json=_call(), headers={"Accept": "application/json"}).json()
+    framed = _sse_payload(
+        client.post("/mcp", json=_call(), headers={"Accept": "text/event-stream"}).text
+    )
+    assert plain == framed
 
 
 def test_an_error_reply_agrees_across_accept_values():
@@ -163,29 +183,26 @@ def test_an_error_reply_agrees_across_accept_values():
     assert plain == framed
 
 
-# ── the legacy SSE transport uses the same encoder ───────────────────
+def test_all_three_transports_share_one_encoder():
+    """stdio was already right; the other two now call the same function."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce" / "contrib" / "mcp"
+    for path in ("transports/http.py", "transports/sse.py", "transports/stdio.py"):
+        assert "encode_envelope" in (root / path).read_text(encoding="utf-8"), path
 
 
-def test_the_legacy_transport_stamps_its_error_replies():
-    """Its `POST` answers errors with `JSONResponse` too."""
-    app = Veloce(title="LegacySSE", version="1.0.0", openapi_url=None)
-    app.json_provider_class = ShoutingProvider
-
-    @app.mcp_tool(description="Add two numbers")
-    async def add(a: int, b: int) -> int:
-        return a + b
-
-    app.mount_mcp(transport="sse", path="/sse")
-    client = app.test_client()
-    # No session id, so the POST is refused - through the same encoder.
-    response = client.post("/messages", json=_call())
-    assert response.json()["dialect"] == "custom"
+# ── the reply is still correct ───────────────────────────────────────
 
 
-# ── the default provider is unaffected ───────────────────────────────
+@pytest.mark.parametrize("accept", ["application/json", "text/event-stream"])
+def test_the_reply_is_still_correct(accept):
+    response = _client().post("/mcp", json=_call(), headers={"Accept": accept})
+    payload = response.json() if accept == "application/json" else _sse_payload(response.text)
+    assert payload["result"]["content"][0]["text"] == "3"
 
 
-def test_an_app_with_no_custom_provider_emits_plain_json():
+def test_an_app_with_no_custom_provider_is_unchanged():
     app = Veloce(title="Plain", version="1.0.0", openapi_url=None)
 
     @app.mcp_tool(description="Add two numbers")
@@ -200,17 +217,22 @@ def test_an_app_with_no_custom_provider_emits_plain_json():
     assert payload["result"]["content"][0]["text"] == "3"
 
 
-def test_json_sort_keys_reaches_an_mcp_reply():
-    """A second, independent provider setting - not just the stamping one."""
-    app = Veloce(title="Sorted", version="1.0.0", openapi_url=None)
-    app.config["JSON_SORT_KEYS"] = True
+def test_a_user_sse_stream_still_uses_the_provider():
+    """`ServerSentEvent.json` is shared; only MCP stopped using it.
 
-    @app.mcp_tool(description="Add two numbers")
-    async def add(a: int, b: int) -> int:
-        return a + b
+    An application's own event stream is application data and must keep the
+    dialect - the fix must not have taken it away from user code.
+    """
+    from veloce import EventSourceResponse, ServerSentEvent
 
-    app.mount_mcp(transport="http", path="/mcp")
-    client = app.test_client()
-    client.post("/mcp", json=INITIALIZE, headers={"Accept": "application/json"})
-    body = client.post("/mcp", json=_call(), headers={"Accept": "application/json"}).text
-    assert body.index('"id"') < body.index('"jsonrpc"')
+    app = Veloce(openapi_url=None)
+    app.json_provider_class = ShoutingProvider
+
+    @app.get("/events")
+    async def events():
+        async def stream():
+            yield ServerSentEvent.json({"tick": 1})
+
+        return EventSourceResponse(stream())
+
+    assert '"dialect":"custom"' in app.test_client().get("/events").text

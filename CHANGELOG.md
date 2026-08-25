@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An MCP JSON-RPC envelope is encoded as protocol on every transport, so a custom `json_provider_class` no longer injects its keys into protocol frames and `JSONIFY_PRETTYPRINT_REGULAR` no longer inflates each SSE frame. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `/openapi.json`, `/docs` and `/redoc` are excluded from the OpenAPI document they serve, so a generated client no longer carries three operations for them. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `instance_path=` must be a rooted path; a relative one resolved against the working directory the process happened to start in. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
@@ -90,6 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+
+- A tool declared with `@app.mcp_tool` renders its result in the app's JSON dialect, as a route-exposed tool already did; the two disagreed and the route-backed one only matched by accident. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `CORSMiddleware` keeps an `Access-Control-Expose-Headers` entry another middleware contributed under any casing; it checked two spellings and silently discarded the rest. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Replacing `Allow` or `Content-Length` clears the existing header whatever casing it was stored under, so a response cannot carry two. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

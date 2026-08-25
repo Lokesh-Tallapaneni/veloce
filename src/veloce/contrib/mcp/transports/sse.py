@@ -31,7 +31,7 @@ from urllib.parse import quote
 
 from veloce import status
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
-from veloce.contrib.mcp._helpers import _notifier_var
+from veloce.contrib.mcp._helpers import _notifier_var, encode_envelope
 from veloce.contrib.mcp._posture import record_endpoint
 from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import (
@@ -48,10 +48,11 @@ from veloce.contrib.mcp.transports.http import (
     _SSE_RETRY_MS,
     _authenticate,
     _logger,
+    _protocol_response,
     _validate_origin,
     register_metadata_route,
 )
-from veloce.http.response import JSONResponse, Response
+from veloce.http.response import Response
 from veloce.principal import Principal, current_principal, set_principal
 from veloce.sse import EventSourceResponse, ServerSentEvent
 
@@ -122,7 +123,7 @@ def register_sse_transport(
         try:
             _validate_origin(request, allowed_origins)
         except MCPError as exc:
-            return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+            return _protocol_response(exc.to_error(None), status_code=exc.http_status)
         principal = None
         if auth is not None:
             principal, challenge = await _authenticate(auth, request)
@@ -140,7 +141,7 @@ def register_sse_transport(
         try:
             _validate_origin(request, allowed_origins)
         except MCPError as exc:
-            return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+            return _protocol_response(exc.to_error(None), status_code=exc.http_status)
         if auth is not None:
             principal, challenge = await _authenticate(auth, request)
             if challenge is not None:
@@ -156,7 +157,7 @@ def register_sse_transport(
         try:
             connection = _resolve(connections, session_id)
         except MCPError as exc:
-            return JSONResponse(exc.to_error(None), status_code=exc.http_status)
+            return _protocol_response(exc.to_error(None), status_code=exc.http_status)
 
         # There is no stream frame to carry a failure for a message whose id could
         # not be read, so it is reported on the POST - with the code the other two
@@ -165,11 +166,13 @@ def register_sse_transport(
         try:
             message = await request.json()
         except Exception:
-            return JSONResponse(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
+            return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
         if message is None:
-            return JSONResponse(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
+            return _protocol_response(parse_error(), status_code=status.HTTP_400_BAD_REQUEST)
         if not isinstance(message, dict):
-            return JSONResponse(invalid_request_error(), status_code=status.HTTP_400_BAD_REQUEST)
+            return _protocol_response(
+                invalid_request_error(), status_code=status.HTTP_400_BAD_REQUEST
+            )
 
         # The answer travels on the stream, not on this response, so the dispatch
         # runs detached and the POST is acknowledged immediately. This is the
@@ -244,7 +247,7 @@ async def _stream(
                 pending.add(task)
                 task.add_done_callback(pending.discard)
                 continue
-            yield ServerSentEvent.json(item, event=_MESSAGE_EVENT)
+            yield ServerSentEvent(data=encode_envelope(item).decode(), event=_MESSAGE_EVENT)
     finally:
         # The client is gone: drop the session so a later POST naming it is told
         # so, rather than queueing an answer nothing will read.

@@ -40,7 +40,7 @@ from typing import IO, TYPE_CHECKING, Any
 
 import orjson
 
-from veloce.contrib.mcp._helpers import _orjson_default
+from veloce.contrib.mcp._helpers import encode_envelope
 from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import internal_error, invalid_request_error, parse_error
 from veloce.contrib.mcp.session import MCPSession
@@ -228,7 +228,7 @@ class StdioTransport:
         `ctx.result_meta` puts straight into the envelope - raised here instead.
         """
         async with self._write_lock:
-            await self._write_line(orjson.dumps(payload, default=_orjson_default))
+            await self._write_line(encode_envelope(payload))
 
     async def _dispatch(self, message: dict[str, Any], session: MCPSession) -> None:
         """Answer one request off the read loop, so the loop keeps reading."""
