@@ -79,9 +79,9 @@ from veloce.contrib.mcp.errors import (
 from veloce.contrib.mcp.server import (
     _SERVED_VERSION_SET,
     META_PROTOCOL_VERSION,
-    MODERN_PROTOCOL_VERSION,
     MCPServer,
     _notifier_var,
+    is_modern_version,
 )
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.event_store import SSEEventStore
@@ -446,15 +446,6 @@ _NAME_B64_PREFIX = "=?base64?"
 _NAME_B64_SUFFIX = "?="
 
 
-def _is_modern_version(version: str | None) -> bool:
-    """Whether `version` names a revision that carries the standard headers.
-
-    The revisions are ISO dates, so ordering them as strings orders them by date
-    and a revision later than the first modern one is modern too.
-    """
-    return version is not None and version >= MODERN_PROTOCOL_VERSION
-
-
 def _decode_standard_name(raw: str) -> str:
     """Return the value `Mcp-Name` carries, decoding the base64 sentinel form."""
     if raw.startswith(_NAME_B64_PREFIX) and raw.endswith(_NAME_B64_SUFFIX):
@@ -504,10 +495,10 @@ def _validate_standard_headers(request: Request, message: dict[str, Any]) -> Non
     # handshake-era request, and holding it to headers that revision never
     # defined would refuse a call that spelled its version correctly in both
     # places.
-    if not _is_modern_version(header_version) and not _is_modern_version(body_version):
+    if not is_modern_version(header_version) and not is_modern_version(body_version):
         return
 
-    if not _is_modern_version(header_version):
+    if not is_modern_version(header_version):
         raise HeaderMismatchError("MCP-Protocol-Version is required on this protocol revision")
     if body_version is not None and body_version != header_version:
         raise HeaderMismatchError(

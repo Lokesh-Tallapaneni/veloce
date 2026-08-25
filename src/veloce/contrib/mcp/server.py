@@ -133,6 +133,23 @@ _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", LATEST_PROTOCOL_VERSION}
 # on every request, and the server answers each one independently.
 MODERN_PROTOCOL_VERSION = "2026-07-28"
 
+
+def is_modern_version(version: str | None) -> bool:
+    """Whether `version` names a revision served in the modern shape.
+
+    The revisions are ISO dates, so ordering them as strings orders them by date
+    and a revision later than the first modern one is modern too.
+
+    The one definition both ends use. Deciding the era twice - the transport on
+    the value, the core on the mere presence of a `_meta` version - let a body
+    naming a handshake-era revision skip the transport's header cross-check
+    while the core answered it in the modern envelope. The cross-check exists so
+    a hop's two ends cannot act on different requests; the server's own two ends
+    did.
+    """
+    return version is not None and version >= MODERN_PROTOCOL_VERSION
+
+
 # Every revision this server serves, newest first. Ordering matters: it is
 # echoed verbatim in `server/discover` and in an `UnsupportedProtocolVersion`
 # error, and a client picks from the front.
@@ -707,7 +724,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         meta = params.get("_meta") if isinstance(params, dict) else None
         raw_version = meta.get(META_PROTOCOL_VERSION) if isinstance(meta, dict) else None
         requested_version: str | None = raw_version if isinstance(raw_version, str) else None
-        is_modern = requested_version is not None
+        is_modern = is_modern_version(requested_version)
         if is_modern and session is not None:
             # A modern client never sends `initialize`, so its identity and
             # capabilities arrive in `_meta` on every request instead. Recording
