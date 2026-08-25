@@ -1691,9 +1691,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
     if getattr(app, "openapi_external_docs", None):
         schema["externalDocs"] = app.openapi_external_docs
 
-    schemas_registry = SchemaRegistry(
-        separate_input_output=getattr(app, "separate_input_output_schemas", True)
-    )
+    schemas_registry = SchemaRegistry(separate_input_output=app.separate_input_output_schemas)
     security_schemes_registry: dict[str, dict] = {}
 
     # Operations whose operationId was auto-generated (no explicit override),
@@ -1739,7 +1737,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
     if webhook_items:
         schema["webhooks"] = webhook_items
 
-    if getattr(app, "disambiguate_operation_ids", True):
+    if app.disambiguate_operation_ids:
         _disambiguate_operation_ids(auto_ops, explicit_ops)
 
     components_schemas = schemas_registry.finalize(schema)
@@ -1904,7 +1902,7 @@ def setup_openapi_routes(
         # `orjson.dumps` returns bytes, so decode for string concatenation
         # into the HTML template; the surrounding page is utf-8, so
         # orjson's raw-UTF-8 output (vs json's ensure_ascii) is fine.
-        params = getattr(app, "swagger_ui_parameters", None) or {}
+        params = app.swagger_ui_parameters or {}
         if params:
             # Compact `key:value` join - orjson serialises nested values
             # without spaces, so the outer separator stays spaceless to
@@ -1915,7 +1913,7 @@ def setup_openapi_routes(
         else:
             ui_params = ""
 
-        oauth_init = getattr(app, "swagger_ui_init_oauth", None)
+        oauth_init = app.swagger_ui_init_oauth
         init_oauth = f"ui.initOAuth({_html_safe_orjson(oauth_init)});" if oauth_init else ""
 
         html_page = SWAGGER_HTML.format(

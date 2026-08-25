@@ -74,6 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A mounted sub-app that cannot serve a request raises instead of silently falling through to the next mount with the body already drained. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - A blueprint `url_value_preprocessor` no longer runs on every request nor costs every route in the app its straight-line dispatch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `Veloce.process_response` runs the dispatch path, so a hook declaring only `response` no longer raises, a non-`Response` return no longer replaces the response, and `after_this_request` callbacks run. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

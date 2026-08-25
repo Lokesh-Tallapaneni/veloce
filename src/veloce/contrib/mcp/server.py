@@ -422,8 +422,8 @@ class MCPServer(TasksMixin, InvocationMixin):
         # Identity the spec lets a server publish about itself beyond its name:
         # icons a client can render beside it, and a page describing it. Both come
         # from the app, so one server identity is declared in one place.
-        self.server_icons = coerce_icons(getattr(app, "mcp_icons", None))
-        self.server_website_url = getattr(app, "website_url", None) or None
+        self.server_icons = coerce_icons(app.mcp_icons)
+        self.server_website_url = app.website_url or None
         self.server_instructions = (
             getattr(app, "description", None) or getattr(app, "summary", None) or None
         )

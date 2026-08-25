@@ -912,11 +912,12 @@ class DispatchMixin:
                     # body source straight over when it does, so a `stream=True`
                     # route keeps streaming once mounted; otherwise drain here,
                     # which is what the transport would have done at top level.
-                    sub_match = (
-                        sub_app.match(request.method, sub_path)
-                        if hasattr(sub_app, "match")
-                        else None
-                    )
+                    # `mount()` routes a non-`Veloce` app to `_asgi_mounts` or
+                    # `_static_handlers`, so every entry here is a `Veloce` and
+                    # has both methods. Probing for them would turn a missing one
+                    # into a silent fall-through to the next mount, with this
+                    # request's body already drained into `sub_request`.
+                    sub_match = sub_app.match(request.method, sub_path)
                     streams = sub_match is not None and sub_match.route_info.stream
                     # `derive_for_mount` owns what the mount changes and what it
                     # carries forward; it stacks under the parent's own root_path
@@ -929,9 +930,8 @@ class DispatchMixin:
                         prefix,
                         body_source=request._body_source if streams else None,
                     )
-                    if hasattr(sub_app, "handle_request"):
-                        response = await sub_app.handle_request(sub_request)
-                        return await self._run_response_middleware(request, response)
+                    response = await sub_app.handle_request(sub_request)
+                    return await self._run_response_middleware(request, response)
 
         # Check static files
         if cp.has_static_handlers:
