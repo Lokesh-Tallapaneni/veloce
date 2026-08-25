@@ -352,6 +352,26 @@ class Veloce(
         self.extra: dict[str, Any] = dict(extra)
         # instance folder - explicit override, else computed from
         # `package_root` on first `instance_path` access.
+        # Refused rather than resolved: the computed default is rooted, and a
+        # relative override would resolve against the working directory the
+        # process happened to be launched from - so the same deployment would put
+        # its SQLite file and uploads somewhere different depending on where it
+        # was started. The location of a per-deployment writable directory is not
+        # something to leave to that.
+        #
+        # A leading separator counts as rooted even where `os.path.isabs` says
+        # otherwise: on Windows `isabs("/srv/app")` is False because there is no
+        # drive, but the path is still not relative to the working directory - and
+        # refusing it would reject a POSIX deployment path written on a Windows
+        # development machine, which is the ordinary case here.
+        if instance_path is not None and not (
+            os.path.isabs(instance_path) or instance_path[:1] in ("/", "\\")
+        ):
+            raise ValueError(
+                f"instance_path must be an absolute path, got {instance_path!r}; "
+                f"it names a per-deployment writable directory, and a relative path "
+                f"would resolve against the current working directory."
+            )
         self._instance_path = instance_path
         # `import_name` - defaults to the caller's module so
         # `Veloce(__name__)` works. Used to compute `root_path` (the

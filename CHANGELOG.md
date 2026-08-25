@@ -48,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `/openapi.json`, `/docs` and `/redoc` are excluded from the OpenAPI document they serve, so a generated client no longer carries three operations for them. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `instance_path=` must be a rooted path; a relative one resolved against the working directory the process happened to start in. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - An env file refuses a value that is not the type its config key declares, naming the key. `DEBUG=flase` read as `False`; an empty value still reads as off. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - An MCP `Capability` declares the methods a modern revision retired as `handshake_only_methods`; the server derives what it refuses from those instead of a separate table. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

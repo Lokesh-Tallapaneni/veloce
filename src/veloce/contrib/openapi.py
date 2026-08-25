@@ -1917,7 +1917,11 @@ def setup_openapi_routes(
         root = request.root_path
         return f"{html.escape(root)}{schema_path}" if root else schema_path
 
-    @app.get(openapi_url, tags=["openapi"], name="openapi_schema")
+    # Excluded from the document they serve: `paths` describes the application's
+    # API, and these three are the server's own documentation endpoints. Listed,
+    # a generated client grew a method for fetching the schema it was generated
+    # from and two for rendering HTML pages.
+    @app.get(openapi_url, tags=["openapi"], name="openapi_schema", include_in_schema=False)
     async def openapi_schema(request: Any):
         # Route through `app.openapi()` so a user override / customised
         # `app.openapi_schema` flows to the JSON endpoint and Swagger UI.
@@ -1963,6 +1967,6 @@ def setup_openapi_routes(
     # string disables that UI while leaving the JSON schema route in place. The
     # empty string is not a path: registered, it mounted the page at the site root.
     if docs_url:
-        app.get(docs_url, tags=["openapi"], name="swagger_ui")(swagger_ui)
+        app.get(docs_url, tags=["openapi"], name="swagger_ui", include_in_schema=False)(swagger_ui)
     if redoc_url:
-        app.get(redoc_url, tags=["openapi"], name="redoc_ui")(redoc_ui)
+        app.get(redoc_url, tags=["openapi"], name="redoc_ui", include_in_schema=False)(redoc_ui)
