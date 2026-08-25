@@ -401,12 +401,16 @@ def jsonable_encoder(
                 kwargs["exclude_defaults"] = True
             if exclude_none:
                 kwargs["exclude_none"] = True
-            # model_dump already honours the filters for the model's own
-            # fields, but a field whose value is itself a plain dict must
-            # still have `exclude_none` applied during re-encoding, so the
-            # filter is forwarded rather than dropped.
+            # `model_dump` already honours the filters for the model's own
+            # fields, but a field whose value is a plain dict or a nested model
+            # is re-encoded here, and the filters must reach it too - that is
+            # what "at every depth" means, and dropping `include`/`exclude` left
+            # a nested `password` in the output. The dataclass branch below
+            # forwards all three; this one now agrees.
             return jsonable_encoder(
                 obj.model_dump(**kwargs),
+                include=include,
+                exclude=exclude,
                 exclude_none=exclude_none,
                 custom_encoder=custom_encoder,
                 _seen=_seen,
