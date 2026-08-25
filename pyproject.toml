@@ -15,7 +15,42 @@ authors = [
 maintainers = [
     { name = "Lokesh Tallapaneni" },
 ]
-keywords = ["asgi", "async", "web", "framework", "http", "api", "websocket", "openapi"]
+keywords = [
+    # What it is
+    "veloce",
+    "asgi",
+    "async",
+    "asyncio",
+    "web",
+    "framework",
+    "web-framework",
+    "http",
+    "http-server",
+    # What it is used to build
+    "api",
+    "rest",
+    "rest-api",
+    "microservice",
+    "websocket",
+    "sse",
+    "server-sent-events",
+    # What it documents itself with
+    "openapi",
+    "swagger",
+    "redoc",
+    # The MCP server, which is the thing no comparable framework ships
+    "mcp",
+    "model-context-protocol",
+    "llm",
+    "ai-agents",
+    "agents",
+    "tools",
+    # How handlers are written
+    "dependency-injection",
+    "pydantic",
+    "msgspec",
+    "type-hints",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Web Environment",
