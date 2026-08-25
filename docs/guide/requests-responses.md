@@ -468,6 +468,22 @@ It also accepts these filter flags:
 | `response_model_include` |
 | `response_model_exclude` |
 
+Each flag maps to the `model_dump` option of the same name. `include` and
+`exclude` accept any collection of field names and are normalised to a set;
+where a field is named by both, `exclude` wins.
+
+```python
+@app.get("/users/{user_id}", response_model=UserOut, response_model_exclude_none=True)
+async def read_user(user_id: int) -> UserOut:
+    return UserOut(id=user_id, name="Ada")     # a null `nickname` is omitted
+```
+
+The flags are fixed when the route is registered, so the options are resolved
+once there rather than rebuilt on every response. That is invisible from the
+outside — the same fields are emitted either way — but it means the flags are
+constructor arguments: assigning to `route.response_model_exclude_none` after
+registration does not take effect. Pass the flag to the route decorator.
+
 !!! note "`response_model` is inferred from the return annotation"
     A `-> UserOut` return annotation supplies the response model, as in FastAPI:
     the value is reshaped and filtered through it, and the schema is documented.

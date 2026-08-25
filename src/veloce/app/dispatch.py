@@ -1391,19 +1391,9 @@ class DispatchMixin:
           validates each element individually.
         """
         model = route_info.response_model
-        dump_kwargs: dict[str, Any] = {}
-        if route_info.response_model_exclude_unset:
-            dump_kwargs["exclude_unset"] = True
-        if route_info.response_model_exclude_defaults:
-            dump_kwargs["exclude_defaults"] = True
-        if route_info.response_model_by_alias:
-            dump_kwargs["by_alias"] = True
-        if route_info.response_model_exclude_none:
-            dump_kwargs["exclude_none"] = True
-        if route_info.response_model_include:
-            dump_kwargs["include"] = route_info.response_model_include
-        if route_info.response_model_exclude:
-            dump_kwargs["exclude"] = route_info.response_model_exclude
+        # Resolved once when the route was registered - see `RouteInfo.__init__`.
+        # Read, never mutated: every route shares its own mapping across requests.
+        dump_kwargs = route_info.response_dump_kwargs
 
         origin = get_origin(model)
         # Sequence-style response models - `response_model=list[Item]` - dump

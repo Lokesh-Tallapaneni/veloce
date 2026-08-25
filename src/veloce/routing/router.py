@@ -261,6 +261,7 @@ class RouteInfo:
         "response_model_exclude_defaults",
         "response_model_by_alias",
         "response_model_exclude_none",
+        "response_dump_kwargs",
         "include_in_schema",
         "responses",
         "operation_id",
@@ -356,6 +357,27 @@ class RouteInfo:
         self.response_model_exclude_defaults = response_model_exclude_defaults
         self.response_model_by_alias = response_model_by_alias
         self.response_model_exclude_none = response_model_exclude_none
+        # The `model_dump` options this route will pass on every response. They
+        # are constructor arguments and nothing assigns them afterwards, so the
+        # mapping is fixed here rather than rebuilt per response - which the
+        # dispatcher did on every request, on most routes, since a return
+        # annotation supplies a response model without one being declared.
+        # A falsy option is omitted rather than passed as False, preserving the
+        # exact call the per-request build produced.
+        dump_kwargs: dict[str, Any] = {}
+        if response_model_exclude_unset:
+            dump_kwargs["exclude_unset"] = True
+        if response_model_exclude_defaults:
+            dump_kwargs["exclude_defaults"] = True
+        if response_model_by_alias:
+            dump_kwargs["by_alias"] = True
+        if response_model_exclude_none:
+            dump_kwargs["exclude_none"] = True
+        if self.response_model_include:
+            dump_kwargs["include"] = self.response_model_include
+        if self.response_model_exclude:
+            dump_kwargs["exclude"] = self.response_model_exclude
+        self.response_dump_kwargs = dump_kwargs
         self.include_in_schema = include_in_schema
         self.responses = responses or {}
         # Explicit OpenAPI `operationId` override; falls back to the route

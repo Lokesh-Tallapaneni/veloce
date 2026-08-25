@@ -45,6 +45,11 @@ _REWRITTEN = {
     "is_trivial_plan",
     "is_request_only_plan",
     "is_fast_eligible",
+    # Derived in `__init__` from the six `response_model_*` flags, which are
+    # themselves forwarded, so each copy rebuilds it rather than carrying one.
+    # Backed by behaviour tests over both copy paths in
+    # `test_response_model_dump_kwargs.py`, not by this exemption alone.
+    "response_dump_kwargs",
 }
 
 
