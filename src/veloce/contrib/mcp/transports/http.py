@@ -61,6 +61,7 @@ from itertools import count
 from typing import TYPE_CHECKING, Any, cast
 
 from veloce import status
+from veloce.contrib.mcp._posture import record_endpoint
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
 from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import (
@@ -219,6 +220,7 @@ def register_http_transport(
         include_in_schema=False,
         exclude_middleware=exclude_middleware,
     )
+    record_endpoint(app, "http", path, auth, allowed_origins)
 
     if auth is not None:
 

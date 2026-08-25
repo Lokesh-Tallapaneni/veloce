@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `veloce check` reports an MCP endpoint mounted without `auth=` or without `allowed_origins=`, as `mcp-endpoint-unauthenticated` and `mcp-origin-unchecked`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `Blueprint` accepts `tags=` and `on_duplicate=`, the two `Router` options it dropped. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `StaticFiles(max_age=...)` sets the cache lifetime, and the handler honours `SEND_FILE_MAX_AGE_DEFAULT` as `send_file` already did. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `GRACEFUL_DRAIN_TIMEOUT` bounds how long shutdown waits for in-flight requests; it was a literal 30 seconds no setting could reach. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

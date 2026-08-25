@@ -184,6 +184,7 @@ def _registered(app: Veloce) -> Iterator[Any]:
     yield from app._middlewares
     yield from app._http_middleware_funcs
     yield from app._static_handlers
+    yield from app._auditables
     for entry in app._asgi_middleware:
         yield entry[0]
 

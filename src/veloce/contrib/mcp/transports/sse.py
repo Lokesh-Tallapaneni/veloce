@@ -32,6 +32,7 @@ from urllib.parse import quote
 from veloce import status
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
 from veloce.contrib.mcp._helpers import _notifier_var
+from veloce.contrib.mcp._posture import record_endpoint
 from veloce.contrib.mcp.context import _transport_var
 from veloce.contrib.mcp.errors import (
     _JSONRPC_INTERNAL_ERROR,
@@ -186,6 +187,7 @@ def register_sse_transport(
         include_in_schema=False,
         exclude_middleware=exclude_middleware,
     )
+    record_endpoint(app, "sse", path, auth, allowed_origins)
 
 
 class _Dispatch:

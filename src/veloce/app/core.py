@@ -661,6 +661,10 @@ class Veloce(
         # URL processors: preprocessor runs after route match and
         # can mutate path_params (e.g. pop a lang segment into g); url_defaults
         # runs inside url_for/url_path_for and can inject default kwargs.
+        # Objects that report to `veloce check` without being middleware or a
+        # static handler. A mounted MCP endpoint registers routes, so the audit
+        # had nothing to ask about a tool-execution endpoint with no auth.
+        self._auditables: list[Any] = []
         self._url_value_preprocessors: list[Callable] = []
         self._url_default_funcs: list[Callable] = []
         # Blueprint-contributed URL processors, bucketed by the endpoint's
