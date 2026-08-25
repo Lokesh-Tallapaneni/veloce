@@ -170,7 +170,7 @@ class HttpSessionStore:
             entry = self._live.get(session_id)
             if entry is None:
                 return None
-            entry.touched_at = time.monotonic()
+            self._touch(session_id, entry)
             return entry.session
 
         record = await self._backend.read(session_id)
@@ -183,7 +183,7 @@ class HttpSessionStore:
             entry = _LiveSession(MCPSession())
             self._live[session_id] = entry
         else:
-            entry.touched_at = time.monotonic()
+            self._touch(session_id, entry)
         session = entry.session
         session.initialized = record.initialized
         session.client_capabilities = record.client_capabilities
@@ -222,12 +222,28 @@ class HttpSessionStore:
         if entry is not None and self._on_evict is not None:
             self._on_evict(entry.session)
 
+    def _touch(self, session_id: str, entry: _LiveSession) -> None:
+        """Refresh an entry's deadline and move it to the end of `_live`.
+
+        The move is what keeps `_evict_idle` off a full scan: with every touch
+        re-inserting, `_live` is ordered oldest-first, so the sweep stops at the
+        first entry still inside the window.
+        """
+        entry.touched_at = time.monotonic()
+        del self._live[session_id]
+        self._live[session_id] = entry
+
     def _evict_idle(self) -> None:
         """Reclaim sessions untouched past the idle time-to-live.
 
         This reclaims what this worker holds. A shared record is left for its own
         expiry: another worker may still be serving the session, and dropping the
         record because *this* worker went quiet would end a live conversation.
+
+        `_live` is ordered oldest-touched first (see `_touch`), so this walks only
+        the entries it actually reclaims and stops at the first live one. It runs
+        on `resolve`, which is every MCP request, and a full scan there cost one
+        pass over every live session per request.
         """
         if not self._live:
             return
@@ -235,10 +251,16 @@ class HttpSessionStore:
         # ("evict on next access") and a coarse monotonic clock (Windows' ~15ms
         # granularity can read the same value twice), a strict `<` would never fire.
         deadline = time.monotonic() - self._idle_ttl
-        expired = [sid for sid, entry in self._live.items() if entry.touched_at <= deadline]
-        for sid in expired:
-            entry = self._live.pop(sid, None)
-            if entry is not None and self._on_evict is not None:
+        expired: list[tuple[str, _LiveSession]] = []
+        # Iterated lazily and stopped at the first live entry, so the walk is the
+        # length of what is being reclaimed - not of the whole map.
+        for sid, entry in self._live.items():
+            if entry.touched_at > deadline:
+                break
+            expired.append((sid, entry))
+        for sid, entry in expired:
+            del self._live[sid]
+            if self._on_evict is not None:
                 self._on_evict(entry.session)
 
 
