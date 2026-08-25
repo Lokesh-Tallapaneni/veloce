@@ -38,6 +38,16 @@ from veloce.http.response import (
 _MISSING: Any = object()
 
 
+def _error_handler_key_error(key: Any) -> str:
+    """The message for an error-handler key that is neither a status nor a class."""
+    lead = "error handler keys must be an int status code or an exception class"
+    if isinstance(key, str):
+        if key.isdigit():
+            return f"{lead}; got the string {key!r}. Write {int(key)} without the quotes."
+        return f"{lead}; got the string {key!r}. Pass the class itself, not its name."
+    return f"{lead}; got {key!r}."
+
+
 class ErrorsMixin:
     """Exception-handler registration and dispatch, mixed into `Veloce`."""
 
@@ -57,11 +67,22 @@ class ErrorsMixin:
         get_allowed_methods: Callable[..., Any]
 
     def register_error_handler(self, code_or_exception: int | type, func: Callable) -> None:
-        """Register an error handler without a decorator."""
+        """Register an error handler without a decorator.
+
+        The key is an `int` status code or an exception class. Anything else is
+        refused: a non-class key landed in `_exception_handlers`, which is matched
+        by walking a raised exception's MRO, so it could never be found.
+        `exception_handlers={"404": h}` - realistic when the mapping is read from
+        JSON, TOML or the environment - registered without a word and never fired.
+        """
         self._assert_mutable()
         if isinstance(code_or_exception, int):
             self._status_handlers[code_or_exception] = func
         else:
+            if not (
+                isinstance(code_or_exception, type) and issubclass(code_or_exception, BaseException)
+            ):
+                raise TypeError(_error_handler_key_error(code_or_exception))
             self._exception_handlers[code_or_exception] = func
             # The MRO-walk cache is invalidated on any registration so a
             # newly-added handler for a base class takes effect for the

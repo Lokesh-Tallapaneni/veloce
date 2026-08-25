@@ -300,8 +300,18 @@ class Veloce(
         # OpenAPI 3.1 Sec. 4.8.2 `info.summary` - a short one-line summary
         # of the API, distinct from the longer `description`.
         self.summary = summary
-        self._docs_url = docs_url
-        self._redoc_url = redoc_url
+        # An empty string disables a UI, the same way `openapi_url` is already
+        # guarded on truthiness. Registered instead, `docs_url=""` mounted Swagger
+        # at the site root - and if the app also owned `/`, the collision only
+        # surfaced on the first request, because the doc routes register lazily.
+        self._docs_url = docs_url or None
+        self._redoc_url = redoc_url or None
+        if self._docs_url is not None and self._docs_url == self._redoc_url:
+            raise ValueError(
+                f"docs_url and redoc_url are both {self._docs_url!r}; two documentation "
+                f"pages cannot share a path. Give them different paths, or pass None to "
+                f"disable one."
+            )
         self._openapi_url = openapi_url
         self._openapi_setup = False
         self.openapi_schema: dict[str, Any] | None = None

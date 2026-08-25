@@ -1946,9 +1946,10 @@ def setup_openapi_routes(
         )
         return HTMLResponse(html_page)
 
-    # Register each interactive UI only when its URL is set - a `None`
-    # disables that UI while leaving the JSON schema route in place.
-    if docs_url is not None:
+    # Register each interactive UI only when its URL is set - `None` or an empty
+    # string disables that UI while leaving the JSON schema route in place. The
+    # empty string is not a path: registered, it mounted the page at the site root.
+    if docs_url:
         app.get(docs_url, tags=["openapi"], name="swagger_ui")(swagger_ui)
-    if redoc_url is not None:
+    if redoc_url:
         app.get(redoc_url, tags=["openapi"], name="redoc_ui")(redoc_ui)

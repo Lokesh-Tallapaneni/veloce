@@ -84,6 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An `exception_handlers=` key that is not an int status code or an exception class raises `TypeError`. A string key was stored in a table matched by MRO walk, so the handler never fired. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `docs_url=""` and `redoc_url=""` disable that page instead of mounting it at the site root, and two documentation pages sharing a path are refused at construction rather than on a later request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - A text `response_class` given a `dict` or `list` raises `TypeError` naming the class and the remedy, instead of `AttributeError: 'dict' object has no attribute 'encode'`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `/docs` and `/redoc` point at the schema path the app actually serves, including `prefix=` and `root_path`. Both rendered empty on a prefixed app, and ReDoc had no way to override it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
