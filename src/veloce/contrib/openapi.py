@@ -1891,6 +1891,19 @@ def setup_openapi_routes(
     can consume the schema without a public interactive explorer.
     """
 
+    # Where the schema route actually ends up. `app.get` prepends the router's
+    # `prefix`, so a prefixed app served the schema at `<prefix><openapi_url>`
+    # while both HTML templates interpolated the bare `openapi_url` - each page
+    # loaded and then fetched a 404, rendering empty. `root_path` is added per
+    # request rather than here, because it is a property of how the app is
+    # mounted at runtime, not of how its routes were registered.
+    schema_path = html.escape(f"{app.prefix}{openapi_url}" if app.prefix else openapi_url)
+
+    def _schema_url(request: Any) -> str:
+        """The URL a browser on `request` should fetch the schema from."""
+        root = request.root_path
+        return f"{html.escape(root)}{schema_path}" if root else schema_path
+
     @app.get(openapi_url, tags=["openapi"], name="openapi_schema")
     async def openapi_schema(request: Any):
         # Route through `app.openapi()` so a user override / customised
@@ -1918,7 +1931,7 @@ def setup_openapi_routes(
 
         html_page = SWAGGER_HTML.format(
             title=html.escape(app.title),
-            openapi_url=html.escape(openapi_url),
+            openapi_url=_schema_url(request),
             ui_params=ui_params,
             init_oauth=init_oauth,
             nonce=_nonce_attr(request),
@@ -1928,7 +1941,7 @@ def setup_openapi_routes(
     async def redoc_ui(request: Any):
         html_page = REDOC_HTML.format(
             title=html.escape(app.title),
-            openapi_url=html.escape(openapi_url),
+            openapi_url=_schema_url(request),
             nonce=_nonce_attr(request),
         )
         return HTMLResponse(html_page)
