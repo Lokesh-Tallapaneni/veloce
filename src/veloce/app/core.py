@@ -1217,26 +1217,22 @@ class Veloce(
                     return result
         return None
 
-    async def process_response(self, request: Request, response: Any) -> Any:
+    async def process_response(self, request: Request, response: Response) -> Response:
         """Run all `after_request` hooks for `(request, response)`.
 
-        Hooks fire in **reverse** registration order; each hook may
-        return a replacement response (the contract: a None return
-        keeps the existing response). App-level hooks reverse-iterate
-        first, then the matched-blueprint bucket - mirrors
-        `_dispatch_request`'s ordering.
+        Hooks fire in **reverse** registration order; each hook may return a
+        replacement `Response` (the contract: any other return keeps the
+        existing one). App-level hooks reverse-iterate first, then the matched
+        blueprint's, then the request's one-shot `after_this_request` callbacks.
+
+        This is the dispatch path itself, not a re-implementation of it, so a
+        hook behaves here exactly as it will in production - including the
+        signature adaptation that lets a hook declare only the arguments it
+        wants.
         """
-        for hook in reversed(self._after_request_hooks):
-            new = await self._call_handler(hook, {"request": request, "response": response})
-            if new is not None:
-                response = new
-        bp = _endpoint_blueprint(getattr(request, "endpoint", None))
-        if bp is not None and self._bp_after_hooks:
-            for hook in reversed(self._bp_after_hooks.get(bp, ())):
-                new = await self._call_handler(hook, {"request": request, "response": response})
-                if new is not None:
-                    response = new
-        return response
+        return await self._run_after_hooks(
+            request, response, _endpoint_blueprint(getattr(request, "endpoint", None))
+        )
 
     @staticmethod
     def ensure_sync(func: Callable) -> Callable:

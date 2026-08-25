@@ -71,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Veloce.process_response` runs the dispatch path, so a hook declaring only `response` no longer raises, a non-`Response` return no longer replaces the response, and `after_this_request` callbacks run. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `Router(tags=[...])` copies the list instead of appending route tags to the caller's own. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `TestClient.cookies` and `TestResponse.cookies` report the decoded value the handler receives, not the percent-encoded wire form. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
