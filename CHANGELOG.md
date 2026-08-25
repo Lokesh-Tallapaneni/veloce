@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `veloce.http.response.header_pop`, the replacement half of `header_get` / `header_present`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `Veloce()` warns when an unrecognised keyword looks like a misspelled parameter (`tittle=` for `title=`), which was previously absorbed into `app.extra` in silence. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `veloce check` reports an MCP endpoint mounted without `auth=` or without `allowed_origins=`, as `mcp-endpoint-unauthenticated` and `mcp-origin-unchecked`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -88,6 +90,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+
+- `CORSMiddleware` keeps an `Access-Control-Expose-Headers` entry another middleware contributed under any casing; it checked two spellings and silently discarded the rest. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- Replacing `Allow` or `Content-Length` clears the existing header whatever casing it was stored under, so a response cannot carry two. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `app.openapi_version` is emitted in the generated document; it was documented as the spec version the document carries and was read nowhere. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The OpenAPI document and the MCP `initialize` result report the same application title; the two builders carried different fallback defaults. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

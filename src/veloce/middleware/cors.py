@@ -51,7 +51,7 @@ from veloce._protocol_constants import (
 )
 from veloce.http.header_set import HeaderSet
 from veloce.http.request import Request
-from veloce.http.response import Response
+from veloce.http.response import Response, header_pop
 from veloce.middleware.base import Middleware
 
 # Fast-path literals that match every possible origin. Anchors and the
@@ -330,13 +330,14 @@ class CORSMiddleware(Middleware):
             # `Response.add_vary` exists for). Assigning discarded those entries
             # silently, and whichever middleware ran last won - so a header a
             # route meant to expose simply never reached the browser.
-            # `Response.headers` is a plain dict, so a contribution written
-            # under a different casing is invisible to a single lookup - the
-            # same reason `_downgrade_to_304` pops both spellings.
+            # `Response.headers` is a plain dict, so a contribution written under
+            # a different casing is invisible to a single lookup. Checking the
+            # canonical spelling and then the lower-case one covered two casings
+            # and dropped the rest: a middleware contributing under
+            # `ACCESS-CONTROL-EXPOSE-HEADERS` had its entry silently discarded,
+            # which is the failure this merge exists to prevent.
             headers = response.headers
-            existing = headers.get(HEADER_ACCESS_CONTROL_EXPOSE_HEADERS)
-            if existing is None:
-                existing = headers.pop("access-control-expose-headers", None)
+            existing = header_pop(headers, HEADER_ACCESS_CONTROL_EXPOSE_HEADERS)
             if existing:
                 merged = HeaderSet(existing)
                 merged.update(self.expose_headers)

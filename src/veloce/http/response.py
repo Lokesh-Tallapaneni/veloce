@@ -7,7 +7,7 @@ import hashlib
 import os
 import stat
 import warnings
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, MutableMapping
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, BinaryIO, Literal
 from urllib.parse import quote
@@ -111,6 +111,23 @@ def header_get(headers: Mapping[str, str], name: str) -> str | None:
 def header_present(headers: Mapping[str, str], name: str) -> bool:
     """Return True when a header named `name` exists under any casing."""
     return header_key(headers, name) is not None
+
+
+def header_pop(headers: MutableMapping[str, str], name: str) -> str | None:
+    """Remove and return `name` under whatever casing it was stored, or None.
+
+    The replacement half of `header_get`. Every site that rewrites a header
+    hand-rolled this, and each covered only the casings its author thought of -
+    the canonical one and, sometimes, the lower-case one. A contribution written
+    under any other casing was left in place, so `Vary`, `Allow` and
+    `Content-Length` could each be emitted twice, and CORS silently discarded an
+    `Access-Control-Expose-Headers` entry another middleware had added.
+
+    Costs one dict lookup when the header is stored under its canonical casing,
+    which is what the framework itself always writes.
+    """
+    key = header_key(headers, name)
+    return None if key is None else headers.pop(key)
 
 
 def _format_content_disposition(disposition: str, filename: str) -> str:
@@ -770,24 +787,33 @@ class Response:
         # header dict whenever no `Vary` is present, which is precisely when
         # this path runs: measured on one Windows desktop, 116 ns to 521 ns per
         # call on a four-header response, about 3% of a request. Framework code
-        # writes `Vary` through this method or the canonical constant, so the
-        # exposure is user code bypassing both. The `vary` property reads
-        # case-insensitively and reports whatever is actually stored.
+        # Two membership tests rather than a case-insensitive scan. A response
+        # stored under a third casing (`VARY`) takes this branch and ends up with
+        # two `Vary` field lines - which RFC 9110 Sec. 5.2 says a recipient
+        # combines into one comma-separated value, so the meaning survives. Making
+        # it exact costs a scan of every header on every response that adds a
+        # `Vary` (+45% here, +4% on a CORS request, measured), which is not worth
+        # tidying an outcome that is already correct on the wire. The merge path
+        # below is case-insensitive, because there a missed value is *lost*.
         if len(header_names) == 1 and HEADER_VARY not in headers and "vary" not in headers:
             value = header_names[0]
             headers[HEADER_VARY] = value
             self._encoded = None
             return value
-        existing = header_get(headers, HEADER_VARY) or ""
+        # One scan, not two: the key is needed both to read the current value and
+        # to clear whatever casing it was stored under.
+        stored_key = header_key(headers, HEADER_VARY)
+        existing = headers[stored_key] if stored_key is not None else ""
         # Delegate dedup + ordering to `HeaderSet` so the same
         # case-insensitive merge logic doesn't drift between this method
         # and the `vary` property's own datastructure.
         merged = HeaderSet(existing)
         merged.update(header_names)
         value = merged.to_header()
-        # Always write under `Vary` (canonical case) and clear any
-        # lower-case duplicate.
-        headers.pop("vary", None)
+        # Always write under `Vary` (canonical case), clearing whatever casing
+        # the value was actually stored under.
+        if stored_key is not None:
+            del headers[stored_key]
         headers[HEADER_VARY] = value
         self._encoded = None
         return value
@@ -808,7 +834,7 @@ class Response:
     def vary(self, value: Any) -> None:
         """Set the vary."""
         hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
-        self.headers.pop("vary", None)
+        header_pop(self.headers, HEADER_VARY)
         self.headers[HEADER_VARY] = hs.to_header()
         self._encoded = None
 
@@ -826,7 +852,7 @@ class Response:
     def allow(self, value: Any) -> None:
         """Set the allow."""
         hs = value if isinstance(value, HeaderSet) else HeaderSet(value)
-        self.headers.pop("allow", None)
+        header_pop(self.headers, HEADER_ALLOW)
         self.headers[HEADER_ALLOW] = hs.to_header()
         self._encoded = None
 
@@ -1259,7 +1285,7 @@ class Response:
         representation_length = str(len(self.body))
         self.status_code = HTTP_304_NOT_MODIFIED
         self.body = b""
-        self.headers.pop("content-length", None)
+        header_pop(self.headers, HEADER_CONTENT_LENGTH)
         self.headers[HEADER_CONTENT_LENGTH] = representation_length
         self._encoded = None
 
