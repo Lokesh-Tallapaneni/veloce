@@ -60,6 +60,7 @@ from veloce._protocol_constants import (
     TRACE_HEADER_TRACESTATE,
     build_trace_carrier,
 )
+from veloce.app.errors import http_exception_payload
 from veloce.app.urls import URLRule as URLRule
 from veloce.blueprints import _endpoint_blueprint
 from veloce.debug import render_traceback_html
@@ -803,10 +804,8 @@ class DispatchMixin:
         `.errors` list - emitted verbatim as `{"detail": [...]}` - rather than
         the stringified repr stored in `exc.detail`.
         """
-        structured = getattr(exc, "errors", None)
-        detail_payload: Any = structured if structured is not None else exc.detail
         response: Response = JSONResponse(
-            {"detail": detail_payload, "status_code": exc.status_code},
+            http_exception_payload(exc),
             status_code=exc.status_code,
             headers=exc.headers,
         )

@@ -264,9 +264,10 @@ class BackgroundTasksMixin:
     async def _drain_spawned_tasks(self) -> None:
         """Cancel and await every spawned task within the per-task budget.
 
-        Run from the shutdown lifecycle after the on_shutdown handlers and the
-        lifespan stack have unwound, so a task spawned by a teardown callback is
-        also drained rather than surviving past shutdown. Each task gets at most
+        Run twice by the shutdown lifecycle: once before the `on_shutdown`
+        handlers, and again in a `finally` after they and the lifespan stack have
+        unwound - so a task spawned by a teardown callback is drained too rather
+        than surviving past shutdown. Each task gets at most
         `GRACEFUL_TASK_TIMEOUT` seconds to finish cancelling; a task that ignores
         cancellation past that is abandoned so shutdown cannot hang
         indefinitely.

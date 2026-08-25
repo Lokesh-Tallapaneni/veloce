@@ -294,9 +294,6 @@ class Config(dict[str, Any]):
             "TCP_KEEPALIVE_IDLE": None,
             "TCP_KEEPALIVE_INTERVAL": None,
             "TCP_KEEPALIVE_COUNT": None,
-            # Per-task budget, in seconds, for draining an `app.spawn(...)`
-            # background task on shutdown: each task is cancelled and awaited
-            # for at most this long before the drain moves on.
             # Read by `app/lifecycle.py`. Truthy turns the event-loop watchdog
             # on; a mapping additionally tunes it (`interval`,
             # `stall_threshold`).
@@ -308,6 +305,10 @@ class Config(dict[str, Any]):
             "MCP_CALL_TIMEOUT": None,
             "MCP_ENFORCE_LIFECYCLE": False,
             "MCP_RESOURCE_SUBSCRIPTIONS": False,
+            # Per-task budget, in seconds, for draining an `app.spawn(...)`
+            # background task on shutdown: each task is cancelled and awaited
+            # for at most this long before the drain moves on. Read by
+            # `app/background.py`.
             "GRACEFUL_TASK_TIMEOUT": 10,
             # How long shutdown waits for in-flight requests to finish after
             # every connection has been asked to quiesce. Separate from

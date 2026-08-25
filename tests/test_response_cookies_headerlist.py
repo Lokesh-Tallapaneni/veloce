@@ -157,7 +157,7 @@ def test_headerlist_matches_the_asgi_emit_after_folding():
     resp.headers["Content-Security-Policy"] = "default-src 'self'"
     resp.headers["content-security-policy"] = "default-src *"
     resp.set_cookie("a", "1")
-    emitted, _ct, _cl = _build_asgi_headers(resp.headers, False)
+    emitted, _ct, _cl = _build_asgi_headers(resp.headers)
     assert [(k.lower(), v) for k, v in resp.headerlist] == [
         (k.decode(), v.decode("latin-1")) for k, v in emitted
     ]

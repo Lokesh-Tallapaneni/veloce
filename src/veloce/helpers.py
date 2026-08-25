@@ -290,9 +290,10 @@ def has_app_context() -> bool:
 def has_request_context() -> bool:
     """True iff a request is bound to this task/context.
 
-    Veloce passes the live request through arguments during dispatch,
-    so this only flips True inside `app.test_request_context()` blocks
-    or when application code explicitly sets the contextvar.
+    The dispatcher binds it on every request, so this is True inside any handler,
+    middleware, hook or template render, as well as inside an
+    `app.test_request_context()` block. It is False outside a request - in
+    startup and shutdown handlers, a background task, or a CLI command.
     """
     return _current_request_var.get() is not None
 

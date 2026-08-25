@@ -101,9 +101,7 @@ _CT_BYTES_CACHE: dict[str, bytes] = {
 _CL_BYTES_SMALL: tuple[bytes, ...] = tuple(str(i).encode("ascii") for i in range(2048))
 
 
-def _build_asgi_headers(
-    headers: Any, skip_content_length: bool
-) -> tuple[list[tuple[bytes, bytes]], bool, bool]:
+def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, bool]:
     """Build ASGI `(name, value)` header tuples from a response header map.
 
     Single source of truth for the ASGI emit header scan shared by the
@@ -113,9 +111,7 @@ def _build_asgi_headers(
     per-cookie tuples (`Response.set_cookie` joins them with a
     `\r\nSet-Cookie: ` literal for the raw HTTP/1.1 wire path). Returns the
     tuples plus whether the response already carried content-type /
-    content-length, so the caller can decide on framework defaults. The
-    streaming branch passes `skip_content_length=True` (the ASGI server frames
-    the body) and ignores the returned flags.
+    content-length, so the caller can decide on framework defaults.
     """
     has_ct = False
     has_cl = False
@@ -143,8 +139,6 @@ def _build_asgi_headers(
                 has_ct = True
             elif k_lower == "content-length":
                 has_cl = True
-                if skip_content_length:
-                    continue
             _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
             _reject_header_crlf(v, f"{k} header value")
             entry = (k_lower.encode(), _encode_header_value(v).encode("latin-1"))
@@ -231,9 +225,7 @@ class AsgiMixin:
         """
         body = response.body
         headers, has_ct, has_cl = (
-            _build_asgi_headers(response.headers, skip_content_length=False)
-            if response.headers
-            else ([], False, False)
+            _build_asgi_headers(response.headers) if response.headers else ([], False, False)
         )
         if not has_cl:
             headers.append((RAW_HEADER_CONTENT_LENGTH, str(len(body)).encode("ascii")))
@@ -617,9 +609,7 @@ class AsgiMixin:
                 # file's is known from its stat - keep the one the response set
                 # so a streamed download stays length-delimited rather than
                 # silently becoming a chunked one.
-                stream_headers, _, _stream_has_cl = _build_asgi_headers(
-                    response.headers, skip_content_length=False
-                )
+                stream_headers, _, _stream_has_cl = _build_asgi_headers(response.headers)
                 # A bodiless status carries no payload and no default
                 # content-type, the same rule the buffered branch below
                 # applies. Without it a streamed 204 shipped its chunks, and a
@@ -708,9 +698,7 @@ class AsgiMixin:
             # any response-set content-length (e.g. the compressed length from
             # `GZipMiddleware`), so it does not skip that header.
             if response.headers:
-                asgi_headers, has_ct, has_cl = _build_asgi_headers(
-                    response.headers, skip_content_length=False
-                )
+                asgi_headers, has_ct, has_cl = _build_asgi_headers(response.headers)
             else:
                 has_ct = False
                 has_cl = False

@@ -504,10 +504,12 @@ class DependencyResolver:
     def reset(self) -> None:
         """Clear the per-request resolver state.
 
-        Run at the top of every `resolve_plan`, and also called directly
-        by the dispatcher's trivial-route fast path (a route with no
-        parameters and no dependencies) so the shared resolver never
-        carries a previous request's cached results into the next one.
+        Run at the top of `resolve_plan` and `resolve_websocket_plan`, which is
+        every path that resolves against this instance. The dispatcher does not
+        call it: a resolver is allocated per request, and a trivial-plan route
+        (no parameters, no dependencies) never allocates one at all - see the
+        note in `_dispatch_request` on why a single shared resolver would let one
+        request's reset clobber another's `yield`-teardown stack.
         """
         self._cache.clear()
         self._teardowns.clear()

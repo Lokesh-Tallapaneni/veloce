@@ -34,9 +34,10 @@ class MCPMixin:
     def _init_mcp_state(self) -> None:
         """The registries `mcp_tool` / `mcp_prompt` / `mcp_completer` write into."""
         # MCP-only tool registrations (contrib.mcp). Each entry is
-        # `(handler, name, description, namespace, scopes, icons, task_support)`,
-        # recorded by `@app.mcp_tool(...)` and consumed once at `mount_mcp` time
-        # when the tool registry is assembled.
+        # `(handler, name, description, namespace, scopes, tags, icons,
+        # task_support, declared, meta, version)`, recorded by
+        # `@app.mcp_tool(...)` and consumed once at `mount_mcp` time when the
+        # tool registry is assembled. The annotation below is the same shape.
         self._mcp_tools: list[
             tuple[
                 Callable[..., Any],
@@ -53,7 +54,7 @@ class MCPMixin:
             ]
         ] = []
         # MCP prompt registrations (contrib.mcp). Each entry is
-        # `(handler, name, description, namespace, scopes, icons)`, recorded by
+        # `(handler, name, description, namespace, scopes, icons, meta)`, recorded by
         # `@app.mcp_prompt(...)` and consumed once at `mount_mcp` time when the
         # prompt registry is assembled.
         self._mcp_prompts: list[

@@ -17,10 +17,10 @@ if TYPE_CHECKING:  # pragma: no cover
 class URLRule:
     """A single registered URL rule view object.
 
-    Iterable over its fields as `(rule, methods, endpoint)` so callers
-    that just want tuple-unpack semantics work; full attribute access
-    gives `rule`, `methods`, `endpoint`, `defaults`, `host`, etc. for
-    introspection.
+    Iterable over its fields as `(rule, methods, endpoint)` so callers that just
+    want tuple-unpack semantics work; the same three are available as attributes
+    for introspection. Slotted, so there are no others - read anything further
+    off the route table itself.
     """
 
     __slots__ = ("rule", "methods", "endpoint")

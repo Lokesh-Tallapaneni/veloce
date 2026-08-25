@@ -1230,11 +1230,13 @@ class Veloce(
     def aborter(self) -> Any:
         """Callable that raises typed `HTTPException`s by status code.
 
-        `app.aborter(404)` is equivalent to the module-level
-        `abort(404)` helper. It is a distinct attribute so applications
-        can subclass `Aborter` to add custom code-to-exception
-        mappings; veloce returns a fresh `Aborter` instance per access
-        so users can mutate `_mapping` per-app without affecting others.
+        `app.aborter(404)` is equivalent to the module-level `abort(404)` helper.
+        It is a distinct attribute so applications can subclass `Aborter` to add
+        custom code-to-exception mappings: assign to `app.aborter`, or mutate the
+        instance this returns.
+
+        One instance per application, built on first access and kept - so a
+        mutation to its mapping sticks, and does not reach any other app.
         """
         if self._aborter is None:
             self._aborter = Aborter()
@@ -1689,11 +1691,11 @@ class Veloce(
 
         - Re-registers each route under `(url_prefix or bp.url_prefix) + path`
           so the same blueprint can be mounted twice (e.g. v1/v2 versions).
-        - Splices the blueprint's `before_request` / `after_request` /
-          `teardown_request` hooks into the app's own lists. Blueprint
-          hooks fire only for blueprint-routed requests (gated via
-          `request.endpoint` starting with `"<bpname>."`); we tag the
-          blueprint's hooks so the dispatcher can filter.
+        - Buckets the blueprint's `before_request` / `after_request` /
+          `teardown_request` hooks under its name, so they fire only for that
+          blueprint's own routes. They are kept apart from the app-level lists
+          rather than spliced into them and filtered: a per-request scan of every
+          hook is what bucketing avoids.
         - Buckets blueprint-level error handlers under the blueprint name (and
           each nested child under its dotted name), scoped to that blueprint's
           own routes; an app-level handler still catches everything as a fallback.
