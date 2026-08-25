@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `CompressionMiddleware` negotiates zstd, brotli and gzip from `Accept-Encoding`; install the `brotli` / `zstd` extras to offer the newer codings. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `RateLimitStrategy.lua_script` / `lua_argv`, an opt-in server-side form a backend can run in place of the Python `evaluate`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `veloce.http.response.header_pop`, the replacement half of `header_get` / `header_present`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

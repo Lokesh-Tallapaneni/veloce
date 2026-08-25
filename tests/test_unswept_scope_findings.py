@@ -177,11 +177,20 @@ def test_a_blueprint_name_is_still_namespaced(caplog):
 # ── 2. the dead parameter is gone ────────────────────────────────────
 
 
-def test_compress_stream_takes_only_the_stream():
-    from veloce.middleware.compression import GZipMiddleware
+def test_compress_stream_carries_no_unused_parameter():
+    """The original finding was a `request` argument threaded through and never
+    read. `coding` was added later and is read, so the check is that every
+    parameter appears in the body rather than that the signature never grows.
+    """
+    from veloce.middleware.compression import CompressionMiddleware
 
-    params = list(inspect.signature(GZipMiddleware._compress_stream).parameters)
-    assert params == ["self", "stream"]
+    source = inspect.getsource(CompressionMiddleware._compress_stream)
+    body = source.split(":", 1)[1]
+    params = [p for p in inspect.signature(CompressionMiddleware._compress_stream).parameters][1:]
+    assert params
+    assert "request" not in params
+    for param in params:
+        assert param in body, f"{param} is never read"
 
 
 def test_streaming_compression_still_works():
@@ -298,7 +307,11 @@ def test_the_scope_defers_only_the_optional_dependency():
                 for sub in ast.walk(fn):
                     if isinstance(sub, (ast.Import, ast.ImportFrom)):
                         deferred.append(getattr(sub, "module", None) or sub.names[0].name)
-    assert set(deferred) <= {"watchfiles"}, deferred
+    # `watchfiles` for the reloader, and the compression codecs, whose packages
+    # are optional. Each of those is imported once at module import to build the
+    # codec table, not per response - the point of the rule is that no deferred
+    # import exists to paper over a cycle, and none of these does.
+    assert set(deferred) <= {"watchfiles", "brotli", "brotlicffi", "zstandard"}, deferred
 
 
 def test_alg_none_is_refused_even_when_allow_listed():

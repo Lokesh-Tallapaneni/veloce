@@ -180,6 +180,7 @@ from veloce.markup import Markup, escape
 # Middleware
 from veloce.middleware import (
     BaseHTTPMiddleware,
+    CompressionMiddleware,
     ConditionalGetMiddleware,
     CORSMiddleware,
     CSPMiddleware,
@@ -344,6 +345,7 @@ __all__ = [
     "CORSMiddleware",
     "CSRFMiddleware",
     "ConditionalGetMiddleware",
+    "CompressionMiddleware",
     "GZipMiddleware",
     "TrustedHostMiddleware",
     "RateLimitMiddleware",

@@ -11,7 +11,7 @@ layered inside.
 from __future__ import annotations
 
 from veloce.middleware.base import BaseHTTPMiddleware, Middleware
-from veloce.middleware.compression import GZipMiddleware
+from veloce.middleware.compression import CompressionMiddleware, GZipMiddleware
 from veloce.middleware.conditional import ConditionalGetMiddleware
 from veloce.middleware.cors import CORSMiddleware
 from veloce.middleware.csrf import CSRFMiddleware, rotate_csrf_token
@@ -39,6 +39,7 @@ __all__ = [
     "CSRFMiddleware",
     "rotate_csrf_token",
     "ConditionalGetMiddleware",
+    "CompressionMiddleware",
     "GZipMiddleware",
     "TrustedHostMiddleware",
     "RateLimitMiddleware",

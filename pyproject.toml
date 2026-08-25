@@ -132,6 +132,17 @@ redis = ["redis>=4.2"]
 # is pure stdlib `argparse` and needs nothing extra, so Click stays opt-in.
 # Install with `pip install veloceframework[cli]`.
 cli = ["click>=8.1"]
+# Brotli for `CompressionMiddleware`. Every current browser sends `br` in
+# Accept-Encoding, and it compresses text better than gzip at comparable speed
+# around the quality the middleware defaults to. Without this extra the
+# middleware simply does not offer `br`. Install with
+# `pip install veloceframework[brotli]`.
+brotli = ["brotli>=1.0"]
+# Zstandard for `CompressionMiddleware`. Faster than both gzip and brotli at a
+# similar ratio, and increasingly sent by browsers as `zstd`. Without this extra
+# the middleware does not offer `zstd`. Install with
+# `pip install veloceframework[zstd]`.
+zstd = ["zstandard>=0.21"]
 # Everything optional in one shot.
 all = [
     "uvicorn[standard]>=0.23",
@@ -142,6 +153,8 @@ all = [
     "msgspec>=0.13",
     "redis>=4.2",
     "click>=8.1",
+    "brotli>=1.0",
+    "zstandard>=0.21",
 ]
 
 [project.scripts]
@@ -193,6 +206,8 @@ dev = [
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.19",
     "strawberry-graphql[asgi]>=0.230",
+    "brotli>=1.2.0",
+    "zstandard>=0.25.0",
 ]
 docs = [
     "mkdocs-material[imaging]>=9.5",
@@ -298,6 +313,9 @@ module = [
     "prometheus_client",
     "redis.*",
     "watchfiles",
+    "brotli",
+    "brotlicffi",
+    "zstandard",
 ]
 ignore_missing_imports = true
 

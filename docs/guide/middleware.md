@@ -119,7 +119,8 @@ Veloce ships the following middleware, all importable from the top-level
 | Middleware                  | Purpose                                                       |
 |-----------------------------|---------------------------------------------------------------|
 | `CORSMiddleware`            | Cross-Origin Resource Sharing                                 |
-| `GZipMiddleware`            | Response compression                                          |
+| `CompressionMiddleware`     | Response compression, negotiated across zstd / brotli / gzip  |
+| `GZipMiddleware`            | Response compression, gzip only                               |
 | `CSRFMiddleware`            | Double-submit-cookie CSRF protection                          |
 | `SessionMiddleware`         | Signed, timestamped session cookies                           |
 | `ServerSessionMiddleware`   | Server-side sessions; the cookie carries only an opaque id    |
@@ -232,6 +233,72 @@ app.add_middleware(ConditionalGetMiddleware())
 ```
 
 `StreamingResponse` bodies are not buffered for ETag synthesis.
+
+### Choosing a content coding
+
+`GZipMiddleware` offers gzip and nothing else, so a browser sending
+`Accept-Encoding: gzip, deflate, br, zstd` — which every current browser does —
+is served the oldest coding it offered. `CompressionMiddleware` offers the
+newer ones too and picks per response:
+
+```python
+from veloce import CompressionMiddleware, Veloce
+
+app = Veloce()
+app.add_middleware(CompressionMiddleware())
+```
+
+Brotli and zstd each need a package, so install what you want to offer:
+
+```bash
+pip install "veloceframework[brotli]"     # adds br
+pip install "veloceframework[zstd]"       # adds zstd
+```
+
+A coding whose package is missing is simply not offered — the middleware still
+serves gzip. Asking for *only* a missing one raises at startup, naming the
+package, rather than quietly serving every response uncompressed.
+
+On an 18 KB JSON response, measured on the machine this was written on:
+
+| Coding | Level | Size | vs gzip | Encode |
+| --- | --- | --- | --- | --- |
+| gzip | 6 | 1,627 B | — | 149 µs |
+| br | 4 | 735 B | 2.2x smaller | 329 µs |
+| zstd | 3 | 834 B | 2.0x smaller | 34 µs |
+
+Your payloads will differ — compression ratio is a property of the data — so
+treat this as the shape of the trade-off, not a promise.
+
+!!! warning "Brotli's default quality is not a serving default"
+    `brotli` defaults to quality 11. On the response above that costs **81x**
+    the CPU of quality 4 to save a further 1.8% of size — a setting for assets
+    compressed once at build time, not for a response being produced now. The
+    middleware defaults `br` to quality 4. Override per coding with `levels=`,
+    whose scales differ (gzip 1–9, brotli 0–11, zstd 1–22):
+
+    ```python
+    app.add_middleware(CompressionMiddleware(levels={"br": 5, "zstd": 6}))
+    ```
+
+Which coding is chosen follows the client first. `Accept-Encoding` q-values
+rank the candidates (RFC 9110 §12.5.3); among equally-weighted ones the
+`algorithms` order decides, so a deployment states its own preference for the
+clients that express none:
+
+```python
+# Prefer speed: zstd first, gzip as the fallback. No brotli offered at all.
+app.add_middleware(CompressionMiddleware(algorithms=("zstd", "gzip")))
+```
+
+`q=0` is a refusal, and a request refusing everything on offer is served
+uncompressed. Every response carries `Vary: Accept-Encoding` whether or not it
+was compressed, so a cache never serves one client's coding to another.
+
+!!! note "Added in version 0.18.0"
+    `CompressionMiddleware`. `GZipMiddleware` is unchanged — it now subclasses
+    it with the coding pinned to gzip, so existing stacks behave exactly as
+    before.
 
 ### Streaming compression
 
