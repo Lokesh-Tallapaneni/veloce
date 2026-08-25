@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The SSE transport runs a tool as the principal that authenticated the `POST`, not the one that opened the `GET` stream. A validated token for one caller executed under another caller's scopes. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - The MCP HTTP endpoint authenticates and `Origin`-checks `GET` and `DELETE`, not only `POST`. A resuming `GET` replayed another principal's tool output without a credential, and any origin could terminate a session. Clients must now send their token on both verbs. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A JSON body model refuses a body whose `Content-Type` declares it is not JSON, closing a CSRF avenue: `text/plain` and the form types are sent cross-origin without a CORS preflight. An absent header and a `+json` suffix are still accepted. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `await request.json()` applies that same rule and reads a declared non-JSON body as `None`, closing the avenue for handlers that parse the body themselves. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

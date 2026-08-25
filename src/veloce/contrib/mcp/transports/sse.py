@@ -137,9 +137,15 @@ def register_sse_transport(
         except MCPError as exc:
             return JSONResponse(exc.to_error(None), status_code=exc.http_status)
         if auth is not None:
-            _principal, challenge = await _authenticate(auth, request)
+            principal, challenge = await _authenticate(auth, request)
             if challenge is not None:
                 return challenge
+            # Publish the identity this POST authenticated as, so the dispatch
+            # below carries it to the runner. Discarding it left
+            # `current_principal()` unset and the tool ran under the identity
+            # that opened the GET stream - a validated token for one caller
+            # executing as another.
+            set_principal(principal)
 
         session_id = request.query_params.get("sessionId")
         try:
