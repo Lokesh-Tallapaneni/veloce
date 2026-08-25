@@ -140,10 +140,11 @@ def test_a_route_reading_check_is_skipped_before_startup():
 
     # Imported but not started: the route does not exist yet, and the check
     # that would call it missing is not asked.
-    assert run(app, routes_final=False) == []
+    # `routes-undocumented` is about the test routes, not this check.
+    assert [f.id for f in run(app, routes_final=False) if "ratelimit" in (f.id or "")] == []
     # Started: the route exists, so the override resolves and nothing is wrong.
     TestClient(app)
-    assert run(app, routes_final=True) == []
+    assert [f.id for f in run(app, routes_final=True) if "ratelimit" in (f.id or "")] == []
 
 
 def test_the_context_reports_the_phase():
@@ -180,8 +181,8 @@ def test_a_route_reading_check_runs_once_the_table_is_final():
             strict_overrides=False,
         )
     )
-    assert run(app, routes_final=False) == []
-    findings = run(app, routes_final=True)
+    assert [f.id for f in run(app, routes_final=False) if "ratelimit" in (f.id or "")] == []
+    findings = [f for f in run(app, routes_final=True) if "ratelimit" in (f.id or "")]
     assert [f.id for f in findings] == ["ratelimit-overrides-unknown"]
     assert findings[0].severity == "warning"
 

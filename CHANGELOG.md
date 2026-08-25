@@ -66,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+- A route whose `response_model=` disagrees with its return annotation fails `veloce check`; it was printed and the command exited 0. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- Response-contract findings carry ids, so `SILENCED_AUDIT_IDS` reaches them, and are reported by severity rather than only under `debug`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `MCP_CALL_TIMEOUT`, `MCP_ENFORCE_LIFECYCLE`, `MCP_RESOURCE_SUBSCRIPTIONS` and `EVENT_LOOP_WATCHDOG` are declared config keys, so an env-file value gets the right type; `MCP_CALL_TIMEOUT=5` reached `asyncio.wait_for` as a string and broke every tool call. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The configuration guide documents every shipped key, and a test fails when the two drift apart. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `app.mount()` accepts any handler exposing `prefix` and `handle(request)`, not only a `StaticFiles`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

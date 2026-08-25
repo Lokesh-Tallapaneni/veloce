@@ -20,7 +20,6 @@ from veloce._internal import (
     _coerce_bool,
     _is_async_callable,
 )
-from veloce._model_backend import resolve_return_model
 from veloce._pipeline import (
     PH_ASGI_WRAP,
     PH_HTTP_AROUND,
@@ -948,50 +947,19 @@ class Veloce(
         return [str(finding) for finding in audit_run(self)]
 
     def response_contract_audit(self) -> list[str]:
-        """Report routes whose declared response contract is absent or contradictory.
+        """Return human-readable findings about each route's response contract.
 
-        A response contract is only checkable once every route is registered, so
-        it is reported here rather than discovered by a request: a handler whose
-        return value cannot satisfy its declared model would otherwise surface as
-        a server error in production, one request at a time.
+        A rendering of the `response-model-contradiction` and
+        `routes-undocumented` findings from `veloce.audit.run(self)`, which is
+        the structured form. A route whose `response_model=` names a different
+        model than its return annotation is a `warning`; a route with no
+        response contract at all is `info`, because many such routes are
+        legitimate - HTML pages, redirects, streams.
 
-        Two findings are produced. A route whose explicit `response_model=`
-        names a different model than its return annotation is a contradiction -
-        the annotation tells a reader and a type checker one thing while the wire
-        carries another. A route with no response contract at all is listed so an
-        app cannot silently ship most of its surface undocumented; many such
-        routes are legitimate (HTML pages, redirects, streams), so this is
-        informational rather than a failure.
-
-        An empty list means nothing was flagged. Drives `veloce check` and is
-        callable directly from a pre-deploy script or a test.
+        An empty list means nothing was flagged.
         """
-        findings: list[str] = []
-        undocumented: list[str] = []
-        for method, path, info in self._collect_all_routes(include_hidden=True):
-            declared = info.response_model
-            annotated = resolve_return_model(info.handler)
-            if declared is None:
-                if annotated is None:
-                    undocumented.append(f"{method} {path}")
-                continue
-            if annotated is not None and annotated is not declared:
-                findings.append(
-                    f"{method} {path} declares response_model="
-                    f"{getattr(declared, '__name__', declared)!s} but its return annotation "
-                    f"names {getattr(annotated, '__name__', annotated)!s}; the documented "
-                    "response and the annotation disagree."
-                )
-        if undocumented:
-            listed = ", ".join(sorted(undocumented)[:10])
-            more = f", and {len(undocumented) - 10} more" if len(undocumented) > 10 else ""
-            findings.append(
-                f"{len(undocumented)} route(s) publish no response schema: {listed}{more}. "
-                "Annotate the handler's return type, or pass response_model=, to document them."
-            )
-        return findings
-
-    # ── JSON, static files, and Jinja ──────────────────────
+        contract_ids = {"response-model-contradiction", "routes-undocumented"}
+        return [str(finding) for finding in audit_run(self) if finding.id in contract_ids]
 
     @property
     def json(self) -> Any:

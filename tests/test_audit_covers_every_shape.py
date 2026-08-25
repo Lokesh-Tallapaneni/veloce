@@ -87,7 +87,8 @@ def test_a_dispatch_middleware_can_satisfy_the_hardening_check():
         return {}
 
     assert TestClient(app).get("/x").headers["X-Content-Type-Options"] == "nosniff"
-    assert [f.id for f in run(app)] == []
+    # `routes-undocumented` is about the test route, not the hardening check.
+    assert "hardening-headers-missing" not in {f.id for f in run(app)}
 
 
 def test_an_asgi_middleware_class_can_satisfy_the_hardening_check():

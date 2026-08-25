@@ -482,13 +482,6 @@ class LifecycleMixin:
                     for _audit_finding in _findings:
                         self.logger.warning("audit: %s", _audit_finding)
 
-                # In debug, surface response contracts at first boot: a route
-                # that publishes no schema, or whose `response_model` disagrees
-                # with its return annotation, otherwise degrades silently and is
-                # only noticed by reading the rendered docs.
-                if self.debug:
-                    for _finding in self.response_contract_audit():
-                        self.logger.warning("response contract: %s", _finding)
             except BaseException:
                 # Unwind whatever startup acquired before the failure, then let
                 # the original error propagate so the ASGI/native caller emits

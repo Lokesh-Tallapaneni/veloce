@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from veloce._model_backend import resolve_return_model
 from veloce.exceptions import VeloceError
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -97,6 +98,54 @@ class AuditContext:
     routes_final: bool
 
 
+def _response_contract_findings(app: Any) -> list[Finding]:
+    """Findings about what each route says it returns.
+
+    These used to be a second audit returning bare strings. Its own docstring
+    distinguished two severities in prose - a `response_model` contradicting its
+    return annotation was "a contradiction", an undocumented route was
+    "informational rather than a failure" - and then flattened both into one
+    untyped list. So the contradiction never reached `veloce check`'s exit code,
+    could not be silenced, and was reported at startup only under `debug`.
+
+    Saying it with severity instead means one audit, one vocabulary, one exit
+    code and one silencing mechanism.
+    """
+    findings: list[Finding] = []
+    undocumented: list[str] = []
+    for method, path, info in app._collect_all_routes(include_hidden=True):
+        declared = info.response_model
+        annotated = resolve_return_model(info.handler)
+        if declared is None:
+            if annotated is None:
+                undocumented.append(f"{method} {path}")
+            continue
+        if annotated is not None and annotated is not declared:
+            findings.append(
+                Finding(
+                    f"{method} {path} declares response_model="
+                    f"{getattr(declared, '__name__', declared)!s} but its return annotation "
+                    f"names {getattr(annotated, '__name__', annotated)!s}; the documented "
+                    "response and the annotation disagree.",
+                    severity="warning",
+                    fix="make the annotation and response_model name the same model",
+                    id="response-model-contradiction",
+                )
+            )
+    if undocumented:
+        listed = ", ".join(sorted(undocumented)[:10])
+        more = f", and {len(undocumented) - 10} more" if len(undocumented) > 10 else ""
+        findings.append(
+            Finding(
+                f"{len(undocumented)} route(s) publish no response schema: {listed}{more}.",
+                severity="info",
+                fix="annotate the handler's return type, or pass response_model=",
+                id="routes-undocumented",
+            )
+        )
+    return findings
+
+
 def _app_findings(app: Any) -> list[Finding]:
     """Findings about the application itself rather than about a middleware."""
     findings: list[Finding] = []
@@ -109,6 +158,7 @@ def _app_findings(app: Any) -> list[Finding]:
                 id="debug-enabled",
             )
         )
+    findings.extend(_response_contract_findings(app))
     # `SECRET_KEY` is deliberately not checked here. Only the session middleware
     # reads it, and only it knows whether it was handed a key directly - reading
     # the config alone warned about a middleware constructed with an explicit

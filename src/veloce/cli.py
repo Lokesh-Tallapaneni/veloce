@@ -312,16 +312,6 @@ def _cmd_check(args: argparse.Namespace) -> int:
     else:
         print("Security audit: no issues found.")
 
-    # Response contracts are reported alongside the security posture so a route
-    # that documents nothing - or contradicts its own annotation - is visible
-    # before deploying, rather than surfacing as a client-side surprise.
-    contracts = app.response_contract_audit()
-    if contracts:
-        print(f"Response contracts: {len(contracts)} finding(s):")
-        for finding in contracts:
-            print(f"  - {finding}")
-    else:
-        print("Response contracts: every route publishes a response schema.")
     return 1 if failing else 0
 
 
