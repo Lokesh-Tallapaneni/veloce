@@ -228,6 +228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `jsonable_encoder` applies `include` and `exclude` below a model, as documented. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HTTPBearer(scheme_name=...)` publishes that scheme in the OpenAPI document, not a fixed `bearer`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `handle_http_exception` renders the same body as the request cycle for an exception with an empty detail. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `response_model=Sequence[Model]`, `tuple[Model, ...]` and `set[Model]` document an array of refs. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ## [0.17.1] - 2026-08-23
 
