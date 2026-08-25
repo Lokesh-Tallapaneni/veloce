@@ -84,6 +84,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `title` and `version` must be non-empty strings; a non-string produced an invalid OpenAPI document and a 500 on `/docs`, and `validate_openapi=True` did not catch it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - An `exception_handlers=` key that is not an int status code or an exception class raises `TypeError`. A string key was stored in a table matched by MRO walk, so the handler never fired. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `docs_url=""` and `redoc_url=""` disable that page instead of mounting it at the site root, and two documentation pages sharing a path are refused at construction rather than on a later request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 

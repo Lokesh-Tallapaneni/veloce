@@ -42,6 +42,13 @@ class MountingMixin:
     def mount(self, prefix: str, app: Any, *, expose_mcp: bool = False) -> None:
         """Mount a sub-application at a path prefix.
 
+        `prefix` is the full path the sub-app is reached at. The app's own
+        `Veloce(prefix=...)` does not apply here - that prepends to routes this
+        app *registers*, and a mount places another application rather than
+        registering a route. An app built with `Veloce(prefix="/api")` and
+        `mount("/sub", child)` serves the child at `/sub`, not `/api/sub`; write
+        `mount("/api/sub", child)` for that.
+
         A veloce sub-app is dispatched through the parent's request
         pipeline. Any other ASGI application - an ASGI micro-app, an
         instrumentation shim - is dispatched at the ASGI layer instead:

@@ -79,6 +79,9 @@ def test_validation_rejects_missing_responses() -> None:
     # The structural checker rejects an operation with no responses, a malformed
     # parameter, or a non-object operations container.
     doc = {
+        # `info` is required, and the checker now says so - supply a valid one so
+        # this test still exercises the responses check it was written for.
+        "info": {"title": "t", "version": "1"},
         "paths": {"/x": {"get": {"summary": "x", "responses": {}}}},
         "components": {"schemas": {}},
     }
@@ -88,6 +91,7 @@ def test_validation_rejects_missing_responses() -> None:
 
 def test_validation_rejects_parameter_without_name_or_location() -> None:
     doc = {
+        "info": {"title": "t", "version": "1"},
         "paths": {
             "/x": {
                 "get": {

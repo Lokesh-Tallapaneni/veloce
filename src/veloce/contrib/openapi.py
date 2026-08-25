@@ -1631,6 +1631,19 @@ def _validate_document(schema: dict[str, Any]) -> None:
     dangling `$ref` before the document reaches Swagger UI, raising a
     `ValueError` that names the offending path and method.
     """
+    # `info.title` and `info.version` are REQUIRED and are strings - OpenAPI 3.1
+    # Sec. 4.8.2. The pass checked `$ref`s and container shapes and never these,
+    # so `validate_openapi=True` accepted a document it was asked to reject.
+    info = schema.get("info")
+    if not isinstance(info, dict):
+        raise ValueError("OpenAPI document `info` must be an object")
+    for field in ("title", "version"):
+        value = info.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                f"OpenAPI document `info.{field}` must be a non-empty string, got {value!r}"
+            )
+
     schemas = schema.get("components", {}).get("schemas", {})
     paths = schema.get("paths", {})
     if not isinstance(paths, dict):

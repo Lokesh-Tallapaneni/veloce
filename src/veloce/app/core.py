@@ -146,19 +146,34 @@ class Veloce(
         ] = False,
         prefix: Annotated[
             str,
-            Doc("Path prefix prepended to every route registered on the app."),
+            Doc(
+                "Path prefix prepended to every route registered on the app, including"
+                " the documentation and MCP routes. It does not apply to `app.mount()`,"
+                " which places a sub-application at the prefix it is given."
+            ),
         ] = "",
         docs_url: Annotated[
             str | None,
-            Doc("Path serving the Swagger UI docs page; `None` disables it."),
+            Doc(
+                "Path serving the Swagger UI docs page; `None` or an empty string"
+                " disables it, as does disabling `openapi_url`, since the page has no"
+                " schema to read. Cannot equal `redoc_url`."
+            ),
         ] = "/docs",
         redoc_url: Annotated[
             str | None,
-            Doc("Path serving the ReDoc docs page; `None` disables it."),
+            Doc(
+                "Path serving the ReDoc docs page; `None` or an empty string disables"
+                " it, as does disabling `openapi_url`. Cannot equal `docs_url`."
+            ),
         ] = "/redoc",
         openapi_url: Annotated[
             str | None,
-            Doc("Path serving the generated OpenAPI JSON document; `None` disables it."),
+            Doc(
+                "Path serving the generated OpenAPI JSON document; `None` or an empty"
+                " string disables it, and disables `docs_url` and `redoc_url` with it -"
+                " both pages read this document."
+            ),
         ] = "/openapi.json",
         lifespan: Annotated[
             Callable | None,
@@ -290,6 +305,16 @@ class Veloce(
             frame = sys._getframe(1)
             import_name = frame.f_globals.get("__name__", "veloce.app")
         self.import_name = import_name
+        # Both are REQUIRED strings in the document these build (OpenAPI 3.1
+        # Sec. 4.8.2) and both are interpolated into the two HTML pages, where a
+        # non-string reached `html.escape` and answered 500. Refused here, at the
+        # one place they enter, rather than on a request to `/docs`.
+        for _field, _value in (("title", title), ("version", version)):
+            if not isinstance(_value, str) or not _value:
+                raise ValueError(
+                    f"{_field} must be a non-empty string, got {_value!r}; it is a "
+                    f"required field of the OpenAPI document and appears on /docs."
+                )
         self.title = title
         self.version = version
         # Identity the MCP `serverInfo` publishes beyond name and version. Held on
