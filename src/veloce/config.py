@@ -337,10 +337,21 @@ class Config(dict[str, Any]):
     def from_mapping(self, mapping: Mapping[str, Any] | None = None, **kwargs: Any) -> bool:
         """Bulk-update from `mapping` and/or kwargs.
 
-        Only UPPERCASE keys are stored; lowercase keys are silently
-        skipped. Always returns True so the call can be used as a
-        chaining sentinel.
+        Only UPPERCASE keys are config keys. A non-uppercase **keyword** argument
+        raises: it was typed out one key at a time, so dropping it silently means
+        `from_mapping(debug=True)` leaves `DEBUG` untouched and says nothing. Keys
+        in a `mapping` are filtered quietly instead, because a settings dict or a
+        parsed config section legitimately carries entries that are not config.
+
+        Always returns True so the call can be used as a chaining sentinel.
         """
+        rejected = sorted(k for k in kwargs if not self._is_uppercase_key(k))
+        if rejected:
+            raise TypeError(
+                f"config keys must be UPPERCASE; got {', '.join(rejected)}. "
+                f"Write {rejected[0].upper()}=... , or pass a mapping to have "
+                f"non-config keys filtered."
+            )
         merged: dict[str, Any] = {}
         if mapping is not None:
             merged.update(mapping)

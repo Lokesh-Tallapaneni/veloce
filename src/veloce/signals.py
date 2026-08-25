@@ -133,10 +133,13 @@ class Signal:
     (sync receivers still run inline in registration order first).
     """
 
-    __slots__ = ("name", "_subs")
+    __slots__ = ("name", "doc", "_subs")
 
-    def __init__(self, name: str = "") -> None:
+    def __init__(self, name: str = "", doc: str | None = None) -> None:
         self.name = name
+        #: What this signal is for, as given to `Namespace.signal(name, doc=...)`.
+        #: `None` when the signal was constructed directly without one.
+        self.doc = doc
         # Each subscription: (sender, ref_or_callable, is_weak, is_async).
         # `sender` is `ANY_SENDER` for unfiltered receivers, else the
         # sender itself (strong reference - typical senders are app
@@ -458,14 +461,18 @@ class Namespace:
     def signal(self, name: str, doc: str | None = None) -> Signal:
         """Return the `Signal` named `name`, creating it on first use.
 
-        Repeated calls with the same `name` return the identical
-        instance. `doc` is accepted for API familiarity; it is ignored
-        because `Signal` is slotted and carries no per-instance docstring.
+        Repeated calls with the same `name` return the identical instance, and
+        the first call's `doc` is the one kept - a later call naming a different
+        one does not rewrite a signal other code already holds.
+
+        `doc` is recorded on the signal as `Signal.doc`. It used to be accepted
+        and discarded, which made it a silent no-op for anyone porting code that
+        passed it.
         """
         existing = self._signals.get(name)
         if existing is not None:
             return existing
-        sig = Signal(name)
+        sig = Signal(name, doc)
         self._signals[name] = sig
         return sig
 

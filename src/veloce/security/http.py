@@ -268,5 +268,12 @@ class HTTPBearer(_BearerScheme):
         self._bearer_scheme = scheme_name
 
     def openapi_scheme(self) -> dict[str, Any] | None:
-        """HTTP authentication, published with the scheme it advertises."""
-        return {"type": "http", "scheme": "bearer"}
+        """HTTP authentication, published with the scheme it advertises.
+
+        The scheme is `scheme_name`, which is also what `__call__` matches the
+        `Authorization` header against. Publishing a fixed `"bearer"` meant a
+        custom scheme changed what the server accepts and not what the document
+        told a client to send. Lower-cased because OpenAPI 3.1 names the IANA
+        registry entry, whose entries are lower-case.
+        """
+        return {"type": "http", "scheme": self.scheme_name.lower()}
