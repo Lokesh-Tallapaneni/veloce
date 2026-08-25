@@ -43,6 +43,7 @@ from veloce._route_contract import describe_slot
 from veloce.contrib.mcp.context import MCPContext
 from veloce.contrib.openapi import (
     _adapted_to_schema,
+    _apply_marker_constraints,
     _pydantic_to_schema,
     _python_type_to_schema,
 )
@@ -397,10 +398,16 @@ def _slot_schema(
         prop = _python_type_to_schema(d.target_type)
 
     if d.marker is not None:
-        if getattr(d.marker, "description", None):
-            prop = {**prop, "description": d.marker.description}
-        if getattr(d.marker, "title", None):
-            prop = {**prop, "title": d.marker.title}
+        # The same keywords the OpenAPI lowering publishes, from the same
+        # function. Copying only `description` and `title` by hand left every
+        # validation bound out, so the tool schema advertised a wider contract
+        # than the server accepts and an agent was refused for a value the
+        # schema said was allowed. A model property is skipped: it is a `$ref`
+        # to a schema that already carries the model's own bounds, and the
+        # marker's belong to the group rather than to any one field.
+        if d.model is None:
+            prop = dict(prop)
+            _apply_marker_constraints(prop, d.marker)
         # Advertise the declared default so a schema-aware client can populate
         # the field itself instead of omitting it and relying on the server's
         # fallback. A `default_factory` builds a per-call value with no single
