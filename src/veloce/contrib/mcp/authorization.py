@@ -655,12 +655,35 @@ async def _authenticate_client(
     return client, None
 
 
+#: The grant types this token endpoint implements. A registration naming
+#: anything else is refused rather than silently narrowed to these.
+SUPPORTED_GRANT_TYPES = ("authorization_code", "refresh_token")
+
+
+def _refuse_unregistered_grant(client: OAuthClient, grant_type: str) -> Response | None:
+    """Refuse a grant the client is not registered for, per RFC 6749 Sec. 5.2.
+
+    `grant_types` was recorded and never read, so a client registered for
+    `authorization_code` alone could still refresh. The registration is the
+    contract; this is where it binds.
+    """
+    if grant_type in client.grant_types:
+        return None
+    return _error_response(
+        "unauthorized_client",
+        f"this client is not registered for the {grant_type!r} grant type",
+    )
+
+
 async def _grant_authorization_code(server: MCPAuthorizationServer, form: Any) -> Response:
     """Redeem a code: single-use, PKCE-verified, and bound to its own request."""
     client, failure = await _authenticate_client(server, form)
     if failure is not None:
         return failure
     assert client is not None
+    refused = _refuse_unregistered_grant(client, "authorization_code")
+    if refused is not None:
+        return refused
 
     code = form.get("code")
     verifier = form.get("code_verifier")
@@ -715,6 +738,9 @@ async def _grant_refresh_token(server: MCPAuthorizationServer, form: Any) -> Res
     if failure is not None:
         return failure
     assert client is not None
+    refused = _refuse_unregistered_grant(client, "refresh_token")
+    if refused is not None:
+        return refused
 
     refresh = form.get("refresh_token")
     if not refresh:
@@ -777,6 +803,24 @@ async def _handle_register(server: MCPAuthorizationServer, request: Request) -> 
                 f"{uri!r} must be https, a loopback http address, or a private-use scheme",
             )
 
+    # RFC 7591 Sec. 2. Omitted keeps the historical default rather than the
+    # spec's narrower `["authorization_code"]`: narrowing silently would stop
+    # refresh working for every client already registered without the key.
+    grants = body.get("grant_types", list(SUPPORTED_GRANT_TYPES))
+    if not isinstance(grants, list) or not all(isinstance(g, str) for g in grants):
+        return _error_response("invalid_client_metadata", "grant_types must be a list of strings")
+    unsupported = [g for g in grants if g not in SUPPORTED_GRANT_TYPES]
+    if unsupported:
+        return _error_response(
+            "invalid_client_metadata",
+            f"unsupported grant_types: {' '.join(sorted(unsupported))}",
+        )
+    if "authorization_code" not in grants:
+        return _error_response(
+            "invalid_client_metadata",
+            "grant_types must include 'authorization_code'; it is the only way to obtain a token",
+        )
+
     requested = frozenset((body.get("scope") or "").split())
     allowed = frozenset(server.scopes_supported)
     if requested - allowed:
@@ -797,13 +841,16 @@ async def _handle_register(server: MCPAuthorizationServer, request: Request) -> 
             client_secret_digest=_digest(secret) if secret is not None else None,
             client_name=body.get("client_name"),
             scopes=requested or allowed,
+            grant_types=tuple(grants),
         )
     )
     registered: dict[str, Any] = {
         "client_id": client_id,
         "redirect_uris": list(uris),
         "token_endpoint_auth_method": "client_secret_post" if secret else "none",
-        "grant_types": ["authorization_code", "refresh_token"],
+        # What was stored, not a fixed pair: a client told it holds a grant it
+        # does not have cannot tell a refusal from a bug.
+        "grant_types": list(grants),
         "response_types": ["code"],
     }
     if body.get("client_name"):
