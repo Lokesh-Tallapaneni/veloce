@@ -166,6 +166,40 @@ def _app_findings(app: Any) -> list[Finding]:
     return findings
 
 
+def _unmatched_exclusions(app: Any) -> list[Finding]:
+    """Report `exclude_middleware` names that match nothing registered.
+
+    An exclusion is matched by `Middleware.middleware_name`, and an unmatched one
+    is simply skipped at dispatch: the route keeps a middleware its author
+    believes they opted out of, with nothing said at registration, startup, or
+    dispatch. The documented use is `exclude_middleware=["CSRFMiddleware"]` on a
+    webhook route, where a typo or a middleware registered under a custom `name=`
+    leaves the route protected and 403ing.
+
+    Registration cannot answer this - routes are commonly registered before
+    middleware - so it is asked once the set is final.
+    """
+    registered = {mw.middleware_name for mw in app._middlewares}
+    unmatched: dict[str, str] = {}
+    for method, path, info in app._collect_all_routes(include_hidden=True):
+        for name in info.excluded_middleware or ():
+            if name not in registered:
+                unmatched.setdefault(name, f"{method} {path}")
+    if not unmatched:
+        return []
+    known = ", ".join(sorted(registered)) or "none registered"
+    return [
+        Finding(
+            f"Route {where} excludes {name!r}, which no registered middleware is "
+            f"named - the exclusion does nothing. Registered names: {known}.",
+            severity="warning",
+            fix="Match the name a middleware reports, or drop the exclusion.",
+            id="exclude-middleware-unmatched",
+        )
+        for name, where in sorted(unmatched.items())
+    ]
+
+
 def _registered(app: Veloce) -> Iterator[Any]:
     """Every registered component that could report on itself.
 
@@ -199,6 +233,8 @@ def run(app: Veloce, *, routes_final: bool = False) -> list[Finding]:
     """
     ctx = AuditContext(app=app, routes_final=routes_final)
     findings = _app_findings(app)
+    if routes_final:
+        findings.extend(_unmatched_exclusions(app))
 
     # One pass: whether anything hardens responses is a question about the set,
     # which no member can answer, so it is settled alongside collecting them.
