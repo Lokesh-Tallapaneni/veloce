@@ -33,6 +33,7 @@ from veloce._handler_plan import (
     MK_BODY,
     _unwrap_optional,
 )
+from veloce._internal import _current_request_var
 from veloce._model_backend import (
     ModelBackend,
     adapter_for,
@@ -684,6 +685,30 @@ def _scalar_str(value: Any) -> str | None:
     return None
 
 
+def _carrier_scope() -> dict[str, Any] | None:
+    """An ASGI-shaped scope carrying the calling peer, or `None` off-transport.
+
+    A replayed request has no socket of its own, so without this everything
+    keyed on caller identity - rate limiting above all - saw an unknown peer and
+    bucketed each call separately, silently failing open on the agent-facing
+    door while the same route stayed limited over HTTP.
+
+    The carrier's *resolved* `client_host` is what propagates, so a `ProxyFix`
+    correction already applied there carries over rather than being re-derived
+    from headers this request does not have. Only the peer crosses: copying
+    headers would let a credential presented to the transport be re-read by the
+    route's own `Security` scheme, which the empty header list exists to prevent.
+
+    A port of 0 stands in for the peer's real port, which is not identifying and
+    is not reachable from the carrier's public surface.
+    """
+    carrier = _current_request_var.get()
+    if carrier is None:
+        return None
+    host = carrier.client_host
+    return {"client": (host, 0)} if host else None
+
+
 def _build_request(
     tool_name: str,
     arguments: dict[str, Any] | None = None,
@@ -724,6 +749,7 @@ def _build_request(
         query_string="",
         headers=[],
         body=b"",
+        scope=_carrier_scope(),
     )
     if not arguments:
         return request

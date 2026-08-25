@@ -107,6 +107,42 @@ path, so a handler, dependency, or hook that branches on `request.method` /
 `request.path` sees the route's own values (the concrete path-parameter values
 remain on `request.path_params`).
 
+It also carries the caller: `request.client_host` on a replayed call is the
+address the transport saw on the carrying request, so anything keyed on who is
+calling — a rate limit, an allow-list, an audit log — behaves as it does over
+HTTP. Where a `ProxyFix`-style middleware corrected the address on the carrier,
+the corrected value is what propagates.
+
+```python
+from veloce import Veloce, rate_limit
+from veloce.ratelimit import FixedWindow
+
+app = Veloce()
+
+@app.get("/report", expose_as_mcp_tool=True, mcp_description="Build a report")
+@rate_limit(FixedWindow(limit=2, window=60))
+async def report() -> dict:
+    return {"rows": 10_000}
+```
+
+Two calls a minute, whichever door they arrive through — the third is refused
+over HTTP with a `429`, and refused to an agent as a tool error. The budget is
+shared, so an agent that has spent it cannot get a third report by switching to
+the HTTP endpoint.
+
+!!! warning "A stdio server has no caller to inherit"
+    Over `serve_stdio` there is no carrying request, so `request.client_host` is
+    `None` and a rate limit keyed on the caller has nothing to count against —
+    each call falls into its own bucket and is admitted. A stdio server is
+    launched by, and serves, exactly one local client; put the limit at the
+    process level rather than per-caller.
+
+Headers are a separate matter and are deliberately **not** inherited. A replayed
+request has no headers at all, so a credential presented to the transport is
+never re-read by the route's own `Security` scheme, and a tool argument can
+never masquerade as one. Authentication over MCP is the validated
+[`Principal`](#authenticating-an-agent), not a request header.
+
 A client-supplied parameter declared inside a `Depends` dependency - including a
 body model - is advertised in the tool's input schema, so `tools/list` and
 `tools/call` agree on the accepted inputs. A route's rule `defaults=` fill any

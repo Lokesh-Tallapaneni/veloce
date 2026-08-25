@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `MCPAuthorizationServer.verifier(resource=...)` enforces RFC 8707 audience binding, refusing a token minted for another server. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A registered OAuth client is refused a grant type it did not register for. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A route exposed as an MCP tool keeps its rate limit; the replayed call reported no caller, so every call got a fresh bucket. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Added
 
