@@ -2434,6 +2434,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "brotli" },
     { name = "click" },
     { name = "gunicorn", marker = "sys_platform != 'win32'" },
     { name = "msgspec" },
@@ -2442,6 +2443,10 @@ all = [
     { name = "redis" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
+    { name = "zstandard" },
+]
+brotli = [
+    { name = "brotli" },
 ]
 cli = [
     { name = "click" },
@@ -2466,6 +2471,9 @@ uvicorn = [
 ]
 ws = [
     { name = "websockets" },
+]
+zstd = [
+    { name = "zstandard" },
 ]
 
 [package.dev-dependencies]
@@ -2495,6 +2503,8 @@ docs = [
 
 [package.metadata]
 requires-dist = [
+    { name = "brotli", marker = "extra == 'all'", specifier = ">=1.0" },
+    { name = "brotli", marker = "extra == 'brotli'", specifier = ">=1.0" },
     { name = "click", marker = "extra == 'all'", specifier = ">=8.1" },
     { name = "click", marker = "extra == 'cli'", specifier = ">=8.1" },
     { name = "gunicorn", marker = "sys_platform != 'win32' and extra == 'all'", specifier = ">=21.0" },
@@ -2518,8 +2528,10 @@ requires-dist = [
     { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.19.0" },
     { name = "websockets", marker = "extra == 'all'", specifier = ">=12" },
     { name = "websockets", marker = "extra == 'ws'", specifier = ">=12" },
+    { name = "zstandard", marker = "extra == 'all'", specifier = ">=0.21" },
+    { name = "zstandard", marker = "extra == 'zstd'", specifier = ">=0.21" },
 ]
-provides-extras = ["uvicorn", "ws", "gunicorn", "otel", "metrics", "fast", "redis", "cli", "all"]
+provides-extras = ["uvicorn", "ws", "gunicorn", "otel", "metrics", "fast", "redis", "cli", "brotli", "zstd", "all"]
 
 [package.metadata.requires-dev]
 dev = [
