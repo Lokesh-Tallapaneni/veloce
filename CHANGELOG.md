@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `veloce check` reports an `exclude_middleware` name that matches no registered middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Signal.doc` records the description given to `Namespace.signal(name, doc=...)`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A second route taking an existing `name=` logs a warning naming both paths. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
 
@@ -234,6 +235,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `HTTPValidationError` schema declares the `status_code` every 422 response carries. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Body()` on a model parameter validates it, instead of passing the raw decoded body to the handler. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An MCP tool schema publishes a parameter marker's constraints, matching the OpenAPI document. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `CORSMiddleware`'s usage example lists `allow_headers`, which credentials require. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ## [0.17.1] - 2026-08-23
 
