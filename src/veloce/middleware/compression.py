@@ -44,6 +44,25 @@ _DEFAULT_COMPRESSIBLE = (
 )
 
 
+def _refuses(pieces: list[str]) -> bool:
+    """True when a media-range's parameters carry `q=0`.
+
+    Both spellings: RFC 9110 Sec. 12.4.2's `weight` rule is written with an ABNF
+    string literal, and RFC 5234 Sec. 2.3 makes those case-insensitive, so `Q=0`
+    is as much a refusal as `q=0`. `AcceptHeader` already reads both; this is the
+    same rule, applied once for the explicit media range and the wildcard.
+    """
+    for param in pieces[1:]:
+        param = param.strip()
+        if param[:2] in ("q=", "Q="):
+            try:
+                if float(param[2:]) == 0:
+                    return True
+            except ValueError:
+                pass
+    return False
+
+
 def _accepts_gzip(accept: str) -> bool:
     """Parse Accept-Encoding and return True only if gzip is accepted (explicit or wildcard)."""
     # Fast path for the common browser shape: no header, or a list of bare
@@ -65,27 +84,10 @@ def _accepts_gzip(accept: str) -> bool:
         pieces = part.split(";")
         encoding = pieces[0].strip().lower()
         if encoding == HEADER_VALUE_GZIP:
-            for param in pieces[1:]:
-                param = param.strip()
-                if param.startswith("q="):
-                    try:
-                        if float(param[2:]) == 0:
-                            return False
-                    except ValueError:
-                        pass
-            return True
+            return not _refuses(pieces)
         if encoding == "*":
             # Wildcard matches everything not explicitly listed.
-            q_zero = False
-            for param in pieces[1:]:
-                param = param.strip()
-                if param.startswith("q="):
-                    try:
-                        if float(param[2:]) == 0:
-                            q_zero = True
-                    except ValueError:
-                        pass
-            wildcard_ok = not q_zero
+            wildcard_ok = not _refuses(pieces)
     if wildcard_ok is not None:
         return wildcard_ok
     return False

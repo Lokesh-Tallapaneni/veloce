@@ -49,6 +49,21 @@ if TYPE_CHECKING:  # pragma: no cover
     from veloce.http.response import Response
 
 
+def _error_handler_key_error(key: Any) -> str:
+    """The message for an error-handler key that is neither a status nor a class.
+
+    Lives here rather than beside either registration site so the app-level and
+    blueprint-level checks cannot drift: the blueprint one was missing entirely,
+    and a non-class key sat in an MRO-matched table where it could never fire.
+    """
+    lead = "error handler keys must be an int status code or an exception class"
+    if isinstance(key, str):
+        if key.isdigit():
+            return f"{lead}; got the string {key!r}. Write {int(key)} without the quotes."
+        return f"{lead}; got the string {key!r}. Pass the class itself, not its name."
+    return f"{lead}; got {key!r}."
+
+
 class VeloceError(Exception):
     """Root of every exception Veloce raises.
 

@@ -34,6 +34,7 @@ from typing import Annotated, Any
 
 from typing_extensions import Doc
 
+from veloce.exceptions import _error_handler_key_error
 from veloce.routing.router import RouteInfo, Router, _readd_route
 
 
@@ -261,6 +262,16 @@ class Blueprint(Router):
             if isinstance(exc_class_or_status, int):
                 self._status_handlers[exc_class_or_status] = func
             else:
+                # The exception table is matched by an MRO walk, so a key that is
+                # not an exception class can never be found. Every app-level entry
+                # point refuses one; this must too, or `@bp.errorhandler("500")`
+                # sits in the table and never fires. Realistic when the mapping is
+                # read from JSON, TOML, or the environment.
+                if not (
+                    isinstance(exc_class_or_status, type)
+                    and issubclass(exc_class_or_status, BaseException)
+                ):
+                    raise TypeError(_error_handler_key_error(exc_class_or_status))
                 self._exception_handlers[exc_class_or_status] = func
             return func
 

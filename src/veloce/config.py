@@ -456,6 +456,10 @@ class Config(dict[str, Any]):
 
         Reads `os.environ` only. `from_env_file` reads a file and keeps each key
         verbatim, so the two name the same setting differently - see its note.
+
+        A value that is not valid JSON is given the type its key is read as, the
+        same way the file loader does; a value that cannot be converted raises,
+        naming the key. Nested keys have no declared type and are stored as read.
         """
         sep = f"{prefix}_"
         for name, raw in os.environ.items():
@@ -468,7 +472,13 @@ class Config(dict[str, Any]):
                 value = raw
             if "__" not in stripped:
                 if self._is_uppercase_key(stripped):
-                    self[stripped] = value
+                    # A value that is not valid JSON arrives here as the raw
+                    # string, so `VELOCE_MAX_CONTENT_LENGTH=10MB` would be stored
+                    # as `str` and then compared with `>` against an int on every
+                    # request carrying a body. The same coercion the file loader
+                    # applies gives it the type its key is read as, or refuses it
+                    # by name at load time instead of failing per request.
+                    self[stripped] = _coerce_env_value(stripped, value, self.get(stripped))
                 continue
             # Nested: walk segments and set the leaf.
             segments = stripped.split("__")

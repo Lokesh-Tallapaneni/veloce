@@ -865,7 +865,7 @@ class Response:
     def www_authenticate(self, value: str | None) -> None:
         """Set the WWW-Authenticate."""
         if value is None:
-            self.headers.pop(HEADER_WWW_AUTHENTICATE, None)
+            header_pop(self.headers, HEADER_WWW_AUTHENTICATE)
         else:
             # Caller-supplied challenges may interpolate a realm or
             # token68; reject CRLF here so this low-level setter has the
@@ -894,7 +894,7 @@ class Response:
         invalidates the cached encode after every mutation.
         """
         if value is None:
-            self.headers.pop(name, None)
+            header_pop(self.headers, name)
         else:
             self.headers[name] = value
         self._encoded = None
@@ -978,7 +978,7 @@ class Response:
     def date(self, value: Any) -> None:
         """Set the date."""
         if value is None:
-            self.headers.pop(HEADER_DATE, None)
+            header_pop(self.headers, HEADER_DATE)
         else:
             self.headers[HEADER_DATE] = http_date(value)
         self._encoded = None
@@ -1024,7 +1024,7 @@ class Response:
     def retry_after(self, value: Any) -> None:
         """Set the retry after."""
         if value is None:
-            self.headers.pop(HEADER_RETRY_AFTER, None)
+            header_pop(self.headers, HEADER_RETRY_AFTER)
         elif isinstance(value, timedelta):
             self.headers[HEADER_RETRY_AFTER] = str(int(value.total_seconds()))
         elif isinstance(value, datetime):
@@ -1044,7 +1044,7 @@ class Response:
     @age.setter
     def age(self, value: int | None) -> None:
         if value is None:
-            self.headers.pop(HEADER_AGE, None)
+            header_pop(self.headers, HEADER_AGE)
         else:
             self.headers[HEADER_AGE] = str(int(value))
         self._encoded = None
