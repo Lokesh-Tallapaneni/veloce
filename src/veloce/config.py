@@ -146,6 +146,10 @@ _ENV_TYPED_NONE_DEFAULTS: dict[str, str] = {
     "TCP_KEEPALIVE_IDLE": "int",
     "TCP_KEEPALIVE_INTERVAL": "int",
     "WEBSOCKET_IDLE_TIMEOUT": "int",
+    "MCP_CALL_TIMEOUT": "int",
+    # Truthy enables the watchdog; a mapping tunes it. Only a string needs
+    # coercing - a mapping set in code passes through untouched.
+    "EVENT_LOOP_WATCHDOG": "bool",
 }
 
 #: Keys an env file supplies as free-form text. Listed so the completeness test
@@ -251,6 +255,17 @@ class Config(dict[str, Any]):
             # Per-task budget, in seconds, for draining an `app.spawn(...)`
             # background task on shutdown: each task is cancelled and awaited
             # for at most this long before the drain moves on.
+            # Read by `app/lifecycle.py`. Truthy turns the event-loop watchdog
+            # on; a mapping additionally tunes it (`interval`,
+            # `stall_threshold`).
+            "EVENT_LOOP_WATCHDOG": None,
+            # Read by `contrib/mcp/server.py`. Declared here so they carry a
+            # documented default and an env-file value gets the right type -
+            # unregistered, `MCP_CALL_TIMEOUT=5` reached `asyncio.wait_for` as a
+            # string and broke every tool call.
+            "MCP_CALL_TIMEOUT": None,
+            "MCP_ENFORCE_LIFECYCLE": False,
+            "MCP_RESOURCE_SUBSCRIPTIONS": False,
             "GRACEFUL_TASK_TIMEOUT": 10,
             # How long shutdown waits for in-flight requests to finish after
             # every connection has been asked to quiesce. Separate from

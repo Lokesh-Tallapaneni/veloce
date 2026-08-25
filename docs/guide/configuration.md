@@ -72,6 +72,13 @@ The defaults are:
 | `TCP_KEEPALIVE_COUNT` | `None` | Failed probes before the connection is dropped (`TCP_KEEPCNT`); Linux only. |
 | `JSON_ERRORS_VERBOSE` | `False` | Include parser detail in JSON body-parse error responses. |
 | `GRACEFUL_TASK_TIMEOUT` | `10` | Seconds to wait for background tasks to finish cancelling on shutdown. |
+| `MAX_CONCURRENT_CONNECTIONS` | `None` | Cap on simultaneous connections on the built-in serving path; `None` is unlimited. |
+| `WRITE_BUFFER_HIGH_WATER` | `65536` | Bytes buffered before the built-in server applies write back-pressure. |
+| `EVENT_LOOP_WATCHDOG` | `None` | Truthy enables the event-loop stall watchdog; a mapping tunes it (`interval`, `stall_threshold`). |
+| `SILENCED_AUDIT_IDS` | `()` | Finding ids `security_audit` drops. Accepts a comma-separated list from an env file. |
+| `MCP_CALL_TIMEOUT` | `None` | Per-call wall-clock budget in seconds for an MCP tool; `None` is unbounded. |
+| `MCP_ENFORCE_LIFECYCLE` | `False` | Require the MCP `initialize` handshake before any other request on a stateful connection. |
+| `MCP_RESOURCE_SUBSCRIPTIONS` | `False` | Advertise and serve MCP resource subscriptions. |
 | `GRACEFUL_DRAIN_TIMEOUT` | `30` | Seconds shutdown waits for in-flight requests to finish. Runs before `GRACEFUL_TASK_TIMEOUT`, so a container's termination grace period must cover both. |
 | `WEBSOCKET_IDLE_TIMEOUT` | `None` | Seconds a WebSocket may sit idle before it is closed with `1001 Going Away`. `None` disables it. A handler's `set_idle_timeout()` overrides it. |
 

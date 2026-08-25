@@ -66,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+- `MCP_CALL_TIMEOUT`, `MCP_ENFORCE_LIFECYCLE`, `MCP_RESOURCE_SUBSCRIPTIONS` and `EVENT_LOOP_WATCHDOG` are declared config keys, so an env-file value gets the right type; `MCP_CALL_TIMEOUT=5` reached `asyncio.wait_for` as a string and broke every tool call. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The configuration guide documents every shipped key, and a test fails when the two drift apart. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `app.mount()` accepts any handler exposing `prefix` and `handle(request)`, not only a `StaticFiles`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A subdomain route no longer matches an IP-literal host, where the router and `request.subdomain` disagreed. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An instrumentation hook marked `is_access_log` suppresses the built-in access log, so `run(access_log=True)` does not log twice. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
