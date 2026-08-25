@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Veloce()` warns when an unrecognised keyword looks like a misspelled parameter (`tittle=` for `title=`), which was previously absorbed into `app.extra` in silence. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `veloce check` reports an MCP endpoint mounted without `auth=` or without `allowed_origins=`, as `mcp-endpoint-unauthenticated` and `mcp-origin-unchecked`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `Blueprint` accepts `tags=` and `on_duplicate=`, the two `Router` options it dropped. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

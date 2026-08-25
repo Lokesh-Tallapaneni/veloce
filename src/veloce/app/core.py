@@ -8,6 +8,7 @@ import functools
 import logging
 import os
 import sys
+import warnings
 import weakref
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Annotated, Any
@@ -71,6 +72,54 @@ from veloce.routing.router import Router, _readd_route
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon
     from veloce.middleware import Middleware
+
+
+@functools.lru_cache(maxsize=1)
+def _constructor_parameter_names() -> frozenset[str]:
+    """Every real `Veloce()` parameter name, read once."""
+    import inspect
+
+    return frozenset(
+        name
+        for name, parameter in inspect.signature(Veloce.__init__).parameters.items()
+        if parameter.kind is not parameter.VAR_KEYWORD and name != "self"
+    )
+
+
+def _warn_on_misspelled_parameters(extra: dict[str, Any]) -> None:
+    """Warn when an `**extra` key looks like a misspelling of a real parameter.
+
+    `**extra` is an open namespace, so an unknown key is not an error - an
+    extension may legitimately put anything there. A key one edit away from a
+    real parameter name is a different thing: `Veloce(tittle="My API")` was
+    accepted, stashed where nothing reads it, and the app served the default
+    title with no error, no warning and no log line.
+
+    Only reached when `extra` is non-empty, so an app that passes none pays
+    nothing - neither the imports nor the signature read, which is why both are
+    deferred. The parameter names are read once and cached: introspecting a
+    35-parameter `Annotated` signature costs ~140us, and an app using `**extra`
+    legitimately would otherwise pay that on every construction.
+    """
+    import difflib
+
+    known = _constructor_parameter_names()
+    for key in extra:
+        # A similarity ratio is `2M / (len(a) + len(b))` with `M <= min(len)`, so
+        # 0.8 is unreachable once one name is more than half again as long as the
+        # other. Filtering on that first keeps the comparison off the names that
+        # cannot match - most of them, for a typical extension key.
+        span = range(int(len(key) * 0.66), int(len(key) * 1.5) + 1)
+        candidates = [name for name in known if len(name) in span]
+        close = difflib.get_close_matches(key, candidates, n=1, cutoff=0.8) if candidates else []
+        if close:
+            warnings.warn(
+                f"Veloce() got {key!r}, which is not a parameter - did you mean "
+                f"{close[0]!r}? It has been kept in `app.extra`, so nothing reads it "
+                f"and {close[0]!r} keeps its default.",
+                UserWarning,
+                stacklevel=3,
+            )
 
 
 class Veloce(
@@ -293,7 +342,13 @@ class Veloce(
             on_duplicate=on_duplicate,
         )
         # arbitrary `**extra` ctor kwargs are stashed on
-        # `app.extra` for extensions / OpenAPI customisation to read.
+        # `app.extra` for extensions / OpenAPI customisation to read. The
+        # namespace is open by design, so a key that is merely unknown is fine -
+        # but one that is a near-miss of a real parameter is almost certainly a
+        # typo, and absorbing `tittle=` silently meant the app ran with the
+        # default title and nothing said so.
+        if extra:
+            _warn_on_misspelled_parameters(extra)
         self.extra: dict[str, Any] = dict(extra)
         # instance folder - explicit override, else computed from
         # `package_root` on first `instance_path` access.
