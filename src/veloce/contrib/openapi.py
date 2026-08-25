@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections.abc
 import contextlib
 import copy
 import datetime
@@ -233,8 +234,9 @@ def _python_type_to_schema(annotation: Any) -> dict:
     if annotation is None or annotation is inspect.Parameter.empty:
         return {"type": "string"}
     # `Any` means "any value allowed" - JSON Schema convention is an empty
-    # schema, not a string default. Lets `dict[str, Any]` emit
-    # `additionalProperties: {}` rather than forcing string-valued entries.
+    # schema, not a string default. (This does not reach a `dict` value type:
+    # the `dict` branch below omits `additionalProperties` on purpose, for the
+    # reason stated there.)
     if annotation is Any:
         return {}
 
@@ -797,6 +799,13 @@ def _pydantic_to_schema(
     return {"$ref": f"#/components/schemas/{name}"}
 
 
+#: Origins that serialise to a JSON array. The docstring below has always
+#: promised "any `Sequence[MyModel]`"; only `list` was handled, so a handler
+#: annotated `-> Sequence[Item]` or `-> tuple[Item, ...]` lost its response
+#: schema entirely.
+_SEQUENCE_ORIGINS = (list, collections.abc.Sequence, tuple, set, frozenset, collections.abc.Set)
+
+
 def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> dict | None:
     """Render `response_model` into an OpenAPI schema object.
 
@@ -812,8 +821,10 @@ def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> 
     computed / read-only fields are documented as clients actually receive them.
     """
     origin = get_origin(response_model)
-    if origin is list:
+    if origin in _SEQUENCE_ORIGINS:
         args = get_args(response_model)
+        # `tuple[Item, ...]` carries an Ellipsis in its second slot; every
+        # sequence origin documents its element type from the first.
         if args and _is_model_type(args[0]):
             inner = registry.ref(args[0], mode="serialization")
             return {"type": "array", "items": inner}

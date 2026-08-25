@@ -152,8 +152,9 @@ def _sync_app_jinja_helpers(env: Any) -> None:
 
 def _gather_context_processors(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run every `@app.context_processor` registered on the current app and
-    merge their returned dicts. Returns an empty dict when no app is bound
-    (e.g. rendering outside a request context).
+    merge their returned dicts. With no app bound (rendering outside a request
+    context) there is nothing to run, so the caller's own `extra` is returned
+    unchanged rather than discarded.
 
     context-processor outputs are merged in registration order;
     the caller's explicit context (passed to `TemplateResponse`) wins over

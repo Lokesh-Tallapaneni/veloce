@@ -57,9 +57,14 @@ class CompletionResult:
     Usage::
 
         @app.mcp_completer(prompt="greet", argument="name")
-        async def complete_name(value: str) -> CompletionResult:
-            matches = await lookup_names(prefix=value)
+        async def complete_name(value: str, siblings: dict[str, str]) -> CompletionResult:
+            matches = await lookup_names(prefix=value, scope=siblings)
             return CompletionResult(matches[:100], total=len(matches))
+
+    A completer is always called with two arguments - the partial value, and the
+    sibling argument values the client has already filled - so it must declare
+    both. Declaring only the value raises at call time and surfaces as an
+    internal error.
     """
 
     values: Sequence[str]
