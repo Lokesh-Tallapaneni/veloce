@@ -62,6 +62,7 @@ from veloce._protocol_constants import (
     URL_SCHEME_HTTP,
     URL_SCHEME_WS,
 )
+from veloce.http.cookies import iter_cookies
 from veloce.status import (
     HTTP_301_MOVED_PERMANENTLY,
     HTTP_302_FOUND,
@@ -80,14 +81,44 @@ from veloce.status import (
 _SET_COOKIE_LOWER = HEADER_SET_COOKIE.lower()
 
 
-def _parse_set_cookie_first_pair(value: str) -> tuple[str, str] | None:
+def _decode_cookie_value(value: str) -> str:
+    """Return what a handler is given for a jar value, undoing `dump_cookie`.
+
+    The jar keeps the wire form so it can re-emit it verbatim; every read
+    surface reports this instead, so what a test asserts on is what the server
+    parses. It goes through `iter_cookies` - the one cookie reader - rather than
+    repeating its unquoting, which is how the two came to disagree.
+
+    This is a test-client path, so the synthetic header costs nothing that
+    matters; `iter_cookies` itself stays untouched for the request path.
+    """
+    for _name, decoded in iter_cookies("v=" + value):
+        return decoded
+    return value
+
+
+def _parse_set_cookie_first_pair(value: str, *, decode: bool = True) -> tuple[str, str] | None:
     """Return the `(name, value)` of a Set-Cookie header's first segment.
 
     The leading `name=value` pair is the cookie itself; the rest are
     attributes. Returns `None` when the first segment has no `=`.
+
+    `decode=True` percent-decodes the value through `iter_cookies`, the
+    framework's one cookie reader - so what a test asserts on is what the
+    handler will be given. `decode=False` keeps the wire form, which is what the
+    jar stores: it re-emits the bytes the server sent, the way a browser does.
+
+    Both were the raw form before, which meant `client.cookies["pref"]` and
+    `request.cookies["pref"]` disagreed for any value carrying an escape - a
+    test asserting the value the handler sees failed against a server that was
+    sending exactly that.
     """
     first = value.split(";", 1)[0].strip()
     if "=" not in first:
+        return None
+    if decode:
+        for name, decoded in iter_cookies(first):
+            return name, decoded
         return None
     cname, _, cval = first.partition("=")
     return cname.strip(), cval.strip()
@@ -364,7 +395,10 @@ def _apply_set_cookie_to_jar(jar: dict[str, str], raw_headers: list[tuple[bytes,
         if name.lower() != _SET_COOKIE_LOWER:
             continue
         value = value_bytes.decode("latin-1")
-        pair = _parse_set_cookie_first_pair(value)
+        # `decode=False`: the jar re-emits these bytes verbatim on the next
+        # request, which is what a browser does. The decoded form is what the
+        # read side shows.
+        pair = _parse_set_cookie_first_pair(value, decode=False)
         if pair is None:
             continue
         cname, cval = pair
@@ -1243,7 +1277,7 @@ class _TestClientCookies:
         self._client = client
 
     def __getitem__(self, key: str) -> str:
-        return self._client._cookies[key]
+        return _decode_cookie_value(self._client._cookies[key])
 
     def __setitem__(self, key: str, value: str) -> None:
         self._client._cookies[key] = value
@@ -1261,7 +1295,8 @@ class _TestClientCookies:
         return len(self._client._cookies)
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self._client._cookies.get(key, default)
+        raw = self._client._cookies.get(key)
+        return default if raw is None else _decode_cookie_value(raw)
 
     def clear(self) -> None:
         self._client._cookies.clear()
@@ -1270,16 +1305,16 @@ class _TestClientCookies:
         self._client._cookies.update(other)
 
     def items(self) -> Any:
-        return self._client._cookies.items()
+        return [(k, _decode_cookie_value(v)) for k, v in self._client._cookies.items()]
 
     def keys(self) -> Any:
         return self._client._cookies.keys()
 
     def values(self) -> Any:
-        return self._client._cookies.values()
+        return [_decode_cookie_value(v) for v in self._client._cookies.values()]
 
     def __repr__(self) -> str:
-        return f"<TestClient cookies: {self._client._cookies}>"
+        return f"<TestClient cookies: {dict(self.items())}>"
 
 
 # ── Async client ──────────────────────────────────────────
