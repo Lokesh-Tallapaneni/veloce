@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Middleware.sets_hardening_headers` marks a middleware that adds hardening headers, satisfying the audit's headers check. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SessionMiddlewareBase` is public; subclass it to add a session backend that `security_audit` recognises. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `veloce check` reports an `exclude_middleware` name that matches no registered middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
 
@@ -90,6 +91,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TestClient` builds a `SelectorEventLoop` on Windows; pass `loop=asyncio.ProactorEventLoop()` for a handler that spawns a subprocess. Measured on one Windows desktop: 73.0 vs 93.6 us per request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An ASGI WebSocket message is read and written one coroutine frame deep when no timeout is set. Measured on one Windows desktop: 1.34 vs 2.02 us per echo round. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An MCP `list[T]` tool argument refuses a non-array and a wrong-typed member instead of wrapping or passing it through; send the array the published schema declares. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `from_prefixed_env` coerces a value to its key's declared type and refuses one it cannot convert. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Blueprint.errorhandler` raises `TypeError` for a key that is neither a status code nor an exception class. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The MCP transport trims a bearer token as RFC 7235 allows; a token carrying other whitespace is now refused. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Removed
 
@@ -202,6 +206,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tools/list` omits `execution` for a modern client, whose revision removed the field. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `server/discover` is marked private rather than publicly cacheable; its answer varies by caller. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `subscriptions/listen` works on the default HTTP deployment instead of requiring a persistent session. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Query(group=True)` and its header and cookie forms appear in the OpenAPI document and in MCP tool schemas. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- An MCP tool call binds a grouped model instead of failing with an internal error. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A grouped field's declared constraints reach both published contracts instead of only the runtime. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `g` keeps a value written by a sync handler or an offloaded dependency. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `MCPContext.result_meta` written by a sync tool reaches the client. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Response.add_vary` merges an existing `Vary` stored under any header casing instead of dropping it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- Clearing `location`, `date`, `age`, and six sibling response headers works under any stored casing. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `GZipMiddleware` honours a `Q=0` refusal, not only the lower-case spelling. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The MCP transport does not send an SSE stream to a client that refused it with `q=0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `RedisRateLimitBackend` falls back to optimistic locking on a server with scripting disabled. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ## [0.17.1] - 2026-08-23
 
