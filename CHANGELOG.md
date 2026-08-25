@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The MCP HTTP transport requires and cross-checks `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` on the `2026-07-28` revision. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `MCPAuthorizationServer.verifier(resource=...)` enforces RFC 8707 audience binding, refusing a token minted for another server. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A registered OAuth client is refused a grant type it did not register for. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Added
 
@@ -219,6 +220,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GZipMiddleware` honours a `Q=0` refusal, not only the lower-case spelling. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The MCP transport does not send an SSE stream to a client that refused it with `q=0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `RedisRateLimitBackend` falls back to optimistic locking on a server with scripting disabled. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- Dynamic client registration stores the requested `grant_types` and echoes what it stored. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ## [0.17.1] - 2026-08-23
 
