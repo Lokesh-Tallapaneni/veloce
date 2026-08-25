@@ -351,3 +351,163 @@ def test_reused_resolver_clears_state_before_compiled_path():
         assert resolver._teardowns == [], "stale teardown leaked into the compiled path"
 
     asyncio.new_event_loop().run_until_complete(run())
+
+
+# ── generated code is debuggable ─────────────────────────────────────
+#
+# The resolver is `exec`-compiled, and it was compiled under the fixed filename
+# "<veloce-resolver>" with its source thrown away. Nothing could map that name
+# back to a line, so a failure inside generated code produced a frame with no
+# source:
+#
+#     File "<veloce-resolver>", line 4, in _resolver
+#     TypeError: ...
+#
+# - no code shown, and every resolver in the process claimed the same name, so
+# even reconstructing one by hand told you nothing about which route it was.
+#
+# Registering the source in `linecache` under a per-resolver filename is what
+# the interpreter already consults when formatting a traceback, so the frame
+# renders its line like any other. It costs one dict entry per compiled
+# resolver, written at registration time, and nothing per request.
+
+
+def _resolver_of(handler):
+    from veloce._handler_plan import build_plan
+
+    plan = build_plan(handler)
+    return compile_param_resolver(plan, _coerce_value, RequestValidationError)
+
+
+async def _one(q: int = 0):
+    return q
+
+
+async def _two(page: int = 1):
+    return page
+
+
+def test_the_generated_frame_shows_its_source():
+    """The defect: a traceback through generated code showed no line."""
+    import linecache
+    import traceback
+
+    resolver = _resolver_of(_one)
+    filename = resolver.__code__.co_filename
+    frame = traceback.StackSummary.from_list([(filename, 2, "_resolver", None)]).format()
+    rendered = "".join(frame)
+    assert filename in rendered
+    # `from_list` with `None` text makes the formatter consult linecache, which
+    # is exactly the path the interpreter takes when rendering a real traceback.
+    assert linecache.getline(filename, 2).strip() != ""
+
+
+def test_each_resolver_gets_its_own_filename():
+    """One shared name meant one resolver's source described them all."""
+    first = _resolver_of(_one)
+    second = _resolver_of(_two)
+    assert first.__code__.co_filename != second.__code__.co_filename
+
+
+def test_the_filename_names_the_handler():
+    """So a frame identifies which route generated it."""
+    assert "_one" in _resolver_of(_one).__code__.co_filename
+
+
+def test_the_registered_source_is_the_resolver_that_ran():
+    """A per-resolver entry must hold that resolver's own code."""
+    import linecache
+
+    resolver = _resolver_of(_one)
+    source = "".join(linecache.getlines(resolver.__code__.co_filename))
+    assert "def _resolver(" in source
+    assert "'q'" in source or '"q"' in source
+
+
+def test_checkcache_does_not_evict_the_entry():
+    """`linecache.checkcache` runs on every traceback; a stat-based entry for a
+    filename with no file on disk would be dropped before it was ever read."""
+    import linecache
+
+    resolver = _resolver_of(_one)
+    filename = resolver.__code__.co_filename
+    assert linecache.getline(filename, 1) != ""
+    linecache.checkcache()
+    assert linecache.getline(filename, 1) != ""
+
+
+def test_inspect_can_read_the_generated_source():
+    import inspect
+
+    resolver = _resolver_of(_one)
+    assert "def _resolver(" in inspect.getsource(resolver)
+
+
+def test_a_graph_resolver_is_registered_too():
+    """The second generator gets the same treatment.
+
+    Driven through a real request: the graph resolver is built by the resolver
+    on first use, not by `build_plan`, so serving the route is what compiles it.
+    """
+    import linecache
+
+    async def dep(q: int = 0):
+        return q
+
+    app = Veloce(openapi_url=None)
+
+    @app.get("/chained")
+    async def chained(value: int = Depends(dep)):
+        return {"value": value}
+
+    with TestClient(app) as tc:
+        assert tc.get("/chained?q=3").json() == {"value": 3}
+
+    plans = [
+        info.handler_plan
+        for _method, _path, info in app._collect_all_routes(include_hidden=True)
+        if info.path_template == "/chained"
+    ]
+    compiled = [p.compiled_graph_resolver for p in plans if p is not None]
+    resolver = next((c for c in compiled if callable(c)), None)
+    if resolver is None:
+        return  # this plan shape stayed on the interpreter
+    assert linecache.getline(resolver.__code__.co_filename, 1) != ""
+    assert "graph-resolver" in resolver.__code__.co_filename
+
+
+def test_registration_still_returns_a_working_resolver():
+    """The negative: naming and registering must not disturb the result."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/items")
+    async def items(q: int = 0):
+        return {"q": q}
+
+    with TestClient(app) as tc:
+        assert tc.get("/items?q=7").json() == {"q": 7}
+
+
+def test_the_filename_is_stable_for_the_same_generated_code():
+    """Documented in the debugging guide: the digest changes only when the
+    generated code does, so a frame is comparable across runs and processes."""
+    assert _resolver_of(_one).__code__.co_filename == _resolver_of(_one).__code__.co_filename
+
+
+def test_recompiling_one_plan_adds_one_cache_entry():
+    """A counter-keyed name grew `linecache` without bound - a re-registered
+    route or a test suite would accumulate an entry per compile, never freed."""
+    import linecache
+
+    before = {k for k in linecache.cache if k.startswith("<veloce-")}
+    for _ in range(25):
+        _resolver_of(_one)
+    after = {k for k in linecache.cache if k.startswith("<veloce-")}
+    assert len(after - before) <= 1
+
+
+def test_a_different_plan_gets_its_own_entry():
+    """Bounded must not mean shared: two resolvers keep two sources."""
+    first = _resolver_of(_one).__code__.co_filename
+    second = _resolver_of(_two).__code__.co_filename
+    assert first != second

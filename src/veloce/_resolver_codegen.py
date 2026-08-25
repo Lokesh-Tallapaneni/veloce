@@ -34,6 +34,8 @@ the synchronously-invoked compiled function.
 
 from __future__ import annotations
 
+import hashlib
+import linecache
 from collections.abc import Callable
 from typing import Any, get_args, get_origin
 
@@ -85,6 +87,39 @@ class _NotCompilable(Exception):
     """Raised mid-emit when a slot the pre-check missed cannot be compiled."""
 
 
+def _compile_resolver(source: str, kind: str, plan: HandlerPlan, ns: dict[str, Any]) -> Any:
+    """Compile `source` into `ns` under a name a traceback can render.
+
+    Generated code has no file, so a frame from it used to print a bare
+    `File "<veloce-resolver>", line N` with no source line - and every resolver
+    in the process shared that one name, so the frame did not even say which
+    route it came from. The name here carries the handler, and the source is
+    registered in `linecache`, which is what the traceback machinery consults.
+
+    `mtime` is `None` by the `linecache` convention for source with no file on
+    disk: `checkcache` skips such an entry instead of stat-ing a path that does
+    not exist and evicting it. Registration-time only, one entry per compiled
+    resolver; the request path never touches this.
+
+    Returns the resolver, or `None` if the generated source does not compile.
+    """
+    handler = getattr(plan, "handler", None)
+    name = getattr(handler, "__qualname__", None) or getattr(handler, "__name__", "?")
+    # Keyed by a digest of the source rather than a counter, so recompiling the
+    # same plan - which a test suite or a re-registered route does - reuses one
+    # entry instead of adding another that nothing will ever free. The bound is
+    # the number of distinct resolvers, which is what it should be.
+    digest = hashlib.blake2b(source.encode(), digest_size=6).hexdigest()
+    filename = f"<veloce-{kind}:{name}:{digest}>"
+    try:
+        exec(compile(source, filename, "exec"), ns)
+    except SyntaxError:
+        return None
+    if filename not in linecache.cache:
+        linecache.cache[filename] = (len(source), None, source.splitlines(keepends=True), filename)
+    return ns["_resolver"]
+
+
 def compile_param_resolver(
     plan: HandlerPlan,
     coerce_value: Callable[[Any, Any, str, str], Any],
@@ -118,12 +153,7 @@ def compile_param_resolver(
 
     lines.append("    return k")
 
-    source = "\n".join(lines)
-    try:
-        exec(compile(source, "<veloce-resolver>", "exec"), ns)
-    except SyntaxError:
-        return None
-    return ns["_resolver"]
+    return _compile_resolver("\n".join(lines), "resolver", plan, ns)
 
 
 def compile_graph_resolver(
@@ -172,12 +202,7 @@ def compile_graph_resolver(
         return None
     lines.append("    return k")
 
-    source = "\n".join(lines)
-    try:
-        exec(compile(source, "<veloce-graph-resolver>", "exec"), ns)
-    except SyntaxError:
-        return None
-    return ns["_resolver"]
+    return _compile_resolver("\n".join(lines), "graph-resolver", plan, ns)
 
 
 # ── Compilability pre-check ───────────────────────────────

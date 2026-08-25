@@ -148,6 +148,31 @@ app.config["TESTING"] = True        # DEBUG + TESTING -> exceptions propagate
     applies to exceptions that reach the unhandled `500` path. See
     [Error handling](error-handling.md).
 
+## Frames from generated code
+
+Veloce compiles a small resolver for routes whose parameters it can bind
+directly, so a traceback can pass through code that has no file on disk. Those
+frames read like any other — they name the handler they belong to and show
+their source:
+
+```text
+  File "<veloce-resolver:search:9f2c1a0b4e77>", line 7, in _resolver
+    _qp = request.query_params
+          ^^^^^^^^^^^^^^^^^^^^
+```
+
+The name between the colons is the handler, so a frame tells you which route
+generated it. The trailing digest distinguishes resolvers, and is stable for a
+given handler — it changes only when the generated code does.
+
+There is nothing to enable, and nothing to turn off in production: the source is
+registered once when the route is registered, and the request path never
+consults it.
+
+!!! note "Changed in version 0.18.0"
+    Generated frames used to render as a bare `File "<veloce-resolver>", line N`
+    with no source line, and every resolver in the process shared that one name.
+
 ## Next steps
 
 - Convert raised exceptions into responses — see [Error handling](error-handling.md).

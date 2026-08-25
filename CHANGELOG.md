@@ -61,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `RedisRateLimitBackend` runs a built-in strategy as a Lua script - one round trip instead of three, executed atomically, with no contended-key fallback that could admit requests over the limit. A custom strategy keeps the `WATCH` path unless it declares `lua_script`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
+- A traceback frame from a compiled resolver names its handler and shows its source, instead of a bare `<veloce-resolver>` with no line. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - An MCP JSON-RPC envelope is encoded as protocol on every transport, so a custom `json_provider_class` no longer injects its keys into protocol frames and `JSONIFY_PRETTYPRINT_REGULAR` no longer inflates each SSE frame. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `/openapi.json`, `/docs` and `/redoc` are excluded from the OpenAPI document they serve, so a generated client no longer carries three operations for them. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
