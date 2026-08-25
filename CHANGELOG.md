@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Request.is_secure` is `True` for a `wss` connection and for any casing of an encrypted scheme; `request.scheme` and `url_for(_external=True)` are normalised to lowercase per RFC 3986 Sec. 3.1. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The MCP HTTP transport requires and cross-checks `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` on the `2026-07-28` revision. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `MCPAuthorizationServer.verifier(resource=...)` enforces RFC 8707 audience binding, refusing a token minted for another server. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Added
 
@@ -95,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Blueprint.errorhandler` raises `TypeError` for a key that is neither a status code nor an exception class. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The MCP transport trims a bearer token as RFC 7235 allows; a token carrying other whitespace is now refused. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HttpSessionStore.resolve` no longer scans every live session, so MCP request cost stays flat under load. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `@app.middleware("http")` raises `TypeError` for options it cannot honour instead of dropping them. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Removed
 
