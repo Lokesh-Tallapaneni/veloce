@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from typing_extensions import Doc
 
+from veloce._constants import MSG_NOT_AUTHENTICATED
 from veloce.exceptions import Unauthorized
 from veloce.principal import Principal, set_principal
 from veloce.security.base import SecurityScheme
@@ -113,14 +114,14 @@ class SessionAuth(SecurityScheme):
         subject = session.get(self.subject_key)
         if not subject:
             if self.auto_error:
-                raise Unauthorized("Not authenticated")
+                raise Unauthorized(MSG_NOT_AUTHENTICATED)
             return None
 
         if self.loader is not None:
             principal = self.loader(request, subject)
             if principal is None:
                 if self.auto_error:
-                    raise Unauthorized("Not authenticated")
+                    raise Unauthorized(MSG_NOT_AUTHENTICATED)
                 return None
         else:
             principal = Principal(

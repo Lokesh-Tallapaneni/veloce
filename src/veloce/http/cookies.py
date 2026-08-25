@@ -13,6 +13,13 @@ from datetime import datetime, timedelta
 from typing import Literal
 from urllib.parse import quote, unquote
 
+from veloce._constants import (
+    MSG_LABEL_COOKIE_DOMAIN,
+    MSG_LABEL_COOKIE_NAME,
+    MSG_LABEL_COOKIE_PATH,
+    MSG_LABEL_COOKIE_SAMESITE,
+    MSG_LABEL_COOKIE_VALUE,
+)
 from veloce._header_parsing import unquote_value
 from veloce._internal import _reject_header_crlf
 from veloce.http.dates import http_date
@@ -119,7 +126,7 @@ def dump_cookie(
             raise ValueError("cookie prefix must be 'host', 'secure', or None")
     else:
         wire_key = key
-    _reject_header_crlf(key, "cookie name")
+    _reject_header_crlf(key, MSG_LABEL_COOKIE_NAME)
     # The name must be a valid RFC 6265 token (no spaces/separators/CTLs) and
     # must not collide with a cookie-attribute keyword - both prevent a
     # malformed or attribute-injecting Set-Cookie header.
@@ -130,7 +137,7 @@ def dump_cookie(
         )
     if key.lower() in _RESERVED_COOKIE_NAMES:
         raise ValueError(f"cookie name {key!r} collides with a reserved cookie-attribute keyword")
-    _reject_header_crlf(value, "cookie value")
+    _reject_header_crlf(value, MSG_LABEL_COOKIE_VALUE)
     # `%` must NOT be in the safe set: it is the percent-encoding marker, and
     # `parse_cookie` percent-decodes the value. Leaving a literal `%` unescaped
     # makes a value like "100%" decode back to garbage (e.g. "%00" -> NUL), so
@@ -147,17 +154,17 @@ def dump_cookie(
         parts.append(f"Expires={http_date(expires)}")
 
     if path:
-        _reject_header_crlf(path, "cookie path")
+        _reject_header_crlf(path, MSG_LABEL_COOKIE_PATH)
         parts.append(f"Path={path}")
     if domain:
-        _reject_header_crlf(domain, "cookie domain")
+        _reject_header_crlf(domain, MSG_LABEL_COOKIE_DOMAIN)
         parts.append(f"Domain={domain}")
     if secure:
         parts.append("Secure")
     if httponly:
         parts.append("HttpOnly")
     if samesite is not None:
-        _reject_header_crlf(samesite, "cookie samesite")
+        _reject_header_crlf(samesite, MSG_LABEL_COOKIE_SAMESITE)
         # The whole rule lives here, in the one function that renders a
         # `Set-Cookie`. Callers used to fix the value up on the way in - one
         # dropped a whitespace-only value, one capitalised, one passed the raw

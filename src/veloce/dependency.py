@@ -1008,7 +1008,7 @@ class DependencyResolver:
             if slot.is_optional:
                 return None
             raise RequestValidationError(
-                [{"loc": ["body"], "msg": "field required", "type": "missing"}]
+                [{"loc": ["body"], "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
             )
         try:
             return adapter_for(slot.model).validate_json(raw)

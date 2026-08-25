@@ -45,6 +45,7 @@ from veloce.contrib.mcp.errors import (
 )
 from veloce.contrib.mcp.session import MCPSession
 from veloce.contrib.mcp.transports.http import (
+    _SSE_RETRY_MS,
     _authenticate,
     _logger,
     _validate_origin,
@@ -73,8 +74,6 @@ _ENDPOINT_EVENT = "endpoint"
 # The event carrying a JSON-RPC message from server to client.
 _MESSAGE_EVENT = "message"
 
-# Reconnect hint, in milliseconds, sent when a stream closes.
-_SSE_RETRY_MS = 3000
 
 # Queued by the POST half to tell a stream generator to finish.
 _STREAM_END = object()

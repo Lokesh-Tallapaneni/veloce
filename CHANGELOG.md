@@ -89,6 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `app.openapi_version` is emitted in the generated document; it was documented as the spec version the document carries and was read nowhere. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The OpenAPI document and the MCP `initialize` result report the same application title; the two builders carried different fallback defaults. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - A pre-dispatch refusal (the 413 on both transports, and the ASGI 400) is encoded in the app's JSON dialect. These ran before the app contextvar was bound, so the dialect appeared only when an earlier request had left it set on the same task. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `app.run()` answers a `MAX_CONTENT_LENGTH` refusal with the same JSON body as the ASGI path; it sent `Content Too Large` as untyped text, so a client parsing the documented error shape failed on that transport only. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

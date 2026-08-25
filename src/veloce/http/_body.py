@@ -31,21 +31,20 @@ from collections.abc import Callable
 from typing import Any
 
 from veloce._constants import MSG_REQUEST_BODY_EXCEEDS_MAX
+from veloce._protocol_constants import (
+    ASGI_EVENT_HTTP_DISCONNECT,
+    ASGI_EVENT_HTTP_REQUEST,
+)
 from veloce.exceptions import RequestEntityTooLarge
+from veloce.status import HTTP_413_CONTENT_TOO_LARGE
 
 # ASGI message types consumed by the pull-based body source below.
-_ASGI_HTTP_REQUEST = "http.request"
-_ASGI_HTTP_DISCONNECT = "http.disconnect"
 
 # Bound on unconsumed body chunks. Reaching the high-water mark pauses socket
 # reading; draining back to the low-water mark resumes it. The gap (hysteresis)
 # avoids thrashing pause/resume on every single chunk around the boundary.
 DEFAULT_HIGH_WATER_CHUNKS = 16
 DEFAULT_LOW_WATER_CHUNKS = 4
-
-
-#: Kept local so `http` does not import the `status` module for one integer.
-_HTTP_413_CONTENT_TOO_LARGE = 413
 
 
 def too_large_payload(limit: int | None) -> dict[str, Any]:
@@ -59,7 +58,7 @@ def too_large_payload(limit: int | None) -> dict[str, Any]:
     """
     return {
         "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
-        "status_code": _HTTP_413_CONTENT_TOO_LARGE,
+        "status_code": HTTP_413_CONTENT_TOO_LARGE,
         "limit": limit,
     }
 
@@ -296,11 +295,11 @@ class ASGIBodySource:
                 raise StopAsyncIteration
             message = await self._receive()
             mtype = message.get("type")
-            if mtype == _ASGI_HTTP_DISCONNECT:
+            if mtype == ASGI_EVENT_HTTP_DISCONNECT:
                 self._done = True
                 self._disconnected = True
                 raise StopAsyncIteration
-            if mtype != _ASGI_HTTP_REQUEST:
+            if mtype != ASGI_EVENT_HTTP_REQUEST:
                 # Ignore any non-body control message and keep pulling.
                 continue
             chunk = message.get("body", b"") or b""
@@ -329,11 +328,11 @@ class ASGIBodySource:
         while not self._done:
             message = await self._receive()
             mtype = message.get("type")
-            if mtype == _ASGI_HTTP_DISCONNECT:
+            if mtype == ASGI_EVENT_HTTP_DISCONNECT:
                 self._done = True
                 self._disconnected = True
                 break
-            if mtype != _ASGI_HTTP_REQUEST:
+            if mtype != ASGI_EVENT_HTTP_REQUEST:
                 continue
             last = not message.get("more_body", False)
             if last:

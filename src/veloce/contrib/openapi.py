@@ -821,10 +821,12 @@ def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> 
 
 def _build_info_object(app: Any) -> dict[str, Any]:
     """Return the OpenAPI `info` object assembled from app metadata."""
-    info_obj: dict[str, Any] = {
-        "title": getattr(app, "title", "Veloce API"),
-        "version": getattr(app, "version", "0.1.0"),
-    }
+    # Read directly: `Veloce.__init__` requires both to be non-empty strings, so
+    # a fallback here is a second copy of a default that cannot be reached. The
+    # two copies had already disagreed - this one said "Veloce API" where the
+    # constructor and the MCP server said "Veloce", so one app named itself two
+    # things across its two doors.
+    info_obj: dict[str, Any] = {"title": app.title, "version": app.version}
     if getattr(app, "summary", None):
         info_obj["summary"] = app.summary
     if getattr(app, "description", ""):
@@ -1690,7 +1692,10 @@ def _validate_document(schema: dict[str, Any]) -> None:
 def get_openapi_schema(app: Any) -> dict[str, Any]:
     """Generate OpenAPI 3.1 schema from the app's registered routes."""
     schema: dict[str, Any] = {
-        "openapi": "3.1.0",
+        # `app.openapi_version` is documented as "the spec version string emitted
+        # in the document", and was emitted nowhere: setting it changed the
+        # attribute and not the document.
+        "openapi": app.openapi_version,
         "info": _build_info_object(app),
         "paths": {},
         "components": {"schemas": {}},

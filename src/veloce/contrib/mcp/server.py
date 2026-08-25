@@ -126,7 +126,10 @@ LATEST_PROTOCOL_VERSION = "2025-11-25"
 # request falls back to `LATEST_PROTOCOL_VERSION`. ``2025-03-26`` is excluded: it
 # predates the ``title`` / ``outputSchema`` / ``structuredContent`` fields this
 # server emits.
-_SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", LATEST_PROTOCOL_VERSION})
+#: The revision before `LATEST_PROTOCOL_VERSION`, still served.
+PRIOR_PROTOCOL_VERSION = "2025-06-18"
+
+_SUPPORTED_PROTOCOL_VERSIONS = frozenset({PRIOR_PROTOCOL_VERSION, LATEST_PROTOCOL_VERSION})
 
 # The first "modern" revision: no `initialize` handshake, no protocol-level
 # session. A client declares its version, identity and capabilities in `_meta`
@@ -156,7 +159,7 @@ def is_modern_version(version: str | None) -> bool:
 SERVED_PROTOCOL_VERSIONS: tuple[str, ...] = (
     MODERN_PROTOCOL_VERSION,
     LATEST_PROTOCOL_VERSION,
-    "2025-06-18",
+    PRIOR_PROTOCOL_VERSION,
 )
 
 # `_meta` keys the modern revision reserves. Prefixed per the spec's naming
@@ -423,22 +426,24 @@ class MCPServer(TasksMixin, InvocationMixin):
         self._any_scoped_resources = any(
             resource.tool.required_scopes for resource in self.resources.resources.values()
         )
-        self.server_name = getattr(app, "title", None) or "Veloce"
-        self.server_version = getattr(app, "version", None) or "0.1.0"
+        # Read directly for the same reason `_build_info_object` does: the
+        # constructor guarantees both, so a fallback here is a duplicated default.
+        self.server_name = app.title
+        self.server_version = app.version
         # Human-facing display name and client-facing usage guidance for the
         # `initialize` result, read from the same app metadata the OpenAPI
         # document uses so the two doors describe the server identically. The
-        # title falls back to the identifier name; instructions prefer the longer
-        # `description`, then the one-line `summary`. Empty when neither is set.
-        self.server_title = getattr(app, "title", None) or None
+        # spec separates the identifier `name` from the display `title`; an app
+        # declares one title and it serves as both. Instructions prefer the
+        # longer `description`, then the one-line `summary`, and are omitted when
+        # neither is set.
+        self.server_title = app.title
         # Identity the spec lets a server publish about itself beyond its name:
         # icons a client can render beside it, and a page describing it. Both come
         # from the app, so one server identity is declared in one place.
         self.server_icons = coerce_icons(app.mcp_icons)
         self.server_website_url = app.website_url or None
-        self.server_instructions = (
-            getattr(app, "description", None) or getattr(app, "summary", None) or None
-        )
+        self.server_instructions = app.description or app.summary or None
         # Optional per-call wall-clock budget (`MCP_CALL_TIMEOUT` seconds in
         # `app.config`). The stdio serve loop is serial, so a handler that awaits
         # forever wedges every later call; when set, a call exceeding the budget
