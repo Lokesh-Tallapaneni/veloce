@@ -232,7 +232,7 @@ class GZipMiddleware(Middleware):
         ):
             return response
 
-        response._stream = self._compress_stream(response._stream, request)
+        response._stream = self._compress_stream(response._stream)
         # A streamed gzip body is chunked / `more_body`-framed; any declared
         # length describes the uncompressed representation, so finalize with no
         # Content-Length (the native chunked path relies on Transfer-Encoding).
@@ -306,7 +306,7 @@ class GZipMiddleware(Middleware):
         """
         return co.compress(b) + co.flush(zlib.Z_SYNC_FLUSH)
 
-    async def _compress_stream(self, stream: Any, request: Request) -> AsyncIterator[bytes]:
+    async def _compress_stream(self, stream: Any) -> AsyncIterator[bytes]:
         """Gzip a chunk stream lazily, reusing one `compressobj` across chunks.
 
         `wbits = MAX_WBITS | 16` selects gzip framing (header + CRC trailer) so

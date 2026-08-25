@@ -98,9 +98,14 @@ class CORSMiddleware(Middleware):
             CORSMiddleware(
                 allow_origins=["https://example.com"],
                 allow_methods=["GET", "POST"],
+                allow_headers=["Authorization", "Content-Type"],
                 allow_credentials=True,
             )
         )
+
+    `allow_headers` defaults to `["*"]`, and the Fetch standard forbids a
+    wildcard alongside credentials, so it must be listed explicitly whenever
+    `allow_credentials=True` - omitting it raises at construction.
     """
 
     def __init__(

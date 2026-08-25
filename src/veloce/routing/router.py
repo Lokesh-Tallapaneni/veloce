@@ -1317,6 +1317,22 @@ class Router:
         # actually wins on the override/warn replace paths, and is never written
         # if the duplicate policy raised. Drop any stale reverse-converter cache
         # so a re-registered name re-derives from its new template.
+        # A name taken by a *different* path is a collision: the earlier route
+        # keeps serving but becomes unreachable by name, so `url_for` starts
+        # resolving to somewhere else and a template renders the wrong link.
+        # `on_duplicate` governs method+path and never saw this. Re-registering
+        # the *same* path is the override path, where the name legitimately
+        # moves with the route it names, so that stays silent.
+        previous = self._named_routes.get(route_name)
+        if previous is not None and previous[0] != full_path:
+            _logger.warning(
+                "Duplicate route name %r: %s now resolves to %s, and %s is no "
+                "longer reachable by name",
+                route_name,
+                route_name,
+                full_path,
+                previous[0],
+            )
         self._named_routes[route_name] = (full_path, param_names)
         self._reverse_converters.pop(route_name, None)
 
