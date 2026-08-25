@@ -164,20 +164,30 @@ class RedisRateLimitBackend(RateLimitBackend):
         )
     """
 
-    __slots__ = ("_redis", "_prefix", "_watch_error", "_no_script_error", "_digests")
+    __slots__ = (
+        "_redis",
+        "_prefix",
+        "_watch_error",
+        "_no_script_error",
+        "_response_error",
+        "_digests",
+        "_no_scripting",
+    )
 
     def __init__(self, client: Redis, *, prefix: str = "veloce:ratelimit:") -> None:
         # redis is present whenever this backend is constructed; importing the
         # exception class here (not per request) keeps the module importable
         # without redis installed while giving the retry loop a concrete type.
-        from redis.exceptions import NoScriptError, WatchError
+        from redis.exceptions import NoScriptError, ResponseError, WatchError
 
         self._redis = client
         self._prefix = prefix
         self._watch_error = WatchError
         self._no_script_error = NoScriptError
+        self._response_error = ResponseError
         # script text -> SHA1, so a repeat call is one `EVALSHA` round trip.
         self._digests: dict[str, str] = {}
+        self._no_scripting = False
 
     @classmethod
     def from_url(
@@ -189,8 +199,22 @@ class RedisRateLimitBackend(RateLimitBackend):
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
         redis_key = self._prefix + key
         script = strategy.lua_script
-        if script is not None:
-            return await self._evaluate_lua(redis_key, strategy, script, now)
+        if script is not None and not self._no_scripting:
+            try:
+                return await self._evaluate_lua(redis_key, strategy, script, now)
+            except self._response_error as exc:
+                if "unknown command" not in str(exc).lower():
+                    raise
+                # A Redis-compatible server without scripting (some managed
+                # proxies disable EVAL). Fall back to the watched path so the
+                # limiter keeps working, and say so once: that path gives up on
+                # atomicity under contention, which is a weaker guarantee than
+                # the one the strategy was written to provide.
+                self._no_scripting = True
+                _logger.warning(
+                    "redis server does not support scripting; rate limiting falls back "
+                    "to optimistic locking, which is not atomic under contention"
+                )
         return await self._evaluate_watched(redis_key, strategy, now)
 
     async def _evaluate_lua(

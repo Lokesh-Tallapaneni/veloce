@@ -23,6 +23,7 @@ from veloce._handler_plan import (
     K_BG_TASKS,
     K_BODY_MODEL,
     K_DEPENDS,
+    K_MODEL_GROUP,
     K_PARAM_MARKER,
     K_QUERY,
     K_QUERY_LIST,
@@ -263,6 +264,14 @@ def _collect_input_slots(
         # its fields are the tool's inputs. Declaring the parameter name instead
         # would publish a shape the call path rejects.
         if in_depends and slot.kind == K_BODY_MODEL and is_pydantic_model(slot.model):
+            _spread_model_fields(slot.model, properties, required, schemas_registry)
+            continue
+
+        # `Annotated[Filters, Query(group=True)]` reads each of the model's
+        # fields off its own wire key, so the tool's inputs are those fields -
+        # the same spread, for the same reason. Declaring `filters` instead
+        # published a nested object no call path accepts.
+        if slot.kind == K_MODEL_GROUP and is_pydantic_model(slot.model):
             _spread_model_fields(slot.model, properties, required, schemas_registry)
             continue
 
@@ -601,6 +610,33 @@ def _coerce_argument(slot: _Slot, value: Any) -> Any:
     return value
 
 
+def _bind_model_group(slot: _Slot, arguments: dict[str, Any]) -> Any:
+    """Rebuild a grouped model from the flat arguments its fields were published as.
+
+    The field walk is `slot.group_fields`, precomputed at registration and shared
+    with the HTTP resolver, so both doors read the same keys and validate against
+    the same model - an agent and a browser get the same answer, including the
+    same constraint errors.
+    """
+    raw = {
+        validate_key: arguments[wire_key]
+        for validate_key, wire_key, _is_list in slot.group_fields
+        if wire_key in arguments
+    }
+    # A group slot is built from a marker (`Query(group=True)`), so it always
+    # has one; the fallback keeps the type checker honest rather than guarding.
+    marker = slot.marker
+    has_default = marker is not None and marker.has_default
+    if not raw and (slot.is_optional or has_default):
+        return marker.resolve_default() if marker is not None and has_default else None
+    model = slot.model
+    if is_pydantic_model(model):
+        return _validate_model(raw, model)
+    if slot.backend == ModelBackend.ADAPTED:
+        return _validate_adapted(raw, model)
+    return raw
+
+
 def _validate_adapted(value: Any, model: Any) -> Any:
     """Validate `value` onto a dataclass / `TypedDict`, re-raising as a clear error.
 
@@ -871,7 +907,9 @@ async def bind_arguments(
             kwargs[name] = await resolver._exec_depends(slot, request, arguments)
             continue
 
-        if name in arguments:
+        if kind == K_MODEL_GROUP:
+            kwargs[name] = _bind_model_group(slot, arguments)
+        elif name in arguments:
             kwargs[name] = _coerce_argument(slot, arguments[name])
         elif (marker := slot.marker) is not None and marker.has_default:
             # A parameter marker owns its declared default (`Body(500)`), and the

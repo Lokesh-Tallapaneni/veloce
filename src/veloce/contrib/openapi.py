@@ -6,6 +6,7 @@ import contextlib
 import copy
 import datetime
 import enum
+import functools
 import html
 import inspect
 import logging
@@ -64,6 +65,29 @@ _REDOC_JS_INTEGRITY = "sha384-0GrsyTQc9Oqd8h+b2dbc4XdR2T/DYpy0tLNNstyx+LBMUyiBbc
 
 
 # ── Introspection / merge helpers ──────────────────────────
+
+
+def _group_field_schema(model: Any, wire_name: str) -> dict[str, Any] | None:
+    """Return one field's declared schema from a grouped model, or `None`.
+
+    `None` when the field resolves to a `$ref` (a nested model), which a
+    parameter schema cannot carry - the caller falls back to the annotation.
+    """
+    try:
+        properties = _grouped_model_properties(model)
+    except Exception:
+        return None
+    prop = properties.get(wire_name)
+    if prop is None or "$ref" in prop:
+        return None
+    return dict(prop)
+
+
+@functools.lru_cache(maxsize=256)
+def _grouped_model_properties(model: Any) -> dict[str, Any]:
+    """`{wire name: schema}` for a grouped model, by alias where one is set."""
+    schema = model.model_json_schema(by_alias=True)
+    return schema.get("properties") or {}
 
 
 def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
@@ -963,7 +987,12 @@ def _extract_parameters(
 
         # path / query / header / cookie parameter.
         param_schema: dict[str, Any]
-        if d.is_list:
+        if d.group_field and (grouped := _group_field_schema(d.model, d.wire_name)) is not None:
+            # The field's own declaration owns its constraints; rebuilding the
+            # schema from the annotation alone would publish a laxer contract
+            # than the resolver enforces.
+            param_schema = grouped
+        elif d.is_list:
             param_schema = {"type": "array", "items": _python_type_to_schema(d.target_type)}
         else:
             param_schema = _python_type_to_schema(d.target_type)
