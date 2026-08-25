@@ -795,6 +795,9 @@ class MCPContext:
         """
         meta = _result_meta_var.get()
         if meta is None:
+            # Only outside a served call - the server binds the slot before the
+            # handler runs, so a write from a sync (offloaded) handler mutates a
+            # dict both contexts share rather than one this copy would discard.
             meta = {}
             _result_meta_var.set(meta)
         return meta

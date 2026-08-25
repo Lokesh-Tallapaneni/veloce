@@ -213,13 +213,18 @@ class _RequestGlobals:
         return self._get_store().setdefault(name, default)
 
     def _reset(self) -> None:
-        """Reset g for a new request.
+        """Bind a fresh store for a new request.
 
-        Clears the var to `None` rather than binding a fresh dict -
-        `_get_store` allocates lazily on first access, so a request whose
-        handler never touches `g` pays no allocation.
+        Eagerly, not on first access. A sync handler runs in a copied context
+        (`copy_context().run`), so a `set()` performed inside it lands in the
+        copy and is discarded when the thread returns - and lazy binding put
+        that `set()` inside the handler. `g.x = 1` from a `def` handler was
+        therefore dropped, unless something earlier in the request happened to
+        touch `g` and bind the store in the request's own context first.
+        Binding here costs one empty dict per request and makes every write a
+        mutation of an object both contexts share.
         """
-        self._ctx_var.set(None)
+        self._ctx_var.set({})
 
     def _snapshot(self) -> dict[str, Any] | None:
         """Return the bound store so a nested binding can hand it back."""

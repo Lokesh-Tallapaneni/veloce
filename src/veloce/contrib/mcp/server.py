@@ -812,8 +812,12 @@ class MCPServer(TasksMixin, InvocationMixin):
         # answer instead of re-deriving its own from `params`.
         era_token = _era_modern_var.set(is_modern)
         # A fresh slot per message, so `_meta` a handler attaches belongs to this
-        # call's result and cannot reach the next one.
-        result_meta_token = _result_meta_var.set(None)
+        # call's result and cannot reach the next one. Bound eagerly rather than
+        # on first access: a sync tool handler runs in a copied context, so a
+        # `set()` performed inside it would be discarded with the copy and the
+        # handler's `_meta` would never be sent. An empty dict reads as no `_meta`
+        # at the attach site below.
+        result_meta_token = _result_meta_var.set({})
         release_tokens = True
         # Read while the slot is still bound: the `finally` below releases it, and
         # the result is not assembled until after that.
