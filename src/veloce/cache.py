@@ -34,7 +34,7 @@ from typing import Any
 
 import orjson
 
-from veloce._internal import _is_async_callable
+from veloce._internal import _is_async_callable, _require_methods
 
 # Stable digest input: sort dict keys so equal mappings hash identically
 # regardless of construction order.
@@ -74,6 +74,16 @@ class Cache:
     """
 
     __slots__ = ()
+
+    #: Methods a backend must supply. Checked at subclass definition rather than
+    #: left to fail at call time - a cache is usually written once and exercised
+    #: much later, so a forgotten `set` surfaced on a live write path instead of
+    #: on `import`.
+    _required = ("get", "set", "delete")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, Cache, Cache._required)
 
     async def get(self, key: str) -> bytes | None:
         """Return the stored bytes for `key`, or `None` if absent or expired."""

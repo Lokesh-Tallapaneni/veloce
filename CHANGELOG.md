@@ -67,6 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `RedisRateLimitBackend` runs a built-in strategy as a Lua script - one round trip instead of three, executed atomically, with no contended-key fallback that could admit requests over the limit. A custom strategy keeps the `WATCH` path unless it declares `lua_script`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
+- `Cache` and `SessionStore` refuse a subclass that omits a required method, at definition rather than on the request that first calls it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - A traceback frame from a compiled resolver names its handler and shows its source, instead of a bare `<veloce-resolver>` with no line. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `response_model_*` filter flags resolve when the route is registered rather than on every response; assigning one to a `RouteInfo` afterwards no longer takes effect. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

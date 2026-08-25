@@ -374,7 +374,22 @@ defence](https://owasp.org/www-community/attacks/Session_fixation).
 To back sessions with Redis or a database, subclass
 [`SessionStore`](../reference/sessions.md#veloce.SessionStore) and implement its async
 methods. The interface is async so a network-backed store does not block the
-event loop:
+event loop.
+
+`read`, `write` and `delete` are all required, and a store that omits one is
+refused where it is written rather than on the request that first needs it:
+
+```python
+class MyStore(SessionStore):
+    async def read(self, session_id): ...
+    async def write(self, session_id, data, max_age): ...
+    # `delete` forgotten
+
+# TypeError: MyStore does not implement SessionStore: delete missing
+```
+
+!!! note "Added in version 0.18.0"
+    The subclass check. A store that already implements all three is unaffected.
 
 ```python
 from typing import Any

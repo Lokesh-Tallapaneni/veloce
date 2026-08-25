@@ -132,6 +132,29 @@ Both backends satisfy the same `Cache` interface, so swapping one for the other
 never changes behaviour — write your own backend by subclassing `Cache` and
 implementing `get` / `set` / `delete`.
 
+All three are required, and a subclass that omits one is refused where it is
+written rather than on the request that first needs it:
+
+```python
+class MyCache(Cache):
+    __slots__ = ()
+
+    async def get(self, key: str) -> bytes | None: ...
+    async def set(self, key: str, value: bytes, ttl: int) -> None: ...
+    # `delete` forgotten
+
+# TypeError: MyCache does not implement Cache: delete missing
+```
+
+Subclassing a *concrete* backend is the usual way to specialise one, and
+inherits real implementations, so `class Instrumented(InMemoryCache)` needs
+override nothing. `SessionStore` enforces its `read` / `write` / `delete` the
+same way — see [Sessions](sessions.md).
+
+!!! note "Added in version 0.18.0"
+    The subclass check. A backend that already implements all three is
+    unaffected.
+
 !!! note "Caching is opt-in and zero-cost when unused"
     Nothing in the request dispatch path references the cache. Adding the
     feature, or leaving handlers undecorated, has no effect on throughput.

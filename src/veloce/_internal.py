@@ -557,3 +557,28 @@ def dumps_current(payload: Any) -> bytes:
 # app's core resolves it and the dispatch mixin reads it, and those two cannot
 # import each other.
 _UNRESOLVED_JSON_DUMPS: Any = object()
+
+
+def _require_methods(cls: type, base: type, names: tuple[str, ...]) -> None:
+    """Refuse `cls` unless it supplies a real implementation of every name.
+
+    Abstractness in this codebase is a `NotImplementedError` body rather than
+    `abc.ABC`, so "supplied" means the attribute resolves to something other
+    than the one `base` defines. A subclass of a *concrete* backend therefore
+    passes on inherited implementations, which is how a deployment usually
+    specialises one.
+
+    Raised at subclass definition, so a forgotten method is an `import`-time
+    `TypeError` naming what is missing rather than a `NotImplementedError` on a
+    live request. Runs once per subclass; nothing per request consults it.
+    """
+    missing = [
+        name
+        for name in names
+        if getattr(cls, name, None) is getattr(base, name, None)
+        and name not in getattr(cls, "__abstractmethods__", ())
+    ]
+    if missing:
+        raise TypeError(
+            f"{cls.__name__} does not implement {base.__name__}: {', '.join(missing)} missing"
+        )

@@ -16,6 +16,8 @@ import random
 import time
 from typing import Any
 
+from veloce._internal import _require_methods
+
 # Probabilistic sweep tuning for `InMemorySessionStore`. The threshold keeps
 # small stores cheap; the probability keeps the amortised cost of a write
 # below one full scan per `1/_SWEEP_PROBABILITY` writes.
@@ -154,6 +156,16 @@ class SessionStore:
     # Empty so a slotted concrete store actually stays slotted; without it the
     # subclasses' own `__slots__` are inert and every instance carries a dict.
     __slots__ = ()
+
+    #: Methods a store must supply. Checked at subclass definition rather than
+    #: left to fail at call time - a store is written once and exercised much
+    #: later, so a forgotten `write` surfaced on a live request instead of on
+    #: `import`.
+    _required = ("read", "write", "delete")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, SessionStore, SessionStore._required)
 
     async def read(self, session_id: str) -> dict[str, Any] | None:
         """Return the stored payload for `session_id`, or `None` when it
