@@ -122,11 +122,17 @@ Open <http://127.0.0.1:8000/items/42> to see `{"item_id": 42}`, or
 | Validation        | Pydantic v2 query / path / header / cookie / body, structured 422 errors                    |
 | OpenAPI           | OpenAPI 3.1, Swagger UI, ReDoc, security schemes, webhooks, callbacks, `operation_id`       |
 | WebSockets        | full ASGI surface, dependency injection, subprotocol negotiation (under an ASGI server), typed iter helpers |
-| Middleware        | CORS, GZip, TrustedHost, HTTPSRedirect, ProxyFix, Session, CSRF, `BaseHTTPMiddleware`       |
+| Middleware        | CORS, compression (zstd/brotli/gzip), TrustedHost, HTTPSRedirect, ProxyFix, Session, CSRF, CSP, security headers, conditional GET, request IDs, logging, `BaseHTTPMiddleware` |
 | Templating        | Jinja2 with `url_for` / `g` / `current_app` globals, async render, context processors       |
 | Sessions          | signed cookies, server-side backend, `permanent_lifetime`, secret rotation                  |
+| Streaming         | Server-Sent Events (`EventSourceResponse`, `ServerSentEvent`), streamed request bodies      |
+| Signals           | `request_started` / `request_finished` / `got_request_exception` and the app-context pair    |
+| Security          | password hashing (`hash_password`, `is_strong_password`), signing, JWT, OAuth2 flows        |
+| Rate limiting     | `FixedWindow` / `SlidingWindow` / `TokenBucket`, per-route `@rate_limit`, Redis backend      |
+| Caching           | `Cache` / `InMemoryCache`, the `@cached` decorator, Redis backend                            |
+| Agents (MCP)      | expose routes as Model Context Protocol tools, resources, prompts; HTTP / SSE / stdio transports |
 | Testing           | in-memory `TestClient`, multipart, cookies, follow-redirects, `session_transaction`         |
-| Tooling           | `veloce run`, `veloce routes`, `veloce shell` (argparse-based CLI)                          |
+| Tooling           | `veloce new` / `generate` scaffolding, `run`, `routes`, `check`, `mcp`, `shell`              |
 
 The full Tier 0/1/2 feature matrix and per-feature design notes live in
 [`docs/`](docs/).

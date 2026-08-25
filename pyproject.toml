@@ -77,12 +77,12 @@ classifiers = [
 ]
 dependencies = [
     "uvloop>=0.19.0; sys_platform != 'win32'",
-    "orjson>=3.9.0",
-    "pydantic>=2.0.0",
+    "orjson>=3.11.5",
+    "pydantic>=2.4.0",
     "multidict>=6.0.0",
-    "python-multipart>=0.0.6",
+    "python-multipart>=0.0.22",
     "httptools>=0.6.0",
-    "jinja2>=3.1",
+    "jinja2>=3.1.6",
 ]
 
 [project.optional-dependencies]
@@ -103,7 +103,7 @@ ws = ["websockets>=12"]
 # worker class. POSIX-only — gunicorn does not run on Windows — so this extra
 # is opt-in and never pulled in by a plain install. The `uvicorn` extra
 # remains the recommended production server.
-gunicorn = ["gunicorn>=21.0; sys_platform != 'win32'"]
+gunicorn = ["gunicorn>=23.0.0; sys_platform != 'win32'"]
 # OpenTelemetry tracing bridge for `veloce.otel.instrument_with_otel`. Only the
 # OTel API is pulled in — the application supplies its own configured SDK,
 # TracerProvider, and exporter. Kept optional so a plain install carries no
@@ -152,7 +152,7 @@ ciso8601 = ["ciso8601>=2.3"]
 all = [
     "uvicorn[standard]>=0.23",
     "websockets>=12",
-    "gunicorn>=21.0; sys_platform != 'win32'",
+    "gunicorn>=23.0.0; sys_platform != 'win32'",
     "opentelemetry-api>=1.20",
     "prometheus_client>=0.17",
     "msgspec>=0.13",

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Runtime dependency floors raised to releases carrying current security fixes: `orjson>=3.11.5`, `pydantic>=2.4.0`, `python-multipart>=0.0.22`, `jinja2>=3.1.6`, `gunicorn>=23.0.0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - A `dependencies=` entry that is not a `Depends` raises `TypeError` at registration. `dependencies=[guard]` - the `Depends()` wrapper forgotten - was silently discarded, so the guard never ran and every route on it was open. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - The SSE transport runs a tool as the principal that authenticated the `POST`, not the one that opened the `GET` stream. A validated token for one caller executed under another caller's scopes. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
