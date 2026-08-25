@@ -800,16 +800,34 @@ class SecurityHeadersMiddleware(Middleware):
         if permissions_policy:
             headers[HEADER_PERMISSIONS_POLICY] = permissions_policy
         self._headers = headers
+        # `(name, lowered name, value)` per default, settled here: the lowered
+        # form is compared against the response's keys on every response, and
+        # this set cannot change for the life of the middleware.
+        self._header_items: tuple[tuple[str, str, str], ...] = tuple(
+            (name, name.lower(), value) for name, value in headers.items()
+        )
 
     async def process_response(self, request: Request, response: Response) -> Response:
         """Attach security hardening headers to every response."""
-        for name, value in self._headers.items():
-            # Defaults only - never clobber a value the handler chose. Match
-            # case-insensitively: `Response.headers` is a plain dict, so a
-            # handler-set lowercase `x-frame-options` must still count as an
-            # override of the `X-Frame-Options` default.
-            if not header_present(response.headers, name):
-                response.headers[name] = value
+        # Defaults only - never clobber a value the handler chose. Matching is
+        # case-insensitive because `Response.headers` is a plain dict, so a
+        # handler-set lowercase `x-frame-options` must still count as an
+        # override of the `X-Frame-Options` default.
+        #
+        # One lowered-key set, not `header_present` per default: that helper
+        # returns fast on an exact-key hit and otherwise scans every response
+        # header, and the common case is that the handler set none of these -
+        # so every one of the three to six calls took the full scan. This is
+        # the same shape `_encode_response_head` already uses for the identical
+        # question.
+        headers = response.headers
+        if not headers:
+            headers.update(self._headers)
+            return response
+        present = {key.lower() for key in headers}
+        for name, lowered, value in self._header_items:
+            if lowered not in present:
+                headers[name] = value
         return response
 
 
