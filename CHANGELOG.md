@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `serve_stdio` isolates the protocol wire, so handler or subprocess output cannot corrupt the JSON-RPC stream. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Added
+
+- `Blueprint` accepts `tags=` and `on_duplicate=`, the two `Router` options it dropped. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `StaticFiles(max_age=...)` sets the cache lifetime, and the handler honours `SEND_FILE_MAX_AGE_DEFAULT` as `send_file` already did. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `GRACEFUL_DRAIN_TIMEOUT` bounds how long shutdown waits for in-flight requests; it was a literal 30 seconds no setting could reach. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Auditable` carries the audit contract for every middleware shape, so a `BaseHTTPMiddleware` can declare `sets_hardening_headers` and contribute findings. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -68,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+
+- `Router(tags=[...])` copies the list instead of appending route tags to the caller's own. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `TestClient.cookies` and `TestResponse.cookies` report the decoded value the handler receives, not the percent-encoded wire form. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A route whose `response_model=` disagrees with its return annotation fails `veloce check`; it was printed and the command exited 0. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

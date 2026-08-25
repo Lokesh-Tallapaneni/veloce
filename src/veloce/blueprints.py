@@ -175,12 +175,24 @@ class Blueprint(Router):
             dict[int, dict[str, Any]] | None,
             Doc("Additional OpenAPI responses overlaid onto every route on this blueprint."),
         ] = None,
+        tags: Annotated[
+            list[str] | None,
+            Doc("OpenAPI tags applied to every route registered on this blueprint."),
+        ] = None,
+        on_duplicate: Annotated[
+            str,
+            Doc(
+                "Policy for a second handler on the same path and method: `error`, `warn`, or `override`."
+            ),
+        ] = "error",
     ) -> None:
         super().__init__(
             prefix=url_prefix,
             default_response_class=default_response_class,
             dependencies=dependencies,
             responses=responses,
+            tags=tags,
+            on_duplicate=on_duplicate,
         )
         self.name = name
         self.url_prefix = url_prefix

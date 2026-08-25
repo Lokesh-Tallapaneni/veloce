@@ -584,7 +584,9 @@ class Router:
                 f"on_duplicate must be one of {sorted(_DUPLICATE_POLICIES)}, got {on_duplicate!r}"
             )
         self.on_duplicate = on_duplicate
-        self.tags = tags or []
+        # Copied, not aliased: `router.tags` is appended to as routes register,
+        # which would otherwise mutate the list the caller still holds.
+        self.tags = list(tags or [])
         # a Response subclass used when a registered route
         # doesn't pick its own `response_class=`. Routes still override
         # per-call; this is just the fallback before the built-in default
