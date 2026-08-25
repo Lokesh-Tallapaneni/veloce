@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A `dependencies=` entry that is not a `Depends` raises `TypeError` at registration. `dependencies=[guard]` - the `Depends()` wrapper forgotten - was silently discarded, so the guard never ran and every route on it was open. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - The SSE transport runs a tool as the principal that authenticated the `POST`, not the one that opened the `GET` stream. A validated token for one caller executed under another caller's scopes. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - The MCP HTTP endpoint authenticates and `Origin`-checks `GET` and `DELETE`, not only `POST`. A resuming `GET` replayed another principal's tool output without a credential, and any origin could terminate a session. Clients must now send their token on both verbs. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

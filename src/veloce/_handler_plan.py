@@ -922,11 +922,33 @@ def build_plan(
 
 
 def build_route_dep_plans(route_dependencies: list[Any], *, websocket: bool = False) -> list[_Slot]:
-    """Pre-plan a route's `dependencies=[Depends(...), ...]` list."""
+    """Pre-plan a route's `dependencies=[Depends(...), ...]` list.
+
+    An entry that is not a `Depends` (or a `Security`, which subclasses it) is
+    refused rather than skipped. Dropping it silently is how `dependencies=[guard]`
+    - the wrapper forgotten - registered without a word and then never ran: the
+    source read as protected and every route was open. This runs from `add_route`,
+    so the refusal lands on the line that declared the route.
+    """
     from veloce.dependency import Depends  # local import breaks the cycle
 
     out: list[_Slot] = []
     for dep in route_dependencies:
-        if isinstance(dep, Depends):
-            out.append(_build_depends_slot("", dep, websocket=websocket))
+        if not isinstance(dep, Depends):
+            raise TypeError(_dependency_entry_error(dep))
+        out.append(_build_depends_slot("", dep, websocket=websocket))
     return out
+
+
+def _dependency_entry_error(dep: Any) -> str:
+    """The message for a `dependencies=` entry that is not a `Depends`."""
+    if callable(dep):
+        name = getattr(dep, "__name__", None) or "the callable"
+        return (
+            f"dependencies= takes Depends(...) or Security(...), not a bare callable; "
+            f"got {name}. Wrap it as Depends({name}) so it runs."
+        )
+    return (
+        f"dependencies= takes Depends(...) or Security(...); got {dep!r}, "
+        f"which is not callable and cannot be a dependency."
+    )

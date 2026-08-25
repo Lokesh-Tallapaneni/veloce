@@ -292,7 +292,14 @@ class TestRegexInclude:
         assert m.path_params == {"n": 4}
 
     def test_include_applies_router_dependencies(self):
-        main = Router(dependencies=["dep_a"])
+        """A real `Depends`, not a placeholder string: a bare entry is refused now."""
+        from veloce import Depends
+
+        async def dep_a() -> str:
+            return "a"
+
+        marker = Depends(dep_a)
+        main = Router(dependencies=[marker])
         sub = Router()
 
         @sub.get("/items/{id:[0-9]+}")
@@ -302,7 +309,7 @@ class TestRegexInclude:
         main.include_router(sub)
         m = main.match("GET", "/items/1")
         assert m is not None
-        assert "dep_a" in m.route_info.dependencies
+        assert marker in m.route_info.dependencies
 
 
 # ── OpenAPI schema participation ─────────────────────────────────
