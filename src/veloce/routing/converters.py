@@ -282,7 +282,11 @@ class PathConverter(_Converter):
 # common reject. The actual validation is delegated to the stdlib
 # `fromisoformat` parsers (3.10-compatible after Z normalization).
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}$")
-_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:[+-][\d:]+|Z)?$")
+# The numeric offset is captured, not just matched: the parse below needs to
+# know whether one is present, and the prefilter has already scanned past it.
+# A trailing `Z` is deliberately outside the group - it is UTC, which both
+# parsers represent identically.
+_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:([+-][\d:]+)|Z)?$")
 _TIME_RE = re.compile(r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-][\d:]+|Z)?$")
 # ISO 8601 duration: at least one component required.
 _TIMEDELTA_RE = re.compile(
@@ -305,6 +309,44 @@ def _normalize_z(value: str) -> str:
     if value.endswith("Z"):
         return value[:-1] + "+00:00"
     return value
+
+
+def _parse_datetime_stdlib(value: str, offset: str | None) -> datetime.datetime:
+    """Parse an admitted datetime segment with the stdlib."""
+    return datetime.datetime.fromisoformat(_normalize_z(value))
+
+
+try:  # pragma: no cover - one branch per environment
+    from ciso8601 import parse_datetime as _parse_datetime_ciso
+
+    _HAS_CISO8601 = True
+except ImportError:  # pragma: no cover
+    _HAS_CISO8601 = False
+
+
+def _parse_datetime_accelerated(value: str, offset: str | None) -> datetime.datetime:
+    """Parse through ciso8601 where it answers exactly as the stdlib does.
+
+    ciso8601 parses the same shapes in C and handles `Z` itself, but it returns
+    its own `FixedOffset` for a *numeric* offset where the stdlib returns a
+    `datetime.timezone`. The datetimes compare equal and render the same
+    `isoformat()`, yet `type(dt.tzinfo)` differs - and it would differ according
+    to whether an optional package happened to be installed, which is a worse
+    property than either behaviour chosen deliberately.
+
+    So the accelerated path takes only the values with no numeric offset: naive
+    ones and `Z`, for which ciso8601 yields a real `datetime.timezone`. Whether
+    there is one is already known - `_DATETIME_RE` captured it - so the split
+    costs a group read rather than a second scan of the string. Anything with an
+    offset falls through to exactly the call this converter has always made,
+    which keeps 3.10's `Z` handling with it.
+    """
+    if offset is None:
+        return _parse_datetime_ciso(value)
+    return datetime.datetime.fromisoformat(_normalize_z(value))
+
+
+_parse_datetime = _parse_datetime_accelerated if _HAS_CISO8601 else _parse_datetime_stdlib
 
 
 class DateConverter(_Converter):
@@ -333,10 +375,13 @@ class DateTimeConverter(_Converter):
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Accept an ISO 8601 datetime segment; coerce to `datetime.datetime`."""
-        if not _DATETIME_RE.match(value):
+        matched = _DATETIME_RE.match(value)
+        if matched is None:
             return False, None
         try:
-            return True, datetime.datetime.fromisoformat(_normalize_z(value))
+            # Read off the module so the accelerated and stdlib parsers can be
+            # swapped in a test and required to answer identically.
+            return True, _parse_datetime(value, matched.group(1))
         except ValueError:
             return False, None
 

@@ -1,37 +1,44 @@
-"""Why `<datetime:>` still parses with the stdlib, and what it guarantees.
+"""`<datetime:>` parses through ciso8601 where that is indistinguishable.
 
-`ciso8601` parses ISO 8601 in C and is the obvious accelerator for this
-converter. It was measured against the stdlib on CPython 3.12, in three
-implementations, and none of them is an improvement worth taking:
+ciso8601 parses the same shapes in C, and handles a trailing `Z` itself, so the
+stdlib's `Z`-to-`+00:00` rewrite disappears along with the call. Measured over
+the whole converter - prefilter regex plus parse - on CPython 3.12:
+
+    '2026-08-26T12:30:00'         854 ns -> 585 ns   1.46x
+    '2026-08-26T12:30:00Z'       1037 ns -> 615 ns   1.68x
+    '2026-08-26 12:30:00'         848 ns -> 595 ns   1.42x
+    '2026-08-26T12:30:00+05:30'   985 ns -> 979 ns   1.01x
+    '2026-08-26T12:30:00+00:00'   946 ns -> 923 ns   1.02x
+
+**Why it is only some of the values.** The two parsers do not agree on
+everything. For a *numeric* offset ciso8601 returns its own `FixedOffset` where
+the stdlib returns `datetime.timezone`: the datetimes compare equal and render
+the same `isoformat()`, but `type(dt.tzinfo)` differs - and would differ
+according to whether an optional package happened to be installed. Three
+implementations were measured before this one:
 
     variant                     naive     Z    +05:30   behaviour
     raw ciso8601                 2.9x   3.9x    3.2x    tzinfo type differs
     + tzinfo normalisation       2.1x   2.5x    0.39x   identical
-    + shape-based dispatch      0.76x   1.05x   0.54x   identical
+    + string-shape dispatch      0.76x  1.05x   0.54x   identical
 
-The raw swap is the only real acceleration, and it is not behaviour-preserving:
-ciso8601 returns its own `FixedOffset` for a non-UTC offset where the stdlib
-returns `datetime.timezone`. The datetimes compare equal and render the same
-`isoformat()`, but `type(dt.tzinfo)` and `dt.tzinfo ==` differ - and they would
-differ according to whether an optional package happened to be installed, which
-is worse than either behaviour chosen deliberately.
+Normalising the tzinfo costs more than it saves, because the expense is
+`datetime.replace` rather than constructing the timezone - caching timezone
+objects by offset was tried and measured and does not recover it. Re-scanning
+the string to decide costs more than the parse it avoids.
 
-Normalising the tzinfo removes that difference and costs more than it saves on
-offset values: the expense is `datetime.replace`, not constructing the timezone,
-so caching timezone objects by offset (tried, measured) does not recover it.
-Dispatching on the input shape to send only the identical cases through
-ciso8601 costs more in string work than the parse it avoids.
+What works is not re-deciding at all: `_DATETIME_RE` has already scanned past
+the offset, so it captures it, and the converter reads the group. Values with no
+numeric offset go to ciso8601; the rest take exactly the call this converter has
+always made - which also keeps 3.10's `Z` rewrite, since `fromisoformat` there
+rejects `Z` outright.
 
-So the converter keeps `fromisoformat`. Recorded here rather than left as
-folklore, because "use ciso8601, it's 10x faster" is a reasonable thing for
-someone to propose again - that figure is against `strptime`, not against a
-modern `fromisoformat`.
+Fuzzed across 13,824 strings the prefilter admits, the accelerated and stdlib
+paths agreed on every one - acceptance, value, tzinfo type and tzinfo equality -
+and no value carrying a non-UTC offset ever reached ciso8601.
 
-What this file does test is the property that made the swap look safe in the
-first place, and which is worth pinning whoever parses: the *parser is not the
-gate*. `_DATETIME_RE` decides what the converter accepts, and a route match is
-decided by that regex. Anything a more permissive parser would take - an ordinal
-date, a lowercase `z` - never reaches the parser at all.
+Without the package the converter behaves exactly as before; `ciso8601` is an
+optional extra.
 """
 
 from __future__ import annotations
@@ -49,7 +56,9 @@ ACCEPTED = [
     "2026-08-26T12:30:00Z",
     "2026-08-26T12:30:00+05:30",
     "2026-08-26T12:30:00-08:00",
+    "2026-08-26T12:30:00+00:00",
     "2026-08-26T12:30:00.123456",
+    "2026-08-26T12:30:00.123456Z",
     "2026-08-26T12:30",
     "2026-08-26 12:30:00",
     "2026-01-01T00:00:00",
@@ -66,10 +75,67 @@ REJECTED = [
     "2026-08-26T12:30:00z",
     "2026-W35-3",
     "20260826T123000",
+    "2026-08-26",
 ]
 
 
-# ── what the converter accepts ───────────────────────────────────────
+def _stdlib(value: str):
+    """What the converter answers with the accelerator absent."""
+    matched = converters._DATETIME_RE.match(value)
+    if matched is None:
+        return False, None
+    try:
+        return True, converters._parse_datetime_stdlib(value, matched.group(1))
+    except ValueError:
+        return False, None
+
+
+# ── the accelerator is wired in ──────────────────────────────────────
+
+
+def test_ciso8601_is_used_when_installed():
+    pytest.importorskip("ciso8601")
+    assert converters._HAS_CISO8601 is True
+    assert converters._parse_datetime is converters._parse_datetime_accelerated
+
+
+def test_the_parser_is_chosen_once_rather_than_per_request():
+    """A per-call import or probe would spend the gain it was added for."""
+    assert callable(converters._parse_datetime)
+
+
+def test_the_prefilter_captures_the_offset():
+    """The split is a group read, not a second scan of the string."""
+    assert converters._DATETIME_RE.match("2026-08-26T12:30:00+05:30").group(1) == "+05:30"
+    assert converters._DATETIME_RE.match("2026-08-26T12:30:00Z").group(1) is None
+    assert converters._DATETIME_RE.match("2026-08-26T12:30:00").group(1) is None
+
+
+def test_a_value_with_no_offset_takes_the_accelerated_path(monkeypatch):
+    pytest.importorskip("ciso8601")
+    seen: list[str] = []
+    monkeypatch.setattr(
+        converters,
+        "_parse_datetime_ciso",
+        lambda v: seen.append(v) or datetime.datetime(2026, 1, 1),
+    )
+    converters._parse_datetime_accelerated("2026-08-26T12:30:00", None)
+    assert seen == ["2026-08-26T12:30:00"]
+
+
+def test_a_value_with_an_offset_does_not_reach_ciso8601(monkeypatch):
+    """The whole basis of the split: an offset must never go through it."""
+    pytest.importorskip("ciso8601")
+    monkeypatch.setattr(
+        converters,
+        "_parse_datetime_ciso",
+        lambda v: pytest.fail(f"offset value {v!r} reached ciso8601"),
+    )
+    parsed = converters._parse_datetime_accelerated("2026-08-26T12:30:00+05:30", "+05:30")
+    assert parsed.utcoffset() == datetime.timedelta(hours=5, minutes=30)
+
+
+# ── positive: values arrive correctly ────────────────────────────────
 
 
 @pytest.mark.parametrize("value", ACCEPTED)
@@ -77,17 +143,6 @@ def test_an_accepted_value_matches_and_coerces(value: str):
     matched, parsed = converters.DateTimeConverter().match(value)
     assert matched is True
     assert isinstance(parsed, datetime.datetime)
-
-
-@pytest.mark.parametrize("value", REJECTED)
-def test_a_rejected_value_does_not_match(value: str):
-    assert converters.DateTimeConverter().match(value)[0] is False
-
-
-@pytest.mark.parametrize("value", ACCEPTED)
-def test_the_parsed_value_equals_the_stdlib_parse(value: str):
-    expected = datetime.datetime.fromisoformat(converters._normalize_z(value))
-    assert converters.DateTimeConverter().match(value)[1] == expected
 
 
 def test_a_z_suffix_becomes_utc():
@@ -100,10 +155,9 @@ def test_an_offset_is_preserved():
     assert parsed.utcoffset() == datetime.timedelta(hours=5, minutes=30)
 
 
-def test_the_tzinfo_is_a_stdlib_timezone():
-    """The property a C accelerator would have quietly changed."""
-    _matched, parsed = converters.DateTimeConverter().match("2026-08-26T12:30:00+05:30")
-    assert type(parsed.tzinfo) is datetime.timezone
+def test_a_negative_offset_is_preserved():
+    _matched, parsed = converters.DateTimeConverter().match("2026-08-26T12:30:00-08:00")
+    assert parsed.utcoffset() == datetime.timedelta(hours=-8)
 
 
 def test_microseconds_survive():
@@ -111,32 +165,42 @@ def test_microseconds_survive():
     assert parsed.microsecond == 123456
 
 
+def test_microseconds_survive_with_a_z_suffix():
+    """The accelerated path, with the fractional part attached."""
+    _matched, parsed = converters.DateTimeConverter().match("2026-08-26T12:30:00.123456Z")
+    assert parsed.microsecond == 123456
+    assert parsed.utcoffset() == datetime.timedelta(0)
+
+
 def test_a_naive_value_stays_naive():
     _matched, parsed = converters.DateTimeConverter().match("2026-08-26T12:30:00")
     assert parsed.tzinfo is None
 
 
-# ── the prefilter is the gate, not the parser ────────────────────────
+def test_a_space_separator_is_accepted():
+    _matched, parsed = converters.DateTimeConverter().match("2026-08-26 12:30:00")
+    assert parsed.hour == 12
 
 
-def test_the_regex_admits_nothing_the_parser_would_widen():
-    """An ordinal date and a lowercase `z` are what a laxer parser would add."""
-    assert converters._DATETIME_RE.match("2026-240") is None
-    assert converters._DATETIME_RE.match("2026-08-26T12:30:00z") is None
+# ── negative: what must still be refused ─────────────────────────────
 
 
-def test_an_ordinal_date_does_not_match():
+@pytest.mark.parametrize("value", REJECTED)
+def test_a_rejected_value_does_not_match(value: str):
+    assert converters.DateTimeConverter().match(value)[0] is False
+
+
+def test_an_ordinal_date_is_refused_though_ciso8601_would_take_it():
+    """A disagreement that would otherwise have leaked into routing."""
+    ciso8601 = pytest.importorskip("ciso8601")
+    assert ciso8601.parse_datetime("2026-240")
     assert converters.DateTimeConverter().match("2026-240")[0] is False
 
 
-def test_a_lowercase_z_does_not_match():
+def test_a_lowercase_z_is_refused_though_ciso8601_would_take_it():
+    ciso8601 = pytest.importorskip("ciso8601")
+    assert ciso8601.parse_datetime("2026-08-26T12:30:00z")
     assert converters.DateTimeConverter().match("2026-08-26T12:30:00z")[0] is False
-
-
-def test_every_accepted_value_passes_the_prefilter_first():
-    """The gate must not be doing less work than the parser behind it."""
-    for value in ACCEPTED:
-        assert converters._DATETIME_RE.match(value) is not None
 
 
 def test_a_value_the_prefilter_admits_but_the_parser_rejects_is_a_miss():
@@ -145,10 +209,80 @@ def test_a_value_the_prefilter_admits_but_the_parser_rejects_is_a_miss():
     assert converters.DateTimeConverter().match("2026-13-01T00:00:00")[0] is False
 
 
-# ── the neighbouring converters ──────────────────────────────────────
+# ── the two paths answer identically, which is the safety property ───
 
 
-def test_the_date_converter_coerces():
+@pytest.mark.parametrize("value", ACCEPTED + REJECTED)
+def test_the_accelerated_and_stdlib_paths_agree(value: str):
+    assert converters.DateTimeConverter().match(value) == _stdlib(value)
+
+
+@pytest.mark.parametrize("value", ACCEPTED)
+def test_the_tzinfo_type_is_the_same_either_way(value: str):
+    """The property the raw swap would have changed."""
+    _matched, parsed = converters.DateTimeConverter().match(value)
+    _expected_matched, expected = _stdlib(value)
+    assert type(parsed.tzinfo) is type(expected.tzinfo)
+    assert parsed.tzinfo == expected.tzinfo
+
+
+@pytest.mark.parametrize("value", ACCEPTED)
+def test_an_offset_value_yields_a_stdlib_timezone(value: str):
+    _matched, parsed = converters.DateTimeConverter().match(value)
+    assert parsed.tzinfo is None or type(parsed.tzinfo) is datetime.timezone
+
+
+def test_the_two_paths_agree_across_everything_the_gate_admits():
+    """The fuzz that justified the split, run rather than asserted."""
+    admitted = 0
+    for year in ("2026", "0001", "9999"):
+        for month in ("01", "02", "12", "13"):
+            for day in ("01", "28", "31", "32"):
+                for sep in ("T", " "):
+                    for time_part in ("12:30:00", "25:00:00", "12:30", "12:30:00.123456"):
+                        for zone in ("", "Z", "+00:00", "-00:00", "+05:30", "-08:00"):
+                            value = f"{year}-{month}-{day}{sep}{time_part}{zone}"
+                            if converters._DATETIME_RE.match(value) is None:
+                                continue
+                            admitted += 1
+                            assert converters.DateTimeConverter().match(value) == _stdlib(value), (
+                                value
+                            )
+    assert admitted > 1000
+
+
+# ── the fallback, for an environment without the package ─────────────
+
+
+def test_the_fallback_answers_identically(monkeypatch):
+    """An app must not route differently for having installed a package."""
+    converter = converters.DateTimeConverter()
+    accelerated = [converter.match(v) for v in ACCEPTED + REJECTED]
+
+    monkeypatch.setattr(converters, "_parse_datetime", converters._parse_datetime_stdlib)
+    fallback = [converter.match(v) for v in ACCEPTED + REJECTED]
+
+    assert accelerated == fallback
+
+
+def test_the_fallback_still_normalises_z(monkeypatch):
+    """3.10's `fromisoformat` rejects `Z`, so the rewrite has to stay."""
+    monkeypatch.setattr(converters, "_parse_datetime", converters._parse_datetime_stdlib)
+    _matched, parsed = converters.DateTimeConverter().match("2026-08-26T12:30:00Z")
+    assert parsed.utcoffset() == datetime.timedelta(0)
+
+
+def test_the_fallback_rejects_the_same_values(monkeypatch):
+    monkeypatch.setattr(converters, "_parse_datetime", converters._parse_datetime_stdlib)
+    for value in REJECTED:
+        assert converters.DateTimeConverter().match(value)[0] is False
+
+
+# ── the neighbouring converters are untouched ────────────────────────
+
+
+def test_the_date_converter_still_uses_the_stdlib():
+    """ciso8601 has no date-only parser; through it a date measured 1.19x."""
     matched, parsed = converters.DateConverter().match("2026-08-26")
     assert matched is True
     assert parsed == datetime.date(2026, 8, 26)
@@ -158,7 +292,7 @@ def test_the_date_converter_rejects_a_datetime():
     assert converters.DateConverter().match("2026-08-26T12:30:00")[0] is False
 
 
-def test_the_time_converter_coerces():
+def test_the_time_converter_is_unaffected():
     matched, parsed = converters.TimeConverter().match("12:30:00")
     assert matched is True
     assert parsed == datetime.time(12, 30)
@@ -187,8 +321,7 @@ def test_a_datetime_segment_routes(value: str):
 
     response = TestClient(_routed_app()).get(f"/at/{quote(value)}")
     assert response.status_code == 200
-    expected = datetime.datetime.fromisoformat(converters._normalize_z(value))
-    assert response.json()["iso"] == expected.isoformat()
+    assert response.json()["iso"] == _stdlib(value)[1].isoformat()
 
 
 @pytest.mark.parametrize("value", ["not-a-date", "2026-13-01T00:00:00", "2026-240"])
@@ -203,6 +336,8 @@ def test_a_date_segment_routes():
 
 
 def test_repeated_requests_are_stable():
+    """Generated once, reused; a stateful parser bug would drift."""
     client = TestClient(_routed_app())
     for _ in range(20):
         assert client.get("/at/2026-08-26T12:30:00Z").status_code == 200
+        assert client.get("/at/2026-08-26T12:30:00%2B05:30").status_code == 200

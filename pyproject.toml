@@ -143,6 +143,11 @@ brotli = ["brotli>=1.0"]
 # the middleware does not offer `zstd`. Install with
 # `pip install veloceframework[zstd]`.
 zstd = ["zstandard>=0.21"]
+# ciso8601 accelerates the `<datetime:>` path converter. Only values with no
+# numeric offset take it - those are the ones it parses identically to the
+# stdlib - so the converter answers the same either way, just faster. Install
+# with `pip install veloceframework[ciso8601]`.
+ciso8601 = ["ciso8601>=2.3"]
 # Everything optional in one shot.
 all = [
     "uvicorn[standard]>=0.23",
@@ -155,6 +160,7 @@ all = [
     "click>=8.1",
     "brotli>=1.0",
     "zstandard>=0.21",
+    "ciso8601>=2.3",
 ]
 
 [project.scripts]
@@ -208,6 +214,7 @@ dev = [
     "strawberry-graphql[asgi]>=0.230",
     "brotli>=1.2.0",
     "zstandard>=0.25.0",
+    "ciso8601>=2.3.3",
 ]
 docs = [
     "mkdocs-material[imaging]>=9.5",
@@ -316,6 +323,7 @@ module = [
     "brotli",
     "brotlicffi",
     "zstandard",
+    "ciso8601",
 ]
 ignore_missing_imports = true
 
