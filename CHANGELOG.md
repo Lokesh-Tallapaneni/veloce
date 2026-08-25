@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SessionMiddlewareBase` is public; subclass it to add a session backend that `security_audit` recognises. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `veloce check` reports an `exclude_middleware` name that matches no registered middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Signal.doc` records the description given to `Namespace.signal(name, doc=...)`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
 
@@ -99,6 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HttpSessionStore.resolve` no longer scans every live session, so MCP request cost stays flat under load. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `@app.middleware("http")` raises `TypeError` for options it cannot honour instead of dropping them. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A `MethodView` verb method declaring a parameter marker or `Depends()` raises `TypeError` at class definition. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `Config.from_mapping` raises `TypeError` for a non-uppercase keyword argument instead of dropping it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Removed
 
@@ -223,6 +225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RedisRateLimitBackend` falls back to optimistic locking on a server with scripting disabled. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Dynamic client registration stores the requested `grant_types` and echoes what it stored. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `include` and `exclude` below a model, as documented. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `HTTPBearer(scheme_name=...)` publishes that scheme in the OpenAPI document, not a fixed `bearer`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ## [0.17.1] - 2026-08-23
 
