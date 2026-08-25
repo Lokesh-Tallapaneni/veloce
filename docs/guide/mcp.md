@@ -1878,6 +1878,17 @@ primitive called anyway still fails with an authorization error.
 That much needs no configuration. Pass a `tool_filter` to narrow the tool listing
 further, by whatever policy the application has:
 
+!!! warning "A filter narrows listings; it does not refuse calls"
+
+    Unlike the scope check above, `tool_filter` is **not** an authorization
+    boundary. A tool it hides is still callable — `tools/list` omits the entry
+    and `tools/call` runs it. The same is true of
+    [`ctx.hide`](#hiding-a-primitive-from-one-connection).
+
+    Anything a caller must be *refused* needs `scopes=` on the tool, which is
+    checked on every call. Use `tool_filter` to keep a listing short and
+    relevant, not to keep a caller out.
+
 ```python
 from veloce import Veloce, Principal
 
@@ -1996,9 +2007,16 @@ async def verify(key: str, ctx: MCPContext) -> str:
     return "verified"
 ```
 
+### Hiding a primitive from one connection
+
 `ctx.hide(name)` removes a tool, prompt or resource from this connection's
 listings; `ctx.unhide(name)` puts it back; `ctx.reset_visibility()` restores
 everything. Resources are named by their URI.
+
+!!! warning "Hiding is not enforcement"
+
+    A hidden primitive is still callable, exactly as with `tool_filter`. What a
+    caller may invoke is decided by its declared `scopes=` alone.
 
 Each sends the `list_changed` notification for the listing the name belongs to,
 and only when something actually changed — a name that names nothing sends

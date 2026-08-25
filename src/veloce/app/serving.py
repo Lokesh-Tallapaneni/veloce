@@ -177,8 +177,9 @@ class ServingMixin:
         A no-op when the application already registered one, so `run()` never
         doubles up on an app that called `instrument_access_log` itself.
         """
-        # Deferred: `observability` imports from the app package, so hoisting
-        # this would circle at import time.
+        # Deferred for import cost, not for a cycle: `observability` imports the
+        # app package only under `TYPE_CHECKING`, so hoisting imports cleanly - it
+        # would just pull the instrumentation stack into every `import veloce`.
         from veloce.observability import instrument_access_log
 
         # Ask the hook whether it is an access log, rather than testing which

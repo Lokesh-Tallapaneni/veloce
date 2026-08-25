@@ -189,6 +189,18 @@ class MiddlewareMixin:
                 return response
         """
         if isinstance(middleware_class_or_type, str) and middleware_class_or_type == "http":
+            if kwargs:
+                # The decorator form registers a plain function and has nowhere to
+                # put a class-form option. Dropping them silently is the trap: the
+                # two most plausible - `priority=` and `name=` - are real
+                # `add_middleware` options, so an author gets unordered or unnamed
+                # middleware and nothing says so.
+                names = ", ".join(sorted(kwargs))
+                raise TypeError(
+                    f"@app.middleware('http') takes no options; got {names}. "
+                    f"Pass them to the class form, app.middleware(MyMiddleware, ...), "
+                    f"or to app.add_middleware(...)."
+                )
 
             def decorator(func: Callable) -> Callable:
                 self._register_feature_state(self._http_middleware_funcs, func)

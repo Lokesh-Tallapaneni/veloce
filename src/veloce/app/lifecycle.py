@@ -576,6 +576,8 @@ class LifecycleMixin:
         Useful for tests and for embedding the app where you want
         startup/shutdown without an ASGI server in the loop.
         """
-        from veloce.app.contexts import _LifespanManager  # lazy: breaks app->_contexts->http cycle
+        # Lazy to keep the context machinery off `import veloce`; there is no
+        # app->_contexts->http cycle, and hoisting this imports cleanly.
+        from veloce.app.contexts import _LifespanManager
 
         return _LifespanManager(cast("Veloce", self))

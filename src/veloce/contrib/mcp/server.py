@@ -1319,10 +1319,14 @@ class MCPServer(TasksMixin, InvocationMixin):
         Visibility is scoped by the *same* check `tools/call` performs, so a tool is
         never listed for a caller that cannot invoke it. What this connection hid
         narrows it further, and so does a configured filter; either can hide a tool,
-        neither can reveal one the scope check rejected. Hiding a tool does not
-        change what happens if it is called anyway - an unlisted tool still raises
-        `AuthorizationError` - so a visibility policy can never be mistaken for the
-        authorization decision.
+        neither can reveal one the scope check rejected.
+
+        Narrowing is not enforcement, and this is the half worth being exact about:
+        a tool hidden by `MCPContext.hide` or by a `mount_mcp(tool_filter=...)`
+        policy is still callable, because what a caller may invoke is decided by
+        its declared scopes alone. `MCPContext.hide` documents the same rule.
+        Anything that must be refused needs `required_scopes`; a filter that
+        returns `False` only removes the entry from a listing.
 
         Every reader of "what may this caller see" goes through here - the listing,
         and the search tools that stand in for it - so a tool hidden from one is

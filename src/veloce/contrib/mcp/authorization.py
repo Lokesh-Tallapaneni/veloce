@@ -22,8 +22,9 @@ What it implements, and what it deliberately does not:
   asking for `plain`, is refused: this server issues to public clients, where a
   code intercepted on the redirect is the whole attack.
 - **Audience binding.** The `resource` parameter (RFC 8707) is recorded on the
-  token and checked on validation, so a token minted for one MCP server cannot be
-  replayed against another.
+  token, and `verifier(resource=...)` checks it, so a token minted for one MCP
+  server cannot be replayed against another. Building the verifier without
+  `resource=` leaves the check off and warns.
 
 Storage is behind `AuthorizationStore`; the bundled `InMemoryAuthorizationStore`
 is for a single process and is lost on restart. Anything durable is the
@@ -37,6 +38,7 @@ import hmac
 import logging
 import secrets
 import time
+import warnings
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -350,12 +352,33 @@ class MCPAuthorizationServer:
 
     # ── Issuing ───────────────────────────────────────────
 
-    def verifier(self) -> Callable[[str], Awaitable[Principal | None]]:
+    def verifier(
+        self, *, resource: str | None = None
+    ) -> Callable[[str], Awaitable[Principal | None]]:
         """Return the token verifier to hand `MCPAuth(verify=...)`.
 
         Resolves an opaque token to its `Principal`, refusing one that has expired
-        or was minted for a different resource.
+        or that was minted for a different resource.
+
+        `resource` is this server's canonical URI - the same value passed as
+        `MCPAuth(resource_server_url=...)`. Give it, and a token whose RFC 8707
+        `resource` names a different server is refused: that is the audience
+        binding, and it is what stops a token obtained for one MCP server being
+        replayed against another sharing the authorization server.
+
+        Omitting it leaves audience binding off, and says so: the check cannot be
+        performed without knowing which server this is, and silently accepting
+        another server's token is the failure the parameter exists to prevent.
         """
+        expected = resource
+        if expected is None:
+            warnings.warn(
+                "MCPAuthorizationServer.verifier() was built without resource=, so "
+                "audience binding (RFC 8707) is not enforced and a token minted for "
+                "another MCP server sharing this authorization server is accepted. "
+                "Pass the same URI given as MCPAuth(resource_server_url=...).",
+                stacklevel=2,
+            )
 
         async def verify(token: str, resource: str | None = None) -> Principal | None:
             record = await self.store.get_token(_digest(token))
@@ -363,6 +386,11 @@ class MCPAuthorizationServer:
                 return None
             if record.expires_at <= _now():
                 await self.store.delete_token(_digest(token))
+                return None
+            # An audience-bound token names the server it was minted for; one that
+            # names a different server is not ours to accept. A token carrying no
+            # resource was never bound and is left to the scope check.
+            if expected is not None and record.resource is not None and record.resource != expected:
                 return None
             return Principal(
                 subject=record.subject,

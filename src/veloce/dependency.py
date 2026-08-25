@@ -1202,9 +1202,6 @@ class DependencyResolver:
             # cache across requests via the Veloce instance.
             entry = self._override_subplans.get(actual)
             if entry is None:
-                # local: avoids dependency <-> _handler_plan cycle
-                from veloce._handler_plan import build_plan
-
                 entry = (
                     build_plan(actual),
                     _is_async_callable(actual),

@@ -56,8 +56,9 @@ class TestingMixin:
         write into `g` without going through `handle_request`. Nestable:
         the previous binding (if any) is restored on exit.
         """
-        # Lazy import: `veloce.app.contexts` transitively pulls `veloce.http`, which
-        # is not yet importable at app module-load time (app -> _contexts -> http).
+        # Lazy for the reason the module docstring gives - keeping the context
+        # machinery off `import veloce` - not for a cycle: nothing under
+        # `veloce.http` imports `veloce.app`, and hoisting this imports cleanly.
         from veloce.app.contexts import _AppContext
 
         return _AppContext(cast("Veloce", self))
