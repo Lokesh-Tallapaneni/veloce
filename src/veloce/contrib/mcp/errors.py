@@ -76,6 +76,16 @@ def invalid_request_error() -> dict[str, Any]:
     return _error(None, _JSONRPC_INVALID_REQUEST, "Invalid Request")
 
 
+def internal_error(msg_id: Any, message: str) -> dict[str, Any]:
+    """The JSON-RPC error for a failure the server owns, carrying the request's id.
+
+    A transport that cannot put a reply on the wire must still answer with
+    something: a dropped reply leaves the client waiting for the lifetime of the
+    process with nothing written anywhere to say why.
+    """
+    return _error(msg_id, _JSONRPC_INTERNAL_ERROR, message)
+
+
 def _insufficient_scope(required: frozenset[str]) -> str:
     """Build the error text for a missing-scope rejection."""
     return f"insufficient_scope: requires {sorted(required)}"

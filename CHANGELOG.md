@@ -76,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The MCP stdio transport encodes a reply with the same fallback the HTTP path uses, and answers `-32603` rather than writing nothing when a value cannot be serialised. A `Decimal` in `ctx.result_meta` hung the client. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - An MCP request naming a handshake-era revision in `_meta` is served as handshake-era by both the transport and the core, so it no longer skips the standard-header cross-check while being answered in the modern envelope. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - A mounted sub-app that cannot serve a request raises instead of silently falling through to the next mount with the body already drained. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

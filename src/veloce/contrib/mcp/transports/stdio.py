@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import sys
 from collections.abc import Awaitable, Callable, Iterator
@@ -39,8 +40,9 @@ from typing import IO, TYPE_CHECKING, Any
 
 import orjson
 
+from veloce.contrib.mcp._helpers import _orjson_default
 from veloce.contrib.mcp.context import _transport_var
-from veloce.contrib.mcp.errors import invalid_request_error, parse_error
+from veloce.contrib.mcp.errors import internal_error, invalid_request_error, parse_error
 from veloce.contrib.mcp.session import MCPSession
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -59,6 +61,9 @@ _SERVER_ID_PREFIX = "srv-"
 # force - but these two exist to reach a request that is ALREADY running, so
 # queueing them behind it defeats them entirely.
 _CONTROL_METHODS = frozenset({"ping", "notifications/cancelled"})
+
+
+_logger = logging.getLogger(__name__)
 
 
 class StdioTransport:
@@ -215,15 +220,30 @@ class StdioTransport:
         self._pending.clear()
 
     async def _emit(self, payload: dict[str, Any]) -> None:
-        """Write one JSON line, serialised against every other writer."""
+        """Write one JSON line, serialised against every other writer.
+
+        `default=` is the same fallback the HTTP path uses, so one handler
+        answering both doors produces the same JSON either way. Without it a
+        `Decimal`, a `set`, a `Path` or a registered encoder - all of which
+        `ctx.result_meta` puts straight into the envelope - raised here instead.
+        """
         async with self._write_lock:
-            await self._write_line(orjson.dumps(payload))
+            await self._write_line(orjson.dumps(payload, default=_orjson_default))
 
     async def _dispatch(self, message: dict[str, Any], session: MCPSession) -> None:
         """Answer one request off the read loop, so the loop keeps reading."""
         response = await self.server.handle_message(message, session)
-        if response is not None:
+        if response is None:
+            return
+        try:
             await self._emit(response)
+        except TypeError:
+            # A value no encoder can represent must not cost the client its
+            # reply. This runs in a task nothing awaits, so the exception would
+            # otherwise be the whole of the diagnostic: no bytes written, no
+            # error, and a client waiting for the lifetime of the process.
+            _logger.exception("MCP stdio reply could not be encoded")
+            await self._emit(internal_error(message.get("id"), "Response could not be serialised"))
 
     async def _dispatch_in_order(
         self,
