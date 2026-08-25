@@ -350,10 +350,11 @@ Propagation is also implied when both `DEBUG` and `TESTING` are enabled.
     flag. The full constructor signature is:
 
     ```python
-    TestClient(app, base_url="http://testserver", follow_redirects=False)
+    TestClient(app, base_url="http://testserver", follow_redirects=False, loop=None)
     ```
 
-    `AsyncTestClient` takes the same three arguments.
+    `loop=` supplies an existing event loop; omitted, the client owns its own.
+    `AsyncTestClient` takes the first three — it runs on the caller's loop.
 
 ## Next steps
 

@@ -69,9 +69,10 @@ async def ip(request: Request):
     }
 ```
 
-`client`, `client_host`, and `remote_addr` return `None` for synthetic requests
-(e.g. `TestClient` without a live socket). `access_route` returns `[]` in that
-case.
+`client`, `client_host`, and `remote_addr` return `None` when the transport
+reports no peer. `TestClient` supplies a synthetic one, so under it they read
+`Address(host="testclient", port=50000)`, `"testclient"` and `"testclient"`, and
+`access_route` is `["testclient"]` — assert against those rather than `None`.
 
 !!! warning "Forwarded headers are spoofable"
     `X-Forwarded-For` and `access_route` reflect whatever the caller sent. Only
@@ -467,18 +468,21 @@ It also accepts these filter flags:
 | `response_model_include` |
 | `response_model_exclude` |
 
-!!! warning "`response_model` is never inferred from the return annotation"
-    Unlike FastAPI, Veloce does not read the handler's `-> UserOut` return
-    annotation to pick a response model. A return annotation is ignored for
-    output shaping; you must pass `response_model=UserOut` explicitly, or the
-    handler's value is serialised as-is with no field filtering.
+!!! note "`response_model` is inferred from the return annotation"
+    A `-> UserOut` return annotation supplies the response model, as in FastAPI:
+    the value is reshaped and filtered through it, and the schema is documented.
+    Pass `response_model=` when you want a different model from the one you
+    annotate; it wins over the annotation.
 
-!!! warning "A `Union` response model neither filters nor documents"
-    Only a Pydantic model or `list[Model]` is reshaped at runtime. A
-    `response_model=A | B` (or `Union[A, B]`) falls through unfiltered — the
-    return value is serialised as-is — and the response schema is omitted from
-    OpenAPI rather than rendered as an `anyOf`. Declare a single concrete output
-    model per route.
+    Inference recognises a model, `list[Model]`, and a union of models. Any other
+    annotation declares no contract and the value is serialised as-is.
+
+!!! warning "A `Union` response model documents but does not filter"
+    Only a Pydantic model or a sequence of one is reshaped at runtime. A
+    `response_model=A | B` (or `Union[A, B]`) falls through unfiltered — which
+    member to reshape through is ambiguous, so the return value is serialised
+    as-is. It **is** documented, as a `oneOf` of the alternatives. Declare a
+    single concrete output model per route when you need filtering.
 
 ## Streaming responses
 

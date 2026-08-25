@@ -216,7 +216,7 @@ the same port still works. WebSocket routes are served on both paths.
 
 ## Extending the CLI with plugins
 
-The `veloce` command ships with `run`, `routes`, `check`, `shell`, and
+The `veloce` command ships with `new`, `generate` (`g`), `run`, `mcp`, `routes`, `check`, `shell`, and
 `custom`. A distribution can add its own subcommands by advertising a
 callable under the `veloce.commands` entry-point group — useful for
 deployment helpers, database migrations, or any operational task you want

@@ -152,8 +152,8 @@ You have built and tested a complete Veloce service. From here:
 
 -   :material-book-open-variant: **[The guides](../guide/routing.md)** — every
     feature in depth, from middleware to sessions to WebSockets.
--   :material-code-braces: **[Runnable examples](https://github.com/Lokesh-Tallapaneni/veloce/tree/main/examples)**
-    — complete single-file apps: CRUD, JWT auth, WebSocket chat, SSE, uploads.
+-   :material-code-braces: **[Scaffold a project](../guide/cli.md)** — `veloce new`
+    generates a runnable app you can build on.
 -   :material-needle: **[Dependency Injection](../guide/dependency-injection.md)**
     — `yield` teardown, scopes, and security schemes.
 -   :material-rocket-launch: **[Deployment](../guide/deployment.md)** — run the

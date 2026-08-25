@@ -293,7 +293,7 @@ auto-generated ETag, and `max_age=` to add a `Cache-Control` header.
 !!! warning "send_file blocks inside async handlers"
     `send_file` calls the blocking [`FileResponse`](../reference/responses.md#veloce.FileResponse)
     constructor, which reads file metadata synchronously and emits a
-    `DeprecationWarning` when invoked from an `async def` handler on a running
+    `VeloceDeprecationWarning` when invoked from an `async def` handler on a running
     event loop. Inside async routes use the async-safe alternatives instead:
     `async_send_file` (the async counterpart of `send_file`, same arguments),
     `await FileResponse.from_path(...)` for a lower-level single file, or

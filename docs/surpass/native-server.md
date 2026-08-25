@@ -81,7 +81,7 @@ if __name__ == "__main__":
 | `host` | `None` → `"127.0.0.1"` | Interface to bind. Unset binds to localhost only. |
 | `port` | `8000` | TCP port to listen on. |
 | `workers` | `1` | Must be `1`; any other value raises `ValueError`. |
-| `access_log` | `True` | Print the startup banner (`Listening on ...`). |
+| `access_log` | `True` | Print the startup banner (`Listening on ...`) and a per-request access line. |
 | `ssl_context` | `None` | An `ssl.SSLContext` to serve HTTPS; handed to `create_server(ssl=...)`. |
 | `bind_all` | `False` | Bind `0.0.0.0` (all interfaces) instead of localhost. |
 | `reload` | `False` | Auto-restart on source changes (development only). |

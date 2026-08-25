@@ -41,14 +41,22 @@ change or be removed at any time without notice.
 
 When a public symbol or behaviour is to change or be removed:
 
-1. It keeps working and raises a `DeprecationWarning` that names the replacement.
+1. It keeps working and raises a `VeloceDeprecationWarning` that names the replacement.
 2. The deprecation is recorded in `CHANGELOG.md` under `### Deprecated` with a
    migration note.
 3. The symbol is removed no earlier than the **next minor release** after the one
    that introduced the warning (and, after `1.0`, only in a major release).
 
-To surface deprecations in your own test suite, run pytest with warnings as
-errors for the `veloce` namespace, or `python -W error::DeprecationWarning`.
+To surface deprecations in your own test suite, turn them into errors:
+
+```bash
+python -W error::veloce.VeloceDeprecationWarning -m pytest
+```
+
+`VeloceDeprecationWarning` subclasses **`UserWarning`**, not
+`DeprecationWarning` — deliberately, so it is visible by default rather than
+silenced the way Python hides `DeprecationWarning` outside `__main__`. That also
+means `-W error::DeprecationWarning` does **not** catch it.
 
 ## Reporting
 

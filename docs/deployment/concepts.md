@@ -297,4 +297,3 @@ assert events == ["startup", "shutdown"]
 - Run startup and shutdown code correctly — see [Lifespan events](../guide/lifespan.md).
 - Audit an app before deploying with `veloce check` — see [Deployment overview](../guide/deployment.md).
 - Full signatures are in the [API reference](../reference/index.md).
-```

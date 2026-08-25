@@ -113,8 +113,8 @@ async def stats():
     return jsonify({"mean": float("nan")})   # -> 500, and logged
 ```
 
-Note the `jsonify(...)`: a bare `dict` return takes the direct orjson path and
-does not consult the provider, as the warning in that section explains.
+The `jsonify(...)` is optional here: a bare `dict` return goes through the
+provider too, so both forms get the same treatment.
 
 !!! note "Why this is not the default"
     The `null` is not a preference so much as the shape of the problem. An

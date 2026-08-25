@@ -332,8 +332,9 @@ app.add_middleware(
 )
 ```
 
-An override key that matches no registered route raises on the first request, so
-a wrong prefix fails loudly rather than silently doing nothing. An explicit
+An override key that matches no registered route stops **startup** with
+`AuditFailed`, so a wrong prefix fails before any request is served rather than
+silently doing nothing. An explicit
 `overrides` entry wins over a `@rate_limit` tag on the same route.
 
 !!! note "Per-route limits resolve against the entry route"

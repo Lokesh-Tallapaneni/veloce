@@ -318,8 +318,10 @@ not pending features.
 
 - No `WSGIMiddleware` — Veloce serves ASGI and its own native transport; mount a
   WSGI app behind a separate server.
-- No query/cookie/header **parameter models** (a Pydantic model that fans out
-  into individual query/header params). Declare the parameters individually.
+- Query/cookie/header **parameter models** use a different spelling: annotate the
+  model with `Query(group=True)` (or `Header`/`Cookie`) rather than bare. Its
+  fields fan out into individual parameters, and appear that way in the OpenAPI
+  document and in MCP tool schemas.
 - No `bytes = File()` or `list[UploadFile]` shorthand — use
   [`UploadFile`](../reference/requests.md#veloce.UploadFile) per file.
 - No `generate_unique_id_function`. Set `operation_id=` per route; colliding

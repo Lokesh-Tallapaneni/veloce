@@ -1256,8 +1256,9 @@ app.mount_mcp(transport="http")
 # Listed as: "billing_invoice"
 ```
 
-The namespace defaults to the mount prefix. Pass `mcp_namespace=` to choose
-another, or `mcp_namespace=""` to merge the sub-app's names in unprefixed.
+The namespace is the mount prefix. `mount()` takes `prefix`, `app` and
+`expose_mcp`; there is no separate namespace argument, so mount the sub-app under
+the prefix you want its tools named for.
 
 ### Tools from another MCP server
 

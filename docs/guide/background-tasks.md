@@ -175,13 +175,12 @@ async def report():
     return Response(body=b"queued", background=tasks)
 ```
 
-!!! warning "The `background` argument is on the base `Response` only"
-    Only the base [`Response`](../reference/responses.md#veloce.Response) constructor
-    accepts `background=`. The convenience subclasses —
-    [`JSONResponse`](../reference/responses.md#veloce.JSONResponse), `PlainTextResponse`,
-    `StreamingResponse`, `RedirectResponse` — do **not** take a `background`
-    keyword. To attach a task to one of those, set the attribute after
-    constructing it:
+!!! warning "`StreamingResponse` and `RedirectResponse` take no `background=`"
+    [`Response`](../reference/responses.md#veloce.Response),
+    [`JSONResponse`](../reference/responses.md#veloce.JSONResponse) and
+    `PlainTextResponse` all accept `background=` in their constructor.
+    `StreamingResponse` and `RedirectResponse` do **not**. To attach a task to
+    one of those, set the attribute after constructing it:
 
     ```python
     from veloce import BackgroundTask, JSONResponse, Veloce

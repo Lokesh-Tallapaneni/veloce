@@ -388,7 +388,8 @@ from veloce import Depends, Veloce, current_principal
 from veloce.middleware.sessions import SessionMiddleware
 from veloce.security import SessionAuth, login_session, logout_session
 
-app = Veloce(secret_key="change-me")
+app = Veloce()
+app.config["SECRET_KEY"] = "change-me"
 app.add_middleware(SessionMiddleware, secret_key="change-me")
 session_auth = SessionAuth()
 

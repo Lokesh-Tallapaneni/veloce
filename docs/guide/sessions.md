@@ -219,8 +219,10 @@ app.secret_key = "change-me-in-production"
 app.add_middleware(SessionMiddleware)
 ```
 
-Without either a `secret_key=` argument or a configured `SECRET_KEY`, the
-first request raises `RuntimeError`.
+Without either a `secret_key=` argument or a configured `SECRET_KEY`, **startup**
+fails with `AuditFailed` — before any request is served, so the misconfiguration
+cannot reach production. `AuditFailed` subclasses `ValueError`, not
+`RuntimeError`.
 
 `cookie_prefix` enforces the [RFC 6265bis](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis)
 name-prefix invariants: both prefixes require `secure=True`, and `"host"`

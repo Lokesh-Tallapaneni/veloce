@@ -276,7 +276,7 @@ async def favicon(request: Request):
 
 !!! warning
     The synchronous [`app.send_static_file`](../reference/application.md#veloce.Veloce.send_static_file)
-    reads the file on the calling thread and emits a `DeprecationWarning` when
+    reads the file on the calling thread and emits a `VeloceDeprecationWarning` when
     invoked on a running event loop. From async handlers, use
     `app.send_static_file_async` (above) or
     [`send_from_directory_async`](../reference/helpers.md#veloce.send_from_directory_async).
