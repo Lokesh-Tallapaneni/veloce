@@ -37,7 +37,7 @@ from veloce._model_backend import ModelBackend, backend_of
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce._handler_plan import HandlerPlan, _Slot
-    from veloce.routing.params import ParamBase
+    from veloce._params import ParamBase
     from veloce.routing.router import RouteInfo
 
 

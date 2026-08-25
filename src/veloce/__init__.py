@@ -45,6 +45,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 # Static files
 # Event-loop watchdog
+from veloce._params import Body, Cookie, File, Form, Header, Path, Query
 from veloce.contrib.staticfiles import StaticFiles
 
 # Templating - top-level shortcuts. The full Jinja2Templates
@@ -230,7 +231,6 @@ from veloce.ratelimit import (
     rate_limit,
 )
 from veloce.routing.converters import Converter, register_converter
-from veloce.routing.params import Body, Cookie, File, Form, Header, Path, Query
 
 # Routing
 from veloce.routing.router import Router

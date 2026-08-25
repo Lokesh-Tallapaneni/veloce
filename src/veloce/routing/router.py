@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 from typing_extensions import Doc
 
 from veloce._constants import MSG_SUCCESSFUL_RESPONSE
+from veloce._handler_plan import K_REQUEST, build_plan, build_route_dep_plans
 from veloce._model_backend import resolve_response_contract
 from veloce._protocol_constants import (
     HTTP_METHOD_DELETE,
@@ -1000,16 +1001,8 @@ class Router:
         flags are recomputed here so all three registration paths stay
         byte-for-byte identical.
 
-        Deferred import: `_handler_plan` lives above `routing` in the
-        dependency direction, so importing it at module top would invert that
-        order. Consolidating the import here keeps it off the per-request path
-        (registration-time only) and in a single place.
+        Registration-time only; nothing here runs per request.
         """
-        # local: breaks the routing.router <-> _handler_plan cycle.
-        # `_handler_plan` imports `routing.params`, which the routing package
-        # pulls in, so hoisting this leaves `_handler_plan` half-built.
-        from veloce._handler_plan import K_REQUEST, build_plan, build_route_dep_plans
-
         if reuse_handler_plan is not None:
             route_info.handler_plan = reuse_handler_plan
         else:

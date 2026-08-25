@@ -36,10 +36,10 @@ from typing import Any, ClassVar
 
 from veloce._constants import HEADER_ALLOW
 from veloce._internal import _is_async_callable
+from veloce._params import ParamBase
 from veloce._protocol_constants import HTTP_METHOD_GET
 from veloce.dependency import Depends
 from veloce.exceptions import MethodNotAllowed
-from veloce.routing.params import ParamBase
 
 # Standard HTTP method names (RFC 9110 Sec. 9.3). Lower-cased because that's
 # how methods are spelled on the class; we upper-case for the Allow header.

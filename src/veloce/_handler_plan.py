@@ -23,11 +23,11 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from veloce._internal import _is_async_callable
 from veloce._model_backend import ModelBackend, _msgspec, backend_of
+from veloce._params import Body, Cookie, File, Form, Header, ParamBase, Path
 from veloce.background import BackgroundTasks
 from veloce.http.datastructures import UploadFile
 from veloce.http.request import Request
 from veloce.http.response import Response
-from veloce.routing.params import Body, Cookie, File, Form, Header, ParamBase, Path
 from veloce.websocket import WebSocket
 
 # `Depends` is imported lazily inside builders to break the dependency.py <->

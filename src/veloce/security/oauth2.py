@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from veloce._params import Form
 from veloce._protocol_constants import AUTH_SCHEME_BEARER, OAUTH2_GRANT_TYPE_PASSWORD
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
-from veloce.routing.params import Form
 from veloce.security.base import _BearerScheme
 from veloce.status import HTTP_422_UNPROCESSABLE_ENTITY
 

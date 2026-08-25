@@ -30,12 +30,12 @@ from veloce._model_backend import (
     is_msgspec_struct,
     is_pydantic_model,
 )
+from veloce._params import ParamBase
 from veloce._protocol_constants import HTTP_METHOD_QUERY
 from veloce._route_contract import RouteContract, iter_param_descriptors
 from veloce.dependency import Depends
 from veloce.http.response import HTMLResponse, JSONResponse
 from veloce.routing.converters import path_param_schemas
-from veloce.routing.params import ParamBase
 from veloce.security.base import SecurityScheme
 from veloce.status import HTTP_200_OK, HTTP_422_UNPROCESSABLE_ENTITY
 
