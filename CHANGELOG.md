@@ -94,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `from_prefixed_env` coerces a value to its key's declared type and refuses one it cannot convert. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Blueprint.errorhandler` raises `TypeError` for a key that is neither a status code nor an exception class. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The MCP transport trims a bearer token as RFC 7235 allows; a token carrying other whitespace is now refused. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `HttpSessionStore.resolve` no longer scans every live session, so MCP request cost stays flat under load. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Removed
 
