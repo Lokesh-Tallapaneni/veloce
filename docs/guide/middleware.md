@@ -139,8 +139,15 @@ are also exported, along with the `rotate_csrf_token` helper used with
 `CSRFMiddleware`.
 
 `SessionMiddleware` and `ServerSessionMiddleware` have a dedicated guide —
-see [Sessions](sessions.md). For configuring cookie attributes through
-`app.config`, see [Configuration](configuration.md#built-in-defaults).
+see [Sessions](sessions.md). Cookie attributes are constructor arguments
+(`secure=`, `httponly=`, `samesite=`, `cookie_name=`), not `app.config` keys.
+
+!!! warning "`SESSION_COOKIE_*` keys are retired and stop startup"
+
+    Setting `SESSION_COOKIE_NAME`, `SESSION_COOKIE_SECURE`,
+    `SESSION_COOKIE_HTTPONLY` or `SESSION_COOKIE_SAMESITE` now raises
+    `AuditFailed` at startup rather than being ignored. Pass the value to the
+    middleware instead — see [Sessions](sessions.md).
 
 ### Trusted hosts
 
@@ -503,7 +510,7 @@ exclusions run every registered middleware and pay no extra per-request cost.
 
 - [CORS](cors.md) — the full `CORSMiddleware` parameter reference.
 - [Sessions](sessions.md) — `SessionMiddleware` and `ServerSessionMiddleware`.
-- [Configuration](configuration.md) — the `SESSION_COOKIE_*` keys.
+- [Configuration](configuration.md) — `SECRET_KEY` and the app-level defaults.
 - [Deployment](deployment.md)
 - [Routing](routing.md)
 - [Dependency injection](dependency-injection.md)

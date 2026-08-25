@@ -53,7 +53,7 @@ ExecStart=/srv/myapp/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000 --work
 Restart=on-failure
 RestartSec=2
 KillSignal=SIGTERM
-TimeoutStopSec=35
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target
@@ -73,7 +73,7 @@ The key directives:
 | `Restart` | `on-failure` | Restart the server only when it exits non-zero (a crash), not after a clean stop. |
 | `RestartSec` | `2` | Wait two seconds before restarting, so a crash loop does not spin. |
 | `KillSignal` | `SIGTERM` | Stop the server with `SIGTERM`, which Veloce treats as graceful drain. |
-| `TimeoutStopSec` | `35` | Allow the drain window to finish before `SIGKILL`; keep it above the drain timeout. |
+| `TimeoutStopSec` | `60` | Allow shutdown to finish before `SIGKILL`; keep it above `GRACEFUL_DRAIN_TIMEOUT` **plus** `GRACEFUL_TASK_TIMEOUT`, which run in sequence (30 + 10 = 40 by default). |
 
 !!! warning "Run as a non-root user"
     Set `User=` to a dedicated unprivileged account. A web server reachable
@@ -229,10 +229,15 @@ After the drain, the `shutdown` lifecycle runs: `on_shutdown` handlers fire and
 the `lifespan=` context manager exits, *after* requests have drained.
 
 !!! note "The drain window and `TimeoutStopSec`"
-    The native server allows in-flight dispatch up to 30 seconds before
-    cancelling stragglers. Set systemd's `TimeoutStopSec` above that (35 seconds
-    in the unit above) so the process manager does not `SIGKILL` the server
-    mid-drain.
+    Shutdown spends **two** budgets in sequence, not one:
+    `GRACEFUL_DRAIN_TIMEOUT` (default 30 s) waits for in-flight requests, and
+    then `GRACEFUL_TASK_TIMEOUT` (default 10 s) drains `app.spawn(...)`
+    background tasks. The worst case is their **sum** — 40 seconds by default.
+
+    Set systemd's `TimeoutStopSec` above the sum (60 seconds in the unit above),
+    not above the drain window alone: a value between the two, such as 35, is
+    exactly the `SIGKILL` mid-drain this setting exists to prevent. The same rule
+    applies to a container's termination grace period.
 
 The same contract holds on the other serving paths:
 
