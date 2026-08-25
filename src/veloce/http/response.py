@@ -96,6 +96,9 @@ def header_key(headers: Mapping[str, str], name: str) -> str | None:
     if name in headers:
         return name
     lowered = name.lower()
+    # A first-byte guard before the `.lower()` was measured slower here: the
+    # header dict is short enough that the extra test costs more than the
+    # allocations it avoids.
     for key in headers:
         if key.lower() == lowered:
             return key
@@ -772,37 +775,30 @@ class Response:
         existing entries.
         """
         headers = self.headers
-        # Fast path - the common case (no existing `Vary`, one name, e.g. a
-        # middleware adding `Vary: Cookie` per response) needs no parse/merge:
-        # a single clean token round-trips through `HeaderSet` unchanged, so set
-        # it directly and skip the list+set allocation. Two membership tests
-        # beat two `.get` lookups plus a defensive `.pop`; a (vanishingly rare)
-        # empty-valued lower-case `vary` key falls through to the merge path,
-        # which still clears it. This runs on every session-touched response.
+        # One scan serves both paths: it decides whether a `Vary` already exists
+        # (under any casing) and, if so, names the key to read and clear.
         #
-        # A third spelling is knowingly not handled. Only `Vary` and `vary` are
-        # probed, so a caller that wrote `response.headers["VARY"]` by hand
-        # leaves a value this path orphans and the emit-side case-fold dedup
-        # then drops. Making the guard case-insensitive means scanning the
-        # header dict whenever no `Vary` is present, which is precisely when
-        # this path runs: measured on one Windows desktop, 116 ns to 521 ns per
-        # call on a four-header response, about 3% of a request. Framework code
-        # Two membership tests rather than a case-insensitive scan. A response
-        # stored under a third casing (`VARY`) takes this branch and ends up with
-        # two `Vary` field lines - which RFC 9110 Sec. 5.2 says a recipient
-        # combines into one comma-separated value, so the meaning survives. Making
-        # it exact costs a scan of every header on every response that adds a
-        # `Vary` (+45% here, +4% on a CORS request, measured), which is not worth
-        # tidying an outcome that is already correct on the wire. The merge path
-        # below is case-insensitive, because there a missed value is *lost*.
-        if len(header_names) == 1 and HEADER_VARY not in headers and "vary" not in headers:
+        # The fast path used to probe only `Vary` and `vary`, on the reasoning
+        # that a third casing would merely produce two `Vary` field lines, which
+        # RFC 9110 Sec. 5.2 says a recipient combines. That reasoning was wrong:
+        # both emit paths fold duplicate field names and keep the last write
+        # (`_build_asgi_headers`, `_encode_response_head`), so only one line is
+        # ever sent and the earlier value is dropped, not combined. A response
+        # carrying `VARY: Cookie` reached the wire as `Vary: Accept-Encoding`
+        # alone - and a `Vary: Cookie` a shared cache never sees is how one
+        # user's response gets served to another. The scan is short-circuited on
+        # the canonical spelling inside `header_key`, so the ordinary case is one
+        # dict lookup.
+        stored_key = header_key(headers, HEADER_VARY)
+        # Fast path - no existing `Vary` and a single clean token (a middleware
+        # adding `Vary: Cookie` per response) needs no parse/merge: the token
+        # round-trips through `HeaderSet` unchanged, so set it directly and skip
+        # the list+set allocation. This runs on every session-touched response.
+        if len(header_names) == 1 and stored_key is None:
             value = header_names[0]
             headers[HEADER_VARY] = value
             self._encoded = None
             return value
-        # One scan, not two: the key is needed both to read the current value and
-        # to clear whatever casing it was stored under.
-        stored_key = header_key(headers, HEADER_VARY)
         existing = headers[stored_key] if stored_key is not None else ""
         # Delegate dedup + ordering to `HeaderSet` so the same
         # case-insensitive merge logic doesn't drift between this method

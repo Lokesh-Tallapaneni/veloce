@@ -100,32 +100,27 @@ def test_setting_a_date_header_after_clearing_it_writes_once(case):
     assert list(response.headers) == ["Expires"]
 
 
-# ── The knowing exception, pinned so a change is deliberate ──────────
+# ── add_vary merges under any spelling ──────────────────────
 
 
-@pytest.mark.parametrize("spelling", ["Vary", "vary"])
-def test_add_vary_merges_under_the_two_spellings_it_guards(spelling):
+@pytest.mark.parametrize("spelling", ["Vary", "vary", "VARY", "vAry"])
+def test_add_vary_merges_under_any_spelling(spelling):
     response = Response(body=b"x", headers={spelling: "Cookie"})
     merged = response.add_vary("Accept-Encoding")
     assert "Cookie" in merged
     assert "Accept-Encoding" in merged
 
 
-def test_add_vary_knowingly_does_not_probe_a_third_spelling():
-    """Documented, measured, and deliberate - not an oversight.
+def test_add_vary_no_longer_orphans_a_third_spelling():
+    """This was pinned as a knowing exception; the reasoning behind it was wrong.
 
-    A case-insensitive guard would scan the header dict whenever no `Vary` is
-    present, which is precisely when this fast path runs: 116 ns to 521 ns per
-    call on a four-header response, about 3% of a request. Framework code
-    reaches `Vary` through `add_vary` or the canonical constant.
-
-    The property still reports what is actually stored, which is the half that
-    was worth fixing.
+    The claim was that a third spelling merely produced two `Vary` field lines,
+    which a recipient combines. Both emit paths fold duplicate field names and
+    keep the last write, so the earlier value never reached the wire at all.
     """
     response = Response(body=b"x", headers={"VARY": "Cookie"})
-    # The getter is honest about it...
     assert "Cookie" in list(response.vary)
-    # ...while the fast path writes alongside rather than merging.
     response.add_vary("Accept-Encoding")
-    assert response.headers["VARY"] == "Cookie"
-    assert response.headers["Vary"] == "Accept-Encoding"
+    stored = [(k, v) for k, v in response.headers.items() if k.lower() == "vary"]
+    assert len(stored) == 1
+    assert set(stored[0][1].split(", ")) == {"Cookie", "Accept-Encoding"}

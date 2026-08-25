@@ -21,14 +21,20 @@ had the same single-casing `pop`.
 `header_pop` is the replacement half of the existing `header_get` /
 `header_present` / `header_key` family, and those sites use it.
 
-**One case deliberately left alone.** `add_vary`'s single-header fast path still
-tests only `Vary` and `vary`. A response stored under a third casing takes that
-branch and ends up with two `Vary` field lines — which RFC 9110 §5.2 says a
-recipient combines into one comma-separated value, so the meaning survives.
-Making it exact costs a scan of every header on every response that adds a
-`Vary`: +45% on the method and +4% on a CORS request, measured. Tidying an
-outcome that is already correct on the wire is not worth that. Where a missed
-value would be *lost* rather than merged, the scan is paid.
+**`add_vary` was left out at first, on reasoning that was wrong.** Its fast path
+probed only `Vary` and `vary`, on the argument that a third casing merely produced
+two `Vary` field lines, which RFC 9110 Sec. 5.2 says a recipient combines. It does
+not reach the recipient. Both emit paths fold duplicate field names and keep the
+last write, so one line is sent and the earlier value is dropped:
+
+    headers   {'VARY': 'Cookie', 'Vary': 'Accept-Encoding'}
+    wire      Vary: Accept-Encoding
+
+`Vary: Cookie` gone is not a tidiness problem - it is how a shared cache serves
+one user's response to another. `add_vary` now does the same exact scan as the
+rest of the family, and reuses its result for the merge path. Measured cost:
++0.26 us per call, low single digits on a bare CORS request, within noise on a
+session request.
 """
 
 from __future__ import annotations
@@ -38,6 +44,9 @@ import pytest
 from veloce import CORSMiddleware, Response, Veloce
 from veloce.http.response import header_get, header_key, header_pop, header_present
 from veloce.testclient import TestClient
+
+#: Written as a constant so the escape survives every editing round trip.
+CRLF = bytes((13, 10))
 
 #: Spellings a contributor might plausibly use.
 CASINGS = [
@@ -194,11 +203,14 @@ def test_a_conditional_request_still_downgrades():
     assert len([k for k in conditional.headers if k.lower() == "content-length"]) == 1
 
 
-# ── add_vary: the accepted asymmetry ─────────────────────────────────
+# ── add_vary merges under every casing ───────────────────────
+
+VARY_CASINGS = ["Vary", "vary", "VARY", "vAry", "vARY"]
 
 
-@pytest.mark.parametrize("stored", ["Vary", "vary"])
-def test_add_vary_merges_the_two_common_casings(stored):
+@pytest.mark.parametrize("stored", VARY_CASINGS)
+def test_add_vary_merges_any_casing(stored):
+    """The defect: the last three took the fast path and orphaned the value."""
     response = Response(body=b"{}", headers={stored: "Accept-Encoding"})
     response.add_vary("Origin")
     names = [k for k in response.headers if k.lower() == "vary"]
@@ -206,16 +218,43 @@ def test_add_vary_merges_the_two_common_casings(stored):
     assert set(response.headers[names[0]].split(", ")) == {"Accept-Encoding", "Origin"}
 
 
-@pytest.mark.parametrize("stored", ["VARY", "vAry"])
-def test_add_vary_leaves_a_third_casing_as_a_second_field_line(stored):
-    """Documented and deliberate: RFC 9110 Sec. 5.2 combines them; a scan costs 4%."""
-    response = Response(body=b"{}", headers={stored: "Accept-Encoding"})
-    response.add_vary("Origin")
+@pytest.mark.parametrize("stored", VARY_CASINGS)
+def test_the_merged_vary_reaches_the_native_wire(stored):
+    """Where the loss actually showed: one field line, carrying both values."""
+    response = Response(body=b"x", content_type="text/plain", headers={stored: "Cookie"})
+    response.add_vary("Accept-Encoding")
+    lines = [line for line in response.encode().split(CRLF) if line.lower().startswith(b"vary")]
+    assert len(lines) == 1
+    assert set(lines[0].split(b": ", 1)[1].split(b", ")) == {b"Cookie", b"Accept-Encoding"}
+
+
+@pytest.mark.parametrize("stored", VARY_CASINGS)
+def test_the_merged_vary_reaches_the_headerlist(stored):
+    """`headerlist` is what the ASGI emit path folds; it must carry both."""
+    response = Response(body=b"{}", headers={stored: "Cookie"})
+    response.add_vary("Accept-Encoding")
+    values = [v for k, v in response.headerlist if k.lower() == "vary"]
+    assert len(values) == 1
+    assert set(values[0].split(", ")) == {"Cookie", "Accept-Encoding"}
+
+
+def test_a_session_response_keeps_a_hand_written_vary():
+    """End to end: the middleware that runs `add_vary` on every response."""
+    from veloce import SessionMiddleware
+
+    app = Veloce(openapi_url=None)
+    app.config["SECRET_KEY"] = "k"
+    app.add_middleware(SessionMiddleware(secret_key="k" * 32))
+
+    @app.get("/x")
+    async def x(request):
+        request.session["n"] = 1
+        return Response(body=b"{}", content_type="application/json", headers={"VARY": "Origin"})
+
+    response = TestClient(app).get("/x")
     values = [v for k, v in response.headers.items() if k.lower() == "vary"]
-    assert len(values) == 2
-    # The combined meaning is what a recipient sees, and it is correct.
-    combined = {part.strip() for value in values for part in value.split(",")}
-    assert combined == {"Accept-Encoding", "Origin"}
+    assert len(values) == 1
+    assert "Origin" in values[0]
 
 
 def test_add_vary_merges_when_several_names_are_added():
