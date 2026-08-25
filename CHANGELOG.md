@@ -236,6 +236,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Body()` on a model parameter validates it, instead of passing the raw decoded body to the handler. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An MCP tool schema publishes a parameter marker's constraints, matching the OpenAPI document. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `CORSMiddleware`'s usage example lists `allow_headers`, which credentials require. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- Mounting an MCP transport twice no longer leaves the first mount unreachable by `url_for`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ## [0.17.1] - 2026-08-23
 
