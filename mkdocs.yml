@@ -54,6 +54,7 @@ extra_css:
 
 extra_javascript:
   - javascripts/version-badge.js
+  - javascripts/nav-indicator.js
 
 # Inject the package version (read from pyproject.toml) into config.extra.version
 # so the header badge tracks the published version automatically.
