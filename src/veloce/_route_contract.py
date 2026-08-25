@@ -30,6 +30,7 @@ from veloce._handler_plan import (
     MK_BODY,
     MK_FILE,
     MK_FORM,
+    build_plan,
 )
 from veloce._model_backend import ModelBackend, backend_of
 
@@ -84,7 +85,6 @@ class RouteContract:
             # Cold path: a caller reached lowering before the route's plan was
             # finalized. Build it on demand from the same builder registration
             # uses, so the lowering still reads the IR rather than the signature.
-            from veloce._handler_plan import build_plan  # cold path, no cycle at runtime
 
             plan = build_plan(info.handler)
         return cls(plan=plan, param_names=tuple(info.param_names))

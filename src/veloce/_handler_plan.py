@@ -28,6 +28,7 @@ from veloce.http.datastructures import UploadFile
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.routing.params import Body, Cookie, File, Form, Header, ParamBase, Path
+from veloce.websocket import WebSocket
 
 # `Depends` is imported lazily inside builders to break the dependency.py <->
 # _handler_plan.py cycle: dependency.py imports the plan API at module load,
@@ -161,6 +162,11 @@ def _raise_kwarg_ambiguity(
     Builds the dependency chain (when the offending parameter is in a nested
     `Depends`) from `_seen` so the message points at the exact handler.
     """
+    # local: breaks the exceptions <-> http.response cycle. `exceptions` imports
+    # `JSONResponse`, and `http.datastructures` imports back from
+    # `exceptions`, so importing it here at module scope leaves
+    # `exceptions` half-built. It cannot simply be hoisted: it works only
+    # when placed after the `http` imports, which isort reorders away.
     from veloce.exceptions import ConfigurationError
 
     marker_name = type(marker).__name__
@@ -650,8 +656,6 @@ def build_plan(
 
     ws_type: Any = None
     if websocket:
-        from veloce.websocket import WebSocket
-
         ws_type = WebSocket
 
     try:

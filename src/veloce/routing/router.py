@@ -1005,6 +1005,9 @@ class Router:
         order. Consolidating the import here keeps it off the per-request path
         (registration-time only) and in a single place.
         """
+        # local: breaks the routing.router <-> _handler_plan cycle.
+        # `_handler_plan` imports `routing.params`, which the routing package
+        # pulls in, so hoisting this leaves `_handler_plan` half-built.
         from veloce._handler_plan import K_REQUEST, build_plan, build_route_dep_plans
 
         if reuse_handler_plan is not None:

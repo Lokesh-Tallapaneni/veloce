@@ -41,6 +41,8 @@ from veloce._handler_plan import (
     MK_FORM,
     MK_HEADER,
     _slot_parallel_safe,
+    build_plan,
+    build_route_dep_plans,
     parallel_group_end,
 )
 from veloce._internal import (
@@ -664,8 +666,6 @@ class DependencyResolver:
         """Back-compat path - build a plan on demand. Tests and direct
         callers that did not pre-plan land here.
         """
-        from veloce._handler_plan import build_plan, build_route_dep_plans
-
         plan = build_plan(handler)
         rdp = build_route_dep_plans(route_dependencies) if route_dependencies else None
         return await self.resolve_plan(plan, request, path_params, rdp)

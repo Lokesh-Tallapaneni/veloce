@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
+- Three deferred imports of Veloce modules are hoisted to module scope and three are documented with the cycle they break. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SecurityHeadersMiddleware` applies its headers with one pass over the response's keys instead of a case-insensitive scan per header, saving 1-4 us per response. Output is unchanged. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `APPLICATION_ROOT`, `MAX_COOKIE_SIZE` and `PERMANENT_SESSION_LIFETIME` are removed from the config defaults and stop startup when set; pass `path=`, `max_cookie_size=` and `permanent_lifetime=` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
