@@ -352,6 +352,53 @@ def _emit_dep(lines: list[str], ns: dict[str, Any], slot: Any, ctx: dict[str, An
     return var
 
 
+def _emit_coerced(
+    lines: list[str],
+    j: int,
+    target_type: Any,
+    lhs: str,
+    value_expr: str,
+    name: str,
+    loc: str,
+    indent: str,
+) -> None:
+    """Emit `lhs = <value_expr coerced to target_type>` at `indent`.
+
+    `_coerce_value` decides what to do by walking a chain of `is` comparisons
+    against the type - a question already answered here, at registration. The
+    common answers are written into the source instead of re-asked per request:
+
+      `str` / `Any`   the helper returns its argument unchanged, so the value is
+                      read straight into the slot and there is no call at all.
+      `int` / `float` the conversion itself, guarded to raise the same
+                      `RequestValidationError` the helper raises for the same
+                      input - error payload included, since a compiled route and
+                      an interpreted one must answer a bad value identically.
+
+    Anything else keeps the call. `bool` needs the helper's string handling,
+    enums and `Literal` have their own branches, and the rest goes to Pydantic;
+    reimplementing those in generated source would be duplication, not speed.
+
+    Identity checks rather than a dict lookup: a target type is not always
+    hashable, and hashing one to find out would cost more than the two compares.
+    """
+    if target_type is str or target_type is Any:
+        lines.append(f"{indent}{lhs} = {value_expr}")
+        return
+    if target_type is int or target_type is float:
+        converter = "int" if target_type is int else "float"
+        message = f"Invalid value for {name}: expected {converter}"
+        lines.append(f"{indent}try:")
+        lines.append(f"{indent}    {lhs} = {converter}({value_expr})")
+        lines.append(f"{indent}except (ValueError, TypeError) as _e:")
+        lines.append(
+            f"{indent}    raise _RVE([{{'loc': [{loc!r}, {name!r}], "
+            f"'msg': {message!r}, 'type': 'type_error'}}]) from _e"
+        )
+        return
+    lines.append(f"{indent}{lhs} = _cv({value_expr}, _t{j}, {name!r}, {loc!r})")
+
+
 # ── Parameter / marker emission (shared with the param-only compiler) ──
 def _emit_scalar_param(
     lines: list[str], ns: dict[str, Any], j: int, slot: Any, target: str = "k"
@@ -375,15 +422,16 @@ def _emit_scalar_param(
         ns[f"_d{j}"] = slot._static_default
         default_expr = f"_d{j}"
 
+    effective = slot.target_type or str
     lines.append(f"    _v = path_params.get({name!r}, _M)")
     lines.append("    if _v is not _M:")
-    lines.append(f"        {target}[{name!r}] = _cv(_v, _t{j}, {name!r}, 'path')")
+    _emit_coerced(lines, j, effective, f"{target}[{name!r}]", "_v", name, "path", " " * 8)
     if slot.kind == K_QUERY:
         lines.append("    else:")
         lines.append("        _qp = request.query_params")
         lines.append(f"        if {name!r} in _qp:")
-        lines.append(
-            f"            {target}[{name!r}] = _cv(_qp[{name!r}], _t{j}, {name!r}, 'query')"
+        _emit_coerced(
+            lines, j, effective, f"{target}[{name!r}]", f"_qp[{name!r}]", name, "query", " " * 12
         )
         lines.append(f"        elif _hd{j}:")
         lines.append(f"            {target}[{name!r}] = {default_expr}")

@@ -165,6 +165,13 @@ The name between the colons is the handler, so a frame tells you which route
 generated it. The trailing digest distinguishes resolvers, and is stable for a
 given handler — it changes only when the generated code does.
 
+What you see there is the parameter binding for that route, with each type
+resolved into the code rather than looked up per request: a `str` parameter is
+read straight out of the query string, and an `int` or `float` appears as the
+conversion itself, wrapped so a bad value raises the same `422` it always did.
+A validation failure on a converted parameter therefore surfaces from generated
+source rather than from a shared helper — the response is unchanged.
+
 There is nothing to enable, and nothing to turn off in production: the source is
 registered once when the route is registered, and the request path never
 consults it.
