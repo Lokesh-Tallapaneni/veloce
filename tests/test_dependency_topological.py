@@ -14,7 +14,7 @@ import asyncio
 import time
 
 from veloce import Depends, Query, Security, Veloce
-from veloce._handler_plan import build_plan, compute_dep_waves
+from veloce._handler_plan import build_plan, compute_dep_waves, compute_parallel_groups
 from veloce.dependency import SecurityScopes
 from veloce.testclient import TestClient
 
@@ -42,7 +42,7 @@ def test_deps_separated_by_query_still_batch():
     # Slots: 0=Depends(a), 1=Query, 2=Depends(b). The two deps batch despite
     # the Query slot between them; the legacy contiguous map cannot.
     assert plan.dep_waves == [[0, 2]]
-    assert plan.parallel_groups == {}
+    assert compute_parallel_groups(plan.slots) == {}
 
 
 def test_three_independent_deps_one_wave():

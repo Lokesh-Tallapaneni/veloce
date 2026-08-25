@@ -40,7 +40,7 @@ async def _capture_serve_ssl(ssl_context: object) -> object:
 
     loop.create_server = fake_create_server  # type: ignore[method-assign]
 
-    task = asyncio.create_task(app._serve("127.0.0.1", 0, False, ssl_context))
+    task = asyncio.create_task(app._serve("127.0.0.1", 0, ssl_context))
     try:
         # Give `_serve` a moment to reach the (faked) create_server call.
         for _ in range(50):

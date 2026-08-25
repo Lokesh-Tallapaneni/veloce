@@ -892,9 +892,10 @@ class DependencyResolver:
             kwargs[slot.name] = None
 
     def _parallel_dep_group_end(self, slots: list[Any], start: int) -> int:
-        """Compat shim. The grouping is precomputed at registration
-        (`HandlerPlan.parallel_groups`); this delegates to the shared
-        implementation for direct callers and tests.
+        """Compat shim delegating to the shared implementation.
+
+        For direct callers and tests; the request path uses the plan's
+        precomputed `dep_waves` and never reaches this.
         """
         return parallel_group_end(slots, start)
 

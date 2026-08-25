@@ -834,16 +834,15 @@ async def _handle_register(server: MCPAuthorizationServer, request: Request) -> 
     # what proves it. `token_endpoint_auth_method: "none"` is how it says so.
     wants_secret = body.get("token_endpoint_auth_method", "none") != "none"
     secret = secrets.token_urlsafe(_CREDENTIAL_ENTROPY_BYTES) if wants_secret else None
-    await server.store.save_client(
-        OAuthClient(
-            client_id=client_id,
-            redirect_uris=tuple(uris),
-            client_secret_digest=_digest(secret) if secret is not None else None,
-            client_name=body.get("client_name"),
-            scopes=requested or allowed,
-            grant_types=tuple(grants),
-        )
+    stored = OAuthClient(
+        client_id=client_id,
+        redirect_uris=tuple(uris),
+        client_secret_digest=_digest(secret) if secret is not None else None,
+        client_name=body.get("client_name"),
+        scopes=requested or allowed,
+        grant_types=tuple(grants),
     )
+    await server.store.save_client(stored)
     registered: dict[str, Any] = {
         "client_id": client_id,
         "redirect_uris": list(uris),
@@ -853,8 +852,10 @@ async def _handle_register(server: MCPAuthorizationServer, request: Request) -> 
         "grant_types": list(grants),
         "response_types": ["code"],
     }
-    if body.get("client_name"):
-        registered["client_name"] = body["client_name"]
+    # From the stored client, like `grant_types` above: the registration response
+    # describes the registration, not the request that asked for it.
+    if stored.client_name:
+        registered["client_name"] = stored.client_name
     if secret is not None:
         # The only time the secret is ever readable; only its digest is kept.
         registered["client_secret"] = secret

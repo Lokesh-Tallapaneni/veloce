@@ -163,7 +163,7 @@ class ServingMixin:
         asyncio.set_event_loop(loop)
 
         try:
-            loop.run_until_complete(self._serve(host, port, access_log, ssl_context))
+            loop.run_until_complete(self._serve(host, port, ssl_context))
         except KeyboardInterrupt:
             pass
         finally:
@@ -190,7 +190,7 @@ class ServingMixin:
                 return
         instrument_access_log(cast("Veloce", self))
 
-    async def _serve(self, host: str, port: int, access_log: bool, ssl_context: Any = None) -> None:
+    async def _serve(self, host: str, port: int, ssl_context: Any = None) -> None:
         """Create the server and run forever."""
         # Deferred for import cost, not for a cycle: hoisting this import was
         # measured to add 11 modules and ~8ms to `import veloce`, which every

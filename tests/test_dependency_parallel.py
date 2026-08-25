@@ -219,8 +219,8 @@ def test_independent_deps_are_grouped():
 
     plan = build_plan(h)
     # Two independent plain deps form one parallel group [0, 2).
-    assert plan.parallel_groups == {0: 2}
-    assert plan.parallel_groups == compute_parallel_groups(plan.slots)
+    assert compute_parallel_groups(plan.slots) == {0: 2}
+    assert compute_parallel_groups(plan.slots) == {0: 2}
 
 
 def test_three_independent_deps_grouped():
@@ -236,7 +236,7 @@ def test_three_independent_deps_grouped():
     async def h(x: int = Depends(a), y: int = Depends(b), z: int = Depends(c)):
         return x + y + z
 
-    assert build_plan(h).parallel_groups == {0: 3}
+    assert compute_parallel_groups(build_plan(h).slots) == {0: 3}
 
 
 def test_security_dep_breaks_group():
@@ -250,7 +250,7 @@ def test_security_dep_breaks_group():
         return x
 
     # The Security() slot is not parallel-safe, so no multi-slot group forms.
-    assert build_plan(h).parallel_groups == {}
+    assert compute_parallel_groups(build_plan(h).slots) == {}
 
 
 def test_yield_dep_breaks_group():
@@ -263,7 +263,7 @@ def test_yield_dep_breaks_group():
     async def h(x: int = Depends(a), r: str = Depends(res)):
         return x
 
-    assert build_plan(h).parallel_groups == {}
+    assert compute_parallel_groups(build_plan(h).slots) == {}
 
 
 def test_cache_collision_breaks_group():
@@ -274,4 +274,4 @@ def test_cache_collision_breaks_group():
         return x + y
 
     # Same use_cache=True callable cannot share a parallel run.
-    assert build_plan(h).parallel_groups == {}
+    assert compute_parallel_groups(build_plan(h).slots) == {}

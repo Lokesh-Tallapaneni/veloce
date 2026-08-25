@@ -233,7 +233,9 @@ def run(app: Veloce, *, routes_final: bool = False) -> list[Finding]:
     """
     ctx = AuditContext(app=app, routes_final=routes_final)
     findings = _app_findings(app)
-    if routes_final:
+    # Read from `ctx`, not the parameter: the field is what a third-party
+    # `audit(ctx)` sees, so the two must not be able to disagree.
+    if ctx.routes_final:
         findings.extend(_unmatched_exclusions(app))
 
     # One pass: whether anything hardens responses is a question about the set,
@@ -243,7 +245,7 @@ def run(app: Veloce, *, routes_final: bool = False) -> list[Finding]:
         cls = component if isinstance(component, type) else type(component)
         if getattr(cls, "sets_hardening_headers", False):
             hardened = True
-        if getattr(cls, "audit_needs_routes", False) and not routes_final:
+        if getattr(cls, "audit_needs_routes", False) and not ctx.routes_final:
             continue
         report = getattr(component, "audit", None)
         if report is not None:

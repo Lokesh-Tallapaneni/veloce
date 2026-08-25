@@ -57,7 +57,7 @@ async def test_signal_fallback_when_add_signal_handler_unsupported(monkeypatch):
 
     monkeypatch.setattr(signal, "signal", fake_signal)
 
-    task = asyncio.create_task(app._serve("127.0.0.1", 0, False, None))
+    task = asyncio.create_task(app._serve("127.0.0.1", 0, None))
     try:
         for _ in range(100):
             await asyncio.sleep(0.01)
@@ -102,7 +102,7 @@ async def test_signal_fallback_restores_previous_handler(monkeypatch):
 
     monkeypatch.setattr(signal, "signal", fake_signal)
 
-    task = asyncio.create_task(app._serve("127.0.0.1", 0, False, None))
+    task = asyncio.create_task(app._serve("127.0.0.1", 0, None))
     try:
         for _ in range(100):
             await asyncio.sleep(0.01)

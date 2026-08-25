@@ -40,7 +40,7 @@ async def _capture_reuse_port() -> object:
 
     loop.create_server = fake_create_server  # type: ignore[method-assign]
 
-    task = asyncio.create_task(app._serve("127.0.0.1", 0, False, None))
+    task = asyncio.create_task(app._serve("127.0.0.1", 0, None))
     try:
         for _ in range(50):
             await asyncio.sleep(0.01)

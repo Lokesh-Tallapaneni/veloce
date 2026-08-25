@@ -488,7 +488,6 @@ class HandlerPlan:
         "route_dep_plans",
         "compiled_resolver",
         "compiled_graph_resolver",
-        "parallel_groups",
         "dep_waves",
         "wave_trigger",
         "wave_members",
@@ -516,11 +515,11 @@ class HandlerPlan:
         # compiled fast path; a sentinel = tried and not compilable.
         self.compiled_graph_resolver: Any = None
         # Parallel-dependency grouping, derived once here so the resolver does
-        # not re-scan slot safety on every request. `parallel_groups` is the
-        # legacy contiguous-run map (kept for the compat shims and external
-        # callers); `dep_waves` is the topological batching the resolver now
-        # drives, fusing independent deps across non-dependency slots.
-        self.parallel_groups = compute_parallel_groups(slots)
+        # not re-scan slot safety on every request. The contiguous-run map that
+        # used to be built alongside this was never read - the compat shim it
+        # named delegates to `parallel_group_end` instead - so every plan build
+        # paid for a map nothing consumed. `compute_parallel_groups` remains for
+        # direct callers.
         self.dep_waves = compute_dep_waves(slots)
         # Resolver-facing projection of the waves, built once here. Every batched
         # dependency is resolved at the earliest batched slot index
