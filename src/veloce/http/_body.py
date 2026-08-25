@@ -44,6 +44,26 @@ DEFAULT_HIGH_WATER_CHUNKS = 16
 DEFAULT_LOW_WATER_CHUNKS = 4
 
 
+#: Kept local so `http` does not import the `status` module for one integer.
+_HTTP_413_CONTENT_TOO_LARGE = 413
+
+
+def too_large_payload(limit: int | None) -> dict[str, Any]:
+    """The body both transports answer a `MAX_CONTENT_LENGTH` refusal with.
+
+    Built here so the two paths cannot describe the same refusal differently.
+    The ASGI path answered `{detail, status_code, limit}` as JSON while the
+    native server wrote the plain bytes `Content Too Large` with no content
+    type, so a client parsing the documented error shape got text from
+    `app.run()` and JSON from uvicorn - for the same request against the same app.
+    """
+    return {
+        "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
+        "status_code": _HTTP_413_CONTENT_TOO_LARGE,
+        "limit": limit,
+    }
+
+
 class RequestBodySource:
     """Async producer/consumer queue for one request's body bytes.
 

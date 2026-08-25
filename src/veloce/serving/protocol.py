@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import unquote
 
 import httptools
+import orjson
 
 from veloce import status
 from veloce._constants import (
@@ -38,7 +39,7 @@ from veloce.config import (
 )
 from veloce.config import Config as _Config
 from veloce.exceptions import RequestEntityTooLarge, WebSocketDisconnect
-from veloce.http._body import RequestBodySource
+from veloce.http._body import RequestBodySource, too_large_payload
 from veloce.http.request import Request
 from veloce.http.response import Response
 from veloce.websocket import WebSocket, compute_accept
@@ -965,8 +966,14 @@ class HttpProtocol(asyncio.Protocol):
         if self._current_source is not None:
             self._current_source.feed_eof()
             self._current_source = None
+        # The same body the ASGI path answers with, so one app does not describe
+        # the same refusal two ways depending on how it is served.
+        body = orjson.dumps(too_large_payload(self.app.config.get("MAX_CONTENT_LENGTH")))
         self._emit_http_error(
-            status.HTTP_413_CONTENT_TOO_LARGE, b"Content Too Large", b"Content Too Large"
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            b"Content Too Large",
+            body,
+            extra=b"Content-Type: application/json\r\n",
         )
 
     def _request_timeout(self) -> None:

@@ -34,7 +34,6 @@ from veloce._constants import (
     MSG_INTERNAL_SERVER_ERROR,
     MSG_METHOD_NOT_ALLOWED,
     MSG_NOT_FOUND,
-    MSG_REQUEST_BODY_EXCEEDS_MAX,
     STATE_INJECTED_RESPONSE,
 )
 from veloce._internal import (
@@ -69,6 +68,7 @@ from veloce.exceptions import (
     HTTPException,
 )
 from veloce.helpers import g
+from veloce.http._body import too_large_payload
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
@@ -236,11 +236,7 @@ class DispatchMixin:
         both reject with the identical `{detail, status_code, limit}` payload.
         """
         response: Response = JSONResponse(
-            {
-                "detail": MSG_REQUEST_BODY_EXCEEDS_MAX,
-                "status_code": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                "limit": max_size,
-            },
+            too_large_payload(max_size),
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
         )
         # No route matched on a reject, so no per-route exclusion chain exists.
