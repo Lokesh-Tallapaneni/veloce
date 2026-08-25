@@ -157,12 +157,11 @@ def test_a_url_default_func_is_registered_once():
     async def ping():
         return {}
 
-    before = len(app._url_default_funcs)
     app.register_blueprint(bp, url_prefix="/v1")
-    after_one = len(app._url_default_funcs)
+    after_one = list(app._bp_url_default_funcs["api"])
     app.register_blueprint(bp, url_prefix="/v2")
-    assert len(app._url_default_funcs) == after_one
-    assert after_one == before + 1
+    assert app._bp_url_default_funcs["api"] == after_one
+    assert after_one == [add_default]
 
 
 # ── two different blueprints are not affected ────────────────────────

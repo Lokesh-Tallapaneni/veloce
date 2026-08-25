@@ -209,6 +209,7 @@ class DispatchMixin:
         _bp_teardown_hooks: Any
         _teardown_appcontext_hooks: Any
         _url_value_preprocessors: Any
+        _bp_url_value_preprocessors: Any
         _ensure_pipeline: Callable[..., Any]
         _setup_openapi: Callable[..., Any]
         _openapi_setup: bool
@@ -498,6 +499,16 @@ class DispatchMixin:
                 # guarantees no url-value preprocessors and `is_fast_eligible`
                 # no route `defaults`, so the raw match params are final.
                 request.path_params = match.path_params
+                # One truthiness test in the common case. `is_bare` covers the
+                # app-level processors (they apply to every endpoint); a
+                # blueprint's apply to its own routes only, so they no longer
+                # cost the whole app its fast path - just this lookup.
+                if cp.bp_url_procs is not None:
+                    bp = _endpoint_blueprint(route_info.name)
+                    bp_procs = cp.bp_url_procs.get(bp) if bp is not None else None
+                    if bp_procs is not None:
+                        for proc in bp_procs:
+                            proc(route_info.name, request.path_params)
                 if route_info.is_request_only_plan:
                     result = await route_info.handler(
                         **{route_info.handler_plan.slots[0].name: request}
@@ -1027,6 +1038,13 @@ class DispatchMixin:
             endpoint = match.route_info.name
             for proc in self._url_value_preprocessors:
                 proc(endpoint, request.path_params)
+        if self._bp_url_value_preprocessors:
+            endpoint = match.route_info.name
+            bp = _endpoint_blueprint(endpoint)
+            bp_procs = self._bp_url_value_preprocessors.get(bp) if bp is not None else None
+            if bp_procs is not None:
+                for proc in bp_procs:
+                    proc(endpoint, request.path_params)
 
         return match
 
@@ -1037,13 +1055,20 @@ class DispatchMixin:
 
         Each processor receives `(endpoint, path_params)` and may mutate
         `path_params` in place (e.g. pop a locale segment into `g`). App-level
-        processors plus the blueprint-gated ones merged into the single list
-        run in registration order. Shared by HTTP dispatch and the MCP
-        route-backed tool path so a processor sees the same call on both.
+        App-level processors run first, then the ones the endpoint's blueprint
+        contributes - the same order the request hooks use. Shared by HTTP
+        dispatch and the MCP route-backed tool path so a processor sees the
+        same call on both.
         """
         if self._url_value_preprocessors:
             for proc in self._url_value_preprocessors:
                 proc(endpoint, path_params)
+        if self._bp_url_value_preprocessors:
+            bp = _endpoint_blueprint(endpoint)
+            bp_procs = self._bp_url_value_preprocessors.get(bp) if bp is not None else None
+            if bp_procs is not None:
+                for proc in bp_procs:
+                    proc(endpoint, path_params)
 
     # ── Dependencies and response building ─────────────────
 

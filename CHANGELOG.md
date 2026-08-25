@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
+
+- An app-level `url_value_preprocessor` runs before a blueprint's, matching the request hooks; registration order no longer interleaves the two. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `app.url_value_preprocessors` and `app.url_default_functions` key each blueprint's entries under its dotted name instead of flattening them under `None`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Three deferred imports of Veloce modules are hoisted to module scope and three are documented with the cycle they break. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `SecurityHeadersMiddleware` applies its headers with one pass over the response's keys instead of a case-insensitive scan per header, saving 1-4 us per response. Output is unchanged. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `APPLICATION_ROOT`, `MAX_COOKIE_SIZE` and `PERMANENT_SESSION_LIFETIME` are removed from the config defaults and stop startup when set; pass `path=`, `max_cookie_size=` and `permanent_lifetime=` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -70,6 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Veloce.use_secure_defaults()`; register `SecurityHeadersMiddleware(hsts_max_age=31536000)` and pass `secure=True` to the session middleware. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+
+- A blueprint `url_value_preprocessor` no longer runs on every request nor costs every route in the app its straight-line dispatch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `Veloce.process_response` runs the dispatch path, so a hook declaring only `response` no longer raises, a non-`Response` return no longer replaces the response, and `after_this_request` callbacks run. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 

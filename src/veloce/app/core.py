@@ -663,6 +663,14 @@ class Veloce(
         # runs inside url_for/url_path_for and can inject default kwargs.
         self._url_value_preprocessors: list[Callable] = []
         self._url_default_funcs: list[Callable] = []
+        # Blueprint-contributed URL processors, bucketed by the endpoint's
+        # dotted blueprint name exactly as the request hooks are. Merged into
+        # the app lists as gated closures, every blueprint's processor was
+        # tested on every request - the O(blueprints * processors) of no-op
+        # work the hook buckets exist to avoid - and one of them cost every
+        # route in the app its straight-line dispatch.
+        self._bp_url_value_preprocessors: dict[str, list[Callable]] = {}
+        self._bp_url_default_funcs: dict[str, list[Callable]] = {}
         # `url_build_error_handlers` - list of `(error, endpoint, values)`
         # callbacks consulted when `url_for` can't build a URL.
         self.url_build_error_handlers: list[Callable] = []
@@ -1431,16 +1439,21 @@ class Veloce(
     def url_value_preprocessors(self) -> dict[Any, list[Callable]]:
         """View of registered URL-value preprocessors.
 
-        Returns `{blueprint_name_or_None: [fn, ...]}`. Veloce flattens
-        blueprint preprocessors into the app list at registration time,
-        so the dict carries a single `None` key.
+        Returns `{blueprint_name_or_None: [fn, ...]}` - app-level processors
+        under `None`, then each blueprint's under its dotted name. A nested
+        blueprint's entry is the flattened chain that applies to its routes,
+        outermost first, which is what runs.
         """
-        return {None: list(self._url_value_preprocessors)}
+        view: dict[Any, list[Callable]] = {None: list(self._url_value_preprocessors)}
+        view.update({name: list(fns) for name, fns in self._bp_url_value_preprocessors.items()})
+        return view
 
     @property
     def url_default_functions(self) -> dict[Any, list[Callable]]:
-        """View of registered URL-default callbacks."""
-        return {None: list(self._url_default_funcs)}
+        """View of registered URL-default callbacks, keyed as `url_value_preprocessors`."""
+        view: dict[Any, list[Callable]] = {None: list(self._url_default_funcs)}
+        view.update({name: list(fns) for name, fns in self._bp_url_default_funcs.items()})
+        return view
 
     def shell_context_processor(self, func: Callable) -> Callable:
         """Register a function returning a dict to merge into `veloce shell`.
@@ -1502,11 +1515,18 @@ class Veloce(
         non-None return is used. If none recovers, a `BuildError` is
         raised.
         """
-        if self._url_default_funcs:
+        bp_defaults = None
+        if self._bp_url_default_funcs:
+            bp = _endpoint_blueprint(name)
+            if bp is not None:
+                bp_defaults = self._bp_url_default_funcs.get(bp)
+        if self._url_default_funcs or bp_defaults:
             # Copy so the callbacks can mutate without changing the caller's
             # kwargs dict.
             values = dict(path_params)
             for fn in self._url_default_funcs:
+                fn(name, values)
+            for fn in bp_defaults or ():
                 fn(name, values)
         else:
             values = path_params
@@ -1617,6 +1637,12 @@ class Veloce(
                 ("_before_request_hooks", "_scoped_before_hooks", self._bp_before_hooks),
                 ("_after_request_hooks", "_scoped_after_hooks", self._bp_after_hooks),
                 ("_teardown_request_hooks", "_scoped_teardown_hooks", self._bp_teardown_hooks),
+                (
+                    "_url_value_preprocessors",
+                    "_scoped_url_value_preprocessors",
+                    self._bp_url_value_preprocessors,
+                ),
+                ("_url_default_funcs", "_scoped_url_default_funcs", self._bp_url_default_funcs),
             )
         ):
             own = getattr(blueprint, own_attr)
@@ -1632,40 +1658,6 @@ class Veloce(
                 # contributes hooks but no routes (a route-bearing blueprint
                 # already bumps `_gen` through route registration).
                 self._gen += 1
-
-        # URL processors (L7) - wrapped so they only fire for endpoints
-        # belonging to the blueprint. The endpoint string is the first
-        # arg of the `(endpoint, values)` callable.
-        url_gate_prefix = f"{bp_name}."
-
-        def _proc_gate(fn: Callable, gate_prefix: str) -> Callable:
-            def _gated(endpoint: str, values: dict) -> Any:
-                if endpoint and endpoint.startswith(gate_prefix):
-                    return fn(endpoint, values)
-                return None
-
-            return _gated
-
-        if not already_registered:
-            for fn in blueprint._url_value_preprocessors:
-                self._url_value_preprocessors.append(_proc_gate(fn, url_gate_prefix))
-            for fn in blueprint._url_default_funcs:
-                self._url_default_funcs.append(_proc_gate(fn, url_gate_prefix))
-        # A nested child's processors gate on the child's own prefix. Gated at
-        # the parent's, a child's `url_value_preprocessor` rewrote the path
-        # params of every route under the parent, siblings included.
-        for scoped_attr, target in (
-            ()
-            if already_registered
-            else (
-                ("_scoped_url_value_preprocessors", self._url_value_preprocessors),
-                ("_scoped_url_default_funcs", self._url_default_funcs),
-            )
-        ):
-            for suffix, fns in getattr(blueprint, scoped_attr).items():
-                prefix = f"{bp_name}.{suffix}."
-                for fn in fns:
-                    target.append(_proc_gate(fn, prefix))
 
         # Error handlers stay scoped to the blueprint's own routes: bucket them
         # under the blueprint name rather than merging into the app-global

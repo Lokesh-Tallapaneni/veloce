@@ -99,6 +99,7 @@ class CompiledPipeline:
         "has_static_handlers",
         "has_asgi_mounts",
         "is_bare",
+        "bp_url_procs",
     )
 
     # Slot annotations (no runtime cost - `__slots__` owns storage). Each HTTP
@@ -122,6 +123,7 @@ class CompiledPipeline:
     # url-value preprocessors, no middleware. Rides the same generation counter,
     # so hook/middleware registration must bump `_gen` to keep it fresh.
     is_bare: bool
+    bp_url_procs: dict[str, list] | None
 
 
 # Phase id -> the `CompiledPipeline` slot it fuses into. Kept beside the phase
@@ -176,6 +178,9 @@ def compile_pipeline(app: Veloce) -> CompiledPipeline:
     # Straight-line dispatch eligibility for the whole app: every feature the
     # fast path would skip must be absent. Computed here so dispatch reads one
     # boolean instead of probing each list per request.
+    # `None` when no blueprint registered one, so the fast path tests an
+    # attribute rather than walking a dict that is empty on almost every app.
+    cp.bp_url_procs = app._bp_url_value_preprocessors or None
     cp.is_bare = (
         cp.http_pre is None
         and cp.http_post is None
