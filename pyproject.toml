@@ -185,6 +185,14 @@ dev = [
     # CodSpeed's pytest plugin — powers the `benchmarks/` suite (`pytest
     # benchmarks --codspeed`) that CI runs to track request-path performance.
     "pytest-codspeed>=5.0.3",
+    # The libraries `docs/guide/databases.md` and `docs/how-to/graphql.md` are
+    # written against. Their examples had never been executed because these were
+    # not installed, and the GraphQL page's install line was wrong as a result.
+    # The guarded tests skip without them; installing them is what makes the
+    # guard run.
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.19",
+    "strawberry-graphql[asgi]>=0.230",
 ]
 docs = [
     "mkdocs-material[imaging]>=9.5",
