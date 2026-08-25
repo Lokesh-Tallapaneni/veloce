@@ -1141,10 +1141,11 @@ def _extract_request_body(
 
 
 # Component-schema names for the auto-generated validation-error response. The
-# `{"detail": [{"loc", "msg", "type"}, ...]}` payload these describe is exactly
-# what `request_validation_exception_handler` renders for a 422, so the document
-# advertises the body the resolver actually returns when a path/query/header/
-# cookie/body/form parameter fails validation.
+# `{"detail": [{"loc", "msg", "type"}, ...], "status_code": 422}` payload these
+# describe is what the dispatcher emits for a failed path/query/header/cookie/
+# body/form parameter, so the document advertises the body a client receives.
+# (`request_validation_exception_handler` is exported for applications that want
+# to install it; it is not registered by default and is not this path.)
 _VALIDATION_ERROR_SCHEMA_NAME = "ValidationError"
 _HTTP_VALIDATION_ERROR_SCHEMA_NAME = "HTTPValidationError"
 
@@ -1185,7 +1186,10 @@ _VALIDATION_ERROR_COMPONENT_SCHEMAS: dict[str, dict[str, Any]] = {
                 "type": "array",
                 "title": "Detail",
                 "items": {"$ref": f"#/components/schemas/{_VALIDATION_ERROR_SCHEMA_NAME}"},
-            }
+            },
+            # The dispatcher emits this alongside `detail`; a schema that omits
+            # it describes a body no client actually receives.
+            "status_code": {"type": "integer", "title": "Status Code"},
         },
     },
 }
@@ -1927,9 +1931,10 @@ def _nonce_attr(request: Any) -> str:
     regardless of its source per CSP Level 3). An app with no CSP nonce armed
     gets an empty string, leaving the markup byte-identical to before.
     """
-    # Imported here rather than at module top: `contrib.openapi` is loaded for
-    # every app that serves a schema, and this pulls the middleware package in
-    # only for apps that actually render the docs pages.
+    # Imported here rather than at module top. It buys nothing on import cost -
+    # `veloce/__init__` imports `contrib.templating`, which imports this same
+    # module, so `veloce.middleware.security` is already loaded after a bare
+    # `import veloce` - but it keeps this module's own import graph shallow.
     from veloce.middleware.security import csp_nonce
 
     nonce = csp_nonce(request)

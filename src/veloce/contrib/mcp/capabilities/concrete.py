@@ -3,9 +3,11 @@
 Each capability wraps the server handlers for its spec area and contributes
 both its dispatch-map entries (`handlers`) and its `initialize` advertisement
 (`advertise`). Resources and prompts advertise only when the app exposes at
-least one, so the client does not probe an empty primitive. Tools and logging
-are always advertised: every server serves tools, and any tool may emit a log
-message the client can gate with ``logging/setLevel``.
+least one, so the client does not probe an empty primitive. Tools are always
+advertised, because every server serves tools. Logging is advertised in the
+`initialize` handshake for the same reason - any tool may emit a log message the
+client gates with ``logging/setLevel`` - but not on the modern discovery
+document, where the revision dropped it.
 """
 
 from __future__ import annotations

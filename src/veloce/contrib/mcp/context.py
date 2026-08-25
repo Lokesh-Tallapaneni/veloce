@@ -808,7 +808,10 @@ class MCPContext:
         """Issue a server->client request, gated on the client's advertised capability."""
         if self._requester is None:
             raise RuntimeError(f"{method} requires a bidirectional transport")
-        if capability not in self._client_capabilities:
+        # Through `client_supports`, so the two really are one lookup: a plain
+        # `in` test accepted a client that advertised `"sampling": false`, which
+        # is a client explicitly declining, and issued the request anyway.
+        if not self.client_supports(capability):
             raise MCPCapabilityError(capability)
         return await self._requester(method, params)
 

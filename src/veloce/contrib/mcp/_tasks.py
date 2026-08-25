@@ -74,8 +74,6 @@ _STREAM_BUFFER_LIMIT = 5 * 1024 * 1024
 _STREAM_DRAIN_TIMEOUT = 30.0
 
 
-# The `_meta` key a modern request states its revision in. Duplicated here rather
-# than imported from `server`, which imports this module.
 def _client_declared_tasks() -> bool:
     """Whether the calling client advertised the tasks extension."""
     session = _session_var.get()

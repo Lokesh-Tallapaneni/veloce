@@ -90,8 +90,12 @@ def _fixture_app() -> Veloce:
 # orjson serialization with sorted keys yields exactly this byte sequence
 # for the fixture above. Drift in either length or sha256 means the
 # refactor altered observable output.
-_EXPECTED_BYTES_LEN = 3359
-_EXPECTED_SHA256 = "976330372234fe156a0993c8515adb7165821e125fc3e917745f58ee0075ff9e"
+#
+# Rebaselined once since: `HTTPValidationError` gained a `status_code`
+# property, because the 422 the dispatcher emits carries one and the schema
+# that omitted it described a body no client receives.
+_EXPECTED_BYTES_LEN = 3414
+_EXPECTED_SHA256 = "53eeafad323b47d157fac8cbefce51d8f82616445355f5bcc6df1fa2dc6da776"
 
 
 def test_get_openapi_schema_orchestrator_byte_identical() -> None:

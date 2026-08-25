@@ -11,8 +11,8 @@ runner calls the server's shared `tools/call` result builder - so a tool exposed
 from a route stays one handler behind both doors: the HTTP request, the
 synchronous tool call, and the task all run the identical dispatch path. Task
 support is opt-in per tool (`@app.mcp_tool(task_support=True)` or
-``mcp_task_support=True`` on a route); a tool that does not opt in advertises
-``execution.taskSupport: "forbidden"`` and rejects a task-augmented call.
+``mcp_task_support=True`` on a route); a tool that does not opt in omits the
+``execution`` field from its listing entirely and rejects a task-augmented call.
 
 A task moves through the spec's lifecycle - ``working`` while the handler runs,
 then ``completed`` / ``failed`` on its outcome, or ``cancelled`` after
