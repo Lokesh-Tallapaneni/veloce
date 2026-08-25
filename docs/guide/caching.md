@@ -27,6 +27,48 @@ within the next 60 seconds return the cached value without re-running it. Put
 `@cached` **below** the route decorator so the route registers the wrapped
 handler.
 
+!!! warning "`cached` deduplicates in time, not across concurrent callers"
+    A second call *after* the first has stored its result is served from the
+    cache. Calls that arrive while the first is still running are not: each one
+    misses, and each one runs the function.
+
+    ```python
+    # Ten requests arriving together on a cold key run `build` ten times.
+    await asyncio.gather(*[build(1) for _ in range(10)])
+    ```
+
+    Every caller still gets a correct value and the cache converges on one
+    entry — but if the work behind the cache is expensive enough that a burst of
+    concurrent misses matters (a "stampede"), do the lookup yourself and
+    re-check inside the lock:
+
+    ```python
+    lock = asyncio.Lock()
+
+
+    async def build(n: int) -> dict:
+        key = f"build:{n}"
+        hit = await cache.get(key)
+        if hit is not None:
+            return hit
+        async with lock:
+            # Re-check: another task may have filled it while we queued.
+            hit = await cache.get(key)
+            if hit is not None:
+                return hit
+            value = await expensive(n)
+            await cache.set(key, value, ttl=60)
+            return value
+    ```
+
+    Ten concurrent callers run `expensive` once. Note the re-check is what does
+    the work — wrapping a `@cached` function's *body* in a lock only serialises
+    the callers, because the cache lookup has already happened by then, and all
+    ten still run.
+
+    Single-flight is not built in because it would put a lock acquisition on
+    every lookup, including the hits, which is the common case.
+
 ## Cache keys
 
 By default the key is the function's qualified name plus a digest of its
