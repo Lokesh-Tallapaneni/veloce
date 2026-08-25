@@ -98,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The MCP transport trims a bearer token as RFC 7235 allows; a token carrying other whitespace is now refused. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `HttpSessionStore.resolve` no longer scans every live session, so MCP request cost stays flat under load. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `@app.middleware("http")` raises `TypeError` for options it cannot honour instead of dropping them. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A `MethodView` verb method declaring a parameter marker or `Depends()` raises `TypeError` at class definition. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Removed
 
@@ -221,6 +222,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The MCP transport does not send an SSE stream to a client that refused it with `q=0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `RedisRateLimitBackend` falls back to optimistic locking on a server with scripting disabled. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Dynamic client registration stores the requested `grant_types` and echoes what it stored. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `jsonable_encoder` applies `include` and `exclude` below a model, as documented. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ## [0.17.1] - 2026-08-23
 
