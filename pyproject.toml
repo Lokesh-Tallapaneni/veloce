@@ -143,6 +143,10 @@ dev = [
     # In-memory Redis fake so the contrib.redis store/limiter tests run without a
     # real Redis server.
     "fakeredis>=2.20",
+    # `fakeredis` executes Lua only with a runtime available; without it the
+    # Lua/Python rate-limit parity guard would skip and the duplication of each
+    # built-in strategy would be unchecked.
+    "lupa>=2.0",
     # CodSpeed's pytest plugin — powers the `benchmarks/` suite (`pytest
     # benchmarks --codspeed`) that CI runs to track request-path performance.
     "pytest-codspeed>=5.0.3",

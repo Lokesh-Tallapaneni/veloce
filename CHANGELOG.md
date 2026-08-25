@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RateLimitStrategy.lua_script` / `lua_argv`, an opt-in server-side form a backend can run in place of the Python `evaluate`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `veloce.http.response.header_pop`, the replacement half of `header_get` / `header_present`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `Veloce()` warns when an unrecognised keyword looks like a misspelled parameter (`tittle=` for `title=`), which was previously absorbed into `app.extra` in silence. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -49,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HeaderMismatchError` rejects a modern MCP request whose standard headers disagree with its body. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Changed
+
+- `RedisRateLimitBackend` runs a built-in strategy as a Lua script - one round trip instead of three, executed atomically, with no contended-key fallback that could admit requests over the limit. A custom strategy keeps the `WATCH` path unless it declares `lua_script`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - An MCP JSON-RPC envelope is encoded as protocol on every transport, so a custom `json_provider_class` no longer injects its keys into protocol frames and `JSONIFY_PRETTYPRINT_REGULAR` no longer inflates each SSE frame. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 

@@ -132,12 +132,21 @@ class RedisRateLimitBackend(RateLimitBackend):
     `RateLimitMiddleware` to enforce one limit across every worker and host,
     rather than the per-worker count of the default `InMemoryRateLimitBackend`.
 
-    Each check runs the strategy inside a ``WATCH``/``MULTI`` transaction: the
-    client's state is read under a watch, the pure strategy computes the next
-    state, and the write commits only if no concurrent request changed the key -
-    otherwise it retries. This keeps the read-modify-write atomic without a Lua
-    script. State is stored as JSON under ``<prefix><key>`` with the strategy's
-    TTL, so idle clients expire on their own.
+    A built-in strategy runs as a Lua script: the whole read-modify-write executes
+    inside Redis, atomically, in **one round trip** rather than the three a
+    ``WATCH``/``MULTI`` transaction costs. There is no watch to lose, so no retry
+    loop, and no contended-key fallback that abandons atomicity - which mattered,
+    because a rate limiter's hot key is contended by definition.
+
+    A strategy defined outside Veloce has no Lua form and keeps the
+    ``WATCH``/``MULTI`` path: the state is read under a watch, the pure Python
+    `evaluate` computes the next state, and the write commits only if no
+    concurrent request changed the key, otherwise it retries. Declaring
+    `lua_script` on a custom strategy opts it into the faster path.
+
+    State is stored as JSON under ``<prefix><key>`` with the strategy's TTL, so
+    idle clients expire on their own, and the two forms write the same shape - a
+    rolling upgrade can run both against one key.
 
     Usage::
 
@@ -155,17 +164,20 @@ class RedisRateLimitBackend(RateLimitBackend):
         )
     """
 
-    __slots__ = ("_redis", "_prefix", "_watch_error")
+    __slots__ = ("_redis", "_prefix", "_watch_error", "_no_script_error", "_digests")
 
     def __init__(self, client: Redis, *, prefix: str = "veloce:ratelimit:") -> None:
         # redis is present whenever this backend is constructed; importing the
         # exception class here (not per request) keeps the module importable
         # without redis installed while giving the retry loop a concrete type.
-        from redis.exceptions import WatchError
+        from redis.exceptions import NoScriptError, WatchError
 
         self._redis = client
         self._prefix = prefix
         self._watch_error = WatchError
+        self._no_script_error = NoScriptError
+        # script text -> SHA1, so a repeat call is one `EVALSHA` round trip.
+        self._digests: dict[str, str] = {}
 
     @classmethod
     def from_url(
@@ -176,6 +188,53 @@ class RedisRateLimitBackend(RateLimitBackend):
 
     async def evaluate(self, key: str, strategy: RateLimitStrategy, now: float) -> RateLimitResult:
         redis_key = self._prefix + key
+        script = strategy.lua_script
+        if script is not None:
+            return await self._evaluate_lua(redis_key, strategy, script, now)
+        return await self._evaluate_watched(redis_key, strategy, now)
+
+    async def _evaluate_lua(
+        self, redis_key: str, strategy: RateLimitStrategy, script: str, now: float
+    ) -> RateLimitResult:
+        """Run the strategy inside Redis, in one round trip.
+
+        A Lua script is the whole read-modify-write, executed atomically by the
+        server: no `WATCH` to lose, no retries, and no contended-key fallback that
+        gives up on atomicity. That fallback mattered - a rate limiter's hot key
+        is contended *by definition*, and past the retry budget the watched path
+        admits requests over the limit.
+
+        The digest is cached and `EVALSHA` used; a server that has not seen the
+        script (a restart, a failover, `SCRIPT FLUSH`) answers `NOSCRIPT`, and it
+        is loaded and retried once.
+        """
+        digest = self._digests.get(script)
+        argv = strategy.lua_argv(now)
+        if digest is None:
+            digest = await self._redis.script_load(script)
+            self._digests[script] = digest
+        try:
+            raw = await self._redis.evalsha(digest, 1, redis_key, *argv)
+        except self._no_script_error:
+            # The server forgot the script - a restart, a failover, or a
+            # `SCRIPT FLUSH`. Reload and retry once. Matched on the exception
+            # class rather than the message: redis-py raises `NoScriptError`,
+            # whose text is "No matching script", so a substring test for
+            # "NOSCRIPT" silently never fired.
+            digest = await self._redis.script_load(script)
+            self._digests[script] = digest
+            raw = await self._redis.evalsha(digest, 1, redis_key, *argv)
+        allowed, limit, remaining, retry_after, reset = (int(v) for v in raw)
+        return RateLimitResult(bool(allowed), limit, remaining, retry_after, reset)
+
+    async def _evaluate_watched(
+        self, redis_key: str, strategy: RateLimitStrategy, now: float
+    ) -> RateLimitResult:
+        """Run a strategy that has no Lua form, under optimistic locking.
+
+        The path a strategy defined outside Veloce takes: `evaluate` is Python, so
+        the read-modify-write happens here and `WATCH` guards it.
+        """
         async with self._redis.pipeline() as pipe:
             for _ in range(_MAX_WATCH_RETRIES):
                 try:

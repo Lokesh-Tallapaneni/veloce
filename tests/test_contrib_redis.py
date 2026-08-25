@@ -138,6 +138,19 @@ def test_token_bucket_over_redis(client):
         assert tc.get("/", headers=_UA).status_code == 429
 
 
+class _NoLuaFixedWindow(FixedWindow):
+    """`FixedWindow` with its Lua form removed.
+
+    The `WATCH`/`MULTI` path is the one a strategy defined outside Veloce takes -
+    a built-in runs as a Lua script in one round trip instead. These two tests
+    are about that machinery, so they drive it with a strategy that has no script.
+    """
+
+    __slots__ = ()
+
+    lua_script = None
+
+
 async def test_backend_retries_on_watch_conflict(client):
     # Force the first EXEC to abort with a WatchError by mutating the watched
     # key mid-transaction; the backend must re-read and retry, not error.
@@ -175,7 +188,7 @@ async def test_backend_retries_on_watch_conflict(client):
             return await self._inner.execute()
 
     client.pipeline = lambda *a, **k: RetryPipe(real_pipeline(*a, **k))
-    result = await backend.evaluate("c", FixedWindow(5, 60), 0.0)
+    result = await backend.evaluate("c", _NoLuaFixedWindow(5, 60), 0.0)
     assert result.allowed
     assert state["first"] is False  # the retry branch ran
 
@@ -214,7 +227,7 @@ async def test_backend_falls_back_after_exhausting_retries(client):
             return await self._inner.execute()
 
     client.pipeline = lambda *a, **k: AlwaysConflictPipe(real_pipeline(*a, **k))
-    result = await backend.evaluate("hot", FixedWindow(5, 60), 0.0)
+    result = await backend.evaluate("hot", _NoLuaFixedWindow(5, 60), 0.0)
     assert result.allowed
     # The fallback wrote state through the plain (non-pipeline) client.
     assert await client.get("veloce:ratelimit:hot") is not None
