@@ -555,8 +555,18 @@ class DependencyResolver:
             # Security scopes, and no yield-teardown deps - compiles to a
             # straight-line `async` resolver too. It reads neither the override
             # map nor the MCP context, so it is used only when both are absent;
-            # an active override or MCP context falls through to the interpreter,
-            # which applies them. The compiled body is self-contained (its own
+            # an active override falls through to the interpreter, which applies
+            # them.
+            #
+            # The `_mcp_context` half of that test is a guard, not a live branch:
+            # the MCP door does not call `resolve()` at all - it walks the
+            # top-level slots itself in `contrib/mcp/plan_bridge.bind_arguments`
+            # so it can source arguments from the JSON map rather than the query
+            # string, and reaches this class only through `_exec_depends` for
+            # each sub-graph. So an MCP tool call never reaches this compiled
+            # path whether or not a context is set, and setting one costs it
+            # nothing here. The guard stays because a direct caller can set both.
+            # The compiled body is self-contained (its own
             # locals dedup shared deps), so it runs after the `reset()` above
             # without touching `_cache` / `_teardowns` / `_scope_stack`.
             if not self._overrides and self._mcp_context is None:

@@ -1057,7 +1057,14 @@ class HttpProtocol(asyncio.Protocol):
         # The same body the ASGI path answers with, so one app does not describe
         # the same refusal two ways depending on how it is served.
         body = dumps_for(self.app, too_large_payload(self.app.config.get("MAX_CONTENT_LENGTH")))
-        if request is None:
+        post = None
+        if request is not None:
+            cp = self.app._ensure_pipeline()
+            post = cp.http_post if cp is not None else None
+        if post is None:
+            # No request, or no response phase to run: the refusal is written
+            # synchronously, before this callback returns, exactly as it always
+            # was. An app with no response middleware pays nothing for this.
             self._emit_http_error(
                 status.HTTP_413_CONTENT_TOO_LARGE,
                 b"Content Too Large",
@@ -1070,21 +1077,19 @@ class HttpProtocol(asyncio.Protocol):
             body=body,
             content_type=MIME_JSON,
         )
-        # The response phase may await and this is a synchronous parser callback,
-        # so the write is deferred to a task. `_oversized` is already latched, so
+        # A middleware may await, and this is a synchronous parser callback, so
+        # the write is deferred to a task. `_oversized` is already latched, so
         # nothing further is parsed off this connection in the meantime.
-        task = self.loop.create_task(self._emit_refusal(request, response))
+        task = self.loop.create_task(self._emit_refusal(post, cast("Request", request), response))
         HttpProtocol._active_tasks.add(task)
         task.add_done_callback(HttpProtocol._active_tasks.discard)
 
-    async def _emit_refusal(self, request: Request, response: Response) -> None:
+    async def _emit_refusal(
+        self, post: tuple[Callable, ...], request: Request, response: Response
+    ) -> None:
         """Run the response phase over a refusal, then frame it and close."""
         try:
-            cp = self.app._ensure_pipeline()
-            if cp is not None and cp.http_post is not None:
-                response = await self.app._run_response_phase(
-                    cp.http_post, request, response, False
-                )
+            response = await self.app._run_response_phase(post, request, response, False)
         except Exception:
             # A middleware failure must not swallow the refusal: send what was
             # built, and record why its headers are missing.
