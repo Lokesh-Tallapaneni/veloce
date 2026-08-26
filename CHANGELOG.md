@@ -148,6 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A validation error reports an array index in `loc` as an integer on every body path, matching the published `ValidationError` schema. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude_unset` and `exclude_defaults` to a nested model, not only to one passed in directly. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude_none` to an arbitrary object's attributes, matching every other branch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `response_model_include` / `response_model_exclude` shape the OpenAPI response schema, so the document names exactly the fields the route sends. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

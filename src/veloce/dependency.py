@@ -953,7 +953,7 @@ class DependencyResolver:
             raise RequestValidationError(
                 [
                     {
-                        "loc": [loc, *(str(part) for part in err["loc"])],
+                        "loc": [loc, *err["loc"]],
                         "msg": err["msg"],
                         "type": err["type"],
                     }
@@ -1021,7 +1021,7 @@ class DependencyResolver:
             raise RequestValidationError(
                 [
                     {
-                        "loc": ["body", *(str(part) for part in err["loc"])],
+                        "loc": ["body", *err["loc"]],
                         "msg": err["msg"],
                         "type": err["type"],
                     }
@@ -1124,7 +1124,7 @@ class DependencyResolver:
             raise RequestValidationError(
                 [
                     {
-                        "loc": ["body", *(str(part) for part in err["loc"])],
+                        "loc": ["body", *err["loc"]],
                         "msg": err["msg"],
                         "type": err["type"],
                     }

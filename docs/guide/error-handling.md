@@ -355,6 +355,12 @@ one entry per failed field with `loc` (where it failed), `msg`, and `type`:
 }
 ```
 
+`loc` is the path to the failing value. Its parts are strings for field and key
+names and **integers for array indices**, so an error inside the second element
+of a list reports `["body", "lines", 1, "qty"]`. That union is what the
+generated `ValidationError` schema declares, and it keeps an index `1` distinct
+from a dict key `"1"`.
+
 The exported [`request_validation_exception_handler`](../reference/exceptions.md#veloce.request_validation_exception_handler)
 renders the same per-field `detail` list as `{"detail": [...]}` (without the
 top-level `status_code` field the default dispatch adds). Register it explicitly,
