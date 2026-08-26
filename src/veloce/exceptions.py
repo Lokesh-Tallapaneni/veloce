@@ -226,6 +226,12 @@ class RequestEntityTooLarge(HTTPException):
     code = HTTP_413_REQUEST_ENTITY_TOO_LARGE
     description = "Content Too Large"
 
+    #: The `MAX_CONTENT_LENGTH` the body exceeded, when the raiser knows it.
+    #: Rendered into the error body so a streamed body's refusal describes
+    #: itself the same way the eager refusal paths do; `None` when a caller
+    #: raises this directly without a limit to report.
+    limit: int | None = None
+
 
 class RequestURITooLong(HTTPException):
     code = HTTP_414_REQUEST_URI_TOO_LONG

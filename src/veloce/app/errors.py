@@ -48,10 +48,16 @@ def http_exception_payload(exc: Any) -> dict[str, Any]:
     validation error's structured `.errors` list is emitted verbatim.
     """
     structured = getattr(exc, "errors", None)
-    return {
+    payload: dict[str, Any] = {
         "detail": structured if structured is not None else exc.detail,
         "status_code": exc.status_code,
     }
+    # A body-limit refusal carries the limit it tripped, so a streamed body's
+    # 413 describes itself the same way the eager refusal paths do.
+    limit = getattr(exc, "limit", None)
+    if limit is not None:
+        payload["limit"] = limit
+    return payload
 
 
 class ErrorsMixin:

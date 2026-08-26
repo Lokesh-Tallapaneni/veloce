@@ -216,6 +216,34 @@ class AsgiMixin:
         _override_subplans: Any
         _dependency_overrides: Any
 
+    async def _refuse_too_large(
+        self,
+        send: Any,
+        method: str,
+        path: str,
+        query: str,
+        raw_headers: Any,
+        scope: Any,
+        cp: Any,
+        max_size: int | None,
+    ) -> None:
+        """Emit the `413` for an over-`MAX_CONTENT_LENGTH` body.
+
+        One place rather than three. The body may be refused at three points -
+        on a declared `Content-Length`, on the running total of a buffered read,
+        and on the running total of a streamed one - and each built the same
+        throwaway `Request` to give the response phase something to run against.
+        A refusal path that is written out per site is how one of them ends up
+        fixed and the others not, which is what happened to the native
+        transport's own 413.
+        """
+        await self._emit_response(
+            send,
+            await self._body_too_large_response(
+                Request(method, path, query, raw_headers, b"", scope=scope), cp, max_size
+            ),
+        )
+
     async def _emit_response(self, send: Callable, response: Response) -> None:
         """Emit an already-built `Response` over ASGI, headers included.
 
@@ -512,13 +540,8 @@ class AsgiMixin:
             # as an opaque CORS failure rather than as a 413. Paid only by a
             # request that is being refused.
             if declared_over:
-                await self._emit_response(
-                    send,
-                    await self._body_too_large_response(
-                        Request(scope["method"], path, query, raw_headers, b"", scope=scope),
-                        cp,
-                        max_size,
-                    ),
+                await self._refuse_too_large(
+                    send, scope["method"], path, query, raw_headers, scope, cp, max_size
                 )
                 return
 
@@ -566,26 +589,16 @@ class AsgiMixin:
                             body_parts.append(chunk)
                             received += len(chunk)
                             if max_size is not None and received > max_size:
-                                await self._emit_response(
-                                    send,
-                                    await self._body_too_large_response(
-                                        Request(method, path, query, raw_headers, b"", scope=scope),
-                                        cp,
-                                        max_size,
-                                    ),
+                                await self._refuse_too_large(
+                                    send, method, path, query, raw_headers, scope, cp, max_size
                                 )
                                 return
                         if not message.get("more_body", False):
                             break
                     body = b"".join(body_parts)
                 elif max_size is not None and len(body) > max_size:
-                    await self._emit_response(
-                        send,
-                        await self._body_too_large_response(
-                            Request(method, path, query, raw_headers, b"", scope=scope),
-                            cp,
-                            max_size,
-                        ),
+                    await self._refuse_too_large(
+                        send, method, path, query, raw_headers, scope, cp, max_size
                     )
                     return
                 request = Request(

@@ -47,6 +47,21 @@ DEFAULT_HIGH_WATER_CHUNKS = 16
 DEFAULT_LOW_WATER_CHUNKS = 4
 
 
+def body_too_large(limit: int | None) -> RequestEntityTooLarge:
+    """The refusal a body source raises, carrying the limit it tripped.
+
+    The limit rides on the exception so the rendered body matches the one the
+    eager refusal paths emit through `too_large_payload`. Without it a streamed
+    body's 413 answered `{detail, status_code}` while the declared-length and
+    buffered refusals answered `{detail, status_code, limit}` - the same refusal
+    described two ways, which is exactly what `too_large_payload` exists to
+    prevent.
+    """
+    exc = RequestEntityTooLarge(MSG_REQUEST_BODY_EXCEEDS_MAX)
+    exc.limit = limit
+    return exc
+
+
 def too_large_payload(limit: int | None) -> dict[str, Any]:
     """The body both transports answer a `MAX_CONTENT_LENGTH` refusal with.
 
@@ -204,7 +219,7 @@ class RequestBodySource:
 
     def _check_overflow(self) -> None:
         if self._overflow:
-            raise RequestEntityTooLarge(MSG_REQUEST_BODY_EXCEEDS_MAX)
+            raise body_too_large(self._max)
 
     def __aiter__(self) -> RequestBodySource:
         return self
@@ -308,7 +323,7 @@ class ASGIBodySource:
             if chunk:
                 self._size += len(chunk)
                 if self._max is not None and self._size > self._max:
-                    raise RequestEntityTooLarge(MSG_REQUEST_BODY_EXCEEDS_MAX)
+                    raise body_too_large(self._max)
                 return chunk
             if self._done:
                 raise StopAsyncIteration
@@ -341,7 +356,7 @@ class ASGIBodySource:
             if chunk:
                 self._size += len(chunk)
                 if self._max is not None and self._size > self._max:
-                    raise RequestEntityTooLarge(MSG_REQUEST_BODY_EXCEEDS_MAX)
+                    raise body_too_large(self._max)
                 if parts is None:
                     if last:
                         # Whole body arrived in one message: skip the list/join.
