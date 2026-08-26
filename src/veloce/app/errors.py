@@ -25,7 +25,7 @@ from veloce._protocol_constants import (
     HTTP_METHOD_HEAD,
     HTTP_METHOD_OPTIONS,
 )
-from veloce.exceptions import HTTPException, _error_handler_key_error
+from veloce.exceptions import HTTPException, _error_handler_key_error, http_exception_payload
 from veloce.http.request import Request
 from veloce.http.response import (
     JSONResponse,
@@ -36,28 +36,6 @@ from veloce.http.response import (
 # exception handler matched this type"). Plain `cache.get(k)` would re-walk the
 # MRO every time for an unhandled exception type.
 _MISSING: Any = object()
-
-
-def http_exception_payload(exc: Any) -> dict[str, Any]:
-    """The JSON body for an `HTTPException`, in one place.
-
-    Built here and used by both emit paths - the request cycle and the
-    out-of-band `handle_http_exception`. They were two copies differing by an
-    `or "Error"` substitution, so an exception carrying an empty detail rendered
-    `{"detail": ""}` through a request and `{"detail": "Error"}` out of band. A
-    validation error's structured `.errors` list is emitted verbatim.
-    """
-    structured = getattr(exc, "errors", None)
-    payload: dict[str, Any] = {
-        "detail": structured if structured is not None else exc.detail,
-        "status_code": exc.status_code,
-    }
-    # A body-limit refusal carries the limit it tripped, so a streamed body's
-    # 413 describes itself the same way the eager refusal paths do.
-    limit = getattr(exc, "limit", None)
-    if limit is not None:
-        payload["limit"] = limit
-    return payload
 
 
 class ErrorsMixin:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from veloce._constants import HEADER_AUTHORIZATION, HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
+from veloce._internal import _quote_header_value as _quote_header_value
 from veloce._protocol_constants import AUTH_SCHEME_BEARER
 from veloce.exceptions import HTTPException
 from veloce.status import HTTP_401_UNAUTHORIZED
@@ -12,17 +13,6 @@ from veloce.status import HTTP_401_UNAUTHORIZED
 _BEARER_PREFIX = AUTH_SCHEME_BEARER + " "
 _BEARER_PREFIX_LOWER = _BEARER_PREFIX.lower()
 _BEARER_PREFIX_LEN = len(_BEARER_PREFIX)
-
-
-def _quote_header_value(value: str) -> str:
-    """Escape a string for an HTTP quoted-string (RFC 7230 Sec. 3.2.6).
-
-    Backslash must be escaped before the double-quote, or a literal
-    backslash preceding a quote would be mis-escaped. This is the correct
-    transform for a `realm` and other WWW-Authenticate quoted params -
-    not `urllib.parse.quote`, which percent-encodes and mangles `@`/space.
-    """
-    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _validate_realm(realm: str) -> None:

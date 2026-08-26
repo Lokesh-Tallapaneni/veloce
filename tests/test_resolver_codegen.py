@@ -470,8 +470,12 @@ def test_a_graph_resolver_is_registered_too():
     ]
     compiled = [p.compiled_graph_resolver for p in plans if p is not None]
     resolver = next((c for c in compiled if callable(c)), None)
-    if resolver is None:
-        return  # this plan shape stayed on the interpreter
+    # Asserted, not skipped. This bare-`return`ed when no compiled resolver was
+    # found, so the two assertions below were silently skipped in exactly the
+    # case they exist to detect: a compiler that stopped compiling this shape
+    # left the module green. A chained `Depends` on a plain scalar is the
+    # canonical compiled shape - if it stops compiling, this must fail.
+    assert resolver is not None, "the chained-Depends shape no longer compiles a graph resolver"
     assert linecache.getline(resolver.__code__.co_filename, 1) != ""
     assert "graph-resolver" in resolver.__code__.co_filename
 

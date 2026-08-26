@@ -37,6 +37,7 @@ from veloce._constants import (
     MIME_MULTIPART_FORM_DATA,
     MIME_OCTET_STREAM,
 )
+from veloce._internal import _quote_header_value
 from veloce._protocol_constants import (
     ASGI_EVENT_HTTP_DISCONNECT,
     ASGI_EVENT_HTTP_REQUEST,
@@ -459,7 +460,7 @@ def _encode_multipart(
         # fields into the multipart preamble.
         if "\r" in value or "\n" in value:
             raise ValueError("multipart name / filename must not contain CR or LF")
-        return value.replace("\\", "\\\\").replace('"', '\\"')
+        return _quote_header_value(value)
 
     boundary = "----veloce-" + secrets.token_hex(16)
     parts: list[bytes] = []

@@ -594,3 +594,18 @@ def _require_methods(cls: type, base: type, names: tuple[str, ...]) -> None:
         raise TypeError(
             f"{cls.__name__} does not implement {base.__name__}: {', '.join(missing)} missing"
         )
+
+
+def _quote_header_value(value: str) -> str:
+    """Escape a string for the inside of an HTTP quoted-string.
+
+    RFC 9110 Sec. 5.6.4: a backslash begins a quoted-pair, so both the
+    backslash and the double-quote must be escaped - and the backslash first,
+    or the backslash written to escape a quote would itself be doubled.
+
+    Shared by every quoted-string producer in the package (header parameters,
+    `Content-Disposition` filenames, `WWW-Authenticate` params and the test
+    client's multipart headers), which previously each wrote the transform out
+    and did not all get it right.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')

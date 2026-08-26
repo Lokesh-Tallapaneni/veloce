@@ -26,7 +26,7 @@ from veloce._constants import (
     MIME_OCTET_STREAM,
 )
 from veloce._header_parsing import parse_header_params, parse_media_type_params
-from veloce._internal import is_default_port
+from veloce._internal import _quote_header_value, is_default_port
 from veloce._protocol_constants import URL_SCHEME_HTTP, URL_SCHEME_HTTPS
 from veloce.exceptions import FilesKeyError, RequestURITooLong
 from veloce.http.cookies import iter_cookies
@@ -473,8 +473,10 @@ class URL:
 # ── Multidict-backed collections ──────────────────────────
 # A header parameter value carrying any of these characters must be
 # double-quoted (RFC 9110 Sec. 5.6.6 quoted-string). Hoisted so `Headers.add`
-# does not rebuild the trigger set on every parameter.
-_HEADER_PARAM_QUOTE_TRIGGERS = frozenset((" ", ";", ",", '"'))
+# does not rebuild the trigger set on every parameter. A backslash is included
+# because it is not a `tchar` (RFC 9110 Sec. 5.6.2), so a value containing one
+# cannot be sent as a bare token.
+_HEADER_PARAM_QUOTE_TRIGGERS = frozenset((" ", ";", ",", '"', "\\"))
 
 
 class _GetListMixin:
@@ -601,7 +603,7 @@ class Headers(_GetListMixin, CIMultiDict):
                 pk = pk.replace("_", "-")
                 sval = str(pv)
                 if any(c in sval for c in _HEADER_PARAM_QUOTE_TRIGGERS):
-                    sval = '"' + sval.replace('"', '\\"') + '"'
+                    sval = '"' + _quote_header_value(sval) + '"'
                 parts.append(f"{pk}={sval}")
             value = "; ".join(parts)
         super().add(key, value)

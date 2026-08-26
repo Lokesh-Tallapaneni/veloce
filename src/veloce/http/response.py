@@ -57,6 +57,7 @@ from veloce._internal import (
     _etag_matches_weak,
     _file_etag,
     _header_value_has_crlf,
+    _quote_header_value,
     _reject_header_crlf,
     dumps_current,
     guess_content_type,
@@ -150,9 +151,7 @@ def _format_content_disposition(disposition: str, filename: str) -> str:
         c == "\t" or c == " " or "\x21" <= c <= "\x7e" for c in filename
     )
     if quotable:
-        # RFC 9110 Sec. 5.6.4 quoted-string escape: backslash first so an
-        # original backslash is not doubled again when escaping the quote.
-        escaped = filename.replace("\\", "\\\\").replace('"', '\\"')
+        escaped = _quote_header_value(filename)
         param = f'filename="{escaped}"'
     else:
         param = f"filename*=UTF-8''{quote(filename, safe='')}"

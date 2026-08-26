@@ -68,7 +68,6 @@ from veloce._protocol_constants import (
     TRACE_HEADER_TRACESTATE,
     build_trace_carrier,
 )
-from veloce.app.errors import http_exception_payload
 from veloce.app.urls import URLRule as URLRule
 from veloce.blueprints import _endpoint_blueprint
 from veloce.debug import render_traceback_html
@@ -76,6 +75,7 @@ from veloce.dependency import DependencyResolver, Depends
 from veloce.encoders import orjson_default
 from veloce.exceptions import (
     HTTPException,
+    http_exception_payload,
 )
 from veloce.helpers import g
 from veloce.http._body import too_large_payload

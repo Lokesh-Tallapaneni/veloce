@@ -150,6 +150,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `SessionAuth` describes itself in the OpenAPI document, so a session-guarded route declares a security requirement instead of publishing as open. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The legacy MCP SSE transport sends its reconnect hint on the first frame; no frame carried `retry` before. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A header parameter containing a backslash is quoted and escaped, so a `Content-Disposition` filename ending in one no longer emits an unterminated quoted-string. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The exported `http_exception_handler` renders the same body as the default error path: an empty detail is not replaced with `"Error"`, and a body-limit refusal keeps its `limit`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A validation error reports an array index in `loc` as an integer on every body path, matching the published `ValidationError` schema. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude_unset` and `exclude_defaults` to a nested model, not only to one passed in directly. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude_none` to an arbitrary object's attributes, matching every other branch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

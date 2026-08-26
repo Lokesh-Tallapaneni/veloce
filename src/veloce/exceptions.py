@@ -492,17 +492,42 @@ def exception_for_status(status_code: int) -> type[HTTPException]:
 # ── Default exception handlers ────────────────────────────
 
 
+def http_exception_payload(exc: Any) -> dict[str, Any]:
+    """The JSON body for an `HTTPException`, in one place.
+
+    Used by every path that renders one: the request cycle, the out-of-band
+    `handle_http_exception`, and the public `http_exception_handler`. They were
+    separate copies that disagreed - an exception with an empty detail rendered
+    `{"detail": ""}` through a request and `{"detail": "Error"}` elsewhere, and
+    only one of them carried a body-limit refusal's `limit`.
+
+    `exc.detail` already falls back to the subclass `description` at
+    construction, so no second fallback is applied here. A validation error's
+    structured `.errors` list is emitted verbatim.
+    """
+    structured = getattr(exc, "errors", None)
+    payload: dict[str, Any] = {
+        "detail": structured if structured is not None else exc.detail,
+        "status_code": exc.status_code,
+    }
+    # A body-limit refusal carries the limit it tripped, so a streamed body's
+    # 413 describes itself the same way the eager refusal paths do.
+    limit = getattr(exc, "limit", None)
+    if limit is not None:
+        payload["limit"] = limit
+    return payload
+
+
 async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
     """Render an ``HTTPException`` as a JSON ``{"detail": ..., "status_code": ...}`` response.
 
     Honours ``exc.status_code``, ``exc.detail`` (falling back to the
     subclass description), and ``exc.headers``.
     """
-    status = exc.status_code or HTTP_500_INTERNAL_SERVER_ERROR
-    detail = exc.detail or getattr(exc, "description", "") or "Error"
+    payload = http_exception_payload(exc)
     return JSONResponse(
-        {"detail": detail, "status_code": status},
-        status_code=status,
+        payload,
+        status_code=payload["status_code"],
         headers=dict(exc.headers) if getattr(exc, "headers", None) else None,
     )
 

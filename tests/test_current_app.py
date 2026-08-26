@@ -14,10 +14,36 @@ def test_current_app_unbound_outside_request_raises():
 
 
 def test_current_app_unbound_is_falsy():
-    """The proxy supports truthiness so `if current_app:` works."""
-    # We can only assert this if no test before us has left a binding.
-    # Since contextvars are per-task, this is safe in isolation.
-    assert bool(current_app) is False or bool(current_app) is True  # never raises
+    """The proxy supports truthiness so `if current_app:` works.
+
+    The assertion here used to be `bool(x) is False or bool(x) is True`, which
+    holds for any object whose `__bool__` returns a bool - it proved only that
+    the call did not raise, never that an unbound proxy is falsy. The binding
+    is a contextvar, so an unbound context is the default and can be asserted
+    directly.
+    """
+    assert bool(current_app) is False
+
+
+def test_current_app_unbound_takes_the_else_branch():
+    """The behaviour the truthiness exists for, rather than the value it returns."""
+    taken = "then" if current_app else "else"
+    assert taken == "else"
+
+
+def test_current_app_bound_is_truthy():
+    """The negative: a proxy that was falsy always would pass the test above."""
+    app = Veloce(openapi_url=None)
+    with app.app_context():
+        assert bool(current_app) is True
+        assert ("then" if current_app else "else") == "then"
+
+
+def test_the_binding_does_not_outlive_the_context():
+    app = Veloce(openapi_url=None)
+    with app.app_context():
+        pass
+    assert bool(current_app) is False
 
 
 @pytest.mark.asyncio
