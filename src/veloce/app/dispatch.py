@@ -523,7 +523,18 @@ class DispatchMixin:
                     result = await route_info.handler(**{route_info.request_param_name: request})
                 else:
                     result = await route_info.handler()
-                response = self._build_response(request, match, result)
+                # `_build_response` reduced to this one call on this path, and
+                # every other line of it was dead work. `is_fast_eligible`
+                # (routing/router.py) is set only when `response_model is None`,
+                # `response_class is None` and `status_code == HTTP_200_OK`, so
+                # its three tests can never fire; and it requires a trivial or
+                # request-only plan, which by definition carries no `Response`
+                # slot and no dependencies - the only writers of
+                # `STATE_INJECTED_RESPONSE` - so the injection merge cannot fire
+                # either. `test_fast_path_response_agreement` pins that, so a
+                # future loosening of `is_fast_eligible` fails rather than
+                # silently skipping work this path still needs.
+                response = self._coerce_response(result)
                 # `is_bare` guarantees the app/blueprint after_request hooks are
                 # empty, so the only work `_run_after_hooks` could do here is
                 # drain one-shot `after_this_request` callbacks. Probe for them

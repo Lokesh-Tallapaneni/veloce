@@ -197,6 +197,11 @@ def _quality(pieces: list[str]) -> float:
     return 1.0
 
 
+# Distinct `Accept-Encoding` strings a deployment sees in practice number in the
+# dozens; this is generous headroom before the memo is recycled.
+_MAX_NEGOTIATED = 256
+
+
 def _negotiate(accept: str, offered: tuple[str, ...]) -> str | None:
     """Pick the content coding to use, or `None` to send the body unencoded.
 
@@ -277,6 +282,14 @@ class CompressionMiddleware(Middleware):
         super().__init__(name=name)
         self.minimum_size = minimum_size
         self.algorithms, self.levels = self._resolve_codings(algorithms, levels, compresslevel)
+        # `_negotiate` splits, strips, lowers and builds a set per response, but
+        # clients send one of a handful of stable `Accept-Encoding` strings and
+        # `self.algorithms` is fixed at construction - so the answer is a pure
+        # function of the header. Memoised here rather than globally because the
+        # offered tuple is per-instance. Bounded and cleared wholesale on
+        # overflow rather than merely refusing new entries, so a flood of junk
+        # headers cannot permanently occupy it and lock the real values out.
+        self._negotiated: dict[str, str | None] = {}
         # `include_types` is matched as a prefix (so `"text/"` covers
         # every text/* media type). None means "use the default
         # compressible set". `exclude_types` always wins on collision.
@@ -360,7 +373,14 @@ class CompressionMiddleware(Middleware):
         # the success path does not re-add it.
         response.add_vary(HEADER_ACCEPT_ENCODING)
         accept = request.headers.get(HEADER_ACCEPT_ENCODING, "")
-        coding = _negotiate(accept, self.algorithms)
+        memo = self._negotiated
+        if accept in memo:
+            coding = memo[accept]
+        else:
+            coding = _negotiate(accept, self.algorithms)
+            if len(memo) >= _MAX_NEGOTIATED:
+                memo.clear()
+            memo[accept] = coding
         if coding is None:
             return response
 

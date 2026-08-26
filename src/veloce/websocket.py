@@ -923,8 +923,21 @@ class WebSocket:
         payload = dumps_for(self.app, data)
         if mode == "binary":
             await self.send_bytes(payload)
-        else:
+            return
+        if self._asgi_send is not None:
+            # The ASGI `websocket.send` event carries a `str`, so the decode is
+            # unavoidable on this path.
             await self.send_text(payload.decode("utf-8"))
+            return
+        # Native transport: a text frame carries UTF-8 bytes on the wire, and
+        # `payload` already is those bytes. Decoding to `str` only so
+        # `send_text` can encode it straight back transcoded the whole message
+        # twice per send.
+        if not self._accepted:
+            raise RuntimeError("WebSocket.send_json(): call accept() before sending")
+        if self._closed:
+            raise WebSocketDisconnect()
+        await self._raw_send(payload, opcode=0x1)
 
     async def send_bytes(self, data: bytes) -> None:
         """Send a binary frame."""
