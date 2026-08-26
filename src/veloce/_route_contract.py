@@ -24,7 +24,6 @@ from veloce._handler_plan import (
     K_DEPENDS,
     K_MODEL_GROUP,
     K_PARAM_MARKER,
-    K_PATH,
     K_QUERY,
     K_QUERY_LIST,
     K_UPLOAD_FILE,
@@ -190,11 +189,11 @@ def describe_slot(slot: _Slot, param_names: tuple[str, ...]) -> ParamDescriptor 
             default=slot.default,
             is_optional=slot.is_optional,
         )
-    if kind in (K_QUERY, K_PATH):
+    if kind == K_QUERY:
         return ParamDescriptor(
             name=slot.name,
             wire_name=slot.name,
-            location="path" if (kind == K_PATH or slot.name in param_names) else "query",
+            location="path" if slot.name in param_names else "query",
             target_type=slot.target_type,
             is_list=False,
             model=None,

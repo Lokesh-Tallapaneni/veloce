@@ -41,7 +41,6 @@ K_REQUEST = 0
 K_BG_TASKS = 1
 K_DEPENDS = 2
 K_PARAM_MARKER = 3
-K_PATH = 4
 K_QUERY = 5
 K_QUERY_LIST = 6
 K_BODY_MODEL = 7
@@ -369,16 +368,19 @@ def _slot_parallel_safe(slot: _Slot, seen_plans: set[int]) -> bool:
     """
     if isinstance(slot.target_type, list) and slot.target_type:
         return False
-    if getattr(slot, "dep_is_gen", False) or getattr(slot, "dep_is_async_gen", False):
+    # Read directly: all three are `__slots__` fields that `__init__` assigns
+    # unconditionally, so the `getattr` defaults could never apply. Matches the
+    # sibling `_cached_callables`, which already reads them this way.
+    if slot.dep_is_gen or slot.dep_is_async_gen:
         return False
-    sub_plan = getattr(slot, "sub_plan", None)
+    sub_plan = slot.sub_plan
     if sub_plan is None:
         return True
     plan_id = id(sub_plan)
     if plan_id in seen_plans:
         return True
     seen_plans.add(plan_id)
-    for sub in getattr(sub_plan, "slots", ()):
+    for sub in sub_plan.slots:
         if sub.kind == K_DEPENDS and not _slot_parallel_safe(sub, seen_plans):
             return False
     return True
@@ -931,7 +933,7 @@ def build_plan(
             continue
 
         # Default fallback: path-or-query, decided at resolve time because
-        # path_params are scope-local (per match). The slot is K_PATH-or-QUERY
+        # path_params are scope-local (per match). The slot is path-or-query
         # ambiguous; we pick K_QUERY and the resolver will prefer path_params
         # when the name is present there. This keeps the plan handler-local
         # (one plan per handler, reusable across overrides).

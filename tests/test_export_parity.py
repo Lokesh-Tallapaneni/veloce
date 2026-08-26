@@ -124,6 +124,100 @@ UNEXPORTED: dict[str, str] = {
     "workers.VeloceWorker": "gunicorn worker, referenced by dotted path",
     "workers.build_protocol_factory": "gunicorn worker internals",
     "workers.build_ssl_context": "gunicorn worker internals",
+    # ── app/ mixins ──────────────────────────────────────────────
+    # `Veloce` is composed of these; they are never constructed or imported
+    # by application code, and `veloce.app` exports only `Veloce` itself.
+    "app.asgi.AsgiMixin": "composition unit of Veloce; not constructed by application code",
+    "app.background.BackgroundTasksMixin": "composition unit of Veloce; not constructed by application code",
+    "app.dispatch.DispatchMixin": "composition unit of Veloce; not constructed by application code",
+    "app.errors.ErrorsMixin": "composition unit of Veloce; not constructed by application code",
+    "app.lifecycle.LifecycleMixin": "composition unit of Veloce; not constructed by application code",
+    "app.mcp.MCPMixin": "composition unit of Veloce; not constructed by application code",
+    "app.middleware.MiddlewareMixin": "composition unit of Veloce; not constructed by application code",
+    "app.mounting.MountingMixin": "composition unit of Veloce; not constructed by application code",
+    "app.openapi.OpenAPIMixin": "composition unit of Veloce; not constructed by application code",
+    "app.plugins.PluginsMixin": "composition unit of Veloce; not constructed by application code",
+    "app.serving.ServingMixin": "composition unit of Veloce; not constructed by application code",
+    "app.templating.TemplatingMixin": "composition unit of Veloce; not constructed by application code",
+    "app.testing.TestingMixin": "composition unit of Veloce; not constructed by application code",
+    # ── contrib/mcp internals ────────────────────────────────────
+    # Reached across the MCP package's own submodules. `contrib` is exempt
+    # from the re-export rule (guardrails L173), so these stay module-local.
+    "contrib.mcp.completion.attach_completers": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.composition.T": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.composition.mount_namespace": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.composition.renamed": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.composition.mcp_mounts": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.descriptors.MCPDescriptor": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.errors.parse_error": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.errors.invalid_request_error": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.errors.internal_error": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.errors.UnsupportedProtocolVersionError": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.icons.coerce_icons": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.icons.render_icons": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.pagination.T": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.pagination.encode_cursor": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.pagination.decode_cursor": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.pagination.paginate": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.plan_bridge.build_input_schema": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.plan_bridge.build_output_schema": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.plan_bridge.bind_arguments": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.safety.require_mcp_description": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.safety.TOOL_ANNOTATION_HINTS": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.safety.validate_tool_annotations": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.sampling.content_blocks": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.server.is_modern_version": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.resource_updated_notification": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.resources_list_changed_notification": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.subscription_acknowledged_notification": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.subscription_closed_response": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.subscriptions.ConnectionRegistry": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.tasks.TASK_STATUSES": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.tasks.task_ttl_ms": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.tasks.new_task": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.tasks.create_task_result": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.tasks.status_notification": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.toolsearch.ToolStep": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.toolsearch.ToolSearch": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.transports.event_store.SSEEventStore": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.transports.http.register_metadata_route": "internal to the MCP integration; not part of its published surface",
+    "contrib.mcp.transports.session_store.HttpSessionStore": "internal to the MCP integration; not part of its published surface",
+    # ── routing/converters concrete classes ──────────────────────
+    # `veloce.routing` publishes the `Converter` base and `register_converter`;
+    # the built-in converters are implementations reached through that seam,
+    # and the parsing helpers serve the router alone.
+    "routing.converters.StringConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.IntConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.FloatConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.UUIDConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.PathConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.DateConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.DateTimeConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.TimeConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.TimeDeltaConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.DecimalConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.AnyConverter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.parse_converter": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.is_regex_path": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.extract_regex_converters": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.build_route_regex": "implementation behind the Converter base / register_converter seam",
+    "routing.converters.path_param_schemas": "implementation behind the Converter base / register_converter seam",
+    # ── remaining leaf internals ─────────────────────────────────
+    "contrib.openapi.SchemaRegistry": "internal accumulator for one schema build",
+    "contrib.openapi.SWAGGER_HTML": "template body for the built-in docs route",
+    "contrib.openapi.REDOC_HTML": "template body for the built-in docs route",
+    "exceptions.http_exception_payload": "shared error-body builder for the in-tree emit paths",
+    "http.cookies.iter_cookies": "the single cookie parser; users read request.cookies",
+    "http.cookies.parse_cookie": "header-level helper behind Request.cookies",
+    "http.cookies.dump_cookie": "header-level helper behind Response.set_cookie",
+    "http.dates.http_date": "header-level date formatting behind the response helpers",
+    "http.dates.parse_date": "header-level date parsing behind the request helpers",
+    "http.response.header_pop": "raw header-list helper used by the emit paths",
+    "middleware.base.Auditable": "protocol the startup audit checks middleware against",
+    "routing.router.RadixNode": "the routing tree's node; an internal data structure",
+    "routing.router.RegexRoute": "the regex fallback's route record; internal",
+    "serving.reloader.is_reloader_child": "reloader process-role probe, used by the runner",
+    "serving.reloader.run_with_reloader": "reloader entry point, reached through Veloce.run",
 }
 
 
@@ -245,17 +339,47 @@ def test_no_leaf_module_declares_all():
     assert not offenders, f"leaf modules must not declare __all__: {offenders}"
 
 
+def _gateway_names(rel: pathlib.Path) -> set[str]:
+    """Names exported by the nearest package gateway above `rel`.
+
+    The repository rule is that an `__init__.py` gateway owns the public
+    surface, so a leaf name re-exported by its own subpackage gateway is
+    published - it does not additionally have to appear in the top-level
+    `__all__`.
+    """
+    parts = rel.parts[:-1]
+    package = "veloce" + ("." + ".".join(parts) if parts else "")
+    try:
+        module = importlib.import_module(package)
+    except Exception:  # pragma: no cover - an optional integration's deps
+        return set()
+    return set(getattr(module, "__all__", ()) or ())
+
+
 def test_leaf_module_public_names_are_exported_or_recorded():
+    """Every public leaf name is exported through a gateway or written down.
+
+    This walked `PACKAGE_ROOT.glob("*.py")` - not `rglob` - so it enforced the
+    rule on the package root only and exempted all eight subpackages, while the
+    sibling `__all__` guard two functions above already used `rglob`. Eighty-three
+    public names across `app/`, `contrib/`, `http/`, `middleware/`, `routing/`
+    and `serving/` had never been through this decision.
+    """
     top = set(veloce.__all__)
     unrecorded: list[str] = []
-    for path in sorted(PACKAGE_ROOT.glob("*.py")):
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         if path.name == "__init__.py" or path.name.startswith("_"):
             continue
-        stem = path.stem
+        rel = path.relative_to(PACKAGE_ROOT).with_suffix("")
+        # A private subpackage (`_internal`-style) is out of scope entirely.
+        if any(part.startswith("_") for part in rel.parts):
+            continue
+        dotted = ".".join(rel.parts)
+        gateway = _gateway_names(rel)
         for name in _defined_public_names(_parse(path)):
-            if name in top or f"{stem}.{name}" in UNEXPORTED:
+            if name in top or name in gateway or f"{dotted}.{name}" in UNEXPORTED:
                 continue
-            unrecorded.append(f"{stem}.{name}")
+            unrecorded.append(f"{dotted}.{name}")
     assert not unrecorded, (
         "public in a leaf module but neither exported nor recorded in "
         f"UNEXPORTED with a reason: {unrecorded}"
@@ -263,14 +387,22 @@ def test_leaf_module_public_names_are_exported_or_recorded():
 
 
 def test_unexported_entries_are_still_defined():
-    """A recorded exception whose symbol is gone, or now exported, is stale."""
+    """A recorded exception whose symbol is gone, or now exported, is stale.
+
+    Walks the same tree as the guard it complements, so a subpackage entry is
+    validated rather than silently accepted.
+    """
     top = set(veloce.__all__)
     defined: set[str] = set()
-    for path in sorted(PACKAGE_ROOT.glob("*.py")):
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         if path.name == "__init__.py" or path.name.startswith("_"):
             continue
-        defined |= {f"{path.stem}.{n}" for n in _defined_public_names(_parse(path))}
-    stale = sorted(key for key in UNEXPORTED if key not in defined or key.split(".", 1)[1] in top)
+        rel = path.relative_to(PACKAGE_ROOT).with_suffix("")
+        if any(part.startswith("_") for part in rel.parts):
+            continue
+        dotted = ".".join(rel.parts)
+        defined |= {f"{dotted}.{n}" for n in _defined_public_names(_parse(path))}
+    stale = sorted(key for key in UNEXPORTED if key not in defined or key.rsplit(".", 1)[1] in top)
     assert not stale, f"UNEXPORTED records names that are gone or now exported: {stale}"
 
 

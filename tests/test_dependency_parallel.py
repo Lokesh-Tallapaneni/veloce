@@ -6,7 +6,7 @@ one at a time. The win shows up clearly when each dependency does I/O
 (an `asyncio.sleep` here stands in for any awaitable wait): the total
 resolve time becomes `max(dep_durations)` rather than `sum(...)`.
 
-Constraints — preserved by `_parallel_dep_group_end`:
+Constraints — preserved by `parallel_group_end`:
 - Security() scope-pushing dependencies stay sequential.
 - yield-style dependencies stay sequential.
 - two siblings sharing a `use_cache=True` callable stay sequential.
@@ -20,7 +20,12 @@ import time
 import pytest
 
 from veloce import Depends, Security, Veloce
-from veloce._handler_plan import build_plan, compute_parallel_groups
+from veloce._handler_plan import (
+    _slot_parallel_safe,
+    build_plan,
+    compute_parallel_groups,
+    parallel_group_end,
+)
 from veloce.testclient import TestClient
 
 #: How long each probe dependency sleeps. A sequential resolver makes the
@@ -124,10 +129,10 @@ def test_yield_dependency_still_tears_down_in_order():
 
 @pytest.mark.asyncio
 async def test_group_end_helper_stops_at_security_dependency():
-    """`_parallel_dep_group_end` refuses to expand past a Security() slot."""
+    """`parallel_group_end` refuses to expand past a Security() slot."""
     from types import SimpleNamespace
 
-    from veloce.dependency import K_DEPENDS, DependencyResolver
+    from veloce.dependency import K_DEPENDS
 
     plain = SimpleNamespace(
         kind=K_DEPENDS,
@@ -147,9 +152,8 @@ async def test_group_end_helper_stops_at_security_dependency():
         dep_callable=lambda: None,
         sub_plan=None,
     )
-    resolver = DependencyResolver()
     # plain, plain, sec, plain — the run should stop at the Security() slot.
-    end = resolver._parallel_dep_group_end([plain, plain, sec, plain], 0)
+    end = parallel_group_end([plain, plain, sec, plain], 0)
     assert end == 2
 
 
@@ -162,7 +166,7 @@ async def test_group_end_helper_refuses_nested_security():
     """
     from types import SimpleNamespace
 
-    from veloce.dependency import K_DEPENDS, DependencyResolver
+    from veloce.dependency import K_DEPENDS
 
     # An inner Security slot reachable through outer plain's sub_plan.
     inner_sec = SimpleNamespace(
@@ -192,16 +196,15 @@ async def test_group_end_helper_refuses_nested_security():
         dep_callable=lambda: None,
         sub_plan=None,
     )
-    resolver = DependencyResolver()
     # The first slot fails the safety check, so the parallelisable run
     # cannot be expanded at all — `end == start`, which the caller
     # treats as "fall back to sequential" (it only gathers when
     # `end > start + 1`).
-    end = resolver._parallel_dep_group_end([outer_with_nested_sec, plain], 0)
+    end = parallel_group_end([outer_with_nested_sec, plain], 0)
     assert end == 0
     # The transitive-safe helper directly returns False, too.
-    assert resolver._slot_safe_for_parallel(outer_with_nested_sec, set()) is False
-    assert resolver._slot_safe_for_parallel(plain, set()) is True
+    assert _slot_parallel_safe(outer_with_nested_sec, set()) is False
+    assert _slot_parallel_safe(plain, set()) is True
 
 
 # ── Precomputed parallel grouping (registration-time) ──────────────────

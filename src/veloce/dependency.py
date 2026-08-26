@@ -28,7 +28,6 @@ from veloce._handler_plan import (
     K_DEPENDS,
     K_MODEL_GROUP,
     K_PARAM_MARKER,
-    K_PATH,
     K_QUERY,
     K_QUERY_LIST,
     K_REQUEST,
@@ -40,10 +39,8 @@ from veloce._handler_plan import (
     MK_COOKIE,
     MK_FORM,
     MK_HEADER,
-    _slot_parallel_safe,
     build_plan,
     build_route_dep_plans,
-    parallel_group_end,
 )
 from veloce._internal import (
     _BaseExceptionGroup,
@@ -399,26 +396,18 @@ class SecurityScopes:
 
 # ── Resolver ──────────────────────────────────────────────
 
-# Returned by `_resolve_scalar_param` for a path slot with no value, no default,
-# and not optional: the caller leaves the kwarg unset so the handler default
-# applies. A query slot raises `missing` instead, so it never returns this.
-_PARAM_MISSING: Any = object()
 
-
-def _resolve_scalar_param(
-    slot: Any, request: Request, path_params: dict[str, str], *, allow_query: bool
-) -> Any:
+def _resolve_scalar_param(slot: Any, request: Request, path_params: dict[str, str]) -> Any:
     """Resolve a scalar path-or-query parameter to its coerced value.
 
-    A path binding wins when the matched params include the name; a `K_QUERY`
-    slot (`allow_query=True`) then falls back to the query string, a `K_PATH`
-    slot does not. With no value, a default or optional yields that; otherwise a
-    query slot raises `missing` and a path slot returns `_PARAM_MISSING`.
+    A path binding wins when the matched params include the name, then the
+    query string. With no value, a default or optional yields that; otherwise
+    the parameter is reported missing.
     """
     name = slot.name
     if name in path_params:
         return _coerce_value(path_params[name], slot.target_type or str, name, "path")
-    if allow_query and name in request.query_params:
+    if name in request.query_params:
         return _coerce_value(request.query_params[name], slot.target_type or str, name, "query")
     if slot.has_default:
         # A plain mutable default is wrapped in a copying factory at
@@ -429,11 +418,9 @@ def _resolve_scalar_param(
         return slot._static_default
     if slot.is_optional:
         return None
-    if allow_query:
-        raise RequestValidationError(
-            [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
-        )
-    return _PARAM_MISSING
+    raise RequestValidationError(
+        [{"loc": ("query", name), "msg": MSG_FIELD_REQUIRED, "type": "missing"}]
+    )
 
 
 def _resolve_list_param(slot: Any, request: Request, path_params: dict[str, str]) -> Any:
@@ -712,7 +699,7 @@ class DependencyResolver:
         - markers and body: `K_PARAM_MARKER` -> `_resolve_marker`, `K_BODY_MODEL`
           -> `_resolve_body_model`, `K_UPLOAD_FILE` -> `_resolve_upload_file`;
         - path / query parameters: `K_QUERY_LIST` -> `_resolve_list_param`,
-          `K_QUERY` / `K_PATH` -> `_resolve_scalar_param`.
+          `K_QUERY` -> `_resolve_scalar_param`.
         """
         slots = plan.slots
         kwargs: dict[str, Any] = {}
@@ -819,14 +806,7 @@ class DependencyResolver:
                 if mcp_context is not None and slot.target_type is type(mcp_context):
                     kwargs[name] = mcp_context
                     continue
-                kwargs[name] = _resolve_scalar_param(slot, request, path_params, allow_query=True)
-                continue
-
-            # K_PATH is not currently emitted by build_plan; future-proof.
-            if kind == K_PATH:
-                val = _resolve_scalar_param(slot, request, path_params, allow_query=False)
-                if val is not _PARAM_MISSING:
-                    kwargs[name] = val
+                kwargs[name] = _resolve_scalar_param(slot, request, path_params)
                 continue
 
             # Fall-through: kind didn't match anything; advance so the
@@ -894,18 +874,6 @@ class DependencyResolver:
             kwargs[slot.name] = upload
         elif slot.is_optional:
             kwargs[slot.name] = None
-
-    def _parallel_dep_group_end(self, slots: list[Any], start: int) -> int:
-        """Compat shim delegating to the shared implementation.
-
-        For direct callers and tests; the request path uses the plan's
-        precomputed `dep_waves` and never reaches this.
-        """
-        return parallel_group_end(slots, start)
-
-    def _slot_safe_for_parallel(self, slot: Any, seen_plans: set[int]) -> bool:
-        """Compat shim delegating to the shared parallel-safety check."""
-        return _slot_parallel_safe(slot, seen_plans)
 
     async def _resolve_model_group(self, slot: Any, request: Request) -> Any:
         """Bind a model whose fields come from one request source.

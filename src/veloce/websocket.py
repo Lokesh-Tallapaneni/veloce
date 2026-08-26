@@ -1415,18 +1415,22 @@ class WebSocket:
             self._close_protocol_error()
             return 0
 
-        if masked:
-            if n < offset + 4:
-                return 0
-            mask = buf[start + offset : start + offset + 4]
-            offset += 4
+        # Unconditional: every unmasked frame already returned above (RFC 6455
+        # Sec. 5.1 requires a client frame to be masked), so `masked` is true
+        # from here on and `mask` is always bound. Re-testing it left two
+        # always-true branches on the per-frame path and made `mask` read as
+        # conditionally bound.
+        if n < offset + 4:
+            return 0
+        mask = buf[start + offset : start + offset + 4]
+        offset += 4
 
         frame_len = offset + payload_len
         if n < frame_len:
             return 0
 
         payload = bytes(buf[start + offset : start + offset + payload_len])
-        if masked and payload_len:
+        if payload_len:
             payload = _unmask(payload, mask, payload_len)
 
         # Control frames (close / ping / pong) - never fragmented; handled

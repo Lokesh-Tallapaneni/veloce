@@ -44,7 +44,6 @@ from veloce._handler_plan import (
     K_BG_TASKS,
     K_DEPENDS,
     K_PARAM_MARKER,
-    K_PATH,
     K_QUERY,
     K_REQUEST,
     K_RESPONSE,
@@ -59,7 +58,7 @@ from veloce._handler_plan import (
 
 # Slot kinds this compiler can emit straight-line code for. Anything else
 # forces a fallback to the interpreter.
-_SUPPORTED = frozenset({K_REQUEST, K_QUERY, K_PATH, K_PARAM_MARKER})
+_SUPPORTED = frozenset({K_REQUEST, K_QUERY, K_PARAM_MARKER})
 
 # Slot kinds the graph compiler binds with no request-source lookup: the
 # request itself, the WebSocket (bound the same way on a WS resolve), the
@@ -148,7 +147,7 @@ def compile_param_resolver(
             lines.append(f"    k[{slot.name!r}] = request")
         elif slot.kind == K_PARAM_MARKER:
             _emit_marker(lines, ns, j, slot)
-        else:  # K_QUERY (path-or-query) / K_PATH
+        else:  # K_QUERY (path-or-query)
             _emit_scalar_param(lines, ns, j, slot)
 
     lines.append("    return k")
@@ -222,7 +221,7 @@ def _graph_compilable(plan: HandlerPlan, seen: set[int]) -> bool:
     seen.add(pid)
     for slot in plan.slots:
         kind = slot.kind
-        if kind in _GRAPH_BIND or kind in (K_QUERY, K_PATH):
+        if kind in _GRAPH_BIND or kind == K_QUERY:
             continue
         if kind == K_PARAM_MARKER:
             if slot.marker_kind not in _SYNC_MARKERS:
@@ -300,7 +299,7 @@ def _emit_graph_slot(
     if kind == K_PARAM_MARKER:
         _emit_marker(lines, ns, j, slot, target)
         return
-    if kind in (K_QUERY, K_PATH):
+    if kind == K_QUERY:
         _emit_scalar_param(lines, ns, j, slot, target)
         return
 
@@ -403,7 +402,7 @@ def _emit_coerced(
 def _emit_scalar_param(
     lines: list[str], ns: dict[str, Any], j: int, slot: Any, target: str = "k"
 ) -> None:
-    """Emit a scalar `K_QUERY` (path-or-query) or `K_PATH` slot into `target`.
+    """Emit a scalar `K_QUERY` (path-or-query) slot into `target`.
 
     Path lookup + coercion is shared; the kinds differ only in the query
     fallback and the missing-required behaviour.
@@ -426,27 +425,21 @@ def _emit_scalar_param(
     lines.append(f"    _v = path_params.get({name!r}, _M)")
     lines.append("    if _v is not _M:")
     _emit_coerced(lines, j, effective, f"{target}[{name!r}]", "_v", name, "path", " " * 8)
-    if slot.kind == K_QUERY:
-        lines.append("    else:")
-        lines.append("        _qp = request.query_params")
-        lines.append(f"        if {name!r} in _qp:")
-        _emit_coerced(
-            lines, j, effective, f"{target}[{name!r}]", f"_qp[{name!r}]", name, "query", " " * 12
-        )
-        lines.append(f"        elif _hd{j}:")
-        lines.append(f"            {target}[{name!r}] = {default_expr}")
-        lines.append(f"        elif _io{j}:")
-        lines.append(f"            {target}[{name!r}] = None")
-        lines.append("        else:")
-        lines.append(
-            f"            raise _RVE([{{'loc': ('query', {name!r}), "
-            f"'msg': {MSG_FIELD_REQUIRED!r}, 'type': 'missing'}}])"
-        )
-    else:  # K_PATH - no query fallback, no missing-required error
-        lines.append(f"    elif _hd{j}:")
-        lines.append(f"        {target}[{name!r}] = {default_expr}")
-        lines.append(f"    elif _io{j}:")
-        lines.append(f"        {target}[{name!r}] = None")
+    lines.append("    else:")
+    lines.append("        _qp = request.query_params")
+    lines.append(f"        if {name!r} in _qp:")
+    _emit_coerced(
+        lines, j, effective, f"{target}[{name!r}]", f"_qp[{name!r}]", name, "query", " " * 12
+    )
+    lines.append(f"        elif _hd{j}:")
+    lines.append(f"            {target}[{name!r}] = {default_expr}")
+    lines.append(f"        elif _io{j}:")
+    lines.append(f"            {target}[{name!r}] = None")
+    lines.append("        else:")
+    lines.append(
+        f"            raise _RVE([{{'loc': ('query', {name!r}), "
+        f"'msg': {MSG_FIELD_REQUIRED!r}, 'type': 'missing'}}])"
+    )
 
 
 def _emit_marker(

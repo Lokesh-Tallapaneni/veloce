@@ -34,6 +34,18 @@ except ImportError:  # pragma: no cover - exercised in the no-msgspec CI leg
     _HAS_MSGSPEC = False
 
 
+# `typing.is_typeddict` answers False for a class built from
+# `typing_extensions.TypedDict` - which is the form Pydantic *requires* below
+# Python 3.12 - so using it alone made those types invisible here and they fell
+# to the scalar path. The typing_extensions predicate recognises both spellings.
+# It ships with Pydantic, so it is always present in practice; the fallback
+# keeps this importable if that ever stops being true.
+try:
+    from typing_extensions import is_typeddict as _is_typeddict
+except ImportError:  # pragma: no cover - typing_extensions comes with pydantic
+    from typing import is_typeddict as _is_typeddict
+
+
 class ModelBackend(IntEnum):
     """Which validation/serialization backend owns a model type."""
 
@@ -141,18 +153,6 @@ def struct_to_dict(obj: Any) -> dict[str, Any]:
     rule already covers them.
     """
     return dict(_msgspec.structs.asdict(obj))
-
-
-# `typing.is_typeddict` answers False for a class built from
-# `typing_extensions.TypedDict` - which is the form Pydantic *requires* below
-# Python 3.12 - so using it alone made those types invisible here and they fell
-# to the scalar path. The typing_extensions predicate recognises both spellings.
-# It ships with Pydantic, so it is always present in practice; the fallback
-# keeps this importable if that ever stops being true.
-try:
-    from typing_extensions import is_typeddict as _is_typeddict
-except ImportError:  # pragma: no cover - typing_extensions comes with pydantic
-    from typing import is_typeddict as _is_typeddict
 
 
 def is_adaptable_model(tp: Any) -> bool:
