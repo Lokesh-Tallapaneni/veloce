@@ -614,7 +614,7 @@ class AsgiMixin:
                 # file's is known from its stat - keep the one the response set
                 # so a streamed download stays length-delimited rather than
                 # silently becoming a chunked one.
-                stream_headers, _, _stream_has_cl = _build_asgi_headers(response.headers)
+                stream_headers, _, _ = _build_asgi_headers(response.headers)
                 # A bodiless status carries no payload and no default
                 # content-type, the same rule the buffered branch below
                 # applies. Without it a streamed 204 shipped its chunks, and a

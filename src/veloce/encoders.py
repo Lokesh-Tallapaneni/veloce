@@ -452,40 +452,18 @@ def jsonable_encoder(
         # iterable form differs (sets sort for deterministic output). They share
         # the module-level `_encode_seq` helper so the shared body costs no
         # per-call closure allocation.
-        if isinstance(obj, (list, tuple)):
+        # Every sequence kind encodes the same way; only a set needs ordering
+        # first, and `sorted(obj, key=str)` is what keeps its output
+        # deterministic across runs.
+        if isinstance(obj, (list, tuple, deque, GeneratorType)):
+            items: Any = obj
+        elif isinstance(obj, (set, frozenset)):
+            items = sorted(obj, key=str)
+        else:
+            items = None
+        if items is not None:
             return _encode_seq(
-                obj,
-                include=include,
-                exclude=exclude,
-                exclude_none=exclude_none,
-                custom_encoder=custom_encoder,
-                _seen=_seen,
-            )
-
-        if isinstance(obj, (set, frozenset)):
-            # `sorted(obj, key=str)` keeps set output deterministic.
-            return _encode_seq(
-                sorted(obj, key=str),
-                include=include,
-                exclude=exclude,
-                exclude_none=exclude_none,
-                custom_encoder=custom_encoder,
-                _seen=_seen,
-            )
-
-        if isinstance(obj, deque):
-            return _encode_seq(
-                obj,
-                include=include,
-                exclude=exclude,
-                exclude_none=exclude_none,
-                custom_encoder=custom_encoder,
-                _seen=_seen,
-            )
-
-        if isinstance(obj, GeneratorType):
-            return _encode_seq(
-                obj,
+                items,
                 include=include,
                 exclude=exclude,
                 exclude_none=exclude_none,
