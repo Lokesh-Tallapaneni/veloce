@@ -268,6 +268,84 @@ class SessionMiddlewareBase(Middleware):
         """Return the lifetime this session's cookie and entry should carry."""
         return self.permanent_lifetime if getattr(session, "permanent", False) else self.max_age
 
+    def _configure_cookie(
+        self,
+        *,
+        cookie_name: str,
+        max_age: int,
+        permanent_lifetime: int,
+        path: str,
+        httponly: bool,
+        secure: bool,
+        samesite: str | None,
+        domain: str | None,
+        cookie_prefix: Literal["host", "secure"] | None,
+        partitioned: bool,
+        vary_on_cookie: bool,
+        persist_on_status: Callable[[int], bool] | None,
+        renew_on_access: bool,
+    ) -> None:
+        """Settle, validate and assign every cookie setting both backends share.
+
+        Each `_UNSET` argument takes the library default here, so the object is
+        fully formed at construction and a bad combination of settings fails at
+        that point rather than on the first request. Only `secret_key` and
+        `store` are left to the subclass - they are what distinguishes the
+        backends; everything above this line is the cookie, and the cookie is
+        the same.
+
+        A subclass adding a third backend gets the validation and the
+        `__Host-`/`__Secure-` wire name by calling this, rather than by copying
+        forty lines that must then be kept in step.
+        """
+        shared = _shared_cookie_settings(
+            cookie_name=cookie_name,
+            path=path,
+            httponly=httponly,
+            secure=secure,
+            samesite=samesite,
+        )
+        cookie_name = shared["cookie_name"]
+        path = shared["path"]
+        httponly = shared["httponly"]
+        secure = shared["secure"]
+        samesite = shared["samesite"]
+        _validate_cookie_security(
+            cookie_prefix=cookie_prefix,
+            partitioned=partitioned,
+            domain=domain,
+            path=path,
+            secure=secure,
+            samesite=samesite,
+        )
+        self.cookie_name = cookie_name
+        self.max_age = max_age
+        # `PERMANENT_SESSION_LIFETIME` analog - the cookie `Max-Age` when
+        # `session.permanent` is set. Both backends default to 31 days, so the
+        # two answer `session.permanent = True` identically.
+        self.permanent_lifetime = 86400 * 31 if permanent_lifetime is _UNSET else permanent_lifetime
+        self.path = path
+        self.httponly = httponly
+        self.secure = secure
+        self.samesite = samesite
+        self.domain = domain
+        self.cookie_prefix = cookie_prefix
+        self.partitioned = partitioned
+        # Emit `Vary: Cookie` on responses that write the session cookie, so a
+        # shared cache keyed on URL alone can't serve one user's session-bearing
+        # body to another (RFC 9110 Sec. 12.5.5). Set False to opt out.
+        self.vary_on_cookie = vary_on_cookie
+        # Policy deciding whether to persist for a given response status. The
+        # `None` default means "persist for status < 500" - a failed request
+        # should not write a half-mutated session.
+        self._persist_on_status = persist_on_status
+        # Sliding expiry: when True, a session merely *read* during the request
+        # has its lifetime refreshed on the way out, so an active user is never
+        # logged out mid-session. Default False keeps the prior behaviour.
+        self.renew_on_access = renew_on_access
+        # Read and write must share the prefixed wire name.
+        self._wire_cookie_name = _wire_name(cookie_prefix, cookie_name)
+
     def cookie_is_secure(self) -> bool:
         """Whether this backend's session cookie will carry `Secure`.
 
@@ -352,69 +430,30 @@ class SessionMiddleware(SessionMiddlewareBase):
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
-        # Every cookie setting is settled here from the argument or the library
-        # default, so the object is fully formed at construction. Only
-        # `secret_key` is still resolved later, against `SECRET_KEY`.
-        shared = _shared_cookie_settings(
+        self._configure_cookie(
             cookie_name=cookie_name,
+            max_age=max_age,
+            permanent_lifetime=permanent_lifetime,
             path=path,
             httponly=httponly,
             secure=secure,
             samesite=samesite,
+            domain=domain,
+            cookie_prefix=cookie_prefix,
+            partitioned=partitioned,
+            vary_on_cookie=vary_on_cookie,
+            persist_on_status=persist_on_status,
+            renew_on_access=renew_on_access,
         )
-        cookie_name = shared["cookie_name"]
-        path = shared["path"]
-        httponly = shared["httponly"]
-        secure = shared["secure"]
-        samesite = shared["samesite"]
-        if permanent_lifetime is _UNSET:
-            permanent_lifetime = 86400 * 31
-        if max_cookie_size is _UNSET:
-            max_cookie_size = _DEFAULT_MAX_COOKIE_SIZE
         # The signing key is the one setting still settled against the app: it
         # is the application's key, not an attribute of this cookie, and
         # `app.secret_key` is already its single home.
         self._pending_config = secret_key is None
-        # Every cookie setting is known now, so a bad combination fails here
-        # rather than on the first request.
-        _validate_cookie_security(
-            cookie_prefix=cookie_prefix,
-            partitioned=partitioned,
-            domain=domain,
-            path=path,
-            secure=secure,
-            samesite=samesite,
-        )
         if secret_key is not None:
             self._signer = _build_signer(secret_key)
-        self.cookie_name = cookie_name
-        self.max_age = max_age
-        self.path = path
-        self.httponly = httponly
-        self.secure = secure
-        self.samesite = samesite
-        self.domain = domain
-        self.cookie_prefix = cookie_prefix
-        self.partitioned = partitioned
-        self._wire_cookie_name = _wire_name(cookie_prefix, cookie_name)
-        # `PERMANENT_SESSION_LIFETIME` analog - used for the cookie
-        # `Max-Age` when `session.permanent` is set. Defaults to 31 days.
-        self.permanent_lifetime = permanent_lifetime
+        if max_cookie_size is _UNSET:
+            max_cookie_size = _DEFAULT_MAX_COOKIE_SIZE
         self.max_cookie_size = max_cookie_size
-        # Emit `Vary: Cookie` on responses that write the session cookie, so a
-        # shared cache keyed on URL alone can't serve one user's session-bearing
-        # body to another (RFC 9110 Sec. 12.5.5). Set False to opt out.
-        self.vary_on_cookie = vary_on_cookie
-        # Policy deciding whether to persist for a given response status. The
-        # `None` default means "persist for status < 500" - a failed request
-        # should not write a half-mutated session (Set-Cookie / store write).
-        self._persist_on_status = persist_on_status
-        # Sliding expiry: when True, a session merely *read* during the request
-        # (accessed, not modified) gets its cookie re-signed on the way out, so
-        # its server-enforced timestamp and `Max-Age` roll forward and an active
-        # user is never logged out mid-session. Default False keeps the prior
-        # behavior (only a modified session is re-written).
-        self.renew_on_access = renew_on_access
         # Opt-in transparent chunking: when True, a signed value too large for a
         # single cookie is split across numbered cookies (`<name>.0`, `.1`, ...)
         # on the response and transparently reassembled on the request. Default
@@ -780,52 +819,22 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
-        # Every cookie setting comes from the argument or the library default
-        # (see SessionMiddleware); `app.config` is not consulted.
-        shared = _shared_cookie_settings(
+        self._configure_cookie(
             cookie_name=cookie_name,
+            max_age=max_age,
+            permanent_lifetime=permanent_lifetime,
             path=path,
             httponly=httponly,
             secure=secure,
             samesite=samesite,
-        )
-        cookie_name = shared["cookie_name"]
-        path = shared["path"]
-        httponly = shared["httponly"]
-        secure = shared["secure"]
-        samesite = shared["samesite"]
-        _validate_cookie_security(
+            domain=domain,
             cookie_prefix=cookie_prefix,
             partitioned=partitioned,
-            domain=domain,
-            path=path,
-            secure=secure,
-            samesite=samesite,
+            vary_on_cookie=vary_on_cookie,
+            persist_on_status=persist_on_status,
+            renew_on_access=renew_on_access,
         )
         self.store = store if store is not None else InMemorySessionStore()
-        self.cookie_name = cookie_name
-        self.max_age = max_age
-        # A session the handler marked `permanent` lives this long instead - the
-        # same rule the cookie backend applies, and the same default, so the two
-        # answer `session.permanent = True` identically.
-        self.permanent_lifetime = 86400 * 31 if permanent_lifetime is _UNSET else permanent_lifetime
-        self.path = path
-        self.httponly = httponly
-        self.secure = secure
-        self.samesite = samesite
-        self.domain = domain
-        self.cookie_prefix = cookie_prefix
-        self.partitioned = partitioned
-        # See SessionMiddleware: emit `Vary: Cookie` on session-cookie writes,
-        # and skip persistence on 5xx by default. Same semantics here.
-        self.vary_on_cookie = vary_on_cookie
-        self._persist_on_status = persist_on_status
-        # Sliding expiry: when True, a session merely *read* during the request
-        # has its server-side store TTL and cookie `Max-Age` refreshed on the
-        # way out (see SessionMiddleware). Default False keeps prior behavior.
-        self.renew_on_access = renew_on_access
-        # Read/write must share the prefixed wire name (see SessionMiddleware).
-        self._wire_cookie_name = _wire_name(cookie_prefix, cookie_name)
 
     async def process_request(self, request: Request) -> Response | None:
         """Load the session from the server-side store by cookie id."""
