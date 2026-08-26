@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +43,7 @@ from veloce._constants import (
 )
 from veloce._header_parsing import parse_media_type_params
 from veloce._internal import (
+    _close_form_uploads,
     _coerce_bool,
     _extract_host,
     is_json_mimetype,
@@ -1530,14 +1530,7 @@ class Request:
         exhaustion. Called once the request is finished with, which is after
         any background task has run.
         """
-        form = self._form
-        if form is None:
-            return
-        for value in form.values():
-            close = getattr(value, "file", None)
-            if close is not None and not getattr(close, "closed", True):
-                with contextlib.suppress(Exception):
-                    close.close()
+        _close_form_uploads(self._form)
 
     async def is_disconnected(self) -> bool:
         """Whether the client has disconnected.

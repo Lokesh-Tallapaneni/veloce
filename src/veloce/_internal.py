@@ -609,3 +609,19 @@ def _quote_header_value(value: str) -> str:
     and did not all get it right.
     """
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _close_form_uploads(form: Any) -> None:
+    """Close the spool files a multipart parse opened.
+
+    Takes the form rather than the request so a caller that only needs the
+    files does not have to retain the whole `Request` to reach them - see the
+    background-task release callback in `app/dispatch.py`.
+    """
+    if form is None:
+        return
+    for value in form.values():
+        handle = getattr(value, "file", None)
+        if handle is not None and not getattr(handle, "closed", True):
+            with contextlib.suppress(Exception):
+                handle.close()

@@ -40,6 +40,7 @@ from veloce._internal import (
     _UNRESOLVED_JSON_DUMPS,
     MIME_HTML,
     MIME_JSON,
+    _close_form_uploads,
     _coerce_bool,
     _current_app_var,
     _current_request_var,
@@ -1262,14 +1263,20 @@ class DispatchMixin:
         # no tracked task to drain at shutdown, and leaves the tasks running
         # concurrently as they did before. A failed task still counts as done,
         # so a failure cannot strand the files.
-        if request._form is not None:
+        form = request._form
+        if form is not None:
             remaining = len(tasks)
 
+            # Closes over the *form*, not the request. Capturing `request` kept
+            # the whole object alive - headers, body bytes, state, scope and the
+            # ASGI callables - for as long as the slowest background task ran,
+            # which can be far longer than the response it belonged to. The
+            # spool files are all this callback needs.
             def _release(_task: asyncio.Task[Any]) -> None:
                 nonlocal remaining
                 remaining -= 1
                 if remaining == 0:
-                    request._close_uploads()
+                    _close_form_uploads(form)
 
             for task in tasks:
                 task.add_done_callback(_release)
