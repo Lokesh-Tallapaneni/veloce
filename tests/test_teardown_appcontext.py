@@ -193,3 +193,23 @@ async def test_blueprint_teardown_fires_on_normal_dispatch():
     assert resp.status_code == 200
     assert "app" in events
     assert "bp" in events
+
+
+async def test_teardown_appcontext_not_fired_on_shutdown():
+    """`teardown_appcontext` is per-request only; `_graceful_shutdown` must not
+    duplicate it.
+
+    Lived in `test_async_safety.py`, which was not where a reader looking for
+    appcontext-teardown behaviour would find it.
+    """
+    import asyncio
+
+    log = []
+    app = Veloce(openapi_url=None)
+
+    @app.teardown_appcontext
+    def cleanup(exc):
+        log.append("appcontext_teardown")
+
+    await app._graceful_shutdown(asyncio.get_running_loop())
+    assert "appcontext_teardown" not in log

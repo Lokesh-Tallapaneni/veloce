@@ -107,76 +107,13 @@ class TestStreamingResponse:
         assert isinstance(resp, StreamingResponse)
 
 
-class TestBackgroundTaskSafety:
-    """Verify background tasks hold strong references."""
-
-    @pytest.mark.asyncio
-    async def test_background_task_completes(self):
-        app = Veloce(openapi_url=None)
-        results = []
-
-        async def bg_work():
-            results.append("done")
-
-        from veloce.background import BackgroundTasks
-
-        @app.post("/work")
-        async def do_work(request: Request, tasks: BackgroundTasks):
-            tasks.add_task(bg_work)
-            return {"queued": True}
-
-        resp = await app.handle_request(make_request(method="POST", path="/work"))
-        assert resp.status_code == 200
-        await asyncio.sleep(0.05)
-        assert "done" in results
-
-
-class TestTeardownAlwaysRuns:
-    """Verify teardown hooks run even on errors."""
-
-    @pytest.mark.asyncio
-    async def test_teardown_on_success(self):
-        app = Veloce(openapi_url=None)
-        log = []
-
-        @app.teardown_request
-        async def td(exc):
-            log.append(("td", exc is None))
-
-        @app.get("/ok")
-        async def ok(request: Request):
-            return {"ok": True}
-
-        await app.handle_request(make_request(path="/ok"))
-        assert log == [("td", True)]
-
-    @pytest.mark.asyncio
-    async def test_teardown_on_exception(self):
-        app = Veloce(openapi_url=None)
-        log = []
-
-        @app.teardown_request
-        async def td(exc):
-            log.append(("td", type(exc).__name__ if exc else None))
-
-        @app.get("/boom")
-        async def boom(request: Request):
-            raise RuntimeError("crash")
-
-        await app.handle_request(make_request(path="/boom"))
-        assert log[0][1] == "RuntimeError"
-
-    @pytest.mark.asyncio
-    async def test_teardown_on_404(self):
-        app = Veloce(openapi_url=None)
-        log = []
-
-        @app.teardown_request
-        async def td(exc):
-            log.append("ran")
-
-        await app.handle_request(make_request(path="/nope"))
-        assert "ran" in log
+# `TestBackgroundTaskSafety` and `TestTeardownAlwaysRuns` used to sit here,
+# duplicating `test_background_tasks.py` and `test_teardown_request.py` - two
+# whole modules in this same directory. Their one piece of distinct coverage
+# was that the teardown hooks were `async` where the sibling's were sync;
+# `test_teardown_request.py` is parameterised over both shapes now. The
+# `teardown_appcontext`-on-shutdown case moved to `test_teardown_appcontext.py`,
+# which is where a reader looks for it.
 
 
 class TestGracefulShutdownStructure:
