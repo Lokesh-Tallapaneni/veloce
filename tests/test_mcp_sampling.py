@@ -42,6 +42,15 @@ class _Client:
         self.transport = StdioTransport(server, self._read_line, self._write_line)
         self._capabilities = capabilities
         self._call_id: object = None
+        # An `AssertionError` raised inside a responder is *not* a test failure
+        # on its own: the responder runs inside the transport's write callback,
+        # the server turns any handler exception into an in-band
+        # `{"isError": true}` tool result, and a test whose only post-run check
+        # is `len(self.requests) == 1` is already satisfied - `requests.append`
+        # happens before the responder runs. Two tests in this file passed with
+        # deliberately false assertions because of that. Captured here and
+        # re-raised from `run`, where pytest sees it.
+        self._responder_failure: BaseException | None = None
 
     def _enqueue(self, message: dict) -> None:
         self._to_server.put_nowait(orjson.dumps(message))
@@ -56,7 +65,14 @@ class _Client:
         # or a response to the client's own call is just recorded.
         if "method" in message and "id" in message:
             self.requests.append(message)
-            reply = self._responder(message)
+            try:
+                reply = self._responder(message)
+            except BaseException as err:  # noqa: BLE001 - re-raised from `run`
+                if self._responder_failure is None:
+                    self._responder_failure = err
+                # Keep the protocol moving so the call still settles and `run`
+                # returns to the point where the failure is re-raised.
+                reply = {"error": {"code": -32603, "message": "responder failed"}}
             self._enqueue({"jsonrpc": "2.0", "id": message["id"], **reply})
 
     async def run(self, call: dict) -> list[dict]:
@@ -73,6 +89,8 @@ class _Client:
         # Close the input once the call has been answered so the serve loop ends.
         asyncio.get_running_loop().call_soon(self._close_when_done)
         await self.transport.serve()
+        if self._responder_failure is not None:
+            raise self._responder_failure
         return self.sent
 
     def _close_when_done(self) -> None:
@@ -174,13 +192,14 @@ def test_sample_with_tools_allowed_when_sub_capability_advertised():
         return "ok"
 
     def respond(request: dict) -> dict:
-        assert request["params"]["tools"] == [{"name": "search"}]
-        assert request["params"]["toolChoice"] == {"type": "auto"}
         return {"result": {"role": "assistant", "content": {"type": "text", "text": "x"}}}
 
     client = _Client(MCPServer(app), {"sampling": {"tools": {}}}, respond)
     asyncio.run(client.run(_call("agentic")))
     assert len(client.requests) == 1
+    params = client.requests[0]["params"]
+    assert params["tools"] == [{"name": "search"}]
+    assert params["toolChoice"] == {"type": "auto"}
 
 
 def test_sample_rejected_without_sampling_capability():
@@ -234,10 +253,6 @@ def test_elicit_url_mode_sends_url():
         return result["action"]
 
     def respond(request: dict) -> dict:
-        assert request["params"]["mode"] == "url"
-        assert request["params"]["url"] == "https://example.test/auth"
-        # Required by the spec so a later completion notification can name it.
-        assert request["params"]["elicitationId"]
         return {"result": {"action": "accept"}}
 
     # The client must declare `elicitation.url`; the bare `{"elicitation": {}}`
@@ -245,6 +260,13 @@ def test_elicit_url_mode_sends_url():
     client = _Client(MCPServer(app), {"elicitation": {"url": {}}}, respond)
     asyncio.run(client.run(_call("authorize")))
     assert len(client.requests) == 1
+    # Asserted here rather than inside `respond`, where a failure would be
+    # swallowed into an in-band `isError` result the test never inspects.
+    params = client.requests[0]["params"]
+    assert params["mode"] == "url"
+    assert params["url"] == "https://example.test/auth"
+    # Required by the spec so a later completion notification can name it.
+    assert params["elicitationId"]
 
 
 def test_elicit_rejected_without_capability():
