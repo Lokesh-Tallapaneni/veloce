@@ -1387,7 +1387,7 @@ class HttpProtocol(asyncio.Protocol):
         # bytes as the start of the next response.
         is_head = request.method == HTTP_METHOD_HEAD
         try:
-            if getattr(response, "is_event_source", False):
+            if response.is_event_source:
                 # The stream owns the connection and this path closes it when
                 # the generator ends, so the head must say so rather than
                 # advertising a socket the client may reuse.

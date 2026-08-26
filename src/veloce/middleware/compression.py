@@ -428,10 +428,7 @@ class CompressionMiddleware(Middleware):
         # SSE and other latency-sensitive streams trade wire size for
         # per-event delivery; routing them through a buffering compressor would
         # merge or delay frames.
-        if (
-            getattr(response, "is_event_source", False)
-            or response.mimetype in self.latency_sensitive_types
-        ):
+        if response.is_event_source or response.mimetype in self.latency_sensitive_types:
             return response
 
         if self._skip_for_type_or_encoding(response):

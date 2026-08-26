@@ -20,8 +20,9 @@ import typing
 
 import pytest
 
-from veloce import Blueprint, Router, Veloce
+from veloce import Blueprint, Request, Router, Veloce
 from veloce.routing.router import RouteInfo
+from veloce.testclient import TestClient
 
 _ROUTER_SRC = pathlib.Path(inspect.getfile(Router)).read_text(encoding="utf-8")
 
@@ -44,6 +45,7 @@ _REWRITTEN = {
     "route_dep_plans",
     "is_trivial_plan",
     "is_request_only_plan",
+    "request_param_name",
     "is_fast_eligible",
     # Derived in `__init__` from the six `response_model_*` flags, which are
     # themselves forwarded, so each copy rebuilds it rather than carrying one.
@@ -339,3 +341,78 @@ def test_an_mcp_field_declared_through_the_decorator_reaches_the_tree():
     assert info.mcp_resource_size == 7
     assert info.mcp_meta == {"k": "v"}
     assert info.mcp_description == "D"
+
+
+# ── Fields derived at registration ───────────────────────────────────
+#
+# `request_param_name` is exempt from the static parity guard because
+# `_finalize_plans` recomputes it on every registration path, the same way it
+# recomputes `is_request_only_plan` beside it. These are the tests that make the
+# exemption honest: a handler that calls its request parameter something other
+# than `request` must still be bound correctly through every route-copy path.
+
+
+def _renamed_request_app(register):
+    app = Veloce(openapi_url=None)
+    register(app)
+    return app
+
+
+def test_a_renamed_request_parameter_is_recorded():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/r")
+    async def route(req: Request):
+        return {"path": req.path}
+
+    info = app.match("GET", "/r").route_info
+    assert info.is_request_only_plan is True
+    assert info.request_param_name == "req"
+
+
+def test_a_renamed_request_parameter_is_bound_at_dispatch():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/r")
+    async def route(req: Request):
+        return {"path": req.path}
+
+    assert TestClient(app).get("/r").json() == {"path": "/r"}
+
+
+def test_a_renamed_request_parameter_survives_a_blueprint():
+    bp = Blueprint("bp", url_prefix="/bp")
+
+    @bp.get("/r")
+    async def route(req: Request):
+        return {"path": req.path}
+
+    app = Veloce(openapi_url=None)
+    app.register_blueprint(bp)
+    assert app.match("GET", "/bp/r").route_info.request_param_name == "req"
+    assert TestClient(app).get("/bp/r").json() == {"path": "/bp/r"}
+
+
+def test_a_renamed_request_parameter_survives_an_included_router():
+    router = Router()
+
+    @router.get("/r")
+    async def route(req: Request):
+        return {"path": req.path}
+
+    app = Veloce(openapi_url=None)
+    app.include_router(router, prefix="/api")
+    assert app.match("GET", "/api/r").route_info.request_param_name == "req"
+    assert TestClient(app).get("/api/r").json() == {"path": "/api/r"}
+
+
+def test_a_route_with_no_request_parameter_keeps_the_default():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/n")
+    async def route():
+        return {}
+
+    info = app.match("GET", "/n").route_info
+    assert info.is_request_only_plan is False
+    assert info.request_param_name == "request"

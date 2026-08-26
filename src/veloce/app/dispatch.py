@@ -520,9 +520,7 @@ class DispatchMixin:
                         for proc in bp_procs:
                             proc(route_info.name, request.path_params)
                 if route_info.is_request_only_plan:
-                    result = await route_info.handler(
-                        **{route_info.handler_plan.slots[0].name: request}
-                    )
+                    result = await route_info.handler(**{route_info.request_param_name: request})
                 else:
                     result = await route_info.handler()
                 response = self._build_response(request, match, result)
@@ -1106,7 +1104,7 @@ class DispatchMixin:
             if route_info.is_trivial_plan:
                 return {}, None
             if route_info.is_request_only_plan:
-                return {route_info.handler_plan.slots[0].name: request}, None
+                return {route_info.request_param_name: request}, None
             resolver = DependencyResolver()
             resolver._overrides = self._dependency_overrides
             resolver._override_subplans = self._override_subplans
@@ -1673,7 +1671,12 @@ class DispatchMixin:
         version = self._mw_version
         if cache is not None and cache[0] == version:
             return cache[1], cache[2]
-        request_chain = [mw for mw in self._middlewares if mw.middleware_name not in excluded]
+        names, types = excluded
+        request_chain = [
+            mw
+            for mw in self._middlewares
+            if mw.middleware_name not in names and not isinstance(mw, types)
+        ]
         response_chain = request_chain[::-1]
         route_info._mw_chain_cache = (version, request_chain, response_chain)
         return request_chain, response_chain

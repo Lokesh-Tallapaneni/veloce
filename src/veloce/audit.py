@@ -176,13 +176,21 @@ def _unmatched_exclusions(app: Any) -> list[Finding]:
     webhook route, where a typo or a middleware registered under a custom `name=`
     leaves the route protected and 403ing.
 
+    Only the *name* form can go unmatched. A class entry is matched by
+    `isinstance`, so it cannot be misspelled - a wrong class is an import error
+    where it is written - and excluding a class that happens not to be
+    registered is a legitimate way to write a route that is safe either way.
+
     Registration cannot answer this - routes are commonly registered before
     middleware - so it is asked once the set is final.
     """
     registered = {mw.middleware_name for mw in app._middlewares}
     unmatched: dict[str, str] = {}
     for method, path, info in app._collect_all_routes(include_hidden=True):
-        for name in info.excluded_middleware or ():
+        excluded = info.excluded_middleware
+        if excluded is None:
+            continue
+        for name in excluded[0]:
             if name not in registered:
                 unmatched.setdefault(name, f"{method} {path}")
     if not unmatched:

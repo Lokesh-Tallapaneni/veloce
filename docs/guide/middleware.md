@@ -553,11 +553,37 @@ works — `CSRFMiddleware`, `RateLimitMiddleware`, `TrustedHostMiddleware`, and
 
 ## Excluding middleware per route
 
-A route can opt out of named middleware with `exclude_middleware`. Each entry
-is matched against a middleware's name, which defaults to its class name; pass
-`name=` to the middleware when two instances of the same class must be
-addressed independently. The opt-out applies to both the request and response
-phases, so a skipped middleware never runs for that route at all.
+A route can opt out of middleware with `exclude_middleware`. Each entry is
+either the middleware **class** or its resolved **name**:
+
+```python
+from veloce import CSRFMiddleware, Veloce
+
+app = Veloce()
+
+
+@app.post("/webhooks/stripe", exclude_middleware=[CSRFMiddleware])
+async def stripe_webhook():
+    return {"ok": True}
+```
+
+Prefer the class. It matches by type, so it covers a subclass of that
+middleware, and it cannot be misspelled — a wrong class is an error where you
+write it, while a wrong name is an exclusion that silently matches nothing and
+leaves the middleware running.
+
+A string matches a middleware's resolved name, which defaults to its class name;
+pass `name=` to the middleware when two instances of the same class must be
+addressed independently, and exclude them by those names. A string entry matches
+that one name exactly and does **not** reach subclasses.
+
+The opt-out applies to both the request and response phases, so a skipped
+middleware never runs for that route at all.
+
+!!! note "Changed in version 0.13"
+    `exclude_middleware` accepts middleware classes. An entry that is neither a
+    class nor a string now raises `TypeError` at registration; it was previously
+    accepted and matched nothing.
 
 The exclusion set is keyed on the route matched at dispatch entry. The same set
 of middleware that runs `process_request` runs `process_response`, so setup and

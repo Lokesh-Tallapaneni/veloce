@@ -223,6 +223,15 @@ class Response:
         "_ct_params",
     )
 
+    #: Whether this response is a Server-Sent Events stream. `EventSourceResponse`
+    #: overrides it to `True`. Declared here as a class attribute - legal
+    #: alongside `__slots__` and costing nothing per instance - so the transport
+    #: and compression paths can read it directly. They used
+    #: `getattr(response, "is_event_source", False)`, which on a slotted class
+    #: with no such attribute misses the slots *and* the MRO and pays CPython's
+    #: full exception setup and teardown: ~38 ns on every response.
+    is_event_source = False
+
     def __init__(
         self,
         status_code: int = HTTP_200_OK,

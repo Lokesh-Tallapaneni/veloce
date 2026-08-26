@@ -29,6 +29,7 @@ from veloce._protocol_constants import (
     URL_SCHEME_HTTP,
 )
 from veloce.exceptions import DuplicateRouteError
+from veloce.middleware.base import Middleware
 from veloce.routing.converters import (
     StringConverter,
     _Converter,
@@ -93,6 +94,40 @@ _DOC_STREAM = Doc(
     "The synchronous body accessors are unavailable on a streaming route "
     "until the body is drained."
 )
+_DOC_EXCLUDE_MIDDLEWARE = Doc(
+    "Middleware this route opts out of, as classes or as resolved names. A "
+    "class matches by type, so it covers subclasses and cannot be misspelled; "
+    "a string matches the middleware's resolved `name` exactly, which is how "
+    "two instances of one class are told apart."
+)
+
+
+def _split_exclusions(
+    entries: Sequence[str | type] | None,
+) -> tuple[frozenset[str], tuple[type, ...]] | None:
+    """Split `exclude_middleware` into its name set and its type tuple.
+
+    `None` when the route excludes nothing, which the dispatch path tests for
+    before doing any filtering. An entry that is neither a name nor a
+    `Middleware` subclass is a `TypeError` here rather than an exclusion that
+    silently matches nothing - which is the failure this shape exists to end.
+    """
+    if not entries:
+        return None
+    names: set[str] = set()
+    types: list[type] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            names.add(entry)
+        elif isinstance(entry, type) and issubclass(entry, Middleware):
+            types.append(entry)
+        else:
+            raise TypeError(
+                "exclude_middleware entries must be a middleware class or a "
+                f"middleware name, got {entry!r}"
+            )
+    return frozenset(names), tuple(types)
+
 
 # Normalize an OpenAPI-style path to its parameter-name-agnostic shape:
 # `/items/{slug}` and `/items/{id}` both become `/items/{}`. Used to detect
@@ -274,6 +309,7 @@ class RouteInfo:
         "route_dep_plans",
         "is_trivial_plan",
         "is_request_only_plan",
+        "request_param_name",
         "is_fast_eligible",
         "subdomain",
         "host",
@@ -334,7 +370,7 @@ class RouteInfo:
         mcp_scopes: Sequence[str] | None = None,
         mcp_icons: Sequence[Any] | None = None,
         mcp_task_support: bool = False,
-        excluded_middleware: frozenset[str] | None = None,
+        excluded_middleware: tuple[frozenset[str], tuple[type, ...]] | None = None,
     ) -> None:
         self.handler = handler
         self.param_names = param_names
@@ -430,6 +466,10 @@ class RouteInfo:
         # are built.
         self.is_trivial_plan = False
         self.is_request_only_plan = False
+        #: The handler's parameter name for the injected `Request` on a
+        #: request-only plan, so dispatch binds it without walking
+        #: `handler_plan.slots[0].name` per request. Fixed at registration.
+        self.request_param_name = "request"
         # True when this route can take the straight-line dispatch fast path:
         # an async trivial/request-only plan with no response_model, custom
         # response_class, non-default status, subdomain/host constraint,
@@ -495,7 +535,12 @@ class RouteInfo:
         # whose result is memoised in `_mw_chain_cache` keyed on the app's
         # middleware-list version so the filter runs at most once per
         # (route, middleware-set) generation, not per request.
-        self.excluded_middleware: frozenset[str] | None = excluded_middleware
+        #: `(names, types)` for a route that opts out of middleware, else `None`.
+        #: A name matches `Middleware.middleware_name` exactly; a type matches by
+        #: `isinstance`, so it covers subclasses.
+        self.excluded_middleware: tuple[frozenset[str], tuple[type, ...]] | None = (
+            excluded_middleware
+        )
         self._mw_chain_cache: tuple[int, list[Any], list[Any]] | None = None
 
 
@@ -1052,6 +1097,8 @@ class Router:
         route_info.is_request_only_plan = (
             len(slots) == 1 and slots[0].kind == K_REQUEST and not has_deps
         )
+        if route_info.is_request_only_plan:
+            route_info.request_param_name = slots[0].name
         # Straight-line dispatch eligibility: an async handler with a trivial or
         # request-only plan and none of the per-route features the fast path
         # cannot honour. WebSocket routes never enter HTTP dispatch, so they are
@@ -1238,8 +1285,8 @@ class Router:
             _DOC_MCP_TASK_SUPPORT,
         ] = False,
         exclude_middleware: Annotated[
-            Sequence[str] | None,
-            Doc("Names of middleware this route opts out of."),
+            Sequence[str | type] | None,
+            _DOC_EXCLUDE_MIDDLEWARE,
         ] = None,
         stream: Annotated[
             bool,
@@ -1323,7 +1370,7 @@ class Router:
             mcp_scopes=mcp_scopes,
             mcp_icons=mcp_icons,
             mcp_task_support=mcp_task_support,
-            excluded_middleware=frozenset(exclude_middleware) if exclude_middleware else None,
+            excluded_middleware=_split_exclusions(exclude_middleware),
         )
         route_info.stream = stream
         route_info.strict_slashes = strict_slashes
@@ -1915,8 +1962,8 @@ class Router:
             _DOC_MCP_TASK_SUPPORT,
         ] = False,
         exclude_middleware: Annotated[
-            Sequence[str] | None,
-            Doc("Names of middleware this route opts out of."),
+            Sequence[str | type] | None,
+            _DOC_EXCLUDE_MIDDLEWARE,
         ] = None,
         stream: Annotated[
             bool,
@@ -2435,5 +2482,9 @@ def _readd_route(
         mcp_scopes=list(info.mcp_scopes) if info.mcp_scopes else None,
         mcp_icons=info.mcp_icons,
         mcp_task_support=info.mcp_task_support,
-        exclude_middleware=(list(info.excluded_middleware) if info.excluded_middleware else None),
+        exclude_middleware=(
+            [*info.excluded_middleware[0], *info.excluded_middleware[1]]
+            if info.excluded_middleware
+            else None
+        ),
     )
