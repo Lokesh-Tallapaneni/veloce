@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import time
 
 import pytest
 
@@ -322,39 +321,63 @@ async def test_send_robust_async_mixed_sync_async_with_failure():
     assert results[2] == (async_ok, "async-value")
 
 
-#: How long each probe receiver sleeps. Concurrent dispatch starts them all at
-#: once; sequential dispatch spaces the starts a whole delay apart.
-_RECEIVER_DELAY = 0.05
+#: Failure bound for the rendezvous below - not a synchronisation delay. A
+#: sequential dispatch never reaches it and fails here instead of hanging.
+_RENDEZVOUS_TIMEOUT = 5.0
+
+
+class _Rendezvous:
+    """Every receiver must arrive before any is released.
+
+    Concurrency was previously inferred from the wall-clock spread between
+    receiver start times against a hard 25 ms threshold - "flaky by
+    construction" on a loaded machine, and a threshold that says nothing about
+    the property on a fast one. A rendezvous states the property directly:
+    under concurrent dispatch all receivers arrive and the last one releases
+    them; under sequential dispatch the first blocks forever, which the timeout
+    turns into a clear failure rather than a hang.
+
+    `asyncio.Barrier` would say this in one line but landed in 3.11, and this
+    project supports 3.10.
+    """
+
+    def __init__(self, parties: int) -> None:
+        self.parties = parties
+        self.arrived: list[str] = []
+        self._all_here = asyncio.Event()
+
+    async def wait(self, marker: str) -> None:
+        self.arrived.append(marker)
+        if len(self.arrived) == self.parties:
+            self._all_here.set()
+        await asyncio.wait_for(self._all_here.wait(), timeout=_RENDEZVOUS_TIMEOUT)
 
 
 # ── asend: concurrent async dispatch ────────────────────────────────
 
 
 async def test_asend_runs_async_receivers_concurrently():
-    sig = Signal("concurrent")
-    starts: list[float] = []
+    """All three receivers are in flight at once, proved by rendezvous.
 
-    async def make(marker: str):
+    No wall-clock threshold: each receiver blocks until every receiver has
+    arrived, which only a concurrent dispatch can satisfy.
+    """
+    sig = Signal("concurrent")
+    rendezvous = _Rendezvous(parties=3)
+
+    def make(marker: str):
         async def receiver(sender, **kwargs):
-            starts.append(time.perf_counter())
-            await asyncio.sleep(_RECEIVER_DELAY)
+            await rendezvous.wait(marker)
             return marker
 
         return receiver
 
     for marker in ("a", "b", "c"):
-        sig.connect(await make(marker), weak=False)
+        sig.connect(make(marker), weak=False)
 
     results = await sig.asend("s")
 
-    # The robust measure is when each receiver *began*, not how long the whole
-    # dispatch took: total elapsed jitters under a loaded scheduler, while the
-    # spread between concurrently-scheduled starts stays small. Sequential
-    # dispatch would space them a whole delay apart.
-    assert len(starts) == 3
-    assert max(starts) - min(starts) < _RECEIVER_DELAY / 2, (
-        f"receivers did not start concurrently: spread={max(starts) - min(starts):.4f}s"
-    )
+    assert sorted(rendezvous.arrived) == ["a", "b", "c"]
     assert [value for _, value in results] == ["a", "b", "c"]
 
 
@@ -426,22 +449,20 @@ async def test_asend_runs_all_async_receivers_before_raising():
 
 
 async def test_send_robust_async_concurrent_and_robust():
+    """Concurrent *and* robust: one receiver raising does not stop the others."""
     sig = Signal("robust-concurrent")
-    starts: list[float] = []
+    rendezvous = _Rendezvous(parties=3)
 
     async def ok_a(sender, **kwargs):
-        starts.append(time.perf_counter())
-        await asyncio.sleep(_RECEIVER_DELAY)
+        await rendezvous.wait("a")
         return "a"
 
     async def raiser(sender, **kwargs):
-        starts.append(time.perf_counter())
-        await asyncio.sleep(_RECEIVER_DELAY)
+        await rendezvous.wait("raiser")
         raise RuntimeError("boom")
 
     async def ok_b(sender, **kwargs):
-        starts.append(time.perf_counter())
-        await asyncio.sleep(_RECEIVER_DELAY)
+        await rendezvous.wait("b")
         return "b"
 
     sig.connect(ok_a, weak=False)
@@ -457,12 +478,8 @@ async def test_send_robust_async_concurrent_and_robust():
     assert isinstance(results[1][1], RuntimeError)
     assert str(results[1][1]) == "boom"
     assert results[2] == (ok_b, "b")
-    # Concurrency measured by start spread rather than total elapsed - see the
-    # note on `test_asend_runs_async_receivers_concurrently`.
-    assert len(starts) == 3
-    assert max(starts) - min(starts) < _RECEIVER_DELAY / 2, (
-        f"receivers did not start concurrently: spread={max(starts) - min(starts):.4f}s"
-    )
+    # Every receiver reached the rendezvous, so all three were in flight at once.
+    assert sorted(rendezvous.arrived) == ["a", "b", "raiser"]
 
 
 async def test_asend_propagates_contextvars_snapshot():
