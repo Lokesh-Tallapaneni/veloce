@@ -93,22 +93,48 @@ def _app() -> Veloce:
     return app
 
 
-def _exporter_and_app():
-    """Build an in-memory exporter wired to an instrumented `_app()`."""
+def _exporter() -> tuple:
+    """An in-memory exporter and a provider feeding it.
+
+    The half shared by tests that build their own application - one with
+    `debug=True`, one that registers a hook before the bridge - and so cannot
+    use `_traced_app`.
+    """
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
         InMemorySpanExporter,
     )
 
-    from veloce.otel import instrument_with_otel
-
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return exporter, provider
+
+
+def _traced_app(*, live: bool = False, **kwargs):
+    """An in-memory exporter, its provider, and an instrumented `_app()`.
+
+    This four-import, six-statement construction was re-inlined at a dozen test
+    sites. It is the setup, not the subject: what each of those tests is about
+    is the spans that come out.
+    """
+
+    from veloce.otel import instrument_with_otel
+
+    exporter, provider = _exporter()
 
     app = _app()
-    instrument_with_otel(app, tracer_provider=provider)
+    if live:
+        instrument_with_otel(app, tracer_provider=provider, live=True, **kwargs)
+    else:
+        instrument_with_otel(app, tracer_provider=provider, **kwargs)
+    return exporter, provider, app
+
+
+def _exporter_and_app():
+    """Build an in-memory exporter wired to an instrumented `_app()`."""
+    exporter, _provider, app = _traced_app()
     return exporter, app
 
 
@@ -116,21 +142,9 @@ def test_emits_server_span_per_request() -> None:
     pytest.importorskip("opentelemetry")
     pytest.importorskip("opentelemetry.sdk")
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
     from opentelemetry.trace import SpanKind
 
-    from veloce.otel import instrument_with_otel
-
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-
-    app = _app()
-    instrument_with_otel(app, tracer_provider=provider)
+    exporter, provider, app = _traced_app()
 
     app.test_client().get("/items/7")
 
@@ -151,20 +165,7 @@ def test_span_is_backdated_to_the_measured_request_window() -> None:
 
     import time
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
-    from veloce.otel import instrument_with_otel
-
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-
-    app = _app()
-    instrument_with_otel(app, tracer_provider=provider)
+    exporter, provider, app = _traced_app()
 
     # Bracket the request with wall-clock readings so we can prove the exported
     # span timestamps reflect the real request window, not just a duration_ms
@@ -198,20 +199,8 @@ def test_span_is_root_and_ignores_ambient_context() -> None:
 
     from opentelemetry import context as otel_context
     from opentelemetry import trace
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
 
-    from veloce.otel import instrument_with_otel
-
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-
-    app = _app()
-    instrument_with_otel(app, tracer_provider=provider)
+    exporter, provider, app = _traced_app()
 
     # Make an unrelated span the ambient current context while the request runs.
     # The retroactive request span must NOT pick this up as its parent.
@@ -237,21 +226,9 @@ def test_5xx_marks_span_error() -> None:
     pytest.importorskip("opentelemetry")
     pytest.importorskip("opentelemetry.sdk")
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
     from opentelemetry.trace import StatusCode
 
-    from veloce.otel import instrument_with_otel
-
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-
-    app = _app()
-    instrument_with_otel(app, tracer_provider=provider)
+    exporter, provider, app = _traced_app()
 
     app.test_client().get("/crash")
 
@@ -436,17 +413,9 @@ def test_span_end_time_is_not_shifted_by_a_slow_earlier_hook() -> None:
     pytest.importorskip("opentelemetry.sdk")
     import time
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
     from veloce.otel import instrument_with_otel
 
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    exporter, provider = _exporter()
     app = _app()
 
     # A slow instrumentation hook registered BEFORE the OTel bridge: it runs
@@ -473,18 +442,10 @@ def test_head_to_streaming_endpoint_is_traced() -> None:
     pytest.importorskip("opentelemetry")
     pytest.importorskip("opentelemetry.sdk")
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
     from veloce import StreamingResponse
     from veloce.otel import instrument_with_otel
 
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    exporter, provider = _exporter()
 
     app = Veloce(debug=True, openapi_url=None)
 
@@ -510,18 +471,10 @@ def test_streaming_get_is_not_traced() -> None:
     pytest.importorskip("opentelemetry")
     pytest.importorskip("opentelemetry.sdk")
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
     from veloce import StreamingResponse
     from veloce.otel import instrument_with_otel
 
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    exporter, provider = _exporter()
 
     app = Veloce(debug=True, openapi_url=None)
 
@@ -669,20 +622,9 @@ def test_re_instrument_emits_a_single_span_per_request() -> None:
     pytest.importorskip("opentelemetry")
     pytest.importorskip("opentelemetry.sdk")
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
     from veloce.otel import instrument_with_otel
 
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-
-    app = _app()
-    instrument_with_otel(app, tracer_provider=provider)
+    exporter, provider, app = _traced_app()
     with pytest.warns(RuntimeWarning):
         instrument_with_otel(app, tracer_provider=provider)
 
@@ -714,17 +656,9 @@ def test_on_span_enriches_every_emitted_span() -> None:
     pytest.importorskip("opentelemetry")
     pytest.importorskip("opentelemetry.sdk")
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
     from veloce.otel import instrument_with_otel
 
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    exporter, provider = _exporter()
 
     seen_routes: list[str | None] = []
 
@@ -749,17 +683,9 @@ def test_on_span_exception_is_suppressed_and_span_still_ends() -> None:
     pytest.importorskip("opentelemetry")
     pytest.importorskip("opentelemetry.sdk")
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
     from veloce.otel import instrument_with_otel
 
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    exporter, provider = _exporter()
 
     def boom(span, metrics):
         raise RuntimeError("enrichment is broken")
@@ -817,17 +743,9 @@ def test_exclude_routes_suppresses_spans_for_noisy_routes() -> None:
     pytest.importorskip("opentelemetry")
     pytest.importorskip("opentelemetry.sdk")
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
     from veloce.otel import instrument_with_otel
 
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    exporter, provider = _exporter()
 
     app = Veloce(debug=True, openapi_url=None)
 
@@ -854,21 +772,7 @@ def test_exclude_routes_suppresses_spans_for_noisy_routes() -> None:
 
 def _live_exporter_and_app(**kwargs):
     """Build an in-memory exporter wired to a *live*-instrumented `_app()`."""
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
-    from veloce.otel import instrument_with_otel
-
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-
-    app = _app()
-    instrument_with_otel(app, tracer_provider=provider, live=True, **kwargs)
-    return exporter, provider, app
+    return _traced_app(live=True, **kwargs)
 
 
 def test_live_handler_span_is_child_of_server_span() -> None:
@@ -1160,12 +1064,6 @@ def test_live_span_strictly_nests_entire_request() -> None:
 
     import time
 
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
     from veloce.otel import instrument_with_otel
 
     events: dict[str, int] = {}
@@ -1181,9 +1079,7 @@ def test_live_span_strictly_nests_entire_request() -> None:
             await self.app(scope, receive, send)
             events["marker_exit"] = time.time_ns()
 
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    exporter, provider = _exporter()
 
     app = _app()
     # Register the inner marker BEFORE the live span: under correct PH_ASGI_WRAP
