@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, get_type_hints
 
 from veloce._handler_plan import (
     K_BODY_MODEL,
+    K_DEPENDS,
     K_MODEL_GROUP,
     K_PARAM_MARKER,
     K_PATH,
@@ -227,11 +228,21 @@ def iter_param_descriptors(contract: RouteContract) -> Iterator[ParamDescriptor]
     """Yield one `ParamDescriptor` per documentable input in the route's plan.
 
     The single canonical walk over the plan's parameter slots, built on
-    `describe_slot`. Inject-only slots are skipped; dependency sub-graphs are not
-    recursed (a lowering that needs them walks `slot.sub_plan` itself).
+    `describe_slot`. Inject-only slots are skipped. Dependency sub-graphs *are*
+    recursed: a `Query()` declared on a dependency is read off the wire and
+    enforced with a 422 exactly like one declared on the handler, so it belongs
+    in the contract.
+
+    A route with no dependency takes the flat loop below, so the bookkeeping the
+    recursion needs is not paid by the common case.
     """
     param_names = contract.param_names
-    for slot in contract.plan.slots:
+    slots = contract.plan.slots
+    for slot in slots:
+        if slot.kind == K_DEPENDS:
+            yield from _iter_through_dependencies(slots, param_names)
+            return
+    for slot in slots:
         descriptor = describe_slot(slot, param_names)
         if descriptor is None:
             continue
@@ -243,6 +254,41 @@ def iter_param_descriptors(contract: RouteContract) -> Iterator[ParamDescriptor]
             yield from _expand_group(descriptor)
             continue
         yield descriptor
+
+
+def _iter_through_dependencies(
+    slots: list[_Slot], param_names: tuple[str, ...]
+) -> Iterator[ParamDescriptor]:
+    """Walk a plan whose slots include a dependency, sub-graphs included.
+
+    Level by level, so a handler's own parameter shadows a sub-dependency of the
+    same name regardless of declaration order, and each sub-plan is visited once:
+    a diamond graph, and a dependency injected twice, are each one wire
+    parameter rather than two.
+    """
+    seen_names: set[str] = set()
+    seen_plans: set[int] = set()
+    level = list(slots)
+    while level:
+        deeper: list[_Slot] = []
+        for slot in level:
+            if slot.kind == K_DEPENDS:
+                sub_plan = slot.sub_plan
+                if sub_plan is not None and id(sub_plan) not in seen_plans:
+                    seen_plans.add(id(sub_plan))
+                    deeper.extend(sub_plan.slots)
+                continue
+            descriptor = describe_slot(slot, param_names)
+            if descriptor is None:
+                continue
+            expanded = (
+                _expand_group(descriptor) if descriptor.group_fields is not None else (descriptor,)
+            )
+            for item in expanded:
+                if item.wire_name not in seen_names:
+                    seen_names.add(item.wire_name)
+                    yield item
+        level = deeper
 
 
 def _expand_group(descriptor: ParamDescriptor) -> Iterator[ParamDescriptor]:

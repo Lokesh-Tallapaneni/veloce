@@ -74,8 +74,15 @@ _TERMINAL_STATUSES = TASK_STATUSES - _NON_TERMINAL_STATUSES
 
 # Default time-to-live (seconds) a created task is retained before eviction, used
 # when the client requests none. A client may shorten or extend it per call via
-# the task `ttl`; the server keeps the requested value verbatim.
+# the task `ttl`.
 _DEFAULT_TASK_TTL_SECONDS = 300
+
+# Ceiling (seconds) on a client-requested `ttl`. Expiry is what reclaims a
+# settled task and its result, so an unclamped `ttl` let a caller decide how long
+# the server holds them - `{"task": {"ttl": 999999999999}}` is 31 years, which is
+# process life. Clamped rather than refused: the call still succeeds and the task
+# reports the TTL it actually got, so a client asking for more learns what it has.
+_MAX_TASK_TTL_SECONDS = 3600
 
 # Suggested client poll interval (milliseconds) reported on a working task so a
 # client paces its `tasks/get` polling instead of busy-looping.
@@ -238,14 +245,15 @@ def task_ttl_ms(params: dict[str, Any]) -> int:
     """Return the requested task time-to-live in milliseconds, or the default.
 
     The client may attach a ``ttl`` (milliseconds) to the ``task`` field; an
-    absent or non-positive value falls back to the server default so a task is
-    always retained for a bounded, sensible window.
+    absent or non-positive value falls back to the server default, and a value
+    above `_MAX_TASK_TTL_SECONDS` is clamped to it, so a task is always retained
+    for a bounded, sensible window.
     """
     task_field = params.get("task")
     if isinstance(task_field, dict):
         ttl = task_field.get("ttl")
         if isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0:
-            return ttl
+            return min(ttl, _MAX_TASK_TTL_SECONDS * 1000)
     return _DEFAULT_TASK_TTL_SECONDS * 1000
 
 

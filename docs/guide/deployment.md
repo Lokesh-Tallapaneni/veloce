@@ -44,7 +44,34 @@ app = Veloce()
 app.config["REQUEST_TIMEOUT"] = 15     # drop a half-sent request after 15s
 app.config["KEEP_ALIVE_TIMEOUT"] = 30  # close an idle connection after 30s
 app.config["MAX_CONCURRENT_CONNECTIONS"] = 1000  # reject beyond this (default 1000)
+app.config["MAX_PIPELINED_REQUESTS"] = 64        # queue depth per connection
 ```
+
+An over-`MAX_CONTENT_LENGTH` upload that announces its size up front is refused
+with a `413` that runs through the app's response phase, so it carries the same
+CORS and security headers a served response would — a cross-origin upload that
+trips the limit reaches the client as a `413`, not as an opaque CORS failure.
+
+Refusals that happen before a request exists — a malformed request line, an
+over-long request line or header block, the concurrent-connection reject — are
+framed directly and carry no middleware headers. There is nothing to run
+middleware against at that point, and this matches what an ASGI server does with
+the same conditions.
+
+!!! note "Changed in version 0.13"
+    The built-in server's `413` runs the response phase. It previously carried
+    only a `Content-Type`, so `app.run()` and `VeloceWorker` served a different
+    refusal surface than uvicorn for the same app.
+
+A connection also stops reading its socket once `MAX_PIPELINED_REQUESTS`
+(default **64**) parsed requests are waiting to be served, and resumes as the
+queue drains. Requests are throttled, never dropped: every one still gets its
+response, in order. Transport flow control is otherwise driven by the request
+body buffer, and a pipelined bodiless `GET` has no body — so without this a peer
+could queue one request object per 27 bytes it wrote.
+
+!!! note "Added in version 0.13"
+    `MAX_PIPELINED_REQUESTS`, and the pipelining depth bound it configures.
 
 !!! note "Concurrent-connection cap"
     The built-in server admits at most `MAX_CONCURRENT_CONNECTIONS` simultaneous

@@ -22,6 +22,7 @@ import httptools
 
 from veloce import status
 from veloce._constants import (
+    MIME_JSON,
     MIME_TEXT_PLAIN,
     MSG_ERROR_RESPONSE_EMISSION,
     MSG_INTERNAL_SERVER_ERROR,
@@ -70,6 +71,11 @@ WRITE_BUFFER_HIGH_WATER = DEFAULT_WRITE_BUFFER_HIGH_WATER
 # process - but the helper that clears it exists for the test suite, which
 # drives shutdown repeatedly within one interpreter.
 _SHUTTING_DOWN = False
+
+# Reasons a connection has stopped reading its socket, held as a bitmask so a
+# resume for one cannot cancel the other's pause.
+_PAUSE_BODY = 1
+_PAUSE_DEPTH = 2
 
 
 def _enable_tcp_keepalive(
@@ -131,6 +137,11 @@ _WS_HEADER_KEY = b"sec-websocket-key"
 _WS_HEADER_VERSION = b"sec-websocket-version"
 _WS_HEADER_HOST = b"host"
 _WS_HEADER_ORIGIN = b"origin"
+
+# The one extra header line a bare-framed JSON refusal carries.
+CONTENT_TYPE_JSON_LINE = b"Content-Type: application/json\r\n"
+
+
 # RFC 6455 Sec. 4.2.2: the only WebSocket protocol version Veloce speaks.
 _WS_SUPPORTED_VERSION = b"13"
 
@@ -159,6 +170,8 @@ class HttpProtocol(asyncio.Protocol):
         "_oversized",
         "_counted",
         "_request_queue",
+        "_pause_reasons",
+        "_max_pipelined",
         "_server_loop",
         "_closing",
         "_draining",
@@ -218,6 +231,14 @@ class HttpProtocol(asyncio.Protocol):
     # deliberately slow client can pin a connection open.
     REQUEST_TIMEOUT = 30  # seconds
 
+    # How many parsed-but-unserved pipelined requests a connection will hold
+    # before it stops reading the socket. Transport flow control is otherwise
+    # driven by the request *body* source, and a pipelined bodiless GET has no
+    # body - so without this bound a peer could queue one `Request`,
+    # `RequestBodySource` and `RouteMatch` per 27 bytes it wrote. Overridable
+    # per-app via `MAX_PIPELINED_REQUESTS` in `app.config`.
+    MAX_PIPELINED_REQUESTS = 64
+
     def __init__(self, app: Veloce, loop: asyncio.AbstractEventLoop) -> None:
         self.app = app
         self.loop = loop
@@ -249,6 +270,10 @@ class HttpProtocol(asyncio.Protocol):
         # response written first. The tuple carries the Request, its body
         # source (the protocol feeds body chunks into it), and the keep-alive
         # flag snapshotted at headers-complete.
+        self._pause_reasons = 0
+        self._max_pipelined: int = app.config.get(
+            "MAX_PIPELINED_REQUESTS", HttpProtocol.MAX_PIPELINED_REQUESTS
+        )
         self._request_queue: deque[tuple[Request, RequestBodySource, bool, RouteMatch | None]] = (
             deque()
         )
@@ -376,7 +401,12 @@ class HttpProtocol(asyncio.Protocol):
         if max_len is not None:
             declared = self._declared_content_length()
             if declared is not None and declared > max_len:
-                self._reject_413()
+                # Built before the refusal so the response phase has a request
+                # to run against - a cross-origin upload that trips the limit
+                # must not reach the client as an opaque CORS failure, which is
+                # the reason `app/asgi.py` routes its own 413 through
+                # `_body_too_large_response`.
+                self._reject_413(self._refusal_request())
                 return
 
         # Clear an `Expect: 100-continue` client to send its body. The early
@@ -431,6 +461,11 @@ class HttpProtocol(asyncio.Protocol):
         # route streams its body or wants it buffered.
         match = self.app.match(request.method, request.path)
         self._request_queue.append((request, source, keep_alive, match))
+        # A pipelined bodiless request never fills a body buffer, so depth is the
+        # only backpressure signal this shape has. Stop reading here; `_serve`
+        # resumes once it has drained the queue.
+        if len(self._request_queue) >= self._max_pipelined:
+            self._pause_reading_depth()
         # Start the per-connection server loop on the first queued request; it
         # runs until the queue drains, guaranteeing FIFO response ordering.
         if self._server_loop is None or self._server_loop.done():
@@ -811,22 +846,45 @@ class HttpProtocol(asyncio.Protocol):
         timeout = self.app.config.get("REQUEST_TIMEOUT", self.REQUEST_TIMEOUT)
         self._request_timer = self.loop.call_later(timeout, self._request_timeout)
 
+    def _set_pause_reason(self, bit: int, paused: bool) -> None:
+        """Add or clear one reason to stop reading, pausing the transport once.
+
+        Two independent things want the socket quiet: a full request-body buffer
+        and a full pipelining queue. Reference-counting them means a resume for
+        one reason cannot cancel the other's pause. A guard keeps this safe after
+        teardown: a closing or absent transport simply ignores the request.
+        """
+        before = self._pause_reasons
+        self._pause_reasons = after = (before | bit) if paused else (before & ~bit)
+        if (before == 0) == (after == 0):
+            return
+        transport = self.transport
+        if transport is None or transport.is_closing():
+            return
+        if after:
+            transport.pause_reading()
+        else:
+            transport.resume_reading()
+
     def _pause_reading(self) -> None:
         """Stop pulling bytes off the socket - the body buffer is full.
 
         Invoked by the in-flight `RequestBodySource` when its buffer reaches
-        the high-water mark. A guard keeps it safe after teardown: a closing or
-        absent transport simply ignores the request.
+        the high-water mark.
         """
-        transport = self.transport
-        if transport is not None and not transport.is_closing():
-            transport.pause_reading()
+        self._set_pause_reason(_PAUSE_BODY, True)
 
     def _resume_reading(self) -> None:
         """Resume pulling bytes once the consumer drains below the low mark."""
-        transport = self.transport
-        if transport is not None and not transport.is_closing():
-            transport.resume_reading()
+        self._set_pause_reason(_PAUSE_BODY, False)
+
+    def _pause_reading_depth(self) -> None:
+        """Stop reading - the pipelining queue is at its depth limit."""
+        self._set_pause_reason(_PAUSE_DEPTH, True)
+
+    def _resume_reading_depth(self) -> None:
+        """Resume reading once the pipelining queue has drained."""
+        self._set_pause_reason(_PAUSE_DEPTH, False)
 
     # ── write-side flow control ───────────────────────────
 
@@ -954,12 +1012,43 @@ class HttpProtocol(asyncio.Protocol):
             return False
         return self._has_expect_continue
 
-    def _reject_413(self) -> None:
+    def _refusal_request(self) -> Request | None:
+        """Build a body-less `Request` for a pre-dispatch refusal, or `None`.
+
+        The request line and headers are parsed by the time a declared
+        `Content-Length` is checked, so a refusal at that point can carry the
+        same request the response phase would have seen. There is deliberately
+        no body source: the body is what is being refused.
+        """
+        transport = self.transport
+        if transport is None or transport.is_closing():
+            return None
+        try:
+            path, query_bytes = self._parse_request_target()
+            return Request(
+                method=self.parser.get_method().decode("ascii"),
+                path=path,
+                query_string=query_bytes.decode("ascii"),
+                headers=list(self.headers),
+                body=b"",
+                transport=transport,
+            )
+        except Exception:
+            # A refusal must never fail to be sent because building a request
+            # from its headers failed; fall back to the bare framing.
+            return None
+
+    def _reject_413(self, request: Request | None = None) -> None:
         """Emit a 413 and close - the body exceeds MAX_CONTENT_LENGTH.
 
         Marks `_oversized` so any buffered follow-up parser callbacks
         short-circuit; the connection is terminated rather than trusted to
         resynchronise after a partially-read over-limit body.
+
+        With a `request`, the refusal runs through the app's response phase so it
+        carries the CORS and security headers a served response would - the same
+        guarantee `app/asgi.py` gives. Without one there is nothing to run
+        middleware against, and the bare framing is written directly.
         """
         self._oversized = True
         if self._current_source is not None:
@@ -968,12 +1057,42 @@ class HttpProtocol(asyncio.Protocol):
         # The same body the ASGI path answers with, so one app does not describe
         # the same refusal two ways depending on how it is served.
         body = dumps_for(self.app, too_large_payload(self.app.config.get("MAX_CONTENT_LENGTH")))
-        self._emit_http_error(
-            status.HTTP_413_CONTENT_TOO_LARGE,
-            b"Content Too Large",
-            body,
-            extra=b"Content-Type: application/json\r\n",
+        if request is None:
+            self._emit_http_error(
+                status.HTTP_413_CONTENT_TOO_LARGE,
+                b"Content Too Large",
+                body,
+                extra=CONTENT_TYPE_JSON_LINE,
+            )
+            return
+        response = Response(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            body=body,
+            content_type=MIME_JSON,
         )
+        # The response phase may await and this is a synchronous parser callback,
+        # so the write is deferred to a task. `_oversized` is already latched, so
+        # nothing further is parsed off this connection in the meantime.
+        task = self.loop.create_task(self._emit_refusal(request, response))
+        HttpProtocol._active_tasks.add(task)
+        task.add_done_callback(HttpProtocol._active_tasks.discard)
+
+    async def _emit_refusal(self, request: Request, response: Response) -> None:
+        """Run the response phase over a refusal, then frame it and close."""
+        try:
+            cp = self.app._ensure_pipeline()
+            if cp is not None and cp.http_post is not None:
+                response = await self.app._run_response_phase(
+                    cp.http_post, request, response, False
+                )
+        except Exception:
+            # A middleware failure must not swallow the refusal: send what was
+            # built, and record why its headers are missing.
+            _logger.exception("response middleware raised while building a refusal")
+        transport = self.transport
+        if transport is not None and not transport.is_closing():
+            transport.write(response.encode(keep_alive=False))
+            transport.close()
 
     def _request_timeout(self) -> None:
         """A client took too long to send a complete request - drop it."""
@@ -1080,6 +1199,13 @@ class HttpProtocol(asyncio.Protocol):
         """
         while self._request_queue and not self._closing:
             request, source, keep_alive, match = self._request_queue.popleft()
+            # Resume at half the limit rather than at the limit, so a connection
+            # serving a steady pipeline does not pause and resume on every
+            # request.
+            if self._pause_reasons & _PAUSE_DEPTH and (
+                len(self._request_queue) <= self._max_pipelined >> 1
+            ):
+                self._resume_reading_depth()
             should_continue = await self._dispatch(request, source, keep_alive, match)
             # Notify the optional per-request hook (gunicorn max_requests
             # recycling) once the request has been fully dispatched, regardless

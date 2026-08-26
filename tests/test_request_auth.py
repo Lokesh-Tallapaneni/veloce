@@ -31,11 +31,20 @@ def test_basic_with_empty_password():
     assert auth.password == ""
 
 
-def test_basic_without_colon_keeps_token_only():
+def test_basic_without_colon_yields_no_credentials():
+    """RFC 7617 Sec. 2 makes the colon mandatory, so this is a malformed header.
+
+    This previously asserted `username == "justname"`, pinning a defect: the
+    scheme that consumes the same header, `HTTPBasic`, answered it with a 401,
+    so code reading `request.auth` saw a username for credentials the
+    application had refused. A malformed payload now parses like undecodable
+    base64 already did in the next test - scheme reported, credentials not.
+    """
     creds = base64.b64encode(b"justname").decode()
     auth = _req(f"Basic {creds}").auth
-    assert auth.username == "justname"
-    assert auth.password == ""
+    assert auth.type == "basic"
+    assert auth.username is None
+    assert auth.password is None
 
 
 def test_basic_invalid_base64_returns_type_only():

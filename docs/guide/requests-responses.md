@@ -253,6 +253,7 @@ A handler can return several shapes; Veloce coerces each to a `Response`.
 | `Response` instance | Used as-is. |
 | `(body, status)` tuple | `body` coerced, then status applied. |
 | `(body, status, headers)` tuple | `body` coerced, status and headers applied. |
+| any other tuple | JSON-encoded as an array, like a `list`. |
 
 ```python title="app.py"
 from veloce import Request, Veloce
@@ -281,6 +282,17 @@ In the `(body, status)` tuple the second element may be an `int` status, in
 !!! note
     A bare `str` body still becomes `text/html`, so `("<b>hi</b>", 201)` is an
     HTML `201`.
+
+Only those two lengths are response tuples. A tuple of any other length is a
+value, and is encoded as a JSON array — `return ("x",)` is `["x"]`, not `"x"`.
+That holds whether or not the route declares a `response_class`, so a mistyped
+`return body, 201, headers, extra` shows up in the body rather than silently
+serving a `200` with the headers dropped.
+
+!!! note "Changed in version 0.13"
+    A route with a `response_class` reads a non-`(body, status[, headers])`
+    tuple the same way a route without one does. It previously took the tuple's
+    first element and discarded the rest.
 
 ### Status codes
 

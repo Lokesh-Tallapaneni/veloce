@@ -1052,10 +1052,18 @@ as a failed result with an actionable message. Call the tool synchronously (no
 The server emits `notifications/tasks/status` on each transition (carrying the
 `io.modelcontextprotocol/related-task` `_meta` key), and the `CreateTaskResult`
 returned at creation carries the `io.modelcontextprotocol/model-immediate-response`
-hint. A task is retained for a bounded time-to-live (the client may set `ttl` in
-milliseconds on the `task` field); a settled task is evicted once it expires, and
-a session's tasks — settled or still working — are reclaimed when its
-`Mcp-Session-Id` is terminated or evicted, so an abandoned task cannot leak.
+hint. A task is retained for a bounded time-to-live: the client may set `ttl` in
+milliseconds on the `task` field, up to a server ceiling of one hour, above which
+the request is clamped rather than refused — the task reports the TTL it actually
+received, so a client that asked for more can see what it got. A settled task is
+evicted once it expires, and a session's tasks — settled or still working — are
+reclaimed when its `Mcp-Session-Id` is terminated or evicted, so an abandoned
+task cannot leak.
+
+!!! note "Changed in version 0.13"
+    A client-requested `ttl` is capped at one hour. It was previously kept
+    verbatim, so a client could pin a task and its result for the process
+    lifetime.
 
 !!! note "Added in version 0.9"
     Task-augmented tool calls require a tool to opt in with `task_support=True`;

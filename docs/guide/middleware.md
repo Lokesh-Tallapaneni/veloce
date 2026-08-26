@@ -346,6 +346,15 @@ from veloce import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware(max_requests=100, window_seconds=60))
 ```
 
+Per-client state is process-local and size-bounded: `max_keys` (default
+`100_000`) caps how many client keys are tracked at once, so a caller cycling
+source addresses cannot grow the limiter's memory without limit. When the cap is
+reached, expired entries are dropped first and then the oldest by arrival — never
+the client that triggered the eviction, which would otherwise be a way to flush
+another client's counter. The same knob applies to the default backend on the
+`strategy=` form below; if you pass your own `backend`, set its `max_keys`
+instead.
+
 Pass a `strategy` to choose the algorithm, and a `backend` to choose where the
 per-client state lives:
 

@@ -277,6 +277,7 @@ class Config(dict[str, Any]):
             "REQUEST_HANDLER_TIMEOUT": 30,
             "KEEP_ALIVE_TIMEOUT": 75,
             "REQUEST_TIMEOUT": 30,
+            "MAX_PIPELINED_REQUESTS": 64,
             # Read by the built-in serving path alongside the timeouts above;
             # seeded here so every key it consults is discoverable in one place.
             "MAX_CONCURRENT_CONNECTIONS": DEFAULT_MAX_CONCURRENT_CONNECTIONS,

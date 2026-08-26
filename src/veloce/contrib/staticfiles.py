@@ -617,13 +617,6 @@ class StaticFiles:
 
             r_start, r_end = resolved
             length = r_end - r_start + 1
-
-            def _read_range() -> bytes:
-                with open(file_path, "rb") as f:
-                    f.seek(r_start)
-                    return f.read(length)
-
-            body = await loop.run_in_executor(None, _read_range)
             range_headers = {
                 HEADER_CONTENT_RANGE: f"bytes {r_start}-{r_end}/{size}",
                 HEADER_ETAG: etag,
@@ -643,9 +636,28 @@ class StaticFiles:
                 # may replay this uncompressed range to a compression-capable
                 # client (RFC 9110 Sec. 12.5.5).
                 range_headers[HEADER_VARY] = HEADER_ACCEPT_ENCODING
+            # The threshold applies to the resolved slice, not to whether a
+            # range was asked for. `Range: bytes=0-` is a well-formed range over
+            # the entire file, so buffering every range read a 500 MiB asset
+            # whole into memory on a request that cost the client nothing.
+            # A small slice of a huge file still buffers - a bounded slice is
+            # cheaper as one message than as chunked transfer.
+            if length >= self.STREAM_THRESHOLD:
+                return StreamingResponse(
+                    content=self._iter_file(file_path, loop, r_start, length),
+                    status_code=HTTP_206_PARTIAL_CONTENT,
+                    content_type=content_type,
+                    headers=range_headers,
+                )
+
+            def _read_range() -> bytes:
+                with open(file_path, "rb") as f:
+                    f.seek(r_start)
+                    return f.read(length)
+
             return Response(
                 status_code=HTTP_206_PARTIAL_CONTENT,
-                body=body,
+                body=await loop.run_in_executor(None, _read_range),
                 content_type=content_type,
                 headers=range_headers,
             )
@@ -700,8 +712,14 @@ class StaticFiles:
             headers=common_headers,
         )
 
-    async def _iter_file(self, path: str, loop: Any) -> AsyncIterator[bytes]:
+    async def _iter_file(
+        self, path: str, loop: Any, start: int = 0, length: int | None = None
+    ) -> AsyncIterator[bytes]:
         """Yield the file in `STREAM_CHUNK_SIZE`-byte chunks via the executor.
+
+        `start` and `length` bound the read to a byte range; the defaults cover
+        the whole file. One iterator for both so a range stream and a full
+        stream cannot drift in their descriptor or chunking handling.
 
         The file handle is opened on the executor (blocking syscall) and
         closed in a finally so a client disconnect mid-stream doesn't
@@ -713,12 +731,18 @@ class StaticFiles:
             return open(path, "rb")  # noqa: SIM115 - closed in finally
 
         chunk_size = self.STREAM_CHUNK_SIZE
+        remaining = length
         fh = await loop.run_in_executor(None, _open)
         try:
-            while True:
-                chunk = await loop.run_in_executor(None, fh.read, chunk_size)
+            if start:
+                await loop.run_in_executor(None, fh.seek, start)
+            while remaining is None or remaining > 0:
+                want = chunk_size if remaining is None else min(chunk_size, remaining)
+                chunk = await loop.run_in_executor(None, fh.read, want)
                 if not chunk:
                     break
+                if remaining is not None:
+                    remaining -= len(chunk)
                 yield chunk
         finally:
             await loop.run_in_executor(None, fh.close)

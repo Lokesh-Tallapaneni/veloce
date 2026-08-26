@@ -313,9 +313,13 @@ class RateLimitMiddleware(Middleware):
         backend: RateLimitBackend | None = None,
         overrides: dict[str, RateLimitStrategy] | None = None,
         strict_overrides: bool = True,
+        max_keys: int = 100_000,
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
+        if max_keys < 1:
+            raise ValueError("RateLimitMiddleware max_keys must be >= 1")
+        self._max_keys = max_keys
         self._strategy = strategy
         # An override key naming no route is a configuration error by default.
         # One app that mounts a different set of routers per deployment shares a
@@ -349,6 +353,12 @@ class RateLimitMiddleware(Middleware):
             self.window_seconds = window_seconds
             self._buckets: dict[str, deque[float]] = {}
             self._last_sweep = time.monotonic()
+            # Sweeping alone bounds nothing: it runs once per window and only
+            # drops buckets whose newest stamp has aged out, so distinct keys
+            # arriving *within* a window accumulate without limit. A single
+            # machine's IPv6 /64 is enough to make that unbounded, which is why
+            # the strategy path's backend has carried a `max_keys` cap all
+            # along. This is the same cap for this path.
             # Lazy-allocated on first sweep so the lock binds to the running
             # event loop, not to whatever loop is current at construction
             # time (matches the same pattern used for `Veloce`'s first-request
@@ -361,7 +371,18 @@ class RateLimitMiddleware(Middleware):
         else:
             # Pluggable algorithm + backend path. The backend runs the pure
             # strategy under its own atomic read-modify-write.
-            self._backend = backend if backend is not None else InMemoryRateLimitBackend()
+            if backend is None:
+                self._backend = InMemoryRateLimitBackend(max_keys=max_keys)
+            else:
+                # One bound, one place to set it: a backend carries its own
+                # `max_keys`, so accepting both would leave the effective cap
+                # depending on which one the request happened to reach.
+                if max_keys != 100_000:
+                    raise ValueError(
+                        "max_keys applies to the default backend; "
+                        "set it on the backend you passed instead"
+                    )
+                self._backend = backend
             if overrides:
                 for route, override in overrides.items():
                     if not isinstance(override, RateLimitStrategy):
@@ -571,6 +592,8 @@ class RateLimitMiddleware(Middleware):
 
         bucket = self._buckets.get(client)
         if bucket is None:
+            if len(self._buckets) >= self._max_keys:
+                self._evict_buckets(cutoff)
             bucket = deque()
             self._buckets[client] = bucket
 
@@ -608,6 +631,21 @@ class RateLimitMiddleware(Middleware):
         reset = self._reset_after(state, time.monotonic())
         self._apply_headers(response, self.max_requests, remaining, reset)
         return response
+
+    def _evict_buckets(self, cutoff: float) -> None:
+        """Make room in `_buckets`, dropping stale entries before live ones.
+
+        Expired buckets go first; if the dict is still full, the oldest by
+        insertion order goes. Never the key being inserted - evicting the newest
+        would let a caller cycling source addresses flush an honest client's
+        counter, turning a memory bound into a rate-limit bypass. Mirrors
+        `InMemoryRateLimitBackend._evict` so both paths age out alike.
+        """
+        stale = [k for k, stamps in self._buckets.items() if not stamps or stamps[-1] <= cutoff]
+        for k in stale:
+            del self._buckets[k]
+        while len(self._buckets) >= self._max_keys:
+            del self._buckets[next(iter(self._buckets))]
 
     def _bucket_key(self, request: Request) -> str:
         """Pick a bucket key for `request`.

@@ -1565,25 +1565,34 @@ class DispatchMixin:
                 # builtins so the same serialiser answers for every return type.
                 return JSONResponse.from_bytes(dumps(_msgspec.to_builtins(result)))
             result = _msgspec.to_builtins(result)
-        # Use custom response_class if specified
-        if response_class is not None:
-            if isinstance(result, tuple):
-                if len(result) == 3:
+        # A `(body, status[, headers])` return, unpacked once for both the
+        # `response_class` and no-class paths. Two copies had drifted: a
+        # one-element tuple meant the body with a class and a one-item JSON array
+        # without, and a four-element tuple lost its status and headers in
+        # silence. Any other length is not a response tuple and falls through as
+        # a plain value.
+        if isinstance(result, tuple):
+            length = len(result)
+            if length == 2 or length == 3:
+                if length == 3:
                     body, code, headers = result
-                elif len(result) == 2:
-                    body, second = result
-                    if isinstance(second, int):
-                        body, code, headers = body, second, {}
-                    elif isinstance(second, dict):
-                        body, code, headers = body, status.HTTP_200_OK, second
-                    else:
-                        body, code, headers = body, int(second), {}
                 else:
-                    body, code, headers = result[0], status.HTTP_200_OK, {}
+                    body, second = result
+                    if isinstance(second, dict):
+                        code, headers = status.HTTP_200_OK, second
+                    else:
+                        code = second if isinstance(second, int) else int(second)
+                        headers = None
                 resp = self._coerce_response(body, response_class)
                 resp.status_code = code
-                resp.headers.update(headers)
+                if headers:
+                    resp.headers.update(headers)
+                # The body was coerced and may already carry a cached encoding;
+                # the status line and headers just changed, so it is stale.
+                resp._encoded = None
                 return resp
+        # Use custom response_class if specified
+        if response_class is not None:
             if isinstance(response_class, type) and issubclass(response_class, JSONResponse):
                 if isinstance(result, _PydanticBaseModel):
                     result = result.model_dump()
@@ -1608,28 +1617,6 @@ class DispatchMixin:
         # Pydantic model
         if isinstance(result, _PydanticBaseModel):
             return self._json_from_handler(result.model_dump())
-        # Tuple response (body, status_code) or (body, status_code, headers)
-        if isinstance(result, tuple):
-            if len(result) == 2:
-                body, second = result
-                if isinstance(second, int):
-                    resp = self._coerce_response(body)
-                    resp.status_code = second
-                elif isinstance(second, dict):
-                    resp = self._coerce_response(body)
-                    resp.headers.update(second)
-                else:
-                    resp = self._coerce_response(body)
-                    resp.status_code = int(second)
-                resp._encoded = None
-                return resp
-            if len(result) == 3:
-                body, code, headers = result
-                resp = self._coerce_response(body)
-                resp.status_code = code
-                resp.headers.update(headers)
-                resp._encoded = None
-                return resp
         return self._json_from_handler(result)
 
     # ── Middleware phases ──────────────────────────────────

@@ -66,6 +66,7 @@ The defaults are:
 | `REQUEST_HANDLER_TIMEOUT` | `30` | Per-handler timeout in seconds, on the built-in serving path. Under an ASGI server the handler is not bounded by Veloce; use the server's own timeout. |
 | `KEEP_ALIVE_TIMEOUT` | `75` | Keep-alive timeout in seconds, on the built-in serving path. |
 | `REQUEST_TIMEOUT` | `30` | Request read timeout in seconds, on the built-in serving path. |
+| `MAX_PIPELINED_REQUESTS` | `64` | How many pipelined requests a connection queues before it stops reading, on the built-in serving path. |
 | `TCP_KEEPALIVE` | `True` | Enable OS-level TCP keepalive (`SO_KEEPALIVE`) on the built-in serving path. |
 | `TCP_KEEPALIVE_IDLE` | `None` | Idle seconds before the first keepalive probe (`TCP_KEEPIDLE`); Linux/macOS only. |
 | `TCP_KEEPALIVE_INTERVAL` | `None` | Seconds between keepalive probes (`TCP_KEEPINTVL`); Linux only. |

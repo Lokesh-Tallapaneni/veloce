@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The built-in server's `413` for a declared over-limit `Content-Length` runs the response phase, so it carries the CORS and security headers the ASGI path already gave it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `StaticFiles` streams a byte range at or above `STREAM_THRESHOLD`; `Range: bytes=0-` previously read the whole file into memory. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The built-in server stops reading a connection once `MAX_PIPELINED_REQUESTS` (default `64`) requests are queued, bounding what a pipelining flood can allocate. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `RateLimitMiddleware(max_requests=...)` bounds its per-client state with `max_keys` (default `100_000`), matching the `strategy=` path. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- An MCP task `ttl` is clamped to one hour; a client could otherwise pin a task and its result for the process lifetime. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `request.authorization` reports no username for a colon-less `Basic` payload, which RFC 7617 makes malformed; it previously named one for a header `HTTPBasic` answers with a `401`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `response_model` filters a msgspec struct or `list[Struct]` response as it filters a Pydantic one; it previously shaped nothing on that backend, so a subclass returned under a base-model contract put its extra fields on the wire. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - A credential carrying a non-ASCII byte is refused rather than crashing the request: `decode_jwt` raises `InvalidTokenError`, a forged CSRF token answers `403`, and a PKCE verifier is rejected. All three answered `500` before, pre-authentication. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -140,6 +146,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A tuple return that is not `(body, status[, headers])` reads the same with and without a `response_class`; the `response_class` path took the first element and discarded the rest. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A parameter declared on a dependency is published in the OpenAPI document; it was enforced with a `422` but absent from the schema. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A tool declared with `@app.mcp_tool` renders its result in the app's JSON dialect, as a route-exposed tool already did; the two disagreed and the route-backed one only matched by accident. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `CORSMiddleware` keeps an `Access-Control-Expose-Headers` entry another middleware contributed under any casing; it checked two spellings and silently discarded the rest. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

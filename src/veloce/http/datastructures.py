@@ -985,10 +985,16 @@ class Authorization:
                 decoded = base64.b64decode(credentials.strip(), validate=True).decode("utf-8")
             except (ValueError, UnicodeDecodeError):
                 return cls(type="basic", raw=header_value)
-            if ":" in decoded:
-                user, _, pw = decoded.partition(":")
-                return cls(type="basic", raw=header_value, username=user, password=pw)
-            return cls(type="basic", raw=header_value, username=decoded, password="")
+            # RFC 7617 Sec. 2: the credentials are `userid ":" password` and the
+            # colon is mandatory. A colon-less payload is malformed, so it
+            # yields no credentials - the same shape as undecodable base64
+            # above. Reporting `username=decoded, password=""` instead handed a
+            # username to code reading `request.authorization` for a header
+            # `HTTPBasic` refuses with a 401.
+            user, sep, pw = decoded.partition(":")
+            if not sep:
+                return cls(type="basic", raw=header_value)
+            return cls(type="basic", raw=header_value, username=user, password=pw)
 
         if scheme_lower == "bearer":
             return cls(type="bearer", raw=header_value, token=credentials.strip())
