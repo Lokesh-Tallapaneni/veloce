@@ -684,6 +684,18 @@ class MCPServer(TasksMixin, InvocationMixin):
 
     # ── JSON-RPC dispatch ─────────────────────────────────
 
+    @property
+    def capabilities(self) -> tuple[Capability, ...]:
+        """The capabilities this server was built with, in registration order.
+
+        What a capability owns - its methods, which of them are handshake-only,
+        and how it advertises itself per protocol revision - is readable from
+        each entry. Asking what a server actually supports otherwise means
+        reading a private tuple, and an out-of-tree tool auditing an MCP mount
+        has the same question a test does.
+        """
+        return self._capabilities
+
     async def handle_message(
         self, message: dict[str, Any], session: MCPSession | None = None
     ) -> dict[str, Any] | None:

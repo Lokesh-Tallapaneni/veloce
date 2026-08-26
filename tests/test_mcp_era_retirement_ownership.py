@@ -62,7 +62,7 @@ def test_ping_comes_from_the_server():
 def test_the_capabilities_supply_the_rest():
     server = _server()
     from_capabilities = frozenset().union(
-        *(capability.handshake_only_methods for capability in server._capabilities)
+        *(capability.handshake_only_methods for capability in server.capabilities)
     )
     assert from_capabilities == HISTORIC_SET - _CORE_HANDSHAKE_ONLY_METHODS
 
@@ -116,7 +116,7 @@ def test_a_capability_does_not_advertise_what_it_retires():
     import json
 
     server = _server()
-    for capability in server._capabilities:
+    for capability in server.capabilities:
         if not capability.handshake_only_methods:
             continue
         try:

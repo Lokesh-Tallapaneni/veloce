@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MCPServer.capabilities` exposes the capabilities a server was built with. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `SessionMiddlewareBase.wire_cookie_name` exposes the cookie name after the `__Host-` / `__Secure-` prefix. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `SessionMiddleware.bind_secret_key()` settles the signing key from a config before the first request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

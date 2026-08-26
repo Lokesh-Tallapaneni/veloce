@@ -206,3 +206,46 @@ class SSEStream:
         """
         for _ in range(turns):
             await asyncio.sleep(0)
+
+
+async def call(server: MCPServer, method: str, params: dict | None = None, *, id: int = 1) -> Any:
+    """Dispatch one request through `handle_message` and return its `result`.
+
+    Eleven modules called the private handler behind a method
+    (`server._tools_call({...})`) to skip writing the JSON-RPC envelope. That is
+    convenience, but it also skips the dispatch map, the in-flight tracking and
+    the error shaping - so a method that was never registered, or registered
+    under the wrong name, passed those tests and failed for a real client.
+
+    Raises `AssertionError` carrying the JSON-RPC error when the call fails, so
+    a test that expected success reports what went wrong rather than an opaque
+    `KeyError: 'result'`.
+    """
+    envelope = await call_raw(server, method, params, id=id)
+    assert envelope is not None, f"{method} returned no response"
+    if "error" in envelope:
+        raise AssertionError(f"{method} failed: {envelope['error']}")
+    return envelope["result"]
+
+
+async def call_raw(
+    server: MCPServer, method: str, params: dict | None = None, *, id: int | None = 1
+) -> dict | None:
+    """Dispatch one request and return the whole JSON-RPC envelope.
+
+    Pass `id=None` to send a notification, which has no response.
+    """
+    message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+    if id is not None:
+        message["id"] = id
+    if params is not None:
+        message["params"] = params
+    return await server.handle_message(message)
+
+
+async def call_error(server: MCPServer, method: str, params: dict | None = None) -> dict:
+    """Dispatch one request expected to fail, and return its `error` object."""
+    envelope = await call_raw(server, method, params)
+    assert envelope is not None, f"{method} returned no response"
+    assert "error" in envelope, f"{method} unexpectedly succeeded: {envelope}"
+    return envelope["error"]

@@ -78,7 +78,7 @@ def test_a_capability_contributing_an_extension_is_advertised():
     app = _app()
     server = MCPServer(app)
     contributed = {}
-    for capability in server._capabilities:
+    for capability in server.capabilities:
         entry = capability.extensions()
         if entry:
             contributed.update(entry)

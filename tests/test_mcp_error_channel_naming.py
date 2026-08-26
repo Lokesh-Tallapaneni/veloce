@@ -75,6 +75,12 @@ def test_a_transport_named_test_does_not_assert_the_in_band_result():
     )
 
 
+# How a test can legitimately claim the transport channel. Reading `["error"]`
+# off an envelope, naming the exception type, or going through `call_error`,
+# which asserts `"error" in envelope` on the caller's behalf.
+TRANSPORT_FORMS = ('["error"]', "InvalidParamsError", "call_error(")
+
+
 def test_a_transport_named_test_asserts_something_about_invalid_params():
     """The weaker companion: it must at least mention the channel or the error
     type, or the name is decoration."""
@@ -84,9 +90,21 @@ def test_a_transport_named_test_asserts_something_about_invalid_params():
             if not any(marker in node.name for marker in TRANSPORT_MARKERS):
                 continue
             body = _source_of(path, node)
-            if '["error"]' not in body and "InvalidParamsError" not in body:
+            if not any(form in body for form in TRANSPORT_FORMS):
                 offenders.append(f"{path.name}::{node.name}")
-    assert not offenders, f"named for invalid-params but assert neither form: {offenders}"
+    assert not offenders, f"named for a transport error but assert no form: {offenders}"
+
+
+def test_the_accepted_forms_are_each_in_use():
+    """A form nothing uses is a hole the guard cannot see through."""
+    bodies = [
+        _source_of(path, node)
+        for path in _mcp_modules()
+        for node in _test_functions(path)
+        if any(marker in node.name for marker in TRANSPORT_MARKERS)
+    ]
+    unused = [form for form in TRANSPORT_FORMS if not any(form in body for body in bodies)]
+    assert unused != list(TRANSPORT_FORMS), "no transport-named test asserts any form"
 
 
 def test_an_in_band_named_test_asserts_the_result():

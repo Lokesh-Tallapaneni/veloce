@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import call, call_error
 from veloce import Principal, Veloce
 from veloce.contrib.mcp.context import MCPContext, _in_task_var
-from veloce.contrib.mcp.errors import AuthorizationError
 from veloce.contrib.mcp.server import MCPServer
 from veloce.contrib.mcp.session import MCPSession
 from veloce.principal import set_principal
@@ -180,19 +180,19 @@ def _server_app() -> Veloce:
 
 async def test_tool_reads_a_resource_through_the_context():
     server = MCPServer(_server_app())
-    result = await server._tools_call({"name": "via_context", "arguments": {}})
+    result = await call(server, "tools/call", {"name": "via_context", "arguments": {}})
     assert "theme" in result["content"][0]["text"]
 
 
 async def test_tool_renders_a_prompt_through_the_context():
     server = MCPServer(_server_app())
-    result = await server._tools_call({"name": "prompt_via_context", "arguments": {}})
+    result = await call(server, "tools/call", {"name": "prompt_via_context", "arguments": {}})
     assert "Hello ada" in result["content"][0]["text"]
 
 
 async def test_tool_enumerates_resources_and_prompts():
     server = MCPServer(_server_app())
-    result = await server._tools_call({"name": "inventory", "arguments": {}})
+    result = await call(server, "tools/call", {"name": "inventory", "arguments": {}})
     text = result["content"][0]["text"]
     assert "config://app" in text
     assert "greet" in text
@@ -218,8 +218,14 @@ async def test_reading_a_scoped_resource_still_enforces_its_scopes():
 
     server = MCPServer(app)
     set_principal(Principal(subject="nobody", scopes=frozenset()))
-    with pytest.raises(AuthorizationError):
-        await server._tools_call({"name": "leak", "arguments": {}})
+    # Through `handle_message` the refusal is what a client actually receives:
+    # a JSON-RPC error naming the missing scope, rather than an exception that
+    # only escapes when the handler is called directly. That is the stronger
+    # assertion - it pins the wire contract, not the internal type.
+    error = await call_error(server, "tools/call", {"name": "leak", "arguments": {}})
+    assert error["code"] == -32003
+    assert "insufficient_scope" in error["message"]
+    assert error["data"]["requiredScopes"] == ["vault"]
 
 
 async def test_reading_a_scoped_resource_succeeds_with_the_scope():
@@ -241,7 +247,7 @@ async def test_reading_a_scoped_resource_succeeds_with_the_scope():
 
     server = MCPServer(app)
     set_principal(Principal(subject="ops", scopes=frozenset({"vault"})))
-    result = await server._tools_call({"name": "read_vault", "arguments": {}})
+    result = await call(server, "tools/call", {"name": "read_vault", "arguments": {}})
     assert "s3cr3t" in result["content"][0]["text"]
 
 

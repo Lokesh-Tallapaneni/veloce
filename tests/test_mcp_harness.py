@@ -18,6 +18,9 @@ from tests._mcp import (
     accepts_any,
     accepts_good,
     auth,
+    call,
+    call_error,
+    call_raw,
 )
 from veloce import Veloce
 
@@ -199,3 +202,89 @@ async def test_settled_yields_without_sleeping():
     async with SSEStream(_sse_app()) as stream:
         await stream.event()
     await stream.settled()
+
+
+# ── call / call_raw / call_error ─────────────────────────────────────
+#
+# Eleven modules called the private handler behind a method to skip writing the
+# JSON-RPC envelope. Going through `handle_message` costs one helper and buys
+# the dispatch map, the in-flight tracking and the error shaping - so a method
+# registered under the wrong name fails here instead of passing and failing for
+# a real client.
+
+
+async def test_call_returns_the_result():
+    server = _server(_app())
+    await call(server, "initialize", _INIT["params"])
+    assert "tools" in await call(server, "tools/list")
+
+
+async def test_call_passes_params():
+    server = _server(_app())
+    await call(server, "initialize", _INIT["params"])
+    result = await call(server, "tools/call", {"name": "add", "arguments": {"a": 2, "b": 3}})
+    assert "5" in result["content"][0]["text"]
+
+
+async def test_call_raises_with_the_error_attached():
+    """An opaque `KeyError: 'result'` says nothing about what went wrong."""
+    server = _server(_app())
+    with pytest.raises(AssertionError, match="tools/call failed"):
+        await call(server, "tools/call", {"name": "nope", "arguments": {}})
+
+
+async def test_call_error_returns_the_error_object():
+    server = _server(_app())
+    error = await call_error(server, "tools/call", {"name": "nope", "arguments": {}})
+    assert "code" in error
+
+
+async def test_call_error_refuses_a_success():
+    """The negative: it must not silently pass when the call worked."""
+    server = _server(_app())
+    await call(server, "initialize", _INIT["params"])
+    with pytest.raises(AssertionError, match="unexpectedly succeeded"):
+        await call_error(server, "tools/list")
+
+
+async def test_call_raw_returns_the_envelope():
+    server = _server(_app())
+    envelope = await call_raw(server, "initialize", _INIT["params"])
+    assert envelope is not None
+    assert envelope["jsonrpc"] == "2.0"
+    assert envelope["id"] == 1
+
+
+async def test_a_notification_has_no_response():
+    assert await call_raw(_server(_app()), "notifications/initialized", id=None) is None
+
+
+async def test_an_unknown_method_is_method_not_found():
+    """It goes through the dispatch map, which is the point."""
+    error = await call_error(_server(_app()), "no/such/method")
+    assert error["code"] == -32601
+
+
+# ── the capability registry ──────────────────────────────────────────
+
+
+def test_a_server_reports_its_capabilities():
+    assert _server(_app()).capabilities
+
+
+def test_the_capabilities_are_a_tuple():
+    """Read-only: the set is decided at construction and the method map, the
+    handshake-only set and the era-aware set are all derived from it there."""
+    assert isinstance(_server(_app()).capabilities, tuple)
+
+
+def test_the_property_is_the_registry():
+    server = _server(_app())
+    assert server.capabilities == server._capabilities
+
+
+def test_a_capability_names_the_methods_it_owns():
+    """What the property is for: asking what a server actually supports."""
+    server = _server(_app())
+    owned = {method for capability in server.capabilities for method in capability.handlers()}
+    assert "tools/list" in owned
