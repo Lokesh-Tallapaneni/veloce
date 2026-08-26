@@ -22,6 +22,7 @@ from veloce._protocol_constants import (
     URL_SCHEME_HTTP,
     URL_SCHEME_HTTPS,
 )
+from veloce._version import resolve_version
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app.core import Veloce
@@ -44,6 +45,21 @@ class ServingMixin:
         _drain_spawned_tasks: Callable[..., Any]
         _setup_openapi: Callable[..., Any]
         _instrumentation: Any
+
+    def _print_banner(self, host: str, port: int, tls: bool = False) -> None:
+        """Print the development server's start-up banner.
+
+        The version is the installed *framework* version, resolved from the same
+        distribution metadata `veloce.__version__` and `veloce --version` read.
+        It used to print `self.version`, which is the constructor's `version=` -
+        the API version emitted into the OpenAPI document - so a default app
+        announced `Veloce v0.1.0` whatever framework version was running, on the
+        one line an operator reads to find out.
+        """
+        scheme = URL_SCHEME_HTTPS if tls else URL_SCHEME_HTTP
+        print(f"\n  Veloce v{resolve_version()}")
+        print(f"  Listening on {scheme}://{host}:{port}")
+        print("  Press Ctrl+C to stop\n")
 
     def run(
         self,
@@ -148,10 +164,7 @@ class ServingMixin:
             pass
 
         if access_log:
-            scheme = URL_SCHEME_HTTPS if ssl_context is not None else URL_SCHEME_HTTP
-            print(f"\n  Veloce v{self.version}")
-            print(f"  Listening on {scheme}://{host}:{port}")
-            print("  Press Ctrl+C to stop\n")
+            self._print_banner(host, port, tls=ssl_context is not None)
             # The flag named itself after this and only printed the banner: a
             # development server that answers requests silently is the odd one
             # out, and a request that fails leaves nothing to correlate it with.
