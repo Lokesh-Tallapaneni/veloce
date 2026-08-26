@@ -923,7 +923,8 @@ class ServerSessionMiddleware(SessionMiddlewareBase):
     def _clear_session_cookie(self, response: Response) -> None:
         """Tell the client to drop the session cookie. Single place that
         knows how this middleware's cookie attribute set maps to
-        `delete_cookie` - three callers all share the same kwargs."""
+        `delete_cookie` - three callers all share the same kwargs.
+        """
         response.delete_cookie(
             self.cookie_name,
             path=self.path,

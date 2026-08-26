@@ -839,7 +839,8 @@ class HttpProtocol(asyncio.Protocol):
     def _arm_request_timer(self) -> None:
         """Start the slowloris read budget when a request's bytes begin
         arriving. The connection is no longer idle, so the keep-alive
-        timer is stood down in favour of the (shorter) request timer."""
+        timer is stood down in favour of the (shorter) request timer.
+        """
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
             self._keep_alive_handle = None
@@ -889,7 +890,7 @@ class HttpProtocol(asyncio.Protocol):
     # ── write-side flow control ───────────────────────────
 
     def pause_writing(self) -> None:
-        """asyncio callback: the transport write buffer crossed the high mark.
+        """Asyncio callback: the transport write buffer crossed the high mark.
 
         Clearing the gate makes the next `drain()` block, throttling a
         producer (a streaming/SSE response or the native WebSocket send path)
@@ -900,7 +901,7 @@ class HttpProtocol(asyncio.Protocol):
         self._can_write.clear()
 
     def resume_writing(self) -> None:
-        """asyncio callback: the write buffer drained below the low mark."""
+        """Asyncio callback: the write buffer drained below the low mark."""
         self._can_write.set()
 
     async def drain(self) -> None:

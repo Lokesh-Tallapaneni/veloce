@@ -2037,7 +2037,6 @@ def setup_openapi_routes(
     respectively - the JSON schema route is still registered, so tooling
     can consume the schema without a public interactive explorer.
     """
-
     # Where the schema route actually ends up. `app.get` prepends the router's
     # `prefix`, so a prefixed app served the schema at `<prefix><openapi_url>`
     # while both HTML templates interpolated the bare `openapi_url` - each page

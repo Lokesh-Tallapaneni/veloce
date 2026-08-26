@@ -1319,7 +1319,8 @@ class Veloce(
 
     async def full_dispatch_request(self, request: Request) -> Any:
         """Alias for `_dispatch_request` (which already runs the
-        full before/after-request hook chain inline)."""
+        full before/after-request hook chain inline).
+        """
         return await self._dispatch_request(request, self._ensure_pipeline())
 
     async def preprocess_request(self, request: Request) -> Any:
@@ -1593,7 +1594,6 @@ class Veloce(
         registered shell-context-processor's return dict overlays on
         top, in registration order - later processors win on conflicts.
         """
-
         ctx: dict[str, Any] = {"app": self, "g": g}
         for fn in self._shell_context_processors:
             extra = fn()

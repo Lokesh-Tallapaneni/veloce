@@ -554,7 +554,8 @@ class Request:
     @property
     def is_form(self) -> bool:
         """`True` when the body is `application/x-www-form-urlencoded`
-        or `multipart/form-data`."""
+        or `multipart/form-data`.
+        """
         m = self.mimetype
         return m == MIME_FORM_URLENCODED or m.startswith("multipart/")
 
@@ -762,7 +763,8 @@ class Request:
     @property
     def range(self) -> RangeSpec | None:
         """Parse `Range:` header per RFC 9110 Sec. 14.2. Returns `None` when
-        absent or unparseable."""
+        absent or unparseable.
+        """
         cached = self._range
         if cached is _UNSET:
             cached = RangeSpec.parse(self.headers.get(HEADER_RANGE, ""))
@@ -848,13 +850,15 @@ class Request:
     @property
     def full_path(self) -> str:
         """Path + `?` + query string. Always contains a `?` even when the
-        query string is empty."""
+        query string is empty.
+        """
         return f"{self.path}?{self.query_string}"
 
     @property
     def url_root(self) -> str:
         """Root URL of the request: `scheme://host/` (with trailing slash,
-        no path or query string)."""
+        no path or query string).
+        """
         url = self.url
         return f"{url.scheme}://{url.netloc}/"
 

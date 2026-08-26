@@ -322,7 +322,8 @@ class Jinja2Templates:
     def _apply_auto_reload(self, env: Any) -> None:
         """When `auto_reload` was left unset, track the bound app's
         `debug` flag - production (`debug=False`) skips the per-render
-        template `stat`. Explicit settings are left untouched."""
+        template `stat`. Explicit settings are left untouched.
+        """
         if self._auto_reload is not None:
             return
         app = _current_app_var.get()
@@ -372,7 +373,8 @@ class Jinja2Templates:
         background: Any = None,
     ) -> Response:
         """Render a template and return a response, optionally overriding the
-        content type and attaching a background task."""
+        content type and attaching a background task.
+        """
         self._apply_auto_reload(self.env)
         _sync_app_jinja_helpers(self.env)
         template = self._resolve_template(self.env, name)
@@ -463,7 +465,8 @@ class Jinja2Templates:
 
     def get_template(self, name: str | Sequence[str]) -> Any:
         """Get a raw Jinja2 template object, resolving a fallback list to the
-        first existing template."""
+        first existing template.
+        """
         return self._resolve_template(self.env, name)
 
 

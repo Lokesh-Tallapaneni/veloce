@@ -116,7 +116,8 @@ def _forbidden() -> Response:
     """Build the canonical 403 served on traversal / symlink-escape / EACCES.
 
     Every static denial returns the same opaque body so the handler never
-    discloses whether a path exists, only that it may not be read."""
+    discloses whether a path exists, only that it may not be read.
+    """
     return Response(status_code=HTTP_403_FORBIDDEN, body=b"Forbidden")
 
 
@@ -124,7 +125,8 @@ def _not_modified(etag: str, last_modified: str) -> Response:
     """Build the 304 carrying the current validators (RFC 9110 Sec. 13.1.4).
 
     The empty-body 304 must still echo `ETag` and `Last-Modified` so the
-    client can refresh its cached validators on the revalidation hit."""
+    client can refresh its cached validators on the revalidation hit.
+    """
     return Response(
         status_code=HTTP_304_NOT_MODIFIED,
         body=b"",
@@ -253,7 +255,8 @@ class StaticFiles:
         """True when `real_path` (already realpath-resolved) is inside the
         served root. Uses `commonpath` so prefix-collisions (e.g.
         `/srv/static_evil/...` against root `/srv/static`) are correctly
-        rejected. `ValueError` on Windows drive mismatches counts as out."""
+        rejected. `ValueError` on Windows drive mismatches counts as out.
+        """
         try:
             return os.path.commonpath([real_path, self._real_root]) == self._real_root
         except ValueError:
@@ -761,8 +764,8 @@ class StaticFiles:
     def _compute_etag(self, path: str, size: int, mtime: float) -> str:
         """Compute ETag - delegates to the shared `_file_etag` helper so the
         StaticFiles handler and `FileResponse` validate against the same
-        `If-None-Match` value for the same file."""
-
+        `If-None-Match` value for the same file.
+        """
         return _file_etag(path, size, mtime)
 
     async def _render_directory_index(self, dir_path: str, url_path: str, loop: Any) -> Response:

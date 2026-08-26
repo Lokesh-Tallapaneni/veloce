@@ -11,6 +11,7 @@ filesystem semantics.
 References:
 - OWASP Path Traversal cheat sheet
 - CWE-22 (Improper Limitation of a Pathname to a Restricted Directory)
+
 """
 
 from __future__ import annotations

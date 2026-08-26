@@ -294,15 +294,56 @@ select = [
     "UP",   # pyupgrade
     "SIM",  # flake8-simplify
     "ASYNC",
+    # PEP 257 docstring rules. The style guide names ruff as the write-time gate
+    # for its PEP 257 clause; before this, `select` carried no `D` family at all,
+    # so that clause was prose nothing executed. The subset below is every `D`
+    # rule the source already satisfies, so it is enforced from here on. The
+    # rules deliberately left out are listed under `ignore`, each with the
+    # convention it would contradict - they are style decisions for the
+    # maintainer, not defects to sweep.
+    "D",
 ]
 ignore = [
     "E501",  # line length handled by formatter
     "B008",  # function calls in default args (Depends/Query/etc. legitimately need this)
+    # ── PEP 257 rules deliberately not enforced ──────────────────────
+    # The style guide explicitly says to skip docstrings on dunders, `__init__`,
+    # HTTP-method shortcuts and delegation methods under five lines, so these
+    # three would flag exactly what it tells authors not to write.
+    "D105",  # undocumented magic method
+    "D107",  # undocumented `__init__`
+    "D102",  # undocumented public method
+    "D101",  # undocumented public class - same skip list (HTTP exception subclasses)
+    # A predicate reads better as a noun phrase ("True when the port is the
+    # default for the scheme") than as "Return True when ...", and the codebase
+    # uses that form consistently for properties and predicates. Enforcing
+    # imperative mood would rewrite 77 of them; that is a style decision for the
+    # maintainer rather than a review fix.
+    "D401",  # non-imperative mood
+    # Module docstrings open with an em-dash tagline that legitimately wraps to a
+    # second line; D205 wants the whole summary on one physical line, which would
+    # mean shortening every module tagline or exceeding the line limit.
+    "D205",  # blank line required between summary line and description
+    # Escape sequences appear inside RFC quotations and regex documentation; a
+    # raw docstring there would be noise.
+    "D301",  # use raw string for backslashes
+    "D400",  # first line should end with a period - taglines end with a clause
+    "D404",  # docstring should not start with "This"
+    "D415",  # first line should end with punctuation - as D400
+    "D203",  # incompatible with D211, which is the convention here
+    "D213",  # incompatible with D212, which is the convention here
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["B"]  # bugbear false positives in test patterns
+# The style guide's PEP 257 clause is about `src/veloce/**`. Test functions,
+# benchmark scripts and the demo app carry their explanation in the module
+# docstring and the test name, not in a per-function docstring.
+"tests/**" = ["B", "D"]  # bugbear false positives in test patterns; see above
 "src/veloce/__init__.py" = ["F401"]  # re-exports
+"benchmarks/**" = ["D"]
+"example_app.py" = ["D"]
+"bench/**" = ["D"]
+"mkdocs_hooks.py" = ["D"]  # a build hook, not shipped API
 
 [tool.mypy]
 python_version = "3.10"

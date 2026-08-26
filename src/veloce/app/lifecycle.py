@@ -204,7 +204,8 @@ class LifecycleMixin:
 
     def teardown_request(self, func: Callable) -> Callable:
         """Register a function to run after request teardown.
-        Called with an optional exception argument, even if an exception occurred."""
+        Called with an optional exception argument, even if an exception occurred.
+        """
         self._assert_mutable()
         self._teardown_request_hooks.append(func)
         self._gen += 1

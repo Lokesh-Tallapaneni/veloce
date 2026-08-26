@@ -817,6 +817,7 @@ class WebSocket:
                 closed, or if a ``subprotocol``/``headers`` argument is passed
                 on the native (``Veloce.run``) upgrade path, where the 101
                 response has already been sent and cannot be renegotiated.
+
         """
         # Enforce the handshake state machine: accepting an already-accepted
         # or already-closed connection is a programming error - surface it

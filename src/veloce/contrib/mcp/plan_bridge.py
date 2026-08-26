@@ -346,7 +346,8 @@ def _rewrite_refs(node: Any) -> set[str]:
 
 def _deepcopy_schema(node: Any) -> Any:
     """Copy a JSON-Schema fragment so in-place ref rewriting never mutates the
-    shared component registry."""
+    shared component registry.
+    """
     if isinstance(node, dict):
         return {key: _deepcopy_schema(value) for key, value in node.items()}
     if isinstance(node, list):

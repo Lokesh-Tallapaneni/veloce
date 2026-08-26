@@ -490,7 +490,6 @@ class Response:
         five fields (name, value, domain, path, samesite), so `set_cookie`
         does not repeat it.
         """
-
         # dump_cookie accepts datetime and numeric timestamps but not
         # pre-formatted strings. Handle the string case separately.
         expires_str: str | None = None
@@ -831,7 +830,6 @@ class Response:
         string to replace it. Mutating the returned object does *not*
         write back - call `add_vary(...)` or reassign for that.
         """
-
         return HeaderSet(header_get(self.headers, HEADER_VARY) or "")
 
     @vary.setter
@@ -849,7 +847,6 @@ class Response:
         Lists the HTTP methods the resource supports (RFC 9110 Sec. 10.2.1).
         Assign a `HeaderSet`, iterable, or comma-separated string.
         """
-
         return HeaderSet(header_get(self.headers, HEADER_ALLOW) or "")
 
     @allow.setter
@@ -979,7 +976,6 @@ class Response:
         Returns `None` when unset or unparseable. Assign a `datetime`
         or POSIX timestamp to set it; assign `None` to remove it.
         """
-
         return parse_date(header_get(self.headers, HEADER_DATE))
 
     @date.setter
@@ -1107,7 +1103,6 @@ class Response:
         introspection: `resp.cache_control.max_age`,
         `resp.cache_control.no_store`, etc.
         """
-
         return CacheControl(header_get(self.headers, HEADER_CACHE_CONTROL) or "")
 
     def iter_encoded(self) -> Any:

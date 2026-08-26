@@ -18,8 +18,9 @@ The public API is:
 
 - every symbol exported from the top-level package (`from veloce import X` —
   i.e. names in `veloce.__all__`), and the same names re-exported from each
-  subpackage gateway (`veloce.http`, `veloce.routing`, `veloce.middleware`,
-  `veloce.security`, `veloce.contrib`, `veloce.serving`);
+  subpackage gateway (`veloce.app`, `veloce.http`, `veloce.routing`,
+  `veloce.middleware`, `veloce.security`, `veloce.contrib`,
+  `veloce.contrib.mcp`, `veloce.serving`);
 - the documented behaviour of those symbols described in this documentation;
 - the `veloce` command-line interface.
 

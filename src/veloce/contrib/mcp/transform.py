@@ -116,7 +116,6 @@ def derive_tool(
     argument not mentioned is published unchanged. Naming one the original does
     not have is refused, since it would silently do nothing.
     """
-
     if tool.derived_from is not None:
         raise ValueError(
             f"{tool.name!r} is already a derived tool. One translation maps a published "
