@@ -62,18 +62,37 @@ def test_changed_path_detects_modify_add_remove():
     assert reloader._changed_path(before, {"a.py": 1.0}) == "b.py"  # removed
 
 
-def test_wait_for_change_stat_returns_on_new_file(tmp_path):
-    (tmp_path / "app.py").write_text("x = 1\n")
+def test_wait_for_change_stat_returns_on_new_file(tmp_path, monkeypatch):
+    """A file added after the baseline snapshot is detected.
+
+    The synchronisation is an `Event` set by the first `_snapshot` call, not a
+    wall-clock sleep. `_wait_for_change_stat` takes its baseline on its first
+    line and rolls it forward every iteration, so a file written *before* the
+    worker reaches that line is already in the baseline and is never seen - the
+    watcher then blocks until the 5 s join expires and the test fails. A sleep
+    only makes that unlikely, on the machine it was written on; an event makes
+    it impossible.
+    """
+    (tmp_path / "app.py").write_text("x = 1")
     result: dict[str, str] = {}
+    baseline_taken = threading.Event()
+    real_snapshot = reloader._snapshot
+
+    def snapshot_and_signal(dirs):
+        taken = real_snapshot(dirs)
+        baseline_taken.set()
+        return taken
+
+    monkeypatch.setattr(reloader, "_snapshot", snapshot_and_signal)
 
     def watch():
-        result["path"] = reloader._wait_for_change_stat([str(tmp_path)], interval=0.02)
+        result["path"] = reloader._wait_for_change_stat([str(tmp_path)], interval=0.01)
 
     worker = threading.Thread(target=watch, daemon=True)
     worker.start()
-    time.sleep(0.1)
+    assert baseline_taken.wait(timeout=5), "the watcher never took its baseline"
     # Adding a file is detected without depending on mtime resolution.
-    (tmp_path / "new.py").write_text("y = 2\n")
+    (tmp_path / "new.py").write_text("y = 2")
     worker.join(timeout=5)
 
     assert not worker.is_alive(), "watcher did not return after a change"
