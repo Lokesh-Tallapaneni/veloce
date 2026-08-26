@@ -57,6 +57,7 @@ from veloce._protocol_constants import (
     RAW_HEADER_CONTENT_TYPE,
     RAW_HEADER_SET_COOKIE,
     ROUTE_METHOD_WEBSOCKET,
+    SET_COOKIE_JOINER,
 )
 from veloce.app.urls import URLRule as URLRule
 from veloce.dependency import DependencyResolver
@@ -128,7 +129,11 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
     for k, v in headers.items():
         k_lower = k.lower()
         if k_lower == "set-cookie":
-            for piece in v.split("\r\nSet-Cookie:"):
+            # The same constant `Response.set_cookie` joins with. A literal here
+            # matched only because it is a prefix of that constant and the strip
+            # below hid the difference; changing the constant would have left this
+            # path silently emitting several cookies inside one header.
+            for piece in v.split(SET_COOKIE_JOINER):
                 cookie = piece.strip()
                 _reject_header_crlf(cookie, MSG_LABEL_SET_COOKIE_VALUE)
                 asgi_headers.append(
