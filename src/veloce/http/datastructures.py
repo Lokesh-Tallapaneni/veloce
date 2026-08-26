@@ -822,9 +822,20 @@ class AcceptHeader:
         # explicit `Br;q=0` must reject `br`. Fold both sides to lowercase
         # before the exact compare; the `*` wildcard fallback is unaffected.
         folded = value.lower()
+        # A repeated token with conflicting weights (`gzip;q=1.0, gzip;q=0`) is
+        # not defined by RFC 9110, so this reads it the way the rest of the
+        # method does: an explicit refusal anywhere wins. Returning the first
+        # entry instead let a later `q=0` be ignored, which is the one reading
+        # this method exists to rule out.
+        found: float | None = None
         for opt, q, _okey in self._options:
             if opt.lower() == folded:
-                return q
+                if q == 0.0:
+                    return 0.0
+                if found is None:
+                    found = q
+        if found is not None:
+            return found
         for opt, q, _okey in self._options:
             if opt == "*":
                 return q
@@ -883,9 +894,16 @@ class AcceptHeader:
         `specificity` is the score of the most specific matching client
         range (0 for non-MIME headers), used by `best_match` to prefer a
         parameterized exact match over a wildcard at equal quality.
+
+        Non-MIME headers rank through `quality_explicit`, not `quality`: RFC 9110
+        Sec. 12.5.3 makes an explicit `q=0` a refusal that a wildcard must not
+        override, and `quality` deliberately reports the max across an exact and
+        a `*` match. Ranking through it made `best_match` recommend a coding the
+        client had explicitly rejected - `gzip;q=0, *` selected `gzip`. The MIME
+        path already resolves this correctly, by most-specific-range.
         """
         if not self._mime:
-            return (self.quality(value), 0)
+            return (self.quality_explicit(value), 0)
         return self._mime_best(_parse_mime_key(value))
 
     def _mime_best(self, vkey: _MimeKey) -> tuple[float, int]:

@@ -150,6 +150,15 @@ When the client sends no `Accept` header (no preference expressed), `best_match`
 the first option — a missing `Accept` means "accept anything". Among accepted candidates a
 parameterized exact match beats a bare wildcard; ties go to your option order.
 
+An explicit `q=0` is a refusal and a `*` wildcard does not override it, so
+`Accept-Encoding: gzip;q=0, *` never selects `gzip` however permissive the
+wildcard is (RFC 9110 Sec. 12.5.3).
+
+!!! note "Changed in version 0.18"
+    `best_match` on a non-MIME header (`Accept-Encoding`, `Accept-Language`,
+    `Accept-Charset`) previously let a `*` wildcard override an explicit `q=0`,
+    so it could recommend a value the client had rejected.
+
 Other methods on the parsed header:
 
 | Method | Returns | Purpose |
