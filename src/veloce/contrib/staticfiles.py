@@ -519,15 +519,15 @@ class StaticFiles:
             size = stat_result.st_size
             cache_key = file_path
 
-            if cache_key in self._etag_cache:
-                cached_etag, cached_mtime = self._etag_cache[cache_key]
-                if cached_mtime == mtime:
-                    etag = cached_etag
-                    # Record the hit as recent usage so the LRU keeps it.
-                    self._etag_cache.move_to_end(cache_key)
-                else:
-                    etag = self._compute_etag(file_path, size, mtime)
-                    self._remember_etag(cache_key, etag, mtime)
+            # One lookup rather than a membership test plus a subscript, and the
+            # recompute stated once: a stale entry and a missing one are the same
+            # case. `.get` also treats a stale entry correctly without the outer
+            # branch having to know it exists.
+            cached = self._etag_cache.get(cache_key)
+            if cached is not None and cached[1] == mtime:
+                etag = cached[0]
+                # Record the hit as recent usage so the LRU keeps it.
+                self._etag_cache.move_to_end(cache_key)
             else:
                 etag = self._compute_etag(file_path, size, mtime)
                 self._remember_etag(cache_key, etag, mtime)

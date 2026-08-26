@@ -547,16 +547,14 @@ class SchemaRegistry:
 
     @staticmethod
     def _unique_def_name(components: dict[str, dict], base: str) -> str:
-        """Return a component name derived from `base` not already in use."""
-        # The `-Output` suffix mirrors the top-level serialization variant
-        # naming so a diverging nested model reads as its owner's output twin.
-        candidate = f"{base}-Output"
-        if candidate not in components:
-            return candidate
-        n = 2
-        while f"{candidate}_{n}" in components:
-            n += 1
-        return f"{candidate}_{n}"
+        """Return a component name derived from `base` not already in use.
+
+        The `-Output` suffix mirrors the top-level serialization variant naming
+        so a diverging nested model reads as its owner's output twin; finding a
+        free name from there is `_unique_component_name`'s job, which this used
+        to restate with the arguments in the other order.
+        """
+        return _unique_component_name(f"{base}-Output", components)
 
     def _all_tokens(self) -> list[str]:
         return [self._entries[k].token for k in self._order]
