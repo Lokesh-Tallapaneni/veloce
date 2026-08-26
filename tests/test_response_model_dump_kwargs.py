@@ -368,14 +368,24 @@ def test_a_route_with_no_model_has_an_empty_mapping():
 
 
 def test_a_payload_missing_a_required_field_still_errors():
+    """A response the model rejects is a 500, not a partial body on the wire.
+
+    This previously read `pytest.raises(Exception)` around
+    `TestClient(app, raise_server_exceptions=True)` - a keyword `TestClient` does
+    not accept. The `TypeError` from the constructor satisfied the assertion, so
+    the route was never called and nothing about response-model validation was
+    tested.
+    """
     app = Veloce(openapi_url=None)
 
     @app.get("/u", response_model=User)
     async def read_user():
         return {"name": "no-id"}
 
-    with pytest.raises(Exception):
-        TestClient(app, raise_server_exceptions=True).get("/u")
+    response = TestClient(app).get("/u")
+    assert response.status_code == 500
+    # The failure must not leak the payload or the validation detail.
+    assert b"no-id" not in response.body
 
 
 def test_a_wrongly_typed_field_is_still_coerced_or_rejected():
