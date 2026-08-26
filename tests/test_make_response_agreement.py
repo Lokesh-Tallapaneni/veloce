@@ -17,8 +17,9 @@ object's repr. And raw `bytes` came back as `application/octet-stream` from the
 helper but `text/html` from the other two, so the same value carried a different
 content type depending on which entry point a caller reached for.
 
-Both were unified onto what the other two already did (which is also what Flask's
-`text/html` default mimetype does for a bytes body). These tests assert the three
+Both were unified onto what the other two already did, which is also the
+long-standing convention for a synchronous response helper: a default mimetype
+of `text/html` for a body handed over as raw bytes. These tests assert the three
 against **each other** across the whole table, so the docstring's claim is
 checked rather than asserted.
 """
