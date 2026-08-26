@@ -24,6 +24,7 @@ import urllib.parse
 
 import pytest
 
+from tests._mcp import SSEStream, auth
 from veloce import MCPContext, Veloce
 from veloce.contrib.mcp import MCPAuth
 from veloce.principal import Principal, current_principal
@@ -33,79 +34,6 @@ TOKENS = {
     "tok-alice": ("alice", ("read",)),
     "tok-bob": ("bob", ("read", "write")),
 }
-
-
-class _Stream:
-    """An open `GET`, with its SSE frames readable one at a time."""
-
-    def __init__(self, app: Veloce, headers: list | None = None) -> None:
-        self._app = app
-        self._headers = list(headers or []) + [(b"accept", b"text/event-stream")]
-        self._chunks: asyncio.Queue[bytes] = asyncio.Queue()
-        self._buffer = ""
-        self.status: int | None = None
-        self.task: asyncio.Task | None = None
-
-    async def __aenter__(self) -> _Stream:
-        self.task = asyncio.ensure_future(self._run())
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        if self.task is not None:
-            self.task.cancel()
-
-    async def _run(self) -> None:
-        scope = {
-            "type": "http",
-            "asgi": {"version": "3.0"},
-            "http_version": "1.1",
-            "method": "GET",
-            "path": "/sse",
-            "raw_path": b"/sse",
-            "query_string": b"",
-            "headers": self._headers,
-            "client": ("127.0.0.1", 5555),
-            "server": ("127.0.0.1", 8000),
-            "scheme": "http",
-            "root_path": "",
-        }
-        first = True
-
-        async def receive() -> dict:
-            nonlocal first
-            if first:
-                first = False
-                return {"type": "http.request", "body": b"", "more_body": False}
-            await asyncio.sleep(3600)
-            return {"type": "http.disconnect"}
-
-        async def send(message: dict) -> None:
-            if message["type"] == "http.response.start":
-                self.status = message["status"]
-            elif message["type"] == "http.response.body":
-                await self._chunks.put(message.get("body", b""))
-
-        await self._app(scope, receive, send)
-
-    async def event(self, timeout: float = 5.0) -> dict[str, str]:
-        while True:
-            if "\n\n" in self._buffer:
-                raw, _, self._buffer = self._buffer.partition("\n\n")
-                fields = {}
-                for line in raw.splitlines():
-                    if line and ":" in line:
-                        key, _, value = line.partition(":")
-                        fields[key.strip()] = value.strip()
-                if fields:
-                    return fields
-                continue
-            self._buffer += (await asyncio.wait_for(self._chunks.get(), timeout)).decode()
-
-    async def message(self, timeout: float = 5.0) -> dict:
-        while True:
-            frame = await self.event(timeout)
-            if frame.get("event") == "message":
-                return json.loads(frame["data"])
 
 
 async def _post(app: Veloce, path: str, payload: dict, headers: list) -> int:
@@ -157,11 +85,7 @@ def _verify(token: str) -> Principal | None:
 
 
 def _auth() -> MCPAuth:
-    return MCPAuth(
-        verify=_verify,
-        resource_server_url="https://api.example.com/mcp",
-        authorization_servers=["https://auth.example.com"],
-    )
+    return auth(_verify)
 
 
 def _app(**mount: object) -> Veloce:
@@ -193,9 +117,9 @@ def _subject_of(response: dict) -> str | None:
     return json.loads(response["result"]["content"][0]["text"])["subject"]
 
 
-async def _open(app: Veloce, token: str | None) -> tuple[_Stream, str]:
+async def _open(app: Veloce, token: str | None) -> tuple[SSEStream, str]:
     """Open a stream and return it with the POST path it advertised."""
-    stream = _Stream(app, _bearer(token) if token else None)
+    stream = SSEStream(app, headers=_bearer(token) if token else None)
     await stream.__aenter__()
     frame = await stream.event()
     assert frame["event"] == "endpoint"

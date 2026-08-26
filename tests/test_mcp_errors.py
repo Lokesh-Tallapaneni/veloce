@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import orjson
-
+from tests._mcp import Pipe
 from veloce import Veloce
 from veloce.contrib.mcp import (
     AuthorizationError,
@@ -29,35 +28,10 @@ from veloce.contrib.mcp.errors import (
     _StreamTooLargeError,
 )
 from veloce.contrib.mcp.server import MCPServer
-from veloce.contrib.mcp.transports.stdio import StdioTransport
 
 
 def _server(app: Veloce) -> MCPServer:
     return MCPServer(app)
-
-
-class _Pipe:
-    """Drive a `StdioTransport` in-process: feed request lines, collect replies."""
-
-    def __init__(self, server: MCPServer) -> None:
-        self._inbox: list[bytes] = []
-        self.outbox: list[dict] = []
-        self.transport = StdioTransport(server, self._read_line, self._write_line)
-
-    def feed(self, message: dict) -> None:
-        self._inbox.append(orjson.dumps(message))
-
-    async def _read_line(self) -> bytes | None:
-        if not self._inbox:
-            return None
-        return self._inbox.pop(0)
-
-    async def _write_line(self, data: bytes) -> None:
-        self.outbox.append(orjson.loads(data))
-
-    async def run(self) -> list[dict]:
-        await self.transport.serve()
-        return self.outbox
 
 
 # -- Code mapping ------------------------------------------------------
@@ -158,7 +132,7 @@ async def test_handler_raised_invalid_params_surfaces_on_error_channel():
     async def reject() -> str:
         raise InvalidParamsError("nope")
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "reject"}})
     out = (await pipe.run())[0]
     assert out["error"]["code"] == _JSONRPC_INVALID_PARAMS
@@ -168,7 +142,7 @@ async def test_handler_raised_invalid_params_surfaces_on_error_channel():
 async def test_unknown_method_still_maps_to_method_not_found():
     """An unimplemented method returns the method-not-found code."""
     app = Veloce()
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "does/not/exist", "params": {}})
     out = (await pipe.run())[0]
     assert out["error"]["code"] == _JSONRPC_METHOD_NOT_FOUND

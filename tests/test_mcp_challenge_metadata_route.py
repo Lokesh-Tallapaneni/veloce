@@ -23,9 +23,9 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import auth
 from veloce import Veloce
 from veloce.contrib.mcp.auth import PROTECTED_RESOURCE_METADATA_PATH, MCPAuth
-from veloce.principal import Principal
 
 #: (transport, mount path, the path an unauthenticated POST goes to)
 TRANSPORTS = [
@@ -35,11 +35,7 @@ TRANSPORTS = [
 
 
 def _auth() -> MCPAuth:
-    return MCPAuth(
-        verify=lambda token: Principal(subject="s") if token == "good" else None,
-        resource_server_url="https://api.example.com/mcp",
-        authorization_servers=["https://auth.example.com"],
-    )
+    return auth()
 
 
 def _app(transport: str, path: str, **mount) -> Veloce:

@@ -109,9 +109,26 @@ def test_encoding_does_not_mutate_the_input():
 
 
 def test_a_tampered_value_decodes_to_none():
+    """The payload segment is edited, not the last character of the signature.
+
+    base64url's final character can carry padding bits, so several distinct
+    characters decode to the same bytes - flipping it is not reliably a change
+    at all. Rewriting the payload always is.
+    """
+    mw = _mw()
+    payload, _, rest = mw.encode_cookie({"user": "alice"}).partition(".")
+    tampered = payload[:-1] + ("A" if payload[-1] != "A" else "B") + "." + rest
+    assert mw.decode_cookie(tampered) is None
+
+
+def test_editing_the_payload_really_changes_it():
+    """The guard on the test above: if the edit were a no-op the assertion
+    would pass for the wrong reason."""
     mw = _mw()
     token = mw.encode_cookie({"user": "alice"})
-    assert mw.decode_cookie(token[:-1] + ("x" if token[-1] != "x" else "y")) is None
+    payload = token.partition(".")[0]
+    edited = payload[:-1] + ("A" if payload[-1] != "A" else "B")
+    assert edited != payload
 
 
 def test_garbage_decodes_to_none():

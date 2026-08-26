@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp import auth
 from veloce import Veloce
 from veloce.contrib.mcp import MCPAuth
 from veloce.principal import Principal
@@ -114,15 +115,7 @@ def _verify(token: str) -> Principal | None:
 
 
 def _status(header: str | None) -> int:
-    client = TestClient(
-        _app(
-            MCPAuth(
-                verify=_verify,
-                resource_server_url="https://api.example.com/mcp",
-                authorization_servers=["https://auth.example.com"],
-            )
-        )
-    )
+    client = TestClient(_app(auth(_verify)))
     headers = {"Accept": "application/json"}
     if header is not None:
         headers["Authorization"] = header

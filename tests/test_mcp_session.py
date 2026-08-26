@@ -4,36 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
-import orjson
-
+from tests._mcp import Pipe
 from veloce import Veloce
 from veloce.contrib.mcp import MCPSession
 from veloce.contrib.mcp.server import MCPServer
-from veloce.contrib.mcp.transports.stdio import StdioTransport
-
-
-class _Pipe:
-    """Drive a `StdioTransport` in-process: feed request lines, collect replies."""
-
-    def __init__(self, server: MCPServer) -> None:
-        self._inbox: list[bytes] = []
-        self.outbox: list[dict] = []
-        self.transport = StdioTransport(server, self._read_line, self._write_line)
-
-    def feed(self, message: dict) -> None:
-        self._inbox.append(orjson.dumps(message))
-
-    async def _read_line(self) -> bytes | None:
-        if not self._inbox:
-            return None
-        return self._inbox.pop(0)
-
-    async def _write_line(self, data: bytes) -> None:
-        self.outbox.append(orjson.loads(data))
-
-    async def run(self) -> list[dict]:
-        await self.transport.serve()
-        return self.outbox
 
 
 def _strict_app() -> Veloce:
@@ -95,7 +69,7 @@ def test_initialized_notification_marks_session():
 
 def test_stdio_loop_records_capabilities_across_messages():
     app = Veloce(openapi_url=None)
-    pipe = _Pipe(MCPServer(app))
+    pipe = Pipe(MCPServer(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -116,7 +90,7 @@ def test_stdio_loop_records_capabilities_across_messages():
 
 
 def test_pre_initialize_request_rejected_when_enforced():
-    pipe = _Pipe(MCPServer(_strict_app()))
+    pipe = Pipe(MCPServer(_strict_app()))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
     out = asyncio.run(pipe.run())
     assert out[0]["error"]["code"] == -32600
@@ -124,21 +98,21 @@ def test_pre_initialize_request_rejected_when_enforced():
 
 
 def test_ping_allowed_before_initialize_when_enforced():
-    pipe = _Pipe(MCPServer(_strict_app()))
+    pipe = Pipe(MCPServer(_strict_app()))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}})
     out = asyncio.run(pipe.run())
     assert out[0]["result"] == {}
 
 
 def test_initialize_allowed_first_when_enforced():
-    pipe = _Pipe(MCPServer(_strict_app()))
+    pipe = Pipe(MCPServer(_strict_app()))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
     out = asyncio.run(pipe.run())
     assert "protocolVersion" in out[0]["result"]
 
 
 def test_requests_allowed_after_initialize_when_enforced():
-    pipe = _Pipe(MCPServer(_strict_app()))
+    pipe = Pipe(MCPServer(_strict_app()))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
     pipe.feed({"jsonrpc": "2.0", "method": "notifications/initialized"})
     pipe.feed({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
@@ -149,7 +123,7 @@ def test_requests_allowed_after_initialize_when_enforced():
 def test_notification_passes_before_initialize_when_enforced():
     # A one-way message is not ordered by the initialization rule, so a stray
     # notification before initialize is swallowed (no response), not rejected.
-    pipe = _Pipe(MCPServer(_strict_app()))
+    pipe = Pipe(MCPServer(_strict_app()))
     pipe.feed({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}})
     out = asyncio.run(pipe.run())
     assert out == []
@@ -159,7 +133,7 @@ def test_lifecycle_not_enforced_by_default():
     # Without the opt-in flag the stdio loop answers a pre-initialize request
     # exactly as before, so existing clients are unaffected.
     app = Veloce(openapi_url=None)
-    pipe = _Pipe(MCPServer(app))
+    pipe = Pipe(MCPServer(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
     out = asyncio.run(pipe.run())
     assert "tools" in out[0]["result"]

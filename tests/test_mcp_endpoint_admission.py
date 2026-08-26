@@ -16,6 +16,7 @@ from __future__ import annotations
 import orjson
 import pytest
 
+from tests._mcp import auth
 from veloce import MCPContext, Principal, Veloce
 from veloce.contrib.mcp import MCPAuth
 
@@ -29,11 +30,7 @@ def _verify(token: str):
 
 
 def _auth() -> MCPAuth:
-    return MCPAuth(
-        verify=_verify,
-        resource_server_url="https://api.example.com/mcp",
-        authorization_servers=["https://auth.example.com"],
-    )
+    return auth(_verify)
 
 
 _TOKEN = {"authorization": "Bearer good"}

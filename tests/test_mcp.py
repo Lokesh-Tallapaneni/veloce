@@ -11,6 +11,7 @@ import orjson
 import pytest
 from pydantic import BaseModel, Field, computed_field
 
+from tests._mcp import Pipe
 from veloce import (
     BackgroundTasks,
     Blueprint,
@@ -32,30 +33,6 @@ from veloce.contrib.mcp.transports.stdio import StdioTransport
 from veloce.dependency import DependencyResolver
 
 # -- In-process stdio driver ------------------------------------------
-
-
-class _Pipe:
-    """Drive a `StdioTransport` in-process: feed request lines, collect replies."""
-
-    def __init__(self, server: MCPServer) -> None:
-        self._inbox: list[bytes] = []
-        self.outbox: list[dict] = []
-        self.transport = StdioTransport(server, self._read_line, self._write_line)
-
-    def feed(self, message: dict) -> None:
-        self._inbox.append(orjson.dumps(message))
-
-    async def _read_line(self) -> bytes | None:
-        if not self._inbox:
-            return None
-        return self._inbox.pop(0)
-
-    async def _write_line(self, data: bytes) -> None:
-        self.outbox.append(orjson.loads(data))
-
-    async def run(self) -> list[dict]:
-        await self.transport.serve()
-        return self.outbox
 
 
 def _server(app: Veloce) -> MCPServer:
@@ -232,7 +209,7 @@ def test_pydantic_input_schema_is_self_contained():
     async def create(item: Item) -> dict:
         return item.model_dump()
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
     out = asyncio.run(pipe.run())
 
@@ -295,7 +272,7 @@ def test_tools_list_and_call_round_trip():
     async def add(a: int, b: int) -> int:
         return a + b
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
     pipe.feed({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
     pipe.feed(
@@ -322,7 +299,7 @@ def test_call_coerces_string_arguments():
     async def double(n: int) -> int:
         return n * 2
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     # JSON argument arrives as a string; the bridge coerces it to int.
     pipe.feed(
         {
@@ -343,7 +320,7 @@ def test_call_pydantic_body_model():
     async def summarise(item: Item) -> str:
         return f"{item.qty}x {item.name}"
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -375,7 +352,7 @@ def test_missing_required_argument_is_an_in_band_tool_error():
     async def add(a: int, b: int) -> int:
         return a + b
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -405,7 +382,7 @@ def test_handler_internal_type_error_is_in_band():
         # invalid-params transport error.
         return n + "x"  # type: ignore[operator]
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -423,7 +400,7 @@ def test_handler_internal_type_error_is_in_band():
 
 def test_unknown_method_returns_method_not_found():
     app = Veloce(openapi_url=None)
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 9, "method": "does/not/exist", "params": {}})
     out = asyncio.run(pipe.run())
     assert out[0]["error"]["code"] == -32601
@@ -431,7 +408,7 @@ def test_unknown_method_returns_method_not_found():
 
 def test_notification_yields_no_response():
     app = Veloce(openapi_url=None)
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     # No `id` -> notification, no response written.
     pipe.feed({"jsonrpc": "2.0", "method": "notifications/initialized"})
     out = asyncio.run(pipe.run())
@@ -491,7 +468,7 @@ def test_dependency_injection_on_tool_call():
     registry = build_registry(app)
     assert "factor" not in registry.tools["scaled"].input_schema["properties"]
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -521,7 +498,7 @@ def test_route_level_dependency_runs_on_tool_call():
         events.append("handler")
         return {"ok": True}
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -553,7 +530,7 @@ def test_route_level_dependency_can_reject_tool_call():
         reached.append("handler")
         return {"secret": 42}
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -583,7 +560,7 @@ def test_yield_dependency_teardown_runs():
         events.append(f"use:{res}")
         return res
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -603,7 +580,7 @@ def test_context_is_injected():
     async def whoami(ctx: MCPContext) -> str:
         return ctx.tool_name
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -632,7 +609,7 @@ def test_dependency_consumes_tool_argument():
     async def lookup(resolved: int = Depends(get_user_id)) -> int:
         return resolved
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -664,7 +641,7 @@ def test_malformed_argument_type_is_an_in_band_tool_error():
     async def double(n: int) -> int:
         return n * 2
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     # `"abc"` cannot coerce to int; this is a malformed call, so it routes to
     # the JSON-RPC error channel rather than isError=true.
     pipe.feed(
@@ -704,7 +681,7 @@ def test_malformed_model_argument_is_an_in_band_tool_error():
     async def summarise(item: Item) -> str:
         return f"{item.qty}x {item.name}"
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     # `qty` is not an integer; model validation fails at the binding boundary.
     pipe.feed(
         {
@@ -739,7 +716,7 @@ def test_security_scopes_param_injected():
     registry = build_registry(app)
     assert "scopes" not in registry.tools["whatscopes"].input_schema["properties"]
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -760,7 +737,7 @@ def test_sync_handler_offloaded():
     def sync_add(a: int, b: int) -> int:
         return a + b
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -864,7 +841,7 @@ def test_instrumentation_fires_on_tool_call():
     async def add(a: int, b: int) -> int:
         return a + b
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -906,7 +883,7 @@ def test_duplicate_tool_name_raises():
 
 def _call(app: Veloce, name: str, arguments: dict) -> dict:
     """Drive one `tools/call` and return the single response object."""
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -1135,7 +1112,7 @@ def test_mount_mcp_enters_lifespan_before_serving():
     async def _drive() -> dict:
         # Mirror `mount_mcp`: drive the server inside the app lifespan in-process.
         async with app.lifespan_context():
-            pipe = _Pipe(_server(app))
+            pipe = Pipe(_server(app))
             pipe.feed(
                 {
                     "jsonrpc": "2.0",
@@ -1986,14 +1963,14 @@ def test_instrumentation_records_real_status_for_short_circuit_and_error():
 
 def _initialize(app: Veloce, params: dict) -> dict:
     """Drive one `initialize` and return the response object."""
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params})
     return asyncio.run(pipe.run())[0]
 
 
 def _list_tools(app: Veloce) -> dict[str, dict]:
     """Drive one `tools/list` and return the entries keyed by tool name."""
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
     out = asyncio.run(pipe.run())[0]
     return {tool["name"]: tool for tool in out["result"]["tools"]}
@@ -2027,7 +2004,7 @@ def test_initialize_without_version_returns_latest():
 def test_ping_returns_empty_result():
     """`ping` is answered with an empty result object, not method-not-found."""
     app = Veloce(openapi_url=None)
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 9, "method": "ping", "params": {}})
     out = asyncio.run(pipe.run())[0]
     assert "error" not in out
@@ -2752,7 +2729,7 @@ def test_response_model_exclude_drops_required_from_output_schema():
 
 def _list_resources(app: Veloce) -> dict[str, dict]:
     """Drive one `resources/list` and return the entries keyed by URI."""
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/list", "params": {}})
     out = asyncio.run(pipe.run())[0]
     return {r["uri"]: r for r in out["result"]["resources"]}
@@ -2760,7 +2737,7 @@ def _list_resources(app: Veloce) -> dict[str, dict]:
 
 def _list_resource_templates(app: Veloce) -> dict[str, dict]:
     """Drive one `resources/templates/list` and return the entries keyed by template."""
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/templates/list", "params": {}})
     out = asyncio.run(pipe.run())[0]
     return {r["uriTemplate"]: r for r in out["result"]["resourceTemplates"]}
@@ -2768,7 +2745,7 @@ def _list_resource_templates(app: Veloce) -> dict[str, dict]:
 
 def _read_resource(app: Veloce, uri: str) -> dict:
     """Drive one `resources/read` and return the single response object."""
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/read", "params": {"uri": uri}})
     return asyncio.run(pipe.run())[0]
 
@@ -2991,7 +2968,7 @@ def test_subscribe_then_resource_updated_reaches_subscriber():
         return "ok"
 
     server = MCPServer(app)
-    pipe = _Pipe(server)
+    pipe = Pipe(server)
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -3017,7 +2994,7 @@ def test_resource_updated_skips_unsubscribed_uri():
         return "ok"
 
     server = MCPServer(app)
-    pipe = _Pipe(server)
+    pipe = Pipe(server)
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -3043,7 +3020,7 @@ def test_unsubscribe_stops_resource_updates():
         return "ok"
 
     server = MCPServer(app)
-    pipe = _Pipe(server)
+    pipe = Pipe(server)
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -3075,7 +3052,7 @@ def test_list_changed_reaches_open_connection():
         return "ok"
 
     server = MCPServer(app)
-    pipe = _Pipe(server)
+    pipe = Pipe(server)
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "announce"}})
     out = asyncio.run(pipe.run())
 
@@ -3085,7 +3062,7 @@ def test_list_changed_reaches_open_connection():
 
 
 def test_subscribe_returns_empty_result():
-    pipe = _Pipe(_server(_subscriptions_app()))
+    pipe = Pipe(_server(_subscriptions_app()))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -3099,7 +3076,7 @@ def test_subscribe_returns_empty_result():
 
 
 def test_subscribe_rejects_missing_uri():
-    pipe = _Pipe(_server(_subscriptions_app()))
+    pipe = Pipe(_server(_subscriptions_app()))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "resources/subscribe", "params": {}})
     out = asyncio.run(pipe.run())[0]
     assert out["error"]["code"] == -32602
@@ -3117,7 +3094,7 @@ def test_subscribe_unknown_when_disabled():
     async def settings() -> dict:
         return {}
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -3141,7 +3118,7 @@ def test_notify_is_inert_when_disabled():
         return "ok"
 
     server = MCPServer(app)
-    pipe = _Pipe(server)
+    pipe = Pipe(server)
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "touch"}})
     out = asyncio.run(pipe.run())
     assert not [m for m in out if m.get("method", "").startswith("notifications/resources/")]
@@ -3401,7 +3378,7 @@ def test_non_binary_response_still_emits_text_block():
 
 def _list_prompts(app: Veloce) -> dict[str, dict]:
     """Drive one `prompts/list` and return the entries keyed by prompt name."""
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed({"jsonrpc": "2.0", "id": 1, "method": "prompts/list", "params": {}})
     out = asyncio.run(pipe.run())[0]
     return {p["name"]: p for p in out["result"]["prompts"]}
@@ -3409,7 +3386,7 @@ def _list_prompts(app: Veloce) -> dict[str, dict]:
 
 def _get_prompt(app: Veloce, name: str, arguments: dict | None = None) -> dict:
     """Drive one `prompts/get` and return the single response object."""
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -3617,7 +3594,7 @@ def test_progress_notification_emitted_with_token():
         await ctx.report_progress(2, 2)
         return "done"
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -3673,7 +3650,7 @@ def test_log_filtered_below_set_level():
         await ctx.log("info", "noisy")
         return "ok"
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     # Raise the minimum to `error`, then call: the `info` log is below it.
     pipe.feed(
         {"jsonrpc": "2.0", "id": 1, "method": "logging/setLevel", "params": {"level": "error"}}
@@ -3699,7 +3676,7 @@ def test_logging_set_level_rejects_invalid_level():
     async def add(a: int, b: int) -> int:
         return a + b
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {"jsonrpc": "2.0", "id": 1, "method": "logging/setLevel", "params": {"level": "verbose"}}
     )
@@ -3720,7 +3697,7 @@ def test_logging_capability_advertised():
 
 def _drive_call(app: Veloce, name: str, arguments: dict | None = None):
     """Drive one `tools/call` through the transport and return every written line."""
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
@@ -4485,7 +4462,7 @@ async def test_stdio_task_augmented_tool_can_sample():
         reply = await ctx.sample([{"role": "user", "content": "hi"}], max_tokens=8)
         return reply.get("content", {}).get("text", "")
 
-    pipe = _Pipe(_server(app))
+    pipe = Pipe(_server(app))
     pipe.feed(
         {
             "jsonrpc": "2.0",
