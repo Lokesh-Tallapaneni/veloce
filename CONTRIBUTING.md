@@ -95,6 +95,58 @@ pytest benchmarks/memory --codspeed     # allocation of held structures
 6. Open a pull request against `main`. All changes merge through pull requests;
    direct pushes to `main` are not used.
 
+## How this codebase keeps itself honest
+
+Two conventions do most of the work here. Both exist because prose does not
+enforce anything — a rule nobody executes drifts, and the drift is silent.
+
+### 1. A claim about the code is executed, not asserted
+
+If a docstring, a guide page or the README states a behaviour, a test runs that
+exact statement. This is why `tests/` contains files named `*_claims.py`,
+`*_contract*.py`, `*_parity*.py` and `*_invariants.py` — they are not testing
+features, they are testing that what we *say* is still true.
+
+Concretely, when you write documentation:
+
+- **A code block in a guide should be runnable, and something should run it.**
+  Several test modules execute every Python block on a page in order. A worked
+  example that nobody executes is the most common way docs go wrong — and it
+  fails quietly, because the reader assumes the mistake is theirs.
+- **A stated guarantee gets a test named after the guarantee**, not after the
+  function. `test_a_timeout_consumes_no_message` beats `test_receive_timeout_2`.
+- **Prefer the direction that catches an omission.** A test that every symbol in
+  the README's feature table exists is worth more than one that a particular
+  symbol is listed: the first catches a table naming something that was removed.
+
+### 2. A structural rule is enforced where it is broken, not reviewed
+
+Where a mistake can be caught at import or at class definition, it should be —
+not left to fail on a live request.
+
+- **A base class meant for subclassing checks its subclasses.** `Cache`,
+  `SessionStore`, `View`, `JSONProvider`, the path-converter base and the MCP
+  registry base all raise `TypeError` at class-definition time naming the method
+  you forgot, rather than a `NotImplementedError` on the first request that
+  needs it. If you add a base class with abstract methods, add the same guard —
+  `veloce._internal._require_methods` does it in three lines.
+- **A structural invariant gets a test that walks the structure.** When a field
+  was added to `RouteInfo` recently, `test_route_field_parity.py` failed
+  immediately because two route-copy paths had not been updated. No reviewer
+  would reliably have caught that.
+- **Validate configuration with `ValueError`, not `assert`, on any security
+  surface.** `python -O` strips assert statements; a middleware that validated
+  its arguments with one constructed happily under `-O` and then emitted no
+  header at all. `AssertionError` remains fine for API misuse that fails loudly
+  anyway.
+
+### What this means for a pull request
+
+Adding a feature: a test for the behaviour, and a test for anything the docs
+claim about it. Fixing a bug: a test that fails on the commit before yours.
+Changing something structural: ask what would catch the next person forgetting,
+and add that.
+
 ## Commit messages
 
 Write commit messages and pull request descriptions that state **what** changed
