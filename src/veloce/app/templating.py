@@ -17,7 +17,6 @@ class TemplatingMixin:
 
     if TYPE_CHECKING:  # pragma: no cover
         # Attributes the host application (`Veloce`) provides.
-        jinja_env: Any
         _template_filters: Any
         _template_globals: Any
         _template_tests: Any

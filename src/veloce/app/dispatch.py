@@ -243,13 +243,9 @@ class DispatchMixin:
         logger: Any
         debug: bool
         match: Callable[..., Any]
-        update_template_context: Callable[..., Any]
         make_default_options_response: Callable[..., Any]
-        _status_handlers: Any
-        _find_exception_handler: Callable[..., Any]
         _find_scoped_exception_handler: Callable[..., Any]
         _find_scoped_status_handler: Callable[..., Any]
-        _mcp_context: Any
         _instrumentation: Any
         _middlewares: Any
         log_exception: Callable[..., Any]

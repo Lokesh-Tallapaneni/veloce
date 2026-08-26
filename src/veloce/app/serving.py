@@ -40,9 +40,6 @@ class ServingMixin:
         debug: bool
         version: str
         _run_lifecycle: Callable[..., Any]
-        _stop_watchdog: Callable[..., Any]
-        _shutdown_subapps: Callable[..., Any]
-        _drain_spawned_tasks: Callable[..., Any]
         _setup_openapi: Callable[..., Any]
         _instrumentation: Any
 

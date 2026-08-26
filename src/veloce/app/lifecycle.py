@@ -167,9 +167,7 @@ class LifecycleMixin:
         _lifespan_stack: Any
         _started_subapps: Any
         _mounted_apps: Any
-        _middlewares: Any
         debug: Any
-        response_contract_audit: Callable[[], list[str]]
         _watchdog: Any
         _drain_spawned_tasks: Callable[..., Any]
 
