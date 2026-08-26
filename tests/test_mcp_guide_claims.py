@@ -275,7 +275,6 @@ def test_every_internal_anchor_link_resolves():
     reports it, but the strict build cannot run on every machine (the social-card
     plugin needs libcairo), so the check belongs here too.
     """
-    import re
 
     text = GUIDE.read_text(encoding="utf-8")
     anchors = {

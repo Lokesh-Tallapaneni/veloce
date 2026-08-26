@@ -30,7 +30,6 @@ async def _until(predicate, *, turns: int = 2000) -> None:
     The same module already demonstrated the deterministic idiom with an
     `asyncio.Event`; this is the form that needs no change to the task itself.
     """
-    import asyncio
 
     for _ in range(turns):
         if predicate():

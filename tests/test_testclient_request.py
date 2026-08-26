@@ -206,6 +206,5 @@ class TestTestClientNoWarning:
     """Verify TestClient doesn't trigger pytest collection warning."""
 
     def test_testclient_has_test_false(self):
-        from veloce.testclient import TestClient
 
         assert TestClient.__test__ is False

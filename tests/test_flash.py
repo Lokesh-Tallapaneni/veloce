@@ -20,16 +20,12 @@ class TestFlashMessages:
     """
 
     def _make_app(self):
-        from veloce import Veloce
-        from veloce.middleware.sessions import SessionMiddleware
 
         app = Veloce(openapi_url=None)
         app.add_middleware(SessionMiddleware, secret_key="t" * 32)
         return app
 
     def test_flash_and_retrieve(self):
-        from veloce.helpers import flash, get_flashed_messages
-        from veloce.testclient import TestClient
 
         app = self._make_app()
 
@@ -53,8 +49,6 @@ class TestFlashMessages:
         assert client.get("/get").json() == {"messages": []}
 
     def test_flash_with_categories(self):
-        from veloce.helpers import flash, get_flashed_messages
-        from veloce.testclient import TestClient
 
         app = self._make_app()
 
@@ -74,8 +68,6 @@ class TestFlashMessages:
         assert resp.json() == {"m": [["error", "Error occurred"], ["success", "All good"]]}
 
     def test_flash_category_filter(self):
-        from veloce.helpers import flash, get_flashed_messages
-        from veloce.testclient import TestClient
 
         app = self._make_app()
 
@@ -97,8 +89,6 @@ class TestFlashMessages:
 
     def test_flash_category_filter_multi(self):
         """Multiple-category filter — `info` and `warn` pass, `error` is dropped."""
-        from veloce.helpers import flash, get_flashed_messages
-        from veloce.testclient import TestClient
 
         app = self._make_app()
 
@@ -121,8 +111,6 @@ class TestFlashMessages:
 
 
 def test_get_flashed_messages_with_category_filter_set():
-    from veloce.helpers import flash
-    from veloce.middleware.sessions import SessionMiddleware
 
     app = Veloce(openapi_url=None)
     app.add_middleware(SessionMiddleware(secret_key="test-secret-key-32-bytes-long-ok"))

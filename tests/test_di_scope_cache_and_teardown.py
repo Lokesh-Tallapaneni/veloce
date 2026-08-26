@@ -385,7 +385,6 @@ async def test_nested_scope_reader_behind_plain_depends_not_collapsed():
     """A scope-reading helper reached through a plain `Depends` inside a
     `Security()` wrapper must still resolve per scope set (the wrapper inherits
     the scopes; the helper below reads them), not collapse by callable identity."""
-    from veloce import Depends
 
     app = Veloce(debug=True, openapi_url=None)
     seen: list[list[str]] = []

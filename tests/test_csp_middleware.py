@@ -190,4 +190,13 @@ def test_nonce_disabled_with_placeholder_rejected():
 
 
 def test_public_import():
-    from veloce import CSPMiddleware, csp_nonce  # noqa: F401
+    """The names are re-exported from the package root, not only from the
+    middleware module. The body used to be the import alone, which this module
+    already performs at the top - so it could not have failed here without
+    failing collection first."""
+    import veloce
+
+    assert veloce.CSPMiddleware is CSPMiddleware
+    assert veloce.csp_nonce is csp_nonce
+    assert "CSPMiddleware" in veloce.__all__
+    assert "csp_nonce" in veloce.__all__

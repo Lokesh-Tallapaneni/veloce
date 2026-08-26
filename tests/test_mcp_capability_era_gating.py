@@ -114,8 +114,6 @@ async def test_no_advertised_capability_names_a_method_the_dispatcher_refuses(mo
     union of what each capability declares, so this checks the set the
     dispatcher will actually consult.
     """
-    from veloce import Veloce
-    from veloce.contrib.mcp.server import MCPServer
 
     probe = Veloce(openapi_url=None)
 
@@ -184,8 +182,6 @@ def _client_visible_payloads() -> str:
     """Everything a client learns about this server's surface, as one blob."""
     import asyncio
     import json
-
-    from veloce.contrib.mcp.session import MCPSession
 
     server = MCPServer(_app())
     modern = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}

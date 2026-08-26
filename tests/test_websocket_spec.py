@@ -190,7 +190,6 @@ async def test_close_idempotent():
 
 
 async def test_websocket_send_before_accept_raises():
-    from veloce.websocket import WebSocket
 
     ws = WebSocket(transport=None, headers={})
     with pytest.raises(RuntimeError, match="accept"):
@@ -198,7 +197,6 @@ async def test_websocket_send_before_accept_raises():
 
 
 async def test_websocket_double_accept_raises():
-    from veloce.websocket import WebSocket
 
     ws = WebSocket(transport=None, headers={})
     ws._accepted = True

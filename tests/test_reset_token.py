@@ -81,5 +81,4 @@ def test_version_mismatch_returns_false():
 
 
 def test_public_exports():
-    from veloce import check_reset_token, make_reset_token  # noqa: F401
     from veloce.security import make_reset_token as _mrt  # noqa: F401

@@ -41,7 +41,6 @@ def test_import_workers_module_succeeds_without_gunicorn() -> None:
 def test_worker_class_is_importable_by_path() -> None:
     # `gunicorn ... -k veloce.workers.VeloceWorker` resolves the class by this
     # exact dotted path; assert it imports and is a class.
-    from veloce.workers import VeloceWorker
 
     assert isinstance(VeloceWorker, type)
 
@@ -93,8 +92,6 @@ def test_worker_subclasses_gunicorn_base_when_available() -> None:
     # real gunicorn base class so process supervision plugs in.
     pytest.importorskip("gunicorn")
     from gunicorn.workers.base import Worker
-
-    from veloce.workers import VeloceWorker
 
     assert issubclass(VeloceWorker, Worker)
 
@@ -307,7 +304,6 @@ def test_keep_serving_reports_alive_flag() -> None:
     # VeloceWorker._keep_serving returns self.alive so the per-connection serve
     # loop stops draining queued/pipelined requests once recycling clears alive.
     # Exercised without gunicorn by binding the unbound method to a stub.
-    from veloce.workers import VeloceWorker
 
     class _Stub:
         alive = True
@@ -374,7 +370,6 @@ class _ServeStub:
 
 
 async def test_serve_closes_partial_listeners_when_a_later_bind_fails() -> None:
-    from veloce.workers import VeloceWorker
 
     sockets = [_FakeGSock(object()), _FakeGSock(object()), _FakeGSock(object())]
     stub = _ServeStub(sockets, fail_after=1)
@@ -411,7 +406,6 @@ class _WorkerStub:
 
 
 def test_build_ssl_context_returns_none_when_tls_off() -> None:
-    from veloce.workers import VeloceWorker
 
     worker = _WorkerStub(_CfgStub(is_ssl=False, ssl_options={}))
     assert VeloceWorker._build_ssl_context(worker) is None
@@ -419,7 +413,6 @@ def test_build_ssl_context_returns_none_when_tls_off() -> None:
 
 def test_build_ssl_context_uses_default_factory_without_hook(tmp_path) -> None:
     pytest.importorskip("cryptography")
-    from veloce.workers import VeloceWorker
 
     certfile, keyfile = _write_self_signed_cert(tmp_path)
     cfg = _CfgStub(
@@ -435,7 +428,6 @@ def test_build_ssl_context_uses_default_factory_without_hook(tmp_path) -> None:
 
 def test_build_ssl_context_invokes_customization_hook(tmp_path) -> None:
     pytest.importorskip("cryptography")
-    from veloce.workers import VeloceWorker
 
     certfile, keyfile = _write_self_signed_cert(tmp_path)
     seen = {}
@@ -463,7 +455,6 @@ def test_build_ssl_context_invokes_customization_hook(tmp_path) -> None:
 
 def test_build_ssl_context_rejects_non_context_from_hook(tmp_path) -> None:
     pytest.importorskip("cryptography")
-    from veloce.workers import VeloceWorker
 
     certfile, keyfile = _write_self_signed_cert(tmp_path)
 
@@ -485,7 +476,6 @@ def test_build_ssl_context_rejects_non_context_from_hook(tmp_path) -> None:
 def test_build_ssl_context_hook_still_fails_fast_on_missing_cert() -> None:
     # The hook receives a factory; if it calls it with no certfile configured,
     # the fail-fast guard inside build_ssl_context still fires (no cleartext).
-    from veloce.workers import VeloceWorker
 
     def hook(config, default_ssl_context_factory):
         return default_ssl_context_factory()

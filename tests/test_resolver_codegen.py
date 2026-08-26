@@ -373,7 +373,6 @@ def test_reused_resolver_clears_state_before_compiled_path():
 
 
 def _resolver_of(handler):
-    from veloce._handler_plan import build_plan
 
     plan = build_plan(handler)
     return compile_param_resolver(plan, _coerce_value, RequestValidationError)

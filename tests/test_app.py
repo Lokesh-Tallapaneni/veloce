@@ -428,7 +428,6 @@ async def test_paramless_route_under_app_level_dependency_is_not_trivial():
 
 
 def test_debug_attr_writes_config():
-    from veloce import Veloce
 
     app = Veloce(openapi_url=None)
     app.debug = True
@@ -436,7 +435,6 @@ def test_debug_attr_writes_config():
 
 
 def test_config_debug_reflected_in_attr():
-    from veloce import Veloce
 
     app = Veloce(openapi_url=None)
     app.config["DEBUG"] = True
@@ -444,14 +442,12 @@ def test_config_debug_reflected_in_attr():
 
 
 def test_debug_constructor_seeds_config():
-    from veloce import Veloce
 
     assert Veloce(debug=True, openapi_url=None).config["DEBUG"] is True
     assert Veloce(openapi_url=None).config["DEBUG"] is False
 
 
 def test_post_construction_debug_enables_html_traceback():
-    from veloce import Veloce
     from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)
@@ -474,7 +470,6 @@ def test_post_construction_debug_enables_html_traceback():
 def test_debug_string_false_is_falsey():
     # A dotenv-loaded `DEBUG=false` is the string "false"; it must read as False,
     # not truthy. Guards the bool("false") regression on string-based config.
-    from veloce import Veloce
 
     app = Veloce(openapi_url=None)
     app.config["DEBUG"] = "false"
@@ -485,7 +480,6 @@ def test_debug_string_false_is_falsey():
 
 def test_debug_setter_coerces_string():
     # `app.debug = "false"` (string from an env source) must store False.
-    from veloce import Veloce
 
     app = Veloce(openapi_url=None)
     app.debug = "false"

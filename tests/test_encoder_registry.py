@@ -231,8 +231,6 @@ def test_orjson_default_resolves_scalar_subclass_without_registry():
     even with an empty registry, instead of falling through to `vars()` -> {}."""
     import datetime as _dt
 
-    from veloce.encoders import orjson_default
-
     class _MyDateTime(_dt.datetime):
         pass
 
@@ -243,7 +241,6 @@ def test_orjson_default_resolves_scalar_subclass_without_registry():
     assert orjson_default(dt) == dt.isoformat()
     assert orjson_default(_MyFloat(1.5)) == 1.5
     # End-to-end through orjson with the default hook.
-    import orjson
 
     assert orjson.dumps(_MyDateTime(2024, 1, 2), default=orjson_default) == b'"2024-01-02T00:00:00"'
 

@@ -63,7 +63,6 @@ def test_explicit_none_max_content_length_allows_any_size():
 def test_default_limit_rejects_oversized_declared_length():
     """With no explicit config, the default 100 MiB cap rejects an over-limit
     declared Content-Length cheaply (DoS protection is on by default)."""
-    import asyncio
 
     app = _app(max_size=None)  # no explicit config -> default 100 MiB
     req = Request(
@@ -84,7 +83,6 @@ def test_declared_content_length_over_limit_rejected_cheaply():
     """A liar that claims Content-Length over the limit is rejected without
     reading the body. We can't easily fake a content-length-vs-body mismatch
     through the TestClient — but we can construct a Request directly."""
-    import asyncio
 
     app = _app(max_size=100)
 
@@ -101,7 +99,6 @@ def test_declared_content_length_over_limit_rejected_cheaply():
 
 def test_actual_body_over_limit_rejected_even_without_content_length():
     """No Content-Length header but oversized body → still rejected."""
-    import asyncio
 
     app = _app(max_size=100)
     req = Request(

@@ -5398,7 +5398,6 @@ def test_event_store_discards_unknown_stream_and_malformed_ids():
 
 
 async def test_sse_disconnection_does_not_cancel_the_call():
-    from veloce.contrib.mcp.server import MCPServer
     from veloce.contrib.mcp.transports.http import _stream_response
 
     app = Veloce(openapi_url=None)

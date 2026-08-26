@@ -174,7 +174,6 @@ def test_the_walk_itself_does_not_recurse():
 
 
 def test_a_document_with_nested_models_still_resolves_its_refs():
-    from pydantic import BaseModel
 
     from veloce import Veloce
 

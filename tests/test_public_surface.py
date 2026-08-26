@@ -446,7 +446,5 @@ class TestSubPackageImports:
     def test_py_typed_exists(self):
         import os
 
-        import veloce
-
         pkg_dir = os.path.dirname(veloce.__file__)
         assert os.path.exists(os.path.join(pkg_dir, "py.typed"))

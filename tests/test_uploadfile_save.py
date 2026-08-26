@@ -37,7 +37,6 @@ def test_save_to_path_creates_parent_only_if_user_did():
     """`save` does not auto-create missing directories; the caller must."""
     upload = _upload(b"x")
     import os
-    import tempfile
 
     tmpdir = tempfile.mkdtemp()
     try:

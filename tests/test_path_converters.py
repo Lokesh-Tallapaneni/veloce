@@ -465,7 +465,6 @@ _FLOAT_SPELLINGS = ["1.5", "+1.5", "-1.5", ".5", "5."]
 
 
 def _both_paths_app():
-    from veloce import Veloce
 
     app = Veloce(openapi_url=None)
 
@@ -511,7 +510,6 @@ def test_what_the_converter_rejects_is_rejected_on_both_paths(value):
 
 def test_a_float_placeholder_does_not_swallow_an_int_route():
     """The dot stays required, so `123` is still an int and not a float."""
-    from veloce import Veloce
     from veloce.testclient import TestClient
 
     app = Veloce(openapi_url=None)

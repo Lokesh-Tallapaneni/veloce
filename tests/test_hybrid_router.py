@@ -384,7 +384,6 @@ def test_regex_route_router_dependency_runs_exactly_once_after_include():
     twice, after the sub-router is included into a parent — confirming
     `_merge_regex_routes` does not double-apply dependencies."""
     from veloce import Depends, TestClient
-    from veloce.routing.router import Router
 
     calls = {"sub": 0, "parent": 0}
 
@@ -740,7 +739,6 @@ def test_overlapping_tree_and_regex_methods_are_unioned():
     """A path served by a tree handler on one method and a regex handler on
     another reports both methods for 405/OPTIONS (get_allowed_methods unions
     tree + regex instead of returning early on the tree hit)."""
-    from veloce.routing.router import Router
 
     r = Router()
 

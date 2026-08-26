@@ -163,7 +163,6 @@ def test_app_wraps_invalid_value_in_build_error():
 
 
 def _slash_app():
-    from veloce import Veloce
 
     app = Veloce(openapi_url=None)
 

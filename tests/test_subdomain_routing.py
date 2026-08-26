@@ -122,7 +122,6 @@ def test_request_subdomain_property_without_server_name():
 
 
 def _subdomain(host: str, server_name: str | None = None) -> str:
-    from veloce import Veloce
     from veloce.http.request import Request
 
     request = Request("GET", "/", "", {"Host": host}, b"")
