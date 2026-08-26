@@ -175,6 +175,16 @@ class CORSMiddleware(Middleware):
         # - it is `", ".join`-ed into the response header.
         self._allow_origins_set: frozenset[str] = frozenset(self.allow_origins)
         self._allow_origins_has_star = "*" in self._allow_origins_set
+        # Whether `Access-Control-Allow-Origin` can differ between two callers,
+        # which is exactly when `Vary: Origin` is required. Only a bare `*`
+        # allow-list without credentials answers every caller identically; a
+        # regex, an explicit list, or credentials (which force echoing the exact
+        # origin) all vary. Settled here rather than per response: the answer
+        # cannot change once configured, and it must hold for a *refused* origin
+        # too, whose response carries no header to infer it from.
+        self._varies_by_origin = bool(
+            self.allow_origin_regex or allow_credentials or not self._allow_origins_has_star
+        )
         self._allow_headers_lower: frozenset[str] = frozenset(h.lower() for h in self.allow_headers)
         self._allow_headers_has_star = "*" in self.allow_headers
         # Uppercased method set for the preflight requested-method check.
@@ -304,10 +314,13 @@ class CORSMiddleware(Middleware):
         if allow_origin is not None:
             response.headers[HEADER_ACCESS_CONTROL_ALLOW_ORIGIN] = allow_origin
 
-        # `Vary: Origin` is required whenever the response value depends on
-        # the request origin (i.e. anything other than literal `*` without
-        # credentials). Cache poisoning class is real here.
-        if allow_origin is not None and allow_origin != "*":
+        # `Vary: Origin` is required whenever the response value depends on the
+        # request origin. Dependence is a property of the *configuration*, not of
+        # this request's outcome: gating on `allow_origin is not None` left the
+        # refused and no-Origin responses unmarked, so a shared cache could store
+        # one under an unkeyed entry and later hand it to an allowed origin,
+        # whose browser then blocks a request that should have succeeded.
+        if self._varies_by_origin:
             response.add_vary(HEADER_ORIGIN)
 
         if preflight:

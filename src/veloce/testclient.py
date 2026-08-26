@@ -1108,9 +1108,14 @@ class TestClient:
         self.close()
 
     def __del__(self) -> None:
-        if self._owns_loop and not self._loop.is_closed():
+        # Read through `getattr`: when `__init__` raises before setting these -
+        # an unexpected keyword argument, say - the finaliser still runs, and an
+        # `AttributeError` here surfaces through the unraisable hook *above* the
+        # real constructor error, burying it.
+        loop = getattr(self, "_loop", None)
+        if getattr(self, "_owns_loop", False) and loop is not None and not loop.is_closed():
             with contextlib.suppress(Exception):
-                self._loop.close()
+                loop.close()
 
 
 # ── WebSocket session ─────────────────────────────────────
