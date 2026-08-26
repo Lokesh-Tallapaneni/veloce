@@ -24,7 +24,6 @@ dicts, because the dict is the mechanism and the JSON is the contract.
 
 from __future__ import annotations
 
-import pytest
 from pydantic import BaseModel, Field
 
 from veloce import Veloce
