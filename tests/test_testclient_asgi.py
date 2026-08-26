@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from veloce import Request, Veloce
 from veloce.testclient import TestClient
 
@@ -104,16 +102,15 @@ def test_client_extracts_multiple_set_cookies():
         r.set_cookie("b", "2")
         return r
 
-    # `pytest` import is now unused in this test body; keep at module top.
-    assert pytest is not None
-
     client = TestClient(app)
     resp = client.get("/multi")
+    # Both, not just the first. This asserted only `a` behind a note saying `b`
+    # "may or may not survive" because `set_cookie` joins into one header -
+    # which the ASGI emit path splits back out, so the hedge outlived the bug
+    # that motivated it. A no-op `assert pytest is not None` stood where the
+    # second assertion belonged.
     assert resp.cookies.get("a") == "1"
-    # `b` may or may not survive depending on whether Set-Cookie is one
-    # header value vs two; the current Response.set_cookie joins via
-    # `\r\nSet-Cookie:` literal in one header, which is wrong on ASGI.
-    # M1 will fix this. For now assert at least the first cookie is parsed.
+    assert resp.cookies.get("b") == "2"
 
 
 # ── The client decodes the path like a real ASGI server ──────────────

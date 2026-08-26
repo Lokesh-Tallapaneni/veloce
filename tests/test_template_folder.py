@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import sys
+import types
+
 from veloce import Veloce
 from veloce.contrib.templating import Jinja2Templates, render_template
 
@@ -36,24 +40,80 @@ def test_absolute_template_folder_binds_jinja2templates(tmp_path):
         _unbind(token)
 
 
-def test_relative_template_folder_resolves_under_package_root(tmp_path):
-    """A relative folder is anchored to `app.package_root`."""
-    (tmp_path / "templates").mkdir()
-    (tmp_path / "templates" / "x.html").write_text("X={{ x }}")
+def test_relative_template_folder_resolves_under_package_root(tmp_path, monkeypatch):
+    """A relative folder is anchored to `app.package_root`.
 
-    # Build the app with import_name pointing at a module known to be
-    # under tmp_path. Simulate via direct attribute override since
-    # `Veloce(import_name=__name__)` would anchor to the test file's dir.
-    app = Veloce(openapi_url=None, import_name="cli_template_folder_demo")
-    # Without a real module, `package_root` falls back to cwd. Force the
-    # resolution by passing an absolute folder via re-init.
-    app2 = Veloce(openapi_url=None, template_folder=str(tmp_path / "templates"))
-    assert app2._templates is not None
-    token = _bind(app2)
+    This previously built an app with an `import_name`, abandoned it, rendered
+    through a *second* app configured with an absolute folder, and closed with a
+    "sanity check" on the app it never used - so the `os.path.isabs` branch it is
+    named for never ran.
+
+    `package_root` is the directory of `import_name`'s module file, so
+    registering a module whose `__file__` lives under `tmp_path` exercises the
+    real resolution.
+    """
+    package_dir = tmp_path / "pkg"
+    (package_dir / "templates").mkdir(parents=True)
+    (package_dir / "templates" / "x.html").write_text("X={{ x }}")
+
+    module = types.ModuleType("template_folder_demo")
+    module.__file__ = str(package_dir / "app.py")
+    monkeypatch.setitem(sys.modules, "template_folder_demo", module)
+
+    app = Veloce(
+        openapi_url=None,
+        import_name="template_folder_demo",
+        template_folder="templates",
+    )
+    assert app.package_root == str(package_dir)
+    assert not os.path.isabs(app.template_folder)
+    assert app._templates is not None
+
+    token = _bind(app)
     try:
         assert render_template("x.html", x=7) == "X=7"
     finally:
         _unbind(token)
-    # The first app is just for the import_name-resolution case;
-    # nothing more to assert without making the test fragile.
-    assert app.template_folder is None  # never set; sanity check
+
+
+def test_a_relative_template_folder_does_not_resolve_against_the_cwd(tmp_path, monkeypatch):
+    """A decoy of the same name under the working directory must not win."""
+    package_dir = tmp_path / "pkg"
+    (package_dir / "templates").mkdir(parents=True)
+    (package_dir / "templates" / "x.html").write_text("RIGHT")
+
+    decoy = tmp_path / "cwd"
+    (decoy / "templates").mkdir(parents=True)
+    (decoy / "templates" / "x.html").write_text("DECOY")
+    monkeypatch.chdir(decoy)
+
+    module = types.ModuleType("template_folder_demo2")
+    module.__file__ = str(package_dir / "app.py")
+    monkeypatch.setitem(sys.modules, "template_folder_demo2", module)
+
+    app = Veloce(
+        openapi_url=None,
+        import_name="template_folder_demo2",
+        template_folder="templates",
+    )
+    token = _bind(app)
+    try:
+        assert render_template("x.html") == "RIGHT"
+    finally:
+        _unbind(token)
+
+
+def test_an_absolute_template_folder_is_used_as_is(tmp_path):
+    """The other side of the branch - what the old test actually covered."""
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "x.html").write_text("X={{ x }}")
+
+    app = Veloce(openapi_url=None, template_folder=str(tmp_path / "templates"))
+    assert os.path.isabs(app.template_folder)
+    assert app._templates is not None
+
+    token = _bind(app)
+    try:
+        assert render_template("x.html", x=7) == "X=7"
+    finally:
+        _unbind(token)
