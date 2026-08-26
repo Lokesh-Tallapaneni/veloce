@@ -16,6 +16,28 @@ def _req(path: str = "/x") -> Request:
 # ── Single BackgroundTask attached to Response ───────────────────────
 
 
+async def _until(predicate, *, turns: int = 2000) -> None:
+    """Advance the event loop until `predicate()` holds.
+
+    Replaces `await asyncio.sleep(0.05)` after a fire-and-forget task. A fixed
+    sleep is a guess in both directions: too short and the suite is flaky on a
+    loaded machine, too long and every such test pays for the worst case. This
+    yields to the loop and re-checks, so it returns as soon as the task has run
+    and raises a named failure if it never does - rather than falling through to
+    an assertion whose message is about the wrong thing.
+
+    The same module already demonstrated the deterministic idiom with an
+    `asyncio.Event`; this is the form that needs no change to the task itself.
+    """
+    import asyncio
+
+    for _ in range(turns):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("the background task never ran")
+
+
 @pytest.mark.asyncio
 async def test_response_carries_single_background_task():
     log: list[str] = []
@@ -35,8 +57,7 @@ async def test_response_carries_single_background_task():
 
     resp = await app.handle_request(_req())
     assert resp.status_code == 200
-    # Give the fire-and-forget task a chance to land.
-    await asyncio.sleep(0.05)
+    await _until(lambda: log == ["fired"])
     assert log == ["fired"]
 
 
@@ -55,7 +76,7 @@ async def test_response_carries_background_tasks_collection():
         return Response(body=b"ok", content_type="text/plain", background=tasks)
 
     await app.handle_request(_req())
-    await asyncio.sleep(0.05)
+    await _until(lambda: log == ["a", "b"])
     assert log == ["a", "b"]
 
 
@@ -92,7 +113,7 @@ async def test_async_background_task():
         )
 
     await app.handle_request(_req())
-    await asyncio.sleep(0.05)
+    await _until(lambda: log == ["async-fired"])
     assert log == ["async-fired"]
 
 
@@ -100,7 +121,14 @@ async def test_async_background_task():
 async def test_background_task_exception_does_not_break_response():
     """A failing background task is logged but never breaks the response."""
 
+    ran: list[str] = []
+
     def boom() -> None:
+        # Recorded before raising, so the wait below has something to observe.
+        # The sleep this replaced waited for a task it could not see, and the
+        # test asserted nothing about it - so it passed whether or not the task
+        # ever ran.
+        ran.append("boom")
         raise RuntimeError("kaboom")
 
     app = Veloce(debug=True, openapi_url=None)
@@ -116,8 +144,8 @@ async def test_background_task_exception_does_not_break_response():
     resp = await app.handle_request(_req())
     assert resp.status_code == 200
     assert resp.body == b"ok"
-    # Let the loop pick up the rejected task; it logs but doesn't crash.
-    await asyncio.sleep(0.05)
+    await _until(lambda: ran == ["boom"])
+    assert ran == ["boom"]
 
 
 @pytest.mark.asyncio
@@ -139,7 +167,7 @@ async def test_response_background_with_di_injected_tasks_coexist():
         )
 
     await app.handle_request(_req())
-    await asyncio.sleep(0.05)
+    await _until(lambda: set(log) == {"from-di", "from-response"})
     assert set(log) == {"from-di", "from-response"}
 
 

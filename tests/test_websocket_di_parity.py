@@ -235,24 +235,42 @@ def test_websocket_body_model_param_is_inert():
 
 
 def test_websocket_independent_async_deps_run_in_parallel():
-    """Two sibling Depends() on a WebSocket handler begin concurrently, like
-    the HTTP path — confirms resolve_ws_plan passes the precomputed
-    parallel-dependency grouping into the resolver."""
+    """Two sibling Depends() on a WebSocket handler begin concurrently.
+
+    Confirms `resolve_ws_plan` passes the precomputed parallel-dependency
+    grouping into the resolver, like the HTTP path.
+
+    **Proven structurally, not by a clock.** This compared two `time.monotonic()`
+    samples against a 30 ms bound after two real 50 ms sleeps - a wall-clock
+    threshold in the default suite, which is the class of test this project
+    excludes behind the `perf` marker, and which fails under CI contention for
+    reasons that have nothing to do with the code.
+
+    Each dependency now waits at a shared rendezvous before returning. If
+    resolution were sequential the first would wait for a sibling that had not
+    started, and the test would **hang** rather than pass - so concurrency is
+    proven by the test completing at all, with no sleep and no threshold.
+    """
     import asyncio
-    import time
 
     app = Veloce(debug=True, openapi_url=None)
-    starts: list[float] = []
+    arrived: list[str] = []
+    both_here = asyncio.Event()
+
+    async def _rendezvous(name: str) -> str:
+        arrived.append(name)
+        if len(arrived) == 2:
+            both_here.set()
+        # `asyncio.Barrier` says this in one line but landed in 3.11; this
+        # project supports 3.10.
+        await asyncio.wait_for(both_here.wait(), timeout=5.0)
+        return name
 
     async def slow_a():
-        starts.append(time.monotonic())
-        await asyncio.sleep(0.05)
-        return "a"
+        return await _rendezvous("a")
 
     async def slow_b():
-        starts.append(time.monotonic())
-        await asyncio.sleep(0.05)
-        return "b"
+        return await _rendezvous("b")
 
     @app.websocket("/ws-par")
     async def handler(ws, a=Depends(slow_a), b=Depends(slow_b)):
@@ -263,10 +281,5 @@ def test_websocket_independent_async_deps_run_in_parallel():
     client = app.test_client()
     with client.websocket_connect("/ws-par") as conn:
         assert conn.receive_text() == "ab"
-    assert len(starts) == 2
-    # Sequential resolution would put the second start ~50ms after the first
-    # (the `slow_a` sleep). The 30ms bound stays well under that while tolerating
-    # event-loop scheduling jitter on coarse-clock platforms (e.g. Windows CI).
-    assert abs(starts[1] - starts[0]) < 0.030, (
-        f"WS siblings did not start concurrently: delta={starts[1] - starts[0]:.4f}s"
-    )
+    assert sorted(arrived) == ["a", "b"]
+    assert both_here.is_set()

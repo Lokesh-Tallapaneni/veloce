@@ -15,7 +15,6 @@ Constraints — preserved by `parallel_group_end`:
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
@@ -28,32 +27,52 @@ from veloce._handler_plan import (
 )
 from veloce.testclient import TestClient
 
-#: How long each probe dependency sleeps. A sequential resolver makes the
-#: second dependency start a whole delay behind the first; a concurrent one
-#: starts both at once.
-_DEP_DELAY = 0.05
+
+def _rendezvous_pair():
+    """Two dependencies that can only both finish if they run concurrently.
+
+    Each records its arrival and then waits until the other has arrived too. A
+    sequential resolver runs the first to completion before starting the second,
+    so the first would wait for a sibling that has not begun - and the request
+    would fail on the bounded wait rather than passing.
+
+    `asyncio.Barrier` says this in one line but landed in 3.11; this project
+    supports 3.10.
+    """
+    arrived: list[str] = []
+    both_here = asyncio.Event()
+
+    async def _arrive(name: str) -> str:
+        arrived.append(name)
+        if len(arrived) == 2:
+            both_here.set()
+        await asyncio.wait_for(both_here.wait(), timeout=5.0)
+        return name
+
+    async def slow_a() -> str:
+        return await _arrive("a")
+
+    async def slow_b() -> str:
+        return await _arrive("b")
+
+    return slow_a, slow_b, arrived, both_here
 
 
 def test_independent_async_siblings_run_in_parallel():
     """Two sibling Depends() begin concurrently rather than sequentially.
 
-    The robust assertion is the **start-time delta**, not total elapsed
-    — under a noisy CI scheduler total elapsed jitters but the start
-    delta between two concurrently-scheduled coroutines stays small
-    even when each individual coroutine takes longer than expected.
+    **Proven structurally, not by a clock.** This compared two `time.monotonic()`
+    samples against a 25 ms budget after two real 50 ms sleeps - a wall-clock
+    threshold in the default suite, which is the class of test this project
+    excludes behind the `perf` marker, and which fails under CI contention for
+    reasons unrelated to the code. The previous docstring argued the start-delta
+    was the *robust* measure of the two available; it is still a clock.
+
+    The dependencies now meet at a rendezvous, so concurrency is proven by the
+    request succeeding at all: sequential resolution cannot get past it.
     """
     app = Veloce(openapi_url=None)
-    starts: list[float] = []
-
-    async def slow_a() -> str:
-        starts.append(time.monotonic())
-        await asyncio.sleep(_DEP_DELAY)
-        return "a"
-
-    async def slow_b() -> str:
-        starts.append(time.monotonic())
-        await asyncio.sleep(_DEP_DELAY)
-        return "b"
+    slow_a, slow_b, arrived, both_here = _rendezvous_pair()
 
     @app.get("/parallel")
     async def handler(a: str = Depends(slow_a), b: str = Depends(slow_b)) -> dict:
@@ -62,15 +81,8 @@ def test_independent_async_siblings_run_in_parallel():
     resp = TestClient(app).get("/parallel")
     assert resp.status_code == 200
     assert resp.json() == {"a": "a", "b": "b"}
-    assert len(starts) == 2
-    # Both deps must begin close together; sequential would mean the second
-    # waits a whole `_DEP_DELAY` behind the first. The budget is half that delay
-    # rather than a small absolute number: it still fails a sequential
-    # implementation by a wide margin, while leaving enough headroom that a
-    # loaded scheduler cannot fail a correct one.
-    assert abs(starts[1] - starts[0]) < _DEP_DELAY / 2, (
-        f"siblings did not start concurrently: delta={starts[1] - starts[0]:.4f}s"
-    )
+    assert sorted(arrived) == ["a", "b"]
+    assert both_here.is_set()
 
 
 def test_shared_use_cache_dependency_runs_once():

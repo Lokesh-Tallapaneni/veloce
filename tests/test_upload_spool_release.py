@@ -86,10 +86,16 @@ async def test_a_background_task_can_still_read_the_upload():
         assert response.status_code == 200
         assert seen["file"].closed is False, "released before the background task ran"
 
-        for _ in range(200):
-            await asyncio.sleep(0.01)
+        # Poll on a fine tick rather than a coarse one. The task under test
+        # genuinely sleeps ~20 ms (that delay is the subject - the files must
+        # still be open *while* it runs), so a pure `sleep(0)` yield advances no
+        # wall-clock time and never observes the release. A 10 ms tick made a
+        # passing run cost up to two seconds; a 1 ms tick returns as soon as the
+        # callback has fired.
+        for _ in range(2000):
             if seen["file"].closed:
                 break
+            await asyncio.sleep(0.001)
 
     assert seen["open_during_task"] is True
     assert seen["read_during_task"] == 16
