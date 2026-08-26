@@ -1283,7 +1283,7 @@ class Veloce(
                 import click
             except ImportError as err:  # pragma: no cover
                 raise RuntimeError(
-                    "app.cli requires `click` - install with: pip install veloceframework[cli]"
+                    "app.cli requires `click`. Install it with: pip install veloceframework[cli]"
                 ) from err
             self._cli_group = click.Group(
                 name=getattr(self, "title", "app").lower().replace(" ", "-"),
@@ -1302,7 +1302,7 @@ class Veloce(
             from click.testing import CliRunner
         except ImportError as err:  # pragma: no cover
             raise RuntimeError(
-                "test_cli_runner() requires `click`. Install with: pip install veloceframework[cli]"
+                "test_cli_runner() requires `click`. Install it with: pip install veloceframework[cli]"
             ) from err
         return CliRunner(**kwargs)
 

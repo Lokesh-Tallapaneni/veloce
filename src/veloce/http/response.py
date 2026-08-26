@@ -1522,7 +1522,7 @@ class UJSONResponse(Response):
             import ujson  # type: ignore[import-untyped]
         except ImportError as err:
             raise ImportError(
-                "UJSONResponse requires the `ujson` package. Install it: pip install ujson"
+                "UJSONResponse requires the `ujson` package. Install it with: pip install ujson"
             ) from err
         body = ujson.dumps(data).encode("utf-8")
         super().__init__(

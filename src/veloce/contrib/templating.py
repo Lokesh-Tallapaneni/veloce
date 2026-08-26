@@ -281,7 +281,7 @@ class Jinja2Templates:
             from jinja2 import Environment, FileSystemLoader, select_autoescape
         except ImportError as err:
             raise ImportError(
-                "jinja2 is required for templating. Install it: pip install jinja2"
+                "jinja2 is required for templating. Install it with: pip install jinja2"
             ) from err
         # the built-in default: autoescape HTML-shaped extensions. Matches
         # `select_autoescape(["html", "htm", "xhtml", "xml"])`. Pass an
