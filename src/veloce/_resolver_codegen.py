@@ -116,7 +116,35 @@ def _compile_resolver(source: str, kind: str, plan: HandlerPlan, ns: dict[str, A
         return None
     if filename not in linecache.cache:
         linecache.cache[filename] = (len(source), None, source.splitlines(keepends=True), filename)
+        _register_source_key(filename)
     return ns["_resolver"]
+
+
+# The digest key means recompiling the same plan reuses one entry, so a static
+# app's listings are bounded by its distinct resolvers. A process that registers
+# routes over its lifetime - per-tenant routers, a plugin adding routes at
+# runtime - has no such bound, and every distinct handler shape would retain a
+# full source listing forever for something only a traceback ever reads.
+#
+# Bounded FIFO rather than LRU: recency is not worth tracking for entries only a
+# traceback consults, and a static app never reaches the cap. When a dynamic one
+# does, the oldest listing is dropped and a frame from that resolver prints
+# without its source line - which is what every frame from generated code did
+# before this registration existed.
+_MAX_CACHED_SOURCES = 1024
+
+# Insertion-ordered set of the `linecache` keys this module owns. Kept separate
+# from `linecache.cache` so eviction only ever touches entries written here.
+_cached_source_keys: dict[str, None] = {}
+
+
+def _register_source_key(filename: str) -> None:
+    """Record a `linecache` entry this module wrote, evicting the oldest at the cap."""
+    _cached_source_keys[filename] = None
+    while len(_cached_source_keys) > _MAX_CACHED_SOURCES:
+        oldest = next(iter(_cached_source_keys))
+        del _cached_source_keys[oldest]
+        linecache.cache.pop(oldest, None)
 
 
 def compile_param_resolver(

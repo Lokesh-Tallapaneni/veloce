@@ -201,3 +201,69 @@ async def test_a_sweep_of_many_expired_sessions_reclaims_them_all():
     await asyncio.sleep(0.08)
     await store.create()
     assert len(evicted) == 200
+
+
+# ── the live session count has a ceiling ─────────────────────────────
+#
+# Eviction by idle TTL bounds how *long* a session lives, not how many exist at
+# once. Minting one costs a client a single request, so within one TTL window a
+# caller could accumulate them without limit. `max_sessions` is that ceiling.
+#
+# At capacity the store reclaims the least-recently-touched session rather than
+# refusing the new one: `_live` is ordered oldest-touched-first, so the victim is
+# the entry least likely to be in use, and a flood cannot lock legitimate clients
+# out of the transport entirely.
+
+
+async def test_the_live_count_stops_at_the_ceiling():
+    store = HttpSessionStore(idle_ttl=3600, max_sessions=25)
+    for _ in range(200):
+        await store.create()
+    assert len(store._live) <= 25
+
+
+async def test_a_new_session_is_still_minted_at_capacity():
+    """Refusing would let a flood lock real clients out."""
+    store = HttpSessionStore(idle_ttl=3600, max_sessions=5)
+    for _ in range(10):
+        await store.create()
+    session_id, session = await store.create()
+    assert await store.resolve(session_id) is session
+
+
+async def test_the_least_recently_touched_session_is_the_victim():
+    store = HttpSessionStore(idle_ttl=3600, max_sessions=3)
+    first, _ = await store.create()
+    second, _ = await store.create()
+    third, _ = await store.create()
+
+    # Touch the oldest so it is no longer the least recent.
+    await store.resolve(first)
+    await store.create()
+
+    assert await store.resolve(first) is not None
+    assert await store.resolve(second) is None
+
+
+async def test_an_evicted_session_reaches_the_evict_callback():
+    """The transport reclaims what a session owned; a capacity eviction must
+    not skip that the way an idle reclaim does not."""
+    evicted = []
+    store = HttpSessionStore(idle_ttl=3600, on_evict=evicted.append, max_sessions=2)
+    for _ in range(5):
+        await store.create()
+    assert len(evicted) >= 3
+
+
+async def test_a_ceiling_below_one_is_refused():
+    with pytest.raises(ValueError, match="max_sessions"):
+        HttpSessionStore(max_sessions=0)
+
+
+async def test_the_default_ceiling_does_not_disturb_ordinary_use():
+    """The negative: a bound set too low would evict sessions a normal
+    deployment is still using."""
+    store = HttpSessionStore(idle_ttl=3600)
+    ids = [(await store.create())[0] for _ in range(500)]
+    for session_id in ids:
+        assert await store.resolve(session_id) is not None

@@ -53,6 +53,10 @@ _SESSION_ID_ENTROPY_BYTES = 24
 # A client that initializes and disappears (never sending `DELETE`) would otherwise
 # leak its id and its `MCPSession` for the process lifetime; eviction runs lazily
 # on session resolution so no background timer is needed.
+# Live sessions held per worker. Generous for any real deployment; the point is
+# that the count has a ceiling that does not depend on clients behaving.
+_DEFAULT_MAX_SESSIONS = 10_000
+
 _DEFAULT_IDLE_TTL_SECONDS = 3600.0
 
 
@@ -124,16 +128,23 @@ class _LiveSession:
 class HttpSessionStore:
     """Track live `Mcp-Session-Id` values and their sessions for the HTTP transport."""
 
-    __slots__ = ("_live", "_idle_ttl", "_on_evict", "_backend")
+    __slots__ = ("_live", "_idle_ttl", "_max_sessions", "_on_evict", "_backend")
 
     def __init__(
         self,
         idle_ttl: float = _DEFAULT_IDLE_TTL_SECONDS,
         on_evict: Callable[[MCPSession], None] | None = None,
         backend: SessionBackend | None = None,
+        max_sessions: int = _DEFAULT_MAX_SESSIONS,
     ) -> None:
+        if max_sessions < 1:
+            raise ValueError("max_sessions must be >= 1")
         self._live: dict[str, _LiveSession] = {}
         self._idle_ttl = idle_ttl
+        # Live sessions are bounded independently of the idle TTL. Minting a
+        # session costs a client one request, so within one TTL window an
+        # unauthenticated caller could otherwise accumulate them without limit.
+        self._max_sessions = max_sessions
         # Where session records are shared with other workers. `None` - the
         # default - keeps sessions in this process, which is what a single-worker
         # deployment wants and costs nothing.
@@ -146,6 +157,17 @@ class HttpSessionStore:
     async def create(self) -> tuple[str, MCPSession]:
         """Mint a new session id with its `MCPSession`, record it, and return both."""
         self._evict_idle()
+        # At capacity, reclaim the least-recently-touched session rather than
+        # refusing the new one: `_live` is ordered oldest-touched-first (see
+        # `_touch`), so the victim is the entry least likely to be in active use,
+        # and a flood cannot lock legitimate clients out of the transport
+        # entirely. `_on_evict` fires as it does for an idle reclaim, so the
+        # transport still releases what the session owned.
+        while len(self._live) >= self._max_sessions:
+            oldest_id, oldest = next(iter(self._live.items()))
+            del self._live[oldest_id]
+            if self._on_evict is not None:
+                self._on_evict(oldest.session)
         session_id = secrets.token_urlsafe(_SESSION_ID_ENTROPY_BYTES)
         session = MCPSession()
         self._live[session_id] = _LiveSession(session)
