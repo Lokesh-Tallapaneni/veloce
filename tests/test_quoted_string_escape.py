@@ -35,7 +35,7 @@ AWKWARD = [
     "ends with" + BACKSLASH,
     BACKSLASH + "leads",
     BACKSLASH * 2,
-    'both' + BACKSLASH + '"',
+    "both" + BACKSLASH + '"',
     "semi;colon",
     "com,ma",
 ]
