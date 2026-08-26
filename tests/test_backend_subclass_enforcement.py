@@ -242,3 +242,148 @@ def test_a_backend_without_slots_is_still_refused():
 
         class NoSlots(RateLimitBackend):
             pass
+
+
+# ── the same guard on every other base meant for subclassing ─────────
+#
+# Six bases in the tree declare abstract methods with `NotImplementedError`
+# bodies. Two (`Cache`, `SessionStore`) are covered above; these are the rest.
+# Each was checked against its existing subclasses before the guard was added -
+# all eleven built-in converters, both shipped JSON providers, `MethodView`, and
+# all four MCP registries already satisfy it.
+
+
+def test_a_view_without_dispatch_request_is_refused():
+    from veloce import View
+
+    with pytest.raises(TypeError, match="dispatch_request"):
+
+        class Bad(View):
+            pass
+
+
+def test_a_complete_view_is_accepted():
+    from veloce import View
+
+    class Good(View):
+        async def dispatch_request(self, *args, **kwargs):
+            return {}
+
+    assert Good is not None
+
+
+def test_a_method_view_subclass_is_accepted():
+    """`MethodView` supplies `dispatch_request`, so a verb-only subclass is fine
+    - the shape almost every user of class-based views actually writes."""
+    from veloce import MethodView
+
+    class UserView(MethodView):
+        async def get(self):
+            return {}
+
+    assert UserView is not None
+
+
+def test_a_converter_without_match_is_refused():
+    from veloce.routing.converters import _Converter
+
+    with pytest.raises(TypeError, match="match"):
+
+        class Bad(_Converter):
+            __slots__ = ()
+
+
+def test_a_complete_converter_is_accepted():
+    from veloce.routing.converters import _Converter
+
+    class Good(_Converter):
+        __slots__ = ()
+
+        def match(self, value: str):
+            return True, value
+
+    assert Good is not None
+
+
+def test_every_builtin_converter_satisfies_the_guard():
+    """The negative direction: the guard must not have broken what ships."""
+    from veloce.routing import converters
+
+    built_in = [
+        obj
+        for obj in vars(converters).values()
+        if isinstance(obj, type)
+        and issubclass(obj, converters._Converter)
+        and obj is not converters._Converter
+    ]
+    assert len(built_in) >= 10
+
+
+def test_a_json_provider_missing_a_half_is_refused():
+    from veloce.json_provider import JSONProvider
+
+    with pytest.raises(TypeError, match="loads"):
+
+        class Bad(JSONProvider):
+            def dumps(self, obj, **kwargs):
+                return b""
+
+
+def test_a_complete_json_provider_is_accepted():
+    from veloce.json_provider import JSONProvider
+
+    class Good(JSONProvider):
+        def dumps(self, obj, **kwargs):
+            return b"{}"
+
+        def loads(self, data):
+            return {}
+
+    assert Good is not None
+
+
+def test_the_shipped_json_provider_satisfies_the_guard():
+    """Class definition is what the guard checks; `DefaultJSONProvider` takes an
+    `app`, so importing it is the assertion - a failing guard raises on import."""
+    from veloce.json_provider import DefaultJSONProvider, JSONProvider
+
+    assert issubclass(DefaultJSONProvider, JSONProvider)
+
+
+def test_an_mcp_registry_missing_a_hook_is_refused():
+    from veloce.contrib.mcp._registry_base import Registry
+
+    with pytest.raises(TypeError, match="_store|_key|_duplicate_message"):
+
+        class Bad(Registry):
+            pass
+
+
+def test_the_shipped_mcp_registries_satisfy_the_guard():
+    from veloce.contrib.mcp.registry import ToolRegistry
+
+    assert ToolRegistry is not None
+
+
+def test_a_property_counts_as_implemented():
+    """`Registry._store` is a property, not a method - the guard has to accept
+    an override in whichever form the base declared."""
+    from veloce._internal import _require_methods
+
+    class Base:
+        @property
+        def thing(self):
+            raise NotImplementedError
+
+    class Sub(Base):
+        @property
+        def thing(self):
+            return 1
+
+    _require_methods(Sub, Base, ("thing",))
+
+    class Missing(Base):
+        pass
+
+    with pytest.raises(TypeError):
+        _require_methods(Missing, Base, ("thing",))

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Generic, TypeVar
 
+from veloce._internal import _require_methods
+
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.descriptors import MCPDescriptor
 
@@ -29,6 +31,16 @@ class Registry(Generic[T]):
     # expose it through `_store`. Empty slots keep the base from adding a
     # `__dict__` to its `@dataclass(slots=True)` subclasses.
     __slots__ = ()
+
+    #: What a concrete registry must supply, checked at definition rather than
+    #: left to fail at call time - the failure would otherwise surface when the
+    #: first primitive is registered, which is import-time for a decorated tool
+    #: and so already too late to read as a missing-method error.
+    _required = ("_store", "_key", "_duplicate_message")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, Registry, Registry._required)
 
     @property
     def _store(self) -> dict[str, T]:

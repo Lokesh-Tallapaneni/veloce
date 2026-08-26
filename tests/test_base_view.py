@@ -27,13 +27,25 @@ def test_view_dispatch_request_routed():
 
 
 def test_view_base_dispatch_not_implemented_raises():
-    class Bare(View):
-        pass
+    """A view that omits `dispatch_request` is refused where it is written.
 
+    This used to construct and raise `NotImplementedError` on the first request
+    to the route it was registered for. `View.__init_subclass__` now catches it
+    at class definition, so the omission surfaces on import instead.
+    """
+    with pytest.raises(TypeError, match="dispatch_request"):
+
+        class Bare(View):
+            pass
+
+
+def test_view_base_dispatch_still_raises_when_called_directly():
+    """The base's own method keeps its `NotImplementedError` body - the guard
+    sits in front of it rather than replacing it."""
     import asyncio
 
     with pytest.raises(NotImplementedError):
-        asyncio.new_event_loop().run_until_complete(Bare().dispatch_request(_req()))
+        asyncio.new_event_loop().run_until_complete(View().dispatch_request(_req()))
 
 
 def test_as_view_sets_name_and_view_class():

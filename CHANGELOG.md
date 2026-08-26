@@ -69,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `RedisRateLimitBackend` runs a built-in strategy as a Lua script - one round trip instead of three, executed atomically, with no contended-key fallback that could admit requests over the limit. A custom strategy keeps the `WATCH` path unless it declares `lua_script`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
+- `View`, `JSONProvider`, the path-converter base and the MCP registry base refuse a subclass that omits a required method, at definition. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `Cache` and `SessionStore` refuse a subclass that omits a required method, at definition rather than on the request that first calls it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - A traceback frame from a compiled resolver names its handler and shows its source, instead of a bare `<veloce-resolver>` with no line. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

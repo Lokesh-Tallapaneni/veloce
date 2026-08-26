@@ -35,7 +35,7 @@ from collections.abc import Callable
 from typing import Any, ClassVar
 
 from veloce._constants import HEADER_ALLOW
-from veloce._internal import _is_async_callable
+from veloce._internal import _is_async_callable, _require_methods
 from veloce._params import ParamBase
 from veloce._protocol_constants import HTTP_METHOD_GET
 from veloce.dependency import Depends
@@ -144,6 +144,16 @@ class View:
         if cls.methods is not None:
             return [m.upper() for m in cls.methods]
         return [HTTP_METHOD_GET]
+
+    #: The method a subclass must supply, checked at definition rather than left
+    #: to fail at call time - a view that never dispatches serves nothing, and
+    #: the failure would otherwise be a `NotImplementedError` on the first
+    #: request to the route it was registered for.
+    _required = ("dispatch_request",)
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, View, View._required)
 
     async def dispatch_request(self, *args: Any, **kwargs: Any) -> Any:
         """Handle the request - subclasses must override."""

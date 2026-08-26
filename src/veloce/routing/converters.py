@@ -25,6 +25,8 @@ import re
 import uuid
 from typing import Any
 
+from veloce._internal import _require_methods
+
 # UUID format per RFC 4122 (8-4-4-4-12 hex digits, case-insensitive). This is
 # the body (un-anchored) form, reused when translating a `{id:uuid}` placeholder
 # into a named regex group for the hybrid router's regex fallback.
@@ -96,6 +98,16 @@ class _Converter:
     #: more restrictive than `str`, which is the only safe assumption about a
     #: pattern the framework cannot see.
     specificity = 50
+
+    #: The method a subclass must supply, checked at definition rather than left
+    #: to fail at call time - a converter that cannot match refuses every
+    #: segment, so the route it was registered for would silently 404 instead of
+    #: reporting the omission.
+    _required = ("match",)
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _require_methods(cls, _Converter, _Converter._required)
 
     def match(self, value: str) -> tuple[bool, Any]:
         """Validate (and coerce) `value`. Return (ok, coerced)."""
