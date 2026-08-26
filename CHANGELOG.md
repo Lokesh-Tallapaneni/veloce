@@ -165,6 +165,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WebSocket.send_json(mode="text")` frames the encoded payload directly on the built-in server instead of decoding and re-encoding it. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `CompressionMiddleware` memoises the negotiated coding per `Accept-Encoding` value, bounded at 256 entries. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - Generated resolver source listings registered for tracebacks are capped, bounding a process that registers routes over its lifetime. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- An after-request hook or error handler that cannot be weakly referenced - a slotted callable, a method descriptor - runs instead of answering `500`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A validation error reports an array index in `loc` as an integer on every body path, matching the published `ValidationError` schema. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude_unset` and `exclude_defaults` to a nested model, not only to one passed in directly. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude_none` to an arbitrary object's attributes, matching every other branch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

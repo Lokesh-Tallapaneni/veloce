@@ -203,19 +203,79 @@ def _after_response(seen):
 
 
 def test_both_helpers_treat_a_var_keyword_signature_the_same_way():
-    """The property that was broken, asserted at the helpers rather than
-    through two separate routes, so a future divergence names itself."""
-    import inspect
+    """The property that was broken, asserted at the adapter itself.
 
-    from veloce.app.dispatch import DispatchMixin
+    This used to match `"VAR_KEYWORD"` in `inspect.getsource` of both methods,
+    which pinned the spelling rather than the behaviour - and broke the moment
+    the two were consolidated onto one adapter that is demonstrably correct.
+    Now it drives that adapter directly, with each caller's configuration, so it
+    survives refactoring and fails only on an actual divergence.
+    """
+    from veloce.app.dispatch import _adapt_hook_kwargs
 
-    after_src = inspect.getsource(DispatchMixin._call_after_hook)
-    exc_src = inspect.getsource(DispatchMixin._call_exc_handler)
-    assert "VAR_KEYWORD" in after_src
-    assert "VAR_KEYWORD" in exc_src, (
-        "the exception-handler helper does not check for **kwargs; it will call a "
-        "handler declared `def handler(**kwargs)` with an empty dict"
+    def var_keyword(**kwargs):
+        return kwargs
+
+    request, response, exc = object(), object(), ValueError("x")
+    after = _adapt_hook_kwargs(var_keyword, {}, "response", request, response)
+    handler = _adapt_hook_kwargs(var_keyword, {}, "exc", request, exc)
+
+    assert sorted(after) == ["request", "response"]
+    assert sorted(handler) == ["exc", "request"], (
+        "a handler declared `def handler(**kwargs)` is called with an empty dict "
+        "and cannot see the exception it is handling"
     )
+
+
+def test_the_adapter_offers_only_what_a_named_signature_asks_for():
+    """The other half: a named signature gets exactly its parameters."""
+    from veloce.app.dispatch import _adapt_hook_kwargs
+
+    def wants_both(request, response):
+        return None
+
+    def wants_one(response):
+        return None
+
+    def wants_none():
+        return None
+
+    request, response = object(), object()
+    assert sorted(_adapt_hook_kwargs(wants_both, {}, "response", request, response)) == [
+        "request",
+        "response",
+    ]
+    assert sorted(_adapt_hook_kwargs(wants_one, {}, "response", request, response)) == ["response"]
+    assert _adapt_hook_kwargs(wants_none, {}, "response", request, response) == {}
+
+
+def test_the_adapter_caches_its_answer():
+    """The cache is why the signature is inspected once rather than per request."""
+    from veloce.app.dispatch import _adapt_hook_kwargs
+
+    def hook(request, response):
+        return None
+
+    cache: dict = {}
+    _adapt_hook_kwargs(hook, cache, "response", object(), object())
+    assert cache[hook] == (True, True)
+    _adapt_hook_kwargs(hook, cache, "response", object(), object())
+    assert len(cache) == 1
+
+
+def test_an_unhashable_callable_still_adapts():
+    """`contextlib.suppress(TypeError)` around the cache write exists for this;
+    without it an unhashable callable would raise instead of being adapted."""
+    from veloce.app.dispatch import _adapt_hook_kwargs
+
+    class Unhashable:
+        __hash__ = None  # type: ignore[assignment]
+
+        def __call__(self, request, response):
+            return None
+
+    kwargs = _adapt_hook_kwargs(Unhashable(), {}, "response", object(), object())
+    assert sorted(kwargs) == ["request", "response"]
 
 
 def test_the_two_helpers_offer_everything_to_a_var_keyword_signature():
@@ -234,3 +294,83 @@ def test_the_two_helpers_offer_everything_to_a_var_keyword_signature():
     _after_app(after_hook).get("/")
     assert exc_seen["names"] == ["exc", "request"]
     assert after_seen["names"] == ["request", "response"]
+
+
+# ── a hook that cannot be weakly referenced ──────────────────────────
+#
+# The signature caches are `WeakKeyDictionary`s, so a callable that cannot be
+# weakly referenced raises `TypeError` on *lookup*, not only on insert. Only the
+# insert was guarded, so registering such a hook answered `500` on every
+# request - and the guard on the insert shows uncacheable callables were meant
+# to be tolerated all along. An instance of a slotted class is the ordinary way
+# to get one; `str.upper` and other method descriptors are the same shape.
+
+
+class _SlottedHook:
+    """A callable that cannot be weakly referenced (no `__weakref__` slot)."""
+
+    __slots__ = ()
+
+    def __call__(self, request, response):
+        response.headers["X-Slotted-Hook"] = "ran"
+        return response
+
+
+class _SlottedErrorHandler:
+    __slots__ = ()
+
+    def __call__(self, request, exc):
+        return Response(body=b"handled", status_code=418)
+
+
+def test_a_non_weakref_able_after_hook_runs():
+    """The defect: this answered 500, from inside the framework's own cache."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/")
+    async def index():
+        return {"ok": True}
+
+    app.after_request(_SlottedHook())
+    resp = TestClient(app).get("/")
+    assert resp.status_code == 200
+    assert resp.headers["X-Slotted-Hook"] == "ran"
+
+
+def test_a_non_weakref_able_error_handler_runs():
+    app = Veloce(openapi_url=None)
+    app.register_error_handler(ValueError, _SlottedErrorHandler())
+
+    @app.get("/boom")
+    async def boom():
+        raise ValueError("x")
+
+    resp = TestClient(app).get("/boom")
+    assert resp.status_code == 418
+    assert resp.body == b"handled"
+
+
+def test_a_non_weakref_able_hook_runs_on_every_request():
+    """Not cached, so it must keep working rather than working once."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/")
+    async def index():
+        return {"ok": True}
+
+    app.after_request(_SlottedHook())
+    client = TestClient(app)
+    for _ in range(3):
+        assert client.get("/").headers["X-Slotted-Hook"] == "ran"
+
+
+def test_a_weakref_able_hook_is_still_cached():
+    """The negative: tolerating the uncacheable case must not disable caching."""
+    from veloce.app.dispatch import _adapt_hook_kwargs
+
+    def hook(request, response):
+        return None
+
+    cache: dict = {}
+    _adapt_hook_kwargs(hook, cache, "response", object(), object())
+    assert hook in cache

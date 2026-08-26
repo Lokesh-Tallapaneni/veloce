@@ -16,7 +16,7 @@ import inspect
 import time
 import traceback
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 import orjson
@@ -179,6 +179,55 @@ def _is_struct_list_model(model: Any) -> bool:
         args = get_args(model)
         return bool(args) and is_msgspec_struct(args[0])
     return False
+
+
+def _adapt_hook_kwargs(
+    fn: Callable,
+    cache: MutableMapping[Any, tuple[bool, bool]],
+    second_name: str,
+    request: Request,
+    second_value: Any,
+) -> dict[str, Any]:
+    """The kwargs `fn` accepts, from `request` and one other named value.
+
+    After-request hooks and exception handlers are the same adapter: both take
+    `request` and one more parameter (`response` / `exc`), either by name or via
+    `**kwargs`, and both cache the answer per callable. Written out twice, the
+    copies drifted - only one of them handled `**kwargs`, so an exception handler
+    declared `def handler(**kwargs)` was called with an empty dict and could not
+    see the exception it was handling.
+
+    A plain function, not a coroutine: it is called from inside an existing
+    `await` on the response path, and wrapping it would add a coroutine per hook
+    per request for a dict build.
+    """
+    # The read is guarded as well as the write below. The caches are
+    # `WeakKeyDictionary`s, so a callable that cannot be weakly referenced - a
+    # method descriptor such as `str.upper`, say - raises `TypeError` on lookup,
+    # not only on insert. Only the write was guarded, so registering one as a
+    # hook answered `500` on every request. Such a callable is simply not
+    # cached: its signature is resolved per call, which is the cost the guard on
+    # the write was already accepting.
+    try:
+        flags = cache.get(fn)
+    except TypeError:
+        flags = None
+    if flags is None:
+        params = inspect.signature(fn).parameters
+        # A callable taking `**kwargs` accepts whatever is offered.
+        if any(p.kind is p.VAR_KEYWORD for p in params.values()):
+            flags = (True, True)
+        else:
+            flags = ("request" in params, second_name in params)
+        with contextlib.suppress(TypeError):
+            cache[fn] = flags
+    wants_request, wants_second = flags
+    kwargs: dict[str, Any] = {}
+    if wants_request:
+        kwargs["request"] = request
+    if wants_second:
+        kwargs[second_name] = second_value
+    return kwargs
 
 
 class DispatchMixin:
@@ -1338,48 +1387,14 @@ class DispatchMixin:
 
     async def _call_after_hook(self, hook: Callable, request: Request, response: Response) -> Any:
         """Call an after-request hook, adapting kwargs to match its signature."""
-        flags = _after_hook_sig_cache.get(hook)
-        if flags is None:
-            params = inspect.signature(hook).parameters
-            # A hook taking `**kwargs` accepts whatever is offered.
-            if any(p.kind is p.VAR_KEYWORD for p in params.values()):
-                flags = (True, True)
-            else:
-                flags = ("request" in params, "response" in params)
-            with contextlib.suppress(TypeError):
-                _after_hook_sig_cache[hook] = flags
-        wants_request, wants_response = flags
-        kwargs: dict[str, Any] = {}
-        if wants_request:
-            kwargs["request"] = request
-        if wants_response:
-            kwargs["response"] = response
+        kwargs = _adapt_hook_kwargs(hook, _after_hook_sig_cache, "response", request, response)
         return await self._call_handler(hook, kwargs)
 
     async def _call_exc_handler(
         self, handler: Callable, request: Request, exc: BaseException
     ) -> Any:
         """Call an exception handler, adapting kwargs to match its signature."""
-        flags = _exc_handler_sig_cache.get(handler)
-        if flags is None:
-            params = inspect.signature(handler).parameters
-            # A handler taking `**kwargs` accepts whatever is offered - the same
-            # rule `_call_after_hook` applies. Without this the name test below
-            # matched nothing against a `(**kwargs)` signature and the handler
-            # was called with an empty dict, unable to see the exception it was
-            # handling.
-            if any(p.kind is p.VAR_KEYWORD for p in params.values()):
-                flags = (True, True)
-            else:
-                flags = ("request" in params, "exc" in params)
-            with contextlib.suppress(TypeError):
-                _exc_handler_sig_cache[handler] = flags
-        wants_request, wants_exc = flags
-        kwargs: dict[str, Any] = {}
-        if wants_request:
-            kwargs["request"] = request
-        if wants_exc:
-            kwargs["exc"] = exc
+        kwargs = _adapt_hook_kwargs(handler, _exc_handler_sig_cache, "exc", request, exc)
         return await self._call_handler(handler, kwargs)
 
     async def _dispatch_exc_handler(
