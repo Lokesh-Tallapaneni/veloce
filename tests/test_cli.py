@@ -929,6 +929,12 @@ def test_the_dotenv_file_reaches_the_imported_app(tmp_path, monkeypatch, capsys,
     monkeypatch.chdir(tmp_path)
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.delenv("VELOCE_TEST_DEBUG", raising=False)
+    # Each parametrisation must import the app itself. Without this the first
+    # run leaves `envapp` in `sys.modules`, the second finds it cached and never
+    # re-imports - so `check`'s dotenv path went unexercised and the assertion
+    # inspected the module the `routes` run had created. Verified: the module
+    # was imported exactly once across both parametrisations.
+    monkeypatch.delitem(sys.modules, "envapp", raising=False)
 
     main([command, "envapp:app"])
     capsys.readouterr()
