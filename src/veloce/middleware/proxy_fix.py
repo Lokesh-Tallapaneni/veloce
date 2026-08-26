@@ -107,9 +107,26 @@ class ProxyFix(Middleware):
             proto = fwd.get("proto")
             host = fwd.get("host")
         else:
-            client = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_FOR), self.x_for)
-            proto = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PROTO), self.x_proto)
-            host = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_HOST), self.x_host)
+            # Each lookup is gated on its own trust depth. `_pick_hop` returns
+            # `None` for a depth of 0, so an ungated call still pays the header
+            # lookup to reach a foregone answer - and `x_host`, `x_port` and
+            # `x_prefix` are 0 by default, which is three lookups a stock
+            # configuration cannot use.
+            client = (
+                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_FOR), self.x_for)
+                if self.x_for
+                else None
+            )
+            proto = (
+                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PROTO), self.x_proto)
+                if self.x_proto
+                else None
+            )
+            host = (
+                self._pick_hop(request.headers.get(HEADER_X_FORWARDED_HOST), self.x_host)
+                if self.x_host
+                else None
+            )
         # Port and prefix keep their fallback, because RFC 7239 Sec. 4 defines
         # no directive for either: a `Forwarded` hop carries the public port
         # inside `host="example.com:8443"` (so it survives the Host splice
@@ -119,9 +136,15 @@ class ProxyFix(Middleware):
         # would break real deployments to close nothing - unlike `for`,
         # `proto` and `host` above, where the RFC does define a directive and
         # the fallback let a refused hop through.
-        port = self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PORT), self.x_port)
-        prefix = fwd.get("prefix") or self._pick_hop(
-            request.headers.get(HEADER_X_FORWARDED_PREFIX), self.x_prefix
+        port = (
+            self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PORT), self.x_port)
+            if self.x_port
+            else None
+        )
+        prefix = fwd.get("prefix") or (
+            self._pick_hop(request.headers.get(HEADER_X_FORWARDED_PREFIX), self.x_prefix)
+            if self.x_prefix
+            else None
         )
 
         # Reject CR / LF / NUL in any trusted proxy value before it lands on

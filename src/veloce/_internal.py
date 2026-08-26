@@ -215,15 +215,26 @@ def _header_value_has_crlf(value: str) -> bool:
     return "\r" in value or "\n" in value or "\x00" in value
 
 
-def _reject_header_crlf(value: str, what: str) -> str:
+#: Appended to a field name when a header value is rejected. Kept as a constant
+#: so the message is built only on the raise.
+_LABEL_HEADER_VALUE_SUFFIX = " header value"
+
+
+def _reject_header_crlf(value: str, what: str, suffix: str = "") -> str:
     """Reject CR, LF, or NUL in a header field name or value.
 
     Untrusted data carrying these characters enables HTTP response
     splitting / header injection. Raising - rather than silently
     stripping - surfaces the bug at the offending call site.
+
+    `what` and `suffix` are joined only when raising. A caller naming the field
+    it is checking would otherwise build `f"{name} header value"` per header per
+    response for a string almost every call discards.
     """
     if _header_value_has_crlf(value):
-        raise ValueError(f"{what} contains an illegal control character (CR, LF, or NUL)")
+        raise ValueError(
+            f"{what}{suffix} contains an illegal control character (CR, LF, or NUL)"
+        )
     return value
 
 
@@ -296,7 +307,11 @@ def _encode_response_head(
     reason = _STATUS_PHRASES.get(status_code, "")
     parts = [f"HTTP/1.1 {status_code} {reason}".rstrip() + "\r\n"]
 
-    user_keys_lc = {k.lower() for k in headers}
+    # Lowered once per user header and reused below: the duplicate-slot map
+    # needs the same value, and computing it twice showed up on a path that runs
+    # per header per response.
+    lowered = [(key, str(key).lower(), value) for key, value in headers.items()]
+    user_keys_lc = {key_lower for _key, key_lower, _value in lowered}
     # The transport decides whether the connection survives; every head used to
     # state `keep-alive` regardless, so a socket the server was about to close
     # was described as reusable.
@@ -307,7 +322,7 @@ def _encode_response_head(
         )
     for name, value in default_headers.items():
         if name.lower() not in user_keys_lc:
-            _reject_header_crlf(value, f"{name} header value")
+            _reject_header_crlf(value, name, _LABEL_HEADER_VALUE_SUFFIX)
             parts.append(f"{name}: {_encode_header_value(value)}\r\n")
 
     # HTTP field names are case-insensitive (RFC 9110 Sec. 5.1), so two
@@ -317,8 +332,7 @@ def _encode_response_head(
     # The slot map lets a second spelling overwrite the first. `Set-Cookie` is
     # excluded: it is legitimately multi-valued.
     slot_by_name: dict[str, int] = {}
-    for key, value in headers.items():
-        key_lower = str(key).lower()
+    for key, key_lower, value in lowered:
         if key_lower == "set-cookie":
             # One `Set-Cookie` dict entry may carry several cookies joined
             # by the internal separator; emit and CRLF-validate each line.
@@ -328,7 +342,7 @@ def _encode_response_head(
         else:
             _reject_header_crlf(str(key), MSG_LABEL_HEADER_NAME)
             sval = str(value)
-            _reject_header_crlf(sval, f"{key} header value")
+            _reject_header_crlf(sval, str(key), _LABEL_HEADER_VALUE_SUFFIX)
             line = f"{key}: {_encode_header_value(sval)}\r\n"
             slot = slot_by_name.get(key_lower)
             if slot is None:

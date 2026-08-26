@@ -913,10 +913,11 @@ class DispatchMixin:
         #
         # A linear prefix scan, kept deliberately. The `has_mounted_apps` gate
         # makes an app with no mounts pay nothing, and beyond that the cost is
-        # ~0.13 us per mount per request (measured: 1 mount 12.34 us, 3 mounts
-        # 12.79 us, 10 mounts 13.45 us, 50 mounts 18.60 us, min-of-7 over 5k
-        # requests each). A prefix trie would lose to a list scan at the two or
-        # three mounts a typical app registers, and mounts overlapping is now a
+        # ~0.07 us per mount per request (measured on the project's benchmark
+        # host, min-of-7 over 5k requests each: 0 mounts 5.54 us, 1 mount
+        # 6.74 us, 3 mounts 6.91 us, 10 mounts 7.33 us, 50 mounts 10.14 us).
+        # A prefix trie would lose to a list scan at the two or three mounts a
+        # typical app registers, and an overlapping mount is now a
         # registration-time `ValueError` rather than a shadowing to disambiguate
         # here. Revisit if an app is ever seen with mounts in the dozens.
         if cp.has_mounted_apps:
