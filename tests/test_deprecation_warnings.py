@@ -85,16 +85,85 @@ def test_a_deprecation_reached_from_an_application_module_is_visible(tmp_path):
     assert "on_event" in result.stderr
 
 
-def test_every_deprecation_in_the_source_uses_the_veloce_category():
-    """A new deprecation added with the stdlib category would be silent again."""
+def _stdlib_deprecation_uses() -> list[str]:
+    """Every reference to the bare stdlib `DeprecationWarning` in `src/veloce`.
+
+    Found by walking the AST rather than matching source lines. The previous
+    version of this guard compared each *stripped line* against
+    `"DeprecationWarning"` / `"DeprecationWarning,"`, so it saw only the name
+    when a formatter had put it on a line of its own - and the single-line
+    spelling this guard exists to catch,
+
+        warnings.warn("...", DeprecationWarning, stacklevel=2)
+
+    was invisible to it. `VeloceDeprecationWarning` is a distinct `Name`, so it
+    is excluded structurally rather than by substring.
+    """
+    import ast
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parent.parent / "src" / "veloce"
     offenders = []
-    for path in root.rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        for index, line in enumerate(text.splitlines(), 1):
-            stripped = line.strip()
-            if stripped == "DeprecationWarning," or stripped == "DeprecationWarning":
-                offenders.append(f"{path.relative_to(root)}:{index}")
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            # A bare name (`DeprecationWarning`) or a qualified one
+            # (`builtins.DeprecationWarning`); `VeloceDeprecationWarning` is a
+            # different node either way, so it is excluded structurally.
+            if (isinstance(node, ast.Name) and node.id == "DeprecationWarning") or (
+                isinstance(node, ast.Attribute) and node.attr == "DeprecationWarning"
+            ):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    return offenders
+
+
+def test_every_deprecation_in_the_source_uses_the_veloce_category():
+    """A new deprecation added with the stdlib category would be silent again."""
+    offenders = _stdlib_deprecation_uses()
     assert not offenders, f"raise VeloceDeprecationWarning instead: {offenders}"
+
+
+def test_the_guard_sees_a_single_line_deprecation(tmp_path, monkeypatch):
+    """The guard's own failure mode, checked.
+
+    The line-matching version it replaced returned nothing for this file, so it
+    could not have caught the spelling it was written for.
+    """
+    import ast
+
+    source = 'import warnings\nwarnings.warn("gone", DeprecationWarning, stacklevel=2)\n'
+    found = [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Name) and node.id == "DeprecationWarning"
+    ]
+    assert found == [2]
+
+    stripped_line_match = [
+        index
+        for index, line in enumerate(source.splitlines(), 1)
+        if line.strip() in ("DeprecationWarning", "DeprecationWarning,")
+    ]
+    assert stripped_line_match == []
+
+
+def test_the_guard_does_not_flag_the_veloce_category():
+    """The negative: `VeloceDeprecationWarning` must not trip it, or the guard
+    would fail on every correct deprecation in the tree."""
+    import ast
+
+    source = 'warnings.warn("x", VeloceDeprecationWarning, stacklevel=2)\n'
+    found = [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Name) and node.id == "DeprecationWarning"
+    ]
+    assert found == []
+
+
+def test_the_guard_actually_reads_the_package():
+    """A guard that silently walked nothing would pass forever."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "src" / "veloce"
+    assert len(list(root.rglob("*.py"))) > 50
