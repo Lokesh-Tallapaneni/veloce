@@ -34,6 +34,28 @@ def _clear_graceful_drain_latch():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_custom_converters():
+    """Restore the process-global converter registry between tests.
+
+    `register_converter` writes into `routing.converters._CUSTOM`, which has no
+    teardown and no `unregister_converter`. Every test that registered one
+    leaked it into every later test, and the suite compensated by hand-numbering
+    names (`slug`, `slug2`, `slug3`) so registrations would not collide - a
+    workaround that has to be remembered by whoever adds the next one, and that
+    silently stops working when two modules pick the same number.
+
+    Snapshot and restore is one dict copy per test and removes the need for any
+    of that.
+    """
+    from veloce.routing import converters
+
+    saved = dict(converters._CUSTOM)
+    yield
+    converters._CUSTOM.clear()
+    converters._CUSTOM.update(saved)
+
+
+@pytest.fixture(autouse=True)
 def _short_close_handshake_timeout(monkeypatch):
     """Shorten the WebSocket close handshake for the suite.
 
