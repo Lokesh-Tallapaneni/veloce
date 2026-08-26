@@ -931,10 +931,10 @@ class TestClient:
         return self._json_or_form(
             HTTP_METHOD_POST,
             path,
-            json,
-            data,
-            headers,
-            content,
+            json=json,
+            data=data,
+            headers=headers,
+            content=content,
             files=files,
             follow_redirects=follow_redirects,
             stream=stream,
@@ -955,10 +955,10 @@ class TestClient:
         return self._json_or_form(
             HTTP_METHOD_PUT,
             path,
-            json,
-            data,
-            headers,
-            content,
+            json=json,
+            data=data,
+            headers=headers,
+            content=content,
             files=files,
             follow_redirects=follow_redirects,
             stream=stream,
@@ -979,10 +979,10 @@ class TestClient:
         return self._json_or_form(
             HTTP_METHOD_PATCH,
             path,
-            json,
-            data,
-            headers,
-            content,
+            json=json,
+            data=data,
+            headers=headers,
+            content=content,
             files=files,
             follow_redirects=follow_redirects,
             stream=stream,
@@ -1053,10 +1053,10 @@ class TestClient:
             return self._json_or_form(
                 verb,
                 path,
-                json,
-                data,
-                headers,
-                content,
+                json=json,
+                data=data,
+                headers=headers,
+                content=content,
                 files=files,
                 follow_redirects=follow_redirects,
                 stream=stream,
@@ -1541,7 +1541,15 @@ class AsyncTestClient:
         given it takes precedence over and excludes `json`/`data`/`content`/`files`.
         """
         return await self._dispatch_body(
-            HTTP_METHOD_POST, path, json, data, content, files, headers, follow_redirects, stream
+            HTTP_METHOD_POST,
+            path,
+            json=json,
+            data=data,
+            content=content,
+            files=files,
+            headers=headers,
+            follow_redirects=follow_redirects,
+            stream=stream,
         )
 
     async def put(
@@ -1557,7 +1565,15 @@ class AsyncTestClient:
     ) -> TestResponse:
         """Send a PUT. See `post` for the `stream` chunked-body parameter."""
         return await self._dispatch_body(
-            HTTP_METHOD_PUT, path, json, data, content, files, headers, follow_redirects, stream
+            HTTP_METHOD_PUT,
+            path,
+            json=json,
+            data=data,
+            content=content,
+            files=files,
+            headers=headers,
+            follow_redirects=follow_redirects,
+            stream=stream,
         )
 
     async def patch(
@@ -1573,7 +1589,15 @@ class AsyncTestClient:
     ) -> TestResponse:
         """Send a PATCH. See `post` for the `stream` chunked-body parameter."""
         return await self._dispatch_body(
-            HTTP_METHOD_PATCH, path, json, data, content, files, headers, follow_redirects, stream
+            HTTP_METHOD_PATCH,
+            path,
+            json=json,
+            data=data,
+            content=content,
+            files=files,
+            headers=headers,
+            follow_redirects=follow_redirects,
+            stream=stream,
         )
 
     async def delete(
@@ -1632,7 +1656,15 @@ class AsyncTestClient:
             or stream is not None
         ):
             return await self._dispatch_body(
-                verb, path, json, data, content, files, headers, follow_redirects, stream
+                verb,
+                path,
+                json=json,
+                data=data,
+                content=content,
+                files=files,
+                headers=headers,
+                follow_redirects=follow_redirects,
+                stream=stream,
             )
         qs = urlencode(params) if params else ""
         return await self._make_request(
