@@ -44,6 +44,11 @@ class User(BaseModel):
 class Aliased(BaseModel):
     user_id: int = Field(alias="userId")
     display: str = Field(alias="displayName")
+    # Defaulted, so a response that does not supply it leaves it *unset* -
+    # which is what makes `response_model_exclude_unset` observable. Without a
+    # field like this, `exclude_unset` cannot change any output and a test
+    # naming it cannot fail.
+    nickname: str | None = Field(default=None, alias="nickName")
 
     model_config = {"populate_by_name": True}
 
@@ -167,7 +172,13 @@ def test_by_alias_emits_the_field_aliases():
     async def aliased():
         return {"user_id": 7, "display": "Ada"}
 
-    assert TestClient(app).get("/a").json() == {"userId": 7, "displayName": "Ada"}
+    # `nickName` is defaulted rather than absent: without `exclude_unset` every
+    # declared field is emitted, alias and all.
+    assert TestClient(app).get("/a").json() == {
+        "userId": 7,
+        "displayName": "Ada",
+        "nickName": None,
+    }
 
 
 def test_without_by_alias_the_field_names_are_emitted():
@@ -177,7 +188,11 @@ def test_without_by_alias_the_field_names_are_emitted():
     async def aliased():
         return {"user_id": 7, "display": "Ada"}
 
-    assert TestClient(app).get("/a").json() == {"user_id": 7, "display": "Ada"}
+    assert TestClient(app).get("/a").json() == {
+        "user_id": 7,
+        "display": "Ada",
+        "nickname": None,
+    }
 
 
 # ── combinations, which is where a shared mapping could go wrong ─────
@@ -196,13 +211,70 @@ def test_include_and_exclude_together():
 
 
 def test_exclude_unset_with_by_alias():
+    """The two options compose: unset fields go, and the rest use their aliases.
+
+    This was a byte-identical copy of `test_by_alias_emits_the_field_aliases`
+    and never passed `response_model_exclude_unset`, so the interaction it is
+    named for was untested.
+    """
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/a",
+        response_model=Aliased,
+        response_model_by_alias=True,
+        response_model_exclude_unset=True,
+    )
+    async def aliased():
+        return {"user_id": 7, "display": "Ada"}
+
+    assert TestClient(app).get("/a").json() == {"userId": 7, "displayName": "Ada"}
+
+
+def test_by_alias_alone_keeps_the_unset_field():
+    """The half `exclude_unset` removes - without it, `nickName` is emitted."""
     app = Veloce(openapi_url=None)
 
     @app.get("/a", response_model=Aliased, response_model_by_alias=True)
     async def aliased():
         return {"user_id": 7, "display": "Ada"}
 
-    assert TestClient(app).get("/a").json() == {"userId": 7, "displayName": "Ada"}
+    assert TestClient(app).get("/a").json() == {
+        "userId": 7,
+        "displayName": "Ada",
+        "nickName": None,
+    }
+
+
+def test_exclude_unset_alone_keeps_the_field_names():
+    """And the half `by_alias` renames - without it, the field names are sent."""
+    app = Veloce(openapi_url=None)
+
+    @app.get("/a", response_model=Aliased, response_model_exclude_unset=True)
+    async def aliased():
+        return {"user_id": 7, "display": "Ada"}
+
+    assert TestClient(app).get("/a").json() == {"user_id": 7, "display": "Ada"}
+
+
+def test_a_field_that_was_set_survives_exclude_unset():
+    """The negative: `exclude_unset` must drop only what was never supplied."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/a",
+        response_model=Aliased,
+        response_model_by_alias=True,
+        response_model_exclude_unset=True,
+    )
+    async def aliased():
+        return {"user_id": 7, "display": "Ada", "nickname": "Ada-the-first"}
+
+    assert TestClient(app).get("/a").json() == {
+        "userId": 7,
+        "displayName": "Ada",
+        "nickName": "Ada-the-first",
+    }
 
 
 def test_two_routes_do_not_share_one_mapping():
