@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, Veloce, View
 from veloce.testclient import TestClient
 
 
 def _req(method: str = "GET") -> Request:
-    return Request(method=method, path="/", query_string="", headers={}, body=b"")
+    return make_request(method=method, path="/", query_string="", headers={}, body=b"")
 
 
 def test_view_dispatch_request_routed():

@@ -93,12 +93,25 @@ def make_request(
     headers: dict | None = None,
     body: bytes = b"",
     query_string: str = "",
+    **extra,
 ) -> Request:
-    """Factory for test Request objects."""
+    """Build a `Request` for a test.
+
+    The one place the suite constructs a `Request`. Dozens of modules used to
+    re-derive this as a private `_req` / `_request` factory - 71 of them
+    returning exactly this call with these five arguments, under mutually
+    incompatible signatures - so a change to the constructor meant editing all of
+    them.
+
+    `**extra` forwards the less common constructor arguments (`app`, `scope`,
+    `transport`) that a handful of modules need, so those do not have to fall
+    back to building a `Request` by hand.
+    """
     return Request(
         method=method,
         path=path,
         query_string=query_string,
         headers=headers or {},
         body=body,
+        **extra,
     )

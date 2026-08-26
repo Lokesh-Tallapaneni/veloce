@@ -19,6 +19,7 @@ trusted, then the bare header only when no `ProxyFix` ran.
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce.http.datastructures import URL, Headers
 from veloce.http.request import Request
 
@@ -36,7 +37,7 @@ class _Transport:
 
 
 def _request(*, tls: bool = False, headers: dict[str, str] | None = None) -> Request:
-    return Request(
+    return make_request(
         method="GET",
         path="/x",
         query_string="",

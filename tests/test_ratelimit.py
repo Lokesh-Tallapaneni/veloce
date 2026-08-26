@@ -343,7 +343,7 @@ def test_overrides_reject_non_strategy():
 
 
 def _req(app, path):
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"", app=app)
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"", app=app)
 
 
 def test_unknown_override_key_is_reported_not_raised_on_a_request():

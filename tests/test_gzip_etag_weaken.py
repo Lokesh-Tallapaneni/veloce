@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, Response
 from veloce.middleware.compression import GZipMiddleware
 
 
 def _req() -> Request:
-    return Request(
+    return make_request(
         method="GET",
         path="/f",
         query_string="",

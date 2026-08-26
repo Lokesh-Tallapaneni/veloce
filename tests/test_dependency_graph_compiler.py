@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import BackgroundTasks, Depends, Query, Response, Security, Veloce
 from veloce._constants import STATE_INJECTED_RESPONSE
 from veloce._handler_plan import build_plan
@@ -23,7 +24,9 @@ from veloce.security import APIKeyHeader
 
 
 def _req(query: str = "", headers: dict | None = None, path: str = "/x") -> Request:
-    return Request(method="GET", path=path, query_string=query, headers=headers or {}, body=b"")
+    return make_request(
+        method="GET", path=path, query_string=query, headers=headers or {}, body=b""
+    )
 
 
 def _compiles(handler) -> bool:

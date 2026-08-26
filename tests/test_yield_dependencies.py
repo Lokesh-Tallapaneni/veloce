@@ -8,11 +8,12 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Depends, Request, Veloce
 
 
 def _req(path: str = "/") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 @pytest.mark.asyncio

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request
 from veloce.contrib.staticfiles import StaticFiles
 
 
 def _req(path: str) -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 @pytest.mark.asyncio

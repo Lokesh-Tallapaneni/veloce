@@ -6,11 +6,12 @@ import gzip
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import GZipMiddleware, Request, Response
 
 
 def _req() -> Request:
-    return Request(
+    return make_request(
         method="GET",
         path="/x",
         query_string="",

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Blueprint, Request, Veloce
 from veloce.testclient import TestClient
 
 
 def _req(path: str, method: str = "GET") -> Request:
-    return Request(method=method, path=path, query_string="", headers={}, body=b"")
+    return make_request(method=method, path=path, query_string="", headers={}, body=b"")
 
 
 # ── Basic registration ───────────────────────────────────────────────

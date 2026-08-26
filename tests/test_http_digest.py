@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import HTTPDigest, HTTPDigestCredentials, HTTPException, Request
 
 
 def _req(headers: dict | None = None) -> Request:
-    return Request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
+    return make_request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
 
 
 def test_no_header_raises_with_digest_challenge():

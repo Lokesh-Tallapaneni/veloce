@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Depends, Request, Veloce
 from veloce.testclient import TestClient
 
@@ -40,7 +41,7 @@ def _app() -> Veloce:
 
 def _request(app: Veloce, path: str = "/r", method: str = "GET") -> Request:
     """A `Request` shaped as the ASGI transport would build one."""
-    return Request(
+    return make_request(
         method=method,
         path=path,
         query_string="",

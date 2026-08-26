@@ -12,11 +12,12 @@ from typing import Annotated
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Depends, Header, Query, Request, Security, Veloce
 
 
 def _req(path: str = "/x", query: str = "") -> Request:
-    return Request(method="GET", path=path, query_string=query, headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string=query, headers={}, body=b"")
 
 
 # ── Annotated + Depends ───────────────────────────────────────────────

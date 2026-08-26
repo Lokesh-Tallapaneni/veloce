@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import Request
 
 
 def _req(path: str = "/", query: str = "", host: str = "example.com") -> Request:
-    return Request(
+    return make_request(
         method="GET",
         path=path,
         query_string=query,

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import CSRFMiddleware, Request, Veloce
 
 
 def _req(method: str, path: str = "/x", headers: dict | None = None, body: bytes = b"") -> Request:
-    return Request(
+    return make_request(
         method=method,
         path=path,
         query_string="",

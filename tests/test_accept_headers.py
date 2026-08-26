@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from tests.conftest import make_request
 from veloce import AcceptHeader, Request
 
 
 def _req(headers: dict[str, str]) -> Request:
-    return Request(method="GET", path="/", query_string="", headers=headers, body=b"")
+    return make_request(method="GET", path="/", query_string="", headers=headers, body=b"")
 
 
 # ── AcceptHeader.parse ────────────────────────────────────────────────

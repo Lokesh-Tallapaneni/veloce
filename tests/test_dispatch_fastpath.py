@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
+from tests.conftest import make_request
 from veloce import (
     BackgroundTask,
     HTTPException,
@@ -24,7 +25,7 @@ from veloce import (
 
 
 def _req(method: str = "GET", path: str = "/x") -> Request:
-    return Request(method=method, path=path, query_string="", headers={}, body=b"")
+    return make_request(method=method, path=path, query_string="", headers={}, body=b"")
 
 
 def test_fast_path_engages_for_bare_app():

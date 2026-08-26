@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 
+from tests.conftest import make_request
 from veloce import Request, Response, Session, SessionMiddleware, TestClient, Veloce
 
 
 def _req() -> Request:
-    return Request(method="GET", path="/x", query_string="", headers={}, body=b"")
+    return make_request(method="GET", path="/x", query_string="", headers={}, body=b"")
 
 
 async def test_oversized_session_logs_and_drops_cookie(caplog):

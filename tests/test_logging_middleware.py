@@ -7,6 +7,7 @@ import logging
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Response
 from veloce._constants import HEADER_X_REQUEST_ID
 from veloce.http.request import Request
@@ -14,7 +15,7 @@ from veloce.middleware.logging import LoggingMiddleware, RequestIDMiddleware
 
 
 def _request(headers=None) -> Request:
-    return Request(
+    return make_request(
         method="GET",
         path="/",
         query_string="",

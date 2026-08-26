@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, Veloce
 
 
 def _req(path: str = "/x") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 def test_view_functions_lists_registered_handlers():

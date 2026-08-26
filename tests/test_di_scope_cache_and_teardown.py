@@ -21,6 +21,7 @@ import sys
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import (
     ConfigurationError,
     Depends,
@@ -34,7 +35,7 @@ from veloce.dependency import DependencyResolver
 
 
 def _req(path: str = "/", query: str = "") -> Request:
-    return Request(method="GET", path=path, query_string=query, headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string=query, headers={}, body=b"")
 
 
 # ── Finding 13: scope-aware dependency cache ───────────────────────────

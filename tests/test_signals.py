@@ -7,6 +7,7 @@ import contextvars
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, Veloce
 from veloce.signals import (
     ANY_SENDER,
@@ -20,7 +21,7 @@ from veloce.signals import (
 
 
 def _req(path: str = "/x") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 # ── Signal class ─────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import (
     HTTPException,
     OAuth2AuthorizationCodeBearer,
@@ -15,7 +16,7 @@ from veloce import (
 
 
 def _req(headers: dict | None = None) -> Request:
-    return Request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
+    return make_request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
 
 
 # ── Authorization-Code bearer ────────────────────────────────────────

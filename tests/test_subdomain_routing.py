@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, Veloce
 
 
 def _req(path: str, host: str) -> Request:
-    return Request(
+    return make_request(
         method="GET",
         path=path,
         query_string="",

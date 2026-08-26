@@ -6,11 +6,12 @@ import inspect
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request
 
 
 def _req(body: bytes = b"") -> Request:
-    return Request(method="POST", path="/", query_string="", headers={}, body=body)
+    return make_request(method="POST", path="/", query_string="", headers={}, body=body)
 
 
 # ── Request.body (async) ────────────────────────────────────────────

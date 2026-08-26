@@ -18,7 +18,7 @@ from veloce.testclient import TestClient
 
 
 def _req(path: str = "/") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 # ── SecurityScopes class shape ─────────────────────────────────────────

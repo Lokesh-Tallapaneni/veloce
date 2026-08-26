@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import MethodView, Request, Veloce
 from veloce.exceptions import MethodNotAllowed
 
 
 def _req(path: str = "/x", method: str = "GET") -> Request:
-    return Request(method=method, path=path, query_string="", headers={}, body=b"")
+    return make_request(method=method, path=path, query_string="", headers={}, body=b"")
 
 
 # ── as_view returns a dispatcher with the right metadata ─────────────

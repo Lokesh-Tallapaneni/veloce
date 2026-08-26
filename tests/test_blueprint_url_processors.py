@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Blueprint, Request, Veloce, g
 
 
 def _req(path: str = "/api/x/page") -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 # ── url_value_preprocessor ───────────────────────────────────────────

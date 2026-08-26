@@ -35,13 +35,14 @@ import asyncio
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import BackgroundTask, BackgroundTasks, Request, Response, Veloce
 
 pytestmark = pytest.mark.asyncio
 
 
 def _req(path: str = "/x", method: str = "GET") -> Request:
-    return Request(method=method, path=path, query_string="", headers={}, body=b"")
+    return make_request(method=method, path=path, query_string="", headers={}, body=b"")
 
 
 def _multipart(field: str, filename: str, payload: bytes) -> Request:

@@ -6,11 +6,12 @@ import base64
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import HTTPBasic, HTTPException, Request
 
 
 def _req(headers: dict | None = None) -> Request:
-    return Request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
+    return make_request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
 
 
 def _basic(raw: str) -> dict:

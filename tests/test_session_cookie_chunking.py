@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 
+from tests.conftest import make_request
 from veloce import Request, Response, Session, SessionMiddleware, TestClient, Veloce
 
 
 def _req(headers: dict[str, str] | None = None) -> Request:
-    return Request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
+    return make_request(method="GET", path="/x", query_string="", headers=headers or {}, body=b"")
 
 
 async def test_chunking_off_by_default_drops_oversized_cookie(caplog):

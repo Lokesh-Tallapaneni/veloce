@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from veloce import HTTPException, Request, Veloce
+from tests.conftest import make_request
+from veloce import HTTPException, Veloce
 from veloce.exceptions import (
     BadRequest,
     Conflict,
@@ -104,7 +105,7 @@ def test_abort_unknown_code_falls_back_to_base():
 
 
 def _req(path="/"):
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 @pytest.mark.asyncio

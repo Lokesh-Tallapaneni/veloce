@@ -12,13 +12,14 @@ import sys
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request
 from veloce.contrib.staticfiles import StaticFiles
 from veloce.safe import safe_join
 
 
 def _req(path: str) -> Request:
-    return Request(method="GET", path=path, query_string="", headers={}, body=b"")
+    return make_request(method="GET", path=path, query_string="", headers={}, body=b"")
 
 
 def test_safe_join_mixed_case_descendant(monkeypatch):

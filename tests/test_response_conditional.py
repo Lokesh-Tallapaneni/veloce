@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import make_request
 from veloce import Request, Response
 from veloce._internal import _etag_matches_strong
 from veloce.exceptions import PreconditionFailed
 
 
 def _req(headers: dict | None = None) -> Request:
-    return Request(method="GET", path="/", query_string="", headers=headers or {}, body=b"")
+    return make_request(method="GET", path="/", query_string="", headers=headers or {}, body=b"")
 
 
 # ── add_etag ─────────────────────────────────────────────────────────
