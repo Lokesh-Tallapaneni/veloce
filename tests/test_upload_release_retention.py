@@ -70,7 +70,9 @@ def _request_with_form():
     from tests.conftest import make_request
     from veloce.http.datastructures import FormData, UploadFile
 
-    spool = tempfile.SpooledTemporaryFile(max_size=1)
+    # Deliberately not a context manager: the point of the test is that the
+    # release callback closes this handle, so it must outlive this function.
+    spool = tempfile.SpooledTemporaryFile(max_size=1)  # noqa: SIM115
     spool.write(b"hello world")
     spool.seek(0)
     request = make_request(path="/upload", method="POST")
