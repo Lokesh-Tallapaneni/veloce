@@ -157,6 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `veloce.make_response` types a `bytes` body as `text/html`, matching `Veloce.make_response` and dispatch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - The startup banner prints the installed framework version; it printed the app's `version=` argument, defaulting to `0.1.0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A `TestClient` constructor error surfaces instead of being buried by an `AttributeError` from the finaliser. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The declared `Content-Length` check is skipped for methods that carry no body; the received-length cap is unchanged and still refuses an over-limit body on any method. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A validation error reports an array index in `loc` as an integer on every body path, matching the published `ValidationError` schema. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude_unset` and `exclude_defaults` to a nested model, not only to one passed in directly. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude_none` to an arbitrary object's attributes, matching every other branch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
