@@ -12,33 +12,13 @@ from __future__ import annotations
 
 import gzip
 
+from tests._asgi_drive import drive
 from veloce import GZipMiddleware, Request, Veloce
 
 
 async def _drive(app: Veloce, headers: list[tuple[bytes, bytes]]):
     """Run one GET / through the ASGI app and capture the emitted messages."""
-    scope = {
-        "type": "http",
-        "method": "GET",
-        "path": "/",
-        "raw_path": b"/",
-        "query_string": b"",
-        "headers": headers,
-        "client": ("127.0.0.1", 12345),
-        "server": ("testserver", 80),
-        "scheme": "http",
-    }
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    messages: list[dict] = []
-
-    async def send(message):
-        messages.append(message)
-
-    await app(scope, receive, send)
-    return messages
+    return await drive(app, headers=headers)
 
 
 def _start_headers(messages: list[dict]) -> list[tuple[bytes, bytes]]:

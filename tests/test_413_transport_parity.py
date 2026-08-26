@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from tests._asgi_drive import body_of, drive, headers_of, status_of
 from veloce import Veloce
 from veloce.http._body import too_large_payload
 from veloce.serving.protocol import HttpProtocol
@@ -62,21 +63,8 @@ def _scope(body: bytes) -> dict:
 
 async def _drive_asgi(body: bytes, app: Veloce | None = None) -> tuple[int, dict, bytes]:
     """Send one POST through the ASGI entry point."""
-    app = app or _app()
-    out: dict = {"body": b"", "headers": {}}
-
-    async def receive():
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    async def send(message):
-        if message["type"] == "http.response.start":
-            out["status"] = message["status"]
-            out["headers"] = {k.decode().lower(): v.decode() for k, v in message["headers"]}
-        elif message["type"] == "http.response.body":
-            out["body"] += message.get("body", b"")
-
-    await app(_scope(body), receive, send)
-    return out["status"], out["headers"], out["body"]
+    messages = await drive(app or _app(), _scope(body), body=body)
+    return status_of(messages), headers_of(messages), body_of(messages)
 
 
 class _FakeTransport(asyncio.Transport):

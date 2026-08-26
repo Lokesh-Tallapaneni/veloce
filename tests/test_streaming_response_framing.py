@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._asgi_drive import body_of, drive, headers_of, status_of
 from veloce import Response, Veloce
 from veloce.http.response import StreamingResponse
 from veloce.sse import EventSourceResponse, ServerSentEvent
@@ -37,28 +38,9 @@ def _stream(**kw) -> StreamingResponse:
 
 
 async def _drive(app: Veloce, path: str, method: str = "GET"):
-    scope = {
-        "type": "http",
-        "method": method,
-        "path": path,
-        "query_string": b"",
-        "headers": [],
-        "root_path": "",
-        "scheme": "http",
-        "http_version": "1.1",
-    }
-    out: list[dict] = []
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message):
-        out.append(message)
-
-    await app(scope, receive, send)
-    headers = {k.decode().lower(): v.decode() for k, v in out[0]["headers"]}
-    body = b"".join(m.get("body", b"") for m in out[1:])
-    return out[0]["status"], headers, body
+    """Status, headers and body of one request, off the raw message stream."""
+    messages = await drive(app, path=path, method=method)
+    return status_of(messages), headers_of(messages), body_of(messages)
 
 
 # ── A bodiless status carries nothing, on either transport ───────────

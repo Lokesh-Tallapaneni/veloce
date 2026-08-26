@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 
+from tests._asgi_drive import drive
 from veloce import Veloce
 
 
@@ -33,25 +34,8 @@ def _scope(method: str, path: str, headers: list[tuple[bytes, bytes]] | None = N
 
 
 async def _drive(app: Veloce, scope: dict, chunks: list[bytes]) -> list[dict]:
-    messages = [
-        {"type": "http.request", "body": c, "more_body": i < len(chunks) - 1}
-        for i, c in enumerate(chunks)
-    ]
-    msg_iter = iter(messages)
-
-    async def receive() -> dict:
-        try:
-            return next(msg_iter)
-        except StopIteration:
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-    sent: list[dict] = []
-
-    async def send(message: dict) -> None:
-        sent.append(message)
-
-    await app(scope, receive, send)
-    return sent
+    """Feed `chunks` as one request message each, and capture what came back."""
+    return await drive(app, scope, chunks=chunks)
 
 
 def _resp_body(sent: list[dict]) -> bytes:
