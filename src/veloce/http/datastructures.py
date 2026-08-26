@@ -8,7 +8,6 @@ the `getlist` alias on top of multidict's native `getall`.
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import io
 import ipaddress
@@ -26,7 +25,7 @@ from veloce._constants import (
     MIME_OCTET_STREAM,
 )
 from veloce._header_parsing import parse_header_params, parse_media_type_params
-from veloce._internal import _quote_header_value, is_default_port
+from veloce._internal import _decode_basic_credentials, _quote_header_value, is_default_port
 from veloce._protocol_constants import URL_SCHEME_HTTP, URL_SCHEME_HTTPS
 from veloce.exceptions import FilesKeyError, RequestURITooLong
 from veloce.http.cookies import iter_cookies
@@ -1001,19 +1000,14 @@ class Authorization:
         scheme_lower = scheme.lower()
 
         if scheme_lower == "basic":
-            try:
-                decoded = base64.b64decode(credentials.strip(), validate=True).decode("utf-8")
-            except (ValueError, UnicodeDecodeError):
+            # Shared with `HTTPBasic` so the two cannot disagree about what a
+            # valid payload is. `None` covers both malformed shapes - undecodable
+            # base64 and a colon-less value (RFC 7617 Sec. 2 makes the colon
+            # mandatory) - and yields no credentials either way.
+            decoded_pair = _decode_basic_credentials(credentials.strip())
+            if decoded_pair is None:
                 return cls(type="basic", raw=header_value)
-            # RFC 7617 Sec. 2: the credentials are `userid ":" password` and the
-            # colon is mandatory. A colon-less payload is malformed, so it
-            # yields no credentials - the same shape as undecodable base64
-            # above. Reporting `username=decoded, password=""` instead handed a
-            # username to code reading `request.authorization` for a header
-            # `HTTPBasic` refuses with a 401.
-            user, sep, pw = decoded.partition(":")
-            if not sep:
-                return cls(type="basic", raw=header_value)
+            user, pw = decoded_pair
             return cls(type="basic", raw=header_value, username=user, password=pw)
 
         if scheme_lower == "bearer":

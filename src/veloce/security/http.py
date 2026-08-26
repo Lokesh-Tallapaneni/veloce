@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import secrets
 from typing import Any
 
 from veloce._constants import HEADER_AUTHORIZATION, HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
 from veloce._header_parsing import parse_header_params
+from veloce._internal import _decode_basic_credentials
 from veloce._protocol_constants import AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER, AUTH_SCHEME_DIGEST
 from veloce.exceptions import HTTPException
 from veloce.http.request import Request
@@ -75,30 +74,18 @@ class HTTPBasic(SecurityScheme):
                 )
             return None
 
-        # Catch only the exceptions that `b64decode(validate=True)` and
-        # the subsequent `decode("utf-8")` can raise - `binascii.Error`
-        # / `ValueError` from base64 and `UnicodeDecodeError` from the
-        # text conversion. A bare `except Exception` would also swallow
-        # genuine bugs (NameError, AttributeError) and convert them to
-        # a 401, masking defects.
-        try:
-            decoded = base64.b64decode(auth[_BASIC_PREFIX_LEN:], validate=True).decode("utf-8")
-        except (binascii.Error, ValueError, UnicodeDecodeError) as err:
-            raise HTTPException(
-                HTTP_401_UNAUTHORIZED,
-                "Invalid authentication credentials",
-                headers=self._challenge(),
-            ) from err
-        # RFC 7617 Sec. 2: the credentials are `userid ":" password`; the colon
-        # is mandatory. A colon-less payload is malformed and must not
-        # authenticate (it would otherwise pass as an empty-password login).
-        username, sep, password = decoded.partition(":")
-        if not sep:
+        # Shared with `Authorization.from_header`. `None` covers both malformed
+        # shapes - base64 that does not decode as UTF-8, and a colon-less value,
+        # which RFC 7617 Sec. 2 forbids because it would otherwise pass as an
+        # empty-password login. Both answer the same 401 here, as before.
+        decoded_pair = _decode_basic_credentials(auth[_BASIC_PREFIX_LEN:])
+        if decoded_pair is None:
             raise HTTPException(
                 HTTP_401_UNAUTHORIZED,
                 "Invalid authentication credentials",
                 headers=self._challenge(),
             )
+        username, password = decoded_pair
         return HTTPBasicCredentials(username=username, password=password)
 
     def openapi_scheme(self) -> dict[str, Any] | None:

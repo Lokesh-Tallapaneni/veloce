@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import builtins
 import contextlib
 import contextvars
@@ -625,3 +626,33 @@ def _close_form_uploads(form: Any) -> None:
         if handle is not None and not getattr(handle, "closed", True):
             with contextlib.suppress(Exception):
                 handle.close()
+
+
+def _decode_basic_credentials(payload: str) -> tuple[str, str] | None:
+    """Decode an RFC 7617 `Basic` payload into `(userid, password)`, or `None`.
+
+    `None` means malformed, which covers both ways the payload can be: base64
+    that does not decode (or does not decode as UTF-8), and a decoded value with
+    no colon. RFC 7617 Sec. 2 makes the colon mandatory - `userid ":" password` -
+    so a colon-less payload is not "a username with an empty password", it is not
+    credentials at all. Reporting it as a username handed one to code reading
+    `request.authorization` for a header the security scheme refuses with a 401.
+
+    Surrounding whitespace is trimmed here. RFC 9110 Sec. 11.6.1 allows more
+    than one SP between the auth-scheme and the token68, and field values carry
+    optional whitespace, so it is not part of the credential. Only one of the two
+    callers used to trim - `request.authorization` reported credentials that
+    `HTTPBasic` then refused with a 401.
+
+    Shared by `Authorization.from_header` and `HTTPBasic` so the two cannot
+    disagree about what a valid payload is; they each carried a copy, and the
+    copies had already differed on the colon-less case and on whitespace.
+    """
+    try:
+        decoded = base64.b64decode(payload.strip(), validate=True).decode("utf-8")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return None
+    userid, separator, password = decoded.partition(":")
+    if not separator:
+        return None
+    return userid, password
