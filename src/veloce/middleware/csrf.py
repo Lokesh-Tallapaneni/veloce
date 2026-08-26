@@ -87,6 +87,7 @@ from veloce._protocol_constants import (
 from veloce.http.request import Request
 from veloce.http.response import JSONResponse, Response
 from veloce.middleware.base import Middleware
+from veloce.safe import constant_time_compare
 from veloce.signing import BadSignature, Signer
 
 
@@ -324,9 +325,21 @@ class CSRFMiddleware(Middleware):
     @staticmethod
     def _matches(candidate: object, cookie_val: str) -> bool:
         # Constant-time equality, gated on the candidate being a string so
-        # multipart UploadFile parts and missing fields don't reach
-        # `compare_digest` (which would raise on non-bytes/str).
-        return isinstance(candidate, str) and secrets.compare_digest(candidate, cookie_val)
+        # multipart UploadFile parts and missing fields don't reach the compare.
+        if not isinstance(candidate, str):
+            return False
+        try:
+            return secrets.compare_digest(candidate, cookie_val)
+        except TypeError:
+            # `compare_digest` raises on a `str` holding non-ASCII, and both the
+            # header and the form field are caller-controlled - so a forged
+            # token with one non-ASCII byte answered 500 instead of 403 on every
+            # protected write. `constant_time_compare` UTF-8 encodes first, so
+            # the comparison still happens (and a custom non-ASCII
+            # `token_factory` still matches) rather than being refused outright.
+            # Kept in the `except` so the ASCII path - every token this
+            # middleware mints - pays nothing for the guard.
+            return constant_time_compare(candidate, cookie_val)
 
     def _forbidden(self, detail: str) -> Response:
         return JSONResponse(

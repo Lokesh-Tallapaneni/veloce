@@ -185,7 +185,17 @@ def decode_jwt(
     except (ValueError, OSError) as err:
         raise InvalidTokenError("malformed signature segment") from err
 
-    signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    # The base64url segments are ASCII (RFC 7515 Sec. 2); a non-ASCII character
+    # means a malformed token, not an `ascii`-codec crash. `_b64decode` runs in
+    # binascii's relaxed mode and drops characters outside the alphabet, so a
+    # token carrying a stray non-ASCII byte still parses a valid header and
+    # reaches here - and `UnicodeEncodeError` is not a `JWTError`, so the
+    # documented `except JWTError` around an auth dependency did not catch it
+    # and the route answered 500 instead of 401. Mirrors `signing.py`.
+    try:
+        signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    except UnicodeEncodeError as err:
+        raise InvalidTokenError("token segments must be ASCII") from err
     expected = hmac.new(secret_bytes, signing_input, _ALGORITHMS[alg]).digest()
     # Signature verified BEFORE decoding the payload: never drive the JSON
     # parser with unauthenticated bytes.

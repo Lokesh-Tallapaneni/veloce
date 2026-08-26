@@ -506,7 +506,20 @@ distinct subclass of [`JWTError`](../reference/security.md#veloce.JWTError):
 | `UnsupportedAlgorithmError` |
 | `InvalidTokenError` |
 
-`InvalidTokenError` covers a malformed token.
+`InvalidTokenError` covers a malformed token — including one whose segments
+carry a byte outside ASCII, which the base64url alphabet does not contain
+(RFC 7515 §2).
+
+!!! note "Every rejection is a `JWTError`"
+    `decode_jwt` raises nothing outside this hierarchy for a malformed token, so
+    the `except JWTError` shown below is sufficient — it does not need a bare
+    `except Exception` behind it to be safe against a hostile token.
+
+    !!! note "Fixed in version 0.18.0"
+        A token with a non-ASCII byte in one of its segments previously raised
+        `UnicodeEncodeError`, which is not a `JWTError`, so an auth dependency
+        written this way did not catch it and the route answered `500` instead
+        of `401`.
 
 A successful decode returns a read-only
 [`Claims`](../reference/security.md#veloce.Claims) mapping.

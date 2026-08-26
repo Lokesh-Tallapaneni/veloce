@@ -48,6 +48,7 @@ from veloce._internal import _b64encode
 from veloce._protocol_constants import HTTP_METHOD_GET, HTTP_METHOD_POST
 from veloce.http.response import JSONResponse, RedirectResponse, Response
 from veloce.principal import Principal
+from veloce.safe import constant_time_compare
 from veloce.status import HTTP_302_FOUND
 
 _logger = logging.getLogger(__name__)
@@ -478,12 +479,22 @@ def _redirect_uri_is_allowed(uri: str) -> bool:
 
 def _verify_pkce(verifier: str, challenge: str) -> bool:
     """Whether `verifier` hashes to `challenge` under S256."""
-    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    # RFC 7636 Sec. 4.1 confines a verifier to unreserved ASCII, so a non-ASCII
+    # one cannot match any challenge - but it arrives unauthenticated at the
+    # token endpoint, and letting `encode("ascii")` raise turned it into a 500
+    # rather than a refusal.
+    try:
+        verifier_bytes = verifier.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    digest = hashlib.sha256(verifier_bytes).digest()
     # RFC 7636 Sec. 4.2 specifies BASE64URL-ENCODE(SHA256(verifier)) - the
     # RFC 4648 Sec. 5 alphabet with padding stripped, which is exactly what
     # `_b64encode` produces for JWS (RFC 7515 Sec. 2) elsewhere in the tree.
     computed = _b64encode(digest)
-    return hmac.compare_digest(computed, challenge)
+    # `challenge` is caller-supplied too, and `hmac.compare_digest` raises on a
+    # `str` holding non-ASCII; `constant_time_compare` encodes first.
+    return constant_time_compare(computed, challenge)
 
 
 def register_authorization_server(
