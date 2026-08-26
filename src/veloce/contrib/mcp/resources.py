@@ -237,7 +237,7 @@ def build_resource_registry(app: Any) -> ResourceRegistry:
     registry = ResourceRegistry()
     exposed: dict[int, Any] = {}
     methods_by_route: dict[int, list[str]] = {}
-    for method, _path, info in app._collect_all_routes(include_hidden=True):
+    for method, _path, info in app.iter_routes(include_hidden=True):
         if method == ROUTE_METHOD_WEBSOCKET or not info.expose_as_mcp_resource:
             continue
         route_id = id(info)

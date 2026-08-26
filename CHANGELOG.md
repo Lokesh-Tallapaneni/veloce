@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `app.iter_routes()` returns each route as `(method, path, RouteInfo)`; `app.routes` remains the six-field summary. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `CompressionMiddleware` negotiates zstd, brotli and gzip from `Accept-Encoding`; install the `brotli` / `zstd` extras to offer the newer codings. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - The `ciso8601` extra accelerates the `{x:datetime}` path converter for values without a numeric offset; what matches is unchanged. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

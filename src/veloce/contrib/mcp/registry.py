@@ -417,7 +417,7 @@ def build_registry(app: Any) -> ToolRegistry:
     # blueprints). Exposure stays default-closed (`expose_as_mcp_tool=True`).
     exposed: dict[int, Any] = {}
     methods_by_route: dict[int, list[str]] = {}
-    for method, _path, info in app._collect_all_routes(include_hidden=True):
+    for method, _path, info in app.iter_routes(include_hidden=True):
         if method == ROUTE_METHOD_WEBSOCKET or not info.expose_as_mcp_tool:
             continue
         route_id = id(info)

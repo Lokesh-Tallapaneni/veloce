@@ -425,6 +425,43 @@ async def download(name: str):
 app.url_for("download", name="report.pdf")   # "/files/report.pdf"
 ```
 
+## Inspecting the route table
+
+`app.routes` is a summary: a list of dicts with `path`, `method`, `name`,
+`summary`, `tags` and `deprecated`. It is what you want to render a route table
+and nothing more.
+
+```python
+for route in app.routes:
+    print(route["method"], route["path"], route["name"])
+```
+
+To inspect the routes themselves - their response models, dependencies, security
+requirements, and everything else the registration recorded - use
+`app.iter_routes()`, which returns the `RouteInfo` records:
+
+```python
+from veloce import Veloce
+
+app = Veloce()
+
+for method, path, info in app.iter_routes():
+    if info.response_model is not None:
+        print(method, path, "->", info.response_model.__name__)
+```
+
+WebSocket routes and routes registered with `include_in_schema=False` are left
+out by default, matching what the OpenAPI document describes. Pass
+`include_hidden=True` for the complete table:
+
+```python
+for method, path, info in app.iter_routes(include_hidden=True):
+    print(method, path)
+```
+
+`iter_routes()` is defined on `Router`, so a `Blueprint` or a stand-alone
+`Router` answers the same way about its own routes.
+
 ## See also
 
 - [Requests & responses](requests-responses.md)

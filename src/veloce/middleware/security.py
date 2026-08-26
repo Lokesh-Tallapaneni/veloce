@@ -449,7 +449,7 @@ class RateLimitMiddleware(Middleware):
         """
         tagged_strategies: dict[str, RateLimitStrategy] = {}
         known: set[str] = set()
-        for _method, _path, info in app._collect_all_routes(include_hidden=True):
+        for _method, _path, info in app.iter_routes(include_hidden=True):
             known.add(info.path_template)
             tagged = getattr(info.handler, RATE_LIMIT_ATTR, None)
             if isinstance(tagged, RateLimitStrategy):

@@ -113,7 +113,7 @@ def _response_contract_findings(app: Any) -> list[Finding]:
     """
     findings: list[Finding] = []
     undocumented: list[str] = []
-    for method, path, info in app._collect_all_routes(include_hidden=True):
+    for method, path, info in app.iter_routes(include_hidden=True):
         declared = info.response_model
         annotated = resolve_return_model(info.handler)
         if declared is None:
@@ -186,7 +186,7 @@ def _unmatched_exclusions(app: Any) -> list[Finding]:
     """
     registered = {mw.middleware_name for mw in app._middlewares}
     unmatched: dict[str, str] = {}
-    for method, path, info in app._collect_all_routes(include_hidden=True):
+    for method, path, info in app.iter_routes(include_hidden=True):
         excluded = info.excluded_middleware
         if excluded is None:
             continue

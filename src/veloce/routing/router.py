@@ -2288,6 +2288,27 @@ class Router:
 
     # ── Introspection and merge ───────────────────────────
 
+    def iter_routes(self, *, include_hidden: bool = False) -> list[tuple[str, str, RouteInfo]]:
+        """Return every registered route as ``(method, path, info)``.
+
+        ``app.routes`` is a summary view: six fields of `RouteInfo`'s full
+        record, which is enough to render a route table and not enough for
+        anything that inspects a route. This returns the records themselves, so
+        response models, dependencies, security requirements and the rest are
+        reachable without touching private state.
+
+        Hidden routes - WebSocket routes and those registered
+        ``include_in_schema=False`` - are omitted unless ``include_hidden`` is
+        set; the default is the schema-visible set.
+
+        Usage::
+
+            for method, path, info in app.iter_routes():
+                if info.response_model is not None:
+                    print(method, path, info.response_model)
+        """
+        return self._collect_all_routes(include_hidden)
+
     def _collect_all_routes(self, include_hidden: bool = False) -> list[tuple[str, str, RouteInfo]]:
         """Collect routes as (method, path, info) tuples.
 

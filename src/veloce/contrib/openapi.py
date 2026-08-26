@@ -1855,7 +1855,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
     # when something actually references them.
     needs_validation_error_schema = False
 
-    for method, path, info in app._collect_all_routes():
+    for method, path, info in app.iter_routes():
         # OpenAPI 3.1's Path Item Object has no `query` field, so a QUERY route
         # cannot be represented without emitting an invalid operation. Omit it
         # rather than produce an invalid document (native support awaits the
