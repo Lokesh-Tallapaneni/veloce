@@ -23,6 +23,7 @@ from veloce._constants import (
     MSG_LABEL_SET_COOKIE_VALUE,
 )
 from veloce._internal import (
+    _LABEL_HEADER_VALUE_SUFFIX,
     MIME_HTML,
     MIME_JSON,
     MIME_OCTET,
@@ -145,8 +146,14 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
             elif k_lower == "content-length":
                 has_cl = True
             _reject_header_crlf(k, MSG_LABEL_HEADER_NAME)
-            _reject_header_crlf(v, f"{k} header value")
-            entry = (k_lower.encode(), _encode_header_value(v).encode("latin-1"))
+            # The label is joined only when raising; building `f"{k} header
+            # value"` here made a string per header per response that almost
+            # every call discards.
+            _reject_header_crlf(v, k, _LABEL_HEADER_VALUE_SUFFIX)
+            encoded_name = _ENCODED_HEADER_NAMES.get(k_lower)
+            if encoded_name is None:
+                encoded_name = k_lower.encode("latin-1")
+            entry = (encoded_name, _encode_header_value(v).encode("latin-1"))
             slot = slot_by_name.get(k_lower)
             if slot is None:
                 slot_by_name[k_lower] = len(asgi_headers)
@@ -154,6 +161,101 @@ def _build_asgi_headers(headers: Any) -> tuple[list[tuple[bytes, bytes]], bool, 
             else:
                 asgi_headers[slot] = entry
     return asgi_headers, has_ct, has_cl
+
+
+# Every response header name reaching the ASGI transport must be lowercase
+# bytes. The set of names a response actually carries is overwhelmingly the
+# framework's own constants, and `.encode()` on each of them ran per header per
+# response. Seeded once from `_constants.HEADER_*` so it cannot drift from them,
+# and never written at runtime, so an application setting dynamic header names
+# cannot grow it without bound - those simply fall through to `.encode()`.
+_ENCODED_HEADER_NAMES: dict[str, bytes] = {
+    name.lower(): name.lower().encode("latin-1")
+    for name in (
+        "Accept",
+        "Accept-Charset",
+        "Accept-Encoding",
+        "Accept-Language",
+        "Accept-Ranges",
+        "Access-Control-Allow-Credentials",
+        "Access-Control-Allow-Headers",
+        "Access-Control-Allow-Methods",
+        "Access-Control-Allow-Origin",
+        "Access-Control-Allow-Private-Network",
+        "Access-Control-Expose-Headers",
+        "Access-Control-Max-Age",
+        "Access-Control-Request-Headers",
+        "Access-Control-Request-Method",
+        "Access-Control-Request-Private-Network",
+        "Age",
+        "Allow",
+        "Authorization",
+        "Cache-Control",
+        "Connection",
+        "Content-Disposition",
+        "Content-Encoding",
+        "Content-Language",
+        "Content-Length",
+        "Content-Location",
+        "Content-Range",
+        "Content-Security-Policy",
+        "Content-Security-Policy-Report-Only",
+        "Content-Type",
+        "Cookie",
+        "DENY",
+        "Date",
+        "ETag",
+        "Expires",
+        "Host",
+        "If-Match",
+        "If-Modified-Since",
+        "If-None-Match",
+        "If-Range",
+        "If-Unmodified-Since",
+        "Last-Modified",
+        "Location",
+        "Max-Forwards",
+        "Origin",
+        "Permissions-Policy",
+        "Pragma",
+        "Range",
+        "Referer",
+        "Referrer-Policy",
+        "Retry-After",
+        "Sec-WebSocket-Key",
+        "Sec-WebSocket-Protocol",
+        "Set-Cookie",
+        "Strict-Transport-Security",
+        "Transfer-Encoding",
+        "User-Agent",
+        "Vary",
+        "WWW-Authenticate",
+        "X-Accel-Buffering",
+        "X-CSRF-Token",
+        "X-Content-Type-Options",
+        "X-Forwarded-For",
+        "X-Forwarded-Host",
+        "X-Forwarded-Port",
+        "X-Forwarded-Prefix",
+        "X-Forwarded-Proto",
+        "X-Frame-Options",
+        "X-RateLimit-Limit",
+        "X-RateLimit-Remaining",
+        "X-RateLimit-Reset",
+        "X-Request-ID",
+        "X-Requested-With",
+        "attachment",
+        "bytes",
+        "chunked",
+        "close",
+        "gzip",
+        "keep-alive",
+        "no-cache",
+        "nosniff",
+        "public",
+        "strict-origin-when-cross-origin",
+    )
+}
 
 
 async def _refuse_websocket(
