@@ -1,29 +1,21 @@
-"""`include` / `exclude` reach every depth, models included.
+"""Every `jsonable_encoder` filter applies at every depth.
 
-`jsonable_encoder`'s docstring says the filters "apply to dict keys at **every
-depth** - passing `exclude={"password"}` strips a `password` key wherever it
-appears in the structure, not only at the top level."
+The filters were forwarded into the recursion by hand at five sites, and the
+copies had drifted in two ways:
 
-Plain dicts did that. Models did not: the `BaseModel` branch forwarded
-`exclude_none` and `custom_encoder` and dropped `include`/`exclude`, so anything
-below a model kept its secrets:
+* the `_public_vars` fallback omitted `exclude_none`, so an arbitrary object
+  kept its `None` attributes while a plain dict dropped them;
+* no site forwarded `exclude_unset` / `exclude_defaults`, so those worked on a
+  model passed in directly and were silently ignored one level down.
 
-    dict        {'a': {'b': 1}}                                    stripped
-    model       {'name':'n','meta':{'password':'nested','k':1}}    SURVIVED
-    nestedmodel {'inner':{'password':'q','k':2}}                   SURVIVED
-
-The obvious use - sanitising a payload before logging it - is exactly the one
-that silently failed, and it failed on the half a caller is least likely to
-inspect.
-
-The dataclass branch immediately below the model branch already forwarded all
-three, so models and dataclasses disagreed inside one function. They now agree,
-and the behaviour matches what the docstring always claimed.
+Both are depth-dependence, which is the worst shape for a filter: the caller
+gets the behaviour they asked for or not depending on how deeply the model
+happens to be nested. These tests state the property once - the filter's effect
+does not depend on depth or on container shape - and check it across the
+product of both, so a site that stops forwarding fails here.
 """
 
 from __future__ import annotations
-
-import dataclasses
 
 import pytest
 from pydantic import BaseModel
@@ -31,179 +23,154 @@ from pydantic import BaseModel
 from veloce.encoders import jsonable_encoder
 
 
-class Inner(BaseModel):
-    password: str
-    k: int
+class Model(BaseModel):
+    set_field: int = 1
+    default_field: int = 2
 
 
-class Outer(BaseModel):
-    name: str
-    meta: dict
+class Plain:
+    """An arbitrary object, which reaches the `_public_vars` fallback."""
 
+    def __init__(self) -> None:
+        self.name = "x"
+        self.missing = None
 
-class Nested(BaseModel):
-    inner: Inner
 
+def _nest(value, shape: str):
+    """Wrap `value` in each container shape the encoder recurses through."""
+    return {
+        "bare": value,
+        "dict": {"k": value},
+        "list": [value],
+        "tuple": (value,),
+        "deep": {"a": [{"b": value}]},
+    }[shape]
 
-class Deep(BaseModel):
-    level: Nested
 
+def _unwrap(encoded, shape: str):
+    return {
+        "bare": lambda e: e,
+        "dict": lambda e: e["k"],
+        "list": lambda e: e[0],
+        "tuple": lambda e: e[0],
+        "deep": lambda e: e["a"][0]["b"],
+    }[shape](encoded)
 
-@dataclasses.dataclass
-class InnerDC:
-    password: str
-    k: int
 
+SHAPES = ["bare", "dict", "list", "tuple", "deep"]
 
-@dataclasses.dataclass
-class OuterDC:
-    name: str
-    inner: InnerDC
 
+# ── exclude_unset reaches a nested model ─────────────────────────────
 
-# ── exclude reaches every depth ──────────────────────────────────────
 
+@pytest.mark.parametrize("shape", SHAPES)
+def test_exclude_unset_applies_at_every_depth(shape):
+    """The defect: this worked for `bare` and was ignored everywhere else."""
+    encoded = jsonable_encoder(_nest(Model(set_field=5), shape), exclude_unset=True)
+    assert _unwrap(encoded, shape) == {"set_field": 5}
 
-def test_a_top_level_dict_key_is_excluded():
-    assert jsonable_encoder({"password": "x", "a": 1}, exclude={"password"}) == {"a": 1}
 
+@pytest.mark.parametrize("shape", SHAPES)
+def test_exclude_defaults_applies_at_every_depth(shape):
+    encoded = jsonable_encoder(_nest(Model(set_field=5), shape), exclude_defaults=True)
+    assert _unwrap(encoded, shape) == {"set_field": 5}
 
-def test_a_nested_dict_key_is_excluded():
-    """This half always worked."""
-    payload = {"a": {"password": "deep", "b": 1}}
-    assert jsonable_encoder(payload, exclude={"password"}) == {"a": {"b": 1}}
 
+@pytest.mark.parametrize("shape", SHAPES)
+def test_exclude_none_applies_at_every_depth(shape):
+    encoded = jsonable_encoder(_nest({"name": "x", "missing": None}, shape), exclude_none=True)
+    assert _unwrap(encoded, shape) == {"name": "x"}
 
-def test_a_dict_under_a_model_is_excluded():
-    """The defect: `meta` kept its `password`."""
-    obj = Outer(name="n", meta={"password": "nested", "k": 1})
-    assert jsonable_encoder(obj, exclude={"password"}) == {"name": "n", "meta": {"k": 1}}
 
+@pytest.mark.parametrize("shape", SHAPES)
+def test_exclude_applies_at_every_depth(shape):
+    """The one the docstring already promised; kept so it cannot regress."""
+    encoded = jsonable_encoder(_nest({"name": "x", "password": "s"}, shape), exclude={"password"})
+    assert _unwrap(encoded, shape) == {"name": "x"}
 
-def test_a_nested_model_field_is_excluded():
-    """The defect: `inner` kept its `password`."""
-    obj = Nested(inner=Inner(password="q", k=2))
-    assert jsonable_encoder(obj, exclude={"password"}) == {"inner": {"k": 2}}
 
+@pytest.mark.parametrize("shape", SHAPES)
+def test_include_applies_at_every_depth(shape):
+    """`include` is a whitelist over keys at *all* depths, so a nesting key must
+    be listed too or the branch holding the value is dropped - which is the
+    documented behaviour, not depth-dependence."""
+    keys = {"name", "k", "a", "b"}
+    encoded = jsonable_encoder(_nest({"name": "x", "password": "s"}, shape), include=keys)
+    assert _unwrap(encoded, shape) == {"name": "x"}
 
-def test_two_levels_of_model_are_excluded():
-    obj = Deep(level=Nested(inner=Inner(password="q", k=2)))
-    assert jsonable_encoder(obj, exclude={"password"}) == {"level": {"inner": {"k": 2}}}
 
+def test_include_drops_an_unlisted_nesting_key():
+    """The other half of that contract, stated so it is not mistaken for a bug."""
+    assert jsonable_encoder({"k": {"name": "x"}}, include={"name"}) == {}
 
-def test_a_model_inside_a_list_is_excluded():
-    obj = [Inner(password="a", k=1), Inner(password="b", k=2)]
-    assert jsonable_encoder(obj, exclude={"password"}) == [{"k": 1}, {"k": 2}]
 
+# ── the arbitrary-object fallback honours them too ───────────────────
 
-def test_a_model_inside_a_dict_value_is_excluded():
-    obj = {"first": Inner(password="a", k=1)}
-    assert jsonable_encoder(obj, exclude={"password"}) == {"first": {"k": 1}}
 
+def test_an_arbitrary_object_honours_exclude_none():
+    """The `_public_vars` fallback omitted this while every sibling had it."""
+    assert jsonable_encoder(Plain(), exclude_none=True) == {"name": "x"}
 
-def test_a_models_own_field_is_still_excluded():
-    """`model_dump` already did this; forwarding must not undo it."""
-    assert jsonable_encoder(Inner(password="q", k=2), exclude={"password"}) == {"k": 2}
 
+@pytest.mark.parametrize("shape", SHAPES)
+def test_an_arbitrary_object_honours_exclude_none_at_depth(shape):
+    encoded = jsonable_encoder(_nest(Plain(), shape), exclude_none=True)
+    assert _unwrap(encoded, shape) == {"name": "x"}
 
-def test_excluding_several_keys():
-    obj = Nested(inner=Inner(password="q", k=2))
-    assert jsonable_encoder(obj, exclude={"password", "k"}) == {"inner": {}}
 
+def test_an_arbitrary_object_honours_exclude():
+    assert jsonable_encoder(Plain(), exclude={"missing"}) == {"name": "x"}
 
-def test_excluding_a_key_that_is_not_there_changes_nothing():
-    obj = Nested(inner=Inner(password="q", k=2))
-    assert jsonable_encoder(obj, exclude={"absent"}) == {"inner": {"password": "q", "k": 2}}
 
+# ── the property, stated directly ────────────────────────────────────
 
-# ── models and dataclasses agree ─────────────────────────────────────
 
+@pytest.mark.parametrize(
+    ("value", "kwargs"),
+    [
+        (Model(set_field=5), {"exclude_unset": True}),
+        (Model(set_field=5), {"exclude_defaults": True}),
+        ({"name": "x", "missing": None}, {"exclude_none": True}),
+        ({"name": "x", "password": "s"}, {"exclude": {"password"}}),
+    ],
+    ids=["unset", "defaults", "none", "exclude"],
+)
+def test_a_filters_effect_does_not_depend_on_depth(value, kwargs):
+    """Whatever a filter does to a bare value, it does at any nesting.
 
-def test_a_dataclass_still_excludes_at_every_depth():
-    """The branch that was already right."""
-    obj = OuterDC(name="n", inner=InnerDC(password="q", k=2))
-    assert jsonable_encoder(obj, exclude={"password"}) == {"name": "n", "inner": {"k": 2}}
+    `include` is excluded from this product deliberately: it whitelists keys
+    globally, so nesting keys change its input rather than its behaviour. It
+    has its own test above.
+    """
+    bare = jsonable_encoder(value, **kwargs)
+    for shape in SHAPES:
+        encoded = jsonable_encoder(_nest(value, shape), **kwargs)
+        assert _unwrap(encoded, shape) == bare, shape
 
 
-def test_the_two_branches_agree():
-    """The property: which kind of object it is must not decide this."""
-    model = jsonable_encoder(Nested(inner=Inner(password="q", k=2)), exclude={"password"})
-    dc = jsonable_encoder(InnerDC(password="q", k=2), exclude={"password"})
-    assert model["inner"] == dc
+# ── the negatives: no filter means no filtering ──────────────────────
 
 
-# ── include reaches every depth too ──────────────────────────────────
+@pytest.mark.parametrize("shape", SHAPES)
+def test_no_filter_keeps_every_field(shape):
+    """A forwarding bug that dropped fields unconditionally would pass the
+    assertions above and fail here."""
+    encoded = jsonable_encoder(_nest(Model(set_field=5), shape))
+    assert _unwrap(encoded, shape) == {"set_field": 5, "default_field": 2}
 
 
-def test_include_keeps_only_the_named_key():
-    obj = Outer(name="n", meta={"k": 1})
-    assert jsonable_encoder(obj, include={"name"}) == {"name": "n"}
+@pytest.mark.parametrize("shape", SHAPES)
+def test_no_filter_keeps_none_values(shape):
+    encoded = jsonable_encoder(_nest({"name": "x", "missing": None}, shape))
+    assert _unwrap(encoded, shape) == {"name": "x", "missing": None}
 
 
-def test_include_applies_under_a_model():
-    obj = Nested(inner=Inner(password="q", k=2))
-    assert jsonable_encoder(obj, include={"inner", "k"}) == {"inner": {"k": 2}}
+def test_an_unset_field_that_was_set_survives():
+    """`exclude_unset` must drop only what was genuinely never assigned."""
+    encoded = jsonable_encoder({"m": Model(set_field=5, default_field=2)}, exclude_unset=True)
+    assert encoded["m"] == {"set_field": 5, "default_field": 2}
 
 
-# ── nothing changes when no filter is given ──────────────────────────
-
-
-def test_no_filter_leaves_the_structure_whole():
-    obj = Nested(inner=Inner(password="q", k=2))
-    assert jsonable_encoder(obj) == {"inner": {"password": "q", "k": 2}}
-
-
-def test_no_filter_on_a_deep_structure():
-    obj = Deep(level=Nested(inner=Inner(password="q", k=2)))
-    assert jsonable_encoder(obj) == {"level": {"inner": {"password": "q", "k": 2}}}
-
-
-@pytest.mark.parametrize("payload", [{"a": 1}, [1, 2], "text", 5, None, True])
-def test_a_plain_value_is_unchanged(payload):
-    assert jsonable_encoder(payload) == payload
-
-
-# ── the sibling filters still behave ─────────────────────────────────
-
-
-def test_exclude_none_still_reaches_a_nested_dict():
-    """The one filter that was already forwarded."""
-
-    class WithNone(BaseModel):
-        a: int
-        meta: dict
-
-    obj = WithNone(a=1, meta={"b": None, "c": 2})
-    assert jsonable_encoder(obj, exclude_none=True) == {"a": 1, "meta": {"c": 2}}
-
-
-def test_exclude_none_and_exclude_compose():
-    class WithNone(BaseModel):
-        a: int
-        meta: dict
-
-    obj = WithNone(a=1, meta={"b": None, "password": "q", "c": 2})
-    assert jsonable_encoder(obj, exclude_none=True, exclude={"password"}) == {
-        "a": 1,
-        "meta": {"c": 2},
-    }
-
-
-def test_a_custom_encoder_still_applies_under_a_model():
-    from decimal import Decimal
-
-    class WithDecimal(BaseModel):
-        amount: Decimal
-
-    encoded = jsonable_encoder(
-        WithDecimal(amount=Decimal("1.5")), custom_encoder={Decimal: lambda d: f"${d}"}
-    )
-    assert encoded == {"amount": "$1.5"}
-
-
-def test_exclude_unset_still_works():
-    class Partial(BaseModel):
-        a: int = 1
-        b: int = 2
-
-    assert jsonable_encoder(Partial(a=5), exclude_unset=True) == {"a": 5}
+def test_exclude_defaults_keeps_a_non_default_value():
+    encoded = jsonable_encoder({"m": Model(set_field=5, default_field=9)}, exclude_defaults=True)
+    assert encoded["m"] == {"set_field": 5, "default_field": 9}

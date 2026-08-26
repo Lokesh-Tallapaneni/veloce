@@ -176,10 +176,22 @@ The built-in conversions:
 
 ### Filtering fields
 
-`include` and `exclude` are sets of key names applied at **every depth**, not
-just the top level. `exclude_unset`, `exclude_defaults`, and `exclude_none`
-forward to Pydantic's `model_dump` for model inputs; `exclude_none` also drops
-`None`-valued keys from plain dicts.
+Every filter applies at **every depth**, not just the top level.
+
+`include` and `exclude` are sets of key names. Because they filter keys at all
+depths, a nesting key must itself be listed in `include` or the branch holding
+the value is dropped — `include={"name"}` applied to `{"user": {"name": "x"}}`
+yields `{}`.
+
+`exclude_unset`, `exclude_defaults`, and `exclude_none` forward to Pydantic's
+`model_dump`, and reach a model nested inside a dict or list as well as one
+passed in directly. `exclude_none` additionally drops `None`-valued keys from
+plain dicts and from an arbitrary object's attributes.
+
+!!! note "Changed in version 0.18"
+    `exclude_unset` and `exclude_defaults` previously applied only to a model
+    passed in directly and were ignored for a nested one; `exclude_none` was
+    ignored for an arbitrary object's attributes.
 
 ```python
 from pydantic import BaseModel
