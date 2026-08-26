@@ -13,6 +13,7 @@ forgets fails here rather than being discovered as a silent behaviour change.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import pathlib
 import re
@@ -60,6 +61,24 @@ _REWRITTEN = {
 }
 
 
+def _function_source(function_name: str) -> str:
+    """The exact source of the named function, boundaries from the parse tree.
+
+    This used to slice a fixed 4000-character window from the `def` line, which
+    overruns both functions it inspects - by 1463 and 545 characters - and so
+    reads into whatever follows them. Today the overrun happens to contain no
+    `info.<field>` reference, so nothing is falsely credited; the moment a
+    neighbouring function gains one, this guard would report a field as carried
+    that the copy under test never touches. That is precisely the failure it
+    exists to prevent, occurring in the guard itself.
+    """
+    tree = ast.parse(_ROUTER_SRC)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
+            return ast.get_source_segment(_ROUTER_SRC, node) or ""
+    raise AssertionError(f"{function_name} not found in router.py")
+
+
 def _forwarded_in(function_name: str) -> set[str]:
     """Names of `RouteInfo` fields the named function reads off the source route.
 
@@ -68,9 +87,33 @@ def _forwarded_in(function_name: str) -> set[str]:
     (`exclude_middleware=info.excluded_middleware`), or assigned after
     construction, and all three of those are still carrying it.
     """
-    start = _ROUTER_SRC.index(f"def {function_name}(")
-    body = _ROUTER_SRC[start : start + 4000]
-    return set(re.findall(r"\binfo\.([a-z_]+)", body))
+    return set(re.findall(r"\binfo\.([a-z_]+)", _function_source(function_name)))
+
+
+def test_the_scanned_source_stops_at_the_function():
+    """The boundary itself, asserted - a window that overran was the defect.
+
+    The old fixed 4000-character slice reached 545 characters past
+    `_build_merged_route_info`, into `_commit_merged_method`. Any `def` other
+    than the segment's own means the scan is reading a neighbour, whatever that
+    neighbour's indentation - so the count is over `def ` at **any** column, not
+    just column zero.
+    """
+    for name in ("_readd_route", "_build_merged_route_info"):
+        body = _function_source(name)
+        assert body.startswith(f"def {name}("), name
+        others = [
+            line.strip()
+            for line in body.splitlines()
+            if line.lstrip().startswith(("def ", "async def "))
+        ]
+        assert len(others) == 1, f"{name} scan reached a neighbour: {others[1:]}"
+
+
+def test_the_scan_finds_the_fields_it_is_meant_to():
+    """A boundary fix that returned nothing would make the guard vacuous."""
+    for name in ("_readd_route", "_build_merged_route_info"):
+        assert len(_forwarded_in(name)) > 10, name
 
 
 @pytest.mark.parametrize("function_name", ["_readd_route", "_build_merged_route_info"])
