@@ -17,7 +17,6 @@ from veloce._constants import (
 )
 from veloce._internal import (
     MIME_HTML,
-    MIME_OCTET,
     _current_app_var,
     _current_request_var,
 )
@@ -577,22 +576,32 @@ def make_response(
                 status_code = body[1]
             else:
                 headers = body[1]
+        # A `Response` inside the tuple takes the tuple's status and headers,
+        # the way dispatch applies them to a handler's `return resp, 404`.
+        if isinstance(inner, Response):
+            inner.status_code = status_code
+            if headers:
+                inner.headers.update(headers)
+            inner._encoded = None
+            return inner
         return make_response(inner, status_code, headers, content_type)
+    # A `Response` passes through untouched. Without this it fell to the JSON
+    # branch below and was encoded via its `__str__`, so the body became the
+    # object's repr - `b'"<veloce.http.response.Response object at 0x...>"'`.
+    if isinstance(body, Response):
+        return body
     if isinstance(body, (dict, list)):
         return JSONResponse(body, status_code=status_code, headers=headers)
-    if isinstance(body, str):
+    if isinstance(body, (str, bytes)):
+        # `text/html` for both, matching `Veloce.make_response` and dispatch.
+        # This alone used to answer `application/octet-stream` for bytes, so the
+        # same value carried a different type depending on which entry point a
+        # caller reached for - the disagreement `Veloce.make_response`'s
+        # docstring says does not exist.
         ct = content_type or MIME_HTML
         return Response(
             status_code=status_code,
-            body=body.encode("utf-8"),
-            content_type=ct,
-            headers=headers,
-        )
-    if isinstance(body, bytes):
-        ct = content_type or MIME_OCTET
-        return Response(
-            status_code=status_code,
-            body=body,
+            body=body.encode("utf-8") if isinstance(body, str) else body,
             content_type=ct,
             headers=headers,
         )
