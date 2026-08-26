@@ -561,6 +561,31 @@ class SchemaRegistry:
         return [self._entries[k].token for k in self._order]
 
 
+def _iter_dicts(node: Any) -> collections.abc.Iterator[dict]:
+    """Yield every mapping in a JSON tree, the outermost first.
+
+    One walk for the several passes that visit a generated schema: rewriting a
+    `binary` format, collecting local `$defs` targets, repointing renamed refs,
+    resolving placeholder refs, and validating that every ref exists. Each was
+    written as its own recursive function differing only in the body applied at
+    each mapping.
+
+    Iterative rather than recursive on purpose: a deeply nested schema - a model
+    referring to itself through a long chain - would otherwise be bounded by the
+    interpreter's recursion limit rather than by memory. Callers may reassign
+    values on a yielded mapping (every pass below does), but must not add or
+    remove keys while iterating.
+    """
+    stack: list[Any] = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            yield current
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+
+
 def _rewrite_byte_format(node: Any) -> None:
     """Rewrite bytes string fields from OpenAPI `format: binary` to `format: byte`.
 
@@ -569,14 +594,9 @@ def _rewrite_byte_format(node: Any) -> None:
     Pydantic emits `binary` for `bytes`; this realigns the generated schema with
     the actual serialized form. Walks nested objects, arrays, and `$defs` in place.
     """
-    if isinstance(node, dict):
-        if node.get("type") == "string" and node.get("format") == "binary":
-            node["format"] = "byte"
-        for value in node.values():
-            _rewrite_byte_format(value)
-    elif isinstance(node, list):
-        for item in node:
-            _rewrite_byte_format(item)
+    for mapping in _iter_dicts(node):
+        if mapping.get("type") == "string" and mapping.get("format") == "binary":
+            mapping["format"] = "byte"
 
 
 class _SchemaEntry:
@@ -679,21 +699,11 @@ class _SchemaEntry:
 
 def _local_def_refs(node: Any) -> set[str]:
     """Collect every `#/$defs/<name>` target referenced anywhere under `node`."""
-    targets: set[str] = set()
-
-    def _walk(value: Any) -> None:
-        if isinstance(value, dict):
-            ref = value.get("$ref")
-            if isinstance(ref, str) and ref.startswith(_PYDANTIC_DEF_PREFIX):
-                targets.add(ref[len(_PYDANTIC_DEF_PREFIX) :])
-            for item in value.values():
-                _walk(item)
-        elif isinstance(value, list):
-            for item in value:
-                _walk(item)
-
-    _walk(node)
-    return targets
+    return {
+        ref[len(_PYDANTIC_DEF_PREFIX) :]
+        for mapping in _iter_dicts(node)
+        if isinstance(ref := mapping.get("$ref"), str) and ref.startswith(_PYDANTIC_DEF_PREFIX)
+    }
 
 
 def _copy_with_local_defs(node: dict, renames: dict[str, str]) -> dict:
@@ -716,36 +726,26 @@ def _rewrite_local_defs(node: Any, renames: dict[str, str]) -> None:
     owner reaches its distinct nested model while leaving every other ref for
     the global pass.
     """
-    if isinstance(node, dict):
-        ref = node.get("$ref")
+    for mapping in _iter_dicts(node):
+        ref = mapping.get("$ref")
         if isinstance(ref, str) and ref.startswith(_PYDANTIC_DEF_PREFIX):
-            old = ref[len(_PYDANTIC_DEF_PREFIX) :]
-            new = renames.get(old)
+            new = renames.get(ref[len(_PYDANTIC_DEF_PREFIX) :])
             if new is not None:
-                node["$ref"] = f"#/components/schemas/{new}"
-        for value in node.values():
-            _rewrite_local_defs(value, renames)
-    elif isinstance(node, list):
-        for item in node:
-            _rewrite_local_defs(item, renames)
+                mapping["$ref"] = f"#/components/schemas/{new}"
 
 
 def _rewrite_refs(node: Any, token_to_name: dict[str, str]) -> None:
     """Rewrite placeholder and `#/$defs/...` `$ref`s in place throughout `node`."""
-    if isinstance(node, dict):
-        ref = node.get("$ref")
-        if isinstance(ref, str):
-            if ref.startswith(_REF_PLACEHOLDER_PREFIX):
-                name = token_to_name.get(ref[len(_REF_PLACEHOLDER_PREFIX) :])
-                if name is not None:
-                    node["$ref"] = f"#/components/schemas/{name}"
-            elif ref.startswith(_PYDANTIC_DEF_PREFIX):
-                node["$ref"] = f"#/components/schemas/{ref[len(_PYDANTIC_DEF_PREFIX) :]}"
-        for value in node.values():
-            _rewrite_refs(value, token_to_name)
-    elif isinstance(node, list):
-        for item in node:
-            _rewrite_refs(item, token_to_name)
+    for mapping in _iter_dicts(node):
+        ref = mapping.get("$ref")
+        if not isinstance(ref, str):
+            continue
+        if ref.startswith(_REF_PLACEHOLDER_PREFIX):
+            name = token_to_name.get(ref[len(_REF_PLACEHOLDER_PREFIX) :])
+            if name is not None:
+                mapping["$ref"] = f"#/components/schemas/{name}"
+        elif ref.startswith(_PYDANTIC_DEF_PREFIX):
+            mapping["$ref"] = f"#/components/schemas/{ref[len(_PYDANTIC_DEF_PREFIX) :]}"
 
 
 def _register_schema(name: str, schema: dict, registry: dict[str, dict]) -> None:
@@ -1721,19 +1721,14 @@ def _validate_document(schema: dict[str, Any]) -> None:
     known_refs = {f"#/components/schemas/{name}" for name in schemas}
 
     def check_refs(node: Any, where: str) -> None:
-        if isinstance(node, dict):
-            ref = node.get("$ref")
+        for mapping in _iter_dicts(node):
+            ref = mapping.get("$ref")
             if (
                 isinstance(ref, str)
                 and ref.startswith("#/components/schemas/")
                 and ref not in known_refs
             ):
                 raise ValueError(f"{where}: unresolved schema $ref {ref!r}")
-            for value in node.values():
-                check_refs(value, where)
-        elif isinstance(node, list):
-            for item in node:
-                check_refs(item, where)
 
     for path, methods in paths.items():
         if not isinstance(methods, dict):
