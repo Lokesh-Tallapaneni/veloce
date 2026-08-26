@@ -5,7 +5,7 @@ import os
 import pytest
 from hypothesis import settings
 
-from veloce import Request, Veloce
+from veloce import Request
 
 # Hypothesis profiles for the parser fuzz suite. The default keeps the
 # per-example count modest so the fuzz tests run inside the normal `pytest`
@@ -73,18 +73,6 @@ def _short_close_handshake_timeout(monkeypatch):
     from veloce.websocket import WebSocket
 
     monkeypatch.setattr(WebSocket, "CLOSE_HANDSHAKE_TIMEOUT", 0.05)
-
-
-@pytest.fixture
-def app():
-    """Fresh Veloce app with OpenAPI disabled for speed."""
-    return Veloce(debug=True, openapi_url=None)
-
-
-@pytest.fixture
-def app_with_docs():
-    """Veloce app with OpenAPI enabled."""
-    return Veloce(debug=True)
 
 
 def make_request(

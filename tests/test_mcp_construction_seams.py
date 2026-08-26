@@ -72,17 +72,35 @@ def test_a_server_without_search_holds_none():
 
 
 def test_the_session_variable_is_not_typed_as_any():
-    """`Any` silently switched off checking on every reader of `session.hidden`."""
+    """`Any` silently switched off checking on every reader of `session.hidden`.
+
+    Read off the module's `__annotations__` rather than matched in its source
+    text. The previous form asserted the literal string
+    `"_session_var: ContextVar[MCPSession | None]"` appeared and
+    `"ContextVar[Any]"` did not, which pins the *spelling* - a reformat, a line
+    break or an equivalent alias would fail it while the type was still precise,
+    and `ContextVar["Any"]` would pass while it was not.
+    """
     from veloce.contrib.mcp import context
 
-    source = inspect.getsource(context)
-    assert "_session_var: ContextVar[MCPSession | None]" in source
-    assert "_session_var: ContextVar[Any]" not in source
+    annotation = context.__annotations__.get("_session_var")
+    assert annotation is not None, "_session_var carries no annotation at all"
+    assert "Any" not in str(annotation), annotation
+    assert "MCPSession" in str(annotation), annotation
 
 
-def test_the_server_reads_the_session_without_a_cast():
-    source = inspect.getsource(MCPServer.current_session)
-    assert "cast(" not in source
+def test_the_server_returns_the_session_precisely_typed():
+    """What the absent `cast(` was really about.
+
+    The old test asserted `"cast(" not in inspect.getsource(...)`, which pins the
+    absence of a token: it would pass on a body that had been made *less* precise
+    some other way, and fail on a `cast` used for an unrelated reason. The
+    property is that the return type says exactly what comes back, which is what
+    makes a cast unnecessary in the first place.
+    """
+    annotation = inspect.signature(MCPServer.current_session).return_annotation
+    assert annotation is not inspect.Signature.empty
+    assert str(annotation) == "MCPSession | None"
 
 
 # ── A flag reads as a flag ───────────────────────────────────────────
