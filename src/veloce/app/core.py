@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import inspect
 import logging
 import os
 import sys
@@ -963,18 +964,36 @@ class Veloce(
     # ── Registration APIs ──────────────────────────────────
 
     def add_route(self, *args: Any, **kwargs: Any) -> None:
+        """Register a route. See `Router.add_route` for the full signature.
+
+        This override exists only to bracket the base implementation: refuse a
+        mutation once the app is serving, and drop the route caches the new
+        route invalidates. It forwards everything untouched, so the parameters,
+        defaults and `Doc(...)` annotations are the base method's.
+
+        `__doc__` and `__signature__` are re-pointed at the base just below, so
+        `help(app.add_route)` and an editor's signature hint show the documented
+        surface rather than `(*args, **kwargs)`. Restating the parameter list
+        here instead would add a ninth hand-maintained copy of it.
+        """
         self._assert_mutable()
         super().add_route(*args, **kwargs)
         self._invalidate_route_caches()
 
+    # Introspection recovers the documented signature the `*args` forward hides.
+    add_route.__signature__ = inspect.signature(Router.add_route)  # type: ignore[attr-defined]
+
     def include_router(self, router: Any, prefix: str = "", url_prefix: str | None = None) -> None:
-        """Mount a sub-router `include_router`.
+        """Mount a sub-router under an optional path prefix.
 
         Accepts either a `Blueprint` (delegates to `register_blueprint`,
-        honouring its hooks / error handlers / url processors) or a
-        plain `Router` (delegates to `Router.include_router`). The
-        `prefix` and `url_prefix` are interchangeable; both spellings
-        spells it `prefix`, Veloce spells it `url_prefix`.
+        honouring its hooks / error handlers / url processors) or a plain
+        `Router` (delegates to `Router.include_router`).
+
+        `prefix` and `url_prefix` are interchangeable and name the same thing;
+        both spellings are accepted so router-style and blueprint-style calling
+        code can each use the one that reads naturally, and `url_prefix` wins
+        when both are given.
         """
         self._assert_mutable()
         from veloce.blueprints import Blueprint
