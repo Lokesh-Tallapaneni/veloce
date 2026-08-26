@@ -1113,6 +1113,19 @@ class TestClient:
         # an unexpected keyword argument, say - the finaliser still runs, and an
         # `AttributeError` here surfaces through the unraisable hook *above* the
         # real constructor error, burying it.
+        #
+        # The setup lock is restored here as well as in `close()`. The client
+        # disables it on construction and only `close()` put it back, so a client
+        # used without its context manager left the app's setup-lock protection
+        # off for good - a later "registering after serving is refused" check on
+        # that app would then silently not be checking anything. A plain
+        # attribute assignment is safe in a finaliser; the async shutdown
+        # lifecycle is not, and still needs `close()`.
+        prior = getattr(self, "_prior_setup_lock", None)
+        if prior is not None:
+            with contextlib.suppress(Exception):
+                self.app._setup_lock_enabled = prior
+                self._prior_setup_lock = None
         loop = getattr(self, "_loop", None)
         if getattr(self, "_owns_loop", False) and loop is not None and not loop.is_closed():
             with contextlib.suppress(Exception):
