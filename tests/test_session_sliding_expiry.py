@@ -28,13 +28,14 @@ _SECRET = "k" * 32
 async def test_store_touch_refreshes_ttl_without_rewriting_payload():
     store = InMemorySessionStore()
     await store.write("sid", {"user": "alice"}, max_age=10)
-    _, before = store._entries["sid"]
+    before = store.expires_at("sid")
 
     assert await store.touch("sid", max_age=1000) is True
-    payload, after = store._entries["sid"]
+    after = store.expires_at("sid")
+    assert before is not None and after is not None
     assert after > before
-    # Payload object reused, contents unchanged.
-    assert payload == {"user": "alice"}
+    # Payload unchanged - which is why the expiry is what must be observed.
+    assert await store.read("sid") == {"user": "alice"}
 
 
 async def test_store_touch_returns_false_for_absent_id():
@@ -46,7 +47,7 @@ async def test_store_touch_treats_expired_as_absent():
     store = InMemorySessionStore()
     await store.write("sid", {"user": "alice"}, max_age=-1)  # already expired
     assert await store.touch("sid", max_age=1000) is False
-    assert "sid" not in store._entries
+    assert "sid" not in store
 
 
 # ── cookie SessionMiddleware ──────────────────────────────────────────
@@ -139,12 +140,12 @@ def test_server_read_only_does_not_restamp_when_off():
     app, store = _server_app(renew_on_access=False)
     with TestClient(app) as client:
         client.post("/login")
-        (sid,) = store._entries
-        _, before = store._entries[sid]
+        (sid,) = store
+        before = store.expires_at(sid)
         resp = client.get("/read")
     # Default: no cookie re-stamp and store TTL unchanged.
     assert "set-cookie" not in {k.lower() for k in resp.headers}
-    _, after = store._entries[sid]
+    after = store.expires_at(sid)
     assert after == before
 
 
@@ -166,27 +167,27 @@ def test_server_read_only_restamps_when_on(monkeypatch):
     app, store = _server_app(renew_on_access=True)
     with TestClient(app) as client:
         client.post("/login")
-        (sid,) = store._entries
-        _, before = store._entries[sid]
+        (sid,) = store
+        before = store.expires_at(sid)
         resp = client.get("/read")
     cookie = resp.headers.get("set-cookie", "")
     # Cookie re-stamped and store TTL slid forward.
     assert "session=" in cookie
-    _, after = store._entries[sid]
+    after = store.expires_at(sid)
     assert after > before
     # Same id - sliding expiry never rotates the session id.
-    assert sid in store._entries
+    assert sid in store
 
 
 def test_server_untouched_session_never_restamps():
     app, store = _server_app(renew_on_access=True)
     with TestClient(app) as client:
         client.post("/login")
-        (sid,) = store._entries
-        _, before = store._entries[sid]
+        (sid,) = store
+        before = store.expires_at(sid)
         resp = client.get("/notouch")
     assert "set-cookie" not in {k.lower() for k in resp.headers}
-    _, after = store._entries[sid]
+    after = store.expires_at(sid)
     assert after == before
 
 
@@ -196,13 +197,13 @@ def test_server_revoked_before_read_is_treated_as_new():
         client.post("/login")
         # Revoke server-side between requests: the cookie id no longer
         # resolves, so process_request loads a fresh (new) session.
-        store._entries.clear()
+        store.clear()
         resp = client.get("/read")
     # A new empty session that was only read is never written back, so no
     # cookie re-stamp and no resurrection of the revoked entry.
     assert resp.json() == {"user": None}
     assert "set-cookie" not in {k.lower() for k in resp.headers}
-    assert not store._entries
+    assert len(store) == 0
 
 
 async def test_renew_clears_cookie_when_revoked_under_us():

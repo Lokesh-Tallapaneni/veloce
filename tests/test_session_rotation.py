@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from veloce import Request, SessionMiddleware, Veloce
-from veloce.signing import BadSignature
 
 
 def _req(cookie: str = "") -> Request:
@@ -19,7 +18,7 @@ def _req(cookie: str = "") -> Request:
 def test_signer_embeds_timestamp():
     """The cookie payload is a Signer token with three dot-separated parts."""
     mw = SessionMiddleware(secret_key="k" * 32)
-    token = mw._signer.dumps({"a": 1})
+    token = mw.encode_cookie({"a": 1})
     assert token.count(".") == 2  # payload.timestamp.sig — RFC-free shape
 
 
@@ -32,11 +31,10 @@ def test_old_token_rejected_when_past_max_age(monkeypatch):
     real_time = time.time
     fake = [real_time() - 10_000]
     monkeypatch.setattr("veloce.signing.time.time", lambda: fake[0])
-    stale = mw._signer.dumps({"u": "alice"})
+    stale = mw.encode_cookie({"u": "alice"})
     monkeypatch.setattr("veloce.signing.time.time", real_time)
 
-    with pytest.raises(BadSignature):
-        mw._signer.loads(stale, max_age=mw.max_age)
+    assert mw.decode_cookie(stale) is None
 
 
 # ── Secret rotation ──────────────────────────────────────────────────
@@ -45,21 +43,20 @@ def test_old_token_rejected_when_past_max_age(monkeypatch):
 def test_rotation_old_cookie_still_validates():
     """Cookie signed with the old secret still decodes when it's a fallback."""
     old = SessionMiddleware(secret_key="old-secret-" + "x" * 20)
-    cookie_signed_old = old._signer.dumps({"user": "alice"})
+    cookie_signed_old = old.encode_cookie({"user": "alice"})
 
     rotated = SessionMiddleware(secret_key=["new-secret-" + "y" * 20, "old-secret-" + "x" * 20])
-    decoded = rotated._signer.loads(cookie_signed_old)
+    decoded = rotated.decode_cookie(cookie_signed_old)
     assert decoded == {"user": "alice"}
 
 
 def test_rotation_new_cookie_signed_with_primary():
     """New writes use the primary secret — fallback alone can't verify them."""
     rotated = SessionMiddleware(secret_key=["new-secret-" + "y" * 20, "old-secret-" + "x" * 20])
-    new_cookie = rotated._signer.dumps({"v": 2})
+    new_cookie = rotated.encode_cookie({"v": 2})
 
     just_old = SessionMiddleware(secret_key="old-secret-" + "x" * 20)
-    with pytest.raises(BadSignature):
-        just_old._signer.loads(new_cookie)
+    assert just_old.decode_cookie(new_cookie) is None
 
 
 def test_rotation_requires_non_empty_list():
@@ -88,7 +85,7 @@ async def test_round_trip_via_middleware():
 
     # Extract just the cookie value (the bit between `session=` and the first `;`).
     cookie_val = set_cookie.split(";", 1)[0].split("=", 1)[1]
-    decoded = mw._signer.loads(cookie_val, max_age=mw.max_age)
+    decoded = mw.decode_cookie(cookie_val)
     assert decoded == {"hit": 1}
 
 

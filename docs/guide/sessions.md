@@ -470,6 +470,53 @@ async def whoami():
 See the [Flask-style helpers](helpers.md) guide for the full set of
 request-scoped proxies.
 
+## Minting and reading a cookie outside a request
+
+Sometimes there is no request to hang a session on: a fixture that should start
+logged in, a script that hands someone a pre-authenticated link, a test that
+wants to see what a response actually set. `SessionMiddleware` exposes the two
+halves of its cookie handling for that:
+
+```python
+from veloce.middleware.sessions import SessionMiddleware
+
+middleware = SessionMiddleware(secret_key="change-me-in-production")
+
+value = middleware.encode_cookie({"user_id": 7})   # signed cookie value
+middleware.decode_cookie(value)                    # {"user_id": 7}
+middleware.decode_cookie("forged")                 # None
+```
+
+`decode_cookie` returns `None` for a bad signature, a tampered payload, or a
+token older than the middleware would accept - it does not raise. It is the
+same code the request path runs, including the age ceiling that depends on
+whether the session was marked permanent, so a cookie it accepts is a cookie a
+request accepts. Building a `Signer` by hand with the same secret does **not**
+reproduce that: the salt and the two-tier age check are part of the contract.
+
+## Inspecting an in-memory store
+
+`InMemorySessionStore` reads as well as writes, which is what a session count or
+an idle-timeout check needs:
+
+```python
+from veloce.sessions import InMemorySessionStore
+
+store = InMemorySessionStore()
+await store.write("abc", {"user_id": 7}, max_age=3600)
+
+len(store)                  # 1 - live sessions
+"abc" in store              # True
+store.expires_at("abc")     # Unix timestamp, or None
+list(store)                 # ["abc"]
+store.clear()               # revoke everything; returns how many went
+```
+
+All of these agree with `read` about what "present" means: an entry past its
+expiry is absent whether or not the store has swept it yet, and none of them
+evict as a side effect. `expires_at` is the only way to observe a sliding-expiry
+refresh, since `touch` deliberately leaves the payload alone.
+
 ## Next steps
 
 - [Flask-style helpers](helpers.md) — `session`, `flash`, `g`, and the

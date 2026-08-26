@@ -47,13 +47,10 @@ class TestSessions:
         mw = SessionMiddleware(secret_key="test")
 
         # Sign and verify via the underlying Signer.
-        encoded = mw._signer.dumps({"user": "alice"})
-        decoded = mw._signer.loads(encoded)
+        encoded = mw.encode_cookie({"user": "alice"})
+        decoded = mw.decode_cookie(encoded)
         assert decoded["user"] == "alice"
 
-        # Tampered cookie should fail (raises rather than returning None now).
-        from veloce.signing import BadSignature
-
+        # A tampered cookie is refused.
         tampered = encoded[:-5] + "xxxxx"
-        with pytest.raises(BadSignature):
-            mw._signer.loads(tampered)
+        assert mw.decode_cookie(tampered) is None

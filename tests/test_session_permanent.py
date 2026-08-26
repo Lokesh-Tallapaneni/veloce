@@ -23,7 +23,7 @@ def _sign_aged_cookie(mw: SessionMiddleware, payload: dict, age_seconds: int) ->
     real_time = time.time
     try:
         signing.time.time = lambda: real_time() - age_seconds  # type: ignore[attr-defined]
-        return mw._signer.dumps(payload)
+        return mw.encode_cookie(payload)
     finally:
         signing.time.time = real_time  # type: ignore[attr-defined]
 

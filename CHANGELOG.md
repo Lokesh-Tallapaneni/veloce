@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SessionMiddleware.encode_cookie()` / `.decode_cookie()` sign and verify a session cookie outside a request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
+- `InMemorySessionStore` supports `len()`, `in`, iteration, `expires_at()` and `clear()`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `app.iter_routes()` returns each route as `(method, path, RouteInfo)`; `app.routes` remains the six-field summary. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `CompressionMiddleware` negotiates zstd, brotli and gzip from `Accept-Encoding`; install the `brotli` / `zstd` extras to offer the newer codings. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
