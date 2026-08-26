@@ -15,11 +15,13 @@ import asyncio
 import functools
 import importlib
 import ssl
+import sys
+import threading
 
 import pytest
 
 from veloce import Veloce
-from veloce.workers import build_protocol_factory, build_ssl_context
+from veloce.workers import VeloceWorker, build_protocol_factory, build_ssl_context
 
 
 def test_import_veloce_succeeds_without_gunicorn() -> None:
@@ -206,48 +208,90 @@ def test_protocol_request_complete_hook_defaults_none() -> None:
     assert HttpProtocol.on_request_complete is None
 
 
-def test_recycling_counter_logic_trips_at_threshold() -> None:
-    # Model VeloceWorker._count_request without instantiating the worker (which
-    # needs gunicorn): nr increments per request and alive clears at the cap.
-    class _Counter:
-        def __init__(self, max_requests: int) -> None:
-            self.nr = 0
-            self.max_requests = max_requests
-            self.alive = True
+class _RecyclingStub:
+    """The state `VeloceWorker._count_request` touches, without gunicorn.
 
-        def count(self) -> None:
-            self.nr += 1
-            if self.max_requests and self.nr >= self.max_requests:
-                self.alive = False
+    The method is called unbound against this. Modelling the *logic* in the test
+    instead - which is what these tests used to do - meant the shipped method was
+    never executed, so `self._stop.set()` was not covered at all and the two
+    copies could disagree without anything failing.
+    """
 
-    c = _Counter(max_requests=3)
-    c.count()
-    c.count()
-    assert c.alive is True
-    assert c.nr == 2
-    c.count()
-    assert c.alive is False
-    assert c.nr == 3
+    def __init__(self, max_requests: int) -> None:
+        self.nr = 0
+        self.max_requests = max_requests
+        self.alive = True
+        self._stop = threading.Event()
+
+    def count(self) -> None:
+        VeloceWorker._count_request(self)
+
+
+def test_recycling_counter_trips_at_threshold() -> None:
+    worker = _RecyclingStub(max_requests=3)
+    worker.count()
+    worker.count()
+    assert worker.alive is True
+    assert worker.nr == 2
+
+    worker.count()
+    assert worker.alive is False
+    assert worker.nr == 3
+
+
+def test_tripping_the_threshold_wakes_the_heartbeat_loop() -> None:
+    """`_stop` is set so the master can replace the worker promptly.
+
+    The re-implemented counter these tests used omitted this line entirely.
+    """
+    worker = _RecyclingStub(max_requests=1)
+    assert not worker._stop.is_set()
+    worker.count()
+    assert worker._stop.is_set()
+
+
+def test_the_counter_keeps_counting_past_the_threshold() -> None:
+    """A request in flight when the cap trips must still be counted."""
+    worker = _RecyclingStub(max_requests=2)
+    for _ in range(5):
+        worker.count()
+    assert worker.nr == 5
+    assert worker.alive is False
 
 
 def test_recycling_disabled_when_max_requests_zero() -> None:
-    # max_requests == 0 (or sys.maxsize for the disabled case) must never trip.
-    class _Counter:
+    worker = _RecyclingStub(max_requests=0)
+    for _ in range(100):
+        worker.count()
+    assert worker.alive is True
+    assert worker.nr == 100
+    assert not worker._stop.is_set()
+
+
+def test_recycling_disabled_when_max_requests_is_maxsize() -> None:
+    """gunicorn uses `sys.maxsize` for the disabled case, not `0`."""
+    worker = _RecyclingStub(max_requests=sys.maxsize)
+    for _ in range(100):
+        worker.count()
+    assert worker.alive is True
+    assert not worker._stop.is_set()
+
+
+def test_a_missing_max_requests_attribute_does_not_recycle() -> None:
+    """The shipped method reads it with a default; a stub without it must not
+    trip - which the modelled copy could not have shown."""
+
+    class _Bare:
         def __init__(self) -> None:
             self.nr = 0
-            self.max_requests = 0
             self.alive = True
+            self._stop = threading.Event()
 
-        def count(self) -> None:
-            self.nr += 1
-            if self.max_requests and self.nr >= self.max_requests:
-                self.alive = False
-
-    c = _Counter()
-    for _ in range(100):
-        c.count()
-    assert c.alive is True
-    assert c.nr == 100
+    bare = _Bare()
+    for _ in range(10):
+        VeloceWorker._count_request(bare)
+    assert bare.alive is True
+    assert bare.nr == 10
 
 
 def test_protocol_keep_serving_hook_defaults_none() -> None:

@@ -87,43 +87,21 @@ async def test_a_connection_admitted_after_the_latch_starts_draining():
         _reset_drain_latch()
 
 
-# ── The worker drains before it awaits the server ────────────────────
-
-
-async def test_worker_serve_drains_before_awaiting_wait_closed():
-    """The regression: on the old ordering `wait_closed` ran first.
-
-    A stand-in server records when `wait_closed` is awaited; the drain records
-    when it fires. The drain has to come first, or the wait is what blocks.
-    """
-    _reset_drain_latch()
-    order: list[str] = []
-
-    class _Server:
-        def close(self) -> None:
-            order.append("close")
-
-        async def wait_closed(self) -> None:
-            order.append("wait_closed")
-
-    original = HttpProtocol.start_graceful_drain
-
-    def _record() -> None:
-        order.append("drain")
-        original()
-
-    HttpProtocol.start_graceful_drain = staticmethod(_record)  # type: ignore[method-assign]
-    try:
-        # Mirror the worker's teardown block exactly.
-        server = _Server()
-        HttpProtocol.start_graceful_drain()
-        server.close()
-        await server.wait_closed()
-    finally:
-        HttpProtocol.start_graceful_drain = original  # type: ignore[method-assign]
-        _reset_drain_latch()
-
-    assert order.index("drain") < order.index("wait_closed")
+# ── The worker drains before it awaits the server ────────────────
+#
+# `test_worker_serve_drains_before_awaiting_wait_closed` used to live here. It
+# built a stand-in server, called `start_graceful_drain()`, `close()` and
+# `wait_closed()` in that order, and then asserted that the drain came first -
+# the order of four statements the test body had just written. `VeloceWorker.
+# _serve` was never invoked, so it could not fail.
+#
+# Driving the real `_serve` needs a gunicorn worker, and gunicorn is POSIX-only,
+# so it cannot run on every box this suite does. The two source-inspection tests
+# below are the guard instead: they read the shipped teardown block and assert
+# the ordering there. The *behaviour* the ordering exists for - an idle
+# keep-alive connection quiescing, and a connection admitted mid-shutdown
+# starting drained - is covered by the two tests above, against the real
+# `HttpProtocol`.
 
 
 async def test_the_worker_source_orders_the_drain_first():
