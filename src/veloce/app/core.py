@@ -1379,9 +1379,7 @@ class Veloce(
         signature adaptation that lets a hook declare only the arguments it
         wants.
         """
-        return await self._run_after_hooks(
-            request, response, _endpoint_blueprint(request.endpoint)
-        )
+        return await self._run_after_hooks(request, response, _endpoint_blueprint(request.endpoint))
 
     @staticmethod
     def ensure_sync(func: Callable) -> Callable:
