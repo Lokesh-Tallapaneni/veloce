@@ -1257,7 +1257,12 @@ class Response:
         """
         if_match = getattr(request, "if_match", ())
         if not if_match:
-            return self
+            # RFC 9110 Sec. 13.2.2: `If-Unmodified-Since` is evaluated only when
+            # `If-Match` is absent. Skipping it left this the lost-update guard
+            # in name only for a client that sent a date rather than an ETag -
+            # `StaticFiles` has always honoured both, so the two doors disagreed
+            # about what a precondition is.
+            return self._check_unmodified_since(request)
         # `If-Match: *` is an existence precondition (RFC 9110 Sec. 13.1.1):
         # the handler producing this response means the resource exists, so it
         # is satisfied regardless of whether an ETag was attached.
@@ -1269,6 +1274,31 @@ class Response:
             if _etag_matches_strong(ours_etag, tag):
                 return self
         from veloce.exceptions import PreconditionFailed  # avoids response <-> exceptions cycle
+
+        raise PreconditionFailed
+
+    def _check_unmodified_since(self, request: Any) -> Response:
+        """Enforce `If-Unmodified-Since` (RFC 9110 Sec. 13.1.4), or return self.
+
+        Compared at HTTP-date resolution: the header carries whole seconds, so a
+        `Last-Modified` with a fractional part must be floored or every
+        comparison of a resource modified within the same second fails.
+        """
+        since = getattr(request, "if_unmodified_since", None)
+        if since is None:
+            return self
+        raw = header_get(self.headers, HEADER_LAST_MODIFIED)
+        if not raw:
+            # No modification date to compare against, so the precondition
+            # cannot be evaluated and is not a reason to refuse.
+            return self
+        parsed = parse_date(raw)
+        # `parse_date` yields a datetime; `request.if_unmodified_since` yields a
+        # Unix timestamp. Compare as whole seconds - an HTTP-date carries no
+        # finer resolution, so anything else fails within the same second.
+        if parsed is None or int(parsed.timestamp()) <= int(since):
+            return self
+        from veloce.exceptions import PreconditionFailed  # response <-> exceptions cycle
 
         raise PreconditionFailed
 

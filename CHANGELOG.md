@@ -148,6 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Response.check_preconditions` enforces `If-Unmodified-Since` alongside `If-Match`, in RFC 9110 precedence; a date-based precondition was previously ignored. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An exception handler declared `def handler(**kwargs)` receives `request` and `exc`; it was called with an empty mapping. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A dataclass or `TypedDict` return annotation declares a response contract, so the return is filtered rather than served whole. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `response_model=<dataclass>` filters a value of a different dataclass instead of raising; it previously answered `500`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

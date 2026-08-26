@@ -265,6 +265,47 @@ async def profile(request):
     return response.make_conditional(request)
 ```
 
+### Write-side preconditions
+
+`make_conditional` handles the *read* side — it turns a `GET` into a `304` when
+the client already has the current representation.
+[`check_preconditions`](../reference/responses.md#veloce.Response.check_preconditions)
+handles the *write* side: it raises `412 Precondition Failed` when the client's
+"only write if it has not changed" condition no longer holds, which is the guard
+against a lost update.
+
+```python title="app.py"
+from veloce import JSONResponse, Veloce
+
+app = Veloce()
+
+DOCUMENTS = {"readme": {"body": "hello", "modified": 1_700_000_000.0}}
+
+
+@app.put("/documents/{doc_id}")
+async def update(doc_id: str, request):
+    document = DOCUMENTS[doc_id]
+    response = JSONResponse({"id": doc_id})
+    response.add_etag()
+    response.last_modified = document["modified"]
+    # Raises 412 if the client's precondition no longer holds.
+    return response.check_preconditions(request)
+```
+
+Both forms of the condition are honoured, in the precedence RFC 9110 §13.2.2
+defines: `If-Match` is checked first, and `If-Unmodified-Since` only when
+`If-Match` is absent. `If-Match: *` passes whenever a representation exists. A
+concrete `If-Match` tag is compared *strongly* (§8.8.3.1), so the weak ETags
+`add_etag` produces never satisfy one — send `If-Unmodified-Since` instead when
+your ETags are weak.
+
+Call it inside a handler, where the raised `HTTPException` becomes a response.
+
+!!! note "Changed in version 0.13"
+    `check_preconditions` enforces `If-Unmodified-Since`. It previously checked
+    only `If-Match`, so a client sending a date rather than an ETag received no
+    lost-update protection.
+
 ## Cookies
 
 Set cookies with [`set_cookie`](../reference/responses.md#veloce.Response.set_cookie) on the
