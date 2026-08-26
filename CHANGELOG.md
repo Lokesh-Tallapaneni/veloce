@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- `response_model` filters a msgspec struct or `list[Struct]` response as it filters a Pydantic one; it previously shaped nothing on that backend, so a subclass returned under a base-model contract put its extra fields on the wire. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - A credential carrying a non-ASCII byte is refused rather than crashing the request: `decode_jwt` raises `InvalidTokenError`, a forged CSRF token answers `403`, and a PKCE verifier is rejected. All three answered `500` before, pre-authentication. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `CORSMiddleware` emits `Vary: Origin` on every response whose allowed origin could depend on the request, including refusals, so a shared cache cannot serve an unkeyed response to an allowed origin. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

@@ -50,6 +50,11 @@ _REWRITTEN = {
     # Backed by behaviour tests over both copy paths in
     # `test_response_model_dump_kwargs.py`, not by this exemption alone.
     "response_dump_kwargs",
+    # Likewise derived, from `response_model` itself: the `get_origin` result and
+    # the backend classification, hoisted out of the per-response path. Both copy
+    # paths are covered in `test_response_model_msgspec_shaping.py`.
+    "response_model_origin",
+    "response_model_backend",
 }
 
 

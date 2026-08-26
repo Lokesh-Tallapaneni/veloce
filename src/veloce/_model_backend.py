@@ -220,7 +220,20 @@ def shape_through_model(value: Any, model: Any) -> Any:
     conform; the caller decides how to report that.
     """
     if is_pydantic_model(model):
-        return model.model_validate(value).model_dump(mode="json")
+        # Dump a model instance to a mapping *before* validating it. Handing
+        # `model_validate` a subclass instance returns that subclass, and the
+        # dump then carries the subclass's own fields - so a richer object
+        # returned under a base-model contract leaks exactly the fields the
+        # contract excludes. Going through a mapping is what drops them.
+        payload = value.model_dump() if is_pydantic_model(type(value)) else value
+        return model.model_validate(payload).model_dump(mode="json")
+    if is_msgspec_struct(model):
+        # `adapter_for` is a Pydantic `TypeAdapter` and raises
+        # `PydanticSchemaGenerationError` on a Struct, which is why this branch
+        # exists rather than falling through. `convert` from builtins drops any
+        # field the target does not declare and still refuses a value that does
+        # not conform.
+        return _msgspec.to_builtins(_msgspec.convert(_msgspec.to_builtins(value), model))
     adapter = adapter_for(model)
     return adapter.dump_python(adapter.validate_python(value), mode="json")
 

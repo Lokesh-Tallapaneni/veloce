@@ -48,7 +48,15 @@ from veloce._internal import (
     dumps_for,
     offload,
 )
-from veloce._model_backend import _HAS_MSGSPEC, _msgspec, is_msgspec_struct, is_pydantic_model
+from veloce._model_backend import (
+    _HAS_MSGSPEC,
+    ModelBackend,
+    _msgspec,
+    backend_of,
+    is_msgspec_struct,
+    is_pydantic_model,
+    shape_through_model,
+)
 from veloce._pipeline import (
     CompiledPipeline,
 )
@@ -1123,16 +1131,12 @@ class DispatchMixin:
         # The handler may return a dict/BaseModel/list; if the route
         # declared a response_model, route the value through it so
         # extra fields drop, aliases apply, and unset/None filters fire.
-        # A msgspec-struct response_model (or `list[Struct]`) is encoded by the
-        # runtime branch in `_coerce_response`, not reshaped through Pydantic's
-        # `model_dump` / `model_validate`. Both guards are False for every
-        # Pydantic model, so the Pydantic path is unchanged.
-        if (
-            route_info.response_model is not None
-            and not isinstance(result, Response)
-            and not is_msgspec_struct(route_info.response_model)
-            and not _is_struct_list_model(route_info.response_model)
-        ):
+        # Every backend shapes: `_apply_response_model` dispatches a msgspec
+        # struct (or `list[Struct]`) to the backend-agnostic shaper. It used to
+        # be excluded here and reached `_coerce_response` unshaped, so
+        # `response_model` filtered nothing on that backend and a subclass put
+        # its extra fields on the wire.
+        if route_info.response_model is not None and not isinstance(result, Response):
             result = self._apply_response_model(result, route_info)
 
         response = self._coerce_response(result, route_info.response_class)
@@ -1405,7 +1409,7 @@ class DispatchMixin:
         # Read, never mutated: every route shares its own mapping across requests.
         dump_kwargs = route_info.response_dump_kwargs
 
-        origin = get_origin(model)
+        origin = route_info.response_model_origin
         # Sequence-style response models - `response_model=list[Item]` - dump
         # each element through the inner model.
         if origin is list:
@@ -1435,6 +1439,16 @@ class DispatchMixin:
                             )
                             dumped.append(inner.model_validate(payload).model_dump(**dump_kwargs))
                     return dumped
+                if backend_of(inner) is not ModelBackend.NONE:
+                    # msgspec / dataclass / TypedDict elements shape through the
+                    # backend-agnostic shaper. `dump_kwargs` is Pydantic's
+                    # vocabulary and does not apply. An element that is exactly
+                    # the declared type skips the round-trip, as the scalar
+                    # branch below does.
+                    return [
+                        item if type(item) is inner else shape_through_model(item, inner)
+                        for item in result
+                    ]
             return result
 
         # Scalar Pydantic model.
@@ -1456,7 +1470,23 @@ class DispatchMixin:
             validated = model.model_validate(payload)
             return validated.model_dump(**dump_kwargs)
 
-        # Non-pydantic model (e.g. plain class) - pass through unchanged.
+        # msgspec struct / dataclass / TypedDict: shape through the shared
+        # backend-agnostic shaper so a declared output contract filters the same
+        # way whichever kind of type declared it. Skipping this let a subclass
+        # returned under a base-model contract put its extra fields on the wire.
+        # Exactly the declared type carries no field the contract excludes, so it
+        # needs no reshaping and is handed to the encoder as before. Tested
+        # before classifying the backend: `backend_of` walks an isinstance
+        # ladder, and this is the common case on every response.
+        if type(result) is model:
+            return result
+        if route_info.response_model_backend is not ModelBackend.NONE:
+            # A subclass, or a mapping - the case that leaked. The shaper is a
+            # full builtins round-trip, which is why the exact-type check above
+            # keeps it off the common path.
+            return shape_through_model(result, model)
+
+        # Not a model at all (e.g. a plain class) - pass through unchanged.
         return result
 
     @staticmethod
