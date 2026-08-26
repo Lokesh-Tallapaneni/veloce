@@ -144,7 +144,15 @@ def test_a_payload_that_is_all_zero_after_unmasking_keeps_its_length():
 
 
 def _client_frame(payload: bytes, opcode: int = 0x2) -> bytes:
-    """A masked client frame, built the way a browser would."""
+    """A masked client frame, built the way a browser would.
+
+    Deliberately **not** `tests/_ws_frames.client_frame`, which the other
+    websocket modules share: this one masks through `_reference`, the
+    straightforward implementation this module checks the optimised `_unmask`
+    against. Building the frame with the shared helper would mask it with the
+    same code path under test, so a bug in it would cancel out and the
+    comparison would prove nothing.
+    """
     import struct
 
     mask = b"\x11\x22\x33\x44"

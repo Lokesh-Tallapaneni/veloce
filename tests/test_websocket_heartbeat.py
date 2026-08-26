@@ -14,6 +14,7 @@ import struct
 
 import pytest
 
+from tests._ws_frames import client_frame as _client_frame
 from veloce.exceptions import WebSocketDisconnect
 from veloce.status import WS_1006_ABNORMAL_CLOSURE
 from veloce.websocket import WebSocket
@@ -49,15 +50,6 @@ def _make_ws(heartbeat: float | None) -> tuple[WebSocket, _FakeTransport]:
 def _ping_frames(transport: _FakeTransport) -> list[bytes]:
     """Server PING frames (FIN+opcode 0x9) the heartbeat emitted."""
     return [w for w in transport.writes if w and (w[0] & 0x0F) == 0x9]
-
-
-def _client_frame(opcode: int, payload: bytes, fin: bool = True) -> bytes:
-    mask = b"\x11\x22\x33\x44"
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    b0 = (0x80 if fin else 0x00) | opcode
-    n = len(payload)
-    header = bytes([b0, 0x80 | n])
-    return header + mask + masked
 
 
 def test_heartbeat_rejects_non_positive() -> None:

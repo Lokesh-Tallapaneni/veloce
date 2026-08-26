@@ -14,6 +14,7 @@ import struct
 
 import pytest
 
+from tests._ws_frames import client_frame as _client_frame
 from veloce.exceptions import WebSocketDisconnect
 from veloce.websocket import WebSocket, _Utf8Validator
 
@@ -35,21 +36,6 @@ class _FakeTransport:
 def _make_ws() -> tuple[WebSocket, _FakeTransport]:
     transport = _FakeTransport()
     return WebSocket(transport, {"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="}), transport
-
-
-def _client_frame(opcode: int, payload: bytes, fin: bool = True) -> bytes:
-    """Build one masked client→server WebSocket frame (RFC 6455 §5)."""
-    mask = b"\x12\x34\x56\x78"
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    b0 = (0x80 if fin else 0x00) | opcode
-    n = len(payload)
-    if n < 126:
-        header = bytes([b0, 0x80 | n])
-    elif n < 65536:
-        header = bytes([b0, 0x80 | 126]) + struct.pack("!H", n)
-    else:
-        header = bytes([b0, 0x80 | 127]) + struct.pack("!Q", n)
-    return header + mask + masked
 
 
 def _last_close_code(transport: _FakeTransport) -> int:

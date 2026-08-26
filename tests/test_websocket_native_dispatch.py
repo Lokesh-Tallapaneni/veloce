@@ -59,21 +59,6 @@ class _FakeTransport(asyncio.Transport):
         return self.closed
 
 
-def _client_frame(opcode: int, payload: bytes, fin: bool = True) -> bytes:
-    """Build one masked client->server frame (RFC 6455 Sec. 5)."""
-    mask = b"\x12\x34\x56\x78"
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    b0 = (0x80 if fin else 0x00) | opcode
-    n = len(payload)
-    if n < 126:
-        header = bytes([b0, 0x80 | n])
-    elif n < 65536:
-        header = bytes([b0, 0x80 | 126]) + struct.pack("!H", n)
-    else:
-        header = bytes([b0, 0x80 | 127]) + struct.pack("!Q", n)
-    return header + mask + masked
-
-
 def _make_native_ws() -> tuple[WebSocket, _FakeTransport]:
     transport = _FakeTransport()
     ws = WebSocket(transport, {"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="})
