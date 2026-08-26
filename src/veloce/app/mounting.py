@@ -39,6 +39,38 @@ class MountingMixin:
                 return True
         return False
 
+    def _reject_overlapping_prefix(self, prefix: str) -> str:
+        """Normalise `prefix` and refuse it if it overlaps a registered mount.
+
+        Two prefixes overlap when one is a path-segment ancestor of the other,
+        or they are equal. Mounts are tried in a fixed order, so an overlap means
+        one silently shadows the other - and because sub-apps are tried before
+        static handlers, a static mount sharing a prefix with an app mount served
+        nothing at all, in either registration order.
+
+        All three registries are consulted, so the answer does not depend on
+        which entry point registered the other side. Registration-time only: it
+        scans a handful of mounts once per `mount` call and nothing per request.
+        """
+        if prefix and not prefix.startswith("/"):
+            prefix = "/" + prefix
+        registered = [
+            *(existing for existing, _slash, _app in self._mounted_apps),
+            *(existing for existing, _slash, _app in self._asgi_mounts),
+            *(handler.prefix for handler in self._static_handlers),
+        ]
+        for existing in registered:
+            if (
+                prefix == existing
+                or prefix.startswith(existing + "/")
+                or existing.startswith(prefix + "/")
+            ):
+                raise ValueError(
+                    f"mount prefix {prefix or '/'!r} overlaps the "
+                    f"already-mounted prefix {existing or '/'!r}"
+                )
+        return prefix
+
     def mount(self, prefix: str, app: Any, *, expose_mcp: bool = False) -> None:
         """Mount a sub-application at a path prefix.
 
@@ -85,22 +117,7 @@ class MountingMixin:
         prefix = prefix.rstrip("/")
         # A request path always starts with "/"; normalise a prefix given
         # without one so the mount is not silently unreachable.
-        if prefix and not prefix.startswith("/"):
-            prefix = "/" + prefix
-        # Reject an overlapping registration. Two prefixes overlap when
-        # one is a path-segment ancestor of the other (or they are
-        # equal) - mounts are matched in registration order, so an
-        # overlap means one mount silently shadows the other.
-        for existing, _existing_slash, _ in (*self._mounted_apps, *self._asgi_mounts):
-            if (
-                prefix == existing
-                or prefix.startswith(existing + "/")
-                or existing.startswith(prefix + "/")
-            ):
-                raise ValueError(
-                    f"mount prefix {prefix or '/'!r} overlaps the "
-                    f"already-mounted prefix {existing or '/'!r}"
-                )
+        prefix = self._reject_overlapping_prefix(prefix)
         entry = (prefix, prefix + "/", app)
         if isinstance(app, Veloce):
             self._register_feature_state(self._mounted_apps, entry)
@@ -161,6 +178,7 @@ class MountingMixin:
         downgrade the check to a warning when the directory is created after
         the app is constructed.
         """
+        prefix = self._reject_overlapping_prefix(prefix)
         self._register_feature_state(
             self._static_handlers,
             StaticFiles(directory=directory, prefix=prefix, html=html, must_exist=must_exist),

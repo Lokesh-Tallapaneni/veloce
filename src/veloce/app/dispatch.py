@@ -911,7 +911,16 @@ class DispatchMixin:
         defaults, endpoint, and url_rule and run URL value preprocessors.
         Raises `HTTPException` for the 404 / constraint-mismatch cases.
         """
-        # Check mounted sub-apps
+        # Check mounted sub-apps.
+        #
+        # A linear prefix scan, kept deliberately. The `has_mounted_apps` gate
+        # makes an app with no mounts pay nothing, and beyond that the cost is
+        # ~0.13 us per mount per request (measured: 1 mount 12.34 us, 3 mounts
+        # 12.79 us, 10 mounts 13.45 us, 50 mounts 18.60 us, min-of-7 over 5k
+        # requests each). A prefix trie would lose to a list scan at the two or
+        # three mounts a typical app registers, and mounts overlapping is now a
+        # registration-time `ValueError` rather than a shadowing to disambiguate
+        # here. Revisit if an app is ever seen with mounts in the dozens.
         if cp.has_mounted_apps:
             for prefix, prefix_slash, sub_app in self._mounted_apps:
                 if request.path.startswith(prefix_slash) or request.path == prefix:

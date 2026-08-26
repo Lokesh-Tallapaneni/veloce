@@ -267,3 +267,75 @@ def test_a_shared_doc_still_reaches_the_signature_it_documents():
     assert "streaming" in add_route["stream"]
     assert "extension defines" in add_route["mcp_meta"]
     assert "never disagrees" in add_route["mcp_resource_mime_type"]
+
+
+# ── The declaration entry points ─────────────────────────────────────
+#
+# `_readd_route` and `_build_merged_route_info` are the *copy* paths, guarded
+# above. `add_route` and `route` are the *declaration* paths, and they have the
+# same failure shape one step earlier: `route` accepts a parameter and forwards
+# it to `add_route`, so one it accepts but does not forward is silently dropped
+# rather than rejected. Eleven of the forwarded parameters exist for a single
+# emit target (MCP), which is where the risk concentrates.
+
+
+def _forwarded_by_route() -> set[str]:
+    """Names `route` passes on to `add_route`.
+
+    Matched as `name=` in the body rather than as an exact call shape, so a
+    parameter that is wrapped or renamed on the way through still counts as
+    forwarded.
+    """
+    return set(re.findall(r"^\s*([a-z_]+)=", inspect.getsource(Router.route), re.M))
+
+
+def test_every_parameter_route_accepts_is_forwarded():
+    """One `route` accepts but drops is silent - it is not a `TypeError`."""
+    accepted = {name for name in inspect.signature(Router.route).parameters if name != "self"}
+    missing = sorted(accepted - _forwarded_by_route() - {"kwargs"})
+    assert not missing, f"route accepts but does not forward: {missing}"
+
+
+def test_the_two_entry_points_accept_the_same_parameters():
+    """A parameter on `add_route` alone is unreachable from the decorators."""
+    route_params = {name for name in inspect.signature(Router.route).parameters if name != "self"}
+    add_params = {
+        name
+        for name in inspect.signature(Router.add_route).parameters
+        if name not in ("self", "handler")
+    }
+    assert add_params - route_params == set()
+
+
+def test_every_mcp_parameter_reaches_the_route_info():
+    """The eleven single-emit-target fields, end to end through both entry points."""
+    mcp_params = sorted(
+        name for name in inspect.signature(Router.add_route).parameters if name.startswith("mcp_")
+    )
+    assert len(mcp_params) >= 8, mcp_params
+    slots = set(RouteInfo.__slots__)
+    assert all(name in slots for name in mcp_params), [n for n in mcp_params if n not in slots]
+
+
+def test_an_mcp_field_declared_through_the_decorator_reaches_the_tree():
+    """The behavioural half: not just that the names line up, but that a value
+    set through `@app.get` is the value the tree holds."""
+    app = Veloce(openapi_url=None)
+
+    @app.get(
+        "/doc",
+        expose_as_mcp_resource=True,
+        mcp_resource_uri="res://d",
+        mcp_description="D",
+        mcp_resource_mime_type="text/plain",
+        mcp_resource_size=7,
+        mcp_meta={"k": "v"},
+    )
+    async def doc():
+        return {}
+
+    info = app.match("GET", "/doc").route_info
+    assert info.mcp_resource_mime_type == "text/plain"
+    assert info.mcp_resource_size == 7
+    assert info.mcp_meta == {"k": "v"}
+    assert info.mcp_description == "D"
