@@ -230,7 +230,25 @@ def test_an_mcp_mount_is_prefixed():
 
     app.mount_mcp(transport="http", path="/mcp")
     client = TestClient(app)
-    assert client.post("/api/mcp", json={}, headers={"Accept": "application/json"}).status_code
+
+    # A real handshake, so this proves the MCP endpoint is mounted here rather
+    # than that *something* answered. The previous assertion was a bare
+    # `assert ....status_code`, which every HTTP status satisfies - it could not
+    # have failed even if the mount had landed nowhere.
+    handshake = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "1"},
+        },
+    }
+    prefixed = client.post("/api/mcp", json=handshake, headers={"Accept": "application/json"})
+    assert prefixed.status_code == 200
+    assert prefixed.json()["result"]["serverInfo"]
+
     assert client.post("/mcp", json={}, headers={"Accept": "application/json"}).status_code == 404
 
 
