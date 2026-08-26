@@ -155,6 +155,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AcceptHeader.best_match` honours an explicit `q=0` on a non-MIME header, so `Accept-Encoding: gzip;q=0, *` no longer selects `gzip`. Affects `request.accept_encodings` and `request.accept_languages`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `veloce.make_response` returns a `Response` argument unchanged; it previously JSON-encoded the object into its own repr. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `veloce.make_response` types a `bytes` body as `text/html`, matching `Veloce.make_response` and dispatch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- The startup banner prints the installed framework version; it printed the app's `version=` argument, defaulting to `0.1.0`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A `TestClient` constructor error surfaces instead of being buried by an `AttributeError` from the finaliser. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A validation error reports an array index in `loc` as an integer on every body path, matching the published `ValidationError` schema. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude_unset` and `exclude_defaults` to a nested model, not only to one passed in directly. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `jsonable_encoder` applies `exclude_none` to an arbitrary object's attributes, matching every other branch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
