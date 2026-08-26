@@ -797,8 +797,7 @@ class DispatchMixin:
     ) -> Response:
         """Run a registered exception handler and apply the response phase."""
         response = await self._dispatch_exc_handler(handler, request, exc)
-        if cp.http_post is not None:
-            response = await self._run_response_phase(cp.http_post, request, response, excluded)
+        response = await self._run_response_phase(cp.http_post, request, response, excluded)
         return response
 
     async def _default_http_exception_response(
@@ -815,8 +814,7 @@ class DispatchMixin:
             status_code=exc.status_code,
             headers=exc.headers,
         )
-        if cp.http_post is not None:
-            response = await self._run_response_phase(cp.http_post, request, response, excluded)
+        response = await self._run_response_phase(cp.http_post, request, response, excluded)
         return response
 
     async def _shape_server_error(
@@ -842,8 +840,7 @@ class DispatchMixin:
                 body=body,
                 content_type=content_type,
             )
-            if cp.http_post is not None:
-                response = await self._run_response_phase(cp.http_post, request, response, excluded)
+            response = await self._run_response_phase(cp.http_post, request, response, excluded)
             return response
         return await self._handle_error(
             request,
@@ -1003,10 +1000,7 @@ class DispatchMixin:
                 # exist on the parent. `root_path` is "" for a top-level app, so
                 # the unmounted case is unchanged.
                 response = RedirectResponse(request.root_path + alt, status_code=code)
-                if cp.http_post is not None:
-                    response = await self._run_response_phase(
-                        cp.http_post, request, response, excluded
-                    )
+                response = await self._run_response_phase(cp.http_post, request, response, excluded)
                 return response
 
         if match is None:
@@ -1019,10 +1013,9 @@ class DispatchMixin:
                     response = self.make_default_options_response(
                         request.path, allowed_methods=allowed
                     )
-                    if cp.http_post is not None:
-                        response = await self._run_response_phase(
-                            cp.http_post, request, response, excluded
-                        )
+                    response = await self._run_response_phase(
+                        cp.http_post, request, response, excluded
+                    )
                     return response
                 return await self._handle_error(
                     request,
