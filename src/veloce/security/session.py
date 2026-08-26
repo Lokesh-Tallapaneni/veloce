@@ -39,6 +39,11 @@ SESSION_SUBJECT_KEY = "_auth_subject"
 # payload round-trips through JSON.
 SESSION_SCOPES_KEY = "_auth_scopes"
 
+# The cookie `SessionMiddleware` writes by default. `SessionAuth` cannot read the
+# middleware's configuration - it is constructed independently of it - so this is
+# what it advertises in the schema unless told otherwise.
+DEFAULT_SESSION_COOKIE_NAME = "session"
+
 
 class SessionAuth(SecurityScheme):
     """Resolve the current `Principal` from the request's session.
@@ -73,9 +78,14 @@ class SessionAuth(SecurityScheme):
     Pass `loader=` to build a richer principal from the stored subject (a
     database lookup, say); it receives `(request, subject)` and returns a
     `Principal`, or `None` to reject the session.
+
+    The OpenAPI document describes this as an `apiKey` credential read from the
+    session cookie. Pass `cookie_name=` when `SessionMiddleware` is configured
+    with a name other than the default, so the document names the cookie a
+    client actually has to send.
     """
 
-    __slots__ = ("loader", "scopes_key", "subject_key")
+    __slots__ = ("cookie_name", "loader", "scopes_key", "subject_key")
 
     def __init__(
         self,
@@ -96,11 +106,16 @@ class SessionAuth(SecurityScheme):
             Callable[[Request, str], Principal | None] | None,
             Doc("Build the principal from the stored subject instead of the default mapping."),
         ] = None,
+        cookie_name: Annotated[
+            str,
+            Doc("Session cookie name to publish in the OpenAPI document."),
+        ] = DEFAULT_SESSION_COOKIE_NAME,
     ) -> None:
         self.auto_error = auto_error
         self.subject_key = subject_key
         self.scopes_key = scopes_key
         self.loader = loader
+        self.cookie_name = cookie_name
 
     def __call__(self, request: Request) -> Principal | None:
         """Return the session's `Principal`, publishing it for the request."""
@@ -130,6 +145,15 @@ class SessionAuth(SecurityScheme):
             )
         set_principal(principal)
         return principal
+
+    def openapi_scheme(self) -> dict[str, Any] | None:
+        """The session credential, as a cookie-borne API key.
+
+        OpenAPI has no session-specific scheme type; a cookie credential is an
+        `apiKey` read from `cookie`, which is how `APIKeyCookie` describes the
+        same transport.
+        """
+        return {"type": "apiKey", "in": "cookie", "name": self.cookie_name}
 
 
 def login_session(

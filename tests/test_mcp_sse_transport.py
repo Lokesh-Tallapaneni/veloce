@@ -147,6 +147,61 @@ async def test_the_endpoint_event_reflects_a_custom_message_path():
         assert frame["data"].startswith("/agent/messages?sessionId=")
 
 
+# ── The reconnect hint ───────────────────────────────────────────────
+#
+# The stream carried a closing `retry` frame after its loop, but nothing ever
+# queued the sentinel whose `break` was the only way to reach it - so on this
+# transport the hint was never sent and a dropped client fell back to its own
+# default. This stream only ends once the client is already gone, so there is
+# no point at which a closing frame could be delivered; WHATWG SSE applies
+# `retry` as soon as it is parsed, so it rides the first frame instead.
+
+
+async def test_the_first_frame_carries_the_reconnect_hint():
+    """The defect: no frame on this transport carried `retry` at all."""
+    app = _app()
+    async with _Stream(app) as stream:
+        frame = await stream.event()
+        assert frame["retry"] == "3000"
+
+
+async def test_the_reconnect_hint_rides_the_endpoint_frame():
+    """One frame, so a client has both before it can do anything."""
+    app = _app()
+    async with _Stream(app) as stream:
+        frame = await stream.event()
+        assert frame["event"] == "endpoint"
+        assert "retry" in frame
+        assert frame["data"].startswith("/messages?sessionId=")
+
+
+async def test_the_hint_is_sent_before_any_message():
+    """A hint that arrived after the first tool result would be too late for a
+    client that dropped during the call."""
+    app = _app()
+    async with _Stream(app) as stream:
+        first = await stream.event()
+        endpoint = first["data"]
+        assert "retry" in first
+        async with AsyncTestClient(app) as client:
+            await client.post(endpoint, json=_call(1, "add", {"a": 1, "b": 2}))
+            assert (await stream.message())["id"] == 1
+
+
+async def test_later_frames_do_not_repeat_the_hint():
+    """`retry` is sticky per WHATWG SSE, so repeating it on every frame would be
+    bytes on the wire for nothing."""
+    app = _app()
+    async with _Stream(app) as stream:
+        endpoint = (await stream.event())["data"]
+        async with AsyncTestClient(app) as client:
+            await client.post(endpoint, json=_call(1, "add", {"a": 1, "b": 2}))
+            frame = await stream.event()
+            while frame.get("event") != "message":
+                frame = await stream.event()
+            assert "retry" not in frame
+
+
 async def test_each_stream_gets_its_own_session():
     app = _app()
     async with _Stream(app) as first, _Stream(app) as second:

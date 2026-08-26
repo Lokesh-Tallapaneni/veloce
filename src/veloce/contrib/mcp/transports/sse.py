@@ -80,10 +80,6 @@ _ENDPOINT_EVENT = "endpoint"
 _MESSAGE_EVENT = "message"
 
 
-# Queued by the POST half to tell a stream generator to finish.
-_STREAM_END = object()
-
-
 class _SSEConnection:
     """One open stream: its session, its outbound queue, and its caller."""
 
@@ -238,16 +234,17 @@ async def _stream(
     same channel its response will use - the ordering a client relies on.
     """
     endpoint = f"{message_path}?sessionId={quote(session_id, safe='')}"
-    # The client cannot speak until it has this, so it is the first frame.
-    yield ServerSentEvent(data=endpoint, event=_ENDPOINT_EVENT)
+    # The client cannot speak until it has this, so it is the first frame. It
+    # also carries the reconnect hint: WHATWG SSE applies `retry` as soon as it
+    # is parsed, and this stream only ends when the client is already gone, so
+    # a closing frame would never arrive.
+    yield ServerSentEvent(data=endpoint, event=_ENDPOINT_EVENT, retry=_SSE_RETRY_MS)
 
     conn_token = server.register_connection(connection.session, connection.send)
     pending: set[asyncio.Task[None]] = set()
     try:
         while True:
             item = await connection.queue.get()
-            if item is _STREAM_END:
-                break
             if isinstance(item, _Dispatch):
                 task = asyncio.ensure_future(_run(server, connection, item))
                 pending.add(task)
@@ -270,7 +267,6 @@ async def _stream(
         # of the process. The session is minted per stream here, so it has no
         # life beyond this point to protect.
         server.evict_session(connection.session)
-    yield ServerSentEvent(retry=_SSE_RETRY_MS)
 
 
 async def _run(server: MCPServer, connection: _SSEConnection, dispatch: _Dispatch) -> None:
