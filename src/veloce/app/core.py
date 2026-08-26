@@ -1355,7 +1355,10 @@ class Veloce(
             result = await self._call_handler(hook, {"request": request})
             if result is not None:
                 return result
-        bp = _endpoint_blueprint(getattr(request, "endpoint", None))
+        # Read directly: `endpoint` is a `Request.__slots__` field assigned in
+        # `__init__`, so the `getattr` default could never apply - and reading it
+        # the same way `_run_before_hooks` does keeps the two walks comparable.
+        bp = _endpoint_blueprint(request.endpoint)
         if bp is not None and self._bp_before_hooks:
             for hook in self._bp_before_hooks.get(bp, ()):
                 result = await self._call_handler(hook, {"request": request})
@@ -1377,7 +1380,7 @@ class Veloce(
         wants.
         """
         return await self._run_after_hooks(
-            request, response, _endpoint_blueprint(getattr(request, "endpoint", None))
+            request, response, _endpoint_blueprint(request.endpoint)
         )
 
     @staticmethod

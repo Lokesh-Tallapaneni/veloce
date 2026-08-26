@@ -191,6 +191,28 @@ class ErrorsMixin:
         else:
             self.logger.error("Exception on request", exc_info=exc)
 
+    async def _run_exc_handler(
+        self, handler: Callable, exc: BaseException, request: Request | None
+    ) -> Response:
+        """Invoke a matched error handler and coerce whatever it returns.
+
+        Shared by `handle_http_exception` and `handle_user_exception`, which
+        carried this block byte-for-byte twice. Both are out-of-band entry
+        points, so a caller may have no request to hand: the synthetic `GET /`
+        exists so a handler that reads `request` gets an object rather than
+        `None`, and a real request is used whenever the caller has one.
+
+        The error path, so the extra call costs nothing that matters.
+        """
+        if request is None:
+            request = Request(
+                method=HTTP_METHOD_GET, path="/", query_string="", headers={}, body=b""
+            )
+        result = await self._call_exc_handler(handler, request, exc)
+        if isinstance(result, Response):
+            return result
+        return self._coerce_response(result)
+
     async def handle_http_exception(
         self, exc: HTTPException, request: Request | None = None
     ) -> Response:
@@ -213,14 +235,7 @@ class ErrorsMixin:
             exc.status_code, request
         ) or self._find_scoped_exception_handler(type(exc), request)
         if handler is not None:
-            if request is None:
-                request = Request(
-                    method=HTTP_METHOD_GET, path="/", query_string="", headers={}, body=b""
-                )
-            result = await self._call_exc_handler(handler, request, exc)
-            if isinstance(result, Response):
-                return result
-            return self._coerce_response(result)
+            return await self._run_exc_handler(handler, exc, request)
         return JSONResponse(
             http_exception_payload(exc),
             status_code=exc.status_code,
@@ -269,14 +284,7 @@ class ErrorsMixin:
             return await self.handle_http_exception(exc, request=request)
         handler = self._find_scoped_exception_handler(type(exc), request)
         if handler is not None:
-            if request is None:
-                request = Request(
-                    method=HTTP_METHOD_GET, path="/", query_string="", headers={}, body=b""
-                )
-            result = await self._call_exc_handler(handler, request, exc)
-            if isinstance(result, Response):
-                return result
-            return self._coerce_response(result)
+            return await self._run_exc_handler(handler, exc, request)
         self.log_exception(exc, request)
         return JSONResponse(
             {"detail": MSG_INTERNAL_SERVER_ERROR},
