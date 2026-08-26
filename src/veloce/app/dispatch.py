@@ -1351,8 +1351,16 @@ class DispatchMixin:
         """Call an exception handler, adapting kwargs to match its signature."""
         flags = _exc_handler_sig_cache.get(handler)
         if flags is None:
-            params = set(inspect.signature(handler).parameters)
-            flags = ("request" in params, "exc" in params)
+            params = inspect.signature(handler).parameters
+            # A handler taking `**kwargs` accepts whatever is offered - the same
+            # rule `_call_after_hook` applies. Without this the name test below
+            # matched nothing against a `(**kwargs)` signature and the handler
+            # was called with an empty dict, unable to see the exception it was
+            # handling.
+            if any(p.kind is p.VAR_KEYWORD for p in params.values()):
+                flags = (True, True)
+            else:
+                flags = ("request" in params, "exc" in params)
             with contextlib.suppress(TypeError):
                 _exc_handler_sig_cache[handler] = flags
         wants_request, wants_exc = flags

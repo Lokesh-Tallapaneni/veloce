@@ -148,6 +148,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An exception handler declared `def handler(**kwargs)` receives `request` and `exc`; it was called with an empty mapping. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- A dataclass or `TypedDict` return annotation declares a response contract, so the return is filtered rather than served whole. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+- `response_model=<dataclass>` filters a value of a different dataclass instead of raising; it previously answered `500`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A tuple return that is not `(body, status[, headers])` reads the same with and without a `response_class`; the `response_class` path took the first element and discarded the rest. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A parameter declared on a dependency is published in the OpenAPI document; it was enforced with a `422` but absent from the schema. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A tool declared with `@app.mcp_tool` renders its result in the app's JSON dialect, as a route-exposed tool already did; the two disagreed and the route-backed one only matched by accident. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

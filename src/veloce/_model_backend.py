@@ -109,6 +109,13 @@ def resolve_response_contract(handler: Callable[..., Any]) -> Any:
         return None
     if is_pydantic_model(annotation) or is_msgspec_struct(annotation):
         return annotation
+    # A dataclass or `TypedDict` declares an object shape as much as a model
+    # does. `resolve_return_model` accepts both, and this function documents
+    # itself as a *widening* of that one - dropping a shape the narrower resolver
+    # accepts meant `-> SomeDataclass` produced an MCP `outputSchema` and no HTTP
+    # response contract, so the return went unfiltered.
+    if is_adaptable_model(annotation):
+        return annotation
     origin = get_origin(annotation)
     if origin is list:
         args = get_args(annotation)
@@ -235,6 +242,13 @@ def shape_through_model(value: Any, model: Any) -> Any:
         # not conform.
         return _msgspec.to_builtins(_msgspec.convert(_msgspec.to_builtins(value), model))
     adapter = adapter_for(model)
+    # A dataclass adapter refuses an instance of a *different* dataclass
+    # outright ("Input should be a dictionary or an instance of X"), so an
+    # unrelated richer object under a narrower contract was a 500 rather than a
+    # filtered body. Dumping to a mapping first both fixes that and drops the
+    # extra fields, the same way the Pydantic branch above does.
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        value = dataclasses.asdict(value)
     return adapter.dump_python(adapter.validate_python(value), mode="json")
 
 
