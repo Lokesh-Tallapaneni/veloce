@@ -861,19 +861,22 @@ class MCPServer(TasksMixin, InvocationMixin):
         if result is _DEFERRED_RESPONSE:
             # A long-lived request answered by its own closure, not here.
             return None
-        if is_modern and isinstance(result, dict) and "resultType" in result:
-            pass
-        elif is_modern and isinstance(result, dict) and "task" in result:
-            # A task handle is its own result type; the client polls rather than
-            # reading a completed answer here.
-            result = {"resultType": RESULT_TYPE_TASK, **result}
-        elif is_modern and isinstance(result, dict):
-            # Required on every modern result. A legacy client must never see it:
-            # its revision has no such field and the server info below belongs to
-            # the modern shape only.
-            result = {"resultType": RESULT_TYPE_COMPLETE, **result}
-            if method in _CACHEABLE_METHODS:
-                self._add_cache_hints(method, result, session)
+        # `resultType` is required on every modern result and must never reach a
+        # legacy client - its revision has no such field. The shared guard is
+        # tested once rather than repeated per arm, and the "already tagged" case
+        # is stated instead of being an uncommented bare `pass`.
+        if is_modern and isinstance(result, dict):
+            if "resultType" in result:
+                # A handler that tagged its own result keeps that tag.
+                pass
+            elif "task" in result:
+                # A task handle is its own result type; the client polls rather
+                # than reading a completed answer here.
+                result = {"resultType": RESULT_TYPE_TASK, **result}
+            else:
+                result = {"resultType": RESULT_TYPE_COMPLETE, **result}
+                if method in _CACHEABLE_METHODS:
+                    self._add_cache_hints(method, result, session)
         if attached_meta and isinstance(result, dict):
             result = _attach_result_meta(result, attached_meta)
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
