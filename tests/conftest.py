@@ -33,6 +33,26 @@ def _clear_graceful_drain_latch():
     HttpProtocol.reset_graceful_drain()
 
 
+@pytest.fixture(autouse=True)
+def _short_close_handshake_timeout(monkeypatch):
+    """Shorten the WebSocket close handshake for the suite.
+
+    `close()` on a server-initiated close waits for the peer's reply close frame
+    (RFC 6455 Sec. 7.1.1) before dropping the transport, bounded by
+    `CLOSE_HANDSHAKE_TIMEOUT = 5.0`. A test driving a raw socket through a fake
+    transport has no peer to reply, so every such `close()` blocked the full five
+    seconds: **25 tests, 125 seconds** - 93% of the websocket suite's runtime and
+    over half the whole suite's, spent waiting for a reply that was never coming.
+
+    No test asserted on the timeout's duration, so nothing is lost by shortening
+    it here - and what the timeout actually does is now covered properly, and
+    deterministically, in `tests/test_websocket_close_handshake.py`.
+    """
+    from veloce.websocket import WebSocket
+
+    monkeypatch.setattr(WebSocket, "CLOSE_HANDSHAKE_TIMEOUT", 0.05)
+
+
 @pytest.fixture
 def app():
     """Fresh Veloce app with OpenAPI disabled for speed."""
