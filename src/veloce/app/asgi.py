@@ -364,15 +364,27 @@ class AsgiMixin:
 
         Deliberately separate from the buffered emit in `__call__`: that one is
         the hot path and is written inline against precomputed caches, and
-        routing a reject through it would mean restructuring it.
+        routing a reject through it would mean restructuring it. The split is
+        intentional, but the *rules* must not diverge - keep the bodiless-status
+        handling below in step with the buffered branch in `_asgi_app`.
         """
         body = response.body
         headers, has_ct, has_cl = (
             _build_asgi_headers(response.headers) if response.headers else ([], False, False)
         )
+        # A bodiless status carries no payload and no default content-type
+        # (RFC 9110 Sec. 15.3.5 / 15.3.6 / 15.4.5), the same rule the buffered
+        # branch applies. Every current caller of this helper uses a
+        # body-permitting status, so nothing reaches it today - but this is the
+        # general "emit an already-built Response" path, and the next caller
+        # should not have to know the two branches disagreed.
+        body_allowed = status.status_permits_body(response.status_code)
+        if not body_allowed:
+            body = b""
         if not has_cl:
             headers.append((RAW_HEADER_CONTENT_LENGTH, str(len(body)).encode("ascii")))
-        if not has_ct:
+        # An explicit handler-set content-type still survives via `has_ct`.
+        if not has_ct and body_allowed:
             headers.append((RAW_HEADER_CONTENT_TYPE, response.content_type.encode()))
         await send(
             {
