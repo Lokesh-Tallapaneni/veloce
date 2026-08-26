@@ -398,6 +398,11 @@ from veloce import ServerSessionMiddleware, SessionStore, Veloce
 
 
 class RedisSessionStore(SessionStore):
+    # `SessionStore` is slotted, so declare the store's own attributes rather
+    # than letting the subclass fall back to a `__dict__`. The shipped
+    # `veloce.contrib.redis` backends do the same.
+    __slots__ = ("_client",)
+
     def __init__(self, client: Any) -> None:
         self._client = client
 
