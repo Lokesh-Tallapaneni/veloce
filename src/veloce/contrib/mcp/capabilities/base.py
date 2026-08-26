@@ -57,6 +57,22 @@ class Capability:
         """Return the ``{json_rpc_method: handler}`` map this capability answers."""
         raise NotImplementedError
 
+    def extensions(self) -> dict[str, Any] | None:
+        """Return this capability's entry for the advertised extensions object.
+
+        `None` - the default - means this capability contributes no extension,
+        which is true of most of them. A capability contributes an entry only
+        when the feature it names is actually available, so a server with no
+        task-capable tool advertises no tasks extension and a client will never
+        offer one.
+
+        Declared here rather than probed for. The server used to resolve this by
+        `getattr(capability, "extensions", None)`, so the third member of the
+        contract was invisible to anyone reading the base class - and this class
+        is the documented seam an out-of-tree capability implements against.
+        """
+        return None
+
 
 class _ServerCapability(Capability):
     """A capability bound to its `MCPServer`.

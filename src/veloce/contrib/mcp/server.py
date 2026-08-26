@@ -1199,10 +1199,7 @@ class MCPServer(TasksMixin, InvocationMixin):
         """
         advertised: dict[str, Any] = {}
         for capability in self._capabilities:
-            contributed = getattr(capability, "extensions", None)
-            if contributed is None:
-                continue
-            entry = contributed()
+            entry = capability.extensions()
             if entry:
                 advertised.update(entry)
         return advertised

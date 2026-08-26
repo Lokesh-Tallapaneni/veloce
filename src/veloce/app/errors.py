@@ -156,8 +156,9 @@ class ErrorsMixin:
 
         return decorator
 
-    # Veloce names this `errorhandler` (one word, no underscore). The
-    # alias keeps calling code readable; semantics are identical.
+    # A one-word spelling of the same decorator, for code that reads better
+    # without the underscore. Semantics are identical - this is an alias, not a
+    # second implementation.
     errorhandler = exception_handler
 
     def add_exception_handler(self, exc_class_or_status: type | int, handler: Callable) -> None:

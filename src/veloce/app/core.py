@@ -1159,11 +1159,10 @@ class Veloce(
     def package_root(self) -> str:
         """Filesystem path of the directory containing `import_name`'s module.
 
-        Veloce exposes this as `app.root_path`; veloce already uses
-        `Veloce.root_path` for the ASGI mount prefix, so we surface the
-        package-directory variant under a non-conflicting name. Useful
-        for resolving template / static directories relative to the
-        app's source file.
+        Named `package_root` rather than `root_path` because `Veloce.root_path`
+        already means the ASGI mount prefix, which is a different thing entirely
+        - one is a location on disk, the other a URL prefix. Useful for resolving
+        template and static directories relative to the app's source file.
         """
         mod = sys.modules.get(self.import_name)
         mod_file = getattr(mod, "__file__", None) if mod else None
