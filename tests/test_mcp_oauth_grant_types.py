@@ -277,8 +277,19 @@ def test_the_code_grant_still_issues_a_token(grants):
     assert response.json()["access_token"]
 
 
-def test_a_code_only_client_gets_no_refresh_token():
-    """It cannot use one, so issuing one would be a token nobody may redeem."""
+def test_a_code_only_clients_refresh_token_is_unusable():
+    """Named for what it checks.
+
+    It used to be `test_a_code_only_client_gets_no_refresh_token`, which is a
+    condition that never holds: `_issue_tokens` puts a `refresh_token` in every
+    response unconditionally. The test guarded its real assertion behind
+    `if "refresh_token" in body:`, so the branch it existed for ran while the
+    name said the opposite - and had the server ever stopped issuing one, the
+    test would have passed by taking neither path.
+
+    What matters is not whether the token exists but that this client cannot
+    redeem it, which is now asserted directly.
+    """
     _store, client = _build()
     registered = _register(client, grant_types=["authorization_code"])
     code = _authorize(client, registered["client_id"])
@@ -293,17 +304,18 @@ def test_a_code_only_client_gets_no_refresh_token():
         },
     ).json()
     assert body["access_token"]
-    if "refresh_token" in body:
-        # If one is issued anyway, it must at least be unusable by this client.
-        refreshed = client.post(
-            "/token",
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": body["refresh_token"],
-                "client_id": registered["client_id"],
-            },
-        )
-        assert refreshed.json()["error"] == "unauthorized_client"
+    # Asserted, not branched on: the token is always issued, so a conditional
+    # here only hides a regression that stopped issuing it.
+    assert "refresh_token" in body
+    refreshed = client.post(
+        "/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": body["refresh_token"],
+            "client_id": registered["client_id"],
+        },
+    )
+    assert refreshed.json()["error"] == "unauthorized_client"
 
 
 def test_a_full_client_can_refresh_end_to_end():
@@ -321,8 +333,10 @@ def test_a_full_client_can_refresh_end_to_end():
             "client_id": registered["client_id"],
         },
     ).json()
-    if "refresh_token" not in first:
-        pytest.skip("this server does not issue refresh tokens for this flow")
+    # Asserted rather than skipped. A `pytest.skip` here turns the regression
+    # this test exists to catch - the server no longer issuing a refresh token -
+    # into a silent pass, which is the one outcome that must not be quiet.
+    assert "refresh_token" in first, "the token endpoint stopped issuing a refresh token"
     second = client.post(
         "/token",
         data={

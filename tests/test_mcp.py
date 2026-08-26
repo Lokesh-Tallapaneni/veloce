@@ -356,8 +356,19 @@ def test_call_pydantic_body_model():
     assert out[0]["result"]["content"][0]["text"] == "3x widget"
 
 
-def test_missing_required_argument_is_invalid_params():
-    """A missing required argument is an invalid-params transport error."""
+def test_missing_required_argument_is_an_in_band_tool_error():
+    """A missing required argument is reported in band, not on the error channel.
+    An argument-binding failure is a **tool execution** error reported in band
+    (`result.isError`), not a JSON-RPC transport error. The spec reserves the
+    error channel for an unknown tool, a malformed request or a server fault,
+    and clients feed only execution errors back to the model - reporting a bad
+    argument there would deny the model the one signal it can act on.
+
+    Named for that. It used to be `..._is_invalid_params`, with a docstring and
+    a leading comment both asserting the opposite of the assertion below; a
+    later round added a rebuttal comment above the assertion rather than
+    correcting the name and the prose, so the test read as self-contradictory.
+    """
     app = Veloce(openapi_url=None)
 
     @app.mcp_tool(description="Add two integers")
@@ -374,8 +385,6 @@ def test_missing_required_argument_is_invalid_params():
         }
     )
     out = asyncio.run(pipe.run())
-    # Argument-binding failure routes to the JSON-RPC error channel, not an
-    # in-band result, so the agent learns its call was malformed.
     # Input validation is a *tool execution* error, not a protocol error: the
     # spec reserves the JSON-RPC channel for an unknown tool, a malformed
     # request, or a server fault, and clients feed only execution errors back
@@ -636,9 +645,19 @@ def test_dependency_consumes_tool_argument():
     assert out[0]["result"]["content"][0]["text"] == "42"
 
 
-def test_malformed_argument_type_is_invalid_params():
-    """A value that fails coercion onto the parameter type is an invalid-params
-    transport error, not an in-band handler failure."""
+def test_malformed_argument_type_is_an_in_band_tool_error():
+    """A value that fails coercion is reported in band, not on the error channel.
+    An argument-binding failure is a **tool execution** error reported in band
+    (`result.isError`), not a JSON-RPC transport error. The spec reserves the
+    error channel for an unknown tool, a malformed request or a server fault,
+    and clients feed only execution errors back to the model - reporting a bad
+    argument there would deny the model the one signal it can act on.
+
+    Named for that. It used to be `..._is_invalid_params`, with a docstring and
+    a leading comment both asserting the opposite of the assertion below; a
+    later round added a rebuttal comment above the assertion rather than
+    correcting the name and the prose, so the test read as self-contradictory.
+    """
     app = Veloce(openapi_url=None)
 
     @app.mcp_tool(description="Double an integer")
@@ -666,8 +685,19 @@ def test_malformed_argument_type_is_invalid_params():
     assert "n" in out[0]["result"]["content"][0]["text"]
 
 
-def test_malformed_model_argument_is_invalid_params():
-    """A body model that fails validation is an invalid-params transport error."""
+def test_malformed_model_argument_is_an_in_band_tool_error():
+    """A body model that fails validation is reported in band.
+    An argument-binding failure is a **tool execution** error reported in band
+    (`result.isError`), not a JSON-RPC transport error. The spec reserves the
+    error channel for an unknown tool, a malformed request or a server fault,
+    and clients feed only execution errors back to the model - reporting a bad
+    argument there would deny the model the one signal it can act on.
+
+    Named for that. It used to be `..._is_invalid_params`, with a docstring and
+    a leading comment both asserting the opposite of the assertion below; a
+    later round added a rebuttal comment above the assertion rather than
+    correcting the name and the prose, so the test read as self-contradictory.
+    """
     app = Veloce(openapi_url=None)
 
     @app.mcp_tool(description="Summarise an item")
@@ -1517,10 +1547,20 @@ def test_sub_dependency_body_model_resolves_from_tool_args():
     assert payload == {"label": "widget x3"}
 
 
-def test_sub_dependency_query_marker_coercion_failure_is_invalid_params():
-    """A coercion failure resolving a sub-dependency marker maps to the
-    JSON-RPC invalid-params error channel, as a prior round established for
-    top-level markers."""
+def test_sub_dependency_query_marker_coercion_failure_is_an_in_band_tool_error():
+    """A coercion failure resolving a sub-dependency marker is reported in band,
+    the same way a top-level marker's is.
+    An argument-binding failure is a **tool execution** error reported in band
+    (`result.isError`), not a JSON-RPC transport error. The spec reserves the
+    error channel for an unknown tool, a malformed request or a server fault,
+    and clients feed only execution errors back to the model - reporting a bad
+    argument there would deny the model the one signal it can act on.
+
+    Named for that. It used to be `..._is_invalid_params`, with a docstring and
+    a leading comment both asserting the opposite of the assertion below; a
+    later round added a rebuttal comment above the assertion rather than
+    correcting the name and the prose, so the test read as self-contradictory.
+    """
     from veloce import Query
 
     app = Veloce(openapi_url=None)
