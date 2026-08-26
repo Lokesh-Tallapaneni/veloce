@@ -232,9 +232,7 @@ def _reject_header_crlf(value: str, what: str, suffix: str = "") -> str:
     response for a string almost every call discards.
     """
     if _header_value_has_crlf(value):
-        raise ValueError(
-            f"{what}{suffix} contains an illegal control character (CR, LF, or NUL)"
-        )
+        raise ValueError(f"{what}{suffix} contains an illegal control character (CR, LF, or NUL)")
     return value
 
 

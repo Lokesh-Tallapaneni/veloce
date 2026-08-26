@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from veloce.contrib.staticfiles import StaticFiles
-
 
 class MountingMixin:
     """Sub-app / ASGI / static mounting, mixed into `Veloce`."""
@@ -178,6 +176,12 @@ class MountingMixin:
         downgrade the check to a warning when the directory is created after
         the app is constructed.
         """
+        # `app/` is core and `contrib/` is optional, so this is deferred to keep the layering:
+        # `contrib/` is optional, so importing it eagerly made every `import
+        # veloce` pull in the static-file machinery. Registration-time, once per
+        # call - the same shape `app/openapi.py` and `app/mcp.py` already use.
+        from veloce.contrib.staticfiles import StaticFiles
+
         prefix = self._reject_overlapping_prefix(prefix)
         self._register_feature_state(
             self._static_handlers,

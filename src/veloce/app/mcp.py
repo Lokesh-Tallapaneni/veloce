@@ -12,6 +12,8 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
+from veloce.principal import set_principal
+
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon
 
@@ -119,6 +121,9 @@ class MCPMixin:
             async def add(a: int, b: int) -> int:
                 return a + b
         """
+        # `app/` is core and `contrib/` is optional, so this is deferred to keep the
+        # layering: importing the optional integration eagerly would make every
+        # `import veloce` pay for machinery most apps never mount.
         from veloce.contrib.mcp.safety import require_mcp_description, validate_tool_annotations
 
         scope_set = frozenset(scopes) if scopes else None
@@ -173,6 +178,9 @@ class MCPMixin:
             async def summarise(topic: str) -> str:
                 return f"Summarise {topic} in three bullet points."
         """
+        # `app/` is core and `contrib/` is optional, so this is deferred to keep the
+        # layering: importing the optional integration eagerly would make every
+        # `import veloce` pay for machinery most apps never mount.
         from veloce.contrib.mcp.safety import require_mcp_description
 
         scope_set = frozenset(scopes) if scopes else None
@@ -346,14 +354,19 @@ class MCPMixin:
         argument may reference an earlier step's result.
         Call this after the tool / resource / prompt routes are registered.
         """
+        # `app/` is core and `contrib/` is optional, so this is deferred to keep the
+        # layering: importing the optional integration eagerly would make every
+        # `import veloce` pay for machinery most apps never mount.
         from veloce.contrib.mcp.server import DEFAULT_CACHE_TTL_MS, MCPServer
 
         # Omitted means the server's own default freshness hint.
         cache_ttl = DEFAULT_CACHE_TTL_MS if cache_ttl_ms is None else cache_ttl_ms
 
         if transport == "stdio":
+            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
+            # layering: importing the optional integration eagerly would make every
+            # `import veloce` pay for machinery most apps never mount.
             from veloce.contrib.mcp.transports.stdio import serve_stdio
-            from veloce.principal import set_principal
 
             server = MCPServer(
                 self,
@@ -372,6 +385,9 @@ class MCPMixin:
             return _serve()
 
         if transport == "http":
+            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
+            # layering: importing the optional integration eagerly would make every
+            # `import veloce` pay for machinery most apps never mount.
             from veloce.contrib.mcp.transports.http import register_http_transport
 
             server = MCPServer(
@@ -410,6 +426,9 @@ class MCPMixin:
             return None
 
         if transport == "sse":
+            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
+            # layering: importing the optional integration eagerly would make every
+            # `import veloce` pay for machinery most apps never mount.
             from veloce.contrib.mcp.transports.sse import register_sse_transport
 
             server = MCPServer(

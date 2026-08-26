@@ -56,7 +56,6 @@ from veloce.app.urls import URLRule as URLRule
 from veloce.app.urls import _URLMap
 from veloce.audit import run as audit_run
 from veloce.blueprints import _endpoint_blueprint, _resolve_scoped_chain
-from veloce.contrib.staticfiles import StaticFiles
 from veloce.exceptions import (
     BuildError,
     SetupError,
@@ -71,6 +70,7 @@ from veloce.routing.router import Router, _readd_route
 
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.contrib.mcp.icons import Icon
+    from veloce.contrib.staticfiles import StaticFiles
     from veloce.middleware import Middleware
 
 
@@ -476,6 +476,9 @@ class Veloce(
         self.template_folder: str | None = template_folder
         self._templates: Any = None
         if template_folder is not None:
+            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
+            # layering: importing the optional integration eagerly would make every
+            # `import veloce` pay for machinery most apps never mount.
             from veloce.contrib.templating import Jinja2Templates
 
             tdir = template_folder

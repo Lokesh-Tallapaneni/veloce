@@ -22,7 +22,20 @@ import pytest
 
 PACKAGE = pathlib.Path(__file__).resolve().parents[1] / "src" / "veloce"
 
-#: Deferred imports of Veloce modules that carry no cycle note yet. Each is a
+#: The two legitimate reasons to defer an intra-package import, either of which
+#: must appear in a comment within six lines above it.
+#:
+#: A **cycle**: two modules need each other and the import cannot be hoisted
+#: without breaking one of them. The comment must name the cycle.
+#:
+#: A **layer**: `app/` is core and `contrib/` is optional, so importing an
+#: optional integration eagerly makes every `import veloce` pay for machinery
+#: most apps never mount. These deferrals are registration-time and run once.
+#: This category was not expressible before, which is why seven `app/ ->
+#: contrib/` sites sat on the frozen list below as though they were unexplained.
+_ACCEPTED_REASONS = ("cycle", "circular", "layering", "optional integration")
+
+#: Deferred imports of Veloce modules that carry neither note yet. Each is a
 #: `path::module` pair. Removing one is an improvement; adding one is a
 #: regression and fails `test_no_new_undocumented_deferred_import`.
 KNOWN_UNDOCUMENTED: frozenset[str] = frozenset(
@@ -31,16 +44,8 @@ KNOWN_UNDOCUMENTED: frozenset[str] = frozenset(
         "app/core.py::veloce",
         "app/core.py::veloce.blueprints",
         "app/core.py::veloce.config",
-        "app/core.py::veloce.contrib.templating",
         "app/core.py::veloce.json_provider",
         "app/lifecycle.py::veloce.watchdog",
-        "app/mcp.py::veloce.contrib.mcp.safety",
-        "app/mcp.py::veloce.contrib.mcp.server",
-        "app/mcp.py::veloce.contrib.mcp.transports.http",
-        "app/mcp.py::veloce.contrib.mcp.transports.sse",
-        "app/mcp.py::veloce.contrib.mcp.transports.stdio",
-        "app/mcp.py::veloce.principal",
-        "app/openapi.py::veloce.contrib.openapi",
         "app/serving.py::veloce.serving.protocol",
         "app/serving.py::veloce.serving.reloader",
         "app/testing.py::veloce.testclient",
@@ -73,7 +78,7 @@ def _deferred_veloce_imports() -> dict[str, list[int]]:
                 if not module.startswith("veloce"):
                     continue
                 window = " ".join(lines[max(0, sub.lineno - 6) : sub.lineno]).lower()
-                if "cycle" in window or "circular" in window:
+                if any(word in window for word in _ACCEPTED_REASONS):
                     continue
                 key = f"{path.relative_to(PACKAGE).as_posix()}::{module}"
                 found.setdefault(key, []).append(sub.lineno)

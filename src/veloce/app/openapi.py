@@ -30,6 +30,9 @@ class OpenAPIMixin:
             return
         self._openapi_setup = True
         if self._openapi_url:
+            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
+            # layering: importing the optional integration eagerly would make every
+            # `import veloce` pay for machinery most apps never mount.
             from veloce.contrib.openapi import setup_openapi_routes
 
             # Pass the configured URLs through unchanged - `None` means
@@ -55,6 +58,9 @@ class OpenAPIMixin:
         `app.openapi_schema` before any request lands.
         """
         if self.openapi_schema is None:
+            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
+            # layering: importing the optional integration eagerly would make every
+            # `import veloce` pay for machinery most apps never mount.
             from veloce.contrib.openapi import get_openapi_schema
 
             self.openapi_schema = get_openapi_schema(self)
