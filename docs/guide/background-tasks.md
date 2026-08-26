@@ -293,6 +293,49 @@ an `on_startup` handler, the lifespan context, or a request handler — and rais
 `RuntimeError` otherwise. Failures are logged through the same path as
 request-scoped background tasks.
 
+## Waiting for background work
+
+A background task runs *after* the response is sent, so there is normally
+nothing to await - that is the point. When you do need to know it finished (a
+test asserting its effect, a script that must not exit early),
+`wait_for_background_tasks()` waits for every task the application currently has
+in flight:
+
+```python
+from veloce import BackgroundTasks, Request, Veloce
+
+app = Veloce()
+sent = []
+
+
+@app.post("/subscribe")
+async def subscribe(request: Request, tasks: BackgroundTasks):
+    tasks.add_task(sent.append, "welcome@example.com")
+    return {"queued": True}
+```
+
+```python
+from veloce.testclient import TestClient
+
+with TestClient(app) as client:
+    client.post("/subscribe")
+    client.wait_for_background_tasks()
+    assert sent == ["welcome@example.com"]
+```
+
+It returns `True` when everything finished and `False` if the `timeout`
+(5 seconds by default; pass `None` to wait indefinitely) elapsed first. It
+**waits rather than cancels**, so a timeout leaves the work running - shutdown
+is what cancels. A task that spawns another is waited for in full, and a task
+that raises does not become the caller's exception: failures are logged the same
+way they are without a wait.
+
+`AsyncTestClient.wait_for_background_tasks()` is the awaitable form, and
+`app.wait_for_background_tasks()` is available anywhere you already have a
+running loop.
+
+!!! note "Added in version 0.18"
+
 ## Next steps
 
 - [Server-Sent Events](sse.md) — stream events to the client over a

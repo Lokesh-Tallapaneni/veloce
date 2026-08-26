@@ -261,6 +261,38 @@ class BackgroundTasksMixin:
         self._spawned_anon.discard(task)
         self._log_background_task_error(task)
 
+    async def wait_for_background_tasks(self, timeout: float | None = 5.0) -> bool:
+        """Wait for every currently-spawned background task to finish.
+
+        Returns `True` when they all completed, `False` when `timeout` elapsed
+        first. Tasks are left running either way - this waits, it does not
+        cancel; `_drain_spawned_tasks` is the shutdown path that does.
+
+        A response's background task runs *after* the response is sent, which is
+        the point of it, so a caller that needs its effect - a test asserting the
+        email was queued, a script that must not exit early - otherwise has to
+        guess at a sleep or drive the loop by hand. Newly spawned tasks are
+        picked up too: a task that spawns another is waited for in full.
+
+        Usage::
+
+            await app.wait_for_background_tasks()
+        """
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            tasks = [
+                task
+                for task in (*self._spawned_named.values(), *self._spawned_anon)
+                if not task.done()
+            ]
+            if not tasks:
+                return True
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                return False
+            await asyncio.wait(tasks, timeout=remaining)
+
     async def _drain_spawned_tasks(self) -> None:
         """Cancel and await every spawned task within the per-task budget.
 

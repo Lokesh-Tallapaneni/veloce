@@ -151,7 +151,6 @@ def test_bind_all_with_explicit_host_raises_value_error():
 
 
 def test_background_task_failure_is_logged(caplog):
-    import asyncio
 
     from veloce.background import BackgroundTask
 
@@ -172,12 +171,9 @@ def test_background_task_failure_is_logged(caplog):
         resp = client.get("/")
         assert resp.status_code == 200
 
-        # Drain the loop so the background task's done-callback fires.
-        async def _drain():
-            for _ in range(5):
-                await asyncio.sleep(0)
-
-        client._loop.run_until_complete(_drain())
+        # Wait for the task itself rather than guessing at loop turns; the
+        # done-callback that logs the failure has fired once this returns.
+        assert client.wait_for_background_tasks() is True
 
     matches = [r for r in caplog.records if "Background task failed" in r.getMessage()]
     assert matches, "expected background-task failure to be logged"

@@ -738,6 +738,22 @@ class TestClient:
         """Remove a cookie from the jar. No-op if not present."""
         self._cookies.pop(key, None)
 
+    def wait_for_background_tasks(self, timeout: float | None = 5.0) -> bool:
+        """Wait for the app's background tasks to finish, on this client's loop.
+
+        A response's background task runs after the response is returned, so a
+        test asserting its effect otherwise has to reach for `client._loop` and
+        drive it with a hand-picked number of turns. Returns `True` when
+        everything finished, `False` on timeout.
+
+        Usage::
+
+            client.post("/subscribe")
+            client.wait_for_background_tasks()
+            assert sent == ["welcome@example.com"]
+        """
+        return self._loop.run_until_complete(self.app.wait_for_background_tasks(timeout))
+
     @contextlib.contextmanager
     def session_transaction(self) -> Any:
         """Mutate the session outside a request.
@@ -1366,6 +1382,10 @@ class AsyncTestClient:
         self._entered = False
 
     # ── Async context manager ─────────────────────────────
+
+    async def wait_for_background_tasks(self, timeout: float | None = 5.0) -> bool:
+        """Wait for the app's background tasks to finish. See `TestClient`."""
+        return await self.app.wait_for_background_tasks(timeout)
 
     async def __aenter__(self) -> AsyncTestClient:
         self._entered = True

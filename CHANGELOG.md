@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `app.wait_for_background_tasks()`, and the same on both test clients, waits for spawned background work to finish. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `MCPServer.capabilities` exposes the capabilities a server was built with. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `SessionMiddlewareBase.wire_cookie_name` exposes the cookie name after the `__Host-` / `__Secure-` prefix. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
