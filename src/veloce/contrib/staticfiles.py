@@ -31,8 +31,6 @@ from veloce._constants import (
     HEADER_CONTENT_ENCODING,
     HEADER_CONTENT_RANGE,
     HEADER_ETAG,
-    HEADER_IF_MODIFIED_SINCE,
-    HEADER_IF_NONE_MATCH,
     HEADER_LAST_MODIFIED,
     HEADER_VALUE_BYTES,
     HEADER_VARY,
@@ -44,7 +42,7 @@ from veloce._internal import (
     _file_etag,
     guess_content_type,
 )
-from veloce.http.dates import http_date, parse_date
+from veloce.http.dates import http_date
 from veloce.http.request import Request
 from veloce.http.response import RedirectResponse, Response, StreamingResponse
 from veloce.safe import safe_join
@@ -549,17 +547,20 @@ class StaticFiles:
 
             # Conditional GET. Per RFC 9110 Sec. 13.2 precedence: If-None-Match
             # supersedes If-Modified-Since when both are present.
-            if_none_match = request.headers.get(HEADER_IF_NONE_MATCH, "")
+            # Read the parsed property rather than re-splitting the raw header:
+            # `_split_etag_list` does not break on a comma inside an opaque tag's
+            # quoted string, which `split(",")` did - so `If-None-Match:
+            # "abc,def"` never matched and the file was re-sent on every request.
+            # It is also cached per request, where the raw split re-parsed.
+            if_none_match = request.if_none_match
             if if_none_match:
-                if if_none_match.strip() == "*":
+                if if_none_match[0] == "*":
                     return _not_modified(etag, last_modified)
-                for token in if_none_match.split(","):
+                for token in if_none_match:
                     if _etag_matches_weak(etag, token):
                         return _not_modified(etag, last_modified)
             else:
-                ims_header = request.headers.get(HEADER_IF_MODIFIED_SINCE, "")
-                ims_dt = parse_date(ims_header)
-                ims_ts = ims_dt.timestamp() if ims_dt is not None else None
+                ims_ts = request.if_modified_since
                 # Floor mtime to whole seconds because HTTP-dates have second
                 # resolution; otherwise `mtime=1.5` would always appear
                 # "newer" than `IMS=1`.
