@@ -212,6 +212,18 @@ dev = [
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.19",
     "strawberry-graphql[asgi]>=0.230",
+    # The `otel` extra ships only `opentelemetry-api`, but the instrumentation
+    # tests need a real tracer provider and span exporter to observe what
+    # `veloce/otel.py` records - so 36 of `test_otel.py`'s 43 tests skipped in
+    # every environment this project defines, and the module sat at ~20%
+    # coverage with the suite reporting green. The SDK is a test-only
+    # dependency; the shipped extra still requires the API alone.
+    "opentelemetry-sdk>=1.20",
+    # The `metrics` extra's backend. It was present in the working environment
+    # only incidentally, so `uv sync --group dev` removed it and eight
+    # instrumentation tests began skipping - the same shape as the otel gap
+    # above. Named here so the dev environment is reproducible.
+    "prometheus_client>=0.17",
     "brotli>=1.2.0",
     "zstandard>=0.25.0",
     "ciso8601>=2.3.3",
