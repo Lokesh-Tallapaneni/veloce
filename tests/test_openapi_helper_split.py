@@ -11,6 +11,7 @@ refactor leaked a behavior change.
 from __future__ import annotations
 
 import hashlib
+from typing import Annotated
 
 import orjson
 from pydantic import BaseModel
@@ -19,6 +20,7 @@ from veloce import File, Form, Header, Query, Veloce
 from veloce.contrib.openapi import (
     SchemaRegistry,
     _build_info_object,
+    _dependency_graph_has_validatable,
     _extract_parameters,
     _extract_request_body,
     _extract_responses,
@@ -26,7 +28,7 @@ from veloce.contrib.openapi import (
     _walk_webhooks,
     get_openapi_schema,
 )
-from veloce.dependency import Security
+from veloce.dependency import Depends, Security
 from veloce.security.http import HTTPBearer
 
 
@@ -126,9 +128,15 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
         info, schemas_registry
     )
     request_body = _extract_request_body(body_schema, form_fields, body_fields, scalar_body)
-    # POST /items carries a JSON body, so its request is validatable and the
-    # 422 response is auto-added — mirror the orchestrator's argument.
-    has_validatable_params = bool(params) or request_body is not None
+    # Mirror the orchestrator's argument exactly. This copy used to omit the
+    # `_dependency_graph_has_validatable` disjunct, so it agreed only for routes
+    # whose 422 comes from their own parameters or body - the case this fixture
+    # happens to be. A route validated solely through a dependency would have
+    # been compared against the wrong expectation, which is the whole thing this
+    # parity test exists to rule out.
+    has_validatable_params = (
+        bool(params) or request_body is not None or _dependency_graph_has_validatable(info)
+    )
     responses = _extract_responses(info, schemas_registry, has_validatable_params)
     # `_walk_webhooks` appends each webhook's auto operationId to `auto_ops` for
     # the document-wide disambiguation pass; the list is unused here.
@@ -152,3 +160,91 @@ def test_get_openapi_schema_helpers_assemble_same_operation() -> None:
     assert document["responses"] == op["responses"]
     assert params == op.get("parameters", [])
     assert document["webhooks"] == full["webhooks"]
+
+
+# ── the disjunct the parity copy had dropped ─────────────────────────
+#
+# `has_validatable_params` has three terms, and the parity check above hand-wrote
+# it with the third - "some dependency in the graph consumes validated input" -
+# missing. For most shapes that is harmless, because a dependency's `Query` /
+# `Header` / `Cookie` parameters are hoisted into the route's own `parameters`
+# and a dependency's body model becomes the route's `requestBody`, so one of the
+# first two terms is already true.
+#
+# It is load-bearing for exactly one shape: a parameter that is **validated but
+# suppressed from the schema**. `Query(include_in_schema=False)` inside a
+# dependency still raises `RequestValidationError` on bad input, but contributes
+# no `parameters` entry and no `requestBody` - so the third term is the only
+# thing that puts a `422` in the document. That is the case the dropped term
+# covers and the case nothing compared.
+
+
+def _hidden_param_app() -> Veloce:
+    """A route whose only validatable input is hidden from the schema."""
+    app = Veloce(title="Hidden", version="1")
+
+    async def hidden(x: Annotated[int, Query(include_in_schema=False)] = 1):
+        return x
+
+    @app.get("/hidden")
+    async def hidden_route(v=Depends(hidden)):
+        return {}
+
+    @app.get("/bare")
+    async def bare_route():
+        return {}
+
+    return app
+
+
+def test_only_the_third_disjunct_fires_for_a_hidden_parameter():
+    """The premise of the tests below: the other two terms really are false."""
+    app = _hidden_param_app()
+    _m, _p, info = next((m, p, i) for m, p, i in app._collect_all_routes() if p == "/hidden")
+    registry = SchemaRegistry()
+    params, body_schema, form_fields, body_fields, scalar_body = _extract_parameters(info, registry)
+    request_body = _extract_request_body(body_schema, form_fields, body_fields, scalar_body)
+    assert params == []
+    assert request_body is None
+    assert _dependency_graph_has_validatable(info) is True
+
+
+def test_a_hidden_validatable_parameter_still_advertises_a_422():
+    schema = _hidden_param_app().openapi()
+    assert "422" in schema["paths"]["/hidden"]["get"]["responses"]
+
+
+def test_a_route_with_nothing_validatable_does_not():
+    """The negative: without it the assertion above would be vacuous."""
+    schema = _hidden_param_app().openapi()
+    assert "422" not in schema["paths"]["/bare"]["get"]["responses"]
+
+
+def test_the_dropped_disjunct_changes_the_answer():
+    """Stated at the predicate: the two-term expression the parity copy carried
+    disagrees with the orchestrator's three-term one on this route."""
+    app = _hidden_param_app()
+    _m, _p, info = next((m, p, i) for m, p, i in app._collect_all_routes() if p == "/hidden")
+    registry = SchemaRegistry()
+    params, body_schema, form_fields, body_fields, scalar_body = _extract_parameters(info, registry)
+    request_body = _extract_request_body(body_schema, form_fields, body_fields, scalar_body)
+    dropped = bool(params) or request_body is not None
+    correct = dropped or _dependency_graph_has_validatable(info)
+    assert dropped is False
+    assert correct is True
+
+
+def test_the_helpers_and_the_orchestrator_agree_on_that_route():
+    """The parity check itself, run against the case the dropped term covers."""
+    app = _hidden_param_app()
+    full = get_openapi_schema(app)
+    _m, _p, info = next((m, p, i) for m, p, i in app._collect_all_routes() if p == "/hidden")
+    registry = SchemaRegistry()
+    params, body_schema, form_fields, body_fields, scalar_body = _extract_parameters(info, registry)
+    request_body = _extract_request_body(body_schema, form_fields, body_fields, scalar_body)
+    flag = bool(params) or request_body is not None or _dependency_graph_has_validatable(info)
+    responses = _extract_responses(info, registry, flag)
+    document = {"responses": responses}
+    registry.finalize(document)
+    _repoint_validation_error_refs(document, "HTTPValidationError")
+    assert set(document["responses"]) == set(full["paths"]["/hidden"]["get"]["responses"])
