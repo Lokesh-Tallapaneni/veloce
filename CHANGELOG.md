@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The built-in server serves a request whose target is split across two reads; it answered `400`, and measured `MAX_URL_SIZE` against the last fragment rather than the whole target. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `request.authorization` and `HTTPBasic` decode a `Basic` payload through one implementation, so a header with extra whitespace no longer yields credentials from one and a `401` from the other. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `HttpSessionStore` bounds live MCP sessions with `max_sessions` (default `10_000`); the idle TTL limited how long a session lived, not how many a client could mint. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

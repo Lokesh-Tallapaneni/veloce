@@ -323,10 +323,19 @@ class HttpProtocol(asyncio.Protocol):
     def on_url(self, url: bytes) -> None:
         if self._oversized:
             return
-        if len(url) > MAX_URL_SIZE:
+        # Appended, not assigned. `on_url` is an incremental callback like
+        # `on_body`: when the request target spans two reads httptools delivers
+        # it in two calls, and the second is `b""` when the split falls right
+        # after the target. Assigning replaced the accumulated target with the
+        # tail - so a target split from the version that follows it left the
+        # URL empty and the request was answered `400`. A target split across a
+        # TCP segment boundary is ordinary, not adversarial.
+        self.url += url
+        # Measured on the accumulated target for the same reason: the per-call
+        # length is only the fragment this read carried.
+        if len(self.url) > MAX_URL_SIZE:
             self._reject_oversized(status.HTTP_414_REQUEST_URI_TOO_LONG, b"URI Too Long")
             return
-        self.url = url
 
     def on_header(self, name: bytes, value: bytes) -> None:
         if self._oversized:
