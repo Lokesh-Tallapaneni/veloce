@@ -45,41 +45,92 @@ def test_add_exception_handler_by_status_code():
         assert resp.json() == {"msg": "nowhere"}
 
 
-def test_add_exception_handler_registers_in_class_table():
-    app = Veloce()
+def test_a_class_key_handles_that_exception():
+    """Registration used to be asserted by reading `_exception_handlers`. What
+    registration is *for* is that raising the exception reaches the handler,
+    which is both the public behaviour and the stronger claim."""
+    app = Veloce(openapi_url=None)
 
     async def h(request, exc):
-        return JSONResponse({})
+        return JSONResponse({"handled": "class"}, status_code=418)
 
     app.add_exception_handler(CustomError, h)
-    assert app._exception_handlers[CustomError] is h
+
+    @app.get("/boom")
+    async def boom(request: Request):
+        raise CustomError("x")
+
+    with TestClient(app) as client:
+        resp = client.get("/boom")
+    assert resp.status_code == 418
+    assert resp.json() == {"handled": "class"}
 
 
-def test_add_exception_handler_registers_in_status_table():
-    app = Veloce()
+def test_a_status_key_handles_that_status():
+    """The other table, distinguished by an `int` key rather than a class."""
+    app = Veloce(openapi_url=None)
 
     async def h(request, exc):
-        return JSONResponse({})
+        return JSONResponse({"handled": "status"}, status_code=500)
 
     app.add_exception_handler(500, h)
-    assert app._status_handlers[500] is h
+
+    @app.get("/crash")
+    async def crash(request: Request):
+        raise RuntimeError("x")
+
+    with TestClient(app) as client:
+        resp = client.get("/crash")
+    assert resp.status_code == 500
+    assert resp.json() == {"handled": "status"}
+
+
+def test_a_class_key_does_not_answer_an_unrelated_exception():
+    """The negative: a table that caught everything would pass the two above."""
+    app = Veloce(openapi_url=None)
+
+    async def h(request, exc):
+        return JSONResponse({"handled": "class"}, status_code=418)
+
+    app.add_exception_handler(CustomError, h)
+
+    @app.get("/other")
+    async def other(request: Request):
+        raise ValueError("x")
+
+    with TestClient(app) as client:
+        assert client.get("/other").status_code != 418
 
 
 def test_decorator_and_imperative_equivalent():
-    app_dec = Veloce()
-    app_imp = Veloce()
+    """Both forms produce the same behaviour, asserted by running it - the old
+    version compared table membership, which two different handlers would also
+    satisfy."""
+    responses = []
+    for app in (Veloce(openapi_url=None), Veloce(openapi_url=None)):
+        responses.append(app)
 
-    async def h(request, exc):
-        return JSONResponse({})
+    app_dec, app_imp = responses
 
     @app_dec.exception_handler(CustomError)
     async def _h(request, exc):
-        return JSONResponse({})
+        return JSONResponse({"via": "handler"}, status_code=418)
+
+    async def h(request, exc):
+        return JSONResponse({"via": "handler"}, status_code=418)
 
     app_imp.add_exception_handler(CustomError, h)
-    # Both land in the same table under the same key.
-    assert CustomError in app_dec._exception_handlers
-    assert CustomError in app_imp._exception_handlers
+
+    for app in (app_dec, app_imp):
+
+        @app.get("/boom")
+        async def boom(request: Request):
+            raise CustomError("x")
+
+    with TestClient(app_dec) as dec, TestClient(app_imp) as imp:
+        first, second = dec.get("/boom"), imp.get("/boom")
+    assert first.status_code == second.status_code == 418
+    assert first.json() == second.json() == {"via": "handler"}
 
 
 class TestRegisterErrorHandler:
@@ -107,7 +158,6 @@ class TestRegisterErrorHandler:
             return JSONResponse({"error": "custom"}, status_code=500)
 
         app.register_error_handler(CustomError, handle_custom)
-        app._exception_handlers[CustomError] = handle_custom
 
         @app.get("/fail")
         async def fail(request: Request):

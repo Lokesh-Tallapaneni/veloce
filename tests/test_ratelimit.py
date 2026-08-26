@@ -805,7 +805,7 @@ async def test_distinct_clients_keep_distinct_tagged_buckets():
     so the caller cannot be varied over the wire here.
     """
     app = _tagged_app(max_requests=1000, window_seconds=60)
-    middleware = app._middlewares[-1]
+    middleware = app.middlewares[-1]
 
     async def call(agent: str):
         request = make_request(path="/login", headers={"User-Agent": agent})

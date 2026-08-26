@@ -35,6 +35,27 @@ class MiddlewareMixin:
         _http_middleware_funcs: Any
         _gen: int
 
+    @property
+    def middlewares(self) -> tuple[Middleware, ...]:
+        """The registered `Middleware` instances, in the order they will run.
+
+        Registration order unless priorities were set, in which case this is the
+        priority order the pipeline actually uses. Checking whether a middleware
+        is installed - a plugin guarding against registering itself twice, or a
+        startup check that CORS is present - otherwise means reading a private
+        list.
+
+        Standard ASGI middleware classes are not here; they are wrapped around
+        the app when the ASGI stack is assembled rather than run per request by
+        this pipeline.
+
+        Usage::
+
+            if not any(isinstance(m, CORSMiddleware) for m in app.middlewares):
+                app.add_middleware(CORSMiddleware, allow_origins=["*"])
+        """
+        return tuple(self._middlewares)
+
     def add_middleware(self, middleware: Any, **options: Any) -> None:
         """Add middleware to the pipeline.
 

@@ -906,6 +906,7 @@ class DispatchMixin:
                 {"detail": MSG_INTERNAL_SERVER_ERROR},
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             ),
+            exc,
         )
 
     # ── Hooks and route resolution ─────────────────────────
@@ -1330,7 +1331,11 @@ class DispatchMixin:
     # ── Error handling and handler invocation ──────────────
 
     async def _handle_error(
-        self, request: Request, status_code: int, default: Response
+        self,
+        request: Request,
+        status_code: int,
+        default: Response,
+        exc: BaseException | None = None,
     ) -> Response:
         """Check for status-code handler, fall back to default response."""
         # Prefer a handler on the failing request's blueprint chain (a
@@ -1339,7 +1344,14 @@ class DispatchMixin:
         # exception -> 500 path, not only on the HTTPException path.
         handler = self._find_scoped_status_handler(status_code, request)
         if handler:
-            result = await self._call_handler(handler, {"request": request})
+            # Adapt to the handler's signature rather than assuming it takes
+            # only `request`. The same handler registered for a status code is
+            # reachable from here and from `handle_http_exception`, which passes
+            # the exception; a `(request, exc)` handler used to raise
+            # `TypeError` on this path, and that TypeError escaped dispatch.
+            if exc is None:
+                exc = HTTPException(status_code=status_code)
+            result = await self._call_exc_handler(handler, request, exc)
             return await self._run_response_middleware(request, self._coerce_response(result))
         return await self._run_response_middleware(request, default)
 

@@ -635,6 +635,27 @@ This works on `@app.route`/`@app.get`/`@app.post`/… and the imperative
 `add_api_route`, and on `Blueprint` and `Router` routes. Routes that declare no
 exclusions run every registered middleware and pay no extra per-request cost.
 
+## Inspecting the pipeline
+
+`app.middlewares` is the registered `Middleware` instances as a tuple, in the
+order they will run - registration order, or priority order when priorities are
+set. It answers "is this installed?" without reaching into the app:
+
+```python
+from veloce import CORSMiddleware, Veloce
+
+app = Veloce()
+
+if not any(isinstance(m, CORSMiddleware) for m in app.middlewares):
+    app.add_middleware(CORSMiddleware, allow_origins=["https://example.com"])
+```
+
+It is a snapshot, and a tuple: adding middleware must go through
+`add_middleware()`, which is what maintains the ordering and the compiled
+pipeline. Standard ASGI middleware classes do not appear here - they wrap the
+application when the ASGI stack is assembled rather than running in this
+pipeline.
+
 ## See also
 
 - [CORS](cors.md) — the full `CORSMiddleware` parameter reference.

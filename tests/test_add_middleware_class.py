@@ -10,15 +10,15 @@ def test_add_middleware_class_form_instantiates():
     app = Veloce()
     app.add_middleware(CORSMiddleware, allow_origins=["https://example.com"])
     # One middleware instance appended.
-    assert len(app._middlewares) == 1
-    assert isinstance(app._middlewares[0], CORSMiddleware)
+    assert len(app.middlewares) == 1
+    assert isinstance(app.middlewares[0], CORSMiddleware)
 
 
 def test_add_middleware_instance_form_still_works():
     app = Veloce()
     instance = CORSMiddleware(allow_origins=["*"])
     app.add_middleware(instance)
-    assert app._middlewares[-1] is instance
+    assert app.middlewares[-1] is instance
 
 
 def test_add_middleware_class_form_applies_options():
@@ -39,4 +39,4 @@ def test_add_middleware_multiple():
     app = Veloce()
     app.add_middleware(CORSMiddleware, allow_origins=["*"])
     app.add_middleware(CORSMiddleware, allow_origins=["*"])
-    assert len(app._middlewares) == 2
+    assert len(app.middlewares) == 2

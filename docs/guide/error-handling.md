@@ -296,6 +296,44 @@ def create_app() -> Veloce:
     `app.exception_handler` is also available under the alias
     `app.errorhandler` (one word). The two are identical.
 
+## Handlers registered against a status code
+
+A handler can be registered against an `int` status code instead of an exception
+class. It then answers for that status whatever produced it - an
+`HTTPException` you raised, an unhandled exception that became a 500, or a
+request to a path that exists under a different method:
+
+```python
+from veloce import JSONResponse, Request, Veloce
+
+app = Veloce()
+
+
+@app.exception_handler(500)
+async def handle_500(request: Request, exc: Exception):
+    return JSONResponse({"error": "server_error", "kind": type(exc).__name__}, 500)
+```
+
+`exc` is the exception that actually failed where there is one, so the handler
+above reports `RuntimeError` for a crashing route and `HTTPException` for a
+`raise HTTPException(500)`. On a path with no underlying exception - a `405`,
+for instance - it receives an `HTTPException` carrying that status.
+
+The second parameter is optional. A handler declared with only `request` is
+called with only the request:
+
+```python
+@app.exception_handler(404)
+async def handle_404(request: Request):
+    return JSONResponse({"error": "not_found", "path": request.path}, 404)
+```
+
+!!! note "Changed in version 0.18"
+
+    A status-code handler taking `(request, exc)` used to raise `TypeError` when
+    reached from the unhandled-exception or `405` path, because only the
+    `HTTPException` path adapted to the handler's signature.
+
 ## Custom error pages
 
 An error handler can return any response shape, so HTML error pages are

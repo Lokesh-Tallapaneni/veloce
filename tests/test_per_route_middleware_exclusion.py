@@ -254,7 +254,7 @@ def test_proxyfix_accepts_name_and_is_targetable_by_exclusion():
     with TestClient(app) as client:
         forwarded = {"X-Forwarded-Proto": "https"}
         # The middleware instance carries the overridden name.
-        assert app._middlewares[0].middleware_name == "edge"
+        assert app.middlewares[0].middleware_name == "edge"
         # On the unexcluded route ProxyFix rewrites the scheme to https.
         assert client.get("/with-proxyfix", headers=forwarded).json()["scheme"] == "https"
         # On the excluded route ProxyFix is skipped, so the scheme is untouched.
@@ -340,7 +340,7 @@ def test_user_middleware_without_name_kwarg_is_nameable_and_excludable():
 
     with TestClient(app) as client:
         # The post-construction override took effect.
-        assert app._middlewares[0].middleware_name == "usermw"
+        assert app.middlewares[0].middleware_name == "usermw"
         assert client.get("/runs").headers.get("X-User-X") == "1"
         # The route opts out by the overridden name.
         assert "X-User-X" not in client.get("/skips").headers
@@ -381,7 +381,7 @@ def test_user_middleware_without_name_defaults_to_class_name():
         return {"ok": True}
 
     with TestClient(app) as client:
-        assert app._middlewares[0].middleware_name == "_UserMiddlewareNoName"
+        assert app.middlewares[0].middleware_name == "_UserMiddlewareNoName"
         assert "X-User-Y" not in client.get("/skips").headers
 
 
@@ -397,7 +397,7 @@ def test_an_already_built_instance_honours_the_name_override():
     """
     app = Veloce(openapi_url=None)
     app.add_middleware(_Tagger("A"), name="tagger")
-    assert app._middlewares[0].middleware_name == "tagger"
+    assert app.middlewares[0].middleware_name == "tagger"
 
 
 def test_an_instance_name_makes_the_route_exclusion_take_effect():
@@ -420,7 +420,7 @@ def test_an_instance_name_makes_the_route_exclusion_take_effect():
 def test_an_instance_without_a_name_still_uses_its_class_name():
     app = Veloce(openapi_url=None)
     app.add_middleware(_Tagger("A"))
-    assert app._middlewares[0].middleware_name == "_Tagger"
+    assert app.middlewares[0].middleware_name == "_Tagger"
 
 
 def test_a_constructor_argument_passed_with_an_instance_is_refused():
@@ -435,4 +435,4 @@ def test_priority_is_still_accepted_alongside_an_instance():
     app = Veloce(openapi_url=None)
     app.add_middleware(_Tagger("low"), name="low", priority=1)
     app.add_middleware(_Tagger("high"), name="high", priority=5)
-    assert [m.middleware_name for m in app._middlewares] == ["high", "low"]
+    assert [m.middleware_name for m in app.middlewares] == ["high", "low"]

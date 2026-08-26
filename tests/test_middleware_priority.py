@@ -77,7 +77,7 @@ async def test_no_priority_is_registration_order_unchanged():
     # No priority ever set: the ordered rebuild is skipped and the chain is the
     # plain append-order list.
     assert app._any_priority is False
-    assert [m.middleware_name for m in app._middlewares] == ["first", "second"]
+    assert [m.middleware_name for m in app.middlewares] == ["first", "second"]
 
     await _drive(app, log)
     assert log == ["req:first", "req:second", "resp:second", "resp:first"]
