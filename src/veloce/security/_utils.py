@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from veloce._constants import HEADER_AUTHORIZATION, HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
+from veloce._internal import _bearer_token_from
 from veloce._internal import _quote_header_value as _quote_header_value
 from veloce._protocol_constants import AUTH_SCHEME_BEARER
 from veloce.exceptions import HTTPException
@@ -31,35 +32,17 @@ def _extract_bearer_token(
     request: Any, scheme: str = AUTH_SCHEME_BEARER, auto_error: bool = True
 ) -> str | None:
     """Extract a bearer token from the Authorization header."""
-    auth = request.headers.get(HEADER_AUTHORIZATION, "")
-    # The default "Bearer" prefix is precomputed; only a custom scheme name
-    # pays for per-call prefix construction.
-    if scheme == AUTH_SCHEME_BEARER:
-        prefix_len = _BEARER_PREFIX_LEN
-        prefix_lower = _BEARER_PREFIX_LOWER
-    else:
-        prefix = scheme + " "
-        prefix_len = len(prefix)
-        prefix_lower = prefix.lower()
-    if auth[:prefix_len].lower() != prefix_lower:
-        if auto_error:
-            raise HTTPException(
-                HTTP_401_UNAUTHORIZED,
-                MSG_NOT_AUTHENTICATED,
-                headers={HEADER_WWW_AUTHENTICATE: scheme},
-            )
-        return None
-    # RFC 6750 section 2.1 + RFC 7235: only SP/HTAB are permitted between
-    # scheme and token. Do not trim other Unicode whitespace (NBSP, \n, \r, ...).
-    token = auth[prefix_len:].strip(" \t")
-    if not token:
-        if auto_error:
-            raise HTTPException(
-                HTTP_401_UNAUTHORIZED,
-                MSG_NOT_AUTHENTICATED,
-                headers={HEADER_WWW_AUTHENTICATE: scheme},
-            )
-        return None
+    # The extraction itself lives in `_internal`, because the MCP HTTP transport
+    # needs it too and reaching across a subpackage boundary for an
+    # underscore-prefixed name is what that module exists to avoid. What stays
+    # here is the part only a security scheme wants: the challenge.
+    token = _bearer_token_from(request.headers.get(HEADER_AUTHORIZATION, ""), scheme)
+    if token is None and auto_error:
+        raise HTTPException(
+            HTTP_401_UNAUTHORIZED,
+            MSG_NOT_AUTHENTICATED,
+            headers={HEADER_WWW_AUTHENTICATE: scheme},
+        )
     return token
 
 

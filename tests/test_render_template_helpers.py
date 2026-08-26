@@ -32,20 +32,14 @@ def test_render_template_string_autoescapes_html_by_default():
 def test_render_template_string_inside_app_uses_app_templates(tmp_path):
     """When the app has `_templates` bound, the helper goes through it
     (so filters/globals/context processors apply)."""
-    from veloce.helpers import _current_app_var
-
     (tmp_path / "ignored.html").write_text("ignored")
     app = Veloce(openapi_url=None)
     templates = Jinja2Templates(directory=str(tmp_path))
     app._templates = templates
 
-    # Bind the app so the helper finds it.
-    token = _current_app_var.set(app)
-    try:
+    with app.app_context():
         out = render_template_string("X={{ x }}", x=7)
         assert out == "X=7"
-    finally:
-        _current_app_var.reset(token)
 
 
 # ── render_template ──────────────────────────────────────────────────
@@ -57,29 +51,18 @@ def test_render_template_outside_app_raises():
 
 
 def test_render_template_without_templates_attr_raises():
-    from veloce.helpers import _current_app_var
-
     app = Veloce(openapi_url=None)
-    token = _current_app_var.set(app)
-    try:
-        with pytest.raises(RuntimeError, match="template_folder"):
-            render_template("x.html")
-    finally:
-        _current_app_var.reset(token)
+    with app.app_context(), pytest.raises(RuntimeError, match="template_folder"):
+        render_template("x.html")
 
 
 def test_render_template_renders_named_file(tmp_path):
-    from veloce.helpers import _current_app_var
-
     (tmp_path / "hello.html").write_text("Hi {{ name }}!")
     app = Veloce(openapi_url=None)
     app._templates = Jinja2Templates(directory=str(tmp_path))
 
-    token = _current_app_var.set(app)
-    try:
+    with app.app_context():
         assert render_template("hello.html", name="alice") == "Hi alice!"
-    finally:
-        _current_app_var.reset(token)
 
 
 # ── stream_template ───────────────────────────────────────────────────
@@ -99,47 +82,32 @@ def test_stream_template_outside_app_raises():
 
 
 def test_stream_template_without_templates_attr_raises():
-    from veloce.helpers import _current_app_var
-
     app = Veloce(openapi_url=None)
-    token = _current_app_var.set(app)
-    try:
-        with pytest.raises(RuntimeError, match="template_folder"):
-            stream_template("x.html")
-    finally:
-        _current_app_var.reset(token)
+    with app.app_context(), pytest.raises(RuntimeError, match="template_folder"):
+        stream_template("x.html")
 
 
 def test_stream_template_streams_named_file(tmp_path):
-    from veloce.helpers import _current_app_var
-
     (tmp_path / "items.html").write_text("{% for i in items %}<li>{{ i }}</li>{% endfor %}")
     app = Veloce(openapi_url=None)
     app._templates = Jinja2Templates(directory=str(tmp_path))
 
-    token = _current_app_var.set(app)
-    try:
+    with app.app_context():
         out = "".join(stream_template("items.html", items=["a", "b"]))
         assert out == "<li>a</li><li>b</li>"
-    finally:
-        _current_app_var.reset(token)
 
 
 def test_stream_template_wraps_in_streaming_response(tmp_path):
     """The generator is consumable by StreamingResponse."""
     from veloce import StreamingResponse
-    from veloce.helpers import _current_app_var
 
     (tmp_path / "page.html").write_text("Hello {{ who }}")
     app = Veloce(openapi_url=None)
     app._templates = Jinja2Templates(directory=str(tmp_path))
 
-    token = _current_app_var.set(app)
-    try:
+    with app.app_context():
         resp = StreamingResponse(stream_template("page.html", who="world"))
         assert resp.is_streamed
-    finally:
-        _current_app_var.reset(token)
 
 
 def test_stream_template_resolves_context_when_consumed_after_request(tmp_path):
@@ -151,8 +119,6 @@ def test_stream_template_resolves_context_when_consumed_after_request(tmp_path):
     and only then is the (synchronous) body iterated — it must not raise
     "working outside of application context".
     """
-    from veloce.helpers import _current_app_var
-
     # `url_for` is injected as a Jinja global by _sync_app_jinja_helpers and
     # resolves lazily during iteration — the exact context-dependent case.
     (tmp_path / "ctx.html").write_text(
@@ -166,12 +132,8 @@ def test_stream_template_resolves_context_when_consumed_after_request(tmp_path):
     async def home(request):
         return {"ok": True}
 
-    # Build the stream inside the context, then tear the context down.
-    token = _current_app_var.set(app)
-    try:
+    with app.app_context():
         gen = stream_template("ctx.html", items=["a", "b"])
-    finally:
-        _current_app_var.reset(token)
 
     # Context is gone now. Consuming the iterator must still resolve url_for
     # via the snapshot captured when the stream was built.

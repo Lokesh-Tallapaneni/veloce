@@ -54,7 +54,7 @@ from veloce._constants import (
     MSG_LABEL_HEADER_NAME,
     MSG_LABEL_SET_COOKIE_VALUE,
 )
-from veloce._protocol_constants import SET_COOKIE_JOINER
+from veloce._protocol_constants import AUTH_SCHEME_BEARER, SET_COOKIE_JOINER
 from veloce.encoders import orjson_default
 from veloce.secret import Secret
 
@@ -656,3 +656,35 @@ def _decode_basic_credentials(payload: str) -> tuple[str, str] | None:
     if not separator:
         return None
     return userid, password
+
+
+_BEARER_PREFIX = AUTH_SCHEME_BEARER + " "
+_BEARER_PREFIX_LOWER = _BEARER_PREFIX.lower()
+_BEARER_PREFIX_LEN = len(_BEARER_PREFIX)
+
+
+def _bearer_token_from(auth: str, scheme: str = AUTH_SCHEME_BEARER) -> str | None:
+    """The bearer token in an `Authorization` value, or `None`.
+
+    Pure extraction: no exception, no challenge. `security/_utils` wraps it with
+    the `auto_error` behaviour a security scheme needs, and the MCP HTTP
+    transport - which always passes `auto_error=False` because it owes the caller
+    a challenge response rather than a raise - calls this directly.
+
+    Here rather than in `security/` because it is needed from two subpackages,
+    and importing an underscore-prefixed name across a subpackage boundary is
+    what this module exists to avoid.
+
+    RFC 6750 Sec. 2.1 + RFC 7235: only SP/HTAB are permitted between the scheme
+    and the token, so other Unicode whitespace (NBSP, newline) is not trimmed.
+    """
+    if scheme == AUTH_SCHEME_BEARER:
+        prefix_len = _BEARER_PREFIX_LEN
+        prefix_lower = _BEARER_PREFIX_LOWER
+    else:
+        prefix = scheme + " "
+        prefix_len = len(prefix)
+        prefix_lower = prefix.lower()
+    if auth[:prefix_len].lower() != prefix_lower:
+        return None
+    return auth[prefix_len:].strip(" 	") or None
