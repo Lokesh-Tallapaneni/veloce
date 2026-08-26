@@ -8,6 +8,7 @@ import copy
 import datetime
 import enum
 import functools
+import hashlib
 import html
 import inspect
 import logging
@@ -20,7 +21,7 @@ from decimal import Decimal
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 import orjson
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
 from veloce._handler_plan import extract_annotated_marker
@@ -831,7 +832,68 @@ def _pydantic_to_schema(
 _SEQUENCE_ORIGINS = (list, collections.abc.Sequence, tuple, set, frozenset, collections.abc.Set)
 
 
-def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> dict | None:
+#: Derived models built for a route's `response_model_include` /
+#: `response_model_exclude`, keyed by `(model, include, exclude)` so two routes
+#: filtering a model the same way share one component rather than emitting two.
+_FILTERED_MODELS: dict[tuple[int, frozenset | None, frozenset | None], Any] = {}
+
+#: Longest joined field list to spell out in a derived component's name.
+_FILTERED_NAME_LIMIT = 48
+
+
+def _filtered_response_model(model: Any, include: set[str] | None, exclude: set[str] | None) -> Any:
+    """A model carrying only the fields a route's include/exclude leaves.
+
+    `response_model_include` / `response_model_exclude` filter what the route
+    *sends*, and the lowering knew nothing about them - so a route sending
+    `{"name": ...}` was documented as returning the whole model, with the fields
+    it omits still marked `required`. A client generated from that document
+    expects a field the route never sends.
+
+    Deriving a model rather than editing a schema dict keeps every downstream
+    behaviour - naming, `$defs` hoisting, nested refs, serialization mode - on
+    the path the unfiltered model already takes.
+    """
+    if not include and not exclude:
+        return model
+    key = (
+        id(model),
+        frozenset(include) if include else None,
+        frozenset(exclude) if exclude else None,
+    )
+    cached = _FILTERED_MODELS.get(key)
+    if cached is not None:
+        return cached
+    fields: dict[str, Any] = {}
+    for name, field in model.model_fields.items():
+        if include is not None and name not in include:
+            continue
+        if exclude and name in exclude:
+            continue
+        fields[name] = (field.annotation, field)
+    if not fields:
+        # Every field filtered out: nothing to derive, and an empty object is a
+        # less useful document than the model itself.
+        return model
+    # The name reaches the components section, so it has to be stable for a
+    # given filter and distinct between filters. The surviving field names give
+    # both, and read better than an opaque token; a wide model falls back to a
+    # digest rather than emitting an unreadable component key.
+    surviving = sorted(fields)
+    suffix = "_".join(surviving)
+    if len(suffix) > _FILTERED_NAME_LIMIT:
+        suffix = hashlib.blake2b(suffix.encode(), digest_size=6).hexdigest()
+    derived = create_model(f"{model.__name__}_{suffix}", **fields)
+    _FILTERED_MODELS[key] = derived
+    return derived
+
+
+def _response_model_to_schema(
+    response_model: Any,
+    registry: SchemaRegistry,
+    include: set[str] | None = None,
+    exclude: set[str] | None = None,
+) -> dict | None:
     """Render `response_model` into an OpenAPI schema object.
 
     Handles four shapes:
@@ -851,8 +913,8 @@ def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> 
         # `tuple[Item, ...]` carries an Ellipsis in its second slot; every
         # sequence origin documents its element type from the first.
         if args and _is_model_type(args[0]):
-            inner = registry.ref(args[0], mode="serialization")
-            return {"type": "array", "items": inner}
+            element = _filtered_response_model(args[0], include, exclude)
+            return {"type": "array", "items": registry.ref(element, mode="serialization")}
         return {"type": "array", "items": {}}
 
     if origin in (Union, types.UnionType):
@@ -871,7 +933,8 @@ def _response_model_to_schema(response_model: Any, registry: SchemaRegistry) -> 
         return variants[0] if len(variants) == 1 else {"oneOf": variants}
 
     if _is_model_type(response_model):
-        return registry.ref(response_model, mode="serialization")
+        filtered = _filtered_response_model(response_model, include, exclude)
+        return registry.ref(filtered, mode="serialization")
 
     return None
 
@@ -1296,7 +1359,12 @@ def _extract_responses(
         responses[primary_status] = responses.pop(str(HTTP_200_OK))
 
     if info.response_model is not None:
-        resp_schema = _response_model_to_schema(info.response_model, schemas_registry)
+        resp_schema = _response_model_to_schema(
+            info.response_model,
+            schemas_registry,
+            info.response_model_include,
+            info.response_model_exclude,
+        )
         if resp_schema is not None:
             responses[primary_status]["content"] = {MIME_JSON: {"schema": resp_schema}}
 

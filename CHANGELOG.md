@@ -148,6 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `response_model_include` / `response_model_exclude` shape the OpenAPI response schema, so the document names exactly the fields the route sends. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - `Response.check_preconditions` enforces `If-Unmodified-Since` alongside `If-Match`, in RFC 9110 precedence; a date-based precondition was previously ignored. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - An exception handler declared `def handler(**kwargs)` receives `request` and `exc`; it was called with an empty mapping. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 - A dataclass or `TypedDict` return annotation declares a response contract, so the return is filtered rather than served whole. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))

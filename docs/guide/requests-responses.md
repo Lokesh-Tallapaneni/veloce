@@ -484,6 +484,17 @@ Each flag maps to the `model_dump` option of the same name. `include` and
 `exclude` accept any collection of field names and are normalised to a set;
 where a field is named by both, `exclude` wins.
 
+`response_model_include` and `response_model_exclude` also shape the **OpenAPI
+document**: the route's response schema names exactly the fields it sends, under
+a derived component (`Item_name_price`). Routes filtering one model the same way
+share that component; an unfiltered route keeps the model's own. Without this the
+document would advertise fields the route omits — and mark them `required` when
+they have no default — so a generated client would expect data it never receives.
+
+!!! note "Changed in version 0.13"
+    A filtered response documents its filtered shape. It previously documented
+    the whole model whatever the filter said.
+
 ```python
 @app.get("/users/{user_id}", response_model=UserOut, response_model_exclude_none=True)
 async def read_user(user_id: int) -> UserOut:

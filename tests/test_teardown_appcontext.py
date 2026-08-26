@@ -52,9 +52,14 @@ async def test_teardown_appcontext_receives_exception():
 
     await app.handle_request(_req("/boom"))
     assert len(captured) == 1
-    # The default 500 handler runs first, so the exception is "handled" —
-    # depending on framework semantics this might be None or the original.
-    # We accept either, but the hook must have fired exactly once.
+    # Asserted, not hedged. This previously read "depending on framework
+    # semantics this might be None or the original. We accept either", which
+    # declined to check the one thing the test is named for - so the hook could
+    # have started receiving `None` and this would still have passed. The
+    # behaviour is well-defined: the handler's exception reaches the hook even
+    # though the default 500 handler has already rendered a response from it.
+    assert isinstance(captured[0], RuntimeError)
+    assert str(captured[0]) == "kaboom"
 
 
 @pytest.mark.asyncio
