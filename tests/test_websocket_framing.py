@@ -11,6 +11,7 @@ import struct
 
 import pytest
 
+from tests._native_ws import delivered, nothing_delivered
 from tests._ws_frames import client_frame as _client_frame
 from veloce.exceptions import WebSocketDisconnect
 from veloce.websocket import WebSocket
@@ -44,10 +45,10 @@ async def test_frame_split_across_two_feed_data_chunks():
     # the rest of the payload in chunk two.
     cut = 9
     ws.feed_data(frame[:cut])
-    assert ws._receive_queue.empty()  # incomplete — nothing delivered yet
+    assert nothing_delivered(ws)  # incomplete — nothing delivered yet
     ws.feed_data(frame[cut:])
-    assert ws._receive_queue.get_nowait() == b"split-across-reads"
-    assert ws._receive_queue.empty()
+    assert delivered(ws)[0] == b"split-across-reads"
+    assert nothing_delivered(ws)
 
 
 async def test_two_frames_in_one_feed_data_call():
@@ -55,9 +56,11 @@ async def test_two_frames_in_one_feed_data_call():
     ws, _ = _make_ws()
     payload = _client_frame(0x1, b"first") + _client_frame(0x2, b"second")
     ws.feed_data(payload)
-    assert ws._receive_queue.get_nowait() == b"first"
-    assert ws._receive_queue.get_nowait() == b"second"
-    assert ws._receive_queue.empty()
+    # One drain: both frames must be buffered after the single `feed_data`, and
+    # in order. Reading them one at a time would not distinguish that from the
+    # second arriving later.
+    assert delivered(ws) == [b"first", b"second"]
+    assert nothing_delivered(ws)
 
 
 async def test_fragmented_message_reassembled_across_chunks():
@@ -67,8 +70,8 @@ async def test_fragmented_message_reassembled_across_chunks():
     ws.feed_data(_client_frame(0x1, b"frag-", fin=False))
     ws.feed_data(_client_frame(0x0, b"men", fin=False))
     ws.feed_data(_client_frame(0x0, b"ted", fin=True))
-    assert ws._receive_queue.get_nowait() == b"frag-mented"
-    assert ws._receive_queue.empty()
+    assert delivered(ws)[0] == b"frag-mented"
+    assert nothing_delivered(ws)
 
 
 async def test_ping_interleaved_between_fragments_in_one_chunk():
@@ -85,8 +88,8 @@ async def test_ping_interleaved_between_fragments_in_one_chunk():
     # Ping answered with a pong (FIN + opcode 0xA → first byte 0x8A).
     assert any(w[0] == 0x8A for w in transport.writes)
     # The fragmented message reassembled cleanly around the ping.
-    assert ws._receive_queue.get_nowait() == b"AAAABBBB"
-    assert ws._receive_queue.empty()
+    assert delivered(ws)[0] == b"AAAABBBB"
+    assert nothing_delivered(ws)
 
 
 async def test_close_frame_split_across_chunks_still_disconnects():

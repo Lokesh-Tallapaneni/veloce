@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._native_ws import mark_accepted
 from veloce.websocket import (
     WS_1005_NO_STATUS_RCVD,
     WS_1006_ABNORMAL_CLOSURE,
@@ -50,8 +51,9 @@ def _socket(
     async def send(message: dict) -> None:
         outbound.append(message)
 
-    ws = WebSocket.from_asgi({"type": "websocket"}, receive, send, idle_timeout=idle_timeout)
-    ws._accepted = True
+    ws = mark_accepted(
+        WebSocket.from_asgi({"type": "websocket"}, receive, send, idle_timeout=idle_timeout)
+    )
     return ws
 
 
@@ -64,8 +66,7 @@ def _dead_socket(exc: BaseException) -> WebSocket:
     async def send(message: dict) -> None:
         raise exc
 
-    ws = WebSocket.from_asgi({"type": "websocket"}, receive, send)
-    ws._accepted = True
+    ws = mark_accepted(WebSocket.from_asgi({"type": "websocket"}, receive, send))
     return ws
 
 

@@ -23,6 +23,7 @@ import asyncio
 
 import pytest
 
+from tests._native_ws import deliver, mark_accepted
 from veloce.websocket import WebSocket
 
 
@@ -49,8 +50,7 @@ def _accepted_socket() -> WebSocket:
     transport - and `_accepted` is set to mirror the post-handshake state the
     receive methods check for.
     """
-    ws = WebSocket(FakeTransport(), {"sec-websocket-key": "test"})
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(FakeTransport(), {"sec-websocket-key": "test"}))
     return ws
 
 
@@ -60,7 +60,7 @@ async def _queue(ws: WebSocket, payload: object) -> None:
     The queue carries the decoded payload itself - a `str` for text, `bytes` for
     binary - not an ASGI envelope. `receive_json` decodes the text it finds.
     """
-    await ws._receive_queue.put(payload)
+    deliver(ws, payload)
 
 
 # ── the timeout fires when nothing arrives ───────────────────────────

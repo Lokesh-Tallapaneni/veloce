@@ -14,6 +14,7 @@ import struct
 
 import pytest
 
+from tests._native_ws import delivered, mark_accepted, nothing_delivered
 from tests._ws_frames import client_frame as _client_frame
 from veloce.exceptions import WebSocketDisconnect
 from veloce.websocket import WebSocket, _Utf8Validator
@@ -94,14 +95,14 @@ async def test_invalid_utf8_text_frame_closes_with_1007():
     # queued is the terminal disconnect sentinel that wakes a parked receiver.
     from veloce.websocket import _RAW_DISCONNECT
 
-    assert ws._receive_queue.get_nowait() is _RAW_DISCONNECT
-    assert ws._receive_queue.empty()
+    assert delivered(ws)[0] is _RAW_DISCONNECT
+    assert nothing_delivered(ws)
 
 
 async def test_valid_utf8_text_frame_still_delivered():
     ws, _ = _make_ws()
     ws.feed_data(_client_frame(0x1, "naïve café".encode(), fin=True))
-    assert ws._receive_queue.get_nowait().decode("utf-8") == "naïve café"
+    assert delivered(ws)[0].decode("utf-8") == "naïve café"
 
 
 # ── Client frame masking (RFC 6455 Sec. 5.1) ───────────────────────────
@@ -120,7 +121,7 @@ async def test_unmasked_client_frame_closes_with_1002():
     # The unmasked payload never reached the receive queue as data.
     from veloce.websocket import _RAW_DISCONNECT
 
-    assert ws._receive_queue.get_nowait() is _RAW_DISCONNECT
+    assert delivered(ws)[0] is _RAW_DISCONNECT
 
 
 async def test_unmasked_control_frame_closes_with_1002():
@@ -135,7 +136,7 @@ async def test_masked_client_frame_still_accepted():
     # The masking guard must not reject a properly masked client frame.
     ws, _ = _make_ws()
     ws.feed_data(_client_frame(0x1, b"ok", fin=True))
-    assert ws._receive_queue.get_nowait().decode("utf-8") == "ok"
+    assert delivered(ws)[0].decode("utf-8") == "ok"
 
 
 async def test_text_truncated_codepoint_at_fin_closes_with_1007():
@@ -167,14 +168,14 @@ async def test_valid_utf8_split_across_fragments_reassembles():
     ws.feed_data(_client_frame(0x1, text[:1], fin=False))
     ws.feed_data(_client_frame(0x0, text[1:4], fin=False))
     ws.feed_data(_client_frame(0x0, text[4:], fin=True))
-    assert ws._receive_queue.get_nowait().decode("utf-8") == "あい"
+    assert delivered(ws)[0].decode("utf-8") == "あい"
 
 
 async def test_binary_frame_skips_utf8_validation():
     """Binary frames carry arbitrary bytes — no UTF-8 constraint applies."""
     ws, _ = _make_ws()
     ws.feed_data(_client_frame(0x2, b"\xff\x00\xfe", fin=True))
-    assert ws._receive_queue.get_nowait() == b"\xff\x00\xfe"
+    assert delivered(ws)[0] == b"\xff\x00\xfe"
 
 
 # ── Close-frame code / reason validation and exposure ──────────────────
@@ -249,7 +250,7 @@ async def test_rsv1_bit_set_closes_with_1002():
     # Payload never reached the application queue.
     from veloce.websocket import _RAW_DISCONNECT
 
-    assert ws._receive_queue.get_nowait() is _RAW_DISCONNECT
+    assert delivered(ws)[0] is _RAW_DISCONNECT
 
 
 @pytest.mark.parametrize("rsv_mask", [0x20, 0x10])
@@ -271,7 +272,7 @@ async def test_clean_frame_with_zero_rsv_still_delivered():
     """The 0x70 mask must not false-positive on FIN/opcode bits."""
     ws, _ = _make_ws()
     ws.feed_data(_client_frame(0x1, b"hello", fin=True))
-    assert ws._receive_queue.get_nowait().decode("utf-8") == "hello"
+    assert delivered(ws)[0].decode("utf-8") == "hello"
 
 
 # ── Close code preserved across the between-receives path ──────────────
@@ -281,7 +282,7 @@ async def test_close_code_preserved_on_receive_after_close():
     """A close that landed between receives must surface its recorded code on
     the next receive_*() (which hits _check_can_receive first), not a 1000."""
     ws, _ = _make_ws()
-    ws._accepted = True
+    mark_accepted(ws)
     # Peer close (going-away) recorded while user code processed a message.
     ws._closed = True
     ws.close_code = 1001

@@ -7,6 +7,7 @@ import struct
 import orjson
 import pytest
 
+from tests._native_ws import delivered, mark_accepted, nothing_delivered
 from tests._ws_frames import client_frame as _client_frame
 from veloce.websocket import WebSocket
 
@@ -198,8 +199,7 @@ async def test_websocket_send_before_accept_raises():
 
 async def test_websocket_double_accept_raises():
 
-    ws = WebSocket(transport=None, headers={})
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(transport=None, headers={}))
     with pytest.raises(RuntimeError, match="already accepted"):
         await ws.accept()
 
@@ -237,7 +237,7 @@ async def test_websocket_unfragmented_frame_still_delivered():
     """A single FIN data frame is delivered as before."""
     ws, _ = _make_ws()
     ws.feed_data(_client_frame(0x1, b"single", fin=True))
-    assert ws._receive_queue.get_nowait() == b"single"
+    assert delivered(ws)[0] == b"single"
 
 
 async def test_websocket_reassembles_fragmented_message():
@@ -247,8 +247,8 @@ async def test_websocket_reassembles_fragmented_message():
     ws.feed_data(_client_frame(0x1, b"hello ", fin=False))  # start (text)
     ws.feed_data(_client_frame(0x0, b"wonder", fin=False))  # continuation
     ws.feed_data(_client_frame(0x0, b"ful", fin=True))  # final fragment
-    assert ws._receive_queue.get_nowait() == b"hello wonderful"
-    assert ws._receive_queue.empty()  # only one message delivered
+    assert delivered(ws)[0] == b"hello wonderful"
+    assert nothing_delivered(ws)  # only one message delivered
 
 
 async def test_websocket_control_frame_interleaved_in_fragmented_message():
@@ -262,7 +262,7 @@ async def test_websocket_control_frame_interleaved_in_fragmented_message():
     # The ping was answered — a pong frame (FIN + opcode 0xA = 0x8A).
     assert any(w[0] == 0x8A for w in transport.writes)
     # The fragmented message reassembled across the interleaved ping.
-    assert ws._receive_queue.get_nowait() == b"AAAABBBB"
+    assert delivered(ws)[0] == b"AAAABBBB"
 
 
 async def test_websocket_stray_continuation_frame_is_protocol_error():
@@ -287,8 +287,8 @@ async def test_websocket_data_frame_mid_fragmentation_is_protocol_error():
     assert ws._closed is True
     # The interrupting frame is not delivered: the only thing enqueued is the
     # disconnect sentinel that wakes a parked receiver on the protocol close.
-    assert ws._receive_queue.get_nowait() is _RAW_DISCONNECT
-    assert ws._receive_queue.empty()
+    assert delivered(ws)[0] is _RAW_DISCONNECT
+    assert nothing_delivered(ws)
     close = [w for w in transport.writes if w[0] & 0x0F == 0x8]
     assert close and struct.unpack("!H", close[-1][2:4])[0] == 1002
 
@@ -364,8 +364,7 @@ def test_receive_after_close_raises_disconnect():
     from veloce.exceptions import WebSocketDisconnect
 
     async def go() -> None:
-        ws = WebSocket(_FakeTransport(), {})
-        ws._accepted = True
+        ws = mark_accepted(WebSocket(_FakeTransport(), {}))
         ws._closed = True
         with pytest.raises(WebSocketDisconnect):
             await ws.receive_text(timeout=0.01)

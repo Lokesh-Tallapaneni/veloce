@@ -14,6 +14,7 @@ import struct
 
 import pytest
 
+from tests._native_ws import mark_accepted
 from tests._ws_frames import client_frame as _client_frame
 from veloce.exceptions import WebSocketDisconnect
 from veloce.status import WS_1006_ABNORMAL_CLOSURE
@@ -203,7 +204,7 @@ def test_heartbeat_timeout_unblocks_parked_receive() -> None:
 
     async def go() -> None:
         ws, _transport = _make_ws(heartbeat=0.02)
-        ws._accepted = True
+        mark_accepted(ws)
         ws.start_heartbeat()
         with pytest.raises(WebSocketDisconnect) as exc:
             await ws.receive_text()

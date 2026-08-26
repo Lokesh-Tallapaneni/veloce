@@ -25,6 +25,7 @@ import time
 
 import pytest
 
+from tests._native_ws import mark_accepted
 from veloce.websocket import WebSocket
 
 _KEY = {"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="}
@@ -52,8 +53,7 @@ class _Transport:
 
 def _socket() -> tuple[WebSocket, _Transport]:
     transport = _Transport()
-    ws = WebSocket(transport, dict(_KEY))
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(transport, dict(_KEY)))
     return ws, transport
 
 

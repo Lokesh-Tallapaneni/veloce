@@ -15,6 +15,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from tests._native_ws import delivered
 from veloce import WebSocket
 from veloce.exceptions import WebSocketDisconnect
 
@@ -118,7 +119,7 @@ def test_split_binary_frame_reassembles(payload: bytes, mask: bytes, steps: list
         pos += step
     assert not ws._closed
     assert ws._recv_buffer == bytearray()
-    assert ws._receive_queue.get_nowait() == payload
+    assert delivered(ws)[0] == payload
 
 
 @settings(max_examples=300, deadline=None)

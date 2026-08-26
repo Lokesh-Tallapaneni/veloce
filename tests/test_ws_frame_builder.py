@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests._native_ws import delivered, mark_accepted
 from tests._ws_frames import client_frame
 from veloce.websocket import WebSocket
 
@@ -41,8 +42,7 @@ class _Transport:
 
 def _fed(payload: bytes) -> bytes:
     """Feed a binary frame through the real parser and return what it delivered."""
-    ws = WebSocket(_Transport(), dict(_KEY))
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(_Transport(), dict(_KEY)))
     ws.feed_data(client_frame(0x2, payload))
     queue = ws._receive_queue
     assert queue is not None and not queue.empty(), "the parser delivered no message"
@@ -118,8 +118,7 @@ def test_a_text_frame_carries_its_utf8_bytes():
     """The parser queues the raw payload; decoding is `receive_text`'s job. A
     multi-byte character is used so a length computed in characters rather than
     bytes would produce a short frame and fail here."""
-    ws = WebSocket(_Transport(), dict(_KEY))
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(_Transport(), dict(_KEY)))
     text = "héllo"
     ws.feed_data(client_frame(0x1, text.encode("utf-8")))
-    assert ws._receive_queue.get_nowait() == text.encode("utf-8")
+    assert delivered(ws)[0] == text.encode("utf-8")

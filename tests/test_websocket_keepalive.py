@@ -12,6 +12,7 @@ import asyncio
 
 import pytest
 
+from tests._native_ws import deliver, mark_accepted
 from tests._ws_frames import client_frame as _client_frame
 from veloce.exceptions import WebSocketDisconnect
 from veloce.status import WS_1001_GOING_AWAY
@@ -50,7 +51,7 @@ def _asgi_ws(
         send,
         idle_timeout=idle_timeout,
     )
-    ws._accepted = True
+    mark_accepted(ws)
     return ws
 
 
@@ -264,8 +265,7 @@ async def test_idle_timeout_wins_when_smaller_than_per_call_timeout():
 @pytest.mark.asyncio
 async def test_raw_mode_idle_timeout_closes_1001():
     transport = _FakeTransport()
-    ws = WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.02)
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.02))
 
     # Nothing is ever put on the receive queue: a silent peer.
     with pytest.raises(WebSocketDisconnect):
@@ -286,11 +286,10 @@ async def test_raw_mode_idle_timeout_closes_1001():
 @pytest.mark.asyncio
 async def test_raw_mode_activity_delivers_before_idle_close():
     transport = _FakeTransport()
-    ws = WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.2)
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.2))
 
     # Feed a message onto the queue well within the window.
-    ws._receive_queue.put_nowait(b"hello")
+    deliver(ws, b"hello")
     assert await ws.receive_text() == "hello"
     assert transport.closed is False
 
@@ -302,8 +301,7 @@ async def test_raw_mode_idle_window_is_per_completed_message():
     Raw transport is not the production path (ASGI delivers complete messages
     and owns ping/pong), so the window is measured per message, not per frame."""
     transport = _FakeTransport()
-    ws = WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.2)
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.2))
 
     async def feed() -> None:
         # Both fragments assemble well within the 0.2s idle window.
@@ -325,8 +323,7 @@ async def test_raw_mode_silent_after_frame_still_idle_closes():
     """Once frames stop arriving the idle window must still fire: a single
     frame followed by silence past the window trips a clean 1001 close."""
     transport = _FakeTransport()
-    ws = WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.04)
-    ws._accepted = True
+    ws = mark_accepted(WebSocket(transport, {"sec-websocket-key": "k"}, idle_timeout=0.04))
 
     async def feed() -> None:
         await asyncio.sleep(0.02)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._native_ws import mark_accepted
 from veloce import Veloce
 from veloce.testclient import TestClient
 from veloce.websocket import WebSocket, WebSocketState
@@ -79,8 +80,9 @@ def test_send_oserror_normalized_to_disconnect():
         if message.get("type") == "websocket.send":
             raise BrokenPipeError("peer gone")
 
-    ws = WebSocket.from_asgi({"type": "websocket", "path": "/", "headers": []}, receive, send)
-    ws._accepted = True
+    ws = mark_accepted(
+        WebSocket.from_asgi({"type": "websocket", "path": "/", "headers": []}, receive, send)
+    )
 
     async def run():
         with pytest.raises(WebSocketDisconnect):
@@ -103,8 +105,9 @@ def test_send_bytes_connectionreset_normalized():
     async def send(message):
         raise ConnectionResetError("reset")
 
-    ws = WebSocket.from_asgi({"type": "websocket", "path": "/", "headers": []}, receive, send)
-    ws._accepted = True
+    ws = mark_accepted(
+        WebSocket.from_asgi({"type": "websocket", "path": "/", "headers": []}, receive, send)
+    )
 
     async def run():
         with pytest.raises(WebSocketDisconnect):

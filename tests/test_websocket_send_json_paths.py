@@ -18,6 +18,7 @@ import json
 
 import pytest
 
+from tests._native_ws import mark_accepted
 from veloce import Veloce
 from veloce.testclient import TestClient
 
@@ -125,8 +126,7 @@ async def test_send_json_before_accept_is_refused_on_the_native_path():
 async def test_send_json_after_close_is_refused_on_the_native_path():
     from veloce.exceptions import WebSocketDisconnect
 
-    ws = _native_ws()
-    ws._accepted = True
+    ws = mark_accepted(_native_ws())
     ws._closed = True
     with pytest.raises(WebSocketDisconnect):
         await ws.send_json({"a": 1})
