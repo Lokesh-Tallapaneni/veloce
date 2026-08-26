@@ -887,15 +887,15 @@ def _build_info_object(app: Any) -> dict[str, Any]:
     # constructor and the MCP server said "Veloce", so one app named itself two
     # things across its two doors.
     info_obj: dict[str, Any] = {"title": app.title, "version": app.version}
-    if getattr(app, "summary", None):
+    if app.summary:
         info_obj["summary"] = app.summary
-    if getattr(app, "description", ""):
+    if app.description:
         info_obj["description"] = app.description
-    if getattr(app, "terms_of_service", None):
+    if app.terms_of_service:
         info_obj["termsOfService"] = app.terms_of_service
-    if getattr(app, "contact", None):
+    if app.contact:
         info_obj["contact"] = app.contact
-    if getattr(app, "license_info", None):
+    if app.license_info:
         info_obj["license"] = app.license_info
     return info_obj
 
@@ -1092,7 +1092,7 @@ def _declare_undocumented_path_params(info: Any, parameters: list[dict]) -> None
     requires every template expression in the path to have a `path` parameter -
     so a caller reading the schema could not know to supply it at all.
     """
-    template = getattr(info, "path_template", None)
+    template = info.path_template
     if not template:
         return
     declared = {p["name"] for p in parameters if p["in"] == "path"}
@@ -1306,7 +1306,7 @@ def _extract_responses(
     # the operation later) - so a custom 422 shape / media type is preserved
     # rather than overwritten. Operations with no validatable parameter never
     # advertise a 422 the resolver cannot raise.
-    _openapi_extra_responses = (getattr(info, "openapi_extra", None) or {}).get("responses") or {}
+    _openapi_extra_responses = (info.openapi_extra or {}).get("responses") or {}
     if (
         has_validatable_params
         and _VALIDATION_ERROR_STATUS not in responses
@@ -1428,7 +1428,7 @@ def _collect_security_requirements(
                 visit(default)
 
     # Route-level dependencies (the `dependencies=[Depends(...)]` kwarg).
-    for d in getattr(info, "dependencies", ()) or ():
+    for d in info.dependencies or ():
         visit(d)
     # Plus anything in the handler's own parameter defaults.
     handler = info.handler
@@ -1478,12 +1478,12 @@ def _dependency_graph_has_validatable(info: Any) -> bool:
                 return True
         return False
 
-    for dep in getattr(info, "dependencies", None) or []:
+    for dep in info.dependencies or []:
         if isinstance(dep, Depends):
             target = dep.dependency
             if _scheme_definition(target) is None and visit(target):
                 return True
-    return visit(getattr(info, "handler", None))
+    return visit(info.handler)
 
 
 def _build_operation(
@@ -1496,9 +1496,7 @@ def _build_operation(
     # OpenAPI 3.1 Sec. 4.8.10 - operationId must be unique across the document.
     # Explicit override wins; default = `<name>_<method>`. Collisions among the
     # auto-generated form are resolved later in `_disambiguate_operation_ids`.
-    op_id = (
-        info.operation_id if getattr(info, "operation_id", None) else f"{info.name}_{method_lower}"
-    )
+    op_id = info.operation_id if info.operation_id else f"{info.name}_{method_lower}"
     operation: dict[str, Any] = {
         "summary": info.summary or info.name,
         "operationId": op_id,
@@ -1512,7 +1510,7 @@ def _build_operation(
     if info.deprecated:
         operation["deprecated"] = True
     # OpenAPI 3.1 Sec. 4.8.8 - route-level `callbacks` map emitted verbatim.
-    if getattr(info, "callbacks", None):
+    if info.callbacks:
         operation["callbacks"] = info.callbacks
 
     parameters, request_body_schema, form_fields, body_fields, scalar_body = _extract_parameters(
@@ -1544,7 +1542,7 @@ def _build_operation(
     # `openapi_extra` - deep-merge the user-supplied dict over the
     # generated operation. Nested dicts merge key-by-key; scalars and
     # lists in `openapi_extra` overwrite.
-    extra = getattr(info, "openapi_extra", None)
+    extra = info.openapi_extra
     if extra:
         _deep_merge(operation, extra)
 
@@ -1586,7 +1584,7 @@ def _walk_webhooks(
     Sec. 4.8.10).
     """
     webhook_items: dict[str, Any] = {}
-    webhooks_router = getattr(app, "webhooks", None)
+    webhooks_router = app.webhooks
     walker = getattr(webhooks_router, "_walk_routes", None) if webhooks_router else None
     if walker is None:
         return webhook_items
@@ -1770,12 +1768,12 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
         "components": {"schemas": {}},
     }
 
-    if getattr(app, "servers", None):
+    if app.servers:
         schema["servers"] = app.servers
-    if getattr(app, "openapi_tags", None):
+    if app.openapi_tags:
         schema["tags"] = app.openapi_tags
     # OpenAPI 3.1 Sec. 4.8.11 - top-level `externalDocs` object.
-    if getattr(app, "openapi_external_docs", None):
+    if app.openapi_external_docs:
         schema["externalDocs"] = app.openapi_external_docs
 
     schemas_registry = SchemaRegistry(separate_input_output=app.separate_input_output_schemas)
@@ -1812,7 +1810,7 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
         if _references_validation_error_schema(operation):
             needs_validation_error_schema = True
         schema["paths"][path][method_lower] = operation
-        if getattr(info, "operation_id", None):
+        if info.operation_id:
             explicit_ops.append((operation, path, method_lower))
         else:
             auto_ops.append((operation, path, method_lower))
@@ -1854,9 +1852,9 @@ def get_openapi_schema(app: Any) -> dict[str, Any]:
     if security_schemes_registry:
         schema["components"]["securitySchemes"] = security_schemes_registry
 
-    validate = getattr(app, "validate_openapi", None)
+    validate = app.validate_openapi
     if validate is None:
-        validate = bool(getattr(app, "debug", False))
+        validate = bool(app.debug)
     if validate:
         _validate_document(schema)
 
