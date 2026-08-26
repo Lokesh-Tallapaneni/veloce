@@ -23,6 +23,7 @@ import orjson
 from pydantic import BaseModel
 
 from veloce._constants import MIME_FORM_URLENCODED, MIME_JSON, MIME_MULTIPART_FORM_DATA
+from veloce._handler_plan import extract_annotated_marker
 from veloce._model_backend import (
     _msgspec,
     adapter_for,
@@ -111,7 +112,11 @@ def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
     hints: dict[str, Any] = {}
     if hasattr(handler, "__annotations__"):
         try:
-            hints = get_type_hints(handler)
+            # `include_extras=True` keeps PEP 593 metadata: an
+            # `Annotated[..., Security(...)]` parameter carries its marker there
+            # and nowhere else, and stripping it published the route as
+            # unauthenticated while the runtime still enforced it.
+            hints = get_type_hints(handler, include_extras=True)
         except Exception:
             # `get_type_hints` raises a wide range (NameError on unresolved
             # forward refs, TypeError on bad annotations, recursion errors on
@@ -122,6 +127,26 @@ def _handler_intro(handler: Any) -> tuple[Any, dict[str, Any]]:
     with contextlib.suppress(TypeError):
         _HANDLER_INTRO_CACHE[handler] = result
     return result
+
+
+def _param_marker(param: Any, hints: dict[str, Any]) -> Any:
+    """The `Depends` / parameter marker for `param`, however it was spelled.
+
+    A marker reaches a handler two ways: as the parameter default
+    (`cred = Security(scheme)`) or as PEP 593 metadata
+    (`cred: Annotated[object, Security(scheme)]`). Reading only the default
+    published an `Annotated`-spelled route as unauthenticated while the runtime
+    enforced it - and `Annotated` is this project's documented house style, so
+    the recommended form was the broken one.
+
+    Resolution is delegated to the same helper the handler plan uses, so the
+    published contract and the enforced one cannot drift apart again.
+    """
+    default = param.default
+    if isinstance(default, (Depends, ParamBase)):
+        return default
+    marker, _base = extract_annotated_marker(hints.get(param.name, param.annotation))
+    return marker if marker is not None else default
 
 
 def _deep_merge(target: dict, overlay: dict) -> None:
@@ -1394,11 +1419,11 @@ def _collect_security_requirements(
             return
         seen.add(id(inner))
 
-        sig, _ = _handler_intro(inner)
+        sig, hints = _handler_intro(inner)
         if sig is None:
             return
         for param in sig.parameters.values():
-            default = param.default
+            default = _param_marker(param, hints)
             if isinstance(default, Depends):
                 visit(default)
 
@@ -1407,11 +1432,11 @@ def _collect_security_requirements(
         visit(d)
     # Plus anything in the handler's own parameter defaults.
     handler = info.handler
-    sig, _ = _handler_intro(handler)
+    sig, hints = _handler_intro(handler)
     if sig is None:
         return requirements
     for param in sig.parameters.values():
-        default = param.default
+        default = _param_marker(param, hints)
         if isinstance(default, Depends):
             visit(default)
     return requirements
@@ -1439,7 +1464,7 @@ def _dependency_graph_has_validatable(info: Any) -> bool:
         if sig is None:
             return False
         for param in sig.parameters.values():
-            default = param.default
+            default = _param_marker(param, hints)
             if isinstance(default, Depends):
                 target = default.dependency
                 if _scheme_definition(target) is not None:

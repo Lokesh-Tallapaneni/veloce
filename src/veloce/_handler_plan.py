@@ -91,6 +91,44 @@ def _unwrap_optional(annotation: Any) -> tuple[bool, Any]:
     return False, annotation
 
 
+def extract_annotated_marker(annotation: Any) -> tuple[Any, Any]:
+    """Split `Annotated[T, Depends()/Query()/...]` into `(marker, T)`.
+
+    Returns `(None, annotation)` when there is no Veloce marker in the metadata,
+    so a bare annotation - or one carrying unrelated metadata - passes through
+    untouched.
+
+    Shared with the OpenAPI walkers rather than reimplemented there. They
+    classified a parameter solely by `isinstance(param.default, Depends)`, which
+    the `Annotated` spelling never sets, so an `Annotated[..., Security(...)]`
+    route was *enforced* at runtime and published as unauthenticated. One
+    resolver means the two doors cannot disagree again.
+
+    Python 3.10's `get_type_hints` still applies the implicit-Optional rule that
+    PEP 484 dropped in 3.11: a parameter defaulting to `None` comes back as
+    `Optional[Annotated[T, marker]]`, so `Annotated` is no longer outermost and
+    the marker would be missed - silently rebinding a `Body()` / `Header()` /
+    `Cookie()` parameter to the query string. That wrapper is peeled here, so
+    every supported version sees the same shape; on 3.11+ it is a no-op.
+    """
+    if annotation is not None and not hasattr(annotation, "__metadata__"):
+        was_optional, inner = _unwrap_optional(annotation)
+        if was_optional and hasattr(inner, "__metadata__"):
+            annotation = inner
+
+    if get_origin(annotation) is None or not hasattr(annotation, "__metadata__"):
+        return None, annotation
+
+    from veloce.dependency import Depends  # local import breaks the import cycle
+
+    meta_args = get_args(annotation)
+    base_type = meta_args[0] if meta_args else annotation
+    for meta in getattr(annotation, "__metadata__", ()):
+        if isinstance(meta, (Depends, ParamBase)):
+            return meta, base_type
+    return None, base_type
+
+
 def _unwrap_list(annotation: Any) -> tuple[bool, Any]:
     """Detect `list[T]` and unwrap T."""
     origin = get_origin(annotation)
@@ -703,35 +741,14 @@ def build_plan(
         default = param.default
         has_default = default is not inspect.Parameter.empty
 
-        # Python 3.10's `get_type_hints` still applies the implicit-Optional rule
-        # that PEP 484 dropped in 3.11: a parameter defaulting to `None` comes
-        # back as `Optional[Annotated[T, marker]]`, so `Annotated` is no longer
-        # outermost and the marker below would be missed - silently rebinding a
-        # `Body()` / `Header()` / `Cookie()` parameter to the query string. Peel
-        # that wrapper so every supported version sees the same shape; on 3.11+
-        # the wrapper is never added and this is a no-op.
-        if annotation is not None and not hasattr(annotation, "__metadata__"):
-            _was_optional, _inner_annotation = _unwrap_optional(annotation)
-            if _was_optional and hasattr(_inner_annotation, "__metadata__"):
-                annotation = _inner_annotation
-
         # PEP 593: `Annotated[T, Depends(...)]` or `Annotated[T, Query(...)]`.
-        # If the metadata carries a `Depends` (or `ParamBase` marker) and
-        # the user didn't ALSO set it as the default, hoist the marker
-        # into `default` and reduce `annotation` to the inner type.
-        if get_origin(annotation) is not None and hasattr(annotation, "__metadata__"):
-            meta_args = get_args(annotation)
-            base_type = meta_args[0] if meta_args else annotation
-            metadata = getattr(annotation, "__metadata__", ())
-            extracted_marker: Any = None
-            for m in metadata:
-                if isinstance(m, (Depends, ParamBase)):
-                    extracted_marker = m
-                    break
-            if extracted_marker is not None and not isinstance(default, (Depends, ParamBase)):
-                default = extracted_marker
-                has_default = True
-            annotation = base_type
+        # If the metadata carries a marker and the user didn't ALSO set it as the
+        # default, hoist the marker into `default` and reduce `annotation` to the
+        # inner type.
+        extracted_marker, annotation = extract_annotated_marker(annotation)
+        if extracted_marker is not None and not isinstance(default, (Depends, ParamBase)):
+            default = extracted_marker
+            has_default = True
 
         # Ambiguity guard (registration-time, intent-aware). A parameter bound
         # by a BY-NAME magic rule below (`request`, or `ws` / `websocket` on a
