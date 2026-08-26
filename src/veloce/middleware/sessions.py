@@ -346,6 +346,18 @@ class SessionMiddlewareBase(Middleware):
         # Read and write must share the prefixed wire name.
         self._wire_cookie_name = _wire_name(cookie_prefix, cookie_name)
 
+    @property
+    def wire_cookie_name(self) -> str:
+        """The cookie name actually used on the wire.
+
+        `cookie_name` with the RFC 6265bis `__Host-` / `__Secure-` prefix
+        applied. Anything writing or reading this backend's cookie directly
+        needs this name and not the configured one - seeded under the bare name
+        the cookie is simply never found, and the read silently takes the
+        anonymous path.
+        """
+        return self._wire_cookie_name
+
     def cookie_is_secure(self) -> bool:
         """Whether this backend's session cookie will carry `Secure`.
 
@@ -495,18 +507,47 @@ class SessionMiddleware(SessionMiddlewareBase):
         them.
         """
         app = request.app
-        cfg = app.config if app is not None else {}
-        secret = cfg.get("SECRET_KEY")
+        self.bind_secret_key(
+            app.config if app is not None else {},
+            hint="before the first request",
+        )
+
+    def bind_secret_key(self, config: Mapping[str, Any], *, hint: str = "") -> None:
+        """Settle the signing key from `config` if the constructor was not given one.
+
+        A no-op once the key is settled, so it is safe to call from anywhere
+        that needs a usable signer before a request has run - seeding a session
+        in a test, or a CLI command that mints one. `hint` is appended to the
+        error raised when there is no key, so the caller can say when it needed
+        it.
+        """
+        if not self._pending_config:
+            return
+        secret = config.get("SECRET_KEY")
         if not secret:
             raise RuntimeError(
                 "SessionMiddleware has no secret key - pass secret_key= at "
-                "construction or set app.secret_key (config['SECRET_KEY']) "
-                "before the first request."
+                "construction or set app.secret_key (config['SECRET_KEY'])"
+                + (f" {hint}." if hint else ".")
             )
         self._signer = _build_signer(secret)
         self._pending_config = False
 
     # ── The cookie value, for anything that is not a request ──
+
+    def _require_signer(self, caller: str) -> None:
+        """Refuse clearly when the signing key has not been settled yet.
+
+        A middleware constructed without `secret_key=` takes the app's
+        `SECRET_KEY` on the first request. Called before that, these two would
+        have raised `AttributeError` on a private attribute, which says nothing
+        about what to do.
+        """
+        if self._pending_config:
+            raise RuntimeError(
+                f"{caller}() has no signing key yet - pass secret_key= at "
+                f"construction, or call bind_secret_key(app.config) first."
+            )
 
     def encode_cookie(self, session: Mapping[str, Any]) -> str:
         """Return the signed cookie value this middleware would send for `session`.
@@ -517,6 +558,7 @@ class SessionMiddleware(SessionMiddlewareBase):
         secret and salt, and any drift in that construction produces cookies the
         middleware rejects.
         """
+        self._require_signer("encode_cookie")
         return self._signer.dumps(dict(session))
 
     def decode_cookie(self, value: str) -> dict[str, Any] | None:
@@ -526,6 +568,7 @@ class SessionMiddleware(SessionMiddlewareBase):
         than this middleware would accept. The request path calls this, so what
         it accepts and what a request accepts cannot diverge.
         """
+        self._require_signer("decode_cookie")
         try:
             # Decode with the longer window so a permanent cookie is not
             # rejected before its flag is known. The cookie's own `Max-Age`

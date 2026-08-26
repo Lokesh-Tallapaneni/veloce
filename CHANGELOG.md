@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SessionMiddlewareBase.wire_cookie_name` exposes the cookie name after the `__Host-` / `__Secure-` prefix. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
+- `SessionMiddleware.bind_secret_key()` settles the signing key from a config before the first request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `app.middlewares` exposes the registered middleware instances in pipeline order. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `SessionMiddleware.encode_cookie()` / `.decode_cookie()` sign and verify a session cookie outside a request. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
@@ -161,6 +165,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `veloce.routing.params` is removed; import the markers from `veloce` or `veloce.routing`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 ### Fixed
+
+- `client.session_transaction()` applies the middleware's own age ceiling, so a cookie a request would refuse no longer loads. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - A status-code error handler taking `(request, exc)` is called correctly on the unhandled-exception and `405` paths; it raised `TypeError` out of dispatch. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 

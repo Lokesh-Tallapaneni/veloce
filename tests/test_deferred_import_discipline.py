@@ -56,7 +56,6 @@ KNOWN_UNDOCUMENTED: frozenset[str] = frozenset(
         "exceptions.py::veloce.helpers",
         "testclient.py::veloce.middleware.sessions",
         "testclient.py::veloce.sessions",
-        "testclient.py::veloce.signing",
         "workers.py::veloce.serving.protocol",
     }
 )

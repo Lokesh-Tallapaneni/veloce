@@ -219,3 +219,87 @@ def test_the_seam_and_a_request_agree_on_a_stale_token(permanent, aged):
     assert mw.decode_cookie(value) is None
     with TestClient(app) as client:
         assert client.get("/who", headers={"Cookie": f"session={value}"}).json() == {"user": None}
+
+
+# ── before the key is settled ────────────────────────────────────────
+#
+# A middleware constructed without `secret_key=` takes the app's `SECRET_KEY` on
+# the first request. Called before that, these used to raise `AttributeError` on
+# `_signer`, which tells the caller nothing.
+
+
+def test_encoding_before_the_key_is_settled_says_what_to_do():
+    middleware = SessionMiddleware()
+    with pytest.raises(RuntimeError) as raised:
+        middleware.encode_cookie({"user": "alice"})
+    assert "secret_key=" in str(raised.value)
+    assert "bind_secret_key" in str(raised.value)
+
+
+def test_decoding_before_the_key_is_settled_says_what_to_do():
+    middleware = SessionMiddleware()
+    with pytest.raises(RuntimeError, match="bind_secret_key"):
+        middleware.decode_cookie("anything")
+
+
+def test_binding_the_key_makes_them_work():
+    middleware = SessionMiddleware()
+    middleware.bind_secret_key({"SECRET_KEY": SECRET})
+    assert middleware.decode_cookie(middleware.encode_cookie({"a": 1})) == {"a": 1}
+
+
+def test_binding_twice_is_a_no_op():
+    """It runs on the first request too; calling it early must not re-key."""
+    middleware = SessionMiddleware()
+    middleware.bind_secret_key({"SECRET_KEY": SECRET})
+    token = middleware.encode_cookie({"a": 1})
+    middleware.bind_secret_key({"SECRET_KEY": "a-different-secret-entirely"})
+    assert middleware.decode_cookie(token) == {"a": 1}
+
+
+def test_binding_does_not_override_a_constructor_key():
+    middleware = _mw()
+    middleware.bind_secret_key({"SECRET_KEY": "a-different-secret-entirely"})
+    assert _mw().decode_cookie(middleware.encode_cookie({"a": 1})) == {"a": 1}
+
+
+def test_binding_with_no_key_says_both_remedies():
+    middleware = SessionMiddleware()
+    with pytest.raises(RuntimeError) as raised:
+        middleware.bind_secret_key({})
+    assert "secret_key=" in str(raised.value)
+    assert "app.secret_key" in str(raised.value)
+
+
+def test_the_hint_reaches_the_message():
+    middleware = SessionMiddleware()
+    with pytest.raises(RuntimeError, match="before dinner"):
+        middleware.bind_secret_key({}, hint="before dinner")
+
+
+# ── the wire name ────────────────────────────────────────────────────
+
+
+def test_the_wire_name_is_the_plain_name_by_default():
+    assert _mw().wire_cookie_name == "session"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected"),
+    [("host", "__Host-session"), ("secure", "__Secure-session")],
+)
+def test_the_wire_name_carries_the_prefix(prefix, expected):
+    assert _mw(secure=True, cookie_prefix=prefix).wire_cookie_name == expected
+
+
+def test_the_wire_name_follows_a_custom_cookie_name():
+    assert _mw(cookie_name="sid").wire_cookie_name == "sid"
+
+
+def test_the_server_backend_exposes_it_too():
+    """It is on the base, so any backend answers."""
+    from veloce.middleware.sessions import ServerSessionMiddleware
+
+    assert ServerSessionMiddleware(secure=True, cookie_prefix="host").wire_cookie_name == (
+        "__Host-session"
+    )

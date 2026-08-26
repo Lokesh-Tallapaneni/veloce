@@ -120,8 +120,15 @@ def test_no_key_anywhere_says_what_to_do():
         return {"user": request.session.get("user")}
 
     client = TestClient(app)
-    with pytest.raises(RuntimeError, match="needs a signing key"), client.session_transaction():
+    with pytest.raises(RuntimeError) as raised, client.session_transaction():
         pass
+    # Both remedies, and when it was needed. The message comes from the
+    # middleware's own key resolution now, so it cannot drift from the one a
+    # first request would raise.
+    message = str(raised.value)
+    assert "secret_key=" in message
+    assert "app.secret_key" in message
+    assert "session_transaction()" in message
 
 
 # ── the error messages ───────────────────────────────────────────────
@@ -183,3 +190,85 @@ def test_an_empty_session_seeds_cleanly():
     with client.session_transaction():
         pass
     assert client.get("/who").json() == {"user": None}
+
+
+# ── it goes through the middleware, not around it ────────────────────
+#
+# `session_transaction` used to carry its own copy of the middleware's key
+# resolution and its own `Signer.loads` call. The copy differed: it passed
+# `max_age=max(max_age, permanent_lifetime)` and stopped there, skipping the
+# `_permanent`-dependent ceiling the request path applies. So a stale
+# non-permanent cookie that a request would reject was still loaded here, and a
+# test seeded from it saw a session the app would not have.
+
+
+def test_a_seeded_cookie_is_one_a_request_accepts():
+    app = Veloce(openapi_url=None)
+    app.config["SECRET_KEY"] = "k" * 32
+    app.add_middleware(SessionMiddleware())
+
+    @app.get("/who")
+    async def who(request):
+        return {"user": request.session.get("user")}
+
+    client = TestClient(app)
+    with client.session_transaction() as sess:
+        sess["user"] = "alice"
+    assert client.get("/who").json() == {"user": "alice"}
+
+
+def test_a_prefixed_cookie_is_seeded_under_its_wire_name():
+    """`__Host-` must be applied, or the seeded cookie is never found."""
+    app = Veloce(openapi_url=None)
+    app.config["SECRET_KEY"] = "k" * 32
+    app.add_middleware(SessionMiddleware(secure=True, cookie_prefix="host"))
+
+    @app.get("/who")
+    async def who(request):
+        return {"user": request.session.get("user")}
+
+    client = TestClient(app)
+    with client.session_transaction() as sess:
+        sess["user"] = "alice"
+    assert any(name.startswith("__Host-") for name in client._cookies)
+    assert client.get("/who").json() == {"user": "alice"}
+
+
+def test_a_stale_cookie_is_not_loaded_into_the_transaction():
+    """The behaviour the duplicated decode got wrong: the seam applies the same
+    age ceiling a request does, so a cookie the app would refuse starts empty
+    here rather than arriving pre-populated."""
+    import veloce.signing
+
+    app = Veloce(openapi_url=None)
+    app.config["SECRET_KEY"] = "k" * 32
+    middleware = SessionMiddleware(max_age=60, permanent_lifetime=60)
+    app.add_middleware(middleware)
+
+    @app.get("/who")
+    async def who(request):
+        return {"user": request.session.get("user")}
+
+    client = TestClient(app)
+    middleware.bind_secret_key(app.config)
+    real = veloce.signing.time.time
+    veloce.signing.time.time = lambda: real() - 600
+    try:
+        stale = middleware.encode_cookie({"user": "alice"})
+    finally:
+        veloce.signing.time.time = real
+    client._cookies[middleware.wire_cookie_name] = stale
+
+    with client.session_transaction() as sess:
+        assert dict(sess) == {}
+
+
+def test_the_transaction_reads_back_what_it_wrote():
+    app = Veloce(openapi_url=None)
+    app.config["SECRET_KEY"] = "k" * 32
+    app.add_middleware(SessionMiddleware())
+    client = TestClient(app)
+    with client.session_transaction() as sess:
+        sess["n"] = 1
+    with client.session_transaction() as sess:
+        assert sess["n"] == 1
