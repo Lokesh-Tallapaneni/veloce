@@ -59,10 +59,16 @@ def _group_field_schema(model: Any, wire_name: str) -> dict[str, Any] | None:
 
     `None` when the field resolves to a `$ref` (a nested model), which a
     parameter schema cannot carry - the caller falls back to the annotation.
+    That fallback is lossy: the caller rebuilds the schema from the annotation
+    alone, so the field's own `ge` / `le` / `title` do not reach the document
+    while the resolver goes on enforcing them. A `$ref` is the expected reason
+    to take it; an introspection failure is not, and is reported rather than
+    left to look like the ordinary case.
     """
     try:
         properties = _grouped_model_properties(model)
-    except Exception:
+    except Exception as exc:
+        _warn_schema_fallback(f"grouped field {wire_name!r} on {model!r}", exc)
         return None
     prop = properties.get(wire_name)
     if prop is None or "$ref" in prop:

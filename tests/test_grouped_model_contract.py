@@ -26,9 +26,12 @@ refused for sending a value the tool told it was allowed.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from pydantic import BaseModel, Field
 
+import veloce.contrib.openapi as openapi_module
 from veloce import Cookie, Header, Query, Veloce
 from veloce.testclient import TestClient
 
@@ -326,3 +329,49 @@ def test_a_body_model_is_not_treated_as_a_group():
     assert "requestBody" in operation
     assert not operation.get("parameters")
     assert TestClient(app).post("/y", json={"a": 1}).json() == {"a": 1}
+
+
+class Inner(BaseModel):
+    v: int = 1
+
+
+class Nested(BaseModel):
+    inner: Inner = Field(default_factory=Inner)
+
+
+# ── a failed field walk is reported, not silently lax ────────────────
+
+
+def test_a_failed_field_walk_is_reported(monkeypatch, caplog):
+    """Falling back is lossy, and it used to look like the `$ref` case.
+
+    A model the property walk cannot introspect drops every constraint above
+    while the resolver goes on enforcing them, so the document understates the
+    server with nothing said.
+    """
+
+    def explode(model):
+        raise RuntimeError("introspection moved")
+
+    openapi_module._grouped_model_properties.cache_clear()
+    monkeypatch.setattr(openapi_module, "_grouped_model_properties", explode)
+    with caplog.at_level(logging.WARNING, logger="veloce.contrib.openapi"):
+        schema = _parameters(_app())["limit"]["schema"]
+
+    assert any("grouped field" in record.getMessage() for record in caplog.records)
+    # Still a usable document rather than a 500.
+    assert schema["type"] == "integer"
+
+
+def test_a_nested_model_field_is_not_reported(caplog):
+    """A `$ref` is the documented reason to fall back; warning there is noise."""
+    app = Veloce(title="Nested", version="1.0.0")
+
+    @app.get("/nested")
+    async def nested(f: Nested = Query(group=True)) -> dict:
+        return {"ok": True}
+
+    with caplog.at_level(logging.WARNING, logger="veloce.contrib.openapi"):
+        app.openapi()
+
+    assert not [r for r in caplog.records if "grouped field" in r.getMessage()]
