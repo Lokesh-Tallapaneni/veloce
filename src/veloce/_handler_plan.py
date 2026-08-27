@@ -693,8 +693,77 @@ def _inspect_handler(
 
     try:
         return sig, get_type_hints(hint_target, include_extras=True)
-    except Exception:
-        return sig, {}
+    except Exception as exc:
+        # `get_type_hints` resolves the whole signature or none of it, so one
+        # unresolvable annotation used to take every other annotation with it -
+        # and what goes with them is the PEP 593 metadata that carries
+        # `Depends()` / `Security()`. A handler whose unrelated `x: "Typo"`
+        # parameter did not resolve stopped authenticating and answered 200.
+        # Resolve what can be resolved instead, so a broken annotation costs
+        # only its own parameter, and say so rather than degrading in silence.
+        return sig, _salvage_hints(hint_target, exc)
+
+
+def _salvage_hints(hint_target: Any, exc: Exception) -> dict[str, Any]:
+    """Resolve each annotation on its own, keeping the ones that succeed.
+
+    Each is resolved through the same `get_type_hints` the whole-signature call
+    uses - handed one annotation at a time against the target's own globals - so
+    a salvaged hint is identical to what the intact path would have produced.
+    """
+    annotations = getattr(hint_target, "__annotations__", None) or {}
+    globalns = getattr(hint_target, "__globals__", None)
+    resolved: dict[str, Any] = {}
+    unresolved: list[str] = []
+    for name, annotation in annotations.items():
+        probe = _AnnotationProbe()
+        probe.__annotations__ = {name: annotation}
+        try:
+            resolved.update(get_type_hints(probe, globalns, include_extras=True))
+        except Exception:  # noqa: BLE001 - this one genuinely cannot be resolved
+            unresolved.append(name)
+    # A parameter the plan binds by NAME - `request`, `ws` / `websocket`, and
+    # the return annotation, which is not a parameter at all - loses nothing
+    # when its annotation does not resolve, so warning about it would be noise
+    # on handlers that behave correctly. Only the parameters whose binding
+    # genuinely depended on the annotation are worth reporting.
+    consequential = [name for name in unresolved if name not in _BOUND_BY_NAME]
+    if consequential:
+        _warn_unresolved_annotations(hint_target, consequential, exc)
+    return resolved
+
+
+#: Parameters the plan binds from the name alone (see `_build_slots`), plus the
+#: return annotation. An unresolved annotation on one of these changes nothing.
+_BOUND_BY_NAME = frozenset({"request", "ws", "websocket", "return"})
+
+
+class _AnnotationProbe:
+    """A throwaway carrier so one annotation can be resolved by itself.
+
+    `get_type_hints` needs an object with `__annotations__`; giving it a fresh
+    one per parameter is what turns an all-or-nothing resolution into a
+    per-parameter one.
+    """
+
+    __slots__ = ("__annotations__",)
+
+
+def _warn_unresolved_annotations(hint_target: Any, unresolved: list[str], exc: Exception) -> None:
+    """Warn (once at registration) that some annotations could not be resolved.
+
+    Silence here is what made the defect dangerous: the route simply stopped
+    enforcing its security dependency and answered normally.
+    """
+    where = getattr(hint_target, "__qualname__", None) or repr(hint_target)
+    warnings.warn(
+        f"{where}: could not resolve the annotation on "
+        f"{', '.join(repr(n) for n in unresolved)} ({type(exc).__name__}: {exc}); "
+        "those parameters are treated as unannotated. Any `Depends()` / "
+        "`Security()` metadata on them is not applied - import the name at "
+        "runtime rather than only under TYPE_CHECKING",
+        stacklevel=3,
+    )
 
 
 def build_plan(

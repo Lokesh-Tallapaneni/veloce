@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- An unresolvable annotation no longer erases the whole signature's PEP 593 metadata; a route whose unrelated parameter had a bad annotation stopped enforcing its `Depends()` security scheme and served unauthenticated. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
+
 - `Response` copies the `headers` mapping it is given; a handler reusing one dict across requests shipped a previous request's `Set-Cookie`, leaking another user's session. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
 
 - `ProxyFix` counts `Forwarded:` hops correctly when an element carries a backslash; one outside a quoted string hid the following comma, merging the trusted proxy's element into the client's and putting attacker text into `request.remote_addr`. ([#288](https://github.com/Lokesh-Tallapaneni/veloce/pull/288))
