@@ -1,4 +1,16 @@
-"""Tests for the Veloce application — full integration tests."""
+"""The application, exercised end to end.
+
+This is the integration smoke suite: one small pass over each thing an app
+does - routing, path and query parameters, bodies, dependency injection,
+middleware, error handlers, sub-routers, response types, sync handlers - to
+catch a break in the wiring between them. Each of those has its own module
+with the depth; this one is about the seams.
+
+It used to carry a bare-function tail as well, three sections labelled by
+internal batch id and covering the security preset, executor classification
+and `config["DEBUG"]` binding, none of which is about the seams. Those moved
+to the modules named for them.
+"""
 
 import pytest
 from pydantic import BaseModel
@@ -325,181 +337,3 @@ class TestSyncHandlers:
         response = await app.handle_request(make_request(path="/sync"))
         assert response.status_code == 200
         assert b"sync" in response.body
-
-
-# ── S7: secure-by-default preset + security audit ─────────────────────
-
-
-def test_security_audit_flags_insecure_app():
-    from veloce import SessionMiddleware
-
-    insecure = Veloce(debug=True, openapi_url=None)
-    insecure.add_middleware(SessionMiddleware(secret_key="k" * 32))
-    warnings = insecure.security_audit()
-    assert any("DEBUG" in w for w in warnings)
-    # The session cookie is the app-level posture the audit reports on; the
-    # signing key belongs to the middleware, which reports it itself.
-    assert any("not Secure" in w for w in warnings)
-
-
-def test_security_audit_clean_after_hardening():
-    from veloce import SecurityHeadersMiddleware
-
-    secured = Veloce(openapi_url=None)
-    secured.config["SECRET_KEY"] = "a-real-secret"
-    secured.add_middleware(
-        SecurityHeadersMiddleware(
-            hsts_max_age=31536000, content_security_policy="default-src 'self'"
-        )
-    )
-    assert secured.security_audit() == []
-
-
-# ── P-6: trivial-route executor classification ───────────────────────
-
-
-async def test_trivial_route_classified_and_dispatches():
-    """A handler with no injected parameters is classified trivial and is
-    dispatched without entering the dependency resolver."""
-    app = Veloce(debug=True, openapi_url=None)
-
-    @app.get("/trivial")
-    async def trivial():
-        return {"ok": True}
-
-    @app.get("/with-request")
-    async def with_request(request: Request):
-        return {"seen": request.path}
-
-    @app.get("/with-param/{n}")
-    async def with_param(n: int):
-        return {"n": n}
-
-    assert app.match("GET", "/trivial").route_info.is_trivial_plan is True
-    assert app.match("GET", "/with-request").route_info.is_trivial_plan is False
-    assert app.match("GET", "/with-param/5").route_info.is_trivial_plan is False
-
-    # All three still dispatch correctly.
-    assert (await app.handle_request(make_request(path="/trivial"))).status_code == 200
-    assert (await app.handle_request(make_request(path="/with-request"))).status_code == 200
-    param_resp = await app.handle_request(make_request(path="/with-param/5"))
-    assert param_resp.status_code == 200
-    assert b'"n":5' in param_resp.body or b'"n": 5' in param_resp.body
-
-
-async def test_route_with_dependency_is_not_trivial():
-    """A route-level dependency keeps the route on the full resolve path."""
-
-    async def dep():
-        return "x"
-
-    app = Veloce(debug=True, openapi_url=None)
-
-    @app.get("/d", dependencies=[Depends(dep)])
-    async def d():
-        return {"ok": True}
-
-    assert app.match("GET", "/d").route_info.is_trivial_plan is False
-    assert (await app.handle_request(make_request(path="/d"))).status_code == 200
-
-
-async def test_paramless_route_under_app_level_dependency_is_not_trivial():
-    """An app-level `Veloce(dependencies=...)` keeps even a parameter-less
-    handler on the full resolve path, so the dependency still runs."""
-    ran: list[bool] = []
-
-    async def dep():
-        ran.append(True)
-        return "x"
-
-    app = Veloce(debug=True, openapi_url=None, dependencies=[Depends(dep)])
-
-    @app.get("/d")
-    async def d():
-        return {"ok": True}
-
-    assert app.match("GET", "/d").route_info.is_trivial_plan is False
-    resp = await app.handle_request(make_request(path="/d"))
-    assert resp.status_code == 200
-    assert ran == [True]  # the app-level dependency actually executed
-
-
-# ── debug bound to config["DEBUG"] (single source of truth) ──────────
-
-
-def test_debug_attr_writes_config():
-
-    app = Veloce(openapi_url=None)
-    app.debug = True
-    assert app.config["DEBUG"] is True
-
-
-def test_config_debug_reflected_in_attr():
-
-    app = Veloce(openapi_url=None)
-    app.config["DEBUG"] = True
-    assert app.debug is True
-
-
-def test_debug_constructor_seeds_config():
-
-    assert Veloce(debug=True, openapi_url=None).config["DEBUG"] is True
-    assert Veloce(openapi_url=None).config["DEBUG"] is False
-
-
-def test_post_construction_debug_enables_html_traceback():
-    from veloce.testclient import TestClient
-
-    app = Veloce(openapi_url=None)
-
-    @app.get("/boom")
-    async def boom():
-        raise RuntimeError("kaboom")
-
-    app.config["DEBUG"] = True  # flip AFTER construction
-    with TestClient(app) as client:
-        resp = client.get("/boom", headers={"accept": "text/html"})
-    # Flipping config["DEBUG"] after construction now serves the HTML debug
-    # traceback page (the path that reads self.debug, now bound to the config
-    # key) instead of the production JSON error.
-    assert resp.status_code == 500
-    assert "text/html" in resp.content_type
-    assert "RuntimeError" in resp.text
-
-
-def test_debug_string_false_is_falsey():
-    # A dotenv-loaded `DEBUG=false` is the string "false"; it must read as False,
-    # not truthy. Guards the bool("false") regression on string-based config.
-
-    app = Veloce(openapi_url=None)
-    app.config["DEBUG"] = "false"
-    assert app.debug is False
-    app.config["DEBUG"] = "true"
-    assert app.debug is True
-
-
-def test_debug_setter_coerces_string():
-    # `app.debug = "false"` (string from an env source) must store False.
-
-    app = Veloce(openapi_url=None)
-    app.debug = "false"
-    assert app.debug is False and app.config["DEBUG"] is False
-    app.debug = "true"
-    assert app.debug is True
-
-
-def test_run_rejects_multiple_workers():
-    """The built-in server is single-process; run(workers>1) fails loudly."""
-    app = Veloce()
-    with pytest.raises(ValueError, match="runs a single process"):
-        app.run(workers=4)
-
-
-def test_app_still_works():
-    app = Veloce(openapi_url=None)
-
-    @app.get("/")
-    async def index():
-        return {"ok": True}
-
-    assert app.test_client().get("/").json() == {"ok": True}

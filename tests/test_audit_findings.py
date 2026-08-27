@@ -251,3 +251,30 @@ def test_a_configured_header_is_not_reported():
         )
     )
     assert run(app) == []
+
+
+# ── the secure-by-default preset, end to end ─────────────────
+#
+# Moved here from `test_app.py`, where these sat in a bare-function tail whose
+# sections were labelled by internal batch id (`S7:`, `P-6:`).
+
+
+def test_security_audit_flags_insecure_app():
+    insecure = Veloce(debug=True, openapi_url=None)
+    insecure.add_middleware(SessionMiddleware(secret_key="k" * 32))
+    warnings = insecure.security_audit()
+    assert any("DEBUG" in w for w in warnings)
+    # The session cookie is the app-level posture the audit reports on; the
+    # signing key belongs to the middleware, which reports it itself.
+    assert any("not Secure" in w for w in warnings)
+
+
+def test_security_audit_clean_after_hardening():
+    secured = Veloce(openapi_url=None)
+    secured.config["SECRET_KEY"] = "a-real-secret"
+    secured.add_middleware(
+        SecurityHeadersMiddleware(
+            hsts_max_age=31536000, content_security_policy="default-src 'self'"
+        )
+    )
+    assert secured.security_audit() == []

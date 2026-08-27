@@ -314,3 +314,85 @@ def test_render_traceback_html_renders_chained_cause_within_group_child():
     assert "root-cause" in page
     assert "wrapped-error" in page
     assert "The above exception was the direct cause" in page
+
+
+# ── `debug` is bound to config["DEBUG"] ───────────────────────
+#
+# Moved here from `test_app.py`, where these sat in a bare-function tail whose
+# sections were labelled by internal batch id (`S7:`, `P-6:`).
+
+
+def test_debug_attr_writes_config():
+
+    app = Veloce(openapi_url=None)
+    app.debug = True
+    assert app.config["DEBUG"] is True
+
+
+def test_config_debug_reflected_in_attr():
+
+    app = Veloce(openapi_url=None)
+    app.config["DEBUG"] = True
+    assert app.debug is True
+
+
+def test_debug_constructor_seeds_config():
+
+    assert Veloce(debug=True, openapi_url=None).config["DEBUG"] is True
+    assert Veloce(openapi_url=None).config["DEBUG"] is False
+
+
+def test_post_construction_debug_enables_html_traceback():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/boom")
+    async def boom():
+        raise RuntimeError("kaboom")
+
+    app.config["DEBUG"] = True  # flip AFTER construction
+    with TestClient(app) as client:
+        resp = client.get("/boom", headers={"accept": "text/html"})
+    # Flipping config["DEBUG"] after construction now serves the HTML debug
+    # traceback page (the path that reads self.debug, now bound to the config
+    # key) instead of the production JSON error.
+    assert resp.status_code == 500
+    assert "text/html" in resp.content_type
+    assert "RuntimeError" in resp.text
+
+
+def test_debug_string_false_is_falsey():
+    # A dotenv-loaded `DEBUG=false` is the string "false"; it must read as False,
+    # not truthy. Guards the bool("false") regression on string-based config.
+
+    app = Veloce(openapi_url=None)
+    app.config["DEBUG"] = "false"
+    assert app.debug is False
+    app.config["DEBUG"] = "true"
+    assert app.debug is True
+
+
+def test_debug_setter_coerces_string():
+    # `app.debug = "false"` (string from an env source) must store False.
+
+    app = Veloce(openapi_url=None)
+    app.debug = "false"
+    assert app.debug is False and app.config["DEBUG"] is False
+    app.debug = "true"
+    assert app.debug is True
+
+
+def test_run_rejects_multiple_workers():
+    """The built-in server is single-process; run(workers>1) fails loudly."""
+    app = Veloce()
+    with pytest.raises(ValueError, match="runs a single process"):
+        app.run(workers=4)
+
+
+def test_app_still_works():
+    app = Veloce(openapi_url=None)
+
+    @app.get("/")
+    async def index():
+        return {"ok": True}
+
+    assert app.test_client().get("/").json() == {"ok": True}

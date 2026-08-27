@@ -34,6 +34,7 @@ import linecache
 
 from pydantic import BaseModel
 
+from tests.conftest import make_request
 from veloce import Depends, Request, Veloce
 from veloce._handler_plan import build_plan
 from veloce._resolver_codegen import compile_param_resolver
@@ -249,3 +250,75 @@ def test_no_import_happens_while_serving_a_request():
         builtins.__import__ = real_import
 
     assert imported == []
+
+
+# ── trivial-route executor classification ────────────────────
+#
+# Moved here from `test_app.py`, where these sat in a bare-function tail whose
+# sections were labelled by internal batch id (`S7:`, `P-6:`).
+
+
+async def test_trivial_route_classified_and_dispatches():
+    """A handler with no injected parameters is classified trivial and is
+    dispatched without entering the dependency resolver."""
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/trivial")
+    async def trivial():
+        return {"ok": True}
+
+    @app.get("/with-request")
+    async def with_request(request: Request):
+        return {"seen": request.path}
+
+    @app.get("/with-param/{n}")
+    async def with_param(n: int):
+        return {"n": n}
+
+    assert app.match("GET", "/trivial").route_info.is_trivial_plan is True
+    assert app.match("GET", "/with-request").route_info.is_trivial_plan is False
+    assert app.match("GET", "/with-param/5").route_info.is_trivial_plan is False
+
+    # All three still dispatch correctly.
+    assert (await app.handle_request(make_request(path="/trivial"))).status_code == 200
+    assert (await app.handle_request(make_request(path="/with-request"))).status_code == 200
+    param_resp = await app.handle_request(make_request(path="/with-param/5"))
+    assert param_resp.status_code == 200
+    assert b'"n":5' in param_resp.body or b'"n": 5' in param_resp.body
+
+
+async def test_route_with_dependency_is_not_trivial():
+    """A route-level dependency keeps the route on the full resolve path."""
+
+    async def dep():
+        return "x"
+
+    app = Veloce(debug=True, openapi_url=None)
+
+    @app.get("/d", dependencies=[Depends(dep)])
+    async def d():
+        return {"ok": True}
+
+    assert app.match("GET", "/d").route_info.is_trivial_plan is False
+    assert (await app.handle_request(make_request(path="/d"))).status_code == 200
+
+
+async def test_paramless_route_under_app_level_dependency_is_not_trivial():
+    """An app-level `Veloce(dependencies=...)` keeps even a parameter-less
+    handler on the full resolve path, so the dependency still runs."""
+    ran: list[bool] = []
+
+    async def dep():
+        ran.append(True)
+        return "x"
+
+    app = Veloce(debug=True, openapi_url=None, dependencies=[Depends(dep)])
+
+    @app.get("/d")
+    async def d():
+        return {"ok": True}
+
+    assert app.match("GET", "/d").route_info.is_trivial_plan is False
+    resp = await app.handle_request(make_request(path="/d"))
+    assert resp.status_code == 200
+    assert ran == [True]  # the app-level dependency actually executed
