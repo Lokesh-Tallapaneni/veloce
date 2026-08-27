@@ -18,12 +18,13 @@ from veloce._protocol_constants import HTTP_METHOD_GET
 if TYPE_CHECKING:  # pragma: no cover
     from veloce.app.contexts import _AppContext, _TestRequestContext
     from veloce.app.core import Veloce
+    from veloce.testclient import AsyncTestClient, TestClient
 
 
 class TestingMixin:
     """In-memory test-client and outside-request context factories."""
 
-    def test_client(self, **kwargs: Any) -> Any:
+    def test_client(self, **kwargs: Any) -> TestClient:
         """Return an in-memory `TestClient` for this app.
 
         `app.test_client()` is the factory API; the kwargs (e.g.
@@ -35,7 +36,7 @@ class TestingMixin:
 
         return TestClient(self, **kwargs)
 
-    def async_test_client(self, **kwargs: Any) -> Any:
+    def async_test_client(self, **kwargs: Any) -> AsyncTestClient:
         """Return an `AsyncTestClient` for this app.
 
         The async counterpart of `test_client()` - used as

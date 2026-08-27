@@ -402,19 +402,32 @@ class MCPMixin:
         # Omitted means the server's own default freshness hint.
         cache_ttl = DEFAULT_CACHE_TTL_MS if cache_ttl_ms is None else cache_ttl_ms
 
-        if transport == "stdio":
-            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
-            # layering: importing the optional integration eagerly would make every
-            # `import veloce` pay for machinery most apps never mount.
-            from veloce.contrib.mcp.transports.stdio import serve_stdio
+        # Converted once: two transports pass it on, and doing it at each call
+        # site means two places to keep in step.
+        origin_allow_list = frozenset(allowed_origins) if allowed_origins is not None else None
 
-            server = MCPServer(
+        def _build_server() -> MCPServer:
+            """The server, built the same way for every transport.
+
+            Three branches constructed it with the same five arguments; a sixth
+            option added to one of them and not the others is a transport that
+            quietly behaves differently.
+            """
+            return MCPServer(
                 self,
                 tool_filter=tool_filter,
                 cache_ttl_ms=cache_ttl,
                 page_size=page_size,
                 tool_search=tool_search,
             )
+
+        if transport == "stdio":
+            # `app/` is core and `contrib/` is optional, so this is deferred to keep the
+            # layering: importing the optional integration eagerly would make every
+            # `import veloce` pay for machinery most apps never mount.
+            from veloce.contrib.mcp.transports.stdio import serve_stdio
+
+            server = _build_server()
 
             async def _serve() -> None:
                 if principal is not None:
@@ -430,13 +443,7 @@ class MCPMixin:
             # `import veloce` pay for machinery most apps never mount.
             from veloce.contrib.mcp.transports.http import register_http_transport
 
-            server = MCPServer(
-                self,
-                tool_filter=tool_filter,
-                cache_ttl_ms=cache_ttl,
-                page_size=page_size,
-                tool_search=tool_search,
-            )
+            server = _build_server()
             # A task-augmented call records the creating connection's identity and
             # the follow-up tasks/get|result|list|cancel must run under that same
             # connection. The stateless default mints a throwaway session (a fresh,
@@ -455,9 +462,7 @@ class MCPMixin:
                 server,
                 path=path,
                 auth=auth,
-                allowed_origins=(
-                    frozenset(allowed_origins) if allowed_origins is not None else None
-                ),
+                allowed_origins=origin_allow_list,
                 exclude_middleware=exclude_middleware,
                 sessions=sessions,
                 resumable=resumable,
@@ -471,22 +476,14 @@ class MCPMixin:
             # `import veloce` pay for machinery most apps never mount.
             from veloce.contrib.mcp.transports.sse import register_sse_transport
 
-            server = MCPServer(
-                self,
-                tool_filter=tool_filter,
-                cache_ttl_ms=cache_ttl,
-                page_size=page_size,
-                tool_search=tool_search,
-            )
+            server = _build_server()
             register_sse_transport(
                 self,
                 server,
                 path=path if path != "/mcp" else "/sse",
                 message_path=message_path,
                 auth=auth,
-                allowed_origins=(
-                    frozenset(allowed_origins) if allowed_origins is not None else None
-                ),
+                allowed_origins=origin_allow_list,
                 exclude_middleware=exclude_middleware,
             )
             return None

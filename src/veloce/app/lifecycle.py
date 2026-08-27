@@ -372,14 +372,12 @@ class LifecycleMixin:
     # semantically equivalent to `on_startup` / `on_shutdown`; both name
     # pairs are accepted so either reads naturally at the call site.
     def before_serving(self, func: Callable) -> Callable:
-        """Register a coroutine to run once at app startup."""
-        self._on_startup.append(func)
-        return func
+        """Register a coroutine to run once at app startup. Alias of `on_startup`."""
+        return self.on_startup(func)
 
     def after_serving(self, func: Callable) -> Callable:
-        """Register a coroutine to run once at app shutdown."""
-        self._on_shutdown.append(func)
-        return func
+        """Register a coroutine to run once at app shutdown. Alias of `on_shutdown`."""
+        return self.on_shutdown(func)
 
     # ── Lifespan engine ───────────────────────────────────
 
@@ -450,27 +448,29 @@ class LifecycleMixin:
             # The same child instance mounted under multiple prefixes is
             # started and shut down only once (deduped by identity).
             self._started_subapps = []
-            _seen_subs: set[int] = set()
-            for _prefix, _prefix_slash, _sub in self._mounted_apps:
-                if isinstance(_sub, LifecycleMixin) and id(_sub) not in _seen_subs:
-                    _seen_subs.add(id(_sub))
-                    await _sub._run_lifecycle(LIFECYCLE_STARTUP)
-                    self._started_subapps.append(_sub)
+            seen_subs: set[int] = set()
+            for _prefix, _prefix_slash, sub in self._mounted_apps:
+                if isinstance(sub, LifecycleMixin) and id(sub) not in seen_subs:
+                    seen_subs.add(id(sub))
+                    await sub._run_lifecycle(LIFECYCLE_STARTUP)
+                    self._started_subapps.append(sub)
 
             # Dev-mode event-loop blocking watchdog - opt-in, so an app
             # that does not set the config key never builds one. The key
             # may be a plain truthy value, or a mapping of watchdog kwargs
             # (`interval`, `stall_threshold`) for tuning. Registered on the
             # stack so it is always stopped, even on partial-startup failure.
-            _wd_config = self.config.get("EVENT_LOOP_WATCHDOG")
-            if _wd_config and self._watchdog is None:
+            watchdog_config = self.config.get("EVENT_LOOP_WATCHDOG")
+            if watchdog_config and self._watchdog is None:
                 from veloce.watchdog import EventLoopWatchdog
 
-                _wd_kwargs = dict(_wd_config) if isinstance(_wd_config, Mapping) else {}
+                watchdog_kwargs = (
+                    dict(watchdog_config) if isinstance(watchdog_config, Mapping) else {}
+                )
                 self._watchdog = EventLoopWatchdog(
                     asyncio.get_running_loop(),
                     attributor=_build_watchdog_attributor(cast("Veloce", self)),
-                    **_wd_kwargs,
+                    **watchdog_kwargs,
                 )
                 self._watchdog.start()
                 stack.push_async_callback(self._stop_watchdog)
