@@ -10,7 +10,7 @@ renaming. They are kept as-is deliberately for spec compliance.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeVar
 
 from veloce._params import Form
 from veloce._protocol_constants import AUTH_SCHEME_BEARER, OAUTH2_GRANT_TYPE_PASSWORD
@@ -145,6 +145,13 @@ class OpenIdConnect(_OAuth2BearerScheme):
         return {"type": "openIdConnect", "openIdConnectUrl": self.openIdConnectUrl}
 
 
+#: Bound to the form class so `_from_form` returns the *subclass* it was called
+#: on. `typing.Self` would say this directly but is 3.11+, and this package
+#: supports 3.10 - which is why the strict subclass carried a
+#: `# type: ignore[return-value]` instead of a type.
+_FormT = TypeVar("_FormT", bound="OAuth2PasswordRequestForm")
+
+
 class OAuth2PasswordRequestForm:
     """OAuth2 password request form data."""
 
@@ -179,7 +186,7 @@ class OAuth2PasswordRequestForm:
         return cls._from_form(form_data)
 
     @classmethod
-    def _from_form(cls, form_data: Any) -> OAuth2PasswordRequestForm:
+    def _from_form(cls: type[_FormT], form_data: Any) -> _FormT:
         return cls(
             username=form_data.get("username", ""),
             password=form_data.get("password", ""),
@@ -231,4 +238,4 @@ class OAuth2PasswordRequestFormStrict(OAuth2PasswordRequestForm):
                 HTTP_422_UNPROCESSABLE_ENTITY,
                 f"grant_type must be {OAUTH2_GRANT_TYPE_PASSWORD!r}",
             )
-        return cls._from_form(form_data)  # type: ignore[return-value]
+        return cls._from_form(form_data)

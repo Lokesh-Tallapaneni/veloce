@@ -167,7 +167,7 @@ class Blueprint(Router):
             ),
         ] = None,
         dependencies: Annotated[
-            list | None,
+            list[Any] | None,
             Doc(
                 "Dependencies applied to every route on this blueprint, run before per-route ones."
             ),

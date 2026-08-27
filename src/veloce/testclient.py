@@ -21,7 +21,7 @@ import contextlib
 import mimetypes
 import secrets
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, KeysView, Sequence
 from typing import Any
 from urllib.parse import unquote, urlencode, urlparse
 
@@ -1327,13 +1327,13 @@ class _TestClientCookies:
     def __contains__(self, key: str) -> bool:
         return key in self._client._cookies
 
-    def __iter__(self) -> Any:
+    def __iter__(self) -> Iterator[str]:
         return iter(self._client._cookies)
 
     def __len__(self) -> int:
         return len(self._client._cookies)
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def get(self, key: str, default: str | None = None) -> str | None:
         raw = self._client._cookies.get(key)
         return default if raw is None else _decode_cookie_value(raw)
 
@@ -1343,13 +1343,13 @@ class _TestClientCookies:
     def update(self, other: dict[str, str]) -> None:
         self._client._cookies.update(other)
 
-    def items(self) -> Any:
+    def items(self) -> list[tuple[str, str]]:
         return [(k, _decode_cookie_value(v)) for k, v in self._client._cookies.items()]
 
-    def keys(self) -> Any:
+    def keys(self) -> KeysView[str]:
         return self._client._cookies.keys()
 
-    def values(self) -> Any:
+    def values(self) -> list[str]:
         return [_decode_cookie_value(v) for v in self._client._cookies.values()]
 
     def __repr__(self) -> str:

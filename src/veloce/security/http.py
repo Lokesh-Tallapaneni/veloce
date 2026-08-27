@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Callable
 from typing import Any
 
 from veloce._constants import HEADER_AUTHORIZATION, HEADER_WWW_AUTHENTICATE, MSG_NOT_AUTHENTICATED
@@ -165,7 +166,7 @@ class HTTPDigest(SecurityScheme):
         qop: str = "auth",
         algorithm: str = "SHA-256",
         auto_error: bool = True,
-        nonce_factory: Any = None,
+        nonce_factory: Callable[[], str] | None = None,
     ) -> None:
         # RFC 7616 Sec. 3.2 prefers SHA-256; MD5 remains accepted for back-compat
         # with RFC 2617 clients but should not be the default for new servers.

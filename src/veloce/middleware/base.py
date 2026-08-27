@@ -22,6 +22,12 @@ if TYPE_CHECKING:  # pragma: no cover
 # The `call_next` argument type, so user dispatch functions can annotate it.
 CallNext = Callable[[Request], Awaitable[Response]]
 
+#: A `dispatch(request, call_next)` coroutine - the shape `BaseHTTPMiddleware`
+#: accepts as `dispatch=`. Named here beside `CallNext` because the constructor
+#: took a bare `Callable` for its documented public argument while `dispatch()`
+#: five lines below already spelled the parameterised form.
+DispatchFunction = Callable[[Request, CallNext], Awaitable[Response]]
+
 
 class Auditable:
     """What a registered component declares about its own security posture.
@@ -123,10 +129,10 @@ class BaseHTTPMiddleware(Auditable):
         app.add_http_middleware(BaseHTTPMiddleware(dispatch=my_dispatch))
     """
 
-    def __init__(self, dispatch: Callable | None = None) -> None:
+    def __init__(self, dispatch: DispatchFunction | None = None) -> None:
         # A supplied callable is invoked with (request, call_next) directly via
         # `__call__`; bare-function bindings don't receive an automatic `self`.
-        self._dispatch_override: Callable | None = dispatch
+        self._dispatch_override: DispatchFunction | None = dispatch
 
     async def dispatch(self, request: Request, call_next: CallNext) -> Response:
         """Override this in subclasses. Default just calls through.

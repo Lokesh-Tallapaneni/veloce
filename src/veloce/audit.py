@@ -94,11 +94,11 @@ class AuditContext:
     than skip.
     """
 
-    app: Any
+    app: Veloce
     routes_final: bool
 
 
-def _response_contract_findings(app: Any) -> list[Finding]:
+def _response_contract_findings(app: Veloce) -> list[Finding]:
     """Findings about what each route says it returns.
 
     These used to be a second audit returning bare strings. Its own docstring
@@ -146,7 +146,7 @@ def _response_contract_findings(app: Any) -> list[Finding]:
     return findings
 
 
-def _app_findings(app: Any) -> list[Finding]:
+def _app_findings(app: Veloce) -> list[Finding]:
     """Findings about the application itself rather than about a middleware."""
     findings: list[Finding] = []
     if app.debug:
@@ -166,7 +166,7 @@ def _app_findings(app: Any) -> list[Finding]:
     return findings
 
 
-def _unmatched_exclusions(app: Any) -> list[Finding]:
+def _unmatched_exclusions(app: Veloce) -> list[Finding]:
     """Report `exclude_middleware` names that match nothing registered.
 
     An exclusion is matched by `Middleware.middleware_name`, and an unmatched one

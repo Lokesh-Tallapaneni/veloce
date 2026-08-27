@@ -585,7 +585,7 @@ class Response:
         return n
 
     @property
-    def last_modified(self) -> Any:
+    def last_modified(self) -> datetime | None:
         """Parsed `Last-Modified` header -> UTC `datetime` or None.
 
         Accepts the three RFC 9110 Sec. 5.6.7 HTTP-date
@@ -602,7 +602,7 @@ class Response:
         self._set_http_date_header(HEADER_LAST_MODIFIED, value)
 
     @property
-    def expires(self) -> Any:
+    def expires(self) -> datetime | None:
         """Parsed `Expires` header -> UTC `datetime` or None (RFC 9111 Sec. 5.3)."""
         raw = header_get(self.headers, HEADER_EXPIRES)
         if not raw:
@@ -816,7 +816,7 @@ class Response:
         return value
 
     @property
-    def vary(self) -> Any:
+    def vary(self) -> HeaderSet:
         """The `Vary` header as a `HeaderSet`.
 
         Returns a fresh `HeaderSet` parsed from the current header.
@@ -835,7 +835,7 @@ class Response:
         self._encoded = None
 
     @property
-    def allow(self) -> Any:
+    def allow(self) -> HeaderSet:
         """The `Allow` header as a `HeaderSet`.
 
         Lists the HTTP methods the resource supports (RFC 9110 Sec. 10.2.1).
